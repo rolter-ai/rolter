@@ -10,6 +10,11 @@ export interface TableColumn<T> {
   header?: React.ReactNode;
   align?: "left" | "right" | "center";
   mono?: boolean;
+  /**
+   * The cell names its row: a `<th scope="row">`, so a screen reader reads the
+   * row's other cells under that name. At most one column per table.
+   */
+  rowHeader?: boolean;
   width?: string | number;
   render?: (value: unknown, row: T, index: number) => React.ReactNode;
 }
@@ -18,6 +23,8 @@ interface TableBaseProps<T> extends React.HTMLAttributes<HTMLDivElement> {
   columns: TableColumn<T>[];
   data: T[];
   hover?: boolean;
+  /** the table's name for assistive technology, which a visible title above it does not give it */
+  caption?: string;
   rowKey?: keyof T;
   /**
    * What opens under a row, in a full-width row of its own, or null for a row
@@ -65,6 +72,7 @@ export function Table<T extends Record<string, unknown>>({
   columns = [],
   data = [],
   hover = true,
+  caption,
   rowKey,
   detailRow,
   empty,
@@ -91,6 +99,7 @@ export function Table<T extends Record<string, unknown>>({
       {...props}
     >
       <table className="w-full border-collapse text-sm">
+        {caption && <caption className="sr-only">{caption}</caption>}
         <thead>
           <tr>
             {columns.map((c) => (
@@ -132,21 +141,27 @@ export function Table<T extends Record<string, unknown>>({
                     hover && "hover:bg-muted",
                   )}
                 >
-                  {columns.map((c) => (
-                    <td
-                      key={c.key}
-                      className={cn(
-                        "border-b border-[color:var(--border-subtle)] px-4 py-2 align-middle text-[color:var(--text-secondary)]",
-                        c.mono && "font-mono text-xs text-foreground",
-                        // a sized column is sized to its content: the slack goes to
-                        // the unsized ones instead of stretching every cell
-                        c.width && "whitespace-nowrap",
-                        c.align ? ALIGN[c.align] : undefined,
-                      )}
-                    >
-                      {c.render ? c.render(row[c.key], row, i) : (row[c.key] as React.ReactNode)}
-                    </td>
-                  ))}
+                  {columns.map((c) => {
+                    const Cell = c.rowHeader ? "th" : "td";
+                    return (
+                      <Cell
+                        key={c.key}
+                        scope={c.rowHeader ? "row" : undefined}
+                        className={cn(
+                          "border-b border-[color:var(--border-subtle)] px-4 py-2 align-middle text-[color:var(--text-secondary)]",
+                          c.mono && "font-mono text-xs text-foreground",
+                          // a sized column is sized to its content: the slack goes to
+                          // the unsized ones instead of stretching every cell
+                          c.width && "whitespace-nowrap",
+                          // a row header is a th, which would otherwise be bold and centred
+                          c.rowHeader && "font-normal",
+                          c.align ? ALIGN[c.align] : c.rowHeader ? "text-left" : undefined,
+                        )}
+                      >
+                        {c.render ? c.render(row[c.key], row, i) : (row[c.key] as React.ReactNode)}
+                      </Cell>
+                    );
+                  })}
                 </tr>
                 {detail && (
                   <tr className="[&:last-child>td]:border-b-0">

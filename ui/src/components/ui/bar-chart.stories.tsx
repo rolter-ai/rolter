@@ -1,6 +1,7 @@
 import type { Meta, StoryObj } from "@storybook/react";
+import { expect } from "storybook/test";
 
-import { BarChart } from "./bar-chart";
+import { BarChart, BarTrack } from "./bar-chart";
 
 const meta = {
   title: "Charts/BarChart",
@@ -26,5 +27,24 @@ export const TopN: Story = {
     data: [900, 640, 512, 420, 380, 210, 120, 90],
     labels: ["gpt-4o", "claude", "llama", "mistral", "gemini", "groq", "xai", "ollama"],
     topN: 5,
+  },
+};
+
+/**
+ * The single bar the ranked chart draws each row with, and the one a table cell
+ * puts beside its number (the dashboard's by-model table): a fill of `share`
+ * of a quiet track, clamped to the track.
+ */
+export const BarInACell: StoryObj = {
+  render: () => (
+    <div className="flex flex-col gap-2">
+      {[0, 0.4, 1, 1.6].map((share) => (
+        <BarTrack key={share} share={share} color="var(--chart-1)" className="h-2 w-16" />
+      ))}
+    </div>
+  ),
+  play: async ({ canvasElement }) => {
+    const fills = Array.from(canvasElement.querySelectorAll<HTMLElement>("[aria-hidden] > span"));
+    await expect(fills.map((fill) => fill.style.width)).toEqual(["0%", "40%", "100%", "100%"]);
   },
 };

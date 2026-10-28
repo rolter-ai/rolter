@@ -434,7 +434,7 @@ function McpRow({ row, onSelect }: { row: McpLogRow; onSelect: () => void }) {
             e.stopPropagation();
             onSelect();
           }}
-          className="flex h-6 w-6 items-center justify-center rounded-[6px] text-[color:var(--text-subtle)] transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          className="flex h-6 w-6 items-center justify-center rounded-sm text-[color:var(--text-subtle)] transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
         >
           <ChevronRight className="h-4 w-4" />
         </button>
@@ -585,7 +585,7 @@ function DetailDrawer({ eventId, onClose }: { eventId: string; onClose: () => vo
     <aside
       {...drawer}
       aria-label={t("analytics.mcpDetails")}
-      className="rl-fade-in flex w-[380px] flex-none flex-col gap-3.5 overflow-y-auto rounded-[10px] border border-[color:var(--border-default)] bg-card p-4 focus-visible:outline-none"
+      className="rl-fade-in flex w-[380px] flex-none flex-col gap-3.5 overflow-y-auto rounded-lg border border-[color:var(--border-default)] bg-card p-4 focus-visible:outline-none"
     >
       <div className="flex items-center gap-2">
         <span className="min-w-0 truncate font-mono text-sm font-semibold">

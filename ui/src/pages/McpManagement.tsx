@@ -267,7 +267,7 @@ function DiscoveryPicker({
           return (
             <label
               key={mode}
-              className={`flex cursor-pointer items-start gap-2.5 rounded-[10px] border p-3 transition-colors focus-within:ring-1 focus-within:ring-ring ${selected ? "border-[color:var(--red-500)] bg-[color:var(--red-tint)]" : "border-[color:var(--border-default)] hover:bg-card/60"}`}
+              className={`flex cursor-pointer items-start gap-2.5 rounded-lg border p-3 transition-colors focus-within:ring-1 focus-within:ring-ring ${selected ? "border-[color:var(--red-500)] bg-[color:var(--red-tint)]" : "border-[color:var(--border-default)] hover:bg-card/60"}`}
             >
               <input
                 type="radio"
@@ -315,7 +315,7 @@ function DiscoveredEndpoints({ server, resets }: { server: McpServerRow | null; 
     <div
       role="group"
       aria-labelledby="mcp-oauth-discovered-title"
-      className="rounded-[10px] border border-dashed border-[color:var(--border-default)] bg-card p-3"
+      className="rounded-lg border border-dashed border-[color:var(--border-default)] bg-card p-3"
     >
       <div className="flex flex-wrap items-center gap-2">
         <Radar className="h-4 w-4 text-[color:var(--red-folk-text)]" aria-hidden />
@@ -400,7 +400,7 @@ function OAuthClientSection({
   const manual = draft.discovery === "manual";
   const problem = oauthTouched(draft, server) ? oauthProblem(draft) : null;
   return (
-    <section className="rounded-[10px] border border-[color:var(--border-subtle)] bg-[color:var(--surface-subtle)] p-4">
+    <section className="rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-subtle)] p-4">
       <div className="flex flex-wrap items-center gap-2">
         <KeyRound className="h-4 w-4 text-[color:var(--red-folk)]" aria-hidden />
         <h3 className="text-sm font-semibold">{t("pages.mcpCatalog.oauth.title")}</h3>
@@ -870,7 +870,7 @@ export function McpCatalog() {
           {query.data.map((server) => (
             <article
               key={server.id}
-              className={`min-w-0 rounded-[10px] border border-[color:var(--border-default)] p-4 ${server.enabled ? "bg-card" : "bg-[color:var(--surface-subtle)]/60"}`}
+              className={`min-w-0 rounded-lg border border-[color:var(--border-default)] p-4 ${server.enabled ? "bg-card" : "bg-[color:var(--surface-subtle)]/60"}`}
             >
               <div className="flex items-start gap-3">
                 <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-[color:var(--border-default)] bg-[color:var(--surface-subtle)]">
@@ -1112,7 +1112,7 @@ function AuthKindPicker({
           return (
             <label
               key={kind}
-              className={`flex cursor-pointer items-start gap-2.5 rounded-[10px] border p-3 transition-colors focus-within:ring-1 focus-within:ring-ring ${selected ? "border-[color:var(--red-500)] bg-[color:var(--red-tint)]" : "border-[color:var(--border-default)] hover:bg-[color:var(--surface-subtle)]/60"}`}
+              className={`flex cursor-pointer items-start gap-2.5 rounded-lg border p-3 transition-colors focus-within:ring-1 focus-within:ring-ring ${selected ? "border-[color:var(--red-500)] bg-[color:var(--red-tint)]" : "border-[color:var(--border-default)] hover:bg-[color:var(--surface-subtle)]/60"}`}
             >
               <input
                 type="radio"
@@ -1648,7 +1648,7 @@ export function McpLibrary() {
           {query.data.map((item) => (
             <article
               key={item.slug}
-              className="rounded-[10px] border border-[color:var(--border-default)] bg-card p-5"
+              className="rounded-lg border border-[color:var(--border-default)] bg-card p-5"
             >
               <div className="flex items-start gap-3">
                 <span className="flex h-10 w-10 items-center justify-center rounded-lg border border-[color:var(--border-default)] bg-[color:var(--surface-subtle)]">
@@ -1866,7 +1866,7 @@ export function ToolGroups() {
           {groups.data.map((group) => (
             <article
               key={group.id}
-              className="rounded-[10px] border border-[color:var(--border-default)] bg-card p-4"
+              className="rounded-lg border border-[color:var(--border-default)] bg-card p-4"
             >
               <div className="flex items-center gap-2">
                 <Puzzle className="h-4 w-4 text-[color:var(--red-folk-text)]" aria-hidden />
@@ -2041,7 +2041,7 @@ function ToolGroupDialog({
         </Field>
         <fieldset>
           <legend className="text-sm font-medium">{t("pages.mcpCatalog.fields.tools")}</legend>
-          <div className="mt-2 max-h-64 space-y-3 overflow-y-auto rounded-[10px] border border-[color:var(--border-default)] p-3">
+          <div className="mt-2 max-h-64 space-y-3 overflow-y-auto rounded-lg border border-[color:var(--border-default)] p-3">
             {servers.map((server) => (
               <ChipGroup
                 key={server.id}
@@ -2349,7 +2349,7 @@ function McpSettingsForm({
               />
             </Field>
           </div>
-          <p className="flex w-full items-start gap-2 rounded-[10px] border border-[color:var(--border-subtle)] bg-[color:var(--surface-subtle)] p-3 text-xs leading-relaxed text-muted-foreground">
+          <p className="flex w-full items-start gap-2 rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-subtle)] p-3 text-xs leading-relaxed text-muted-foreground">
             <Wrench className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
             {t("pages.mcpSettings.persistNote")}
           </p>

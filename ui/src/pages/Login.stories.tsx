@@ -14,6 +14,7 @@ import {
   recording,
   type FetchStub,
 } from "./story-harness";
+import { buttonVariants } from "@/components/ui/button";
 import { AuthProvider, useAuth } from "@/lib/auth";
 import en from "@/lib/i18n/locales/en.json";
 import { withPageA11y } from "@/lib/story-a11y";
@@ -1231,6 +1232,11 @@ export const IdleCard: Story = {
   },
 };
 
+/** what the brand variant adds to a button, read off the variant rather than spelled out here */
+const BRAND_CLASSES = buttonVariants({ variant: "brand" })
+  .split(" ")
+  .filter((name) => !buttonVariants({ variant: "outline" }).split(" ").includes(name));
+
 /** A password form beside an identity provider: the provider stays the quiet alternative. */
 export const PasswordAndProvider: Story = {
   render: () => (
@@ -1244,7 +1250,7 @@ export const PasswordAndProvider: Story = {
     const canvas = within(canvasElement);
     const link = await canvas.findByRole("link", { name: /continue with okta/i });
     await expect(canvas.getByLabelText(/^password/i)).toBeVisible();
-    await expect(link).not.toHaveClass("bg-brand-folk");
+    await expect(link).not.toHaveClass(...BRAND_CLASSES);
   },
 };
 
@@ -1259,7 +1265,7 @@ export const SsoOnlyProviderIsTheBrandButton: Story = {
   ),
   play: async ({ canvasElement }) => {
     const link = await within(canvasElement).findByRole("link", { name: /continue with okta/i });
-    await expect(link).toHaveClass("bg-brand-folk");
+    await expect(link).toHaveClass(...BRAND_CLASSES);
     // keyboard focus is drawn with the focus-ring token, not the browser default
     await expect(link).toHaveClass("focus-visible:ring-1");
   },

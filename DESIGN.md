@@ -90,7 +90,6 @@ spacing:
   gutter: "22px"
   lg: "24px"
   sidebar: "232px"
-  header: "52px"
   sheet: "580px"
 components:
   button-primary:
@@ -308,7 +307,11 @@ variant. Reference a token: `text-[color:var(--status-danger-text)]`.
 `--zinc-800` moves `bg-muted` with `--surface-subtle` (#1993). Either spelling is fine at a call
 site; a new value goes in the design tokens first. The default `border` colour stays the opaque
 `--zinc-800`, which is what a bare `border` has always painted; the translucent hairlines are the
-three `--border-*` tokens.
+three `--border-*` tokens. This is a decision, not a gap (#3283): a bare `border` is opaque while
+the 200-odd `--border-subtle` uses are translucent, and making the default translucent would move
+every bare border a few levels (a little darker on the base surface, lighter on elevated ones), so it
+stays opaque until someone looks at each screen with that change in hand. New borders use the
+`--border-*` tokens; the bare `border` is for the shadcn contract's own components.
 
 ## Typography
 
@@ -363,8 +366,9 @@ used is retired (#1992).
 
 ## Layout
 
-The shell is a fixed 232px sidebar (a drawer below `md`) beside a content column with a 52px
-header band. Screens pad their header and body with a 22px horizontal gutter; cards pad 24px;
+The shell is a fixed 232px sidebar (a drawer below `md`) beside a content column. The screen
+header has no height of its own: `ScreenHeader` pads 16px above and below its title and subtitle and
+sizes to them, so there is no header token (#3283). Screens pad their header and body with a 22px horizontal gutter; cards pad 24px;
 table cells pad 16px by 8px. Spacing follows Tailwind's 4px scale.
 
 Settings screens use `SettingsBody`, `PageBody`'s left-aligned gutter capped at 840px, so a form

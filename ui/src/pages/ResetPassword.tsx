@@ -100,11 +100,7 @@ export default function ResetPassword({ token }: { token: string }) {
     >
       {reset != null &&
         (done ? (
-          <Button
-            type="button"
-            onClick={toSignIn}
-            className="w-full bg-brand-folk text-white hover:bg-brand-press"
-          >
+          <Button variant="brand" type="button" onClick={toSignIn} className="w-full">
             {t("pages.resetPassword.toSignIn")} <ArrowRight className="h-4 w-4" />
           </Button>
         ) : (
@@ -153,11 +149,7 @@ export default function ResetPassword({ token }: { token: string }) {
                 )}
               </div>
             )}
-            <Button
-              type="submit"
-              disabled={pending || refused}
-              className="w-full bg-brand-folk text-white hover:bg-brand-press"
-            >
+            <Button variant="brand" type="submit" disabled={pending || refused} className="w-full">
               {pending ? (
                 <>
                   {t("pages.resetPassword.saving")}{" "}

@@ -121,10 +121,7 @@ export function TwoFactorPanel() {
             title={t("account.mfa.off.title")}
             description={<OffBody status={status.data} />}
             actions={
-              <Button
-                onClick={() => setEnrolling(true)}
-                className="bg-brand-folk text-white hover:bg-brand-press"
-              >
+              <Button variant="brand" onClick={() => setEnrolling(true)}>
                 {t("account.mfa.off.cta")}
               </Button>
             }

@@ -1225,9 +1225,9 @@ export default function SingleSignOn() {
   if (scope.isLoading || (!!orgId && (providers.isLoading || policy.isLoading))) {
     return (
       <PageBody>
-        <Skeleton className="h-[196px] rounded-[10px]" />
+        <Skeleton className="h-[196px] rounded-lg" />
         <Skeleton className="h-9 w-[280px] rounded-md" />
-        <Skeleton className="h-[240px] rounded-[10px]" />
+        <Skeleton className="h-[240px] rounded-lg" />
       </PageBody>
     );
   }
