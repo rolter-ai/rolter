@@ -76,8 +76,11 @@ A database route can still end up that way without a write being refused: a row 
 
 Every request-log row records the failure that sent the request on to the target that answered it, in `fallback_reason`: `refusal:content_policy_violation`, `throttled` and so on, or an empty string when the first dial answered. It is returned on each row of `GET /api/v1/analytics/invocations`, so a request that reached the expensive target because of a content refusal can be told from one that reached it because of load. The column comes from `clickhouse/023_fallback_reason.sql`; see [Upgrading](/deployment/upgrading).
 
+## Realtime sessions
+
+A [realtime](/api/realtime) session picks its target while it connects, and a failed upstream handshake is classified like an HTTP failure: no answer is `transport` (or `timeout`), a `429` is `throttled` and a `5xx` is `server_error`. The next target is chosen with that failure, so a restricted target that takes it over is reached. A handshake answered with any other status names no class, so only an ordinary target follows it. Once connected, the session stays on its target; a failure later in the session is not taken over. A content refusal cannot happen while connecting, so a target that takes over only refusals is never used by a realtime session.
+
 ## Limits
 
 - Weighted variants honour `takes_over` on their targets the same way, across the whole fallback chain.
-- Realtime (WebSocket) sessions never use a restricted target: their candidates are ordered before any attempt fails.
 - A content refusal returned with a `200` (a `finish_reason` of `content_filter` in a completed response) is an answer, not a failure, and is not taken over.
