@@ -6,6 +6,7 @@ import { ScreenHeader } from "./ScreenHeader";
 import { formattersFor } from "@/lib/i18n/format";
 import en from "@/lib/i18n/locales/en.json";
 import ru from "@/lib/i18n/locales/ru.json";
+import { resolveColorToken } from "@/lib/story-tokens";
 import {
   Harness,
   pending,
@@ -74,6 +75,12 @@ export const Lagging: Story = {
       expect(tile(canvasElement)).toHaveTextContent(D.fleet.lagging_one.replace("{{count}}", "1")),
     );
     await expect(tile(canvasElement)).not.toHaveTextContent(D.fleet.allCurrent);
+    // amber, as the header pill is: a lagging gateway is degraded, not down
+    const note = within(tile(canvasElement)).getByText(
+      D.fleet.lagging_one.replace("{{count}}", "1"),
+    );
+    await expect(getComputedStyle(note).color).toBe(resolveColorToken("--status-warning-text"));
+    await expect(getComputedStyle(note).color).not.toBe(resolveColorToken("--status-danger-text"));
   },
 };
 

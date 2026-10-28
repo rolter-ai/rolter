@@ -323,7 +323,7 @@ export const FleetLaggingInRussian: Story = {
   play: async ({ canvasElement }) => {
     await expectPill(
       canvasElement,
-      fill(ru.shell.gateway.fleet.behind_few, { lagging: 2, count: 5 }),
+      fill(ru.shell.gateway.fleet.behind_many, { lagging: 2, count: 5 }),
       WARNING,
       false,
     );

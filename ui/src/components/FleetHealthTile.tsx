@@ -13,7 +13,9 @@ import { useFormat } from "@/lib/i18n/format";
 const TONE: Record<GatewayHealth, StatTone> = {
   checking: "neutral",
   healthy: "good",
-  degraded: "bad",
+  // degraded is amber here as in the header pill: after every rollout a stale
+  // gateway holds both there for 15 minutes, and red would call that an outage
+  degraded: "warning",
   down: "bad",
   unknown: "neutral",
 };

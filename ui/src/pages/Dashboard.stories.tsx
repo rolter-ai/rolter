@@ -225,6 +225,25 @@ export const TheCacheHitRateIsTheShareOfRequestsACacheAnswered: Story = {
   },
 };
 
+/**
+ * No response cache on a deployment reads as 0.0% beside a line saying nothing
+ * came from the response cache, not as a failure. The tile measures rolter's
+ * response cache; provider prompt caching is not in it.
+ */
+export const ADeploymentWithoutAResponseCacheSaysNoneCameFromIt: Story = {
+  render: () => render(loadedWith({ ...SUMMARY, cache_hit_requests: 0 })),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const hits = await waitFor(() => {
+      const found = tile(canvas, en.pages.dashboard.statCacheHit);
+      expect(found).toHaveTextContent(`${fmt.number(0, { minimumFractionDigits: 1 })}%`);
+      return found;
+    });
+    await expect(hits).toHaveTextContent(en.pages.dashboard.cacheHitsNone);
+    await expect(hits).not.toHaveTextContent(/0 cache hits/);
+  },
+};
+
 /** More hits than the window before is good news, in the success colour, with an arrow. */
 export const TheCacheHitRateIsComparedWithThePreviousWindow: Story = {
   render: () => render(loadedWith(SUMMARY, { ...SUMMARY, requests: 100, cache_hit_requests: 20 })),
@@ -983,6 +1002,8 @@ export const TheFiguresAreStillLoading: Story = {
     const figures = within(canvasElement).getByTestId("dashboard-figures");
     await expectSkeleton(figures);
     await expectNoFalseEmpty(figures, new RegExp(en.pages.dashboard.noRequestsInWindow));
+    // the fleet does not wait for the summary
+    await expect(await within(figures).findByTestId("dashboard-fleet")).toBeVisible();
     await expectTheOthersLoaded(canvasElement, ["dashboard-figures"]);
     await expect(within(canvasElement).queryByRole("alert")).toBeNull();
   },
@@ -1096,6 +1117,30 @@ export const OneFailedCardLeavesTheRestUp: Story = {
     // the retry asked for the spend series once, and for nothing else
     await expect(readsOf(partial, ENDPOINTS[1])).toBe(reads[1] + 1);
     for (const i of [0, 2, 3]) await expect(readsOf(partial, ENDPOINTS[i])).toBe(reads[i]);
+  },
+};
+
+const summaryDown = recording(except([ENDPOINTS[0]], refused));
+
+/**
+ * #1978: the fleet is not analytics. The summary is the heaviest read on the
+ * screen, and when it fails the Gateways tile stays, as the first tile of the
+ * strip, with the summary's own alert beside it in place of the other five.
+ */
+export const AFailedSummaryLeavesTheFleetTileUp: Story = {
+  render: () => render(summaryDown.stub),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const figures = canvas.getByTestId("dashboard-figures");
+    await expectLoadError(figures, /failed to return the overview figures/i);
+    const fleet = await within(figures).findByTestId("dashboard-fleet");
+    await waitFor(() =>
+      expect(fleet).toHaveTextContent(`${fmt.number(3)}${en.pages.dashboard.fleet.liveUnit}`),
+    );
+    await expect(fleet).toBeVisible();
+    await expect(figures.querySelector("[data-testid]")).toBe(fleet);
+    // the other reads answered, so this is a partial failure with one alert
+    await expect(canvas.getAllByRole("alert")).toHaveLength(1);
   },
 };
 

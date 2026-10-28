@@ -6,13 +6,15 @@ description: "Read the spend, usage and per-model figures the Dashboard shows, o
 
 The **Dashboard**'s cards and charts are three control-plane reads over the request log in ClickHouse. They need the control plane's `CLICKHOUSE_URL`; without it they answer `503`.
 
-| Method | Path                           | What it returns                                                                                                             |
-| ------ | ------------------------------ | --------------------------------------------------------------------------------------------------------------------------- |
-| `GET`  | `/api/v1/analytics/summary`    | one row of totals: requests, tokens, cost, unpriced, withheld and unknown-usage traffic, errors and average latency         |
-| `GET`  | `/api/v1/analytics/timeseries` | requests, tokens and cost per time bucket                                                                                   |
-| `GET`  | `/api/v1/analytics/by-model`   | requests, tokens, cost, unpriced, withheld and unknown-usage traffic, errors and p50/p95 latency per model, costliest first |
+| Method | Path                           | What it returns                                                                                                                                       |
+| ------ | ------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET`  | `/api/v1/analytics/summary`    | one row of totals: requests, tokens, cost, unpriced, withheld and unknown-usage traffic, response-cache hits, errors, average latency and p95 latency |
+| `GET`  | `/api/v1/analytics/timeseries` | requests, tokens and cost per time bucket                                                                                                             |
+| `GET`  | `/api/v1/analytics/by-model`   | requests, tokens, cost, unpriced, withheld and unknown-usage traffic, errors and p50/p95 latency per model, costliest first                           |
 
 Each answers `{"data": [...]}`, the rows straight from ClickHouse.
+
+The summary's `cache_hit_requests` counts the requests the gateway answered from its own response cache, scaled by the log's sampling weight like every other count; the Dashboard divides it by `requests` for its _response-cache hit rate_. It does not count provider prompt caching, which shows in each row's `cache_read_tokens` instead. `p95_latency_ms` is the 95th percentile of latency over the whole window, read from the sampled rows as they are; `avg_latency_ms` is still sent. A control plane older than these fields sends neither.
 
 ## Query parameters
 
@@ -78,7 +80,7 @@ With a [`sample_rate`](/observability/log-settings#sampling) below `1` the gatew
 
 `GET /api/v1/analytics/invocations` takes `guardrail=<action>:<rule>` (`provider_blocked:<provider name>` / `provider_transformed:<provider name>`, or the bare `provider_blocked` / `provider_transformed`) to list exactly those requests, and each row carries `guardrail_events`, an array of the same strings.
 
-`GET /api/v1/analytics/invocations` also takes `plugin=<outcome>:<slug>` (or `error:<slug>:<kind>`), named as the plugin rollup below names its entries, to list exactly the requests a plugin acted on; each row carries `plugin_events`, an array of the same strings. Unlike the four shared filters, `guardrail` and `plugin` are only on the invocation list. On a table without `clickhouse/019_plugin_events.sql` a `plugin` filter matches nothing.
+`GET /api/v1/analytics/invocations` also takes `plugin=<outcome>:<slug>` (or `error:<slug>:<kind>`), named as the plugin rollup below names its entries, to list exactly the requests a plugin acted on; each row carries `plugin_events`, an array of the same strings. Unlike the four shared filters, `guardrail` and `plugin` are only on the invocation list. So are `withheld=true` and `usage_unknown=true`, which keep the requests whose response a policy withheld after the provider billed them, and the successes whose upstream reported no usage; any other value applies no filter. Both narrow inside the rows you can read, and they combine with every other filter, though a withheld request is a `403` and an unknown-usage one a success, so asking for both returns nothing. On a table without `clickhouse/019_plugin_events.sql` a `plugin` filter matches nothing.
 
 ## Plugin outcomes
 

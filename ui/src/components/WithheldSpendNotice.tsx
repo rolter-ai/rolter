@@ -1,48 +1,15 @@
 import { CircleHelp, ShieldAlert } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import { Link } from "react-router";
 
+import { SpendNotice } from "@/components/SpendNotice";
 import { useCurrencyCode } from "@/lib/currency";
 import { useFormat } from "@/lib/i18n/format";
-
-// the same link style the unpriced notice uses
-const LINK =
-  "rounded-sm font-medium text-foreground underline underline-offset-2 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
 /** LLM Logs over the figures' own window and filters, narrowed by one more flag. */
 function logsFor(search: string, flag: "withheld" | "usage_unknown") {
   const params = new URLSearchParams(search);
   params.set(flag, "true");
   return { pathname: "/logs", search: `?${params.toString()}` };
-}
-
-function Notice({
-  icon,
-  title,
-  body,
-  to,
-  link,
-}: {
-  icon: React.ReactNode;
-  title: string;
-  body: string;
-  to: ReturnType<typeof logsFor>;
-  link: string;
-}) {
-  return (
-    <div
-      role="status"
-      className="flex items-start gap-2.5 rounded-lg border border-[color:var(--status-warning)]/40 bg-[color:var(--status-warning)]/10 px-4 py-3"
-    >
-      {icon}
-      <p className="min-w-0 text-sm text-muted-foreground">
-        <span className="font-medium text-foreground">{title}</span> {body}{" "}
-        <Link to={to} className={LINK}>
-          {link}
-        </Link>
-      </p>
-    </div>
-  );
 }
 
 /**
@@ -71,17 +38,11 @@ export function WithheldSpendNotice({
   const { t } = useTranslation();
   const fmt = useFormat();
   const currency = useCurrencyCode();
-  const icon = (Icon: typeof ShieldAlert) => (
-    <Icon
-      aria-hidden
-      className="mt-0.5 h-4 w-4 flex-none text-[color:var(--status-warning-text)]"
-    />
-  );
   return (
     <>
       {withheld > 0 && (
-        <Notice
-          icon={icon(ShieldAlert)}
+        <SpendNotice
+          icon={ShieldAlert}
           title={t("pages.dashboard.withheld.title", { count: withheld })}
           body={t("pages.dashboard.withheld.body", { cost: fmt.currency(withheldCost, currency) })}
           to={logsFor(search, "withheld")}
@@ -89,8 +50,8 @@ export function WithheldSpendNotice({
         />
       )}
       {unknownUsage > 0 && (
-        <Notice
-          icon={icon(CircleHelp)}
+        <SpendNotice
+          icon={CircleHelp}
           title={t("pages.dashboard.usageUnknown.title", { count: unknownUsage })}
           body={t("pages.dashboard.usageUnknown.body")}
           to={logsFor(search, "usage_unknown")}

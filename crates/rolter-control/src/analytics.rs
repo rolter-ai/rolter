@@ -682,7 +682,8 @@ fn is_timeout(err: &anyhow::Error) -> bool {
     })
 }
 
-/// Totals over the window: request count, tokens, cost, error count, avg latency.
+/// Totals over the window: request count, tokens, cost, error count, response-cache
+/// hits, and the mean and 95th-percentile latency.
 /// Totals for the window, plus how much of the window is **unpriced**.
 ///
 /// `cost_usd` alone cannot say whether it is a complete figure: traffic against

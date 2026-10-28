@@ -20,7 +20,7 @@ import { Combobox } from "@/components/ui/combobox";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { LineChart } from "@/components/ui/line-chart";
 import { Skeleton } from "@/components/ui/skeleton";
-import { ListSkeleton, LoadingRegion, StatGridSkeleton } from "@/components/LoadingState";
+import { ListSkeleton, LoadingRegion } from "@/components/LoadingState";
 import { STAT_GRID, StatCard } from "@/components/ui/stat-card";
 import { Table } from "@/components/ui/table";
 import {
@@ -202,17 +202,6 @@ function RefreshFailed({
     <p className="mt-2 text-xs text-[color:var(--status-danger-text)]">
       {t("pages.dashboard.feed.refreshFailedRetrying", { time: fmt.time(read.errorUpdatedAt) })}
     </p>
-  );
-}
-
-// the by-model bars while they are coming: rows the height of the bars
-function BarsSkeleton() {
-  return (
-    <LoadingRegion className="flex flex-col gap-2">
-      {Array.from({ length: 4 }, (_, i) => (
-        <Skeleton key={i} height={16} radius={3} />
-      ))}
-    </LoadingRegion>
   );
 }
 
@@ -403,6 +392,7 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
         </Button>
       </div>
       <p data-testid="dashboard-scope" className="text-xs text-muted-foreground">
+        <span className="sr-only">{t("pages.dashboard.scope.label")}: </span>
         {scopeLine}
       </p>
       {filtersOpen && (
@@ -428,154 +418,183 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
       )}
       {!served && gettingStarted}
       <div data-testid="dashboard-figures">
-        <CardRead
-          read={summary}
-          resource={t("errors.resources.dashboardFigures")}
-          target="dashboard"
-          // `Skeleton` is `aria-hidden`, so the four bare ones this used to
-          // render were a loading state no screen reader could hear (#1605)
-          skeleton={<StatGridSkeleton cards={6} className="xl:grid-cols-3" />}
-        >
-          {(s) => {
-            const requests = num(s?.requests);
-            const errors = num(s?.errors);
-            // an average and a rate over no requests are undefined, not zero:
-            // "0 ms" and "0.00 %" read as a measurement of a quiet deployment
-            const measured = requests > 0;
-            const errorRate = measured ? (errors / requests) * 100 : undefined;
-            const unmeasured = t("pages.dashboard.notMeasured");
-            const why = t("pages.dashboard.noRequestsInWindow");
-            // the window before, when it answered and held any traffic: a
-            // first day compares with nothing rather than rising from zero
-            const p = previous.isSuccess ? previous.data : undefined;
-            const prevRequests = p ? num(p.requests) : 0;
-            const before = prevRequests > 0 ? p : undefined;
-            const was = (v: number | string | undefined) => (before ? num(v) : undefined);
-            // the 95th percentile, not the mean: a mean hides the slow tail an
-            // operator is looking for. an older control plane sends no p95, and
-            // then the tile says it is not measured rather than showing the mean
-            const p95 = measured && s?.p95_latency_ms != null ? num(s.p95_latency_ms) : undefined;
-            const hits = s?.cache_hit_requests != null ? num(s.cache_hit_requests) : undefined;
-            const hitRate = measured && hits !== undefined ? (hits / requests) * 100 : undefined;
-            const prevHitRate =
-              before && before.cache_hit_requests != null
-                ? (num(before.cache_hit_requests) / prevRequests) * 100
-                : undefined;
-            const changes = {
-              requests: compare(requests, was(before?.requests)),
-              spend: compare(num(s?.cost_usd), was(before?.cost_usd)),
-              latency: compare(
-                p95,
-                before?.p95_latency_ms != null ? num(before.p95_latency_ms) : undefined,
-              ),
-              hitRate: compare(hitRate, prevHitRate),
-              errorRate: compare(
-                errorRate,
-                before ? (num(before.errors) / prevRequests) * 100 : undefined,
-              ),
-            };
-            const said = (c: Comparison) =>
-              t("pages.dashboard.vsPrevious", {
-                change: fmt.number(c.ratio, {
-                  style: "percent",
-                  signDisplay: "exceptZero",
-                  maximumFractionDigits: 1,
-                }),
-              });
-            // the percentage tiles show one decimal at most
-            const percent = (v: number) =>
-              fmt.number(v, { minimumFractionDigits: 1, maximumFractionDigits: 1 });
-            return (
-              <div className={FIGURES_GRID}>
-                {/* the fleet first: mid-incident, whether the gateways are up
-                    is the first thing asked, and it is not a figure of the window */}
-                <FleetHealthTile />
-                <StatCard
-                  label={t("pages.dashboard.statP95")}
-                  value={p95 !== undefined ? fmt.number(Math.round(p95)) : unmeasured}
-                  unit={p95 !== undefined ? t("pages.dashboard.colMs") : undefined}
-                  trend={changes.latency?.trend}
-                  tone={changes.latency ? toneOfChange(changes.latency.trend, "bad") : undefined}
-                  delta={measured ? (changes.latency ? said(changes.latency) : undefined) : why}
-                />
-                <StatCard
-                  label={t("pages.dashboard.statErrorRate")}
-                  value={
-                    errorRate === undefined
-                      ? unmeasured
-                      : fmt.number(errorRate, {
-                          minimumFractionDigits: 2,
-                          maximumFractionDigits: 2,
-                        })
-                  }
-                  unit={errorRate === undefined ? undefined : "%"}
-                  // an arrow only for a change measured against the window
-                  // before (#2010). with nothing to compare, above 1% of
-                  // requests the count reads as the problem it is rather than
-                  // as growth (#1974)
-                  trend={changes.errorRate?.trend}
-                  tone={
-                    changes.errorRate
-                      ? toneOfChange(changes.errorRate.trend, "bad")
-                      : errorRate !== undefined && errorRate > 1
-                        ? "bad"
-                        : "neutral"
-                  }
-                  // russian needs four plural forms here where english needs two
-                  delta={
-                    errorRate === undefined
-                      ? why
-                      : errors > 0 && changes.errorRate
-                        ? t("pages.dashboard.withChange", {
-                            detail: t("pages.dashboard.errors", { count: errors }),
-                            change: said(changes.errorRate),
-                          })
-                        : errors > 0
-                          ? t("pages.dashboard.errors", { count: errors })
-                          : changes.errorRate
-                            ? said(changes.errorRate)
-                            : undefined
-                  }
-                />
-                <StatCard
-                  label={t("pages.dashboard.statCacheHit")}
-                  value={hitRate !== undefined ? percent(hitRate) : unmeasured}
-                  unit={hitRate !== undefined ? "%" : undefined}
-                  // more hits is the point of cache-aware balancing
-                  trend={changes.hitRate?.trend}
-                  tone={changes.hitRate ? toneOfChange(changes.hitRate.trend, "good") : undefined}
-                  delta={
-                    !measured
-                      ? why
-                      : hits === undefined
-                        ? undefined
-                        : changes.hitRate
-                          ? t("pages.dashboard.withChange", {
-                              detail: t("pages.dashboard.cacheHits", { count: hits }),
-                              change: said(changes.hitRate),
-                            })
-                          : t("pages.dashboard.cacheHits", { count: hits })
-                  }
-                />
-                <StatCard
-                  label={t("pages.dashboard.statRequests")}
-                  value={fmt.number(requests)}
-                  trend={changes.requests?.trend}
-                  tone={changes.requests ? toneOfChange(changes.requests.trend, "good") : undefined}
-                  delta={changes.requests ? said(changes.requests) : undefined}
-                />
-                <StatCard
-                  label={t("pages.dashboard.statSpend")}
-                  value={money(num(s?.cost_usd))}
-                  // more spend is not bad news on its own: it follows traffic
-                  trend={changes.spend?.trend}
-                  tone="neutral"
-                  delta={changes.spend ? said(changes.spend) : undefined}
+        <div className={FIGURES_GRID}>
+          {/* the fleet first: mid-incident, whether the gateways are up is the
+              first thing asked, and it is not a figure of the window. it sits
+              outside the summary's read, so a summary that is slow or failing
+              (the heaviest read on the screen) does not take it away; the other
+              five tiles, or their skeleton or alert, fill the rest of the grid */}
+          <FleetHealthTile />
+          <CardRead
+            read={summary}
+            resource={t("errors.resources.dashboardFigures")}
+            target="dashboard"
+            // `Skeleton` is `aria-hidden`, so bare ones are a loading state no
+            // screen reader could hear (#1605); the region lays out as the
+            // tiles it stands in for
+            skeleton={
+              <LoadingRegion className="contents">
+                {Array.from({ length: 5 }, (_, i) => (
+                  <Skeleton key={i} height={96} radius={10} />
+                ))}
+              </LoadingRegion>
+            }
+            failed={
+              <div className="sm:col-span-1 xl:col-span-2">
+                <LoadError
+                  error={summary.error}
+                  resource={t("errors.resources.dashboardFigures")}
+                  onRetry={() => void summary.refetch()}
+                  target="dashboard"
                 />
               </div>
-            );
-          }}
-        </CardRead>
+            }
+          >
+            {(s) => {
+              const requests = num(s?.requests);
+              const errors = num(s?.errors);
+              // an average and a rate over no requests are undefined, not zero:
+              // "0 ms" and "0.00 %" read as a measurement of a quiet deployment
+              const measured = requests > 0;
+              const errorRate = measured ? (errors / requests) * 100 : undefined;
+              const unmeasured = t("pages.dashboard.notMeasured");
+              const why = t("pages.dashboard.noRequestsInWindow");
+              // the window before, when it answered and held any traffic: a
+              // first day compares with nothing rather than rising from zero
+              const p = previous.isSuccess ? previous.data : undefined;
+              const prevRequests = p ? num(p.requests) : 0;
+              const before = prevRequests > 0 ? p : undefined;
+              const was = (v: number | string | undefined) => (before ? num(v) : undefined);
+              // the 95th percentile, not the mean: a mean hides the slow tail an
+              // operator is looking for. an older control plane sends no p95, and
+              // then the tile says it is not measured rather than showing the mean
+              const p95 = measured && s?.p95_latency_ms != null ? num(s.p95_latency_ms) : undefined;
+              const hits = s?.cache_hit_requests != null ? num(s.cache_hit_requests) : undefined;
+              const hitRate = measured && hits !== undefined ? (hits / requests) * 100 : undefined;
+              const prevHitRate =
+                before && before.cache_hit_requests != null
+                  ? (num(before.cache_hit_requests) / prevRequests) * 100
+                  : undefined;
+              const changes = {
+                requests: compare(requests, was(before?.requests)),
+                spend: compare(num(s?.cost_usd), was(before?.cost_usd)),
+                latency: compare(
+                  p95,
+                  before?.p95_latency_ms != null ? num(before.p95_latency_ms) : undefined,
+                ),
+                hitRate: compare(hitRate, prevHitRate),
+                errorRate: compare(
+                  errorRate,
+                  before ? (num(before.errors) / prevRequests) * 100 : undefined,
+                ),
+              };
+              const said = (c: Comparison) =>
+                t("pages.dashboard.vsPrevious", {
+                  change: fmt.number(c.ratio, {
+                    style: "percent",
+                    signDisplay: "exceptZero",
+                    maximumFractionDigits: 1,
+                  }),
+                });
+              // the percentage tiles show one decimal at most
+              const percent = (v: number) =>
+                fmt.number(v, { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+              return (
+                <>
+                  <StatCard
+                    label={t("pages.dashboard.statP95")}
+                    value={p95 !== undefined ? fmt.number(Math.round(p95)) : unmeasured}
+                    unit={p95 !== undefined ? t("pages.dashboard.colMs") : undefined}
+                    trend={changes.latency?.trend}
+                    tone={changes.latency ? toneOfChange(changes.latency.trend, "bad") : undefined}
+                    delta={measured ? (changes.latency ? said(changes.latency) : undefined) : why}
+                  />
+                  <StatCard
+                    label={t("pages.dashboard.statErrorRate")}
+                    value={
+                      errorRate === undefined
+                        ? unmeasured
+                        : fmt.number(errorRate, {
+                            minimumFractionDigits: 2,
+                            maximumFractionDigits: 2,
+                          })
+                    }
+                    unit={errorRate === undefined ? undefined : "%"}
+                    // an arrow only for a change measured against the window
+                    // before (#2010). with nothing to compare, above 1% of
+                    // requests the count reads as the problem it is rather than
+                    // as growth (#1974)
+                    trend={changes.errorRate?.trend}
+                    tone={
+                      changes.errorRate
+                        ? toneOfChange(changes.errorRate.trend, "bad")
+                        : errorRate !== undefined && errorRate > 1
+                          ? "bad"
+                          : "neutral"
+                    }
+                    // russian needs four plural forms here where english needs two
+                    delta={
+                      errorRate === undefined
+                        ? why
+                        : errors > 0 && changes.errorRate
+                          ? t("pages.dashboard.withChange", {
+                              detail: t("pages.dashboard.errors", { count: errors }),
+                              change: said(changes.errorRate),
+                            })
+                          : errors > 0
+                            ? t("pages.dashboard.errors", { count: errors })
+                            : changes.errorRate
+                              ? said(changes.errorRate)
+                              : undefined
+                    }
+                  />
+                  <StatCard
+                    label={t("pages.dashboard.statCacheHit")}
+                    value={hitRate !== undefined ? percent(hitRate) : unmeasured}
+                    unit={hitRate !== undefined ? "%" : undefined}
+                    // more hits is the point of cache-aware balancing
+                    trend={changes.hitRate?.trend}
+                    tone={changes.hitRate ? toneOfChange(changes.hitRate.trend, "good") : undefined}
+                    delta={
+                      !measured
+                        ? why
+                        : hits === undefined
+                          ? undefined
+                          : changes.hitRate
+                            ? t("pages.dashboard.withChange", {
+                                detail:
+                                  hits === 0
+                                    ? t("pages.dashboard.cacheHitsNone")
+                                    : t("pages.dashboard.cacheHits", { count: hits }),
+                                change: said(changes.hitRate),
+                              })
+                            : hits === 0
+                              ? t("pages.dashboard.cacheHitsNone")
+                              : t("pages.dashboard.cacheHits", { count: hits })
+                    }
+                  />
+                  <StatCard
+                    label={t("pages.dashboard.statRequests")}
+                    value={fmt.number(requests)}
+                    trend={changes.requests?.trend}
+                    tone={
+                      changes.requests ? toneOfChange(changes.requests.trend, "good") : undefined
+                    }
+                    delta={changes.requests ? said(changes.requests) : undefined}
+                  />
+                  <StatCard
+                    label={t("pages.dashboard.statSpend")}
+                    value={money(num(s?.cost_usd))}
+                    // more spend is not bad news on its own: it follows traffic
+                    trend={changes.spend?.trend}
+                    tone="neutral"
+                    delta={changes.spend ? said(changes.spend) : undefined}
+                  />
+                </>
+              );
+            }}
+          </CardRead>
+        </div>
         <RefreshFailed read={summary} region="dashboard" />
       </div>
 
@@ -673,7 +692,7 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
               read={byModel}
               resource={t("errors.resources.dashboardByModel")}
               target="dashboard-by-model"
-              skeleton={<BarsSkeleton />}
+              skeleton={<ListSkeleton rows={4} />}
             >
               {(models) => {
                 const ranked = byRequests(models);
