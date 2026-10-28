@@ -1035,6 +1035,11 @@ pub struct InvocationsQuery {
     /// (`blocked:<slug>`, `transformed:<slug>`, `annotated:<slug>` or
     /// `error:<slug>:<kind>`); empty/omitted applies no filter (#2243)
     pub(crate) plugin: Option<String>,
+    /// one request outcome to filter to (#3307): a name from
+    /// `rolter_core::request_outcome::RequestOutcome`, or `unknown` for rows
+    /// written before the gateway recorded one; empty/omitted applies no
+    /// filter
+    pub(crate) outcome: Option<String>,
     /// page size, 1..=200 (defaults to 50)
     pub(crate) limit: Option<u32>,
     /// opaque `timestamp|request_id` cursor returned as the preceding page's
@@ -1140,6 +1145,10 @@ fn invocations_sql(status_expr: &str, columns: &Columns) -> String {
     // nothing, which is true, since no event was ever recorded there
     let guardrail_filter = columns.expr("guardrail_events");
     let plugin_filter = columns.expr("plugin_events");
+    // without the column every row reads `unknown`, which is what the filter
+    // then matches: true, since no outcome was ever recorded there
+    let outcome = columns.select("outcome");
+    let outcome_filter = columns.expr("outcome");
     format!(
         "select ts, request_id, trace_id, org_id, team_id, project_id, virtual_key_id, \
                 business_unit_id, customer_id, \
@@ -1147,6 +1156,7 @@ fn invocations_sql(status_expr: &str, columns: &Columns) -> String {
                 {cache_write_1h_tokens}, \
                 prompt_tokens, completion_tokens, total_tokens, cost_usd, unpriced, withheld, usage_unknown, latency_ms, ttft_ms, error, \
                 {upstream_status}, {attempts}, {lifecycle_operation}, {guardrail_events}, {plugin_events}, \
+                {outcome}, \
                 if({PAYLOAD_VISIBLE}, payload.request_payload, '') as request_payload, \
                 if({PAYLOAD_VISIBLE}, payload.response_payload, '') as response_payload, \
                 toUInt8(not {PAYLOAD_VISIBLE} \
@@ -1168,11 +1178,30 @@ fn invocations_sql(status_expr: &str, columns: &Columns) -> String {
            and ({{usage_unknown:UInt8}} = 0 or request_logs.usage_unknown = 1) \
            and ({{guardrail:String}} = '' or has({guardrail_filter}, {{guardrail:String}})) \
            and ({{plugin:String}} = '' or has({plugin_filter}, {{plugin:String}})) \
+           and ({{outcome:String}} = '' or {outcome_filter} = {{outcome:String}}) \
            and {status_expr} \
            and {cursor} \
          order by ts desc, request_id desc \
          limit {{limit:UInt32}} format JSON"
     )
+}
+
+/// The values the invocation list's `outcome` filter accepts: every outcome a
+/// gateway writes, then `unknown` for the rows from before it wrote one.
+pub(crate) fn outcome_filter_values() -> Vec<&'static str> {
+    use rolter_core::request_outcome::{RequestOutcome, UNKNOWN_OUTCOME};
+    RequestOutcome::ALL
+        .iter()
+        .map(|outcome| outcome.as_str())
+        .chain([UNKNOWN_OUTCOME])
+        .collect()
+}
+
+/// Whether `outcome` is a value the `outcome` filter accepts; empty is no
+/// filter. Checked before the query so a typo answers 400 rather than an
+/// empty page that reads as "no such requests".
+fn is_outcome_filter(outcome: &str) -> bool {
+    outcome.is_empty() || outcome_filter_values().contains(&outcome)
 }
 
 /// Individual gateway invocations, newest first. Returns every persisted column
@@ -1199,6 +1228,17 @@ async fn invocations(
         )
             .into_response();
     };
+    let outcome = q.outcome.clone().unwrap_or_default();
+    if !is_outcome_filter(&outcome) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": {"message": format!(
+                "outcome must be one of {}",
+                outcome_filter_values().join("|")
+            )}})),
+        )
+            .into_response();
+    }
     let (cursor_ts, cursor_id) = match parse_keyset_cursor(q.cursor.as_deref(), "request_id") {
         Ok(cursor) => cursor,
         Err(message) => return InvalidParam::cursor(message).into_response(),
@@ -1247,6 +1287,7 @@ async fn invocations(
         "param_plugin".to_string(),
         q.plugin.clone().unwrap_or_default(),
     ));
+    params.push(("param_outcome".to_string(), outcome));
     params.extend(row_filter_params(
         q.model.as_deref(),
         q.key.as_deref(),
@@ -1667,6 +1708,45 @@ mod tests {
             .count();
         assert_eq!(rollups, 4, "summary, timeseries, by-model, by-attribution");
         assert_eq!(filtered, rollups);
+    }
+
+    #[test]
+    fn the_invocation_list_reads_and_filters_the_outcome() {
+        let sql = invocations_sql(
+            status_predicate("all").expect("all is whitelisted"),
+            &Columns::default(),
+        );
+        assert!(sql.contains(" outcome, "), "{sql}");
+        assert!(
+            sql.contains("({outcome:String} = '' or outcome = {outcome:String})"),
+            "{sql}"
+        );
+        // a table without 030 reads every row as unknown, selected and filtered
+        let old = invocations_sql(
+            status_predicate("all").expect("all is whitelisted"),
+            &Columns::lacking(&["outcome"]),
+        );
+        assert!(old.contains("'unknown' as outcome"), "{old}");
+        assert!(
+            old.contains("({outcome:String} = '' or 'unknown' = {outcome:String})"),
+            "{old}"
+        );
+    }
+
+    #[test]
+    fn the_outcome_filter_accepts_the_published_names_and_unknown() {
+        assert!(is_outcome_filter(""));
+        for name in [
+            "served",
+            "refused_budget",
+            "refused_rate_limit",
+            "upstream_error",
+            "unknown",
+        ] {
+            assert!(is_outcome_filter(name), "{name}");
+        }
+        assert!(!is_outcome_filter("refused_budget' or 1=1"));
+        assert!(!is_outcome_filter("Served"));
     }
 
     #[test]

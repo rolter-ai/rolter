@@ -85,7 +85,30 @@ export interface InvocationRow {
   /// `error:<slug>:<kind>` entries (#2243); absent from a control plane that
   /// predates it, empty for a request no plugin touched
   plugin_events?: string[];
+  /// what happened to the request, by the name the gateway recorded (#3307):
+  /// `served`, `upstream_error`, `withheld`, `cancelled` or a `refused_*`
+  /// reason; `unknown` on a row older than the column, and absent from a
+  /// control plane that predates it
+  outcome?: string;
 }
+
+/** The outcomes a gateway records, in the order the filter lists them (#3307). */
+export const REQUEST_OUTCOMES = [
+  "served",
+  "upstream_error",
+  "withheld",
+  "cancelled",
+  "refused_budget",
+  "refused_rate_limit",
+  "refused_guardrail",
+  "refused_plugin",
+  "refused_access",
+  "refused_invalid",
+  "refused",
+  "unknown",
+] as const;
+
+export type RequestOutcome = (typeof REQUEST_OUTCOMES)[number];
 
 export interface InvocationsQuery extends AnalyticsWindow, AnalyticsRowFilters {
   /**
@@ -100,6 +123,8 @@ export interface InvocationsQuery extends AnalyticsWindow, AnalyticsRowFilters {
    * `error:<slug>:<kind>` (#2243)
    */
   plugin?: string;
+  /** only the requests the gateway recorded with this outcome (#3307) */
+  outcome?: RequestOutcome;
   status?: "all" | "error" | "success";
   /**
    * The `x-request-id` the gateway returned to the client, matched exactly
@@ -160,6 +185,7 @@ export function fetchInvocationsPage(query: InvocationsQuery = {}): Promise<Invo
   if (query.usage_unknown) params.set("usage_unknown", "true");
   if (query.guardrail) params.set("guardrail", query.guardrail);
   if (query.plugin) params.set("plugin", query.plugin);
+  if (query.outcome) params.set("outcome", query.outcome);
   if (query.limit != null) params.set("limit", String(query.limit));
   if (query.cursor) params.set("cursor", query.cursor);
   const qs = params.toString();

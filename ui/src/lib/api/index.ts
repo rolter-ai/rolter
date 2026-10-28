@@ -251,6 +251,8 @@ export {
 export type { LabelRow, LabelFilter } from "./labels";
 export { fetchInvocations, fetchInvocationsPage } from "./logs";
 export type { InvocationRow, InvocationsQuery, InvocationsPage } from "./logs";
+export { REQUEST_OUTCOMES } from "./logs";
+export type { RequestOutcome } from "./logs";
 export {
   MCP_TRANSPORTS,
   MCP_STATUSES,

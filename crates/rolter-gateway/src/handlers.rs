@@ -853,7 +853,10 @@ impl LifecycleLog<'_> {
             }
             // a leg that went upstream always has the route it went to; the
             // arm exists so that a refusal reads the same on every path
-            _ => row.error = refusal_error(&response),
+            _ => {
+                row.error = refusal_error(&response);
+                row.outcome = Some(refusal_outcome(&response));
+            }
         }
         self.state.log.log_lifecycle(row);
         response
@@ -4997,6 +5000,16 @@ fn refusal_error(response: &Response) -> String {
     error
 }
 
+/// Why the gateway refused with `response`, for the row's `outcome` (#3307):
+/// from the error code it answered with, or its status when it has none.
+fn refusal_outcome(response: &Response) -> rolter_core::request_outcome::RequestOutcome {
+    let code = response
+        .extensions()
+        .get::<crate::error::ErrorCode>()
+        .map(|code| code.0);
+    rolter_core::request_outcome::RequestOutcome::for_refusal(response.status().as_u16(), code)
+}
+
 /// Writes the request-log row for a request the gateway refused before it
 /// reached an upstream (#2807).
 ///
@@ -5063,6 +5076,7 @@ impl Refusals<'_> {
         );
         self.state.log.log_refusal(RequestLog {
             status: response.status().as_u16(),
+            outcome: Some(refusal_outcome(&response)),
             error,
             guardrail_events,
             plugin_events: self.plugin_events(),
@@ -5102,6 +5116,8 @@ fn log_builtin(
         provider: fake_llm::PROVIDER_LABEL.to_string(),
         target: fake_llm::MODEL_NAME.to_string(),
         status: response.status().as_u16(),
+        // the built-in has no upstream to fail: an error is the request's own
+        outcome: (!response.status().is_success()).then(|| refusal_outcome(&response)),
         stream: u8::from(stream),
         prompt_tokens: usage.prompt,
         completion_tokens: usage.completion,

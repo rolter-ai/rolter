@@ -804,6 +804,14 @@ const INVOCATIONS_QUERY: &[QueryParam] = &[
          `blocked:<slug>`, `transformed:<slug>`, `annotated:<slug>` or `error:<slug>:<kind>`; \
          omit for every request",
     ),
+    QueryParam::new(
+        "outcome",
+        "string",
+        "only requests the gateway recorded with this outcome: `served`, `upstream_error`, \
+         `withheld`, `cancelled`, `refused_budget`, `refused_rate_limit`, `refused_guardrail`, \
+         `refused_plugin`, `refused_access`, `refused_invalid`, `refused`, or `unknown` for rows \
+         written before the outcome was recorded; any other value is a 400; omit for every request",
+    ),
     QueryParam::new("limit", "integer", "page size, 1..=200; defaults to 50"),
     QueryParam::new(
         "cursor",
@@ -2269,7 +2277,10 @@ fn operations() -> Vec<Op> {
                  `cache_write_1h_tokens`, `guardrail_events` (an array of strings, one per guardrail \
                  action) and `plugin_events` (the same for plugin calls) come from ClickHouse files an operator applies by hand \
                  (`clickhouse/015` to `019`): on a table that lacks one the field is still on every row, \
-                 as `0` (an empty string for `lifecycle_operation`), and the list does not fail",
+                 as `0` (an empty string for `lifecycle_operation`), and the list does not fail. \
+                 `outcome` (a string, `clickhouse/030`) names what happened to the request: `served`, \
+                 `upstream_error`, `withheld`, `cancelled` or a `refused_*` reason, and `unknown` for a \
+                 row written before the gateway recorded one or on a table without the column",
             )
             .clickhouse_read()
             .query(INVOCATIONS_QUERY),
@@ -4754,6 +4765,8 @@ mod tests {
         // and so can the withheld and the unknown-usage ones (#3302)
         assert!(names.contains("withheld"), "{names:?}");
         assert!(names.contains("usage_unknown"), "{names:?}");
+        // and by the outcome the gateway recorded (#3307)
+        assert!(names.contains("outcome"), "{names:?}");
         // the list no longer pages on an offset, so documenting one would send
         // a caller down a path that silently returns the same page (#1394)
         assert!(!names.contains("offset"), "{names:?}");

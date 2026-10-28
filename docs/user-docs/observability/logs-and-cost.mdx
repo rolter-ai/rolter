@@ -73,6 +73,29 @@ What is **not** logged is anything that happens before the gateway knows who is 
 
 Rows written before `clickhouse/015_upstream_attempts.sql` default both columns to `0`.
 
+#### The outcome of each request
+
+Every row also names what happened to the request in its `outcome` column, so a refusal is selected by its reason rather than inferred from an empty provider and a 4xx:
+
+| `outcome`            | The request                                                                                                               |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| `served`             | got a successful answer, from an upstream, the [response cache](/concepts/response-cache) or the built-in `fake-llm`      |
+| `upstream_error`     | reached an upstream and ended in an error: the provider's own, or the gateway's after every attempt failed                |
+| `withheld`           | was answered and billed, and a post-call policy withheld the answer (see [Withheld responses](#withheld-responses))       |
+| `cancelled`          | lost its caller before the answer was delivered                                                                           |
+| `refused_budget`     | was refused before routing because a budget is spent (`402`)                                                              |
+| `refused_rate_limit` | was refused before routing by a rate limit or a route's own cap (`429`)                                                   |
+| `refused_guardrail`  | was refused before routing by a guardrail or the PII sanitizer                                                            |
+| `refused_plugin`     | was refused before routing by a plugin                                                                                    |
+| `refused_access`     | was refused before routing: an unknown model, or one the key may not use (`403`, `404`)                                   |
+| `refused_invalid`    | was refused before routing because it cannot be served as sent: a missing parameter, an endpoint the route's servers lack |
+| `refused`            | was refused for another reason, or no target was left to try                                                              |
+| `unknown`            | was logged before the gateway recorded an outcome, or by a gateway older than the column                                  |
+
+The `refused_*` rows are the requests refused after the key resolved, and read as described above: no `provider` or `target` and `attempts = 0`. The gateway picks the reason from the error code it answered with (`insufficient_quota`, `rate_limit_exceeded`, `guardrail_blocked`, `plugin_blocked`, `model_not_found`, ...), and from the status where the answer has no code. New outcomes may be added in a later release; treat a name you do not know as "see `status` and `error`".
+
+The column is added by `clickhouse/030_request_outcome.sql`. Every row older than the file reads `unknown`, and a gateway upgraded before you apply it keeps logging and loses only the outcome. Filter by it in **LLM Logs** with **Outcome**, or with `outcome=` on [`GET /api/v1/analytics/invocations`](#paging-the-invocation-log).
+
 **Calls on a stored response** are logged too: `GET`, `DELETE`, `cancel` and `input_items` on `/v1/responses/{id}` write one row each, like any other request from a known caller. The row's `model` is the model the response was created for, and its `provider` and `target` are the ones that hold it. `lifecycle_operation` says which call it was. The row has no tokens and no cost, and it is not marked `unpriced` or `usage_unknown`: the call generates nothing, so there is nothing to price. These calls are not billable, so they do not count against a budget, a token limit or a request limit, and they are left out of the per-model latency series on `/metrics`.
 
 Failures read as they do for a model request. A provider that answered with an error has its status in `upstream_status` and `attempts = 1`; one that could not be reached is a `502` with `upstream_status = 0`. A call the gateway turned away itself has an empty `provider` and `target` and `attempts = 0`: an id that does not exist, has expired or belongs to another tenant (`404`, with no `model` since there is no stored response to take one from), access that was revoked since the response was created (`403`), or an operation the response's provider has no API for (`501`).
@@ -486,6 +509,7 @@ That covers a date the calendar does not have (`2026-02-30`), a lowercase `t` or
 - **Virtual key** takes one key, picked by name from the keys of the project you are looking at. The address carries it as `key=<id>`.
 - **Cost** has three checks. **Unpriced only** keeps the requests recorded as unpriced (see [Unpriced traffic](#unpriced-traffic)); the API takes it as `unpriced=true`. **Withheld responses only** keeps the requests a policy refused to deliver after the provider billed them, and **Unknown usage only** keeps the successes whose upstream reported no usage (see [Withheld and unknown-usage traffic](#withheld-and-unknown-usage-traffic)); the API takes them as `withheld=true` and `usage_unknown=true`. They combine with each other and with every other filter, but a withheld response is a `403` and a response with unknown usage was a success, so ticking both returns nothing. Like every filter here they narrow the rows your roles can read and never widen them.
 - **Business unit** and **Customer** each take several values. A request matches when it was charged to any of the ones you picked.
+- **Outcome** keeps the requests the gateway recorded with one [outcome](#the-outcome-of-each-request), such as **Refused: budget spent** for the requests a spent budget turned away. **Not recorded** keeps the rows written before the gateway recorded one. The API takes it as `outcome=refused_budget`; a value it does not know is a `400`.
 - **Plugin** appears when the address names one (`plugin=blocked:<slug>`), and keeps the requests that plugin acted on. **Clear filters** drops it.
 
 **Clear filters** at the top of the rail drops every filter at once. When nothing matches, the empty table offers the same button.
@@ -526,14 +550,14 @@ The cursor is a position in the list's sort key — `(ts, request_id)`, newest f
 Treat the cursor as opaque and pass it back unchanged. `next_cursor` is `null` only for an empty page; a short page still carries one, so stop when a page comes back with no rows. `limit` is clamped to `1..=200` and defaults to 50. A cursor that is not `timestamp|request_id`, or whose timestamp is not one of the [time window](#time-windows) forms, is a `400` with `param: "cursor"` and `code: "invalid_cursor"`. The MCP call log (`GET /api/v1/mcp/logs`) pages the same way over `(ts, event_id)` and checks its cursor the same way.
 
 <Note>
-  Every filter — `since`, `until`, `model`, `key`, `business_unit`, `customer`, `status`, `unpriced`, `guardrail`, `plugin`, `request_id`, `trace_id` — must be repeated with the cursor, since it is the same query resumed rather than a stored server-side page.
+  Every filter — `since`, `until`, `model`, `key`, `business_unit`, `customer`, `status`, `unpriced`, `guardrail`, `plugin`, `outcome`, `request_id`, `trace_id` — must be repeated with the cursor, since it is the same query resumed rather than a stored server-side page.
 </Note>
 
 The **LLM Logs** screen pages the same way. **Next page** follows the cursor the current page returned and **Previous page** goes back to the one it came from, so a page you return to holds the requests it held before, however much traffic arrived in between. Only the first page follows live traffic while **Streaming** is on; later pages stay fixed on their cursor. Changing a filter starts again from the newest request, and a page after a full last page reads as the end of the log with a **Back to newest** button.
 
 ### Optional columns in the invocation list
 
-Six fields of a row come from ClickHouse files that an existing deployment applies by hand (see [Upgrading](/deployment/upgrading)). Every row from `GET /api/v1/analytics/invocations` carries all six, whether or not the file has been applied:
+These fields of a row come from ClickHouse files that an existing deployment applies by hand (see [Upgrading](/deployment/upgrading)). Every row from `GET /api/v1/analytics/invocations` carries all of them, whether or not the file has been applied:
 
 | Field                   | Type   | Added by                      | Read as when the table lacks it |
 | ----------------------- | ------ | ----------------------------- | ------------------------------- |
@@ -543,6 +567,7 @@ Six fields of a row come from ClickHouse files that an existing deployment appli
 | `cache_write_1h_tokens` | number | `017_cache_write_1h.sql`      | `0`                             |
 | `guardrail_events`      | array  | `018_guardrail_events.sql`    | `[]`                            |
 | `plugin_events`         | array  | `019_plugin_events.sql`       | `[]`                            |
+| `outcome`               | string | `030_request_outcome.sql`     | `"unknown"`                     |
 
 `guardrail_events` lists what each guardrail did to the request, as `<action>:<rule name>` entries (`blocked:`, `redacted:` or `annotated:`) and `provider_blocked:<provider name>` / `provider_transformed:<provider name>` for the guardrail provider (the bare `provider_blocked` / `provider_transformed` on rows that predate the name, or for a provider with none); it is empty for a request no guardrail touched. See [What each rule did](/security/guardrails#what-each-rule-did).
 
@@ -550,7 +575,7 @@ Six fields of a row come from ClickHouse files that an existing deployment appli
 
 `cache_write_1h_tokens` is the part of the row's `cache_write_tokens` that went to the provider's 1 hour cache, never more than the total. The 5 minute share is the difference: `cache_write_tokens - cache_write_1h_tokens`. It is `0` for a provider that reports no split (every provider but Anthropic), for a request that wrote only to the 5 minute cache, and for every row older than the file.
 
-The control plane checks which of the four columns the table has by reading `system.columns`, selects the ones that exist and fills in the default for the rest, so a request list never fails because a file is still to be applied. It remembers the answer: a table that has all four is looked at again every ten minutes, one that lacks a column every minute, so a file you apply shows on the next page within a minute and needs no restart. A ClickHouse user that may not read `system.columns` is treated as having every column, which is how the list behaved before it checked. The check is made once the request is known to be well formed, and a ClickHouse that cannot be reached is an error as it always was, never a default.
+The control plane checks which of these columns the table has by reading `system.columns`, selects the ones that exist and fills in the default for the rest, so a request list never fails because a file is still to be applied. It remembers the answer: a table that has all of them is looked at again every ten minutes, one that lacks a column every minute, so a file you apply shows on the next page within a minute and needs no restart. A ClickHouse user that may not read `system.columns` is treated as having every column, which is how the list behaved before it checked. The check is made once the request is known to be well formed, and a ClickHouse that cannot be reached is an error as it always was, never a default.
 
 ## Finding one request by its id
 

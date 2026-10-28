@@ -149,8 +149,10 @@ const serverFiltered = (rows: InvocationRow[], base = "USD"): FetchStub =>
       const onlyUnpriced = url.searchParams.get("unpriced") === "true";
       const onlyWithheld = url.searchParams.get("withheld") === "true";
       const onlyUnknown = url.searchParams.get("usage_unknown") === "true";
+      const outcome = url.searchParams.get("outcome");
       const data = rows.filter(
         (r) =>
+          (!outcome || (r.outcome ?? "unknown") === outcome) &&
           (!onlyWithheld || Number(r.withheld ?? 0) === 1) &&
           (!onlyUnknown || Number(r.usage_unknown ?? 0) === 1) &&
           (!units || units.includes(r.business_unit_id)) &&
@@ -1230,6 +1232,52 @@ export const StatusIsOneChoiceOfThree: Story = {
     await userEvent.click(radio("All"));
     await waitFor(() => expect(modelsOnScreen(canvasElement)).toHaveLength(2));
     await expect(addressOf(canvasElement).has("status")).toBe(false);
+  },
+};
+
+const OUTCOMES: InvocationRow[] = [
+  row({ request_id: "req-served", model: "gpt-4o", outcome: "served" }),
+  row({
+    request_id: "req-budget",
+    model: "internal-llama",
+    provider: "",
+    target: "",
+    status: 402,
+    attempts: 0,
+    error: "budget exceeded",
+    outcome: "refused_budget",
+  }),
+];
+
+const byOutcome = recording(serverFiltered(OUTCOMES));
+
+/**
+ * #3307: a refusal is picked by the outcome the gateway recorded rather than
+ * inferred from an empty provider and a 4xx. The pick is the outcome the
+ * server is asked for, the address carries it, and the drawer names a row's
+ * outcome in words.
+ */
+export const FiltersByOutcome: Story = {
+  render: () => (
+    <Harness fetchStub={byOutcome.stub}>
+      <Logs />
+      <AddressProbe />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByText("internal-llama");
+    await userEvent.click(canvas.getByRole("button", { name: /Filters/ }));
+    const picker = await canvas.findByRole("combobox", { name: "Outcome" });
+    await userEvent.click(picker);
+    await userEvent.click(await canvas.findByRole("option", { name: "Refused: budget spent" }));
+    await waitFor(() => expect(modelsOnScreen(canvasElement)).toEqual(["internal-llama"]));
+    await expect(lastLogQuery(byOutcome).get("outcome")).toBe("refused_budget");
+    await expect(addressOf(canvasElement).get("outcome")).toBe("refused_budget");
+    await expect(canvas.getByRole("button", { name: "Filters · 1" })).toBeVisible();
+
+    const details = within(await openDetails(canvasElement, "internal-llama"));
+    await expect(details.getByText("Refused: budget spent")).toBeVisible();
   },
 };
 

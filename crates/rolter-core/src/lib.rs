@@ -29,6 +29,7 @@ pub mod plugin_dispatch;
 pub mod probe;
 pub mod prompt_templates;
 pub mod redact;
+pub mod request_outcome;
 pub mod secret_env;
 #[cfg(feature = "shutdown")]
 pub mod shutdown;
