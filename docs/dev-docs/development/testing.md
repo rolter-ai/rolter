@@ -396,6 +396,13 @@ cd examples/presidio-restore-shim
 uv run --no-project --python 3.13 --with-requirements requirements-dev.txt pytest
 ```
 
+`examples/rolter-linear-trainer/` holds no service, only a test (#3455): it runs the
+scikit-learn trainer printed on the semantic guard policies page over the golden vectors in
+`crates/rolter-gateway/tests/fixtures/local_classifier/golden_features.json`, and the gateway's
+`local_classifier` unit test holds the same file against the Rust tokenizer and FNV-1a hash. Change
+the vectors with `ROLTER_REGENERATE_GOLDEN=1 pytest` in that directory, then run the Rust test: both
+sides have to agree.
+
 It is part of `quality`, so `ci-ok` waits on it. dependabot's `pip` ecosystem covers each
 example's directory, so a new example with a `requirements.txt` needs its own entry in
 `.github/dependabot.yml`.

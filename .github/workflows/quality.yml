@@ -709,6 +709,11 @@ jobs:
       - name: presidio restore shim
         working-directory: examples/presidio-restore-shim
         run: uv run --no-project --python 3.13 --with-requirements requirements-dev.txt pytest -q
+      # the trainer printed on the semantic guard policies page, held to the
+      # golden vectors the gateway's local classifier is also tested against
+      - name: rolter-linear/1 trainer vectors
+        working-directory: examples/rolter-linear-trainer
+        run: uv run --no-project --python 3.13 --with-requirements requirements-dev.txt pytest -q
 
   # ── static checks: everything that reads the tree and builds nothing ────────
   # twelve checks that used to be twelve jobs. each did 0-15 s of work and then

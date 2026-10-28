@@ -60,3 +60,9 @@ updates:
     groups:
       example-python:
         update-types: [minor, patch]
+
+  - package-ecosystem: pip
+    directory: /examples/rolter-linear-trainer
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
