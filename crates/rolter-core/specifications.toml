@@ -440,10 +440,12 @@ modules = ["crates/rolter-proxy/src/infinity.rs"]
 supported = [
   "embeddings: OpenAI's own shape, forwarded unchanged",
   "rerank: `{\"text\": ...}` documents flattened on the way up and bare-string documents wrapped on the way back",
+  "every other endpoint refused with `400 unsupported_endpoint` before the upstream on a route that reaches only embedding servers",
 ]
 tests = [
   "crates/rolter-proxy/src/infinity.rs::documents_come_back_in_the_cohere_shape",
   "crates/rolter-gateway/tests/infinity.rs",
+  "crates/rolter-gateway/tests/embedding_only.rs",
 ]
 
 [[spec]]
@@ -458,8 +460,12 @@ conformance = "native-passthrough"
 modules = ["crates/rolter-core/src/upstream.rs"]
 supported = [
   "the OpenAI-compatible `/v1/embeddings` route, and `/health` as the liveness probe",
+  "every other endpoint but `/v1/rerank` refused with `400 unsupported_endpoint` before the upstream on a route that reaches only embedding servers",
 ]
-tests = ["crates/rolter-gateway/tests/tei.rs"]
+tests = [
+  "crates/rolter-gateway/tests/tei.rs",
+  "crates/rolter-gateway/tests/embedding_only.rs",
+]
 
 [[spec]]
 id = "system-one"

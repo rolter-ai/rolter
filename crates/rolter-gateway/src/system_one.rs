@@ -10,13 +10,15 @@
 //! else. A decision model cannot complete, embed or call tools, and a hosted
 //! chat api has no decision endpoint, so a request that crosses that line is
 //! refused here with a pointer to the right endpoint rather than forwarded for
-//! the upstream to answer `404`.
+//! the upstream to answer `404`. The same boundary holds for the
+//! text-embeddings servers (`tei`, `infinity`, #3247): a route that reaches
+//! only them answers embeddings and reranking, and nothing else.
 
 // spec-ref: system-one
 use std::collections::HashMap;
 
 use axum::http::StatusCode;
-use rolter_core::upstream::SYSTEM_ONE_PATH;
+use rolter_core::upstream::{EMBEDDINGS_PATH, RERANK_PATH, SYSTEM_ONE_PATH};
 use rolter_core::{ModelRoute, ProviderConfig};
 
 use crate::error::ApiError;
@@ -58,7 +60,24 @@ pub(crate) fn endpoint_refusal(
             .with_param("model"),
         );
     }
-    if kinds.all(|kind| kind.decision_only()) {
+    // the iterator is only peeked above, so it is walked once per question
+    let (decision_only, embeddings_only) = kinds.fold((true, true), |(d, e), kind| {
+        (d && kind.decision_only(), e && kind.embeddings_only())
+    });
+    if embeddings_only && path != EMBEDDINGS_PATH && path != RERANK_PATH {
+        return Some(
+            ApiError::new(
+                StatusCode::BAD_REQUEST,
+                format!(
+                    "model '{model}' is an embedding model and only answers POST \
+                     {EMBEDDINGS_PATH} (and {RERANK_PATH} where its server reranks)"
+                ),
+            )
+            .with_code("unsupported_endpoint")
+            .with_param("model"),
+        );
+    }
+    if decision_only {
         return Some(
             ApiError::new(
                 StatusCode::BAD_REQUEST,
@@ -121,6 +140,48 @@ mod tests {
         ] {
             assert!(refused(path, &route, &providers), "{path}");
         }
+    }
+
+    #[test]
+    fn an_embedding_route_answers_only_embeddings_and_rerank() {
+        for kind in [ProviderKind::Tei, ProviderKind::Infinity] {
+            let providers = providers(&[("embed", kind), ("embed-2", kind)]);
+            let route = route(&["embed", "embed-2"]);
+            assert!(!refused(EMBEDDINGS_PATH, &route, &providers), "{kind:?}");
+            assert!(!refused(RERANK_PATH, &route, &providers), "{kind:?}");
+            for path in [
+                "/v1/chat/completions",
+                "/v1/completions",
+                "/v1/messages",
+                "/v1/responses",
+                "/v1/images/generations",
+                "/v1/audio/speech",
+                "/v1/audio/transcriptions",
+                SYSTEM_ONE_PATH,
+            ] {
+                assert!(refused(path, &route, &providers), "{kind:?} {path}");
+            }
+        }
+        // tei and infinity together are still embedding-only
+        let providers = providers(&[("tei", ProviderKind::Tei), ("inf", ProviderKind::Infinity)]);
+        let route = route(&["tei", "inf"]);
+        let body = endpoint_refusal("/v1/messages", &route, &providers)
+            .expect("refused")
+            .body();
+        let message = body["error"]["message"].as_str().unwrap_or_default();
+        assert!(message.contains(EMBEDDINGS_PATH), "{body}");
+        assert_eq!(body["error"]["code"], "unsupported_endpoint");
+    }
+
+    #[test]
+    fn an_embedding_server_beside_a_chat_server_is_left_to_balance() {
+        let providers = providers(&[
+            ("tei", ProviderKind::Tei),
+            ("vllm", ProviderKind::OpenaiCompatible),
+        ]);
+        let route = route(&["tei", "vllm"]);
+        assert!(!refused("/v1/chat/completions", &route, &providers));
+        assert!(!refused(EMBEDDINGS_PATH, &route, &providers));
     }
 
     #[test]
