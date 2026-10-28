@@ -670,6 +670,32 @@ pub struct ScimToken {
     pub revoked_at: Option<DateTime<Utc>>,
 }
 
+/// a scoped control-plane API token (#1836): a service account that holds one
+/// role at an org, team or project. `token_hash` is a peppered sha-256; the
+/// plaintext is returned once, at mint or rotation, and never stored.
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+pub struct ApiToken {
+    pub id: Uuid,
+    pub org_id: Uuid,
+    pub team_id: Option<Uuid>,
+    pub project_id: Option<Uuid>,
+    pub name: String,
+    /// a built-in role (`admin` | `member` | `viewer`), or `None` when the
+    /// token holds a custom role
+    pub role: Option<String>,
+    pub custom_role_id: Option<Uuid>,
+    #[serde(skip_serializing)]
+    pub token_hash: String,
+    /// the first characters of the value, to recognise a token in a list
+    pub token_prefix: String,
+    pub expires_at: Option<DateTime<Utc>>,
+    pub created_by: Option<Uuid>,
+    pub created_at: DateTime<Utc>,
+    pub rotated_at: Option<DateTime<Utc>>,
+    pub last_used_at: Option<DateTime<Utc>>,
+    pub revoked_at: Option<DateTime<Utc>>,
+}
+
 /// the SCIM view of a local user within one org: what the IdP calls them and
 /// the stable id it knows them by.
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
@@ -1006,6 +1032,11 @@ pub struct User {
     /// self-service profile (#1823): up to 500 chars, trimmed
     #[serde(default)]
     pub bio: Option<String>,
+    /// delegable deployment role (#1834): `operator`, `security_auditor`, or
+    /// none. Read only by the guard on deployment-wide capabilities; it grants
+    /// nothing at any org, team or project
+    #[serde(default)]
+    pub deployment_role: Option<String>,
 }
 
 /// a role grant at a scope; scope is the most specific non-null id among

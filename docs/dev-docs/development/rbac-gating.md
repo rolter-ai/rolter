@@ -263,8 +263,10 @@ backstop it always was. `ui/src/lib/can.test.ts` pins both.
 - **The deployment-scoped settings screens.** Feature flags, the runtime,
   logging, compatibility, client, model-default, adaptive and security policy,
   the cluster, connectors and alerting are wrapped in
-  `superadminOnly()` (`ui/src/components/ForbiddenScreen.tsx`). A non-superadmin
-  never mounts them, so they send no request to be refused. The MCP logs are
+  `superadminOnly(Screen, key, "<resource>:read")` (`ui/src/components/ForbiddenScreen.tsx`).
+  The third argument is the screen's own read pair, so a caller the table refuses never
+  mounts it and sends no request to be refused: a superadmin passes, and so does the
+  deployment role (operator, security auditor) that the table names for that read (#1834). The MCP logs are
   scoped on the server since #1831 (`mcp_log:read` is a viewer-level project
   capability); the screen stays wrapped until its dashboard half lands.
 
@@ -370,7 +372,7 @@ be reorganised freely (#1298).
 
 Give the nav leaf its `resource`, gate the create control on
 `<resource>:create`, gate each row control on `<resource>:update` or
-`<resource>:delete`, and wrap the screen in `superadminOnly()` if the capability
+`<resource>:delete`, and wrap the screen in `superadminOnly()`, passing its `<resource>:read`, if the capability
 table puts it at `scope: "deployment"`. Cover the roles in a story with
 `<Harness role="viewer">` — the harness stubs both RBAC endpoints from the same
 table this doc names.
