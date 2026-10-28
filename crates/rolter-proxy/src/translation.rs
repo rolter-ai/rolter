@@ -915,7 +915,9 @@ fn clamp_temperature(obj: &mut serde_json::Map<String, Value>, adjustments: &mut
     }
 }
 
-fn anthropic_request(mut v: Value, adjustments: &mut ParamAdjustments) -> Value {
+// the shared translator signature; since #3325 carries `disable_parallel_tool_use`
+// to chat, nothing in this direction is reported
+fn anthropic_request(mut v: Value, _adjustments: &mut ParamAdjustments) -> Value {
     let Some(obj) = v.as_object_mut() else {
         return v;
     };
