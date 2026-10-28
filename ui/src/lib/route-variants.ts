@@ -78,18 +78,31 @@ export function variantsToApi(variants: DraftVariant[]): RouteVariantInput[] {
   }));
 }
 
-/** a whole number, 0 or more: the one weight the control plane accepts here */
-export function variantWeightValid(weight: string): boolean {
+/** the most variants a route takes, and targets a variant takes (`MAX_VARIANTS` in the API) */
+export const MAX_VARIANTS = 32;
+export const MAX_VARIANT_TARGETS = 32;
+
+/** a whole number, 0 or more, that fits the stored integer */
+export function wholeWeight(weight: string): boolean {
   return /^\d+$/.test(weight.trim()) && Number(weight) <= 2_147_483_647;
+}
+
+/**
+ * A variant weight the control plane accepts: 1 or more. A 0 would read as
+ * "fallback only", but the gateway samples it as a 1 (#3341), so the API
+ * refuses it, as it refuses a route target's.
+ */
+export function variantWeightValid(weight: string): boolean {
+  return wholeWeight(weight) && Number(weight) >= 1;
 }
 
 /**
  * The share of first attempts each weight gets, as the gateway samples them.
  *
  * The gateway counts a weight of 0 as 1 when it samples a primary
- * (`weighted_index` in `rolter-core`), so a "fallback only" variant still
- * receives a share. The preview shows the split that happens, not the one the
- * numbers suggest, until #3341 changes the sampling.
+ * (`weighted_index` in `rolter-core`). The sheet refuses a 0, but a variant
+ * imported from `rolter.toml` can carry one, and the preview shows the split
+ * that happens rather than the one the numbers suggest, until #3341.
  */
 export function trafficSplit(weights: number[]): number[] {
   const sampled = weights.map((w) => Math.max(1, Math.floor(w)));
@@ -101,7 +114,7 @@ export function trafficSplit(weights: number[]): number[] {
 export interface VariantErrors {
   name?: "nameRequired" | "nameTaken";
   weight?: "weight";
-  targets?: "targetsRequired" | "targetsAllZero";
+  targets?: "targetsRequired" | "targetsAllZero" | "targetsTooMany";
   /** target keys whose provider is unset */
   provider: Set<string>;
   /** target keys whose weight is not a whole number 0 or more */
@@ -110,8 +123,8 @@ export interface VariantErrors {
 
 export interface VariantValidation {
   byVariant: Map<string, VariantErrors>;
-  /** every variant's weight is 0, so no request has a primary */
-  allZero: boolean;
+  /** more variants than a route takes */
+  tooMany: boolean;
   /** how many separate problems there are, for the sheet's summary */
   count: number;
 }
@@ -130,9 +143,11 @@ export function validateVariants(variants: DraftVariant[]): VariantValidation {
     if (v.targets.length === 0) errors.targets = "targetsRequired";
     for (const tg of v.targets) {
       if (tg.providerId === "") errors.provider.add(tg.key);
-      if (!variantWeightValid(tg.weight)) errors.targetWeight.add(tg.key);
+      if (!wholeWeight(tg.weight)) errors.targetWeight.add(tg.key);
     }
+    if (v.targets.length > MAX_VARIANT_TARGETS) errors.targets = "targetsTooMany";
     if (
+      !errors.targets &&
       v.targets.length > 0 &&
       errors.targetWeight.size === 0 &&
       v.targets.every((tg) => Number(tg.weight) === 0)
@@ -147,11 +162,9 @@ export function validateVariants(variants: DraftVariant[]): VariantValidation {
       Number(errors.targetWeight.size > 0);
     byVariant.set(v.key, errors);
   }
-  const allZero =
-    variants.length > 0 &&
-    variants.every((v) => variantWeightValid(v.weight) && Number(v.weight) === 0);
-  if (allZero) count += 1;
-  return { byVariant, allZero, count };
+  const tooMany = variants.length > MAX_VARIANTS;
+  if (tooMany) count += 1;
+  return { byVariant, tooMany, count };
 }
 
 /** Move the entry at `from` one place up (`-1`) or down (`1`). */
@@ -168,14 +181,23 @@ export function moved<T>(list: T[], from: number, by: -1 | 1): T[] {
  * `variants`, `variants[1].weight`, `variants[0].targets[2].weight`.
  */
 export interface VariantRefusal {
+  /**
+   * the control plane's own sentence, for a refusal of the set as a whole: one
+   * field name (`variants`) covers more than one rule, so it is said as sent
+   */
+  message?: string;
   /** absent for the set as a whole */
   variantKey?: string;
   targetKey?: string;
   field: "variants" | "name" | "weight" | "targets" | "params" | "targetWeight" | "provider";
 }
 
-export function variantRefusalOf(field: string, variants: DraftVariant[]): VariantRefusal | null {
-  if (field === "variants") return { field: "variants" };
+export function variantRefusalOf(
+  field: string,
+  variants: DraftVariant[],
+  message?: string,
+): VariantRefusal | null {
+  if (field === "variants") return { field: "variants", message };
   const match =
     /^variants\[(\d+)\]\.(name|weight|params|targets)(?:\[(\d+)\]\.(weight|provider_id))?$/.exec(
       field,

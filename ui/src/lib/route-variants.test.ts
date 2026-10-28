@@ -2,6 +2,8 @@ import { describe, expect, it } from "bun:test";
 
 import type { RouteVariantRow } from "@/lib/api";
 import {
+  MAX_VARIANT_TARGETS,
+  MAX_VARIANTS,
   moved,
   newVariant,
   newVariantTarget,
@@ -48,18 +50,21 @@ describe("trafficSplit", () => {
 });
 
 describe("validateVariants", () => {
-  it("accepts a well-formed set, a fallback-only variant included", () => {
+  it("accepts a well-formed set, a zero-weight target included", () => {
     const a = newVariant("stable", "prov-1");
-    const b = { ...newVariant("canary", "prov-2"), weight: "0" };
+    const b = {
+      ...newVariant("canary", "prov-2"),
+      weight: "3",
+      targets: [newVariantTarget("prov-2"), newVariantTarget("prov-1", "", "0")],
+    };
     const result = validateVariants([a, b]);
     expect(result.count).toBe(0);
-    expect(result.allZero).toBe(false);
+    expect(result.tooMany).toBe(false);
   });
 
-  it("refuses weights that are all zero, negative or not whole", () => {
-    const a = { ...newVariant("a", "p"), weight: "0" };
-    const b = { ...newVariant("b", "p"), weight: "0" };
-    expect(validateVariants([a, b]).allZero).toBe(true);
+  it("refuses a variant weight of 0 (sampled as 1, #3341), negative or not whole", () => {
+    const zero = { ...newVariant("a", "p"), weight: "0" };
+    expect(validateVariants([zero]).byVariant.get(zero.key)?.weight).toBe("weight");
     const negative = { ...newVariant("c", "p"), weight: "-1" };
     expect(validateVariants([negative]).byVariant.get(negative.key)?.weight).toBe("weight");
     const fraction = { ...newVariant("d", "p"), weight: "1.5" };
@@ -79,6 +84,19 @@ describe("validateVariants", () => {
     expect(result.byVariant.get(idle.key)?.targets).toBe("targetsAllZero");
     expect(result.byVariant.get(unset.key)?.provider.size).toBe(1);
     expect(result.count).toBe(5);
+  });
+});
+
+describe("caps", () => {
+  it("refuses more variants, or more targets in one, than the API takes", () => {
+    const many = Array.from({ length: MAX_VARIANTS + 1 }, (_, i) => newVariant(`v${i}`, "p"));
+    expect(validateVariants(many).tooMany).toBe(true);
+    expect(validateVariants(many.slice(1)).tooMany).toBe(false);
+    const wide = {
+      ...newVariant("wide", "p"),
+      targets: Array.from({ length: MAX_VARIANT_TARGETS + 1 }, () => newVariantTarget("p")),
+    };
+    expect(validateVariants([wide]).byVariant.get(wide.key)?.targets).toBe("targetsTooMany");
   });
 });
 
@@ -113,7 +131,10 @@ describe("ordering and naming", () => {
 describe("variantRefusalOf", () => {
   it("maps a refused field back onto the draft", () => {
     const drafts = variantsFromRows([row("a", 1), row("b", 1)]);
-    expect(variantRefusalOf("variants", drafts)).toEqual({ field: "variants" });
+    expect(variantRefusalOf("variants", drafts, "too many")).toEqual({
+      field: "variants",
+      message: "too many",
+    });
     expect(variantRefusalOf("variants[1].weight", drafts)).toEqual({
       variantKey: drafts[1].key,
       field: "weight",

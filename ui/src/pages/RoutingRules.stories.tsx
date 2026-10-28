@@ -1329,10 +1329,10 @@ export const AddsAVariant: Story = {
 };
 
 /**
- * Weights that are all zero, a repeated name and a variant left without a
- * target are refused in the sheet, each at its field, and nothing is sent. A
- * zero beside a positive weight is allowed, and the preview says what the
- * gateway does with it.
+ * A variant weight of 0, a repeated name and a variant left without a target
+ * are refused in the sheet, each at its field, and nothing is sent. The 0 is
+ * still previewed as the share the gateway would give it, since an import can
+ * store one.
  */
 let refusesSplit: Recorder;
 export const RefusesASplitTheGatewayCannotRoute: Story = {
@@ -1349,14 +1349,11 @@ export const RefusesASplitTheGatewayCannotRoute: Story = {
     const second = await dialog.findByLabelText("Variant 2 weight");
     await userEvent.clear(second);
     await userEvent.type(second, "0");
-    // a fallback-only variant is sampled as weight 1, and the preview says so
-    await expect(await dialog.findByText(/A weight of 0 is still sampled as 1/)).toBeVisible();
+    // a 0 is sampled as a 1 (#3341): the preview shows that share and says so
+    await expect(await dialog.findByText(/is sampled as 1 by the gateway/)).toBeVisible();
     await expect(
       within(dialog.getByRole("list", { name: "Traffic split" })).getByText("10%"),
     ).toBeInTheDocument();
-    const first = dialog.getByLabelText("Variant 1 weight");
-    await userEvent.clear(first);
-    await userEvent.type(first, "0");
     const name = dialog.getByLabelText("Variant 2 name");
     await userEvent.clear(name);
     await userEvent.type(name, "stable");
@@ -1365,12 +1362,13 @@ export const RefusesASplitTheGatewayCannotRoute: Story = {
     await userEvent.click(dialog.getByRole("button", { name: "Save route" }));
 
     await waitFor(() =>
-      expect(dialog.getByText(/At least one variant needs a weight above 0/)).toBeVisible(),
+      expect(dialog.getByText("A variant weight is a whole number, 1 or more.")).toBeVisible(),
     );
     await expect(dialog.getByText(/Another variant of this route has this name/)).toBeVisible();
     await expect(dialog.getByText("A variant needs at least one target.")).toBeVisible();
     await expect(dialog.getByLabelText("Variant 2 name")).toBeInvalid();
-    await expect(dialog.getByLabelText("Variant 1 weight")).toBeInvalid();
+    await expect(dialog.getByLabelText("Variant 2 weight")).toBeInvalid();
+    await expect(dialog.getByLabelText("Variant 1 weight")).toBeValid();
     await expect(dialog.getByText(/3 fields need attention/)).toBeVisible();
     refusesSplit.expectNotSent("PUT", "/variants");
   },
@@ -1414,6 +1412,91 @@ export const VariantRefusedByTheControlPlane: Story = {
     // editing the field clears the refusal
     await userEvent.type(dialog.getByLabelText("Variant 2 weight"), "0");
     await waitFor(() => expect(dialog.getByLabelText("Variant 2 weight")).toBeValid());
+  },
+};
+
+/**
+ * A refusal of the set as a whole names only `variants`, which covers more than
+ * one rule, so the control plane's own sentence is shown, and focus goes to the
+ * section's add button.
+ */
+export const VariantSetRefusedByTheControlPlane: Story = {
+  render: () => (
+    <Harness
+      role="admin"
+      fetchStub={
+        withVariants(SPLIT, () =>
+          json(
+            {
+              error: {
+                code: "invalid_field",
+                message: "a route takes at most 32 variants",
+                field: "variants",
+              },
+            },
+            400,
+          ),
+        ).stub
+      }
+    >
+      <RoutingRules />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const dialog = await openRouteSheet(canvasElement);
+    const weight = await dialog.findByLabelText("Variant 2 weight");
+    await userEvent.clear(weight);
+    await userEvent.type(weight, "2");
+    await userEvent.click(dialog.getByRole("button", { name: "Save route" }));
+    await waitFor(() =>
+      expect(dialog.getByText("a route takes at most 32 variants")).toBeVisible(),
+    );
+    await waitFor(() => expect(dialog.getByRole("button", { name: "Add variant" })).toHaveFocus());
+  },
+};
+
+/**
+ * With no provider the route's project may use, no variant or target can be
+ * added, and the sheet says where to make one rather than leaving the buttons
+ * disabled without a word.
+ */
+export const VariantsWithoutProviders: Story = {
+  render: () => (
+    <Harness
+      role="admin"
+      fetchStub={scoped(async (input, init) => {
+        if (String(input).includes("/providers")) return json([]);
+        return answer(ROUTES)(input, init);
+      })}
+    >
+      <RoutingRules />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const dialog = await openRouteSheet(canvasElement);
+    await expect(await dialog.findByText(/^No variants\./)).toBeVisible();
+    // story-wait-allow: disabled by the empty provider list from the sheet's first paint
+    await expect(dialog.getByRole("button", { name: "Add variant" })).toBeDisabled();
+    await expect(dialog.getAllByRole("link", { name: /providers/i }).length).toBeGreaterThan(0);
+  },
+};
+
+/**
+ * Under a strategy that never reads weights, a variant's target weights do not
+ * split its traffic, and the section says so as the route's own target list does.
+ */
+export const SaysWhenVariantTargetWeightsAreIgnored: Story = {
+  render: () => (
+    <Harness role="admin" fetchStub={withVariants(SPLIT).stub}>
+      <RoutingRules />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const dialog = await openRouteSheet(canvasElement);
+    await dialog.findByLabelText("Variant 2 weight");
+    await expect(dialog.queryByText(/target weights do not split traffic/)).toBeNull();
+    await pickOption(dialog.getByLabelText("Strategy"), /^round_robin\b/);
+    await expect(await dialog.findByText(/target weights do not split traffic/)).toBeVisible();
   },
 };
 

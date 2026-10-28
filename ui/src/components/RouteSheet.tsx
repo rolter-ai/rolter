@@ -267,7 +267,7 @@ export function RouteSheet({
         queryClient.invalidateQueries({ queryKey: ["routes"] });
         const named =
           error instanceof ApiError && error.code === "invalid_field" && error.field
-            ? variantRefusalOf(error.field, draft.variants)
+            ? variantRefusalOf(error.field, draft.variants, error.message)
             : null;
         if (named) {
           setVariantRefusal(named);
@@ -323,13 +323,14 @@ export function RouteSheet({
       ?.querySelector<HTMLElement>('[aria-invalid="true"], [data-error-anchor="true"]')
       ?.focus();
   }, [attempts]);
-  // a server refusal moves focus to its line the same way
+  // a server refusal moves focus to its line the same way, a variant's
+  // included; the section is opened first, so the field is there to take it
   React.useEffect(() => {
-    if (!refusal) return;
+    if (!refusal && !variantRefusal) return;
     bodyRef.current
       ?.querySelector<HTMLElement>('[aria-invalid="true"], [data-error-anchor="true"]')
       ?.focus();
-  }, [refusal]);
+  }, [refusal, variantRefusal]);
 
   const setTargets = (next: DraftTarget[]) => {
     setRefusal(null);
@@ -435,6 +436,7 @@ export function RouteSheet({
                 variants={draft.variants}
                 providers={providers}
                 publicName={route?.model ?? ""}
+                strategy={draft.strategy}
                 validation={variantCheck}
                 showErrors={visibility.attempts > 0}
                 refusal={variantRefusal}

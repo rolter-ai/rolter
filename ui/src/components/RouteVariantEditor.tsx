@@ -1,6 +1,7 @@
 import { ArrowDown, ArrowUp, Plus } from "lucide-react";
 import * as React from "react";
-import { useTranslation } from "react-i18next";
+import { Trans, useTranslation } from "react-i18next";
+import { Link } from "react-router";
 
 import { Button } from "@/components/ui/button";
 import { Combobox } from "@/components/ui/combobox";
@@ -12,28 +13,30 @@ import { ProviderLogo } from "@/components/ui/provider-logo";
 import { SurfacePanel } from "@/components/ui/surface-panel";
 import type { ProviderRow } from "@/lib/api";
 import { useFormat } from "@/lib/i18n/format";
+import { shareBarColor } from "@/lib/share-bars";
+import { usesWeights } from "@/lib/strategies";
 import {
+  MAX_VARIANT_TARGETS,
+  MAX_VARIANTS,
   moved,
   newVariant,
   newVariantTarget,
   nextVariantName,
   trafficSplit,
-  variantWeightValid,
+  wholeWeight,
   type DraftVariant,
   type DraftVariantTarget,
   type VariantRefusal,
   type VariantValidation,
 } from "@/lib/route-variants";
 
-/** one categorical token per variant, the colours the route cards' target bars use */
-const VARIANT_BARS = [1, 2, 3, 4, 5, 6].map((n) => `var(--chart-${n})`);
-const barColor = (i: number) => VARIANT_BARS[i % VARIANT_BARS.length];
-
 export interface RouteVariantEditorProps {
   variants: DraftVariant[];
   providers: ProviderRow[];
   /** the route's public name, the placeholder of a blank upstream model */
   publicName: string;
+  /** the route's strategy, which also picks the leading target inside a variant */
+  strategy: string;
   validation: VariantValidation;
   /** show the validation, once a save was attempted */
   showErrors: boolean;
@@ -55,12 +58,14 @@ export interface RouteVariantEditorProps {
  * and the order of a variant's targets is the order they are tried, so both
  * lists move a line up or down rather than sorting. The preview above the list
  * is the split the gateway applies to first attempts, computed the way it
- * samples (a weight of 0 counts as 1).
+ * samples: a weight of 0, which the sheet refuses but an import can store,
+ * counts as 1 (#3341).
  */
 export function RouteVariantEditor({
   variants,
   providers,
   publicName,
+  strategy,
   validation,
   showErrors,
   refusal,
@@ -77,10 +82,16 @@ export function RouteVariantEditor({
     onChange(variants.map((v, idx) => (idx === i ? { ...v, ...patch } : v)));
   const add = () => onChange([...variants, newVariant(nextVariantName(variants), firstProvider)]);
 
+  // `variants` names more than one rule of the API, so its refusal is said in
+  // the control plane's own words
   const setError =
-    (showErrors && validation.allZero) || refusal?.field === "variants"
-      ? t("routeSheet.variants.errors.allZero")
-      : "";
+    refusal?.field === "variants"
+      ? (refusal.message ?? t("routeSheet.variants.errors.refused"))
+      : showErrors && validation.tooMany
+        ? t("routeSheet.variants.errors.tooMany", { max: MAX_VARIANTS })
+        : "";
+  const full = variants.length >= MAX_VARIANTS;
+  const weightsIgnored = !usesWeights(strategy) && variants.some((v) => v.targets.length > 1);
 
   return (
     <div className="space-y-3">
@@ -90,11 +101,36 @@ export function RouteVariantEditor({
           info={t("routeSheet.variants.info")}
           id={labelId}
         />
-        <Button size="sm" variant="outline" disabled={providers.length === 0} onClick={add}>
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={providers.length === 0 || full}
+          title={full ? t("routeSheet.variants.full", { max: MAX_VARIANTS }) : undefined}
+          aria-describedby={describedBy(setError && setErrId)}
+          // a refusal of the whole set has no field of its own to take focus
+          data-error-anchor={refusal?.field === "variants" || undefined}
+          onClick={add}
+        >
           <Plus className="h-3.5 w-3.5" />
           {t("routeSheet.variants.add")}
         </Button>
       </div>
+      {/* a variant's target needs a provider, which this sheet cannot make, so
+          the way out is a link to where it can, as for the route's own targets */}
+      {providers.length === 0 && (
+        <p className="text-xs text-muted-foreground">
+          <Trans
+            i18nKey="modelSheet.targets.noProviders"
+            components={[
+              <Link
+                key="providers"
+                to="/providers"
+                className="text-foreground underline underline-offset-2 hover:no-underline focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              />,
+            ]}
+          />
+        </p>
+      )}
       {variants.length === 0 ? (
         empty
       ) : (
@@ -103,6 +139,15 @@ export function RouteVariantEditor({
             {t("routeSheet.variants.overridesTargets")}
           </p>
           <SplitPreview variants={variants} />
+          {weightsIgnored && (
+            <p className="text-xs leading-snug text-muted-foreground">
+              <Trans
+                i18nKey="routeSheet.variants.weightsIgnored"
+                values={{ strategy }}
+                components={[<span key="strategy" className="font-mono text-foreground" />]}
+              />
+            </p>
+          )}
           <FieldError id={setErrId} error={setError} />
           <ol aria-labelledby={labelId} className="space-y-3">
             {variants.map((v, i) => (
@@ -111,13 +156,12 @@ export function RouteVariantEditor({
                 n={i + 1}
                 count={variants.length}
                 variant={v}
-                color={barColor(i)}
+                color={shareBarColor(i)}
                 providers={providers}
                 publicName={publicName}
                 validation={validation}
                 showErrors={showErrors}
                 refusal={refusal?.variantKey === v.key ? refusal : null}
-                setErrorId={setError ? setErrId : undefined}
                 onChange={(patch) => update(i, patch)}
                 onMove={(by) => onChange(moved(variants, i, by))}
                 onRemove={() => onChange(variants.filter((_, idx) => idx !== i))}
@@ -132,12 +176,13 @@ export function RouteVariantEditor({
 
 /**
  * The share of first attempts each variant gets: one stacked bar, and the
- * figures under it. Nothing is drawn while a weight is not a number yet.
+ * figures under it. Nothing is drawn while a weight is not a whole number yet;
+ * a 0 is drawn the way the gateway samples it, as a 1.
  */
 function SplitPreview({ variants }: { variants: DraftVariant[] }) {
   const { t } = useTranslation();
   const fmt = useFormat();
-  const ready = variants.every((v) => variantWeightValid(v.weight));
+  const ready = variants.every((v) => wholeWeight(v.weight));
   if (!ready) {
     return (
       <p className="text-xs text-muted-foreground">{t("routeSheet.variants.previewPending")}</p>
@@ -156,7 +201,7 @@ function SplitPreview({ variants }: { variants: DraftVariant[] }) {
             key={variants[i].key}
             className="h-full"
             // a CSS length, never a localized percentage
-            style={{ width: `${share * 100}%`, background: barColor(i) }}
+            style={{ width: `${share * 100}%`, background: shareBarColor(i) }}
           />
         ))}
       </div>
@@ -169,7 +214,7 @@ function SplitPreview({ variants }: { variants: DraftVariant[] }) {
             <span
               aria-hidden="true"
               className="size-2 rounded-full"
-              style={{ background: barColor(i) }}
+              style={{ background: shareBarColor(i) }}
             />
             <span className="text-[color:var(--text-secondary)]">
               {variants[i].name.trim() || t("routeSheet.variants.unnamed", { n: i + 1 })}
@@ -197,7 +242,6 @@ function VariantCard({
   validation,
   showErrors,
   refusal,
-  setErrorId,
   onChange,
   onMove,
   onRemove,
@@ -211,7 +255,6 @@ function VariantCard({
   validation: VariantValidation;
   showErrors: boolean;
   refusal: VariantRefusal | null;
-  setErrorId?: string;
   onChange: (patch: Partial<DraftVariant>) => void;
   onMove: (by: -1 | 1) => void;
   onRemove: () => void;
@@ -228,7 +271,9 @@ function VariantCard({
   };
   const found = validation.byVariant.get(variant.key);
   const shown = (key: string | undefined, refused: boolean) =>
-    (showErrors && key) || refused ? t(`routeSheet.variants.errors.${key ?? "refused"}`) : "";
+    (showErrors && key) || refused
+      ? t(`routeSheet.variants.errors.${key ?? "refused"}`, { max: MAX_VARIANT_TARGETS })
+      : "";
   const nameError = shown(found?.name, refusal?.field === "name");
   const weightError = shown(found?.weight, refusal?.field === "weight");
   const targetsError = shown(found?.targets, refusal?.field === "targets");
@@ -271,12 +316,12 @@ function VariantCard({
           <Input
             aria-label={t("routeSheet.variants.weightAria", { n })}
             type="number"
-            min={0}
+            min={1}
             step={1}
             className="font-mono"
             value={variant.weight}
-            aria-invalid={!!weightError || !!setErrorId || undefined}
-            aria-describedby={describedBy(weightError && ids.weight, setErrorId)}
+            aria-invalid={!!weightError || undefined}
+            aria-describedby={describedBy(weightError && ids.weight)}
             onChange={(e) => onChange({ weight: e.target.value })}
           />
           <Button
@@ -323,7 +368,12 @@ function VariantCard({
           <Button
             size="sm"
             variant="ghost"
-            disabled={providers.length === 0}
+            disabled={providers.length === 0 || variant.targets.length >= MAX_VARIANT_TARGETS}
+            title={
+              variant.targets.length >= MAX_VARIANT_TARGETS
+                ? t("routeSheet.variants.targetsFull", { max: MAX_VARIANT_TARGETS })
+                : undefined
+            }
             aria-label={t("routeSheet.variants.addTargetAria", { n })}
             aria-describedby={describedBy(targetsError && ids.targets)}
             data-error-anchor={(!!targetsError && variant.targets.length === 0) || undefined}
