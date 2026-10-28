@@ -11,11 +11,12 @@ use rolter_core::{
     AdvancedModelConfig, BackpressurePolicy, BalancingStrategy, BudgetConfig, BudgetPeriod,
     BudgetScope, BuiltinRule, Decorator, Error, FailureMode, FeatureFlagsConfig, GatewayConfig,
     GroupMember, GuardAction, GuardStage, GuardrailRule, GuardrailWebhookConfig, GuardrailsConfig,
-    McpAuthKind, McpOAuthSessionConfig, McpServerConfig, ModelPolicy, ModelPriceConfig, ModelRoute,
-    ParamPolicy, PluginInstanceConfig, PluginStage, PluginsConfig, PromptTemplate,
-    PromptTemplateActivationScope, PromptTemplatesConfig, ProviderConfig, ProviderGroupConfig,
-    ProviderKind, RateLimitConfig, Result, Target, TemplateVariable, Tenancy, UnpricedPolicy,
-    VirtualKeyRecord, WebhookAuth, WebhookStage,
+    McpAuthKind, McpOAuthSessionConfig, McpOrgSettingsConfig, McpServerConfig, McpToolGroupConfig,
+    McpToolRefConfig, ModelPolicy, ModelPriceConfig, ModelRoute, ParamPolicy, PluginInstanceConfig,
+    PluginStage, PluginsConfig, PromptTemplate, PromptTemplateActivationScope,
+    PromptTemplatesConfig, ProviderConfig, ProviderGroupConfig, ProviderKind, RateLimitConfig,
+    Result, ScopeWithin, Target, TemplateVariable, Tenancy, UnpricedPolicy, VirtualKeyRecord,
+    WebhookAuth, WebhookStage,
 };
 use rust_decimal::Decimal;
 use sqlx::postgres::PgPoolOptions;
@@ -450,6 +451,25 @@ struct McpServerSnapshotRow {
     connect_timeout_ms: Option<i32>,
     request_timeout_ms: Option<i32>,
     max_retries: Option<i32>,
+    tools: Vec<String>,
+}
+
+#[derive(FromRow)]
+struct McpSettingsSnapshotRow {
+    org_id: Uuid,
+    connect_timeout_ms: i32,
+    request_timeout_ms: i32,
+    max_retries: i32,
+    default_failure_mode: String,
+    allow_unlisted_tools: bool,
+}
+
+#[derive(FromRow)]
+struct McpToolGroupSnapshotRow {
+    id: Uuid,
+    org_id: Uuid,
+    slug: String,
+    tools: serde_json::Value,
 }
 
 #[derive(FromRow)]
@@ -1093,7 +1113,7 @@ impl PostgresConfigStore {
         let rows: Vec<McpServerSnapshotRow> = sqlx::query_as(
             "select id, org_id, slug, url, transport, required_scopes, \
                     auth_kind, auth_header_name, credential_ciphertext, credential_nonce, \
-                    connect_timeout_ms, request_timeout_ms, max_retries \
+                    connect_timeout_ms, request_timeout_ms, max_retries, tools \
              from mcp_servers where enabled order by org_id, slug",
         )
         .fetch_all(&self.pool)
@@ -1146,7 +1166,70 @@ impl PostgresConfigStore {
                     connect_timeout_ms: row.connect_timeout_ms.map(|ms| ms.max(0) as u64),
                     request_timeout_ms: row.request_timeout_ms.map(|ms| ms.max(0) as u64),
                     max_retries: row.max_retries.map(|n| n.max(0) as u32),
+                    tools: row.tools,
                 }
+            })
+            .collect())
+    }
+
+    /// Enabled tool groups for the snapshot (#1403). A disabled group governs
+    /// nothing, so it is not carried. A reference that does not parse is left
+    /// out with a warning rather than failing the snapshot; the API only ever
+    /// writes well-formed ones, so this is a row written around it.
+    async fn load_mcp_tool_groups(&self) -> Result<Vec<McpToolGroupConfig>> {
+        let rows: Vec<McpToolGroupSnapshotRow> = sqlx::query_as(
+            "select id, org_id, slug, tools from mcp_tool_groups where enabled \
+             order by org_id, slug",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(store_err)?;
+        Ok(rows
+            .into_iter()
+            .map(|row| {
+                let tools = match serde_json::from_value::<Vec<McpToolRefConfig>>(row.tools) {
+                    Ok(tools) => tools,
+                    Err(error) => {
+                        tracing::warn!(
+                            group_id = %row.id,
+                            error = %error,
+                            "MCP tool group holds references that do not parse; ignoring them"
+                        );
+                        Vec::new()
+                    }
+                };
+                McpToolGroupConfig {
+                    id: row.id.to_string(),
+                    org_id: row.org_id.to_string(),
+                    slug: row.slug,
+                    tools,
+                }
+            })
+            .collect())
+    }
+
+    /// The organizations that have saved MCP settings. An organization with no
+    /// row is left out and is served the defaults by the gateway, exactly as
+    /// the settings endpoint reports it.
+    async fn load_mcp_settings(&self) -> Result<Vec<McpOrgSettingsConfig>> {
+        let rows: Vec<McpSettingsSnapshotRow> = sqlx::query_as(
+            "select org_id, connect_timeout_ms, request_timeout_ms, max_retries, \
+                    default_failure_mode, allow_unlisted_tools \
+             from mcp_gateway_settings order by org_id",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(store_err)?;
+        Ok(rows
+            .into_iter()
+            .map(|row| McpOrgSettingsConfig {
+                org_id: row.org_id.to_string(),
+                // bounded by check constraints; clamp a row written around them
+                connect_timeout_ms: row.connect_timeout_ms.max(0) as u64,
+                request_timeout_ms: row.request_timeout_ms.max(0) as u64,
+                max_retries: row.max_retries.max(0) as u32,
+                fail_open: row.default_failure_mode == "fail_open",
+                allow_unlisted_tools: row.allow_unlisted_tools,
             })
             .collect())
     }
@@ -1223,7 +1306,7 @@ impl PostgresConfigStore {
             // String) or sqlx errors and the whole snapshot 500s — freezing every
             // polling gateway on its last config the moment any budget exists
             "select id, scope_type, scope_id, limit_usd::text as limit_usd, period,
-                    unpriced_policy, created_at
+                    unpriced_policy, created_at, within_org_id, within_project_id
              from budgets order by created_at",
         )
         .fetch_all(&self.pool)
@@ -1239,6 +1322,7 @@ impl PostgresConfigStore {
                     "virtual_key" => BudgetScope::Key,
                     "business_unit" => BudgetScope::BusinessUnit,
                     "customer" => BudgetScope::Customer,
+                    "user" => BudgetScope::User,
                     // unknown scope: skip rather than mis-enforce
                     _ => return None,
                 };
@@ -1252,6 +1336,7 @@ impl PostgresConfigStore {
                     limit_usd: r.limit_usd.parse().unwrap_or(Decimal::MAX),
                     period: parse_period(&r.period),
                     unpriced_policy: r.unpriced_policy.as_deref().and_then(parse_unpriced_policy),
+                    within: scope_within(r.within_org_id, r.within_project_id),
                 })
             })
             .collect())
@@ -1259,7 +1344,7 @@ impl PostgresConfigStore {
 
     async fn load_rate_limits(&self) -> Result<Vec<RateLimitConfig>> {
         let rows: Vec<RateLimit> = sqlx::query_as(
-            "select id, scope_type, scope_id, rpm, tpm, created_at
+            "select id, scope_type, scope_id, rpm, tpm, created_at, within_org_id, within_project_id
              from rate_limits order by created_at",
         )
         .fetch_all(&self.pool)
@@ -1275,6 +1360,7 @@ impl PostgresConfigStore {
                     "virtual_key" => BudgetScope::Key,
                     "business_unit" => BudgetScope::BusinessUnit,
                     "customer" => BudgetScope::Customer,
+                    "user" => BudgetScope::User,
                     // unknown scope: skip rather than mis-enforce
                     _ => return None,
                 };
@@ -1284,6 +1370,7 @@ impl PostgresConfigStore {
                     // non-positive caps are meaningless; treat them as unset
                     rpm: r.rpm.filter(|v| *v > 0).map(|v| v as u32),
                     tpm: r.tpm.filter(|v| *v > 0).map(|v| v as u32),
+                    within: scope_within(r.within_org_id, r.within_project_id),
                 })
             })
             .collect())
@@ -1757,6 +1844,16 @@ fn price_from_row(row: &ModelPrice) -> std::result::Result<ModelPriceConfig, Str
 /// one row, and moving an existing budget onto another window is not a guess
 /// to make on the operator's behalf. [`unrecognised_budget_period`] is what
 /// says it happened.
+/// The place a `user` cap is narrowed to, as the gateway matches it (#1830).
+fn scope_within(org: Option<Uuid>, project: Option<Uuid>) -> Option<ScopeWithin> {
+    match (org, project) {
+        (Some(org), None) => Some(ScopeWithin::Org(org.to_string())),
+        (None, Some(project)) => Some(ScopeWithin::Project(project.to_string())),
+        // the table's check constraint refuses both, so this is "neither"
+        _ => None,
+    }
+}
+
 fn parse_period(period: &str) -> BudgetPeriod {
     BudgetPeriod::parse(period).unwrap_or(BudgetPeriod::Monthly)
 }
@@ -1830,6 +1927,8 @@ impl ConfigStore for PostgresConfigStore {
         let db_virtual_keys = self.load_virtual_keys().await?;
         let mcp_servers = self.load_mcp_servers().await?;
         let mcp_oauth_sessions = self.load_mcp_oauth_sessions().await?;
+        let mcp_tool_groups = self.load_mcp_tool_groups().await?;
+        let mcp_settings = self.load_mcp_settings().await?;
         let budgets = self.load_budgets().await?;
         let rate_limits = self.load_rate_limits().await?;
         let prompt_templates = self.load_prompt_templates().await?;
@@ -1843,6 +1942,8 @@ impl ConfigStore for PostgresConfigStore {
             db_virtual_keys,
             mcp_servers,
             mcp_oauth_sessions,
+            mcp_tool_groups,
+            mcp_settings,
             budgets,
             rate_limits,
             prompt_templates,
@@ -1950,7 +2051,7 @@ impl ConfigStore for PostgresConfigStore {
         use crate::{ConfigProblem, ProblemOwner};
         let budgets: Vec<Budget> = sqlx::query_as(
             "select id, scope_type, scope_id, limit_usd::text as limit_usd, period,
-                    unpriced_policy, created_at
+                    unpriced_policy, created_at, within_org_id, within_project_id
              from budgets order by created_at",
         )
         .fetch_all(&self.pool)

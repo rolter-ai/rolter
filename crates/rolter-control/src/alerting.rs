@@ -40,7 +40,7 @@ use rolter_store::postgres::crypto::{Kek, KEK_ENV};
 use rolter_store::postgres::repo::AuditLogRepo;
 
 use crate::crud::{invalid_field, pool, ApiError, ApiResult, SafeJson};
-use crate::rbac::{authorize, Principal, ScopeChain, ScopeFilter};
+use crate::rbac::{authorize, is_deployment_operator, Principal, ScopeChain, ScopeFilter};
 use crate::rbac_matrix::{cap, Requirement};
 use crate::ControlState;
 
@@ -471,12 +471,28 @@ fn rule_columns() -> &'static str {
 }
 
 /// A deployment-wide channel or rule names no org, so no membership can
-/// satisfy it and only a superadmin may touch it.
+/// satisfy it: only a superadmin or a deployment operator may touch it. An API
+/// token holds no deployment authority and is refused as a member is.
 fn deployment_only(principal: &Principal) -> ApiResult<()> {
-    match principal {
-        Principal::Superadmin { .. } => Ok(()),
-        Principal::User(_) => Err(ApiError::Forbidden),
+    if is_deployment_operator(principal) {
+        Ok(())
+    } else {
+        Err(ApiError::Forbidden)
     }
+}
+
+/// [`authorize`], except that a superadmin or deployment operator passes every
+/// scope: alerting was theirs before it was delegated.
+async fn authorize_alerting(
+    state: &ControlState,
+    principal: &Principal,
+    chain: ScopeChain,
+    requirement: Requirement,
+) -> ApiResult<()> {
+    if is_deployment_operator(principal) {
+        return Ok(());
+    }
+    authorize(state, principal, chain, requirement).await
 }
 
 /// Guard a channel at its owning org, or at the deployment when it has none.
@@ -487,7 +503,7 @@ async fn authorize_channel(
     requirement: Requirement,
 ) -> ApiResult<()> {
     match org_id {
-        Some(org) => authorize(state, principal, ScopeChain::org(org), requirement).await,
+        Some(org) => authorize_alerting(state, principal, ScopeChain::org(org), requirement).await,
         None => deployment_only(principal),
     }
 }
@@ -514,7 +530,7 @@ async fn authorize_rule(
     requirement: Requirement,
 ) -> ApiResult<()> {
     match rule_chain(state, rule).await {
-        Some(chain) => authorize(state, principal, chain, requirement).await,
+        Some(chain) => authorize_alerting(state, principal, chain, requirement).await,
         None => deployment_only(principal),
     }
 }
@@ -607,7 +623,7 @@ async fn visible_rules(
     .fetch_all(pool(state))
     .await
     .map_err(rolter_store::postgres::store_err)?;
-    if filter.is_superadmin() {
+    if is_deployment_operator(principal) {
         return Ok(rules);
     }
     alerting_orgs(state, &filter).await?;
@@ -631,7 +647,7 @@ async fn list_channels(
     // the rule capability: a team admin names their org's channel on a rule
     // without being able to edit it
     let rules = ScopeFilter::load(&state, &principal, cap!("alert_rule", Read)).await?;
-    let orgs = if rules.is_superadmin() {
+    let orgs = if is_deployment_operator(&principal) {
         None
     } else {
         Some(alerting_orgs(&state, &rules).await?)
@@ -648,8 +664,8 @@ async fn list_channels(
     }
     for channel in &mut channels {
         channel.manageable = match channel.org_id {
-            Some(org) => owned.allows(ScopeChain::org(org)),
-            None => owned.is_superadmin(),
+            Some(org) => is_deployment_operator(&principal) || owned.allows(ScopeChain::org(org)),
+            None => is_deployment_operator(&principal),
         };
         if !channel.manageable {
             channel.endpoint.clear();
@@ -817,7 +833,7 @@ async fn create_rule(
     let (org_id, scope) = match (input.scope_type.as_deref(), input.scope_id) {
         (Some(scope_type), Some(scope_id)) => {
             let chain = ScopeChain::from_scope(pool(&state), scope_type, scope_id).await?;
-            authorize(&state, &principal, chain, cap!("alert_rule", Create)).await?;
+            authorize_alerting(&state, &principal, chain, cap!("alert_rule", Create)).await?;
             (chain.org, Some((scope_type, scope_id)))
         }
         _ => {
@@ -959,9 +975,8 @@ async fn list_history(
     // history is read through the rules the caller may see, so a scoped admin
     // reads only what their own rules wrote
     let rules = visible_rules(&state, &principal, cap!("alert_history", Read)).await?;
-    let filter = ScopeFilter::load(&state, &principal, cap!("alert_history", Read)).await?;
     let rule_ids: Option<Vec<Uuid>> =
-        (!filter.is_superadmin()).then(|| rules.iter().map(|r| r.id).collect());
+        (!is_deployment_operator(&principal)).then(|| rules.iter().map(|r| r.id).collect());
     let limit = query.limit.unwrap_or(100).clamp(1, 500);
     let status = one_of("state", query.state, HISTORY_STATES)?;
     let delivery = one_of("delivery_status", query.delivery_status, DELIVERY_STATUSES)?;

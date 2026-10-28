@@ -69,7 +69,7 @@ A request the gateway refuses before it reaches an upstream is logged too, with 
 
 **LLM Logs** shows the two columns where they explain a status. The detail drawer prints one sentence under the status badge: `Upstream returned 500 after 3 attempts` when an upstream answered, `Upstream did not respond after 2 attempts` when the connection failed before any status line, and `Refused before reaching an upstream` for a request the gateway turned away itself. A request that succeeded on its first attempt gets no sentence, and neither does a cache hit or a `fake-llm` call, which make no attempts either. In the table, a request whose status differs from the upstream's carries the upstream's status beside its own, such as `503` with `500` after it: a `503` the gateway made after every target of a route failed, with the sentence as the tooltip. A provider's error handed to the caller as it came has the same number on both sides, so it gets no hint, and the drawer still says how many attempts it took. A row written before the columns existed has nothing to show and is drawn as it always was.
 
-What is **not** logged is anything that happens before the gateway knows who is asking: a body that is not JSON, a request with no `model`, a missing, unknown or expired key, and a request refused for a missing required header or an oversized body. No tenant owns such a row, and anonymous traffic would otherwise be able to write to your log without limit. `rolter_auth_failures_total` counts the rejected keys.
+What is **not** logged is anything that happens before the gateway knows who is asking: a body that is not JSON, a request with no `model`, a missing, unknown or expired key, and a request refused for a missing required header or an oversized body. No tenant owns such a row, and anonymous traffic would otherwise be able to write to your log without limit. `rolter_auth_failures_total` counts the rejected keys, and `rolter_rejected_requests_total{reason}` splits them by reason (`missing_key`, `invalid_key`, `required_header_missing`), so "how many 401s, and why" is answerable even though none of them has a row. Everything after the key is resolved is logged, including a budget block, a rate limit and a guardrail refusal: the key bounds the write volume, since an attacker cannot mint valid keys.
 
 Rows written before `clickhouse/015_upstream_attempts.sql` default both columns to `0`.
 
@@ -312,6 +312,14 @@ Rolter multiplies the tokens it counted by the number you gave it.
 The dashboard's pricing section links here for that reason — it is the answer
 to "where does this number come from", and the answer is "from whoever typed
 it".
+
+### Withheld and unknown-usage traffic
+
+Two more flags keep a total honest. A **withheld** response is one the provider answered and billed but an output guardrail or a `post_response` plugin refused to deliver: the caller got a 403, and the cost is still in `cost_usd`. **Unknown usage** is the other way round: the upstream answered successfully but reported no token counts, so a zero there means "not reported", not "free".
+
+`GET /api/v1/analytics/summary` and `GET /api/v1/analytics/by-model` report `withheld_requests`, `withheld_cost` (the part of `cost_usd` that bought an answer nobody saw) and `usage_unknown_requests`, scaled by the log's sampling weight like every other count. Every row from `GET /api/v1/analytics/invocations` carries `withheld` and `usage_unknown` as `0` or `1`.
+
+**LLM Logs** marks a withheld row with its 403, the billed cost and the policy named in `error`, and shows a muted dash with an explanation instead of `0` for a row whose usage is unknown, the way it does for an unpriced one.
 
 ### Unpriced traffic
 

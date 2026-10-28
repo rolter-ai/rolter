@@ -114,7 +114,14 @@ async fn crud_roundtrip_across_the_tenancy_and_routing_tables() {
 
     let budgets = BudgetRepo(&pool);
     let budget = budgets
-        .create("project", project.id, "100.5000", "30d", None)
+        .create(
+            "project",
+            project.id,
+            "100.5000",
+            "30d",
+            None,
+            Within::default(),
+        )
         .await
         .unwrap();
     assert_eq!(budget.limit_usd, "100.5000");
@@ -122,7 +129,14 @@ async fn crud_roundtrip_across_the_tenancy_and_routing_tables() {
     // it round-trips as null rather than as a guessed default (#996)
     assert_eq!(budget.unpriced_policy, None);
     let strict = budgets
-        .create("project", project.id, "10.0000", "30d", Some("block"))
+        .create(
+            "project",
+            project.id,
+            "10.0000",
+            "30d",
+            Some("block"),
+            Within::default(),
+        )
         .await
         .unwrap();
     assert_eq!(strict.unpriced_policy, Some("block".to_string()));
@@ -143,7 +157,13 @@ async fn crud_roundtrip_across_the_tenancy_and_routing_tables() {
 
     let limits = RateLimitRepo(&pool);
     let limit = limits
-        .create("project", project.id, Some(60), Some(100_000))
+        .create(
+            "project",
+            project.id,
+            Some(60),
+            Some(100_000),
+            Within::default(),
+        )
         .await
         .unwrap();
     assert_eq!(limit.rpm, Some(60));
@@ -157,7 +177,9 @@ async fn crud_roundtrip_across_the_tenancy_and_routing_tables() {
     ] {
         assert!(
             matches!(
-                limits.create("project", project.id, rpm, tpm).await,
+                limits
+                    .create("project", project.id, rpm, tpm, Within::default())
+                    .await,
                 Err(Error::Config(_))
             ),
             "{rpm:?} / {tpm:?} should be refused"
@@ -1533,4 +1555,162 @@ async fn route_update_is_one_transaction() {
         .await
         .expect_err("unknown route");
     assert!(matches!(missing, Error::NotFound(_)), "{missing:?}");
+}
+
+#[tokio::test]
+async fn mcp_tool_discovery_keeps_the_manifest_when_a_later_attempt_fails() {
+    if !super::super::test_database::is_configured() {
+        eprintln!("skipping: {} not set", super::super::test_database::URL_ENV);
+        return;
+    }
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let org = OrgRepo(&pool).create("acme", "acme").await.unwrap();
+    let repo = McpServerRepo(&pool);
+    let server = repo
+        .create(NewMcpServer {
+            org_id: org.id,
+            name: "docs",
+            slug: "docs",
+            url: "https://mcp.example.com",
+            transport: "streamable_http",
+            description: "",
+            enabled: true,
+            tools: &["old".to_string()],
+            source: "custom",
+            required_scopes: &[],
+        })
+        .await
+        .unwrap();
+    assert_eq!(server.tools_discovery_status, "pending");
+
+    // a failure before any success stays "not discovered yet", with the reason
+    let failed = repo
+        .record_tool_discovery_failure(server.id, "unreachable")
+        .await
+        .unwrap();
+    assert_eq!(failed.tools_discovery_status, "pending");
+    assert_eq!(failed.tools_discovery_error.as_deref(), Some("unreachable"));
+    assert!(failed.tools_discovered_at.is_none());
+    assert!(failed.tools_discovery_attempted_at.is_some());
+    assert_eq!(failed.tools, ["old"]);
+
+    let schemas = serde_json::json!([{"name": "new", "description": "d", "input_schema": {}}]);
+    let found = repo
+        .record_tool_discovery(
+            server.id,
+            McpToolDiscovery {
+                tools: &["new".to_string(), "old".to_string()],
+                stale: &["old".to_string()],
+                schemas: &schemas,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(found.tools_discovery_status, "discovered");
+    assert_eq!(found.tools_discovery_error, None);
+    assert_eq!(found.tools_stale, ["old"]);
+    assert_eq!(repo.tool_schemas(server.id).await.unwrap(), schemas);
+
+    // a later failure marks the row failed but keeps what was discovered
+    let later = repo
+        .record_tool_discovery_failure(server.id, "auth_rejected")
+        .await
+        .unwrap();
+    assert_eq!(later.tools_discovery_status, "failed");
+    assert_eq!(later.tools, ["new", "old"]);
+    assert_eq!(later.tools_stale, ["old"]);
+    assert_eq!(later.tools_discovered_at, found.tools_discovered_at);
+
+    // an operator edit that removes a flagged tool drops its flag
+    let edited = repo
+        .update(
+            server.id,
+            McpServerUpdate {
+                name: "docs",
+                url: "https://mcp.example.com",
+                transport: "streamable_http",
+                description: "",
+                enabled: true,
+                tools: &["new".to_string()],
+                required_scopes: &[],
+                connect_timeout_ms: None,
+                request_timeout_ms: None,
+                max_retries: None,
+            },
+        )
+        .await
+        .unwrap();
+    assert!(edited.tools_stale.is_empty());
+}
+
+/// Provider health follows the routes a project or team uses (#1833): only the
+/// providers its routes target come back, by `(org, name)`, once each.
+#[tokio::test]
+async fn targeted_providers_are_those_the_scopes_routes_use() {
+    if !super::super::test_database::is_configured() {
+        eprintln!("skipping: {} not set", super::super::test_database::URL_ENV);
+        return;
+    }
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let org = OrgRepo(&pool).create("acme", "acme").await.unwrap();
+    let team = TeamRepo(&pool).create(org.id, "core").await.unwrap();
+    let used = ProjectRepo(&pool).create(team.id, "used").await.unwrap();
+    let idle = ProjectRepo(&pool).create(team.id, "idle").await.unwrap();
+    let other_team = TeamRepo(&pool).create(org.id, "other").await.unwrap();
+    let elsewhere = ProjectRepo(&pool)
+        .create(other_team.id, "elsewhere")
+        .await
+        .unwrap();
+    let mut provider_ids = Vec::new();
+    for name in ["alpha", "beta", "unused"] {
+        let id: Uuid = sqlx::query_scalar(
+            "insert into providers (org_id, name, slug, kind, api_base) \
+             values ($1, $2, $2, 'openai', 'http://127.0.0.1:9') returning id",
+        )
+        .bind(org.id)
+        .bind(name)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        provider_ids.push(id);
+    }
+    // `used` routes to alpha twice (two routes) and `elsewhere` to beta
+    for (project, model, provider) in [
+        (used.id, "m1", provider_ids[0]),
+        (used.id, "m2", provider_ids[0]),
+        (elsewhere.id, "m3", provider_ids[1]),
+    ] {
+        let route: Uuid = sqlx::query_scalar(
+            "insert into routes (project_id, model) values ($1, $2) returning id",
+        )
+        .bind(project)
+        .bind(model)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        sqlx::query("insert into route_targets (route_id, provider_id) values ($1, $2)")
+            .bind(route)
+            .bind(provider)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+    let repo = RouteTargetRepo(&pool);
+    let by_project = repo.targeted_providers(&[], &[used.id]).await.unwrap();
+    assert_eq!(by_project, vec![(org.id, "alpha".to_string())]);
+    // a project with no routes, or no scope at all, reaches nothing
+    assert!(repo
+        .targeted_providers(&[], &[idle.id])
+        .await
+        .unwrap()
+        .is_empty());
+    assert!(repo.targeted_providers(&[], &[]).await.unwrap().is_empty());
+    // a team reaches the providers of every project under it
+    let by_team = repo
+        .targeted_providers(&[other_team.id], &[])
+        .await
+        .unwrap();
+    assert_eq!(by_team, vec![(org.id, "beta".to_string())]);
 }

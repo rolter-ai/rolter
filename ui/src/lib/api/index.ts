@@ -116,10 +116,12 @@ export type {
 } from "./auth";
 export {
   SCOPE_TYPES,
+  USER_SCOPE,
   UNPRICED_POLICIES,
   fetchBudgets,
   fetchOrgBudgets,
   fetchBudgetSpend,
+  fetchOrgBudgetSpend,
   createBudget,
   updateBudget,
   deleteBudget,
@@ -141,6 +143,7 @@ export type {
   RateLimitRow,
   CreateRateLimitInput,
   UpdateRateLimitInput,
+  UserScopeNarrowing,
 } from "./budgets";
 export { fetchClusterNodes, setClusterNodeDrain, forgetClusterNode } from "./cluster";
 export type { ClusterNodeRow } from "./cluster";
@@ -202,6 +205,21 @@ export type {
   GuardrailProviderTestErrorKind,
   GuardrailProviderTestResult,
 } from "./guardrails";
+export {
+  BREAKER_STATE_POLL_MS,
+  fetchBreakerState,
+  useBreakerState,
+  breakerFor,
+  isTripped,
+  worstBreaker,
+  breakerLabel,
+} from "./breakerState";
+export type {
+  BreakerStateName,
+  BreakerNodeDto,
+  BreakerTargetDto,
+  BreakerStateDto,
+} from "./breakerState";
 export { fetchUptime, fetchMttr, fetchHealthTimeline } from "./health";
 export type { HealthGrain, UptimeRow, MttrRow, TimelineRow } from "./health";
 export {
@@ -245,6 +263,9 @@ export {
   createMcpServer,
   updateMcpServer,
   setMcpServerAuth,
+  discoverMcpServerTools,
+  fetchMcpServerTools,
+  MCP_TOOLS_DISCOVERY_ERRORS,
   deleteMcpServer,
   fetchMcpLibrary,
   fetchMcpToolGroups,
@@ -262,6 +283,10 @@ export {
   startMcpOAuth,
   refreshMcpSession,
   exchangeMcpSession,
+  MCP_CONNECTION_ERRORS,
+  MCP_PROBE_STATUSES,
+  testMcpServerConnection,
+  callMcpServerTool,
 } from "./mcp";
 export type {
   McpLogRow,
@@ -269,6 +294,16 @@ export type {
   McpLogsQuery,
   McpSummaryRow,
   McpServerRow,
+  McpToolsDiscoveryStatus,
+  McpToolsDiscoveryError,
+  McpServerToolRow,
+  McpServerToolsResponse,
+  McpConnectionError,
+  McpProbeStatus,
+  McpConnectionTest,
+  McpToolCallOutcome,
+  McpToolCallInput,
+  McpToolCallResult,
   McpOAuthDiscovery,
   McpAuthKind,
   McpServerAuthInput,
@@ -303,6 +338,7 @@ export {
   rotateMyKey,
   deleteMyKey,
   fetchMyUsage,
+  fetchMyBudgets,
 } from "./me";
 export type {
   MeMembership,
@@ -314,6 +350,9 @@ export type {
   MintedKey,
   MintKeyInput,
   MyUsageRow,
+  MyBudgetRow,
+  MyRateLimitRow,
+  MyBudgetReport,
   SavedViewSurface,
   SavedViewFilters,
   SavedViewUnavailable,
@@ -413,6 +452,7 @@ export type {
   CustomRoleGrantRow,
   CustomRoleDetail,
   CustomRoleGrantInput,
+  DeploymentRole,
   RbacAction,
   RbacActionView,
   RbacResourceView,
@@ -428,6 +468,7 @@ export type {
 export {
   ApiError,
   isOpenModeNoSession,
+  isAdminTokenRequired,
   setSessionExpiredHandler,
   isEndpointNotMounted,
   clientRequestBoundMs,

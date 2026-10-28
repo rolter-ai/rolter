@@ -162,6 +162,7 @@ mod tests {
             limit_usd: d("1000.0"),
             period: BudgetPeriod::Monthly,
             unpriced_policy: None,
+            within: None,
         }])
     }
 

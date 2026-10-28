@@ -382,7 +382,8 @@ pub struct OwnedVirtualKey {
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
 pub struct Budget {
     pub id: Uuid,
-    /// one of `org` | `team` | `project` | `virtual_key`
+    /// one of `org` | `team` | `project` | `virtual_key` | `business_unit` |
+    /// `customer` | `user`
     pub scope_type: String,
     pub scope_id: Uuid,
     /// decimal(12,4), returned as text to avoid a numeric-crate dependency
@@ -392,6 +393,11 @@ pub struct Budget {
     /// traffic; `None` inherits the deployment-wide setting (#996)
     pub unpriced_policy: Option<String>,
     pub created_at: DateTime<Utc>,
+    /// narrows a `user` budget to the keys the person minted in this org
+    /// (#1830); null on every other scope
+    pub within_org_id: Option<Uuid>,
+    /// narrows a `user` budget to the keys the person minted in this project
+    pub within_project_id: Option<Uuid>,
 }
 
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
@@ -402,6 +408,10 @@ pub struct RateLimit {
     pub rpm: Option<i32>,
     pub tpm: Option<i32>,
     pub created_at: DateTime<Utc>,
+    /// see [`Budget::within_org_id`]
+    pub within_org_id: Option<Uuid>,
+    /// see [`Budget::within_project_id`]
+    pub within_project_id: Option<Uuid>,
 }
 
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
@@ -595,6 +605,49 @@ pub struct SsoGroupMapping {
     pub created_at: DateTime<Utc>,
 }
 
+/// an LDAP directory registered for one org (#1826).
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+pub struct LdapDirectory {
+    pub id: Uuid,
+    pub org_id: Uuid,
+    pub name: String,
+    pub url: String,
+    pub bind_dn: String,
+    /// sealed service-account password. read only by the directory bind,
+    /// through [`super::repo::LdapRepo::bind_password`]; what is serialized in
+    /// its place is the derived boolean `has_bind_password`, so an operator can
+    /// see that one is stored without anything being able to see it
+    #[serde(rename = "has_bind_password", serialize_with = "is_present")]
+    #[serde(skip_deserializing)]
+    pub bind_secret_ciphertext: Option<Vec<u8>>,
+    #[serde(skip)]
+    pub bind_secret_nonce: Option<Vec<u8>>,
+    pub base_dn: String,
+    pub user_filter: String,
+    pub email_attr: String,
+    pub display_name_attr: String,
+    pub group_attr: String,
+    pub require_tls: bool,
+    /// role granted when no group mapping matches; `None` denies login to a
+    /// user the directory has not put in a mapped group
+    pub default_role: Option<String>,
+    pub enabled: bool,
+    pub created_at: DateTime<Utc>,
+}
+
+/// a directory group granting a role at a scope
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+pub struct LdapGroupMapping {
+    pub id: Uuid,
+    pub directory_id: Uuid,
+    pub group_name: String,
+    pub org_id: Option<Uuid>,
+    pub team_id: Option<Uuid>,
+    pub project_id: Option<Uuid>,
+    pub role: String,
+    pub created_at: DateTime<Utc>,
+}
+
 /// one in-flight authorization-code login
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
 pub struct SsoLoginState {
@@ -626,6 +679,32 @@ pub struct ScimToken {
     pub token_hash: String,
     pub created_by: Option<Uuid>,
     pub created_at: DateTime<Utc>,
+    pub last_used_at: Option<DateTime<Utc>>,
+    pub revoked_at: Option<DateTime<Utc>>,
+}
+
+/// a scoped control-plane API token (#1836): a service account that holds one
+/// role at an org, team or project. `token_hash` is a peppered sha-256; the
+/// plaintext is returned once, at mint or rotation, and never stored.
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+pub struct ApiToken {
+    pub id: Uuid,
+    pub org_id: Uuid,
+    pub team_id: Option<Uuid>,
+    pub project_id: Option<Uuid>,
+    pub name: String,
+    /// a built-in role (`admin` | `member` | `viewer`), or `None` when the
+    /// token holds a custom role
+    pub role: Option<String>,
+    pub custom_role_id: Option<Uuid>,
+    #[serde(skip_serializing)]
+    pub token_hash: String,
+    /// the first characters of the value, to recognise a token in a list
+    pub token_prefix: String,
+    pub expires_at: Option<DateTime<Utc>>,
+    pub created_by: Option<Uuid>,
+    pub created_at: DateTime<Utc>,
+    pub rotated_at: Option<DateTime<Utc>>,
     pub last_used_at: Option<DateTime<Utc>>,
     pub revoked_at: Option<DateTime<Utc>>,
 }
@@ -739,6 +818,30 @@ pub struct McpServer {
     /// row of the RFC 9207 §2.4 table a missing `iss` is judged by
     pub oauth_discovered_iss_supported: bool,
     pub oauth_discovered_at: Option<DateTime<Utc>>,
+    /// tools in `tools` that the last successful `tools/list` no longer
+    /// returned. Kept rather than pruned so a tool group that names one still
+    /// validates, and flagged so a card can say it may be gone (#1283)
+    pub tools_stale: Vec<String>,
+    /// `pending` (never asked), `discovered` (the server answered, possibly
+    /// with no tools) or `failed` (the last attempt got no answer)
+    pub tools_discovery_status: String,
+    /// a bounded category for a failed attempt, never the upstream's text
+    pub tools_discovery_error: Option<String>,
+    /// when `tools/list` last succeeded
+    pub tools_discovered_at: Option<DateTime<Utc>>,
+    /// when discovery last ran, whether or not it succeeded
+    pub tools_discovery_attempted_at: Option<DateTime<Utc>>,
+    /// when the control plane last got an MCP handshake out of the server, by
+    /// a status probe or a discovery (#951)
+    pub last_contact_at: Option<DateTime<Utc>>,
+    /// what that handshake negotiated and who answered it
+    pub last_protocol_version: Option<String>,
+    pub last_server_name: Option<String>,
+    /// the reason of the last failed contact (`unreachable`, `handshake_failed`,
+    /// `auth_rejected`, `egress_denied`) and when it happened. Kept after a
+    /// later success, so a status can say when it last broke
+    pub last_error_kind: Option<String>,
+    pub last_error_at: Option<DateTime<Utc>>,
 }
 
 /// One in-flight authorization-code consent, opened by the callback. The PKCE
@@ -942,6 +1045,11 @@ pub struct User {
     /// self-service profile (#1823): up to 500 chars, trimmed
     #[serde(default)]
     pub bio: Option<String>,
+    /// delegable deployment role (#1834): `operator`, `security_auditor`, or
+    /// none. Read only by the guard on deployment-wide capabilities; it grants
+    /// nothing at any org, team or project
+    #[serde(default)]
+    pub deployment_role: Option<String>,
 }
 
 /// a role grant at a scope; scope is the most specific non-null id among
@@ -986,6 +1094,13 @@ pub struct Invitation {
     pub accepted_at: Option<DateTime<Utc>>,
     pub revoked_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
+    /// how emailing the link went (#1828): `not_configured` (no mail transport
+    /// when it was created), `sent` or `failed`. The link is returned to the
+    /// admin whichever it is
+    pub mail_status: String,
+    pub mail_attempted_at: Option<DateTime<Utc>>,
+    /// why a `failed` send failed, in words safe to show an admin
+    pub mail_error: Option<String>,
 }
 
 /// a one-time password reset an administrator issued for an account (#2240)
@@ -1031,6 +1146,23 @@ pub struct MfaPolicyBinding {
     pub org_id: Uuid,
     /// the org's grace window; `None` once the policy is in force
     pub enforce_after: Option<DateTime<Utc>>,
+}
+
+/// One org member's second-factor state, for an admin deciding what a
+/// `required_*` policy would lock out (#1590). No secret and no hash: only
+/// whether a factor is armed and how many recovery codes are left.
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+pub struct OrgMemberMfa {
+    pub user_id: Uuid,
+    pub email: String,
+    /// the account is a deployment superadmin, which is who `required_superadmin`
+    /// binds
+    pub is_superadmin: bool,
+    /// an armed (confirmed) factor, which is what a `required_*` policy asks
+    /// for; a half-finished enrolment is not one
+    pub enabled: bool,
+    /// unspent recovery codes; always `0` without an armed factor
+    pub recovery_codes_remaining: i64,
 }
 
 /// What the dashboard and the login exchange may know about a user's second
@@ -1296,4 +1428,23 @@ pub struct SavedView {
     pub filters: serde_json::Value,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+/// the breaker state one node reported for one `(model, target)` (#2254). A
+/// scoreboard row, replaced by every report from that node rather than appended.
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+pub struct BreakerState {
+    pub node_id: String,
+    /// public model name of the route
+    pub model: String,
+    /// position in the route's target list on that node
+    pub target_index: i32,
+    pub provider: String,
+    pub upstream_model: String,
+    /// `closed`, `open` or `half_open`
+    pub state: String,
+    pub consecutive_failures: i32,
+    /// seconds until an open breaker admits its probe
+    pub retry_after_secs: Option<i32>,
+    pub reported_at: DateTime<Utc>,
 }

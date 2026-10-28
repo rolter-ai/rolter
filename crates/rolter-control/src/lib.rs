@@ -26,9 +26,13 @@ mod analytics;
 mod analytics_access;
 mod analytics_export;
 #[cfg(feature = "postgres")]
+mod api_tokens;
+#[cfg(feature = "postgres")]
 mod auth;
 #[cfg(feature = "postgres")]
 mod auth_policy;
+#[cfg(feature = "postgres")]
+mod breaker_state;
 #[cfg(feature = "postgres")]
 mod client_settings;
 #[cfg(feature = "postgres")]
@@ -52,6 +56,8 @@ mod cors;
 mod crud;
 pub mod deprecation;
 #[cfg(feature = "postgres")]
+mod expiry_sweep;
+#[cfg(feature = "postgres")]
 mod feature_flags;
 #[cfg(feature = "postgres")]
 mod guardrail_trial;
@@ -64,17 +70,24 @@ mod ingest_failure;
 mod invitations;
 #[cfg(feature = "postgres")]
 mod labels;
-#[cfg(feature = "postgres")]
-mod password_reset;
-// not reachable from any sign-in route yet (#1826); see the module docs
-#[cfg(feature = "postgres")]
-mod expiry_sweep;
 pub mod ldap;
+/// LDAP sign-in: the stored directories, their admin API and the step the
+/// password login takes through them (#1826)
+#[cfg(feature = "postgres")]
+mod ldap_signin;
 #[cfg(feature = "postgres")]
 mod log_erasure;
 #[cfg(feature = "postgres")]
 mod logging_settings;
 mod login_throttle;
+/// outbound mail for invitations (#1828); `pub` for the `Mailer` seam the
+/// integration suite installs
+#[cfg(feature = "postgres")]
+pub mod mail;
+#[cfg(feature = "postgres")]
+mod mcp_client;
+#[cfg(feature = "postgres")]
+mod mcp_discovery;
 #[cfg(feature = "postgres")]
 mod mcp_logs;
 #[cfg(feature = "postgres")]
@@ -84,6 +97,8 @@ mod mcp_oauth;
 mod mcp_oauth_discovery;
 #[cfg(feature = "postgres")]
 mod mcp_oauth_flow;
+#[cfg(feature = "postgres")]
+mod mcp_probe;
 #[cfg(feature = "postgres")]
 mod me;
 #[cfg(feature = "postgres")]
@@ -96,6 +111,8 @@ pub mod mfa;
 mod model_defaults;
 mod open_mode;
 mod openapi;
+#[cfg(feature = "postgres")]
+mod password_reset;
 #[cfg(feature = "postgres")]
 mod plugins;
 mod proxy;
@@ -603,6 +620,14 @@ struct ControlState {
     /// `test_app_without_kek` reaches the no-KEK branches through this instead
     #[cfg_attr(not(feature = "postgres"), allow(dead_code))]
     mfa_without_kek: bool,
+    /// opens the directory an org's LDAP settings describe (#1826). The real
+    /// `ldap3` client in production, a stub in the integration suite
+    #[cfg_attr(not(feature = "postgres"), allow(dead_code))]
+    ldap: Arc<dyn ldap::DirectoryFactory>,
+    /// delivers an invitation's link to the invitee (#1828); `None` without
+    /// `ROLTER_SMTP_URL`, in which case the link is only returned to the admin
+    #[cfg(feature = "postgres")]
+    mailer: Option<Arc<dyn mail::Mailer>>,
 }
 
 /// Log that a datastore endpoint is in use. Every startup line that names a
@@ -809,6 +834,8 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         trust_forwarded_for: args.login_trust_forwarded_for,
         update_check: update_check.clone(),
         mfa_without_kek: false,
+        ldap: Arc::new(ldap::Ldap3Factory),
+        mailer: mail::from_env(&egress),
         pool: pool.clone(),
     };
     #[cfg(not(feature = "postgres"))]
@@ -831,6 +858,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         trust_forwarded_for: args.login_trust_forwarded_for,
         update_check: update_check.clone(),
         mfa_without_kek: false,
+        ldap: Arc::new(ldap::Ldap3Factory),
     };
 
     // converge the clickhouse ttl with the stored retention policy. spawned
@@ -1242,6 +1270,12 @@ fn build_app_with(state: ControlState, mount_internal: bool) -> Router {
     // resolves a `Principal` and checks the caller's role at the resource's
     // scope, so it is NOT behind the blanket admin-token layer. open mode (no
     // admin token) is preserved inside the `Principal` extractor.
+    // answers without a database too, with `inventory: false`, so it is
+    // mounted outside the block below
+    #[cfg(feature = "postgres")]
+    {
+        api = api.merge(cluster::summary_router());
+    }
     #[cfg(feature = "postgres")]
     if state.pool.is_some() {
         alerting::start_evaluator(state.clone());
@@ -1256,6 +1290,7 @@ fn build_app_with(state: ControlState, mount_internal: bool) -> Router {
         api = api
             .merge(access_control::router())
             .merge(alerting::router())
+            .merge(api_tokens::router())
             .merge(auth::router())
             .merge(auth_policy::router())
             .merge(mfa::router())
@@ -1266,6 +1301,8 @@ fn build_app_with(state: ControlState, mount_internal: bool) -> Router {
             .merge(plugins::router())
             .merge(public_url::router())
             .merge(mcp_logs::router())
+            .merge(mcp_discovery::router())
+            .merge(mcp_probe::router())
             .merge(ui_events::router())
             .merge(mcp_oauth::router())
             .merge(mcp_oauth_flow::router())
@@ -1282,10 +1319,12 @@ fn build_app_with(state: ControlState, mount_internal: bool) -> Router {
             .merge(model_defaults::router())
             .merge(adaptive_policy::router())
             .merge(adaptive_telemetry::router())
+            .merge(breaker_state::router())
             .merge(rbac_matrix::router())
             .merge(scim::router())
             .merge(scim_groups::router())
             .merge(sso::router())
+            .merge(ldap_signin::router())
             .merge(cluster::router())
             .merge(connectors::router())
             .merge(collector_config::router())
@@ -1330,6 +1369,7 @@ fn internal_routes(state: &ControlState) -> Router<ControlState> {
     #[cfg(feature = "postgres")]
     {
         routes = routes.merge(adaptive_telemetry::internal_router());
+        routes = routes.merge(breaker_state::internal_router());
     }
     routes.layer(axum::middleware::from_fn_with_state(
         state.clone(),
@@ -1517,6 +1557,40 @@ pub async fn test_app_without_kek(pool: sqlx::PgPool) -> anyhow::Result<Router> 
     Ok(build_app_with(state, true))
 }
 
+/// [`test_app`] whose LDAP directories are opened through `factory` instead of
+/// the network, so sign-in through a directory is tested end to end against a
+/// stub that answers from a fixed list of entries (#1826).
+#[cfg(feature = "postgres")]
+pub async fn test_app_with_directory(
+    pool: sqlx::PgPool,
+    admin_token: Option<String>,
+    factory: Arc<dyn ldap::DirectoryFactory>,
+) -> anyhow::Result<Router> {
+    rolter_store::postgres::run_migrations(&pool).await?;
+    let mut state = test_state(pool, admin_token, None);
+    state.ldap = factory;
+    Ok(build_app_with(state, true))
+}
+
+/// [`test_app`] whose invitation mail goes through `mailer` instead of an SMTP
+/// relay, so delivery is tested end to end against a recorder that can also
+/// fail on demand (#1828).
+#[cfg(feature = "postgres")]
+pub async fn test_app_with_mailer(
+    pool: sqlx::PgPool,
+    admin_token: Option<String>,
+    mailer: Arc<dyn mail::Mailer>,
+) -> anyhow::Result<Router> {
+    rolter_store::postgres::run_migrations(&pool).await?;
+    let mut state = test_state(
+        pool,
+        admin_token,
+        Some("https://rolter.example.com".to_string()),
+    );
+    state.mailer = Some(mailer);
+    Ok(build_app_with(state, true))
+}
+
 /// [`test_app`] with the migrations deliberately *not* run, for exercising
 /// `/readyz` against a database whose schema is behind the binary (#1081).
 #[cfg(feature = "postgres")]
@@ -1555,6 +1629,8 @@ fn test_state(
         // what the integration test asserts
         update_check: update_check::UpdateChecker::disabled(),
         mfa_without_kek: false,
+        ldap: Arc::new(ldap::Ldap3Factory),
+        mailer: None,
         pool: Some(pool),
     }
 }
@@ -3423,6 +3499,9 @@ mod tests {
             trust_forwarded_for: false,
             update_check: update_check::UpdateChecker::disabled(),
             mfa_without_kek: false,
+            ldap: Arc::new(ldap::Ldap3Factory),
+            #[cfg(feature = "postgres")]
+            mailer: None,
             #[cfg(feature = "postgres")]
             pool: None,
         }
@@ -4319,6 +4398,41 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(echoed, "hello gateway");
+    }
+
+    /// a control plane with an admin token and no database has no sessions, so
+    /// its analytics routes answer a missing or wrong token with a code the
+    /// dashboard can act on, and accept the right one (#1909)
+    #[tokio::test]
+    async fn analytics_without_a_database_asks_for_the_admin_token_by_code() {
+        let addr = serve(build_app_with(state_with_token(Some("admin-secret")), true)).await;
+        let client = reqwest::Client::new();
+        let url = format!("http://{addr}/api/v1/analytics/summary");
+
+        let anonymous = client.get(&url).send().await.unwrap();
+        assert_eq!(anonymous.status(), 401);
+        let body: serde_json::Value = anonymous.json().await.unwrap();
+        assert_eq!(body["error"]["code"], "admin_token_required");
+
+        let wrong = client
+            .get(&url)
+            .bearer_auth("not-the-token")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(wrong.status(), 401);
+        let body: serde_json::Value = wrong.json().await.unwrap();
+        assert_eq!(body["error"]["code"], "admin_token_required");
+
+        // the right token passes the guard; with no ClickHouse the read itself
+        // then answers something other than the 401
+        let admitted = client
+            .get(&url)
+            .bearer_auth("admin-secret")
+            .send()
+            .await
+            .unwrap();
+        assert_ne!(admitted.status(), 401);
     }
 
     /// the dashboard's config view names every provider, `api_base` and route,

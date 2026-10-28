@@ -18,8 +18,8 @@ use rolter_store::postgres::models::ClusterNode;
 use rolter_store::postgres::repo::{AuditLogRepo, ClusterNodeRepo};
 
 use crate::crud::{pool, ApiError, ApiResult, SafeJson};
-use crate::rbac::{authorize_superadmin, Principal};
-use crate::rbac_matrix::superadmin_cap;
+use crate::rbac::{authorize, authorize_superadmin, Principal, ScopeChain};
+use crate::rbac_matrix::{cap, superadmin_cap};
 use crate::ControlState;
 
 /// Header names a node uses to identify itself on its snapshot poll.
@@ -35,6 +35,14 @@ pub(crate) const NODE_STATE_HEADER: &str = "x-rolter-node-state";
 /// polls in a row is stale rather than merely slow.
 const LIVENESS_WINDOW_SECS: i64 = 60;
 
+/// A gateway that has not polled for this long is no longer part of the fleet
+/// the summary describes. A rollout leaves the old pods' `HOSTNAME`-based ids
+/// behind in the inventory, so without a horizon the summary would count them
+/// `stale` for as long as nobody forgets them and read degraded after every
+/// deploy. Inside the horizon a silent node is `stale`, which is what a crashed
+/// or partitioned gateway looks like; beyond it, it is a node that went away.
+const SUMMARY_HORIZON_SECS: i64 = 15 * 60;
+
 pub(crate) fn router() -> Router<ControlState> {
     Router::new()
         .route("/api/v1/cluster/nodes", get(list_nodes))
@@ -43,6 +51,13 @@ pub(crate) fn router() -> Router<ControlState> {
             axum::routing::delete(forget_node),
         )
         .route("/api/v1/cluster/nodes/{id}/drain", put(set_node_drain))
+}
+
+/// The routes that must answer even where the rest of this module is not
+/// mounted (a control plane with no database), so a reader gets an explicit
+/// `inventory: false` instead of a `404` it cannot tell from an old build.
+pub(crate) fn summary_router() -> Router<ControlState> {
+    Router::new().route("/api/v1/cluster/summary", get(cluster_summary))
 }
 
 /// Whether a node is still polling, and whether it runs the current config.
@@ -173,6 +188,94 @@ fn is_live(node: &ClusterNode, now: DateTime<Utc>) -> bool {
     now.signed_duration_since(node.last_seen_at) <= Duration::seconds(LIVENESS_WINDOW_SECS)
 }
 
+/// Whether `node` is a gateway that polled inside the liveness window.
+pub(crate) fn is_live_gateway(node: &ClusterNode, now: DateTime<Utc>) -> bool {
+    node.role == "gateway" && is_live(node, now)
+}
+
+/// Counts of the gateway fleet, with no node identities.
+#[derive(Debug, Default, PartialEq, Eq, Serialize)]
+struct GatewayCounts {
+    /// gateways that polled inside the liveness window
+    live: usize,
+    /// gateways that stopped polling within the last 15 minutes: down or
+    /// partitioned, as opposed to scaled away
+    stale: usize,
+    /// live gateways that have not applied the current config version; a
+    /// subset of `live`, so a healthy-looking pod running old config is visible
+    lagging: usize,
+}
+
+#[derive(Debug, Serialize)]
+struct ClusterSummary {
+    /// false when there is no cluster inventory to count (no database): the
+    /// numbers are then zero because nothing was counted, not because no
+    /// gateway runs, and a reader should fall back to probing a gateway
+    inventory: bool,
+    gateways: GatewayCounts,
+    /// the control plane's current config version
+    config_version: i64,
+    checked_at: DateTime<Utc>,
+}
+
+/// Roll the inventory up into counts. Control nodes are not gateways. A
+/// gateway an operator has drained is out of service on purpose, so it is
+/// counted nowhere: it should neither read as healthy capacity nor as a fault.
+fn summarize(nodes: &[ClusterNode], now: DateTime<Utc>, current_version: i64) -> GatewayCounts {
+    let mut counts = GatewayCounts::default();
+    for node in nodes
+        .iter()
+        .filter(|n| n.role == "gateway" && n.desired_state != "draining")
+    {
+        if is_live(node, now) {
+            counts.live += 1;
+            if node.config_version < current_version {
+                counts.lagging += 1;
+            }
+        } else if now.signed_duration_since(node.last_seen_at)
+            <= Duration::seconds(SUMMARY_HORIZON_SECS)
+        {
+            counts.stale += 1;
+        }
+    }
+    counts
+}
+
+/// A read-only roll-up of the gateway fleet that every signed-in caller may
+/// read (#2013). `GET /api/v1/cluster/nodes` names hosts and builds and is
+/// superadmin-only; this carries counts and nothing that identifies a node, so
+/// the header's gateway pill and the dashboard home can show a viewer whether
+/// the fleet is up and converged.
+async fn cluster_summary(
+    principal: Principal,
+    State(state): State<ControlState>,
+) -> ApiResult<Json<ClusterSummary>> {
+    authorize(
+        &state,
+        &principal,
+        ScopeChain::default(),
+        cap!("cluster_summary", Read),
+    )
+    .await?;
+    let current_version = state.store.current_version().await.unwrap_or_default();
+    let now = Utc::now();
+    let Some(pool) = state.pool.as_ref() else {
+        return Ok(Json(ClusterSummary {
+            inventory: false,
+            gateways: GatewayCounts::default(),
+            config_version: current_version,
+            checked_at: now,
+        }));
+    };
+    let nodes = ClusterNodeRepo(pool).list().await?;
+    Ok(Json(ClusterSummary {
+        inventory: true,
+        gateways: summarize(&nodes, now, current_version),
+        config_version: current_version,
+        checked_at: now,
+    }))
+}
+
 async fn list_nodes(
     principal: Principal,
     State(state): State<ControlState>,
@@ -240,6 +343,83 @@ mod tests {
             first_seen_at: last_seen_at,
             last_seen_at,
         }
+    }
+
+    #[test]
+    fn the_summary_counts_gateways_by_liveness_and_convergence() {
+        let now = Utc::now();
+        let nodes = vec![
+            // live and converged
+            named_node("gw-1", now, 7, "active"),
+            // live but running the previous snapshot
+            named_node("gw-2", now, 6, "active"),
+            // silent for two minutes: stale, not live
+            named_node("gw-3", now - Duration::seconds(120), 7, "active"),
+        ];
+        assert_eq!(
+            summarize(&nodes, now, 7),
+            GatewayCounts {
+                live: 2,
+                stale: 1,
+                lagging: 1
+            }
+        );
+    }
+
+    #[test]
+    fn a_node_gone_longer_than_the_horizon_is_dropped_not_stale() {
+        let now = Utc::now();
+        // a pod from before the last rollout: its HOSTNAME id never polls again
+        let rollout_leftover = named_node(
+            "gw-old",
+            now - Duration::seconds(SUMMARY_HORIZON_SECS + 1),
+            7,
+            "active",
+        );
+        assert_eq!(
+            summarize(&[rollout_leftover], now, 7),
+            GatewayCounts::default()
+        );
+    }
+
+    #[test]
+    fn control_nodes_and_drained_gateways_are_not_counted() {
+        let now = Utc::now();
+        let mut control = named_node("ctl-1", now, 7, "active");
+        control.role = "control".to_string();
+        let drained = named_node("gw-1", now, 7, "draining");
+        assert_eq!(
+            summarize(&[control, drained], now, 7),
+            GatewayCounts::default()
+        );
+    }
+
+    /// A control plane with no database has no inventory to count, and has to
+    /// say so rather than answer `404` (which a reader cannot tell from an old
+    /// build) or a zero it did not count.
+    #[tokio::test]
+    async fn without_a_database_the_summary_says_it_counted_nothing() {
+        use axum::body::Body;
+        use axum::http::Request;
+        use tower::ServiceExt as _;
+
+        let app = crate::build_app_with(crate::tests::state_with_token(Some("tok")), true);
+        let response = app
+            .oneshot(
+                Request::get("/api/v1/cluster/summary")
+                    .header("authorization", "Bearer tok")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .expect("body");
+        let view: serde_json::Value = serde_json::from_slice(&body).expect("json");
+        assert_eq!(view["inventory"], false);
+        assert_eq!(view["gateways"]["live"], 0);
     }
 
     #[test]

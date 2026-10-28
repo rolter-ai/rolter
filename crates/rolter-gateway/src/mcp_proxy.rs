@@ -11,10 +11,11 @@ use axum::response::{IntoResponse, Response};
 use bytes::Bytes;
 use serde::Deserialize;
 
-use rolter_core::{McpAuthKind, McpServerConfig};
+use rolter_core::{McpAuthKind, McpOrgSettingsConfig, McpServerConfig};
 use rolter_proxy::{McpTransportOverrides, McpUpstreamAuth};
 
 use crate::mcp_log::{CallContext, PendingCall};
+use crate::mcp_policy::Verdict;
 use crate::state::AppState;
 use crate::trace::RequestId;
 
@@ -242,6 +243,51 @@ async fn proxy(
         }
     };
 
+    // the tool groups an organization enabled are an access boundary: a call
+    // naming a tool outside them is refused before anything is forwarded, and
+    // recorded in the MCP log like any other denial (#1403)
+    if method == Method::POST {
+        match crate::mcp_policy::enforce(&snapshot, server, &body) {
+            Verdict::Allow => {}
+            Verdict::Denied(refused) => {
+                let context = CallContext {
+                    server: &server.slug,
+                    transport: &server.transport,
+                    org_id: &key.org_id,
+                    team_id: &key.team_id,
+                    project_id: &key.project_id,
+                    virtual_key_id: &key.id,
+                    user_id: &key.user_id,
+                    request_id: request_id.as_str(),
+                    capture: &snapshot.logging.payload_capture,
+                };
+                let message = refused
+                    .first()
+                    .map(|call| call.message(&server.slug))
+                    .unwrap_or_default();
+                for call in refused {
+                    if let Some(call) =
+                        PendingCall::from_request(&state.mcp_events, call.request, &context)
+                    {
+                        call.fail("auth_denied");
+                    }
+                }
+                return error(StatusCode::FORBIDDEN, message, "mcp_tool_denied");
+            }
+            Verdict::Unreadable => {
+                return error(
+                    StatusCode::BAD_REQUEST,
+                    format!(
+                        "the request to MCP server '{}' could not be read as JSON-RPC, so the \
+                         organization's tool groups cannot be applied to it",
+                        server.slug
+                    ),
+                    "mcp_request_unreadable",
+                );
+            }
+        }
+    }
+
     let Some(url) = downstream_url(&server.url, tail.as_deref(), query) else {
         return error(
             StatusCode::BAD_GATEWAY,
@@ -257,11 +303,23 @@ async fn proxy(
             end_to_end_headers(headers),
             body,
             auth,
-            transport_overrides(server),
+            transport_overrides(server, snapshot.mcp_org_settings.get(&server.org_id)),
         )
         .await
     {
-        Ok(response) => upstream_response(response, call),
+        Ok(response) => {
+            // an upstream that says the user's token was valid but too narrow
+            // gets the step-up answer, not a bare 403 (#1417)
+            if matches!(server.auth_kind, McpAuthKind::Oauth) {
+                if let Some(step_up) = insufficient_scope(&response, &server.slug) {
+                    if let Some(call) = call {
+                        call.fail("auth_denied");
+                    }
+                    return step_up;
+                }
+            }
+            upstream_response(response, call)
+        }
         Err(upstream) => {
             let detail = upstream.to_string();
             // the caller gets a fixed sentence: the forwarder's text quotes the
@@ -289,6 +347,57 @@ async fn proxy(
     }
 }
 
+/// The step-up answer for an upstream `403` whose challenge says
+/// `insufficient_scope` (#1417), or `None` for any other response.
+///
+/// The gateway cannot ask the user for consent: that is an interactive flow the
+/// control plane owns. What it can do is stop the failure being opaque and keep
+/// it from widening anything on its own. The caller gets `403` with the code
+/// `mcp_insufficient_scope`, the scopes the upstream named in the body, and a
+/// standard `WWW-Authenticate` challenge, rebuilt rather than relayed because
+/// the upstream's would point `resource_metadata` at the upstream itself. The
+/// key's owner then re-consents with those scopes, through the dashboard or
+/// `POST /api/v1/mcp-servers/{id}/oauth/authorize` with `step_up_scopes`; until
+/// they do, every such call fails the same way and is logged as `auth_denied`.
+fn insufficient_scope(response: &reqwest::Response, slug: &str) -> Option<Response> {
+    use rolter_core::mcp_challenge::{challenge_scopes, is_insufficient_scope};
+
+    if response.status() != reqwest::StatusCode::FORBIDDEN {
+        return None;
+    }
+    let challenge = response
+        .headers()
+        .get(reqwest::header::WWW_AUTHENTICATE)?
+        .to_str()
+        .ok()?;
+    if !is_insufficient_scope(challenge) {
+        return None;
+    }
+    // validated, deduplicated and bounded: the upstream's words never reach the
+    // caller unfiltered
+    let scopes = challenge_scopes(challenge);
+    let mut body = crate::error::ApiError::new(
+        StatusCode::FORBIDDEN,
+        format!(
+            "MCP server '{slug}' refused the call for want of an OAuth scope the user's session \
+             does not hold; the key's owner must authorize it again for the scopes in \
+             required_scopes"
+        ),
+    )
+    .with_code("mcp_insufficient_scope")
+    .body();
+    body["error"]["required_scopes"] = serde_json::json!(scopes);
+    let mut rebuilt = String::from("Bearer error=\"insufficient_scope\"");
+    if !scopes.is_empty() {
+        rebuilt.push_str(&format!(", scope=\"{}\"", scopes.join(" ")));
+    }
+    let mut answer = (StatusCode::FORBIDDEN, axum::Json(body)).into_response();
+    if let Ok(value) = HeaderValue::from_str(&rebuilt) {
+        answer.headers_mut().insert(header::WWW_AUTHENTICATE, value);
+    }
+    Some(answer)
+}
+
 /// A server configured to present a credential that did not reach the snapshot.
 ///
 /// The usual cause is `ROLTER_KEK` being unset or rotated on the control plane,
@@ -306,17 +415,30 @@ fn missing_credential(slug: &str) -> Response {
     )
 }
 
-/// The server's transport overrides, in the form the forwarder takes. A `None`
-/// column inherits the deployment default rather than becoming a zero.
-fn transport_overrides(server: &McpServerConfig) -> McpTransportOverrides {
+/// The transport values for one call, in the form the forwarder takes.
+///
+/// Highest precedence first: the server's own override, the organization's saved
+/// MCP settings (#1404), then the deployment-level default, which is what a
+/// `None` field means to the forwarder. An organization that never saved its
+/// settings contributes nothing, so it keeps the deployment default.
+fn transport_overrides(
+    server: &McpServerConfig,
+    org: Option<&McpOrgSettingsConfig>,
+) -> McpTransportOverrides {
+    let millis = std::time::Duration::from_millis;
     McpTransportOverrides {
         connect_timeout: server
             .connect_timeout_ms
-            .map(std::time::Duration::from_millis),
+            .or(org.map(|org| org.connect_timeout_ms))
+            .map(millis),
         request_timeout: server
             .request_timeout_ms
-            .map(std::time::Duration::from_millis),
-        max_retries: server.max_retries.unwrap_or(0),
+            .or(org.map(|org| org.request_timeout_ms))
+            .map(millis),
+        max_retries: server
+            .max_retries
+            .or(org.map(|org| org.max_retries))
+            .unwrap_or(0),
     }
 }
 
@@ -606,11 +728,397 @@ mod tests {
         assert_eq!(body["error"]["message"], MCP_UPSTREAM_FAILED);
     }
 
+    fn with_group(tools: &[&str]) -> GatewayConfig {
+        let mut config = config("user-1", &["tools:execute"]);
+        config
+            .mcp_tool_groups
+            .push(rolter_core::McpToolGroupConfig {
+                id: "group-1".to_string(),
+                org_id: "org-1".to_string(),
+                slug: "reviewers".to_string(),
+                tools: tools
+                    .iter()
+                    .map(|tool| rolter_core::McpToolRefConfig {
+                        server_id: "server-1".to_string(),
+                        tool: (*tool).to_string(),
+                    })
+                    .collect(),
+            });
+        config
+    }
+
+    fn call_body(tool: &str) -> Bytes {
+        Bytes::from(format!(
+            r#"{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"{tool}","arguments":{{}}}}}}"#
+        ))
+    }
+
+    async fn post(state: AppState, body: Bytes) -> Response {
+        proxy(
+            state,
+            "github".to_string(),
+            None,
+            None,
+            Method::POST,
+            bearer(),
+            RequestId::default(),
+            body,
+        )
+        .await
+    }
+
+    async fn code_of(response: Response) -> (StatusCode, String) {
+        let status = response.status();
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap_or_default();
+        (
+            status,
+            body["error"]["code"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string(),
+        )
+    }
+
+    /// #1403: a tool outside the organization's groups is refused before
+    /// anything is forwarded, and the refusal is a row in the MCP log.
+    #[tokio::test]
+    async fn a_tool_outside_the_tool_groups_is_refused_and_logged() {
+        let mut state = AppState::new(&with_group(&["get_issue"]));
+        let (sink, mut events) =
+            crate::mcp_log::McpEventSink::capturing(std::sync::Arc::new(Default::default()));
+        state.mcp_events = sink;
+        // the default server url is a closed port: a 403 proves nothing was dialled
+        let (status, code) = code_of(post(state, call_body("delete_repo")).await).await;
+        assert_eq!(
+            (status, code.as_str()),
+            (StatusCode::FORBIDDEN, "mcp_tool_denied")
+        );
+        let event = events.try_recv().expect("the refusal is recorded");
+        assert_eq!(
+            (event.tool.as_str(), event.status, event.server.as_str()),
+            ("delete_repo", "auth_denied", "github")
+        );
+        assert_eq!(
+            (event.org_id.as_str(), event.user_id.as_str()),
+            ("org-1", "user-1")
+        );
+        assert_eq!(event.error, "authentication denied");
+    }
+
+    #[tokio::test]
+    async fn a_batch_holding_one_refused_call_is_refused_whole() {
+        let mut state = AppState::new(&with_group(&["get_issue"]));
+        let (sink, mut events) =
+            crate::mcp_log::McpEventSink::capturing(std::sync::Arc::new(Default::default()));
+        state.mcp_events = sink;
+        let body = Bytes::from(format!(
+            "[{},{}]",
+            String::from_utf8_lossy(&call_body("get_issue")),
+            String::from_utf8_lossy(&call_body("drop")),
+        ));
+        let (status, code) = code_of(post(state, body).await).await;
+        assert_eq!(
+            (status, code.as_str()),
+            (StatusCode::FORBIDDEN, "mcp_tool_denied")
+        );
+        assert_eq!(events.try_recv().unwrap().tool, "drop");
+        assert!(
+            events.try_recv().is_err(),
+            "the allowed call was not refused"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unreadable_body_is_refused_while_a_group_governs_the_server() {
+        let state = AppState::new(&with_group(&["get_issue"]));
+        let (status, code) =
+            code_of(post(state, Bytes::from_static(b"{\"method\": tools/call")).await).await;
+        assert_eq!(
+            (status, code.as_str()),
+            (StatusCode::BAD_REQUEST, "mcp_request_unreadable")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_tool_in_a_group_is_forwarded() {
+        use axum::routing::any;
+        use axum::Router;
+
+        let app = Router::new().route("/{*path}", any(|| async { "ok" }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let mut config = with_group(&["get_issue"]);
+        config.mcp_servers[0].url = format!("http://{addr}/rpc");
+        let response = post(AppState::new(&config), call_body("get_issue")).await;
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn a_server_no_group_names_still_serves_every_tool() {
+        use axum::routing::any;
+        use axum::Router;
+
+        let app = Router::new().route("/{*path}", any(|| async { "ok" }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let mut config = config("user-1", &["tools:execute"]);
+        config.mcp_servers[0].url = format!("http://{addr}/rpc");
+        let response = post(AppState::new(&config), call_body("anything")).await;
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
     #[test]
     fn downstream_url_preserves_tail_and_query() {
         assert_eq!(
             downstream_url("https://mcp.example/rpc/", Some("messages/1"), Some("v=2")),
             Some("https://mcp.example/rpc/messages/1?v=2".to_string())
         );
+    }
+
+    #[test]
+    fn transport_values_resolve_server_then_organization_then_deployment() {
+        let org = McpOrgSettingsConfig {
+            org_id: "org-1".into(),
+            connect_timeout_ms: 1000,
+            request_timeout_ms: 2000,
+            max_retries: 3,
+            ..Default::default()
+        };
+        let none = McpServerConfig::default();
+        let overrides = transport_overrides(&none, Some(&org));
+        assert_eq!(
+            overrides.connect_timeout,
+            Some(std::time::Duration::from_millis(1000))
+        );
+        assert_eq!(
+            overrides.request_timeout,
+            Some(std::time::Duration::from_millis(2000))
+        );
+        assert_eq!(overrides.max_retries, 3);
+
+        let server = McpServerConfig {
+            connect_timeout_ms: Some(10),
+            request_timeout_ms: Some(20),
+            max_retries: Some(0),
+            ..Default::default()
+        };
+        let overrides = transport_overrides(&server, Some(&org));
+        assert_eq!(
+            overrides.connect_timeout,
+            Some(std::time::Duration::from_millis(10))
+        );
+        assert_eq!(
+            overrides.request_timeout,
+            Some(std::time::Duration::from_millis(20))
+        );
+        assert_eq!(
+            overrides.max_retries, 0,
+            "an explicit 0 beats the organization"
+        );
+
+        // nothing saved anywhere: the forwarder falls back to the deployment
+        let overrides = transport_overrides(&none, None);
+        assert_eq!(
+            (overrides.connect_timeout, overrides.request_timeout),
+            (None, None)
+        );
+        assert_eq!(overrides.max_retries, 0);
+    }
+
+    #[tokio::test]
+    async fn the_organization_request_timeout_applies_to_a_server_without_its_own() {
+        use axum::routing::any;
+        use axum::Router;
+
+        let app = Router::new().route(
+            "/{*path}",
+            any(|| async {
+                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                "late"
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let mut config = config("user-1", &["tools:execute"]);
+        config.mcp_servers[0].url = format!("http://{addr}/rpc");
+        config.mcp_settings.push(McpOrgSettingsConfig {
+            org_id: "org-1".into(),
+            connect_timeout_ms: 1000,
+            request_timeout_ms: 150,
+            max_retries: 0,
+            ..Default::default()
+        });
+        let started = std::time::Instant::now();
+        let response = post(AppState::new(&config), call_body("anything")).await;
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        assert!(started.elapsed() < std::time::Duration::from_secs(3));
+    }
+
+    #[tokio::test]
+    async fn an_undeclared_tool_is_refused_and_fail_open_forwards_an_unreadable_body() {
+        use axum::routing::any;
+        use axum::Router;
+
+        let app = Router::new().route("/{*path}", any(|| async { "ok" }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let strict = |fail_open| McpOrgSettingsConfig {
+            org_id: "org-1".into(),
+            connect_timeout_ms: 5000,
+            request_timeout_ms: 30000,
+            max_retries: 0,
+            fail_open,
+            allow_unlisted_tools: false,
+        };
+        let mut config = config("user-1", &["tools:execute"]);
+        config.mcp_servers[0].url = format!("http://{addr}/rpc");
+        config.mcp_servers[0].tools = vec!["get_issue".into()];
+        config.mcp_settings = vec![strict(false)];
+
+        let (status, code) = code_of(post(AppState::new(&config), call_body("drop")).await).await;
+        assert_eq!(
+            (status, code.as_str()),
+            (StatusCode::FORBIDDEN, "mcp_tool_denied")
+        );
+        let allowed = post(AppState::new(&config), call_body("get_issue")).await;
+        assert_eq!(allowed.status(), StatusCode::OK);
+
+        // fail closed (the default) refuses what it cannot read; fail open forwards
+        let (status, code) =
+            code_of(post(AppState::new(&config), Bytes::from_static(b"{ nope")).await).await;
+        assert_eq!(
+            (status, code.as_str()),
+            (StatusCode::BAD_REQUEST, "mcp_request_unreadable")
+        );
+        config.mcp_settings = vec![strict(true)];
+        let forwarded = post(AppState::new(&config), Bytes::from_static(b"{ nope")).await;
+        assert_eq!(forwarded.status(), StatusCode::OK);
+    }
+
+    async fn serving(status: u16, challenge: Option<&'static str>) -> String {
+        use axum::routing::any;
+        use axum::Router;
+
+        let app = Router::new().route(
+            "/{*path}",
+            any(move || async move {
+                let mut response = axum::http::Response::builder().status(status);
+                if let Some(challenge) = challenge {
+                    response = response.header(header::WWW_AUTHENTICATE, challenge);
+                }
+                response.body(Body::from("upstream said no")).unwrap()
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        format!("http://{addr}/rpc")
+    }
+
+    /// #1417: an upstream `insufficient_scope` is the defined step-up answer
+    /// for an OAuth server, and a log row, not a bare relayed 403.
+    #[tokio::test]
+    async fn insufficient_scope_from_an_oauth_server_is_the_step_up_answer() {
+        let mut config = config("user-1", &["tools:execute"]);
+        config.mcp_servers[0].url = serving(
+            403,
+            Some(
+                r#"Bearer error="insufficient_scope", scope="repo read:org", resource_metadata="https://upstream.example/prm""#,
+            ),
+        )
+        .await;
+        let mut state = AppState::new(&config);
+        let (sink, mut events) =
+            crate::mcp_log::McpEventSink::capturing(std::sync::Arc::new(Default::default()));
+        state.mcp_events = sink;
+        let response = post(state, call_body("anything")).await;
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let challenge = response
+            .headers()
+            .get(header::WWW_AUTHENTICATE)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+        // rebuilt: the upstream's resource_metadata is not passed on
+        assert_eq!(
+            challenge,
+            r#"Bearer error="insufficient_scope", scope="repo read:org""#
+        );
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["error"]["code"], "mcp_insufficient_scope");
+        assert_eq!(
+            body["error"]["required_scopes"],
+            serde_json::json!(["repo", "read:org"])
+        );
+        assert!(!body.to_string().contains("upstream said no"));
+        let event = events.try_recv().expect("the refusal is logged");
+        assert_eq!(
+            (event.status, event.tool.as_str()),
+            ("auth_denied", "anything")
+        );
+    }
+
+    #[tokio::test]
+    async fn hostile_scope_text_in_the_challenge_never_reaches_the_caller() {
+        let mut config = config("user-1", &["tools:execute"]);
+        config.mcp_servers[0].url = serving(
+            403,
+            Some(r#"Bearer error="insufficient_scope", scope="ok <script> back\slash""#),
+        )
+        .await;
+        let response = post(AppState::new(&config), call_body("anything")).await;
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            body["error"]["required_scopes"],
+            serde_json::json!(["ok", "<script>"])
+        );
+    }
+
+    #[tokio::test]
+    async fn other_refusals_and_other_auth_kinds_are_relayed_untouched() {
+        // a 403 that is not insufficient_scope
+        let mut config = config("user-1", &["tools:execute"]);
+        config.mcp_servers[0].url = serving(403, Some(r#"Bearer error="invalid_token""#)).await;
+        let response = post(AppState::new(&config), call_body("x")).await;
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
+        assert_eq!(&body[..], b"upstream said no");
+
+        // insufficient_scope from a server with a static credential: there is no
+        // consent to repeat, so it is the upstream's own answer
+        let mut config = config_static_bearer().await;
+        config.mcp_servers[0].url = serving(
+            403,
+            Some(r#"Bearer error="insufficient_scope", scope="repo""#),
+        )
+        .await;
+        let response = post(AppState::new(&config), call_body("x")).await;
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
+        assert_eq!(&body[..], b"upstream said no");
+    }
+
+    async fn config_static_bearer() -> GatewayConfig {
+        let mut config = config("user-1", &["tools:execute"]);
+        config.mcp_servers[0].auth_kind = McpAuthKind::Bearer;
+        config.mcp_servers[0].credential = Some("static-token".to_string());
+        config
     }
 }

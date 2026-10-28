@@ -1,4 +1,4 @@
-import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { KeySquare, Lock, Pencil, Plus, X } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
@@ -21,7 +21,6 @@ import { Tabs } from "@/components/ui/tabs";
 import {
   createCustomRole,
   deleteCustomRole,
-  fetchAccessProfile,
   fetchAccessProfiles,
   fetchCustomRoles,
   fetchMemberships,
@@ -132,7 +131,9 @@ function cellState(resource: RbacResourceView, action: RbacAction, column: RoleC
   const view = resource.actions.find((a) => a.action === action);
   // absent from `actions` means the backend's authority was None
   if (!view) return "na";
-  if (view.superadmin_only) return "superadmin";
+  // a deployment role (#1834) is held on the account, never at a scope, so no
+  // column of this table reaches such a row either
+  if (view.superadmin_only || view.deployment_roles?.length) return "superadmin";
   if (view.authenticated_only) return "allowed";
   if (view.minimum_role !== null && column.rank >= RANK[view.minimum_role]) {
     return "allowed";
@@ -551,36 +552,25 @@ function CustomRolesTab({ matrix, orgId }: { matrix: RbacMatrix; orgId?: string 
   });
 
   // which profiles compose each role, so the list can say what a delete would
-  // have to be detached from first. a deployment has a handful of profiles, and
-  // only the detail call carries the composition — the list endpoint does not.
-  // a caller who may read the matrix but not the profiles simply sees no usage
+  // have to be detached from first. the list embeds each profile's roles, so
+  // this is one request however many profiles there are (#1996). a caller who
+  // may read the matrix but not the profiles simply sees no usage
   const profiles = useQuery({
-    queryKey: ["access-profiles", orgId],
-    queryFn: () => fetchAccessProfiles(orgId as string),
+    queryKey: ["access-profiles", orgId, "roles"],
+    queryFn: () => fetchAccessProfiles(orgId as string, ["roles"]),
     enabled: !!orgId,
     retry: false,
   });
-  const details = useQueries({
-    queries: (profiles.data ?? []).map((profile) => ({
-      queryKey: ["access-profile", profile.id],
-      queryFn: () => fetchAccessProfile(profile.id),
-      retry: false,
-    })),
-  });
-  // role id -> the profiles composing it. a handful of entries over a handful
-  // of profiles, so it is rebuilt per render rather than memoized against a
-  // dependency that would have to be the whole `useQueries` result
-  // and whether that map is an answer yet. the profiles resolve independently
-  // of the roles, so a row rendered "not used by any access profile" — a claim,
-  // not a placeholder — for as long as the detail calls were still in flight,
-  // and then swapped it for the real composition (#1266)
-  const usageKnown = !profiles.isLoading && details.every((detail) => !detail.isLoading);
+  // role id -> the profiles composing it, and whether that map is an answer yet.
+  // the profiles resolve independently of the roles, so a row must not render
+  // "not used by any access profile" — a claim, not a placeholder — while the
+  // read is still in flight (#1266)
+  const usageKnown = !profiles.isLoading;
   const usedBy = new Map<string, string[]>();
-  for (const detail of details) {
-    if (!detail.data) continue;
-    for (const composed of detail.data.roles) {
+  for (const profile of profiles.data ?? []) {
+    for (const composed of profile.roles ?? []) {
       const names = usedBy.get(composed.role_id) ?? [];
-      if (!names.includes(detail.data.name)) names.push(detail.data.name);
+      if (!names.includes(profile.name)) names.push(profile.name);
       usedBy.set(composed.role_id, names);
     }
   }
@@ -1026,12 +1016,13 @@ function GrantGrid({
                       </span>
                     );
                   }
+                  const deploymentWide = view.superadmin_only || !!view.deployment_roles?.length;
                   return (
                     <span key={action} className="flex w-6 justify-center">
                       <Checkbox
                         aria-label={label}
-                        title={view.superadmin_only ? t("pages.rbac.custom.superadminHint") : label}
-                        disabled={view.superadmin_only}
+                        title={deploymentWide ? t("pages.rbac.custom.superadminHint") : label}
+                        disabled={deploymentWide}
                         checked={grants.includes(key)}
                         onChange={() => onToggle(key)}
                       />

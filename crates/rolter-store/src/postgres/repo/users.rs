@@ -12,8 +12,8 @@ use super::lockout::{
 use super::support::{fetch_optional_or_not_found, require_affected, store_err};
 
 /// Every column of `users` that its row type reads.
-const USER_COLUMNS: &str =
-    "id, email, password_hash, is_superadmin, deactivated_at, created_at, display_name, bio";
+const USER_COLUMNS: &str = "id, email, password_hash, is_superadmin, deactivated_at, created_at, \
+     display_name, bio, deployment_role";
 
 /// local accounts. see [`super::super::models::User`]; `find_by_email` backs login.
 pub struct UserRepo<'a>(pub &'a PgPool);
@@ -59,7 +59,7 @@ impl UserRepo<'_> {
     pub async fn list_in_org(&self, org_id: Uuid) -> Result<Vec<User>> {
         sqlx::query_as(
             "select distinct u.id, u.email, u.password_hash, u.is_superadmin,
-                    u.deactivated_at, u.created_at, u.display_name, u.bio
+                    u.deactivated_at, u.created_at, u.display_name, u.bio, u.deployment_role
              from users u
              join memberships m on m.user_id = u.id
              left join teams t on t.id = m.team_id
@@ -84,7 +84,7 @@ impl UserRepo<'_> {
     pub async fn list_in_org_with_unassigned(&self, org_id: Uuid) -> Result<Vec<User>> {
         sqlx::query_as(
             "select distinct u.id, u.email, u.password_hash, u.is_superadmin,
-                    u.deactivated_at, u.created_at, u.display_name, u.bio
+                    u.deactivated_at, u.created_at, u.display_name, u.bio, u.deployment_role
              from users u
              left join memberships m on m.user_id = u.id
              left join teams t on t.id = m.team_id
@@ -297,6 +297,25 @@ impl UserRepo<'_> {
         .await
     }
 
+    /// set or clear the account's deployment role (#1834). deliberately its own
+    /// statement: the column is not one the snapshot reads, so it must stay out
+    /// of [`Self::update_account`], whose `set` list fires the `config_version`
+    /// trigger. callers validate the role; the table's check constraint is the
+    /// backstop
+    pub async fn set_deployment_role(&self, id: Uuid, role: Option<&str>) -> Result<User> {
+        fetch_optional_or_not_found(
+            sqlx::query_as(sqlx::AssertSqlSafe(format!(
+                "update users set deployment_role = $2 where id = $1
+                 returning {USER_COLUMNS}"
+            )))
+            .bind(id)
+            .bind(role),
+            self.0,
+            || format!("user {id}"),
+        )
+        .await
+    }
+
     /// give an account that has no display name the one its identity provider
     /// asserted. The `is null` guard is in the statement so a name set between
     /// the caller's read and this write is never overwritten. Returns whether
@@ -327,6 +346,16 @@ impl UserRepo<'_> {
             || format!("user {id}"),
         )
         .await?;
+        // the caps on a person carry no foreign key to them (#1830)
+        for table in ["budgets", "rate_limits"] {
+            sqlx::query(sqlx::AssertSqlSafe(format!(
+                "delete from {table} where scope_type = 'user' and scope_id = $1"
+            )))
+            .bind(id)
+            .execute(&mut *tx)
+            .await
+            .map_err(store_err)?;
+        }
         tx.commit().await.map_err(store_err)?;
         Ok(LockoutGuard::Done(()))
     }

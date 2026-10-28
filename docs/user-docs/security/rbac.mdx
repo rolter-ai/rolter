@@ -24,6 +24,30 @@ Rolter ships with three built-in roles. Every role applies within the scope it i
   </Card>
 </CardGroup>
 
+## Deployment roles
+
+Some settings belong to the whole deployment rather than to an organisation: cluster nodes and draining, the runtime policy, feature flags, alerting, connectors, the security and logging settings, guardrails, the configuration export and the deployment-wide audit log. There is no organisation to hold a role in, so none of the roles above reaches them, and until now the only way in was a superadmin account, which also reads every tenant. Two narrower **deployment roles** exist for the two jobs that need only part of it. A superadmin gives one to an account; an account holds at most one.
+
+| Role               | For                      | Reaches                                                                                                                                                                           |
+| ------------------ | ------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `operator`         | maintaining the platform | cluster nodes (read, drain, remove), the runtime policy, feature flags, alert channels, rules and history, and connectors: read and change                                        |
+| `security_auditor` | reviewing it             | read only: the security, logging and compatibility settings, guardrail rules and providers, the deployment-wide audit log and the accounts it names, and the configuration export |
+
+Neither role reads tenant request logs or captured payloads, mints or reads a credential, or grants any role: a deployment role gives nothing inside an organisation, team or project, and granting one is a superadmin's alone. The anchors for what each role can and cannot do are `GET /api/v1/rbac/matrix`, which lists the roles that reach each row as `deployment_roles`, and `GET /api/v1/rbac/effective`, which returns yours as `deployment_role`.
+
+An operator who can change **Connectors** can point telemetry export at an endpoint of their choosing, so treat the role as trusted with the telemetry that connectors carry.
+
+Give or clear a role with `PUT /api/v1/users/{id}/deployment-role`, as a superadmin or with the admin token:
+
+```bash
+curl -s -X PUT https://control.example.com/api/v1/users/$USER_ID/deployment-role \
+  -H "Authorization: Bearer $ROLTER_ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"role": "operator"}'
+```
+
+`role` is `operator`, `security_auditor` or `null` to clear it; anything else is `400`. The change applies on the account's next request, and every grant is an audit row, `user.deployment_role`, in the deployment-wide audit log with the previous and the new role. The dashboard shows each screen to the roles that reach it and a forbidden page to everyone else.
+
 ## Scopes
 
 Roles are always granted at a specific scope. Rolter organises resources in a four-level hierarchy:
@@ -88,13 +112,26 @@ Each control is disabled for callers who do not hold admin at the scope the dash
 - **Scope.** The whole organization, any team, or any project in any team, picked by name, the same picker as when you grant a role. The role field is named for the scope you pick (**Org role**, **Team role**, **Project role**) and lists **Admin**, **Member** and **Viewer**. An invitation is authorized at the scope it grants, so a team admin invites into their own team or its projects without an org admin. If the control plane refuses it, the sheet stays open with its message and says that inviting at that scope takes admin there or on a scope above it. `POST /api/v1/orgs/{org_id}/invitations` with `scope_type` and `scope_id`.
 - **Inviting an address again replaces its pending invitation.** The email is compared without regard to case. The earlier link, expired or not, is revoked and stops working, and only the new link is live. The audit entry for the new invitation records the id it replaced.
 - **An account created with a password** takes its role on the whole organization only, because that endpoint has no scope. The scope picker is locked to the organization and says so. Invite by link to choose a team or a project.
-- **The link.** After **Invite** a dialog shows the link once, with what accepting it grants, and a **Copy link** button. rolter does not send email, so you send the link yourself. The page the person opens names the role the way you picked it, **Member** and not `member`, translated like the rest of the dashboard. The link cannot be shown again, so closing the dialog before you have copied it asks "Close without copying?"; Cancel keeps it open. If the browser will not let the page use the clipboard, which is common on a dashboard served over plain `http`, the dialog says the copy failed in a message that stays, and the link stays on screen, selected: copy it by hand with Ctrl+C or Cmd+C, which counts as copied. **Select value** selects it again.
+- **The link.** After **Invite** a dialog shows the link once, with what accepting it grants, and a **Copy link** button. If the control plane has a mail transport (see [Emailing invitations](#emailing-invitations)) the same link has also been emailed to the person, and the dialog says so; without one, nothing was sent and you send the link yourself. The page the person opens names the role the way you picked it, **Member** and not `member`, translated like the rest of the dashboard. The link cannot be shown again, so closing the dialog before you have copied it asks "Close without copying?"; Cancel keeps it open. If the browser will not let the page use the clipboard, which is common on a dashboard served over plain `http`, the dialog says the copy failed in a message that stays, and the link stays on screen, selected: copy it by hand with Ctrl+C or Cmd+C, which counts as copied. **Select value** selects it again.
 
 Under the users table, **Pending invitations** lists every invitation that has not been accepted or revoked: the address, the role, the scope by name, who sent it (by address, as the control plane resolves it on each row, so a team admin sees the sender even when that person is outside the users they can list) and when it expires. A link works once and expires after seven days. An invitation past its expiry stays in the list, marked **Expired**, because it still holds its address: an organization keeps one unaccepted invitation per address, and inviting an address that already has one is refused with the control plane's own message. Revoke the listed one first. **Sent by** names the signed-in account that created the invitation, a superadmin included, even one that holds no role in any organization. It is read from the users list, so it says **not recorded** for an invitation sent with the admin token (or with no admin token configured) or by an account since deleted, and **unknown** for a sender you cannot list, such as a superadmin's account when you are an organization admin.
 
 An org admin sees every invitation of the organization, a team admin the ones into the teams and projects they administer, and someone with neither sees no section.
 
 The **×** at the end of a row revokes the invitation. The confirmation names the address, the role and the scope, and says the link stops working straight away; for an expired one it says revoking only frees the address. `DELETE /api/v1/invitations/{id}`. If the person accepted in the meantime, the control plane answers `404` because only unaccepted invitations can be revoked: the dialog says it is no longer pending and the list refreshes. Like the role controls, the button is disabled for callers without admin at the scope the dashboard is showing, and the server checks again at the invitation's own scope.
+
+#### Emailing invitations
+
+Set two environment variables on the control plane and an invitation is emailed to the invitee as well as handed to you:
+
+| Variable           | Purpose                                                                                                                                                                                              |
+| ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ROLTER_SMTP_URL`  | The relay: `smtp://[user:password@]host[:port]` (STARTTLS when the server offers it, `?tls=required` to insist) or `smtps://host` for implicit TLS. Keep it in a secret, as it can carry a password. |
+| `ROLTER_SMTP_FROM` | The sender, `noreply@example.com` or `Rolter <noreply@example.com>`.                                                                                                                                 |
+
+Both are read at startup. The relay's address is held to the [egress policy](/configuration/config-file) like any other destination, and its certificate is verified against the host's trust store.
+
+The link is returned to you whatever happens, so a relay that is down never stops you inviting anyone. The outcome is kept on the invitation: **Pending invitations** shows whether the link was **Emailed**, **Not emailed** with the reason (the mail server could not be reached, rejected the message, and so on), or **Not emailed: no mail is configured on this control plane**. A failed send is audited as `invitation.mail_failed`, a delivered one as `invitation.mail_sent`; neither records the address or the link. Without these variables nothing changes, and an air-gapped deployment never needs them.
 
 ### Resetting a password
 
@@ -139,9 +176,9 @@ The request log, the usage and spend rollups and provider health are not only ga
 - A request-log row is visible to anyone holding a role at the row's org, team or project. A project viewer sees that project's rows, an org viewer the whole org's, and nobody sees another org's.
 - The request and response **bodies** that [payload capture](/observability/log-settings#payload-capture) stored are shown to **members and admins** of the row's project. A viewer gets the row with the bodies withheld, and the log says so.
 - A project admin can let the project's **viewers** read the bodies too: **Viewers can read captured payloads** in the project's settings (**Project settings** in the project's **⋯** menu in the scope switcher), or [`PUT /api/v1/projects/{id}/settings`](/api/project-settings). It is off by default.
-- Provider health follows provider access: an org-level role in the provider's org. Each health record carries the org that owned the provider when it was written, and the match is on that org, so a provider name another org used and deleted never brings its history to the next org that creates it. Records with no org are visible only to unrestricted callers (the admin token and superadmins): those of providers defined in the gateway's own config file, and, after upgrading, those written before the org was recorded. Until they age out (90 days), an org viewer's health history starts empty at the upgrade.
+- Provider health follows provider access: an org-level role in the provider's org, or a role on a project or team whose routes target the provider — an engineer sees the health of the upstreams behind their own routes, and nothing else about those providers. Each health record carries the org that owned the provider when it was written, and the match is on that org, so a provider name another org used and deleted never brings its history to the next org that creates it. Records with no org are visible only to unrestricted callers (the admin token and superadmins): those of providers defined in the gateway's own config file, and, after upgrading, those written before the org was recorded. Until they age out (90 days), an org viewer's health history starts empty at the upgrade.
 - The admin token and superadmins see everything; so does every caller in [open mode](#open-mode-running-with-no-admin-token). A caller with no valid credentials gets `401`.
-- A control plane with an admin token but no database has no accounts, so the admin token is the only credential these routes accept. The dashboard cannot send it yet, so its Dashboard, Logs and Health screens show a sign-in error there instead of data; see [signing in](/concepts/dashboard#signing-in).
+- A control plane with an admin token but no database has no accounts, so the admin token is the only credential these routes accept, and a request without it (or with a wrong one) is answered `401` with `code: "admin_token_required"`. The dashboard's sign-in card asks for the token there; see [signing in](/concepts/dashboard#signing-in).
 
 ## Organizations are isolated
 
@@ -322,7 +359,7 @@ Editing a role says who the save reaches: the sheet names the access profiles th
   A role can also carry grants naming a resource this build no longer defines — after a downgrade, say. They are not on the grid, since there is no row to tick them on, but the sheet counts them and saving keeps them exactly as they are. Editing a role for an unrelated reason never quietly rewrites it.
 </Note>
 
-**Access Profiles** reads `GET /api/v1/access-profiles/{id}` for each profile, so a card shows the roles composed into it, everyone it reaches, and the model policy it carries — the policy in particular has no list endpoint, and before this it could be written and never seen again. The same sheet creates and edits: name, the custom roles to compose, and the four allow/deny pattern lists, saved in one request. A pattern is an exact name or a prefix ending in `*`; a `*` anywhere else is a literal character that matches nothing, so the sheet flags such a line (`o1-*-mini`, `*-preview`) and refuses to save until it is fixed. In an allow-list one such line would otherwise block every model for everyone the profile reaches.
+**Access Profiles** reads `GET /api/v1/orgs/{org_id}/access-profiles?include=roles,assignments,policy` for the whole list in one request — each profile carries the same `roles`, `assignments` and `policy` that `GET /api/v1/access-profiles/{id}` returns — so a card shows the roles composed into it, everyone it reaches, and the model policy it carries — the policy in particular has no list endpoint, and before this it could be written and never seen again. The same sheet creates and edits: name, the custom roles to compose, and the four allow/deny pattern lists, saved in one request. A pattern is an exact name or a prefix ending in `*`; a `*` anywhere else is a literal character that matches nothing, so the sheet flags such a line (`o1-*-mini`, `*-preview`) and refuses to save until it is fixed. In an allow-list one such line would otherwise block every model for everyone the profile reaches.
 
 Each card lists, by name, the users and teams the profile reaches. The **Assign** button on a card opens a sheet where you choose **User** or **Team** and pick one from the organisation's own list; accounts and teams the profile already reaches are not offered again. A team assignment reaches every member of the team, current and future. The remove button beside a name asks for confirmation before it takes the assignment away, and the delete confirmation for a whole profile says how many users and teams lose it. Both need the admin role in the organisation (`access_profile_assignment:create` and `:delete`); a viewer sees who a profile reaches and finds the buttons refused. Every assignment is written to the audit log.
 
@@ -497,6 +534,8 @@ Rolter ships with **local user accounts** secured with email and password. You c
 
 **OAuth2 / OIDC single sign-on** — with group-to-role mapping for identity providers such as Okta, Auth0, and Google Workspace — is available today, and **SCIM** provisions and deprovisions accounts from the same providers. See [Single sign-on](/security/single-sign-on) and [User provisioning](/security/user-provisioning). A first SSO sign-in gives an account that has no display name the one your identity provider sends; the user can still change it.
 
+**LDAP / Active Directory sign-in** is available too: an org registers a directory, maps its groups to roles, and its users sign in with their directory password. See [LDAP](/security/ldap).
+
 <Info>
-  LDAP and SAML sign-in are not available. Rolter contains the beginnings of an LDAP directory provider, but no configuration, sign-in route or dashboard screen reaches it, so a directory user cannot sign in through it today. If your organisation requires LDAP or SAML-based authentication, reach out to discuss the enterprise roadmap.
+  SAML sign-in is not available. If your organisation requires SAML-based authentication, reach out to discuss the enterprise roadmap.
 </Info>

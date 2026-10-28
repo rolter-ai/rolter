@@ -124,6 +124,12 @@ What the pill cannot see:
   the same `502` as a refused port and the pill reads down. Only connecting is
   bounded; streaming responses stay open.
 
+## The fleet's circuit breakers (#2254)
+
+Breaker state is per process: every gateway replica holds its own registry (`rolter-gateway/src/breaker.rs`), so one replica can shed a target another still uses. The control plane learns it the way it learns the adaptive-routing scores — each gateway **pushes** a sample every 10s to `POST /internal/breaker-state` (`rolter-gateway/src/breaker_report.rs`), over the internal token and the `x-rolter-node-id` identity of the snapshot poll, so a node is one row here and in the cluster inventory. The sample is taken by a background task under the registry lock once per tick; the request path is untouched.
+
+A report replaces the node's whole set of rows in `breaker_state`, so a breaker that closes leaves the table, and **an absent target means closed**. The control plane serves the table at `GET /api/v1/breaker-state` (`rolter-control/src/breaker_state.rs`): rows older than 40s are not served, and `gateways_live` (from the cluster inventory) is what lets a reader tell "all closed" from "nobody is reporting". Entries are filtered to the models the caller sees in the catalog, and per-node ids go only to a caller who sees everything.
+
 ## Probe wiring
 
 `charts/rolter` wires this for you:

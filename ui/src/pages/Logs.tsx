@@ -573,8 +573,14 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
   // when it was served. re-deriving it from today's model prices re-judges an
   // old row against a price added or removed after the fact (#1226)
   const isUnpriced = (row: InvocationRow) => num(row.unpriced) === 1;
+  // the upstream answered but reported no usage, so zero tokens and zero cost
+  // are unknown, not free; this outranks `unpriced` for the same cells
+  const isUsageUnknown = (row: InvocationRow) => num(row.usage_unknown) === 1;
+  // the provider billed for a response an output guardrail or post_response
+  // plugin refused to deliver; tokens and cost are real, the caller got a 403
+  const isWithheld = (row: InvocationRow) => num(row.withheld) === 1;
   const cost = (row: InvocationRow) =>
-    isUnpriced(row) ? null : fmt.currency(num(row.cost_usd), currency);
+    isUnpriced(row) || isUsageUnknown(row) ? null : fmt.currency(num(row.cost_usd), currency);
   const filterCount =
     (status === "all" ? 0 : 1) +
     (model ? 1 : 0) +
@@ -709,10 +715,19 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
       </DetailSection>
       <DetailSection title={t("pages.logs.detail.usage")}>
         <DetailRow label={t("pages.logs.tokens")} mono>
-          {t("pages.logs.tokensInOut", {
-            in: fmt.number(num(selected.prompt_tokens)),
-            out: fmt.number(num(selected.completion_tokens)),
-          })}
+          {isUsageUnknown(selected) ? (
+            <span className="flex flex-col items-start gap-1.5">
+              <Absent />
+              <span className="font-sans text-xs text-muted-foreground">
+                {t("analytics.usageUnknownHint")}
+              </span>
+            </span>
+          ) : (
+            t("pages.logs.tokensInOut", {
+              in: fmt.number(num(selected.prompt_tokens)),
+              out: fmt.number(num(selected.completion_tokens)),
+            })
+          )}
         </DetailRow>
         <DetailRow label={t("pages.logs.detail.promptCache")} mono>
           {t("pages.logs.detail.promptCacheTokens", {
@@ -733,17 +748,35 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
           </DetailRow>
         )}
         <DetailRow label={t("pages.logs.cost")} mono>
-          {cost(selected) ?? (
-            // room enough here to say it, so the explanation is text on the
-            // screen and not a tooltip a keyboard or a touch never reaches
+          {cost(selected) ??
+            (isUsageUnknown(selected) ? (
+              <span className="flex flex-col items-start gap-1.5">
+                <Absent />
+                <span className="font-sans text-xs text-muted-foreground">
+                  {t("analytics.usageUnknownHint")}
+                </span>
+              </span>
+            ) : (
+              // room enough here to say it, so the explanation is text on the
+              // screen and not a tooltip a keyboard or a touch never reaches
+              <span className="flex flex-col items-start gap-1.5">
+                <Unpriced />
+                <span className="font-sans text-xs text-muted-foreground">
+                  {t("analytics.unpricedHint")}
+                </span>
+              </span>
+            ))}
+        </DetailRow>
+        {isWithheld(selected) && (
+          <DetailRow label={t("pages.logs.detail.delivery")}>
             <span className="flex flex-col items-start gap-1.5">
-              <Unpriced />
+              <Withheld />
               <span className="font-sans text-xs text-muted-foreground">
-                {t("analytics.unpricedHint")}
+                {t("analytics.withheldHint")}
               </span>
             </span>
-          )}
-        </DetailRow>
+          </DetailRow>
+        )}
       </DetailSection>
       <DetailSection title={t("pages.logs.detail.attribution")}>
         <DetailRow label={t("pages.logs.virtualKey")}>
@@ -1108,6 +1141,7 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
                         <HttpStatusBadge status={st} className="font-mono">
                           {st ? undefined : "ERR"}
                         </HttpStatusBadge>
+                        {isWithheld(r) && <Withheld titled />}
                         <UpstreamHint row={r} />
                       </div>
                     </td>
@@ -1127,7 +1161,13 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
                         "text-right text-[color:var(--text-secondary)]",
                       )}
                     >
-                      {fmt.number(num(r.total_tokens))}
+                      {isUsageUnknown(r) ? (
+                        <span title={t("analytics.usageUnknownHint")}>
+                          <Absent />
+                        </span>
+                      ) : (
+                        fmt.number(num(r.total_tokens))
+                      )}
                     </td>
                     <td
                       className={cn(
@@ -1137,7 +1177,14 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
                         "whitespace-nowrap text-right text-[color:var(--text-secondary)]",
                       )}
                     >
-                      {cost(r) ?? <Unpriced titled />}
+                      {cost(r) ??
+                        (isUsageUnknown(r) ? (
+                          <span title={t("analytics.usageUnknownHint")}>
+                            <Absent />
+                          </span>
+                        ) : (
+                          <Unpriced titled />
+                        ))}
                     </td>
                     <td
                       className={cn(
@@ -1659,6 +1706,20 @@ function Unpriced({ titled = false }: { titled?: boolean }) {
       title={titled ? t("analytics.unpricedHint") : undefined}
     >
       {t("analytics.unpriced")}
+    </Badge>
+  );
+}
+
+/**
+ * The mark on a request the provider billed but the gateway refused to deliver:
+ * an output guardrail or post_response plugin turned it into a 403. The policy
+ * is in the row's error; the cost beside it is real.
+ */
+function Withheld({ titled = false }: { titled?: boolean }) {
+  const { t } = useTranslation();
+  return (
+    <Badge tone="warning" title={titled ? t("analytics.withheldHint") : undefined}>
+      {t("analytics.withheld")}
     </Badge>
   );
 }

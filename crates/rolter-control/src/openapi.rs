@@ -128,6 +128,10 @@ impl QueryParam {
 const LAST_SUPERADMIN_409: &str =
     "error.code `last_superadmin`: the write would demote, deactivate or delete the last active superadmin";
 
+/// the `409` a token rotation answers for a token that no longer works
+const API_TOKEN_INACTIVE_409: &str =
+    "error.code `api_token_inactive`: the token is revoked or past its expiry, so there is nothing to rotate; mint a new one";
+
 /// the `409` a password change answers for an account with no local password
 const NO_LOCAL_PASSWORD_409: &str =
     "error.code `no_local_password`: the account signs in through single sign-on only, so there is no local password to change";
@@ -387,6 +391,15 @@ const ROUTE_INCLUDE_QUERY: &[QueryParam] = &[QueryParam::new(
     "string",
     "comma-separated extras to embed in each route: `targets` and `complexity`; omitted, the \
      list carries neither, and a value outside those two is a 400",
+)];
+
+/// The access-profile list's query string: what to embed beside each profile.
+const PROFILE_INCLUDE_QUERY: &[QueryParam] = &[QueryParam::new(
+    "include",
+    "string",
+    "comma-separated extras to embed in each profile, as the detail returns them: `roles`, \
+     `assignments` and `policy`; omitted, the list carries none, and a value outside those \
+     three is a 400",
 )];
 
 /// The provider test's query string: the model to look up.
@@ -851,6 +864,11 @@ fn operations() -> Vec<Op> {
                 "ingestAdaptiveTelemetry",
                 "Accept adaptive-routing samples pushed by a gateway",
             ),
+            Op::post(
+                "/internal/breaker-state",
+                "ingestBreakerState",
+                "Accept circuit-breaker state pushed by a gateway",
+            ),
         ],
     ));
 
@@ -1083,6 +1101,13 @@ fn operations() -> Vec<Op> {
                 .body(Payload::Ref("UpdateUser"))
                 .ok(Payload::Ref("User"))
                 .conflict(LAST_SUPERADMIN_409),
+            Op::put(
+                "/api/v1/users/{id}/deployment-role",
+                "setUserDeploymentRole",
+                "Give an account a deployment role (operator or security auditor), or clear it (superadmin)",
+            )
+            .body(Payload::Ref("SetDeploymentRole"))
+            .ok(Payload::Ref("User")),
             Op::delete("/api/v1/users/{id}", "deleteUser", "Delete an account")
                 .conflict(LAST_SUPERADMIN_409),
             Op::get(
@@ -1171,8 +1196,9 @@ fn operations() -> Vec<Op> {
             Op::get(
                 "/api/v1/orgs/{org_id}/access-profiles",
                 "listAccessProfiles",
-                "List access profiles",
-            ),
+                "List access profiles; `include` embeds each profile's roles, assignments and policy so a screen needs one request, not one per profile",
+            )
+            .query(PROFILE_INCLUDE_QUERY),
             Op::post(
                 "/api/v1/orgs/{org_id}/access-profiles",
                 "createAccessProfile",
@@ -1478,6 +1504,11 @@ fn operations() -> Vec<Op> {
             )
             .clickhouse_read()
             .query(WINDOW_QUERY),
+            Op::get(
+                "/api/v1/me/budgets",
+                "getMyBudgets",
+                "The per-user budgets and rate limits that count the calling account's keys, with the spend so far",
+            ),
             Op::patch(
                 "/api/v1/me/profile",
                 "updateMyProfile",
@@ -1518,6 +1549,11 @@ fn operations() -> Vec<Op> {
                 "/api/v1/me/saved-views/{id}",
                 "deleteMySavedView",
                 "Delete a saved filter preset",
+            ),
+            Op::get(
+                "/api/v1/orgs/{org_id}/mfa-status",
+                "getOrgMfaStatus",
+                "Which members of an organization have an armed second factor",
             ),
             Op::get(
                 "/api/v1/me/mfa",
@@ -1564,9 +1600,15 @@ fn operations() -> Vec<Op> {
             Op::get(
                 "/api/v1/orgs/{org_id}/budgets",
                 "listOrgBudgets",
-                "List every spend budget in this organization the caller may read, at any scope",
+                "List every spend budget in this organization the caller may read, at any scope; a key's budget carries `scope_name`",
             )
             .ok(Payload::List("Budget")),
+            Op::get(
+                "/api/v1/orgs/{org_id}/budgets/spend",
+                "getOrgBudgetSpend",
+                "Spend so far against every budget in this organization the caller may read, from the gateway's Redis counters",
+            )
+            .ok(Payload::Ref("BudgetSpendReport")),
             Op::post("/api/v1/budgets", "createBudget", "Create a spend budget")
                 .body(Payload::Ref("CreateBudget"))
                 .ok(Payload::Ref("Budget")),
@@ -1889,6 +1931,26 @@ fn operations() -> Vec<Op> {
                 "Set how rolter authenticates to an MCP server",
             )
             .needs_kek(),
+            Op::post(
+                "/api/v1/mcp-servers/{id}/discover",
+                "discoverMcpServerTools",
+                "Ask an MCP server for its tools with tools/list",
+            ),
+            Op::post(
+                "/api/v1/mcp-servers/{id}/test",
+                "testMcpServerConnection",
+                "Run the MCP handshake against a server and report its status",
+            ),
+            Op::post(
+                "/api/v1/mcp-servers/{id}/tools/call",
+                "callMcpServerTool",
+                "Run one of an MCP server's tools and return the raw exchange",
+            ),
+            Op::get(
+                "/api/v1/mcp-servers/{id}/tools",
+                "listMcpServerTools",
+                "List an MCP server's tools with their input schemas",
+            ),
             Op::get(
                 "/api/v1/mcp-servers/{id}/oauth-client",
                 "getMcpOauthClient",
@@ -2228,6 +2290,11 @@ fn operations() -> Vec<Op> {
                 "getAdaptiveTelemetry",
                 "Samples the gateways have pushed back",
             ),
+            Op::get(
+                "/api/v1/breaker-state",
+                "getBreakerState",
+                "Circuit-breaker state of every target, across the gateway fleet",
+            ),
         ],
     ));
 
@@ -2238,6 +2305,11 @@ fn operations() -> Vec<Op> {
                 "/api/v1/cluster/nodes",
                 "listClusterNodes",
                 "List gateway nodes that have registered",
+            ),
+            Op::get(
+                "/api/v1/cluster/summary",
+                "getClusterSummary",
+                "Counts of live, stale and lagging gateways, with no node identities",
             ),
             Op::put(
                 "/api/v1/cluster/nodes/{id}/drain",
@@ -2436,6 +2508,47 @@ fn operations() -> Vec<Op> {
     ));
 
     ops.extend(tagged(
+        "ldap",
+        vec![
+            Op::get(
+                "/api/v1/orgs/{org_id}/ldap-directories",
+                "listLdapDirectories",
+                "Read an organization's LDAP directory",
+            ),
+            Op::post(
+                "/api/v1/orgs/{org_id}/ldap-directories",
+                "createLdapDirectory",
+                "Register an LDAP directory",
+            ),
+            Op::put(
+                "/api/v1/ldap-directories/{id}",
+                "updateLdapDirectory",
+                "Update an LDAP directory in place",
+            ),
+            Op::delete(
+                "/api/v1/ldap-directories/{id}",
+                "deleteLdapDirectory",
+                "Delete an LDAP directory",
+            ),
+            Op::get(
+                "/api/v1/ldap-directories/{id}/group-mappings",
+                "listLdapGroupMappings",
+                "List an LDAP directory's group mappings",
+            ),
+            Op::post(
+                "/api/v1/ldap-directories/{id}/group-mappings",
+                "createLdapGroupMapping",
+                "Map a directory group to a role at a scope",
+            ),
+            Op::delete(
+                "/api/v1/ldap-group-mappings/{id}",
+                "deleteLdapGroupMapping",
+                "Delete an LDAP group mapping",
+            ),
+        ],
+    ));
+
+    ops.extend(tagged(
         "sso",
         vec![
             Op::get(
@@ -2507,6 +2620,38 @@ fn operations() -> Vec<Op> {
                 "Redeem the one-time code a browser SSO sign-in ended with for its session",
             )
             .public(),
+        ],
+    ));
+
+    ops.extend(tagged(
+        "api-tokens",
+        vec![
+            Op::get(
+                "/api/v1/orgs/{org_id}/api-tokens",
+                "listApiTokens",
+                "List an organization's scoped API tokens",
+            )
+            .ok(Payload::List("ApiToken")),
+            Op::post(
+                "/api/v1/orgs/{org_id}/api-tokens",
+                "createApiToken",
+                "Mint a scoped API token; the secret is returned once",
+            )
+            .body(Payload::Ref("CreateApiToken"))
+            .ok(Payload::Ref("SecretApiToken")),
+            Op::post(
+                "/api/v1/api-tokens/{id}/rotate",
+                "rotateApiToken",
+                "Replace a token's secret; the old one stops working at once",
+            )
+            .ok(Payload::Ref("SecretApiToken"))
+            .conflict(API_TOKEN_INACTIVE_409),
+            Op::delete(
+                "/api/v1/api-tokens/{id}",
+                "revokeApiToken",
+                "Revoke a scoped API token",
+            )
+            .ok(Payload::Ref("ApiToken")),
         ],
     ));
 
@@ -2663,6 +2808,8 @@ fn tags() -> Value {
         {"name": "settings", "description": "deployment-wide singletons the gateway reads from the snapshot"},
         {"name": "invitations", "description": "email invitations into an organization"},
         {"name": "sso", "description": "SSO providers, group mappings and the login redirect"},
+        {"name": "api-tokens", "description": "scoped control-plane API tokens for automation"},
+        {"name": "ldap", "description": "LDAP directories and the group mappings that turn directory groups into roles"},
         {"name": "scim", "description": "SCIM 2.0 provisioning and the tokens that authenticate it"},
         {"name": "proxy", "description": "the dashboard Playground's authenticated passthrough to the data plane"}
     ])
@@ -3124,8 +3271,63 @@ fn identity_schemas(p: &Prim) -> Value {
                 "id": uuid, "email": {"type": "string", "format": "email"},
                 "is_superadmin": {"type": "boolean"},
                 "deactivated_at": nullable_timestamp,
-                "created_at": timestamp
+                "created_at": timestamp,
+                "deployment_role": {"type": ["string", "null"], "enum": ["operator", "security_auditor", null]}
             }
+        },
+        "SetDeploymentRole": {
+            "type": "object",
+            "required": ["role"],
+            "properties": {
+                "role": {"type": ["string", "null"], "enum": ["operator", "security_auditor", null],
+                    "description": "null clears the account's deployment role"}
+            },
+            "additionalProperties": false
+        },
+        "ApiToken": {
+            "type": "object",
+            "required": ["id", "org_id", "name", "token_prefix", "created_at"],
+            "properties": {
+                "id": uuid, "org_id": uuid,
+                "team_id": {"type": ["string", "null"], "format": "uuid"},
+                "project_id": {"type": ["string", "null"], "format": "uuid"},
+                "name": {"type": "string"},
+                "role": {"type": ["string", "null"], "enum": ["admin", "member", "viewer", null]},
+                "custom_role_id": {"type": ["string", "null"], "format": "uuid"},
+                "token_prefix": {"type": "string", "description": "the first characters of the value, to recognise it in a list"},
+                "expires_at": nullable_timestamp,
+                "created_by": {"type": ["string", "null"], "format": "uuid"},
+                "created_at": timestamp,
+                "rotated_at": nullable_timestamp,
+                "last_used_at": nullable_timestamp,
+                "revoked_at": nullable_timestamp
+            }
+        },
+        "SecretApiToken": {
+            "type": "object",
+            "required": ["id", "org_id", "name", "token_prefix", "created_at", "secret"],
+            "description": "an ApiToken plus its secret, returned this once and never again",
+            "properties": {
+                "id": uuid, "org_id": uuid,
+                "name": {"type": "string"},
+                "token_prefix": {"type": "string"},
+                "created_at": timestamp,
+                "secret": {"type": "string", "description": "the bearer value, `rolter_api_…`"}
+            }
+        },
+        "CreateApiToken": {
+            "type": "object",
+            "required": ["name"],
+            "properties": {
+                "name": {"type": "string", "maxLength": 80},
+                "team_id": {"type": ["string", "null"], "format": "uuid", "description": "omit team_id and project_id for an org-wide token"},
+                "project_id": {"type": ["string", "null"], "format": "uuid"},
+                "role": {"type": ["string", "null"], "enum": ["admin", "member", "viewer", null]},
+                "custom_role_id": {"type": ["string", "null"], "format": "uuid", "description": "give exactly one of role and custom_role_id"},
+                "expires_in_days": {"type": ["integer", "null"], "minimum": 1, "maximum": 730, "default": 90},
+                "never_expires": {"type": "boolean", "default": false}
+            },
+            "additionalProperties": false
         },
         "CreateUser": {
             "type": "object",
@@ -3544,7 +3746,26 @@ fn virtual_key_schemas(p: &Prim) -> Value {
                 "models": string_list,
                 "providers": string_list,
                 "cache": {"type": ["boolean", "null"]},
-                "expires_in_days": {"type": ["integer", "null"], "minimum": 1}
+                "expires_in_days": {"type": ["integer", "null"], "minimum": 1},
+                "budget": {
+                    "type": ["object", "null"],
+                    "description": "a spend cap minted with the key: a budget scoped to the key, written in the same transaction (#1171)",
+                    "required": ["limit_usd"],
+                    "properties": {
+                        "limit_usd": {"type": "string", "description": "decimal, 0 to 99999999.9999"},
+                        "period": {"type": "string", "description": "daily, monthly or total (default monthly)"}
+                    },
+                    "additionalProperties": false
+                },
+                "rate_limit": {
+                    "type": ["object", "null"],
+                    "description": "a throughput cap minted with the key: a rate limit scoped to the key (#1171). At least one of rpm and tpm, each at least 1",
+                    "properties": {
+                        "rpm": {"type": ["integer", "null"], "minimum": 1},
+                        "tpm": {"type": ["integer", "null"], "minimum": 1}
+                    },
+                    "additionalProperties": false
+                }
             },
             "additionalProperties": false
         },
@@ -3592,7 +3813,7 @@ fn governance_schemas(p: &Prim) -> Value {
     // the governance dimensions a key's spend rolls up to (#539)
     let scope_type = json!({
         "type": "string",
-        "enum": ["org", "team", "project", "virtual_key", "business_unit", "customer"]
+        "enum": ["org", "team", "project", "virtual_key", "business_unit", "customer", "user"]
     });
     // what `validate_period` in `crud/` accepts, read off the same table the
     // snapshot loader uses, so the documented set cannot drift from it (#1902)
@@ -3619,7 +3840,10 @@ fn governance_schemas(p: &Prim) -> Value {
                     "description": "as stored. A budget written before the period was checked may hold a value the gateway does not recognise; it is enforced as monthly and listed by GET /api/v1/config/problems"
                 },
                 "unpriced_policy": {"type": ["string", "null"], "enum": ["ignore", "warn", "block", null]},
-                "created_at": timestamp
+                "created_at": timestamp,
+                "within_org_id": {"type": ["string", "null"], "format": "uuid", "description": "a user cap only: counts the keys the person minted in this org"},
+                "within_project_id": {"type": ["string", "null"], "format": "uuid", "description": "a user cap only: counts the keys the person minted in this project"},
+                "scope_name": {"type": ["string", "null"], "description": "the org-wide list only: the name (else the prefix) of the key a virtual_key budget caps"}
             }
         },
         "BudgetSpendReport": {
@@ -3658,7 +3882,9 @@ fn governance_schemas(p: &Prim) -> Value {
                     "description": period["description"],
                     "default": "30d"
                 },
-                "unpriced_policy": {"type": ["string", "null"], "enum": ["ignore", "warn", "block", null]}
+                "unpriced_policy": {"type": ["string", "null"], "enum": ["ignore", "warn", "block", null]},
+                "within_org_id": {"type": ["string", "null"], "format": "uuid", "description": "a user cap only: counts the keys the person minted in this org"},
+                "within_project_id": {"type": ["string", "null"], "format": "uuid", "description": "a user cap only: counts the keys the person minted in this project"}
             },
             "additionalProperties": false
         },
@@ -3686,7 +3912,10 @@ fn governance_schemas(p: &Prim) -> Value {
                 "scope_id": uuid,
                 "rpm": {"type": ["integer", "null"]},
                 "tpm": {"type": ["integer", "null"]},
-                "created_at": timestamp
+                "created_at": timestamp,
+                "within_org_id": {"type": ["string", "null"], "format": "uuid", "description": "a user cap only: counts the keys the person minted in this org"},
+                "within_project_id": {"type": ["string", "null"], "format": "uuid", "description": "a user cap only: counts the keys the person minted in this project"},
+                "scope_name": {"type": ["string", "null"], "description": "the org-wide list only: the name (else the prefix) of the key a virtual_key limit caps"}
             }
         },
         "CreateRateLimit": {
@@ -3697,7 +3926,9 @@ fn governance_schemas(p: &Prim) -> Value {
                 "scope_type": scope_type,
                 "scope_id": uuid,
                 "rpm": {"type": ["integer", "null"], "minimum": 1},
-                "tpm": {"type": ["integer", "null"], "minimum": 1}
+                "tpm": {"type": ["integer", "null"], "minimum": 1},
+                "within_org_id": {"type": ["string", "null"], "format": "uuid", "description": "a user cap only: counts the keys the person minted in this org"},
+                "within_project_id": {"type": ["string", "null"], "format": "uuid", "description": "a user cap only: counts the keys the person minted in this project"}
             },
             "additionalProperties": false
         },

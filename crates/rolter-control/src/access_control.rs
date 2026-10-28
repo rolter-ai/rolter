@@ -43,6 +43,8 @@
 //! audited `access_profile.update`. Deleting a *profile* does cascade its
 //! assignments and policy, because that only ever removes access.
 
+use std::collections::HashMap;
+
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::routing::{delete, get, put};
@@ -458,11 +460,53 @@ async fn resolve_roles(
     Ok(out)
 }
 
+/// What `GET /api/v1/orgs/{org_id}/access-profiles` can embed beside each
+/// profile.
+#[derive(Deserialize, Default)]
+struct ListProfilesQuery {
+    /// comma-separated extras, each the field `GET /api/v1/access-profiles/{id}`
+    /// returns: `roles`, `assignments` and `policy`. Omitted, the list is the
+    /// plain profiles it always was
+    include: Option<String>,
+}
+
+/// One profile of the list, plus whatever `?include=` asked to have embedded.
+/// The extras are skipped when not asked for, so a client that sends no
+/// `include` reads exactly the body it read before.
+#[derive(Serialize)]
+struct ProfileListEntry {
+    #[serde(flatten)]
+    profile: AccessProfile,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    roles: Option<Vec<AccessProfileRole>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    assignments: Option<Vec<AccessProfileAssignment>>,
+    /// `null` for a profile with no policy, as in the detail
+    #[serde(skip_serializing_if = "Option::is_none")]
+    policy: Option<Option<AccessProfilePolicy>>,
+}
+
 async fn list_profiles(
     principal: Principal,
     State(state): State<ControlState>,
     Path(org_id): Path<Uuid>,
-) -> ApiResult<Json<Vec<AccessProfile>>> {
+    Query(query): Query<ListProfilesQuery>,
+) -> ApiResult<Json<Vec<ProfileListEntry>>> {
+    let (mut with_roles, mut with_assignments, mut with_policy) = (false, false, false);
+    for token in query.include.as_deref().unwrap_or("").split(',') {
+        match token.trim() {
+            "" => {}
+            "roles" => with_roles = true,
+            "assignments" => with_assignments = true,
+            "policy" => with_policy = true,
+            other => {
+                return Err(invalid_field(
+                    "include",
+                    format!("unknown include `{other}`; expected roles, assignments or policy"),
+                ))
+            }
+        }
+    }
     authorize(
         &state,
         &principal,
@@ -470,7 +514,41 @@ async fn list_profiles(
         cap!("access_profile", Read),
     )
     .await?;
-    Ok(Json(AccessProfileRepo(pool(&state)).list(org_id).await?))
+    let repo = AccessProfileRepo(pool(&state));
+    let profiles = repo.list(org_id).await?;
+    let mut roles: HashMap<Uuid, Vec<AccessProfileRole>> = HashMap::new();
+    if with_roles {
+        for role in repo.list_org_roles(org_id).await? {
+            roles.entry(role.profile_id).or_default().push(role);
+        }
+    }
+    let mut assignments: HashMap<Uuid, Vec<AccessProfileAssignment>> = HashMap::new();
+    if with_assignments {
+        for assignment in repo.list_org_assignments(org_id, None, None).await? {
+            assignments
+                .entry(assignment.profile_id)
+                .or_default()
+                .push(assignment);
+        }
+    }
+    let mut policies: HashMap<Uuid, AccessProfilePolicy> = HashMap::new();
+    if with_policy {
+        for policy in repo.list_org_policies(org_id).await? {
+            policies.insert(policy.profile_id, policy);
+        }
+    }
+    Ok(Json(
+        profiles
+            .into_iter()
+            .map(|profile| ProfileListEntry {
+                roles: with_roles.then(|| roles.remove(&profile.id).unwrap_or_default()),
+                assignments: with_assignments
+                    .then(|| assignments.remove(&profile.id).unwrap_or_default()),
+                policy: with_policy.then(|| policies.remove(&profile.id)),
+                profile,
+            })
+            .collect(),
+    ))
 }
 
 async fn get_profile(
@@ -876,6 +954,9 @@ pub(crate) async fn caller_policy(
 ) -> ApiResult<MergedPolicy> {
     let user = match principal {
         Principal::Superadmin { .. } => return Ok(MergedPolicy::default()),
+        // access profiles are assigned to people and teams, so a token carries
+        // none: its role alone decides, as for an account with no profile
+        Principal::Token(_) => return Ok(MergedPolicy::default()),
         Principal::User(user) => user,
     };
     let policies = AccessProfileRepo(pool(state))

@@ -59,7 +59,7 @@ use crate::ControlState;
 /// [`IdentityProvider`] for rolter's own local accounts (email + argon2id
 /// password hash). Implements ROL-35: local login is now one of potentially
 /// several pluggable providers, alongside [`crate::sso::OidcIdentityProvider`]
-/// and, once it is wired to sign-in, LDAP (#1826).
+/// and LDAP ([`crate::ldap_signin`], #1826).
 pub(crate) struct LocalIdentityProvider {
     pool: PgPool,
 }
@@ -375,12 +375,21 @@ async fn login(
     }
 
     let provider = LocalIdentityProvider::new(pool.clone());
-    let resolved = provider
+    let mut resolved = provider
         .resolve(Credential::Password {
             email: email.clone(),
-            password: body.password,
+            password: body.password.clone(),
         })
         .await;
+    // a local password that does not verify may still be a directory login
+    // (#1826). Only a plain failure falls through: an account the org forces
+    // through sso (`PolicyDenied`) or a database error keep their own answer,
+    // and with no directory enabled this adds one indexed existence probe
+    if matches!(resolved, Err(IdentityError::NotVerified))
+        && crate::ldap_signin::any_enabled(&state).await
+    {
+        resolved = crate::ldap_signin::sign_in(&state, &email, &body.password).await;
+    }
 
     let identity = match resolved {
         Ok(identity) => identity,

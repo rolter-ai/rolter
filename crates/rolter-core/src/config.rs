@@ -76,6 +76,14 @@ pub struct GatewayConfig {
     /// protected internal snapshot channel and are never exposed publicly.
     #[serde(default)]
     pub mcp_oauth_sessions: Vec<McpOAuthSessionConfig>,
+    /// enabled MCP tool groups. The proxy treats them as an access boundary:
+    /// a server named by any of them only serves the tools they list (#1403)
+    #[serde(default)]
+    pub mcp_tool_groups: Vec<McpToolGroupConfig>,
+    /// organization MCP settings the proxy applies per request (#1404). An
+    /// organization with no entry has never saved any and gets the defaults
+    #[serde(default)]
+    pub mcp_settings: Vec<McpOrgSettingsConfig>,
     #[serde(default)]
     pub model_prices: Vec<ModelPriceConfig>,
     /// settlement currency and rate table. Budgets and accumulated spend are
@@ -2155,6 +2163,10 @@ pub struct McpServerConfig {
     pub request_timeout_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_retries: Option<u32>,
+    /// the tools the server's manifest declares, discovered or typed. Empty
+    /// means it declares none, which leaves nothing to check a call against
+    #[serde(default)]
+    pub tools: Vec<String>,
 }
 
 impl std::fmt::Debug for McpServerConfig {
@@ -2176,8 +2188,56 @@ impl std::fmt::Debug for McpServerConfig {
             .field("connect_timeout_ms", &self.connect_timeout_ms)
             .field("request_timeout_ms", &self.request_timeout_ms)
             .field("max_retries", &self.max_retries)
+            .field("tools", &self.tools.len())
             .finish()
     }
+}
+
+/// An organization's MCP settings as the proxy applies them (#1404).
+///
+/// Precedence for the three transport values, highest first: the server's own
+/// override (`McpServerConfig::connect_timeout_ms` and its siblings), then
+/// these, then the deployment-level `[timeouts]` default. `default_transport`
+/// is not here: a server row always names its transport, so the org default is
+/// what the control plane gives a server registered without one.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct McpOrgSettingsConfig {
+    pub org_id: String,
+    pub connect_timeout_ms: u64,
+    pub request_timeout_ms: u64,
+    /// times a call is repeated after a connection that was never made; a
+    /// call that reached the server is never repeated
+    pub max_retries: u32,
+    /// what to do when a request cannot be inspected for tool policy: `true`
+    /// forwards it unchecked, `false` (the default) refuses it
+    #[serde(default)]
+    pub fail_open: bool,
+    /// whether a call may name a tool the server's manifest does not declare
+    #[serde(default)]
+    pub allow_unlisted_tools: bool,
+}
+
+/// One tool of one server, as a tool group names it.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+pub struct McpToolRefConfig {
+    pub server_id: String,
+    pub tool: String,
+}
+
+/// An enabled, organization-owned bundle of MCP tools (#1403).
+///
+/// Only enabled groups reach the snapshot. A server that at least one of them
+/// names is *governed*: the proxy forwards a `tools/call` for it only when the
+/// tool is in the union of the groups that name it, and refuses the rest. A
+/// server no group names is not governed by this and falls back to its declared
+/// manifest.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct McpToolGroupConfig {
+    pub id: String,
+    pub org_id: String,
+    pub slug: String,
+    #[serde(default)]
+    pub tools: Vec<McpToolRefConfig>,
 }
 
 /// A live OAuth session the gateway may spend for one user and MCP server.
@@ -2529,6 +2589,43 @@ pub enum BudgetScope {
     BusinessUnit,
     /// customer the key's spend rolls up to (#539)
     Customer,
+    /// the person who minted the key, counted across every key they minted
+    /// (`created_by`), so "each engineer may spend $50 a month however many
+    /// keys they mint" is expressible (#1830)
+    User,
+}
+
+/// Where a [`BudgetScope::User`] cap applies, when it does not apply to the
+/// person's keys everywhere (#1830): only the keys they minted in one org, or
+/// in one project. Meaningless on every other scope, where the id already
+/// names a place.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ScopeWithin {
+    /// an org id
+    Org(String),
+    /// a project id
+    Project(String),
+}
+
+impl ScopeWithin {
+    /// The part of a counter key that tells a narrowed cap from the person's
+    /// un-narrowed one, and from the same person's cap in another place: two
+    /// caps on one user must not share a counter.
+    pub fn key_segment(&self) -> String {
+        match self {
+            ScopeWithin::Org(id) => format!("org:{id}"),
+            ScopeWithin::Project(id) => format!("project:{id}"),
+        }
+    }
+
+    /// Whether a request in `org` and `project` is inside this place.
+    pub fn contains(&self, org: &str, project: &str) -> bool {
+        match self {
+            ScopeWithin::Org(id) => !org.is_empty() && id == org,
+            ScopeWithin::Project(id) => !project.is_empty() && id == project,
+        }
+    }
 }
 
 impl BudgetScope {
@@ -2541,6 +2638,7 @@ impl BudgetScope {
             BudgetScope::Key => "key",
             BudgetScope::BusinessUnit => "business_unit",
             BudgetScope::Customer => "customer",
+            BudgetScope::User => "user",
         }
     }
 
@@ -2554,6 +2652,7 @@ impl BudgetScope {
             "virtual_key" => BudgetScope::Key,
             "business_unit" => BudgetScope::BusinessUnit,
             "customer" => BudgetScope::Customer,
+            "user" => BudgetScope::User,
             _ => return None,
         })
     }
@@ -2705,6 +2804,10 @@ pub struct BudgetConfig {
     /// resolution is a `max`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unpriced_policy: Option<UnpricedPolicy>,
+    /// narrows a [`BudgetScope::User`] budget to the keys the person minted in
+    /// one org or project; `None` counts all of them (#1830)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub within: Option<ScopeWithin>,
 }
 
 impl BudgetConfig {
@@ -2714,12 +2817,21 @@ impl BudgetConfig {
     /// The gateway writes and reads it, and the control plane reads it to show
     /// the spend so far, so the layout lives here once.
     pub fn spend_key(&self, now: DateTime<Utc>) -> String {
-        format!(
-            "rolter:budget:{}:{}:{}",
-            self.scope.key_label(),
-            self.id,
-            self.period.bucket(now)
-        )
+        match &self.within {
+            None => format!(
+                "rolter:budget:{}:{}:{}",
+                self.scope.key_label(),
+                self.id,
+                self.period.bucket(now)
+            ),
+            Some(within) => format!(
+                "rolter:budget:{}:{}:{}:{}",
+                self.scope.key_label(),
+                self.id,
+                within.key_segment(),
+                self.period.bucket(now)
+            ),
+        }
     }
 }
 
@@ -2741,6 +2853,10 @@ pub struct RateLimitConfig {
     /// capped
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tpm: Option<u32>,
+    /// narrows a [`BudgetScope::User`] limit to the keys the person minted in
+    /// one org or project; `None` counts all of them (#1830)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub within: Option<ScopeWithin>,
 }
 
 /// Upstream retry policy. On a transient upstream failure (HTTP 408/429/5xx or a
@@ -5796,6 +5912,27 @@ mod tests {
     }
 
     #[test]
+    fn a_narrowed_user_cap_keeps_its_own_counter() {
+        let cap = |within: Option<ScopeWithin>| BudgetConfig {
+            scope: BudgetScope::User,
+            id: "u-1".into(),
+            limit_usd: Default::default(),
+            period: BudgetPeriod::Monthly,
+            unpriced_policy: None,
+            within,
+        };
+        let now = at(2026, 10, 11, 1);
+        let keys = [
+            cap(None).spend_key(now),
+            cap(Some(ScopeWithin::Org("o".into()))).spend_key(now),
+            cap(Some(ScopeWithin::Project("o".into()))).spend_key(now),
+        ];
+        assert_eq!(keys[0], "rolter:budget:user:u-1:202610");
+        assert_eq!(keys[1], "rolter:budget:user:u-1:org:o:202610");
+        assert_ne!(keys[1], keys[2], "an org and a project of one id differ");
+    }
+
+    #[test]
     fn the_spend_key_names_scope_id_and_window() {
         let budget = BudgetConfig {
             scope: BudgetScope::Key,
@@ -5803,6 +5940,7 @@ mod tests {
             limit_usd: Default::default(),
             period: BudgetPeriod::Monthly,
             unpriced_policy: None,
+            within: None,
         };
         assert_eq!(
             budget.spend_key(at(2026, 10, 11, 1)),
@@ -7570,6 +7708,7 @@ mod tests {
             limit_usd: d("100.5"),
             period: BudgetPeriod::default(),
             unpriced_policy: None,
+            within: None,
         };
         let json = serde_json::to_value(&budget).expect("serializes");
         assert!(json["limit_usd"].is_number(), "{json}");

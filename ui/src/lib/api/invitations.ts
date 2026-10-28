@@ -20,6 +20,15 @@ export interface Invitation {
   accepted_at: string | null;
   revoked_at: string | null;
   created_at: string;
+  /**
+   * How emailing the link went (#1828): `sent`, `failed`, or `not_configured`
+   * when the control plane has no mail relay. The link is returned to the admin
+   * whichever it is.
+   */
+  mail_status: "not_configured" | "sent" | "failed";
+  mail_attempted_at: string | null;
+  /** why a `failed` send failed, in words that are safe to show */
+  mail_error: string | null;
 }
 
 export interface CreatedInvitation {

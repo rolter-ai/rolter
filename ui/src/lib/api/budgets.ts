@@ -14,6 +14,20 @@ export const SCOPE_TYPES = [
   "customer",
 ] as const;
 
+/**
+ * A budget or rate limit that counts every key one person minted (#1830). It is
+ * not in `SCOPE_TYPES`: the Limits screen offers no user picker, so creating one
+ * stays on the API, but a row of this kind still comes back from the reads and
+ * has to be drawn.
+ */
+export const USER_SCOPE = "user";
+
+/** the narrowing a user-scope row carries; both null counts every key the person minted */
+export interface UserScopeNarrowing {
+  within_org_id?: string | null;
+  within_project_id?: string | null;
+}
+
 export type ScopeType = (typeof SCOPE_TYPES)[number];
 
 /**
@@ -26,7 +40,7 @@ export const UNPRICED_POLICIES = ["ignore", "warn", "block"] as const;
 
 export type UnpricedPolicy = (typeof UNPRICED_POLICIES)[number];
 
-export interface BudgetRow {
+export interface BudgetRow extends UserScopeNarrowing {
   id: string;
   scope_type: string;
   scope_id: string;
@@ -35,9 +49,12 @@ export interface BudgetRow {
   period: string;
   unpriced_policy: UnpricedPolicy | null;
   created_at: string;
+  /// the virtual key's name (its prefix when unnamed) on an org-wide read; null
+  /// on other scopes, and absent on a per-scope read (#3128)
+  scope_name?: string | null;
 }
 
-export interface CreateBudgetInput {
+export interface CreateBudgetInput extends UserScopeNarrowing {
   scope_type: string;
   scope_id: string;
   limit_usd: string;
@@ -94,6 +111,18 @@ export async function fetchBudgetSpend(
   return { status: body.status ?? "unavailable", budgets: body.budgets };
 }
 
+/**
+ * The spend so far against every budget in the org the caller may read (#3128),
+ * the batch form of `fetchBudgetSpend`; same body, same malformed-is-unavailable rule.
+ */
+export async function fetchOrgBudgetSpend(orgId: string): Promise<BudgetSpendReport> {
+  const body = await getJson<Partial<BudgetSpendReport> | null>(
+    `/api/v1/orgs/${encodeURIComponent(orgId)}/budgets/spend`,
+  );
+  if (!body || !Array.isArray(body.budgets)) return { status: "unavailable", budgets: [] };
+  return { status: body.status ?? "unavailable", budgets: body.budgets };
+}
+
 export function createBudget(input: CreateBudgetInput): Promise<BudgetRow> {
   return sendJson<BudgetRow>("POST", "/api/v1/budgets", input);
 }
@@ -117,16 +146,18 @@ export function deleteBudget(id: string): Promise<void> {
   return sendJson<void>("DELETE", `/api/v1/budgets/${id}`);
 }
 
-export interface RateLimitRow {
+export interface RateLimitRow extends UserScopeNarrowing {
   id: string;
   scope_type: string;
   scope_id: string;
   rpm?: number | null;
   tpm?: number | null;
   created_at: string;
+  /// see `BudgetRow.scope_name`
+  scope_name?: string | null;
 }
 
-export interface CreateRateLimitInput {
+export interface CreateRateLimitInput extends UserScopeNarrowing {
   scope_type: string;
   scope_id: string;
   rpm?: number;
