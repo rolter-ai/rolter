@@ -1557,6 +1557,93 @@ async fn route_update_is_one_transaction() {
     assert!(matches!(missing, Error::NotFound(_)), "{missing:?}");
 }
 
+#[tokio::test]
+async fn mcp_tool_discovery_keeps_the_manifest_when_a_later_attempt_fails() {
+    if !super::super::test_database::is_configured() {
+        eprintln!("skipping: {} not set", super::super::test_database::URL_ENV);
+        return;
+    }
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let org = OrgRepo(&pool).create("acme", "acme").await.unwrap();
+    let repo = McpServerRepo(&pool);
+    let server = repo
+        .create(NewMcpServer {
+            org_id: org.id,
+            name: "docs",
+            slug: "docs",
+            url: "https://mcp.example.com",
+            transport: "streamable_http",
+            description: "",
+            enabled: true,
+            tools: &["old".to_string()],
+            source: "custom",
+            required_scopes: &[],
+        })
+        .await
+        .unwrap();
+    assert_eq!(server.tools_discovery_status, "pending");
+
+    // a failure before any success stays "not discovered yet", with the reason
+    let failed = repo
+        .record_tool_discovery_failure(server.id, "unreachable")
+        .await
+        .unwrap();
+    assert_eq!(failed.tools_discovery_status, "pending");
+    assert_eq!(failed.tools_discovery_error.as_deref(), Some("unreachable"));
+    assert!(failed.tools_discovered_at.is_none());
+    assert!(failed.tools_discovery_attempted_at.is_some());
+    assert_eq!(failed.tools, ["old"]);
+
+    let schemas = serde_json::json!([{"name": "new", "description": "d", "input_schema": {}}]);
+    let found = repo
+        .record_tool_discovery(
+            server.id,
+            McpToolDiscovery {
+                tools: &["new".to_string(), "old".to_string()],
+                stale: &["old".to_string()],
+                schemas: &schemas,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(found.tools_discovery_status, "discovered");
+    assert_eq!(found.tools_discovery_error, None);
+    assert_eq!(found.tools_stale, ["old"]);
+    assert_eq!(repo.tool_schemas(server.id).await.unwrap(), schemas);
+
+    // a later failure marks the row failed but keeps what was discovered
+    let later = repo
+        .record_tool_discovery_failure(server.id, "auth_rejected")
+        .await
+        .unwrap();
+    assert_eq!(later.tools_discovery_status, "failed");
+    assert_eq!(later.tools, ["new", "old"]);
+    assert_eq!(later.tools_stale, ["old"]);
+    assert_eq!(later.tools_discovered_at, found.tools_discovered_at);
+
+    // an operator edit that removes a flagged tool drops its flag
+    let edited = repo
+        .update(
+            server.id,
+            McpServerUpdate {
+                name: "docs",
+                url: "https://mcp.example.com",
+                transport: "streamable_http",
+                description: "",
+                enabled: true,
+                tools: &["new".to_string()],
+                required_scopes: &[],
+                connect_timeout_ms: None,
+                request_timeout_ms: None,
+                max_retries: None,
+            },
+        )
+        .await
+        .unwrap();
+    assert!(edited.tools_stale.is_empty());
+}
+
 /// Provider health follows the routes a project or team uses (#1833): only the
 /// providers its routes target come back, by `(org, name)`, once each.
 #[tokio::test]

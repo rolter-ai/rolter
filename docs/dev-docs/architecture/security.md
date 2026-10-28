@@ -5,6 +5,7 @@
 - **Upstream provider keys** are never stored in plaintext in the database. They are **envelope-encrypted** with AES-256-GCM: a per-record data key/nonce, wrapped by a master key (KEK) supplied via `ROLTER_KEK` (env/file). Pluggable backends (HashiCorp Vault, cloud KMS) are a roadmap item.
 - In the **bootstrap file**, prefer `api_key_env` over inline `api_key` so secrets stay in the environment, not on disk.
 - **Virtual keys** are stored as hashes with a short display prefix; the raw key is shown once at creation.
+- **Control-plane API tokens** (#1836) are stored the same way: a peppered sha-256 plus a display prefix, the secret shown once at mint or rotation, an expiry (90 days by default), and mint, rotation and revocation audited. A token holds one role at one scope, never reaches a deployment-wide capability and cannot manage tokens; see [RBAC & authentication](rbac-and-auth.md#scoped-api-tokens-for-automation-1836).
 - Secrets are never logged. The gateway redacts auth headers from traces.
 - **Logs never carry datastore credentials (#2406).** A Redis, ClickHouse, snapshot or Postgres URL can hold a password as userinfo (`redis://:pw@host`) or in a query parameter (`?password=`). Every startup line that names one, and every error that quotes one, goes through `rolter_core::redact` (`crates/rolter-core/src/redact.rs`): `redact_url` keeps scheme, host, port and path and prints userinfo and credential-named query values as `***`, `redact_urls_in_text` does the same for URLs inside an error string, and a URL that does not parse prints as `<invalid url>` rather than being echoed. Use it for any new log line or error that embeds a URL.
 - **`--help` never prints a secret from the environment (#2793).** clap renders `[env: NAME=value]` under every flag backed by an environment variable, current value included, unless the argument sets `hide_env_values = true`. `--help` is what an operator runs, and pastes into an issue, when something does not start, so it is the same leak as the startup log (#2406) through another door. Every `env =` argument whose name matches `TOKEN`, `KEY`, `PEPPER`, `KEK`, `SECRET`, `PASSWORD`, `CREDENTIAL`, `DSN`, `HEADERS` or `_URL` sets it, across `rolter`, `rolter-control`, `rolter-gateway` and `rolter-seed`. The variable's name is still listed; only its value is withheld. `rolter_core::cli_guard` (`crates/rolter-core/src/cli_guard.rs`, behind the `cli-guard` feature each binary crate enables as a dev-dependency) walks a binary's whole clap `Command`, subcommands included, and each binary's tests fail naming any matching argument that does not hide its value, so a flag added later is caught on the pull request that adds it. `crates/rolter/tests/help_hides_env_values.rs` runs the real `rolter` binary with the variables set and asserts none of them reaches `--help`. A non-secret variable with an unlucky name, such as `ROLTER_UI_DOCS_BASE_URL`, hides its value too: the rule is on the name, with no exemption list to go stale.
@@ -1022,22 +1023,24 @@ ones included, and is guarded by the superadmin-only `deployment_audit_log:read`
 capability. It is the same keyset-paged read as the per-org one: the handlers
 share the query-string parsing (`audit_log_filter`), the `(at, id)` cursor and
 the response builder, and differ only in the store call (`list_page_all` /
-`count_all` have no org predicate). A security-auditor role (#1834) does not
-exist yet, so the endpoint admits superadmins alone; that role is to be added
-at the guard in `list_deployment_audit_log`.
+`count_all` have no org predicate). The `security_auditor` deployment role (#1834) holds the same capability, so a
+read-only reviewer reads it without being a superadmin; an `operator` does not
+(see [RBAC & authentication](rbac-and-auth.md#deployment-roles-an-operator-and-a-security-auditor-1834)).
+Granting a deployment role is itself audited, as `user.deployment_role`, in this log.
 
-## Three credentials, one word (#943)
+## Four credentials, one word (#943, #1836)
 
-Three unrelated secrets pass through rolter, and each is an "API key" to
+Four unrelated secrets pass through rolter, and each is an "API key" to
 someone. Keeping them apart is a security property, not a documentation
 nicety — a provider key pasted into a client is a credential leak that no
 budget, allow-list or audit row constrains.
 
-| Credential   | Shape                    | Held by               | Checked by                         |
-| ------------ | ------------------------ | --------------------- | ---------------------------------- |
-| virtual key  | `sk-rolter-<48 hex>`     | client applications   | the gateway, on `/v1/*`            |
-| provider key | the provider's own shape | rolter                | nothing — it is presented upstream |
-| admin token  | operator-chosen          | operators, automation | the control plane                  |
+| Credential   | Shape                    | Held by               | Checked by                                                                 |
+| ------------ | ------------------------ | --------------------- | -------------------------------------------------------------------------- |
+| virtual key  | `sk-rolter-<48 hex>`     | client applications   | the gateway, on `/v1/*`                                                    |
+| provider key | the provider's own shape | rolter                | nothing — it is presented upstream                                         |
+| admin token  | operator-chosen          | operators, automation | the control plane                                                          |
+| API token    | `rolter_api_<64 hex>`    | one automation job    | the control plane, as one role at one scope (#1836, never deployment-wide) |
 
 The gateway therefore refuses a _provider-shaped_ key with a message that names
 the mistake ("this looks like an Anthropic provider key…") rather than a bare

@@ -146,6 +146,55 @@ export const LockedOut: Story = {
   },
 };
 
+/**
+ * A control plane started with `ROLTER_ADMIN_TOKEN` and no database serves no
+ * `/auth/*` routes at all, and the analytics and health routes accept the admin
+ * token alone (#1909). The card takes that token rather than an address, and
+ * stores it as the bearer every later request carries.
+ */
+export const AdminTokenWithoutADatabase: Story = {
+  render: () => (
+    <Harness
+      fetchStub={async (input) => {
+        const url = String(input);
+        if (url.includes("/auth/methods") || url.includes("/auth/me")) {
+          return new Response(
+            JSON.stringify({ error: { message: "no such endpoint", code: "no_such_endpoint" } }),
+            { status: 404, headers: { "Content-Type": "application/json" } },
+          );
+        }
+        return json({});
+      }}
+    >
+      <AuthProvider>
+        <Login />
+      </AuthProvider>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    try {
+      const field = await canvas.findByLabelText(/admin token/i);
+      // no address and no password: the token is the whole credential
+      await expect(canvas.queryByLabelText(/^email/i)).toBeNull();
+      await expect(canvas.queryByLabelText(/^password/i)).toBeNull();
+      await expect(field).toHaveAccessibleDescription(/ROLTER_ADMIN_TOKEN/);
+      const submit = canvas.getByRole("button", { name: /use token/i });
+      // nothing typed yet, nothing to submit
+      await expect(submit).toBeDisabled();
+      await userEvent.type(field, "tok-from-the-operator");
+      await userEvent.click(submit);
+      await waitFor(() =>
+        expect(localStorage.getItem("rolter.session.token")).toBe("tok-from-the-operator"),
+      );
+    } finally {
+      localStorage.removeItem("rolter.session.token");
+      localStorage.removeItem("rolter.session.email");
+      localStorage.removeItem("rolter.session.user");
+    }
+  },
+};
+
 export const ControlPlaneUnreachable: Story = {
   render: () => (
     <Harness
@@ -1058,6 +1107,7 @@ const SSO_MESSAGES: Record<string, RegExp> = {
   unknown_provider: /no longer available/i,
   no_mapped_group: /not in any group/i,
   account_deactivated: /has been deactivated/i,
+  account_outside_org: /cannot sign in through this organization/i,
   idp_verification_failed: /could not be reached or its response/i,
   not_configured: /cannot finish a single sign-on/i,
   internal_error: /failed on our side/i,
@@ -1111,6 +1161,11 @@ export const SsoErrorAccountDeactivated: Story = {
   beforeEach: atQuery("sso_error=account_deactivated"),
   render: refusalRender,
   play: refusalPlay(SSO_MESSAGES.account_deactivated),
+};
+export const SsoErrorAccountOutsideOrg: Story = {
+  beforeEach: atQuery("sso_error=account_outside_org"),
+  render: refusalRender,
+  play: refusalPlay(SSO_MESSAGES.account_outside_org),
 };
 export const SsoErrorVerificationFailed: Story = {
   beforeEach: atQuery("sso_error=idp_verification_failed"),

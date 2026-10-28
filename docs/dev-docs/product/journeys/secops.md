@@ -2,9 +2,10 @@
 
 **Security engineering: reviews and hardens, rarely changes routing.** Wants to
 prove, to themselves and to an auditor, who can read what, that secrets stay out
-of the logs, and that a leaver's access ends. Today that needs **superadmin**,
-because every setting they review is deployment-wide and nothing narrower
-reaches it — which also hands them every tenant's traffic.
+of the logs, and that a leaver's access ends. The settings they
+review are deployment-wide, so they used to need **superadmin**, which also hands
+over every tenant's traffic; the read-only `security_auditor` deployment role
+(#1834) reaches them without it.
 
 **Goal:** "I can show who reads prompts, that credentials never land in a log or
 a response, and that access ends when it should — without being able to change
@@ -18,9 +19,9 @@ trail or should leave a row in it.
 
 ## S0 — the role
 
-| #    | step                                             | where | expect                                                                         | status      |
-| ---- | ------------------------------------------------ | ----- | ------------------------------------------------------------------------------ | ----------- |
-| S0.1 | review security posture without being superadmin | —     | a read-only security-auditor role: settings, guardrails, audit, no tenant data | gap — #1834 |
+| #    | step                                             | where | expect                                                                         | status        |
+| ---- | ------------------------------------------------ | ----- | ------------------------------------------------------------------------------ | ------------- |
+| S0.1 | review security posture without being superadmin | —     | a read-only security-auditor role: settings, guardrails, audit, no tenant data | works — #1834 |
 
 ## S1 — the perimeter
 

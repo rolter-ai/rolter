@@ -38,7 +38,7 @@
 //! audited, so exempting the most privileged account would weaken the policy
 //! and buy no recoverability.
 
-use axum::extract::State;
+use axum::extract::{Path, State};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
@@ -50,7 +50,7 @@ use uuid::Uuid;
 use rolter_auth::totp;
 use rolter_core::Error;
 use rolter_store::postgres::crypto::Kek;
-use rolter_store::postgres::models::{MfaPolicyBinding, User};
+use rolter_store::postgres::models::{MfaPolicyBinding, OrgMemberMfa, User};
 use rolter_store::postgres::repo::{
     mfa_policy_rank, AuditLogRepo, ChallengePurpose, MfaRepo, OrgAuthPolicyRepo, SessionRepo,
     UserRepo,
@@ -58,6 +58,8 @@ use rolter_store::postgres::repo::{
 
 use crate::auth::{session_pepper, AuthError, CurrentUser};
 use crate::crud::{pool, ApiError, ApiResult, SafeJson};
+use crate::rbac::{authorize, Principal, ScopeChain};
+use crate::rbac_matrix::cap;
 use crate::ControlState;
 
 /// How long a login has to answer its second-factor challenge. Long enough to
@@ -102,6 +104,7 @@ pub(crate) fn router() -> Router<ControlState> {
         // the only credential, and it opens these two routes and no others
         .route("/api/v1/auth/mfa/enroll", post(sign_in_enrol))
         .route("/api/v1/auth/mfa/confirm", post(sign_in_confirm))
+        .route("/api/v1/orgs/{org_id}/mfa-status", get(org_mfa_status))
         .route("/api/v1/me/mfa", get(my_status))
         .route("/api/v1/me/mfa/enroll", post(begin_enrolment))
         .route("/api/v1/me/mfa/confirm", post(confirm_enrolment))
@@ -162,6 +165,33 @@ pub(crate) struct MfaStatus {
     /// moment an unenrolled sign-in has to enrol before it gets a session
     /// (#1852). `null` when nothing is required, or it already applies
     pub(crate) enforce_after: Option<DateTime<Utc>>,
+}
+
+/// Who in an org has an armed second factor (#1590).
+///
+/// Answers the question an admin faces when raising `mfa_policy` to a
+/// `required_*` value: which members the policy would send through enrolment.
+/// Gated on `org_auth_policy:read`, the bar for reading the policy itself, so
+/// whoever can decide the policy can see its consequence and nobody else gains
+/// a roster they could not already reach.
+///
+/// `recovery_codes_remaining` is included. It is a count, not a code, and `0`
+/// is operationally useful: that member is one lost phone from the host-side
+/// `rolter mfa reset`. It does say a little about an account, but only to an
+/// admin who can already set the policy that decides whether it can sign in.
+async fn org_mfa_status(
+    principal: Principal,
+    State(state): State<ControlState>,
+    Path(org_id): Path<Uuid>,
+) -> ApiResult<Json<Vec<OrgMemberMfa>>> {
+    authorize(
+        &state,
+        &principal,
+        ScopeChain::org(org_id),
+        cap!("org_auth_policy", Read),
+    )
+    .await?;
+    Ok(Json(MfaRepo(pool(&state)).org_roster(org_id).await?))
 }
 
 async fn my_status(

@@ -245,11 +245,23 @@ fn int_array(values: &[i8]) -> String {
     format!("[{}]", rendered.join(","))
 }
 
-/// The 401 every other guarded route answers with, in the same shape.
-fn unauthenticated() -> Response {
+/// The 401 a control plane with no database answers a missing or wrong admin
+/// token with (#1909).
+///
+/// Coded, unlike the generic 401 the session-backed routes send: with no
+/// database there are no sessions, so the dashboard's "sign in again" would
+/// offer a credential that cannot work. The code says the admin token is the
+/// only thing these routes accept, so the dashboard can ask for it and explain
+/// a refusal instead of looping. The code is part of the API and never renamed.
+fn admin_token_required() -> Response {
     (
         StatusCode::UNAUTHORIZED,
-        Json(json!({"error": {"message": "missing or invalid credentials"}})),
+        Json(json!({"error": {
+            "message": "this control plane has no database, so the admin token \
+                        (ROLTER_ADMIN_TOKEN) is the only credential it accepts here; \
+                        send it as `Authorization: Bearer <token>`",
+            "code": "admin_token_required",
+        }})),
     )
         .into_response()
 }
@@ -312,18 +324,21 @@ async fn resolve(
             Ok(Principal::User(user)) => scoped::for_user(state, &user, reads)
                 .await
                 .map_err(IntoResponse::into_response),
+            // request logs and analytics are read by people: a token has no
+            // account to scope them by, so it reads none (#1836)
+            Ok(Principal::Token(_)) => Err(crate::crud::ApiError::Forbidden.into_response()),
             Err(error) => Err(error.into_response()),
         };
     }
     #[cfg(not(feature = "postgres"))]
     let _ = reads;
     // without one there are no sessions, and the admin token is the only
-    // credential that exists. the dashboard has no way to present it yet,
-    // so a store-less control plane shows these screens to curl only (#1909)
+    // credential that exists. a miss is answered with a code of its own so the
+    // dashboard can ask for the token rather than offer a sign-in (#1909)
     if presents_admin_token(parts, expected) {
         Ok(AnalyticsAccess::unrestricted())
     } else {
-        Err(unauthenticated())
+        Err(admin_token_required())
     }
 }
 
@@ -368,7 +383,7 @@ mod scoped {
         match requirement.authority {
             Authority::Role(role) => role_rank(role) as i8,
             Authority::Authenticated => 0,
-            Authority::Superadmin => i8::MAX,
+            Authority::Superadmin | Authority::Deployment(_) => i8::MAX,
         }
     }
 
@@ -591,6 +606,21 @@ mod scoped {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn a_missing_admin_token_is_a_coded_401_the_dashboard_can_act_on() {
+        let response = admin_token_required();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["error"]["code"], "admin_token_required");
+        assert!(body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("ROLTER_ADMIN_TOKEN"));
+    }
 
     #[test]
     fn provider_health_matches_the_rows_org_and_never_the_bare_name() {
