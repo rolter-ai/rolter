@@ -1492,6 +1492,9 @@ function RateLimitSheet({
         (!limit || dirty) &&
         (!userReach || reachComplete(reach))
       }
+      // either cap will do, so neither field is `required` on its own: a refused
+      // submit with both empty says so in the footer instead
+      blockedMessage={rpm.trim() || tpm.trim() ? undefined : t("pages.limits.rateLimitNeedsOne")}
       saving={save.isPending}
       onSubmit={() => save.mutate()}
     >

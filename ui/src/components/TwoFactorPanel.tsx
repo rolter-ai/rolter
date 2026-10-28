@@ -284,6 +284,10 @@ function EnrolDialog({
     },
   });
 
+  // not `Dialog onSubmit`: the code step is `EnrolSteps`, which owns its own
+  // <form> (Enter on the code field submits it, and it is shared with the
+  // sign-in enrolment screen), and a form nested in the dialog's would be
+  // invalid markup (#3242)
   return (
     <Dialog open onOpenChange={(open) => !open && onClose()}>
       <DialogHeader>

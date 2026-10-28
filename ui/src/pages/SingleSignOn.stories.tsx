@@ -850,6 +850,41 @@ export const CreatesAProvider: Story = {
 };
 
 /**
+ * A refused submit names each mandatory field (#3242): the sheet's Save used to
+ * go quietly dead until all four were typed. Enter then submits once they are.
+ */
+const blockedCreate = recording(api({ providers: () => [provider()] }));
+export const BlockedSubmitNamesTheMandatoryFields: Story = {
+  render: () => (
+    <Harness fetchStub={blockedCreate.stub}>
+      <SingleSignOn />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await clickWhenEnabled(canvasElement, /Add provider/);
+    const panel = within(sheet());
+    for (const label of ["Name", "Slug", "Issuer URL", "Client ID"]) {
+      await expect(panel.getByLabelText(label)).toBeRequired();
+    }
+    await expect(panel.queryByText("Required")).toBeNull();
+
+    await userEvent.click(panel.getByRole("button", { name: "Add provider" }));
+    await waitFor(() => expect(panel.getAllByText("Required")).toHaveLength(4));
+    await waitFor(() => expect(panel.getByLabelText("Name")).toHaveFocus());
+    await expect(await panel.findByRole("status")).toHaveTextContent("4 fields need attention");
+    blockedCreate.expectNotSent("POST", `/api/v1/orgs/${ORG.id}/sso-providers`);
+
+    await userEvent.type(panel.getByLabelText("Name"), "Acme Okta");
+    await userEvent.type(panel.getByLabelText("Slug"), "okta");
+    await userEvent.type(panel.getByLabelText("Issuer URL"), "https://acme.okta.com");
+    await userEvent.type(panel.getByLabelText("Client ID"), "0oa1b2c3d4{Enter}");
+    await expect(
+      await blockedCreate.expectSentBody("POST", `/api/v1/orgs/${ORG.id}/sso-providers`),
+    ).toMatchObject({ name: "Acme Okta", slug: "okta", client_id: "0oa1b2c3d4" });
+  },
+};
+
+/**
  * The provider is refused (#1607).
  *
  * The client secret is typed once and never comes back from the server, so a

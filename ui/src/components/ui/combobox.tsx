@@ -84,6 +84,13 @@ export interface ComboboxProps {
   "aria-label"?: string;
   "aria-describedby"?: string;
   "aria-invalid"?: boolean | "true" | "false";
+  /**
+   * The field must be filled in. Set on the text input, so `Field required`
+   * (which clones it on) and a form's refused submit see an empty combobox the
+   * way they see an empty `Input`.
+   */
+  required?: boolean;
+  "aria-required"?: boolean | "true" | "false";
 }
 
 function fold(text: string): string {
@@ -259,6 +266,8 @@ export const Combobox = React.forwardRef<HTMLInputElement, ComboboxProps>(functi
     "aria-label": ariaLabel,
     "aria-describedby": describedBy,
     "aria-invalid": invalid,
+    required,
+    "aria-required": ariaRequired,
   },
   ref,
 ) {
@@ -577,6 +586,8 @@ export const Combobox = React.forwardRef<HTMLInputElement, ComboboxProps>(functi
         aria-label={ariaLabel}
         aria-describedby={describedBy}
         aria-invalid={invalid}
+        required={required}
+        aria-required={ariaRequired}
         aria-expanded={open}
         aria-controls={listId}
         aria-autocomplete="list"

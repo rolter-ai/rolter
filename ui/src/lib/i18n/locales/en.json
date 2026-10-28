@@ -3883,6 +3883,7 @@
       "rateLimitSheetSubtitle": "Throughput caps for {{scope}} — blank leaves a field uncapped",
       "rpmLabel": "Requests per minute (optional)",
       "tpmLabel": "Tokens per minute (optional)",
+      "rateLimitNeedsOne": "Set a requests or a tokens per minute limit.",
       "uncapped": "unlimited",
       "userScope": {
         "all": "every key they minted",

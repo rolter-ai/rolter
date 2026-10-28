@@ -658,6 +658,49 @@ export const CreatesARateLimit: Story = {
 };
 
 /**
+ * Either cap will do, so neither field is marked required; a refused submit with
+ * both empty says what is missing in the footer (#3242), and Enter submits once
+ * one is typed.
+ */
+let rateLimitBlocked: Recorder;
+export const RateLimitSheetNamesWhatIsMissing: Story = {
+  render: () => {
+    rateLimitBlocked = recording(
+      scoped(async (input, init) => {
+        const url = String(input);
+        if (init?.method === "POST") return json(RATE_LIMITS[0], 201);
+        if (url.includes("/virtual-keys")) return json(KEYS);
+        if (url.includes("/budgets")) return budgetRead(url, BUDGETS);
+        return json(RATE_LIMITS);
+      }),
+    );
+    return (
+      <Harness fetchStub={rateLimitBlocked.stub}>
+        <Limits />
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    await clickWhenEnabled(canvasElement, /add rate limit/i);
+    const form = within(sheet());
+    const rpm = form.getByLabelText("Requests per minute (optional)");
+    await expect(form.queryByRole("status")).toBeNull();
+
+    await userEvent.click(form.getByRole("button", { name: "Create" }));
+    await expect(await form.findByRole("status")).toHaveTextContent(
+      "Set a requests or a tokens per minute limit.",
+    );
+    rateLimitBlocked.expectNotSent("POST", "/rate-limits");
+
+    await userEvent.type(rpm, "300{Enter}");
+    await expectSheetClosed();
+    await expect(await rateLimitBlocked.expectSentBody("POST", "/rate-limits")).toMatchObject({
+      rpm: 300,
+    });
+  },
+};
+
+/**
  * The edits #1285 exists for. Each answers a PATCH with the row it would have
  * written and records what left, so a story can assert the *body*: an edit
  * that sent every field, or that went out as a delete and a create, would
