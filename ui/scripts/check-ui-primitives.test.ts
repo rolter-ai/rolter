@@ -66,6 +66,30 @@ describe("the bare-animation rule", () => {
   });
 });
 
+describe("the untyped-button rule", () => {
+  it("fails a native button with no type, in a primitive too", () => {
+    const source = `const f = () => (\n  <button\n    onClick={go}\n  >\n    x\n  </button>\n);`;
+    for (const file of [SCREEN, "src/components/ui/nav-sidebar.tsx"]) {
+      const [violation] = checkSource(source, file).violations;
+      expect(violation).toMatchObject({ rule: "untyped-button", line: 2 });
+      expect(describeViolation(violation!)).toContain("type");
+    }
+  });
+
+  it("accepts a type, a props spread, a capitalised Button and a waiver", () => {
+    const sources = [
+      `<button type="button" onClick={go} />`,
+      `<button\n  className="x"\n  type={kind}\n/>`,
+      `<button {...props} />`,
+      `<Button onClick={go} />`,
+      `// ui-primitives-allow: the form submits through this one\n<button onClick={go} />`,
+    ];
+    for (const source of sources) {
+      expect(checkSource(source, SCREEN).violations).toEqual([]);
+    }
+  });
+});
+
 describe("the element rules", () => {
   it("fails a bare select and names Combobox", () => {
     const [violation] = checkSource(`const f = () => <select value={v} />;`, SCREEN).violations;

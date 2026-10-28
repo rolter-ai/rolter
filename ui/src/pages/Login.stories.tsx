@@ -1019,7 +1019,9 @@ function LateLogin() {
   const [mounted, setMounted] = React.useState(false);
   return (
     <>
-      <button onClick={() => setMounted(true)}>open the login</button>
+      <button type="button" onClick={() => setMounted(true)}>
+        open the login
+      </button>
       {mounted && (
         <AuthProvider>
           <SignedInProbe>

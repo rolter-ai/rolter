@@ -303,7 +303,8 @@ screen's wording stays in the screen's namespace and arrives as a prop.
 
 `bun run check:primitives` (`ui/scripts/check-ui-primitives.ts`) is what keeps
 this page from being advice. It runs in the `ui, storybook, docs` job and fails on
-ten things: a bare `<select>`, a hand-written `role="listbox"` / `"option"` /
+eleven things: a native `<button>` with no `type` and no props spread (a
+button defaults to submit, so one inside an editor sheet submits the form, #3241), a bare `<select>`, a hand-written `role="listbox"` / `"option"` /
 `"combobox"` (#3058), a native `<input type="checkbox">` outside
 `checkbox.tsx` (#2223), a raw `<pre>`, a `window.confirm`/`alert`/
 `prompt`, a component re-declared under a name `src/components/ui/` already
