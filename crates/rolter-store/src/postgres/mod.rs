@@ -468,6 +468,7 @@ struct McpServerSnapshotRow {
     request_timeout_ms: Option<i32>,
     max_retries: Option<i32>,
     tools: Vec<String>,
+    enforce_manifest_by_default: bool,
 }
 
 #[derive(FromRow)]
@@ -1142,7 +1143,10 @@ impl PostgresConfigStore {
         let rows: Vec<McpServerSnapshotRow> = sqlx::query_as(
             "select id, org_id, slug, url, transport, required_scopes, \
                     auth_kind, auth_header_name, credential_ciphertext, credential_nonce, \
-                    connect_timeout_ms, request_timeout_ms, max_retries, tools \
+                    connect_timeout_ms, request_timeout_ms, max_retries, tools, \
+                    coalesce((select o.mcp_enforce_manifests from orgs o \
+                              where o.id = mcp_servers.org_id), false) \
+                        as enforce_manifest_by_default \
              from mcp_servers where enabled order by org_id, slug",
         )
         .fetch_all(&self.pool)
@@ -1196,6 +1200,7 @@ impl PostgresConfigStore {
                     request_timeout_ms: row.request_timeout_ms.map(|ms| ms.max(0) as u64),
                     max_retries: row.max_retries.map(|n| n.max(0) as u32),
                     tools: row.tools,
+                    enforce_manifest_by_default: row.enforce_manifest_by_default,
                 }
             })
             .collect())

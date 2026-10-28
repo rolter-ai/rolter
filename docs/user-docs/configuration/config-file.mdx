@@ -776,7 +776,7 @@ Not a `rolter.toml` table. Virtual keys created on the dashboard or through the 
 
 ### \[\[mcp_servers\]\]
 
-Not a `rolter.toml` table. MCP servers belong to an organization and are registered on the dashboard or through the management API; the control plane unseals their credentials and ships them in the snapshot. Each entry carries `id`, `org_id`, `slug`, `url`, `transport`, `required_scopes`, `auth_kind`, `auth_header_name`, `credential`, `connect_timeout_ms`, `request_timeout_ms`, `max_retries` and `tools`. With a database, the snapshot carries the control plane's own rows and replaces whatever a bootstrap file holds for this table. See [MCP credentials and transport settings](/configuration/mcp-servers) for what each field means.
+Not a `rolter.toml` table. MCP servers belong to an organization and are registered on the dashboard or through the management API; the control plane unseals their credentials and ships them in the snapshot. Each entry carries `id`, `org_id`, `slug`, `url`, `transport`, `required_scopes`, `auth_kind`, `auth_header_name`, `credential`, `connect_timeout_ms`, `request_timeout_ms`, `max_retries`, `tools` and `enforce_manifest_by_default`, which is true when the server's organization enforces manifests until it saves MCP settings of its own. With a database, the snapshot carries the control plane's own rows and replaces whatever a bootstrap file holds for this table. See [MCP credentials and transport settings](/configuration/mcp-servers) for what each field means.
 
 ---
 

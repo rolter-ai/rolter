@@ -4130,7 +4130,7 @@
       "failClosed": "Fail closed",
       "failOpen": "Fail open",
       "allowUnlisted": "Allow unlisted tools",
-      "allowUnlistedHint": "Permit calls to tools the server’s manifest does not declare. Off, the proxy refuses them. On until you save it off.",
+      "allowUnlistedHint": "Permit calls to tools the server’s manifest does not declare. Off, the proxy refuses them. An organization created before manifests were enforced stays on until you save it off; a newer one starts off.",
       "requestControls": "Request controls",
       "connectTimeout": "Connect timeout (ms)",
       "requestTimeout": "Request timeout (ms)",

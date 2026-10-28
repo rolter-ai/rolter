@@ -2151,6 +2151,12 @@ pub struct McpServerConfig {
     /// means it declares none, which leaves nothing to check a call against
     #[serde(default)]
     pub tools: Vec<String>,
+    /// whether the server's organization enforces manifests until it saves MCP
+    /// settings of its own (#3334): true for an organization created after the
+    /// change, false for one that existed before it. A saved settings row
+    /// decides for itself and overrides this
+    #[serde(default)]
+    pub enforce_manifest_by_default: bool,
 }
 
 impl std::fmt::Debug for McpServerConfig {

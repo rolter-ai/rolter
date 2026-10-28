@@ -196,9 +196,11 @@ request once they are saved:
   `allow_unlisted_tools` off, a server that declares tools (discovered or
   typed) serves only those, and a call naming a tool outside the manifest is
   refused with `403` `mcp_tool_denied`. An organization that never saved its
-  settings allows unlisted tools, as every organization did before manifests
-  were enforced, so an upgrade does not start refusing calls. A server that
-  declares no tools has nothing to check against.
+  settings allows unlisted tools if it existed before manifests were
+  enforced, so an upgrade does not start refusing calls; an organization created
+  since then enforces manifests until it saves settings with `allow_unlisted_tools`
+  on, which `GET /api/v1/orgs/{org_id}/mcp/settings` reports before anything is
+  saved. A server that declares no tools has nothing to check against.
 - **Failure policy.** `default_failure_mode` decides what happens to a request
   the proxy cannot read as JSON-RPC, and so cannot check against the rules
   above: `fail_closed` (the default) refuses it with `400`, `fail_open` forwards

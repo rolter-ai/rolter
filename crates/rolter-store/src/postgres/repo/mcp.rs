@@ -779,7 +779,7 @@ pub struct McpGatewaySettingsUpdate<'a> {
 
 impl McpGatewaySettingsRepo<'_> {
     pub async fn get(&self, org_id: Uuid) -> Result<McpGatewaySettings> {
-        sqlx::query_as(
+        let stored: Option<McpGatewaySettings> = sqlx::query_as(
             "select org_id, default_transport, connect_timeout_ms, request_timeout_ms, \
              max_retries, default_failure_mode, allow_unlisted_tools, updated_at \
              from mcp_gateway_settings where org_id = $1",
@@ -787,9 +787,21 @@ impl McpGatewaySettingsRepo<'_> {
         .bind(org_id)
         .fetch_optional(self.0)
         .await
-        .map_err(store_err)
-        .map(|stored| {
-            stored.unwrap_or_else(|| McpGatewaySettings {
+        .map_err(store_err)?;
+        if let Some(stored) = stored {
+            return Ok(stored);
+        }
+        // no row: the defaults, which are not written anywhere so they follow
+        // later changes. whether manifests are enforced is the one thing the
+        // organization carries itself (#3334)
+        let enforcing: Option<bool> =
+            sqlx::query_scalar("select mcp_enforce_manifests from orgs where id = $1")
+                .bind(org_id)
+                .fetch_optional(self.0)
+                .await
+                .map_err(store_err)?;
+        Ok({
+            McpGatewaySettings {
                 org_id,
                 default_transport: "streamable_http".to_string(),
                 connect_timeout_ms: 5_000,
@@ -797,10 +809,12 @@ impl McpGatewaySettingsRepo<'_> {
                 max_retries: 1,
                 default_failure_mode: "fail_closed".to_string(),
                 // what the proxy does for an org with no row (`mcp_policy`):
-                // unlisted tools pass until the org saves settings refusing them
-                allow_unlisted_tools: true,
+                // an org created before #3334 lets unlisted tools pass until
+                // it saves settings refusing them; a newer one refuses them
+                // until it saves settings allowing them
+                allow_unlisted_tools: !enforcing.unwrap_or(false),
                 updated_at: Utc::now(),
-            })
+            }
         })
     }
 

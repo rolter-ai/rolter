@@ -160,19 +160,24 @@ struct Rules<'a> {
     /// groups when it has an assignment
     governed: Option<Cow<'a, HashSet<String>>>,
     /// the server's declared manifest, when calls must stay inside it: it
-    /// declares one and the organization saved settings that do not allow
-    /// unlisted tools. An organization that never saved its MCP settings keeps
-    /// the behaviour from before manifests were enforced, so an upgrade does not
-    /// start refusing tools a server's manifest happens to leave out
+    /// declares one and the organization either saved settings that do not allow
+    /// unlisted tools or never saved any and was created enforcing (#3334). An
+    /// organization that existed before manifests were enforced and never saved
+    /// its MCP settings keeps that behaviour, so an upgrade does not start
+    /// refusing tools a server's manifest happens to leave out
     declared: Option<&'a [String]>,
 }
 
 impl<'a> Rules<'a> {
     fn of(snapshot: &'a Snapshot, server: &'a McpServerConfig, caller: &Caller<'_>) -> Self {
+        // saved settings decide for themselves; an organization with none
+        // follows the marker it was created with (#3334)
         let allow_unlisted = snapshot
             .mcp_org_settings
             .get(&server.org_id)
-            .is_none_or(|settings| settings.allow_unlisted_tools);
+            .map_or(!server.enforce_manifest_by_default, |settings| {
+                settings.allow_unlisted_tools
+            });
         Self {
             governed: snapshot.mcp_governed_tools.get(&server.id).map(|org_wide| {
                 match caller.assigned_groups(snapshot) {
@@ -859,6 +864,46 @@ mod tests {
         // the behaviour before manifests were enforced, kept so an upgrade does
         // not start refusing a tool the manifest leaves out
         let (snapshot, server) = with_manifest(&["get_issue"], None);
+        assert!(matches!(
+            enforce(&snapshot, &server, call("delete_repo").as_bytes()),
+            Verdict::Allow
+        ));
+    }
+
+    /// #3334: an organization created enforcing refuses a tool outside the
+    /// manifest without having saved anything, and saving settings that allow
+    /// unlisted tools is how it opts out.
+    #[test]
+    fn a_new_organization_enforces_its_manifest_until_it_opts_out() {
+        let enforcing = |settings: Option<McpOrgSettingsConfig>| {
+            let (mut snapshot_config, mut server) = (
+                GatewayConfig::default(),
+                McpServerConfig {
+                    id: "srv".into(),
+                    org_id: "org".into(),
+                    slug: "github".into(),
+                    tools: vec!["get_issue".into()],
+                    enforce_manifest_by_default: true,
+                    ..Default::default()
+                },
+            );
+            snapshot_config.mcp_servers.push(server.clone());
+            snapshot_config.mcp_settings.extend(settings);
+            (
+                Snapshot::build(&snapshot_config, &crate::load::LoadTracker::default()),
+                server,
+            )
+        };
+        let (snapshot, server) = enforcing(None);
+        assert!(matches!(
+            enforce(&snapshot, &server, call("get_issue").as_bytes()),
+            Verdict::Allow
+        ));
+        assert!(matches!(
+            enforce(&snapshot, &server, call("delete_repo").as_bytes()),
+            Verdict::Denied(_)
+        ));
+        let (snapshot, server) = enforcing(Some(settings(true, false)));
         assert!(matches!(
             enforce(&snapshot, &server, call("delete_repo").as_bytes()),
             Verdict::Allow

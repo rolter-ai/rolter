@@ -221,10 +221,21 @@ trigger); an organization with no row is absent and gets the defaults.
 - **Declared manifest.** `McpServerConfig::tools` carries the manifest. A server
   with a non-empty one serves only those tools when the organization's saved
   settings have `allow_unlisted_tools` off; an empty manifest checks nothing.
-  An organization with no settings row allows unlisted tools, and migration
-  `0137` set every row saved before enforcement to allow them: the column was
-  stored but never read until #1404, so an upgrade must not start refusing
-  calls. This sits beside the tool-group rule and both must pass.
+  An organization with no settings row follows its `orgs.mcp_enforce_manifests`
+  marker (#3334): one that existed before the change allows unlisted tools, and
+  migration `0137` set every row saved before enforcement to allow them (the
+  column was stored but never read until #1404, so an upgrade must not start
+  refusing calls); one created afterwards enforces. Migration `0152` adds the
+  marker with default `false` for the rows that exist and then switches the
+  default to `true`, so no org-creation path needs to know about it. It is a
+  column on `orgs` and not on `mcp_gateway_settings` because inserting a settings
+  row at org creation would freeze its timeouts and retries at that day's values
+  instead of letting them follow the deployment defaults. It reaches the gateway
+  as `McpServerConfig::enforce_manifest_by_default` (read in `load_mcp_servers`,
+  with a column-scoped `bump_config_version()` trigger in `0153`); a saved row
+  still decides for itself, which is how an admin opts out. The settings read
+  for an org with no row reports `allow_unlisted_tools` from the same marker.
+  This sits beside the tool-group rule and both must pass.
 - **Failure policy.** `fail_open` / `fail_closed` governs a body the policy
   cannot parse (the only failure of the policy check itself). It never lets a
   call to a refused tool through, and it has no say over an upstream that fails.

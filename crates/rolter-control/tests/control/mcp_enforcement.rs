@@ -113,6 +113,96 @@ async fn enabled_tool_groups_reach_the_snapshot_and_every_edit_bumps_the_version
         .is_empty());
 }
 
+/// #3334: an organization created now enforces its manifests until it saves
+/// settings of its own, one that existed before keeps allowing unlisted tools,
+/// and creating the organization writes no settings row.
+#[tokio::test]
+async fn a_new_organization_enforces_manifests_and_an_existing_one_does_not() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app = rolter_control::test_app(pool.clone()).await.unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    let mut orgs = Vec::new();
+    for slug in ["fresh", "veteran"] {
+        let org: Value = client
+            .post(format!("{base}/api/v1/orgs"))
+            .json(&json!({"name": slug, "slug": slug}))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let org_id = org["id"].as_str().unwrap().to_string();
+        client
+            .post(format!("{base}/api/v1/orgs/{org_id}/mcp-servers"))
+            .json(&json!({
+                "name": slug, "slug": slug, "url": "http://127.0.0.1:9/mcp",
+                "tools": ["search"],
+            }))
+            .send()
+            .await
+            .unwrap();
+        orgs.push(org_id);
+    }
+    // the second org stands for one that existed before the column did
+    sqlx::query("update orgs set mcp_enforce_manifests = false where id = $1::uuid")
+        .bind(&orgs[1])
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let settings = |org: &str| format!("{base}/api/v1/orgs/{org}/mcp/settings");
+    let fresh: Value = client
+        .get(settings(&orgs[0]))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let veteran: Value = client
+        .get(settings(&orgs[1]))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(fresh["allow_unlisted_tools"], false);
+    assert_eq!(veteran["allow_unlisted_tools"], true);
+    // creating the org stored nothing, so the other defaults stay unpinned
+    let rows: (i64,) = sqlx::query_as("select count(*) from mcp_gateway_settings")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(rows.0, 0);
+
+    let config = snapshot_config(&client, &base).await;
+    let servers = config["mcp_servers"].as_array().unwrap();
+    let flag = |org: &str| {
+        servers
+            .iter()
+            .find(|server| server["org_id"] == org)
+            .map(|server| server["enforce_manifest_by_default"].clone())
+    };
+    assert_eq!(flag(&orgs[0]), Some(json!(true)), "{config}");
+    assert_eq!(flag(&orgs[1]), Some(json!(false)), "{config}");
+
+    // changing the marker reaches the gateway
+    let before = config_version(&pool).await;
+    sqlx::query("update orgs set mcp_enforce_manifests = true where id = $1::uuid")
+        .bind(&orgs[1])
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert!(config_version(&pool).await > before);
+}
+
 /// #3295: a group is assigned to a key, project or team of its own organization
 /// only, the assignment reaches the snapshot with the group and bumps the
 /// version, and a disabled group carries none.
