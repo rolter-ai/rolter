@@ -160,6 +160,7 @@
             "group": "Gateway API",
             "pages": [
               "api/overview",
+              "api/specifications",
               "api/chat-completions",
               "api/completions",
               "api/messages",

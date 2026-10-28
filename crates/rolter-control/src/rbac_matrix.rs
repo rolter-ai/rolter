@@ -2328,6 +2328,7 @@ mod tests {
         ("openapi.rs", include_str!("openapi.rs")),
         ("proxy.rs", include_str!("proxy.rs")),
         ("plugins.rs", include_str!("plugins.rs")),
+        ("price_catalogue.rs", include_str!("price_catalogue.rs")),
         ("public_routes.rs", include_str!("public_routes.rs")),
         ("public_url.rs", include_str!("public_url.rs")),
         ("rbac.rs", include_str!("rbac.rs")),

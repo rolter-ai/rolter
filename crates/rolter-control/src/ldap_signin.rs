@@ -50,6 +50,7 @@
 //! health, and a local account's own failed login must not turn into a 500
 //! because an unrelated directory is unreachable.
 
+// spec-ref: ldap
 use std::collections::HashSet;
 
 use axum::extract::{Path, State};

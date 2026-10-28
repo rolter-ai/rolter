@@ -2,15 +2,18 @@
 
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
-use axum::routing::{delete, get};
+use axum::routing::{delete, get, post};
 use axum::{Json, Router};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use rolter_core::Error;
 use rolter_store::postgres::models::ModelPrice;
-use rolter_store::postgres::repo::{ModelPriceRepo, NewModelPrice, UnitRates};
+use rolter_store::postgres::repo::{CatalogueImport, ModelPriceRepo, NewModelPrice, UnitRates};
 
-use super::{explicit_null, invalid_field, pool, require_non_empty, ApiError, ApiResult, SafeJson};
+use super::{
+    explicit_null, invalid_field, pool, require_non_empty, ApiError, ApiResult, Query, SafeJson,
+};
+use crate::price_catalogue::{default_catalogue, Catalogue, CataloguePrice};
 use crate::rbac::{authorize, authorize_superadmin, Principal, ScopeChain};
 use crate::rbac_matrix::{cap, superadmin_cap};
 use crate::ControlState;
@@ -22,6 +25,8 @@ pub(super) fn router() -> Router<ControlState> {
             get(list_model_prices).put(upsert_model_price),
         )
         .route("/api/v1/model-prices/{model}", delete(delete_model_price))
+        .route("/api/v1/model-prices/catalogue", get(list_price_catalogue))
+        .route("/api/v1/model-prices/import", post(import_price_catalogue))
 }
 
 // --- model pricing catalog ---
@@ -209,6 +214,159 @@ async fn delete_model_price(
     authorize_superadmin(&principal, superadmin_cap!("model_price", Delete))?;
     ModelPriceRepo(pool(&state)).delete(&model).await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+// --- price catalogue import (#966) ---
+
+/// Most models one import names, so a request cannot hold a transaction open
+/// over the whole catalogue.
+const MAX_IMPORT_MODELS: usize = 500;
+
+/// Most catalogue entries one listing returns.
+const MAX_CATALOGUE_LIST: usize = 200;
+
+fn catalogue() -> ApiResult<&'static Catalogue> {
+    default_catalogue().map_err(|e| ApiError::Core(Error::Config(e)))
+}
+
+#[derive(Deserialize)]
+struct CatalogueQuery {
+    /// a substring of the model id; every model when omitted
+    q: Option<String>,
+    /// at most this many entries (default and ceiling 200)
+    limit: Option<usize>,
+}
+
+#[derive(Serialize)]
+struct CatalogueListing<'a> {
+    /// the name stored as `source` on a row imported from it
+    source: &'a str,
+    licence: &'a str,
+    url: &'a str,
+    currency: &'a str,
+    /// the day the vendored snapshot was taken; prices drift from it
+    snapshot: String,
+    /// how many models the whole catalogue prices
+    total: usize,
+    entries: Vec<&'a CataloguePrice>,
+}
+
+/// What the importer can offer: the vendored catalogue, searchable, with its
+/// provenance. Read-only and offline.
+async fn list_price_catalogue(
+    principal: Principal,
+    State(state): State<ControlState>,
+    Query(query): Query<CatalogueQuery>,
+) -> ApiResult<Json<CatalogueListing<'static>>> {
+    authorize(
+        &state,
+        &principal,
+        ScopeChain::default(),
+        cap!("model_price", Read),
+    )
+    .await?;
+    let catalogue = catalogue()?;
+    let limit = query
+        .limit
+        .unwrap_or(MAX_CATALOGUE_LIST)
+        .min(MAX_CATALOGUE_LIST);
+    Ok(Json(CatalogueListing {
+        source: catalogue.source,
+        licence: &catalogue.licence,
+        url: &catalogue.url,
+        currency: catalogue.currency,
+        snapshot: catalogue.snapshot.to_string(),
+        total: catalogue.model_count(),
+        entries: catalogue.search(query.q.as_deref().unwrap_or(""), limit),
+    }))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ImportPrices {
+    /// catalogue model ids to import; an id the catalogue does not price is
+    /// reported, not an error
+    models: Vec<String>,
+}
+
+#[derive(Serialize)]
+struct ImportResult {
+    model: String,
+    /// `created`, `updated`, `kept_override` (an operator's own price, left
+    /// alone) or `not_in_catalogue`
+    outcome: &'static str,
+}
+
+#[derive(Serialize)]
+struct ImportReport {
+    source: &'static str,
+    currency: &'static str,
+    snapshot: String,
+    results: Vec<ImportResult>,
+}
+
+/// Import the named models from the vendored catalogue. A price an operator
+/// set is never replaced; an earlier catalogue price is refreshed. Imported
+/// rows are stamped with their source and the snapshot's date, and editing one
+/// afterwards turns it into an operator override.
+async fn import_price_catalogue(
+    principal: Principal,
+    State(state): State<ControlState>,
+    SafeJson(body): SafeJson<ImportPrices>,
+) -> ApiResult<Json<ImportReport>> {
+    authorize_superadmin(&principal, superadmin_cap!("model_price", Update))?;
+    if body.models.is_empty() {
+        return Err(invalid_field("models", "name at least one model to import"));
+    }
+    if body.models.len() > MAX_IMPORT_MODELS {
+        return Err(invalid_field(
+            "models",
+            format!("import at most {MAX_IMPORT_MODELS} models at a time"),
+        ));
+    }
+    let catalogue = catalogue()?;
+    // the catalogue's currency is stated, not assumed, and has to be one the
+    // deployment can convert, like a hand-entered price
+    require_known_currency(&state, catalogue.currency)?;
+    let mut wanted = Vec::new();
+    let mut missing = Vec::new();
+    for model in &body.models {
+        match catalogue.get(model.trim()) {
+            Some(price)
+                if !wanted
+                    .iter()
+                    .any(|p: &CataloguePrice| p.model == price.model) =>
+            {
+                wanted.push(price.clone())
+            }
+            Some(_) => {}
+            None => missing.push(model.clone()),
+        }
+    }
+    let outcomes = ModelPriceRepo(pool(&state))
+        .import_catalogue(catalogue.source, catalogue.imported_at(), &wanted)
+        .await?;
+    let mut results: Vec<ImportResult> = outcomes
+        .into_iter()
+        .map(|(model, outcome)| ImportResult {
+            model,
+            outcome: match outcome {
+                CatalogueImport::Created => "created",
+                CatalogueImport::Updated => "updated",
+                CatalogueImport::KeptOverride => "kept_override",
+            },
+        })
+        .collect();
+    results.extend(missing.into_iter().map(|model| ImportResult {
+        model,
+        outcome: "not_in_catalogue",
+    }));
+    Ok(Json(ImportReport {
+        source: catalogue.source,
+        currency: catalogue.currency,
+        snapshot: catalogue.snapshot.to_string(),
+        results,
+    }))
 }
 
 #[cfg(test)]

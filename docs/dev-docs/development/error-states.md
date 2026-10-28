@@ -150,19 +150,19 @@ flickered would have been unmounted and replaced, so the held node would be
 detached even if a new alert had since appeared.
 
 The Dashboard polls four queries under the same rule (#1975), and each card
-owns the state of the read behind it (#1976). The four figures, the spend chart,
-the traffic donut, the by-model bars and the recent rows each read one query
-through `CardRead`, which shows the card's own skeleton while the read is
-awaited, the card's own `LoadError` with a retry for that read alone when it
-failed holding nothing, and its content once it holds data. The content is a
-render prop handed the data, so a card cannot say "No traffic yet." or "Nothing
-logged yet." about a read that has not answered or that failed. One failing
-endpoint takes down the cards that read it and leaves the rest of the screen up.
-The donut and the bars read the same endpoint, so one failure of it is one alert:
-the traffic share card holds the `LoadError` and its retry, and the by-model card
-holds a plain sentence (`pages.dashboard.sharedRead`, not a live region, no
-button) saying it reads the same data and where to retry. Either card comes back
-with that read.
+owns the state of the read behind it (#1976). The figures, the spend chart, the
+by-model table and the recent rows each read one query through `CardRead`, which
+shows the card's own skeleton while the read is awaited, the card's own
+`LoadError` with a retry for that read alone when it failed holding nothing, and
+its content once it holds data. The content is a render prop handed the data, so a
+card cannot say "No traffic yet." or "Nothing logged yet." about a read that has
+not answered or that failed. One failing endpoint takes down the card that reads
+it and leaves the rest of the screen up. The Gateways tile is not one of the four
+reads: it is drawn beside the summary's `CardRead`, from the fleet query the header
+pill shares, so a slow or failing summary leaves it up and its alert and skeleton
+take the place of the other five tiles only. Each card reads its own endpoint, so
+there is no shared-read sentence (`pages.dashboard.sharedRead` went with the donut
+and the bars it connected).
 
 When every read fails at once the screen says so once (#2342). All four queries in
 error holding nothing, and none of them the no-analytics answer, replace the cards
@@ -171,7 +171,8 @@ with one screen-level `LoadError` that names the analytics
 Try again that refetches all four reads. The setup checklist stays above it, as it
 does above the no-analytics panel. Before, a total outage put five `role="alert"`
 blocks on screen, so a screen reader announced five alerts on mount, two of them (the
-traffic share and the by-model bars) stating one failure twice.
+traffic share and the by-model bars) stating one failure twice. The donut and the bars
+are one table now, so a failed by-model read is one alert.
 
 A partial failure is unchanged: a card whose read failed holds its own alert while the
 ones that answered stay up, and those keep polling. So does a failure next to a read

@@ -25,6 +25,7 @@
 //! reads. Fields Infinity does not know, such as Cohere's `max_tokens_per_doc`,
 //! are ignored by its pydantic models rather than refused, so they are left in.
 
+// spec-ref: infinity, rerank
 use rolter_core::{Error, Result};
 use serde_json::{json, Value};
 

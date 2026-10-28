@@ -4,6 +4,8 @@ import { GatewayProbeError, fetchGatewayReadiness, readinessFrom } from "@/lib/g
 import {
   GATEWAY_HEALTH_POLL_MS,
   GATEWAY_HEALTH_STALE_MS,
+  fetchGatewayCheck,
+  fleetHealth,
   gatewayHealthFrom,
   type GatewayHealthQuery,
 } from "@/lib/gateway-health";
@@ -115,11 +117,13 @@ describe("gatewayHealthFrom", () => {
       health: "checking",
       live: false,
       answeredAt: null,
+      fleet: null,
     });
     expect(gatewayHealthFrom(query({ isError: true, errorUpdatedAt: T0 }))).toEqual({
       health: "unknown",
       live: false,
       answeredAt: null,
+      fleet: null,
     });
   });
 
@@ -129,6 +133,7 @@ describe("gatewayHealthFrom", () => {
       health: "healthy",
       live: true,
       answeredAt: T0,
+      fleet: null,
     });
     expect(gatewayHealthFrom(query({ ...at, data: "draining" })).health).toBe("degraded");
     expect(gatewayHealthFrom(query({ ...at, data: "unreachable" })).health).toBe("down");
@@ -143,7 +148,7 @@ describe("gatewayHealthFrom", () => {
         errorUpdatedAt: T0 + GATEWAY_HEALTH_POLL_MS,
       }),
     );
-    expect(view).toEqual({ health: "healthy", live: false, answeredAt: T0 });
+    expect(view).toEqual({ health: "healthy", live: false, answeredAt: T0, fleet: null });
   });
 
   it("admits it does not know once the answer is older than the grace window", () => {
@@ -155,7 +160,7 @@ describe("gatewayHealthFrom", () => {
         errorUpdatedAt: T0 + GATEWAY_HEALTH_STALE_MS,
       }),
     );
-    expect(view).toEqual({ health: "unknown", live: false, answeredAt: T0 });
+    expect(view).toEqual({ health: "unknown", live: false, answeredAt: T0, fleet: null });
   });
 
   it("gives up on the second failed poll, not the third", () => {
@@ -178,6 +183,115 @@ describe("gatewayHealthFrom", () => {
         errorUpdatedAt: T0 + 30_000,
       }),
     );
-    expect(view).toEqual({ health: "down", live: true, answeredAt: T0 + 60_000 });
+    expect(view).toEqual({
+      health: "down",
+      live: true,
+      answeredAt: T0 + 60_000,
+      fleet: null,
+    });
+  });
+});
+
+describe("fleetHealth", () => {
+  it("is healthy when every live gateway is current and none is stale", () => {
+    expect(fleetHealth({ live: 3, stale: 0, lagging: 0 })).toBe("healthy");
+  });
+
+  it("is degraded while a live gateway lags or one has gone stale", () => {
+    expect(fleetHealth({ live: 3, stale: 0, lagging: 1 })).toBe("degraded");
+    expect(fleetHealth({ live: 2, stale: 1, lagging: 0 })).toBe("degraded");
+  });
+
+  it("is down only when no gateway is live", () => {
+    expect(fleetHealth({ live: 0, stale: 2, lagging: 0 })).toBe("down");
+  });
+});
+
+describe("gatewayHealthFrom on a fleet answer", () => {
+  it("carries the counts, and holds them through a failed check like a probe", () => {
+    const fleet = { live: 3, stale: 0, lagging: 1 };
+    expect(gatewayHealthFrom(query({ data: fleet, dataUpdatedAt: T0 }))).toEqual({
+      health: "degraded",
+      live: true,
+      answeredAt: T0,
+      fleet,
+    });
+    const held = gatewayHealthFrom(
+      query({
+        data: fleet,
+        dataUpdatedAt: T0,
+        isError: true,
+        errorUpdatedAt: T0 + GATEWAY_HEALTH_POLL_MS,
+      }),
+    );
+    expect(held.live).toBe(false);
+    expect(held.fleet).toEqual(fleet);
+    const lost = gatewayHealthFrom(
+      query({
+        data: fleet,
+        dataUpdatedAt: T0,
+        isError: true,
+        errorUpdatedAt: T0 + GATEWAY_HEALTH_STALE_MS,
+      }),
+    );
+    expect(lost).toEqual({ health: "unknown", live: false, answeredAt: T0, fleet: null });
+  });
+});
+
+describe("fetchGatewayCheck", () => {
+  const summary = (body: unknown, status = 200) =>
+    new Response(JSON.stringify(body), {
+      status,
+      headers: { "Content-Type": "application/json" },
+    });
+  /** answer the summary with `first`, and `/gw/readyz` with `ok`; remember what was asked */
+  function stub(first: () => Response) {
+    const asked: string[] = [];
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const path = new URL(String(input), "http://localhost").pathname;
+      asked.push(path);
+      return path === "/api/v1/cluster/summary" ? first() : new Response("ok", { status: 200 });
+    }) as unknown as typeof fetch;
+    return asked;
+  }
+  const counted = {
+    inventory: true,
+    gateways: { live: 3, stale: 1, lagging: 2 },
+    config_version: 412,
+    checked_at: "2026-10-27T09:14:02.511Z",
+  };
+
+  it("answers with the fleet's counts and never probes when the summary counted gateways", async () => {
+    const asked = stub(() => summary(counted));
+    expect(await fetchGatewayCheck()).toEqual({ live: 3, stale: 1, lagging: 2 });
+    expect(asked).toEqual(["/api/v1/cluster/summary"]);
+  });
+
+  it("probes /readyz when the control plane has no inventory", async () => {
+    const asked = stub(() =>
+      summary({ ...counted, inventory: false, gateways: { live: 0, stale: 0, lagging: 0 } }),
+    );
+    expect(await fetchGatewayCheck()).toBe("ready");
+    expect(asked).toEqual(["/api/v1/cluster/summary", "/gw/readyz"]);
+  });
+
+  it("probes when the inventory holds no gateway at all", async () => {
+    // a gateway that sends no node id never enters the inventory
+    stub(() => summary({ ...counted, gateways: { live: 0, stale: 0, lagging: 0 } }));
+    expect(await fetchGatewayCheck()).toBe("ready");
+  });
+
+  it("probes when an older control plane answers the summary with a 404", async () => {
+    const asked = stub(() => summary({ error: { message: "not found" } }, 404));
+    expect(await fetchGatewayCheck()).toBe("ready");
+    expect(asked).toEqual(["/api/v1/cluster/summary", "/gw/readyz"]);
+  });
+
+  it("probes when the summary request itself fails", async () => {
+    const asked = stub(() => {
+      throw new TypeError("Failed to fetch");
+    });
+    expect(await fetchGatewayCheck()).toBe("ready");
+    expect(asked).toContain("/gw/readyz");
   });
 });

@@ -62,9 +62,16 @@ extend-ignore-re = [
   # dashboards (#956) are parsed by SigNoz, not by us — correcting the spelling
   # would make the import silently drop the setting
   "timePreferance",
+  # "titel": a misspelt key in the specification registry's unknown-key test,
+  # which asserts a record carrying a key no table declares is refused.
+  # correcting it would delete the test's subject
+  "titel",
 ]
 
 [files]
 # vendored upstream build artifact (the mermaid runtime the mdbook build ships
 # so the docs render air-gapped). minified identifier soup, not our prose.
-extend-exclude = ["docs/dev-docs/mermaid.min.js"]
+extend-exclude = [
+  "docs/dev-docs/mermaid.min.js",
+  "crates/rolter-control/catalogue/",
+]

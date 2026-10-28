@@ -83,14 +83,23 @@ wait on and the answer is always ready.
 
 ## The dashboard's gateway pill
 
-The status pill in every screen header (`ui/src/components/ScreenHeader.tsx`)
-polls the gateway's `/readyz` every 30 seconds through the control plane's
-`/gw/*` proxy (#1973).
+The status pill in every screen header (`ui/src/components/ScreenHeader.tsx`) and the Gateways tile
+on the Dashboard home (`ui/src/components/FleetHealthTile.tsx`) read one query, `useGatewayHealth`
+in `ui/src/lib/gateway-health.ts`, so the two cannot disagree (#1973, #3263). Every 30 seconds it
+asks `GET /api/v1/cluster/summary` (#2013), the roll-up every signed-in caller may read: the live,
+stale and config-lagging gateways (`docs/user-docs/api/cluster-summary.mdx` has the contract). The pill says how many are live and, when some
+are not, how many are behind or stale; `fleetHealth` maps the counts onto the pill's states
+(healthy, degraded while any live gateway lags or any is stale, down when none is live).
 
-`/readyz` is the one gateway signal every dashboard role can read: the proxy
-takes no admin token and the endpoint takes no key. `/api/v1/cluster/nodes`
-knows more but is superadmin-only, and `/api/v1/health/*` is provider health
-from ClickHouse, not the gateway's. The probe sends no `Authorization` header.
+`fetchGatewayCheck` falls back to the gateway's `/readyz`, described below, whenever the summary has
+nothing to count: `inventory: false` (a control plane with no database), an inventory with no live
+or stale gateway (a gateway that sends no node id never enters it), or a failed request (an older
+control plane answers `404`). That keeps the pill as informative as it was before the summary
+existed, and never reports an empty fleet for a deployment that was simply not counted.
+
+## The `/readyz` probe behind the pill
+
+The probe polls the gateway's `/readyz` through the control plane's `/gw/*` proxy.
 
 `readinessFrom` in `ui/src/lib/gateway.ts` reads the answer strictly:
 
@@ -117,8 +126,8 @@ background poll.
 What the pill cannot see:
 
 - other gateways behind the same `ROLTER_GATEWAY_URL`, and whether a gateway
-  runs the current config version. Both need a fleet summary every signed-in
-  caller can read (#2013).
+  runs the current config version. The probe cannot; the cluster summary above
+  can, and the pill uses it first.
 - an unreachable gateway _host_ is not a blind spot: the proxy's HTTP client
   bounds the connect at 3 seconds (#2014), so a host that drops packets answers
   the same `502` as a refused port and the pill reads down. Only connecting is

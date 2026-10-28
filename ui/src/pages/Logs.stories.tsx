@@ -147,8 +147,12 @@ const serverFiltered = (rows: InvocationRow[], base = "USD"): FetchStub =>
       const model = url.searchParams.get("model");
       const status = url.searchParams.get("status") ?? "all";
       const onlyUnpriced = url.searchParams.get("unpriced") === "true";
+      const onlyWithheld = url.searchParams.get("withheld") === "true";
+      const onlyUnknown = url.searchParams.get("usage_unknown") === "true";
       const data = rows.filter(
         (r) =>
+          (!onlyWithheld || Number(r.withheld ?? 0) === 1) &&
+          (!onlyUnknown || Number(r.usage_unknown ?? 0) === 1) &&
           (!units || units.includes(r.business_unit_id)) &&
           (!customers || customers.includes(r.customer_id)) &&
           (!model || r.model === model) &&
@@ -1440,6 +1444,138 @@ export const TheUnpricedFilterIsSentToTheServer: Story = {
       "aria-checked",
       "false",
     );
+  },
+};
+
+// a withheld response (billed, the caller got a 403) and a success whose upstream
+// reported no usage, beside an ordinary request (#3302)
+const BILLING_ROWS: InvocationRow[] = [
+  row({ request_id: "req-plain", model: "plain-model" }),
+  row({
+    request_id: "req-withheld",
+    model: "withheld-model",
+    status: 403,
+    withheld: 1,
+    error: "blocked by output guardrail",
+  }),
+  row({
+    request_id: "req-unknown",
+    model: "silent-model",
+    usage_unknown: 1,
+    cost_usd: 0,
+    total_tokens: 0,
+  }),
+];
+
+const billingFilters = recording(serverFiltered(BILLING_ROWS));
+
+/**
+ * #3302: the log can be narrowed to the responses a policy withheld after the
+ * provider billed them, and to the successes whose usage was never reported.
+ * The rail's Cost section carries a check for each, the server is asked before
+ * the page is cut, the address holds them like the other filters, and Clear
+ * filters takes both back out. Both ticked at once is one write to the address.
+ */
+export const TheWithheldAndUnknownUsageFiltersAreSentToTheServer: Story = {
+  render: () => (
+    <Harness fetchStub={billingFilters.stub}>
+      <Logs />
+      <AddressProbe />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByText("withheld-model");
+    await expect(modelsOnScreen(canvasElement)).toEqual([
+      "plain-model",
+      "withheld-model",
+      "silent-model",
+    ]);
+    await userEvent.click(canvas.getByRole("button", { name: /Filters/ }));
+    const withheld = await canvas.findByRole("checkbox", { name: "Withheld responses only" });
+    const unknown = await canvas.findByRole("checkbox", { name: "Unknown usage only" });
+    await expect(withheld).toHaveAttribute("aria-checked", "false");
+    await expect(unknown).toHaveAttribute("aria-checked", "false");
+
+    await userEvent.click(withheld);
+    await waitFor(() => expect(modelsOnScreen(canvasElement)).toEqual(["withheld-model"]));
+    await expect(lastLogQuery(billingFilters).get("withheld")).toBe("true");
+    await expect(lastLogQuery(billingFilters).has("usage_unknown")).toBe(false);
+    await expect(addressOf(canvasElement).get("withheld")).toBe("true");
+    await expect(canvas.getByRole("button", { name: "Filters · 1" })).toBeVisible();
+
+    // both at once: a row must be both, and neither row is
+    await userEvent.click(unknown);
+    await waitFor(() => expect(modelsOnScreen(canvasElement)).toEqual([]));
+    await expect(addressOf(canvasElement).get("withheld")).toBe("true");
+    await expect(addressOf(canvasElement).get("usage_unknown")).toBe("true");
+    await expect(canvas.getByRole("button", { name: "Filters · 2" })).toBeVisible();
+
+    await userEvent.click(withheld);
+    await waitFor(() => expect(modelsOnScreen(canvasElement)).toEqual(["silent-model"]));
+    await expect(addressOf(canvasElement).has("withheld")).toBe(false);
+    await expect(lastLogQuery(billingFilters).get("usage_unknown")).toBe("true");
+
+    await userEvent.click(canvas.getByRole("button", { name: "Clear filters" }));
+    await waitFor(() => expect(modelsOnScreen(canvasElement)).toHaveLength(3));
+    await expect(addressOf(canvasElement).toString()).toBe("");
+    await expect(lastLogQuery(billingFilters).has("withheld")).toBe(false);
+    await expect(lastLogQuery(billingFilters).has("usage_unknown")).toBe(false);
+  },
+};
+
+const billingLink = recording(serverFiltered(BILLING_ROWS));
+
+/**
+ * #3302: the Dashboard's withheld notice links here with the window it was read
+ * over. The server is asked for the flag before the first page, the rail shows it
+ * ticked, and the window is kept.
+ */
+export const AWithheldLinkComesBackFiltered: Story = {
+  parameters: { address: "/logs?window=7d&withheld=true" },
+  render: () => (
+    <Harness fetchStub={billingLink.stub}>
+      <Logs />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(modelsOnScreen(canvasElement)).toEqual(["withheld-model"]));
+    const reads = billingLink.calls
+      .filter((c) => c.url.includes("/analytics/invocations"))
+      .map((c) => new URL(c.url, "http://localhost").searchParams);
+    for (const sent of reads) await expect(sent.get("withheld")).toBe("true");
+
+    await userEvent.click(canvas.getByRole("button", { name: "Filters · 1" }));
+    await expect(
+      await canvas.findByRole("checkbox", { name: "Withheld responses only" }),
+    ).toHaveAttribute("aria-checked", "true");
+    await expect(canvas.getByRole("checkbox", { name: "Unknown usage only" })).toHaveAttribute(
+      "aria-checked",
+      "false",
+    );
+  },
+};
+
+const unknownLink = recording(serverFiltered(BILLING_ROWS));
+
+/** #3302: an address that names unknown usage opens narrowed to it, and unticking it widens the read. */
+export const AnUnknownUsageLinkComesBackFiltered: Story = {
+  parameters: { address: "/logs?usage_unknown=true" },
+  render: () => (
+    <Harness fetchStub={unknownLink.stub}>
+      <Logs />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(modelsOnScreen(canvasElement)).toEqual(["silent-model"]));
+    await userEvent.click(canvas.getByRole("button", { name: "Filters · 1" }));
+    const check = await canvas.findByRole("checkbox", { name: "Unknown usage only" });
+    await expect(check).toHaveAttribute("aria-checked", "true");
+    await userEvent.click(check);
+    await waitFor(() => expect(modelsOnScreen(canvasElement)).toHaveLength(3));
+    await expect(lastLogQuery(unknownLink).has("usage_unknown")).toBe(false);
   },
 };
 

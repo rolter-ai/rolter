@@ -114,6 +114,8 @@ mod openapi;
 mod password_reset;
 #[cfg(feature = "postgres")]
 mod plugins;
+#[cfg(feature = "postgres")]
+mod price_catalogue;
 mod proxy;
 // a record for the guard tests; no request path reads it
 #[cfg(test)]
