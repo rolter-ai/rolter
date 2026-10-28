@@ -342,7 +342,7 @@ async fn connect_selected(
     session_guard: SessionGuard,
     key_meta: Option<&crate::state::KeyMeta>,
 ) -> Result<SelectedSession, String> {
-    let candidates = realtime_candidates(state, snap, entry, model, context, key_meta);
+    let candidates = realtime_candidates(state, snap, entry, context, key_meta);
     let mut last_error = "no target selected".to_string();
 
     for candidate in candidates {
@@ -420,10 +420,11 @@ fn realtime_candidates<'a>(
     state: &AppState,
     snap: &Snapshot,
     entry: &'a crate::state::RouteEntry,
-    model: &str,
     context: &RouteContext<'_>,
     key_meta: Option<&crate::state::KeyMeta>,
 ) -> Vec<Candidate<'a>> {
+    // per-target state is keyed by the route's namespace (ADR-0039)
+    let model = entry.namespace.as_str();
     if !entry.route.has_variants() {
         let mut loads = state.loads.snapshot(model, entry.route.targets.len());
         for (index, target) in entry.route.targets.iter().enumerate() {

@@ -688,6 +688,7 @@ mod tests {
             tenancy: None,
         };
         crate::state::RouteEntry {
+            namespace: route.model.clone(),
             project_scope: None,
             overrides: Default::default(),
             throughput: None,

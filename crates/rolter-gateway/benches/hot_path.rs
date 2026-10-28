@@ -292,7 +292,7 @@ fn snapshot_read(c: &mut Criterion) {
             |b, _| {
                 b.iter(|| {
                     let snap = state.snapshot.load();
-                    black_box(snap.routes.contains_key(black_box(model.as_str())))
+                    black_box(snap.routes.get("", black_box(model.as_str())).is_some())
                 });
             },
         );
@@ -362,7 +362,7 @@ fn report_allocations() {
     let model = "model-500";
     let n = allocs_per_op(RUNS, || {
         let snap = state.snapshot.load();
-        black_box(snap.routes.contains_key(black_box(model)));
+        black_box(snap.routes.get("", black_box(model)).is_some());
     });
     eprintln!("  snapshot_read/load_and_route/1000           {n:>8.2}");
 

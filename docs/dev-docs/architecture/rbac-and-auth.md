@@ -125,6 +125,17 @@ file carry none. `Tenancy::admits` decides whether a key may use a row:
 | `tenancy` of the key's own org | admitted                             | admitted                                    |
 | `tenancy` of another org       | refused                              | admitted                                    |
 
+Names are per org (#1857, [ADR-0039](../adr/2026-10-28-per-org-namespaces.md)):
+the snapshot keys routes by `(org, model)` and provider and group slugs by
+`(org, slug)` (`rolter_core::namespace::Namespaced`), with config-file rows in
+the global namespace. A key resolves a name in its own org first, then
+globally; a key with no org gets the global row, or the one org row when only
+one org has the name, and a name two orgs share is unknown to it. A route's
+targets, a variant's and a group's members resolve the same way from the row's
+own org, so a row never names another org's provider. Per-target state is kept
+apart too: providers are keyed by a runtime id and routes by a namespace, each
+the bare name unless another org shares it, then `name@org`.
+
 Every way of addressing a model resolves through `Snapshot::resolve_for`,
 which applies the rule before anything else: a named route; then
 `provider-slug/model`, whose synthetic route takes the provider's tenancy; then
@@ -279,6 +290,17 @@ file carry none. `Tenancy::admits` decides whether a key may use a row:
 | no `tenancy` (config file)     | admitted                             | admitted                                    |
 | `tenancy` of the key's own org | admitted                             | admitted                                    |
 | `tenancy` of another org       | refused                              | admitted                                    |
+
+Names are per org (#1857, [ADR-0039](../adr/2026-10-28-per-org-namespaces.md)):
+the snapshot keys routes by `(org, model)` and provider and group slugs by
+`(org, slug)` (`rolter_core::namespace::Namespaced`), with config-file rows in
+the global namespace. A key resolves a name in its own org first, then
+globally; a key with no org gets the global row, or the one org row when only
+one org has the name, and a name two orgs share is unknown to it. A route's
+targets, a variant's and a group's members resolve the same way from the row's
+own org, so a row never names another org's provider. Per-target state is kept
+apart too: providers are keyed by a runtime id and routes by a namespace, each
+the bare name unless another org shares it, then `name@org`.
 
 Every way of addressing a model resolves through `Snapshot::resolve_for`,
 which applies the rule before anything else: a named route; then

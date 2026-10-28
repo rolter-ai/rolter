@@ -72,20 +72,23 @@ pub fn collect(state: &AppState) -> Vec<RouteTelemetry> {
     let mut routes: Vec<RouteTelemetry> = snapshot
         .routes
         .iter()
-        .filter_map(|(model, entry)| {
-            let loads = state.loads.snapshot(model, entry.route.targets.len());
+        .filter_map(|(_, model, entry)| {
+            // per-target state is keyed by the route's namespace (ADR-0039)
+            let loads = state
+                .loads
+                .snapshot(&entry.namespace, entry.route.targets.len());
             let state = entry.balancer.telemetry(&loads)?;
             let target_labels = entry
                 .route
                 .targets
                 .iter()
                 .map(|target| TargetLabel {
-                    provider: target.provider.clone(),
-                    upstream_model: target.model.clone().unwrap_or_else(|| model.clone()),
+                    provider: snapshot.provider_name(&target.provider).to_string(),
+                    upstream_model: target.model.clone().unwrap_or_else(|| model.to_string()),
                 })
                 .collect();
             Some(RouteTelemetry {
-                model: model.clone(),
+                model: model.to_string(),
                 state,
                 target_labels,
             })

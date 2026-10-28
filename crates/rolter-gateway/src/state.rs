@@ -23,7 +23,17 @@ use crate::rate_limits::RateLimiter;
 
 /// A resolved route plus its constructed balancer.
 pub struct RouteEntry {
+    /// the route as configured, except that every provider it names, in its
+    /// targets, its variants and its semantic cache, is the provider's runtime
+    /// id: resolved in the route's own org first, then globally (#1857)
     pub route: ModelRoute,
+    /// what the route's per-target state is keyed by: in-flight counts, the
+    /// latency window and predictor, cooldowns and breakers, under
+    /// `(namespace, target index)`. The route's name, unless a route of another
+    /// org shares it, then `name@org`, so two orgs' `gpt-4o` never share a
+    /// breaker (ADR-0039). For a synthetic `slug/model` entry it is the address,
+    /// qualified the same way when the provider or group it pins is
+    pub namespace: String,
     /// the pool's balancer. `Arc` rather than `Box` because a group's balancer
     /// is owned by the snapshot and handed to every synthetic entry built for
     /// that group, so its rotation state outlives one request (#1655)
@@ -156,8 +166,20 @@ impl KeyMeta {
         !self.disabled && self.expires_at.is_none_or(|exp| now < exp)
     }
 
+    /// Whether the key's provider allow-list admits the provider with runtime
+    /// id `provider`. The list holds display names, and a runtime id is the
+    /// name with `@org` added when another org shares it (ADR-0039): the
+    /// suffix is ignored when it names the key's own org, or any org for a key
+    /// with none (an org key never reaches another org's provider).
     pub fn provider_allowed(&self, provider: &str) -> bool {
-        self.providers.is_empty() || self.providers.iter().any(|name| name == provider)
+        self.providers.is_empty()
+            || self.providers.iter().any(|name| {
+                name == provider
+                    || provider
+                        .strip_prefix(name.as_str())
+                        .and_then(|rest| rest.strip_prefix(rolter_core::namespace::QUALIFIER))
+                        .is_some_and(|org| self.org_id.is_empty() || org == self.org_id)
+            })
     }
 
     /// Whether this key may address `model`, by both gates it has to clear: the
@@ -190,27 +212,26 @@ impl KeyMeta {
 /// Immutable routing state. Hot-reload swaps a whole new snapshot in atomically
 /// so request handlers never block on a lock or observe a half-applied config.
 pub struct Snapshot {
+    /// providers by runtime id, which is also each one's `name` here: the
+    /// configured name, unless a provider of another org shares it, then
+    /// `name@org` (ADR-0039). Every per-provider store — key pools, queues,
+    /// health probes, scraped queue depth, KV telemetry — is keyed by it, so
+    /// two orgs' `openai` never share state. [`Snapshot::provider_label`]
+    /// gives back the display name and the owning org
     pub providers: HashMap<String, ProviderConfig>,
-    /// provider slug -> provider name, for `provider-slug/model` addressing
-    /// (ADR-0017). A provider without an explicit slug is indexed under one
-    /// derived from its name so TOML-configured deployments get addressing too
-    pub providers_by_slug: HashMap<String, String>,
-    /// group slug -> provider group, for `group-slug/model` addressing (ADR-0017
-    /// addendum). Shares the slug namespace with `providers_by_slug`; a group
-    /// whose slug collides with a provider slug is dropped so the provider wins
-    /// deterministically
-    pub groups_by_slug: HashMap<String, rolter_core::ProviderGroupConfig>,
-    /// one balancer per indexed group slug, built with the snapshot and shared
-    /// by every request that addresses the group.
-    ///
-    /// A group address resolves to a synthetic route built per request, so a
-    /// balancer built there would be new on every request — and a new
-    /// `RoundRobin` always returns index 0, which sent a whole fleet's traffic
-    /// to its first member (#1655). Balancer state is per pool, not per
-    /// request, so it belongs here with everything else a reload replaces
-    pub group_balancers: HashMap<String, Arc<dyn LoadBalancer>>,
+    /// `(org, slug)` -> provider runtime id, for `provider-slug/model`
+    /// addressing (ADR-0017). A provider without an explicit slug is indexed
+    /// under one derived from its name so TOML-configured deployments get
+    /// addressing too
+    pub providers_by_slug: rolter_core::namespace::Namespaced<String>,
+    /// `(org, slug)` -> provider group, for `group-slug/model` addressing
+    /// (ADR-0017 addendum). Shares each org's slug namespace with
+    /// `providers_by_slug`; a group whose slug a provider of the same org holds
+    /// is dropped so the provider wins deterministically
+    pub groups_by_slug: rolter_core::namespace::Namespaced<GroupEntry>,
 
-    pub routes: HashMap<String, RouteEntry>,
+    /// configured routes by `(org, model)`
+    pub routes: rolter_core::namespace::Namespaced<RouteEntry>,
     /// virtual keys indexed by their peppered digest ([`rolter_auth::hash_key`]),
     /// never by plaintext — merges config-defined and database-defined keys
     pub keys: HashMap<String, KeyMeta>,
@@ -327,6 +348,66 @@ impl rolter_balancer::scorer::LatencySource for RouteLatency {
     }
 }
 
+/// A provider group as the snapshot serves it.
+pub struct GroupEntry {
+    /// the group as configured, with each member naming its provider's runtime
+    /// id, resolved in the group's own org first, then globally
+    pub config: rolter_core::ProviderGroupConfig,
+    /// the group's balancer, built with the snapshot and shared by every
+    /// request that addresses the group.
+    ///
+    /// A group address resolves to a synthetic route built per request, so a
+    /// balancer built there would be new on every request — and a new
+    /// `RoundRobin` always returns index 0, which sent a whole fleet's traffic
+    /// to its first member (#1655). Balancer state is per pool, not per
+    /// request, so it belongs here with everything else a reload replaces
+    pub balancer: Arc<dyn LoadBalancer>,
+}
+
+/// The providers of `config` by runtime id, and `(org, name)` -> runtime id.
+///
+/// A provider's runtime id is its name, unless a provider of another org (or
+/// a global one) has the same name: then each org-owned one is `name@org`,
+/// and the global one keeps the bare name (ADR-0039 section 3). A provider
+/// whose id another already took is left out, so the first row wins on every
+/// build; `validate` refuses a name twice in one org before it gets here.
+fn index_providers(
+    config: &GatewayConfig,
+) -> (
+    HashMap<String, ProviderConfig>,
+    rolter_core::namespace::Namespaced<String>,
+) {
+    use rolter_core::namespace::{org_of, qualify, Namespaced};
+    let mut names = Namespaced::new();
+    for p in &config.providers {
+        let _ = names.insert(org_of(p.tenancy.as_ref()), &p.name, ());
+    }
+    let mut providers = HashMap::with_capacity(config.providers.len());
+    let mut ids = Namespaced::new();
+    for p in &config.providers {
+        let org = org_of(p.tenancy.as_ref());
+        let id = if names.is_shared(&p.name) {
+            qualify(&p.name, org)
+        } else {
+            p.name.clone()
+        };
+        if providers.contains_key(&id) || ids.owned_by(org, &p.name).is_some() {
+            tracing::warn!(
+                provider = %p.name,
+                org = %org,
+                "another provider already answers to this name; this one is not served"
+            );
+            continue;
+        }
+        let _ = ids.insert(org, &p.name, id.clone());
+        let mut provider = p.clone();
+        provider.ca_bundles = Some(config.ca_bundles_for(p));
+        provider.name.clone_from(&id);
+        providers.insert(id, provider);
+    }
+    (providers, ids)
+}
+
 /// The generation of the next snapshot built ([`Snapshot::generation`]).
 static NEXT_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
@@ -342,26 +423,32 @@ impl Snapshot {
         loads: &crate::load::LoadTracker,
         telemetry: Option<&crate::cache_telemetry::CacheTelemetry>,
     ) -> Self {
-        let providers: HashMap<String, ProviderConfig> = config
-            .providers
-            .iter()
-            .cloned()
-            .map(|mut p| {
-                p.ca_bundles = Some(config.ca_bundles_for(&p));
-                (p.name.clone(), p)
-            })
-            .collect();
+        use rolter_core::namespace::{org_of, qualify, Namespaced};
+        let (providers, provider_ids) = index_providers(config);
+        // a provider a row names resolves in the row's own org first, then
+        // globally; a name that resolves to nothing stays as written and finds
+        // no provider at request time, as before
+        let resolve = |org: &str, name: &str| {
+            provider_ids
+                .get(org, name)
+                .cloned()
+                .unwrap_or_else(|| name.to_string())
+        };
         // index providers by their URL-safe slug for `provider-slug/model`
         // addressing; an explicit slug wins, otherwise derive one from the
         // name. skip invalid/empty derived slugs. walk the config's list rather
-        // than the map so the first provider in file order wins a collision on
-        // every build: the merged store puts the bootstrap file's rows first,
-        // so a database provider can never take a config-file provider's
-        // address. groups are indexed after every provider, so a legacy
-        // database provider still takes a readonly group's slug; the control
-        // plane's write-time check keeps new rows from getting there
-        let mut providers_by_slug: HashMap<String, String> = HashMap::new();
+        // than the map so the first provider in file order wins a collision in
+        // its org on every build: the merged store puts the bootstrap file's
+        // rows first, so a database provider can never take a config-file
+        // provider's address. groups are indexed after every provider, so a
+        // legacy database provider still takes a readonly group's slug; the
+        // control plane's write-time check keeps new rows from getting there
+        let mut providers_by_slug: Namespaced<String> = Namespaced::new();
         for p in &config.providers {
+            let org = org_of(p.tenancy.as_ref());
+            let Some(id) = provider_ids.owned_by(org, &p.name) else {
+                continue;
+            };
             let slug = p
                 .slug
                 .clone()
@@ -369,39 +456,13 @@ impl Snapshot {
             if !rolter_core::slug::is_valid_slug(&slug) {
                 continue;
             }
-            if let Some(holder) = providers_by_slug.get(&slug) {
+            if let Err(id) = providers_by_slug.insert(org, &slug, id.clone()) {
                 tracing::warn!(
                     %slug,
-                    provider = %p.name,
-                    holder = %holder,
+                    provider = %id,
                     "provider slug already addresses another provider; this one is not addressable"
                 );
-                continue;
             }
-            providers_by_slug.insert(slug, p.name.clone());
-        }
-        // index provider groups by slug for `group-slug/model` addressing
-        // (ADR-0017 addendum). the slug shares the provider namespace: a group
-        // whose slug collides with a provider slug is skipped so the provider
-        // wins deterministically. empty groups are dropped — they never route.
-        let mut groups_by_slug: HashMap<String, rolter_core::ProviderGroupConfig> = HashMap::new();
-        for g in &config.provider_groups {
-            let slug = g
-                .slug
-                .clone()
-                .unwrap_or_else(|| rolter_core::slug::slugify(&g.name));
-            if !rolter_core::slug::is_valid_slug(&slug) || g.members.is_empty() {
-                continue;
-            }
-            if providers_by_slug.contains_key(&slug) {
-                tracing::warn!(
-                    %slug,
-                    group = %g.name,
-                    "provider group slug is a provider's slug; the group is not addressable"
-                );
-                continue;
-            }
-            groups_by_slug.entry(slug).or_insert_with(|| g.clone());
         }
         // price rates are converted into the base currency once, here, rather
         // than per request: cost is linear in the rates, so converting the
@@ -441,8 +502,48 @@ impl Snapshot {
         // forwards) stays in `resolve_pinned`. costs come from the members'
         // declared upstream models, since the requested model is not known yet
         // and a group address is never itself a priced model
-        let mut group_balancers: HashMap<String, Arc<dyn LoadBalancer>> = HashMap::new();
-        for (slug, group) in &groups_by_slug {
+        // index provider groups by slug for `group-slug/model` addressing
+        // (ADR-0017 addendum). the slug shares its org's provider namespace: a
+        // group whose slug a provider of the same org holds is skipped so the
+        // provider wins deterministically. empty groups are dropped — they
+        // never route.
+        //
+        // each group's balancer is built here rather than in `resolve_pinned`.
+        // a group address resolves to a synthetic route per request, so a
+        // balancer built there starts from scratch every time — and a fresh
+        // `RoundRobin` or `WeightedRoundRobin` always picks the heaviest/first
+        // target, which pinned a whole fleet on its first member (#1655).
+        //
+        // the balancer only needs the members' weights, which are fixed for the
+        // life of the snapshot; the per-request part (the model each member
+        // forwards) stays in `resolve_pinned`. costs come from the members'
+        // declared upstream models, since the requested model is not known yet
+        // and a group address is never itself a priced model
+        let mut groups_by_slug: Namespaced<GroupEntry> = Namespaced::new();
+        for g in &config.provider_groups {
+            let org = org_of(g.tenancy.as_ref());
+            let slug = g
+                .slug
+                .clone()
+                .unwrap_or_else(|| rolter_core::slug::slugify(&g.name));
+            if !rolter_core::slug::is_valid_slug(&slug) || g.members.is_empty() {
+                continue;
+            }
+            if providers_by_slug.owned_by(org, &slug).is_some() {
+                tracing::warn!(
+                    %slug,
+                    group = %g.name,
+                    "provider group slug is a provider's slug; the group is not addressable"
+                );
+                continue;
+            }
+            if groups_by_slug.owned_by(org, &slug).is_some() {
+                continue;
+            }
+            let mut group = g.clone();
+            for member in &mut group.members {
+                member.provider = resolve(org, &member.provider);
+            }
             let targets: Vec<Target> = group
                 .members
                 .iter()
@@ -455,14 +556,19 @@ impl Snapshot {
                 .collect();
             let weights: Vec<u32> = targets.iter().map(|t| t.weight).collect();
             let stats = TargetStats {
-                cost_per_mtok: target_costs(&targets, slug, &prices),
+                cost_per_mtok: target_costs(&targets, &slug, &prices),
                 latency: None,
                 adaptive: config.adaptive_routing.clone(),
                 ..Default::default()
             };
-            group_balancers.insert(
-                slug.clone(),
-                Arc::from(build_with_stats(group.strategy, &weights, &stats)),
+            let balancer = Arc::from(build_with_stats(group.strategy, &weights, &stats));
+            let _ = groups_by_slug.insert(
+                org,
+                &slug,
+                GroupEntry {
+                    config: group,
+                    balancer,
+                },
             );
         }
         // compiled before the route loop so each route can resolve its
@@ -470,14 +576,46 @@ impl Snapshot {
         let compiled_guardrails = Arc::new(rolter_core::CompiledGuardrails::from_config(
             &config.guardrails,
         ));
-        let mut routes = HashMap::new();
+        // a route's namespace is qualified only when another org's route has
+        // the same name (ADR-0039 section 3)
+        let mut route_names = Namespaced::new();
         for route in &config.routes {
+            let _ = route_names.insert(org_of(route.tenancy.as_ref()), &route.model, ());
+        }
+        let mut routes: Namespaced<RouteEntry> = Namespaced::new();
+        for configured in &config.routes {
+            let org = org_of(configured.tenancy.as_ref());
+            if routes.owned_by(org, &configured.model).is_some() {
+                tracing::warn!(
+                    model = %configured.model,
+                    org = %org,
+                    "another route already answers to this name; this one is not served"
+                );
+                continue;
+            }
+            let namespace = if route_names.is_shared(&configured.model) {
+                qualify(&configured.model, org)
+            } else {
+                configured.model.clone()
+            };
+            let mut route = configured.clone();
+            for target in route
+                .targets
+                .iter_mut()
+                .chain(route.variants.iter_mut().flat_map(|v| v.targets.iter_mut()))
+            {
+                target.provider = resolve(org, &target.provider);
+            }
+            if let Some(semantic) = route.cache.as_mut().and_then(|c| c.semantic.as_mut()) {
+                semantic.provider = resolve(org, &semantic.provider);
+            }
+            let route = &route;
             let weights: Vec<u32> = route.targets.iter().map(|t| t.weight).collect();
             let stats = TargetStats {
                 cost_per_mtok: target_costs(&route.targets, &route.model, &prices),
                 latency: Some(Arc::new(RouteLatency {
                     loads: loads.clone(),
-                    namespace: route.model.clone(),
+                    namespace: namespace.clone(),
                 })),
                 kv_cache: telemetry.map(|source| {
                     source.kv_source(
@@ -502,7 +640,7 @@ impl Snapshot {
                 // namespace, so it survives the reload that rebuilt this
                 // snapshot along with everything else the tracker holds
                 predictor: loads
-                    .predictor(&route.model, weights.len())
+                    .predictor(&namespace, weights.len())
                     .map(|p| p as Arc<dyn rolter_balancer::scorer::LatencyPredictionSource>),
             };
             let balancer: Arc<dyn LoadBalancer> =
@@ -516,7 +654,7 @@ impl Snapshot {
                         cost_per_mtok: target_costs(&v.targets, &route.model, &prices),
                         latency: Some(Arc::new(RouteLatency {
                             loads: loads.clone(),
-                            namespace: crate::handlers::variant_key(&route.model, &v.name),
+                            namespace: crate::handlers::variant_key(&namespace, &v.name),
                         })),
                         kv_cache: telemetry.map(|source| {
                             source.kv_source(
@@ -536,10 +674,7 @@ impl Snapshot {
                         }),
                         adaptive: config.adaptive_routing.clone(),
                         predictor: loads
-                            .predictor(
-                                &crate::handlers::variant_key(&route.model, &v.name),
-                                w.len(),
-                            )
+                            .predictor(&crate::handlers::variant_key(&namespace, &v.name), w.len())
                             .map(|p| {
                                 p as Arc<dyn rolter_balancer::scorer::LatencyPredictionSource>
                             }),
@@ -552,13 +687,15 @@ impl Snapshot {
                 .iter()
                 .chain(route.variants.iter().flat_map(|v| v.targets.iter()))
                 .find_map(|t| providers.get(&t.provider).and_then(provider_scope));
-            routes.insert(
-                route.model.clone(),
+            let _ = routes.insert(
+                org,
+                &route.model,
                 RouteEntry {
+                    namespace,
                     project_scope,
                     overrides: rolter_proxy::RouteOverrides::from_advanced(&route.advanced),
                     throughput: crate::rate_limits::RouteWindow::new(
-                        route.tenancy.as_ref().map_or("", |t| t.org_id.as_str()),
+                        org,
                         &route.model,
                         route.advanced.limits.rpm,
                         route.advanced.limits.tpm,
@@ -671,7 +808,6 @@ impl Snapshot {
             providers,
             providers_by_slug,
             groups_by_slug,
-            group_balancers,
             routes,
             keys,
             mcp_servers,
@@ -722,12 +858,13 @@ impl Snapshot {
 
     /// The configured route named `model`, if it is in the caller's tenancy.
     ///
+    /// The name resolves in the key's org first, then globally (ADR-0039).
     /// Another org's route, or a project-only route of another project, is a
     /// miss here rather than a refusal (see [`RouteEntry::in_tenancy_of`]), so
     /// the builtin and the pinned addresses behind it still answer the caller.
     pub fn named_route_for(&self, model: &str, key: Option<&KeyMeta>) -> Option<&RouteEntry> {
         self.routes
-            .get(model)
+            .get(key_org(key), model)
             .filter(|entry| entry.in_tenancy_of(key))
     }
 
@@ -741,32 +878,60 @@ impl Snapshot {
         if let Some(entry) = self.named_route_for(model, key) {
             return Some(ResolvedRoute::Named(entry));
         }
-        self.resolve_pinned(model)
+        self.resolve_pinned_in(model, key_org(key))
             .filter(|entry| entry.in_tenancy_of(key))
             .map(ResolvedRoute::Pinned)
     }
 
+    /// [`resolve_pinned_in`](Self::resolve_pinned_in) for a caller with no
+    /// org: the operator's keys, and the listing paths that are not answering
+    /// one key.
+    pub fn resolve_pinned(&self, model: &str) -> Option<RouteEntry> {
+        self.resolve_pinned_in(model, rolter_core::namespace::GLOBAL)
+    }
+
     /// Resolve a `provider-slug/model` address to a synthetic single-target
-    /// [`RouteEntry`] pinned to that provider (ADR-0017). Callers try
-    /// [`Snapshot::routes`] first so a route whose name literally contains `/`
-    /// keeps winning; only on a miss do they split on the first `/` and land
-    /// here. Returns `None` when the string has no `/`, the left segment is not
-    /// a known provider slug, or the right (upstream model) segment is empty.
+    /// [`RouteEntry`] pinned to that provider (ADR-0017), for a caller of
+    /// `org`. Callers try [`Snapshot::routes`] first so a route whose name
+    /// literally contains `/` keeps winning; only on a miss do they split on
+    /// the first `/` and land here. Returns `None` when the string has no `/`,
+    /// the left segment is not a known provider or group slug, or the right
+    /// (upstream model) segment is empty.
+    ///
+    /// The slug resolves in `org` first, then globally, and of a provider and
+    /// a group that both answer, the one `org` owns wins; with neither or both
+    /// owned by it, the provider does.
     ///
     /// The pinned entry bypasses cross-provider fan-out but still fans out
     /// within the provider: its key pool, cooldowns, and circuit breaker run
     /// through the same classic-pool machinery, and the right segment becomes
     /// the target's upstream model rewrite.
-    pub fn resolve_pinned(&self, model: &str) -> Option<RouteEntry> {
+    pub fn resolve_pinned_in(&self, model: &str, org: &str) -> Option<RouteEntry> {
         let (slug, upstream) = model.split_once('/')?;
         if upstream.is_empty() {
             return None;
         }
         // a provider slug pins a single provider; a group slug fans out across
-        // the group's members. the two share a namespace, so at most one hits.
-        if let Some(provider_name) = self.providers_by_slug.get(slug) {
+        // the group's members. the two share each org's namespace, so at most
+        // one of them is the caller's own
+        let provider = self.providers_by_slug.resolve(org, slug);
+        let group = self.groups_by_slug.resolve(org, slug);
+        let group_first = matches!(
+            (provider, group),
+            (Some((p_owner, _)), Some((g_owner, _))) if p_owner != org && g_owner == org && !org.is_empty()
+        );
+        // the address keys per-target state like a route name does, qualified
+        // when another org answers the same slug (ADR-0039)
+        let namespace = |owner: &str, shared: bool| {
+            if shared {
+                rolter_core::namespace::qualify(model, owner)
+            } else {
+                model.to_string()
+            }
+        };
+        if let (Some((owner, provider_id)), false) = (provider, group_first) {
             let target = Target {
-                provider: provider_name.clone(),
+                provider: provider_id.clone(),
                 model: Some(upstream.to_string()),
                 weight: 1,
                 takes_over: Vec::new(),
@@ -776,16 +941,26 @@ impl Snapshot {
             // it to another org's key exactly as it would a named route (#1844)
             let tenancy = self
                 .providers
-                .get(provider_name)
+                .get(provider_id)
                 .and_then(|provider| provider.tenancy.clone());
             // nor does its project scope, which `tenancy.project_id` carries for
             // a provider: the synthetic route is narrowed to that project
-            let scope = self.providers.get(provider_name).and_then(provider_scope);
+            let scope = self.providers.get(provider_id).and_then(provider_scope);
+            let shared = self.providers_by_slug.is_shared(slug);
             // a single target has nothing to balance between, so a per-request
             // balancer is fine here
-            return Some(self.synthetic_route(model, strategy, vec![target], None, tenancy, scope));
+            return Some(self.synthetic_route(
+                model,
+                namespace(owner, shared),
+                strategy,
+                vec![target],
+                None,
+                tenancy,
+                scope,
+            ));
         }
-        if let Some(group) = self.groups_by_slug.get(slug) {
+        if let Some((owner, entry)) = group {
+            let group = &entry.config;
             // one target per member; each rewrites to its own upstream model
             // when set, otherwise forwards the requested model as-is (passthrough)
             let targets: Vec<Target> = group
@@ -814,18 +989,39 @@ impl Snapshot {
                         .iter()
                         .find_map(|m| self.providers.get(&m.provider).and_then(provider_scope))
                 });
+            let shared = self.groups_by_slug.is_shared(slug);
             // the group's own balancer, so the rotation advances across
             // requests instead of restarting on each one (#1655)
             return Some(self.synthetic_route(
                 model,
+                namespace(owner, shared),
                 group.strategy,
                 targets,
-                self.group_balancers.get(slug).cloned(),
+                Some(entry.balancer.clone()),
                 group.tenancy.clone(),
                 scope,
             ));
         }
         None
+    }
+
+    /// The display name and owning org of the provider with runtime id `id`,
+    /// for what a log row, a response header or a span shows. The org is
+    /// empty for a global provider; an unknown id is its own name.
+    pub fn provider_label<'a>(&'a self, id: &'a str) -> (&'a str, &'a str) {
+        let org = self
+            .providers
+            .get(id)
+            .map_or(rolter_core::namespace::GLOBAL, |p| {
+                rolter_core::namespace::org_of(p.tenancy.as_ref())
+            });
+        (rolter_core::namespace::display_name(id, org), org)
+    }
+
+    /// The display name of the provider with runtime id `id`; see
+    /// [`provider_label`](Self::provider_label).
+    pub fn provider_name<'a>(&'a self, id: &'a str) -> &'a str {
+        self.provider_label(id).0
     }
 
     /// Build a synthetic single-pool [`RouteEntry`] for an addressed model
@@ -835,9 +1031,11 @@ impl Snapshot {
     /// `balancer` is the pool's shared balancer when one outlives the request
     /// (a group's), or `None` to build a throwaway one for a pool of a single
     /// target, where selection state cannot matter.
+    #[allow(clippy::too_many_arguments)]
     fn synthetic_route(
         &self,
         model: &str,
+        namespace: String,
         strategy: rolter_core::BalancingStrategy,
         targets: Vec<Target>,
         balancer: Option<Arc<dyn LoadBalancer>>,
@@ -865,6 +1063,7 @@ impl Snapshot {
             tenancy,
         };
         RouteEntry {
+            namespace,
             project_scope,
             overrides: Default::default(),
             throughput: None,
@@ -876,6 +1075,12 @@ impl Snapshot {
             guardrails: Default::default(),
         }
     }
+}
+
+/// The org of the key making a request, [`GLOBAL`](rolter_core::namespace::GLOBAL)
+/// for none or for a key from the gateway's own config file.
+pub fn key_org(key: Option<&KeyMeta>) -> &str {
+    key.map_or(rolter_core::namespace::GLOBAL, |key| key.org_id.as_str())
 }
 
 /// The project a provider is scoped to, if any. For a provider the tenancy's
@@ -1139,18 +1344,16 @@ impl AppState {
         forwarder.set_compatibility(&config.compatibility);
         forwarder.set_client_policy(&config.client);
         forwarder.set_model_defaults(&config.model_defaults);
-        health_events.set_provider_orgs(&config.providers);
         let provider_queues = ProviderQueues::new(forwarder.clone(), metrics.clone());
         let side_client = crate::egress_client::EgressClient::new(egress.clone());
         let cache_telemetry =
             crate::cache_telemetry::CacheTelemetry::new(metrics.clone(), side_client.clone());
-        cache_telemetry.configure(&config.providers);
+        let snapshot = Snapshot::build_with_telemetry(config, &loads, Some(&cache_telemetry));
+        // both keyed by runtime id, which the snapshot assigns (ADR-0039)
+        cache_telemetry.configure(snapshot.providers.values());
+        health_events.set_provider_orgs(snapshot.providers.values());
         Self {
-            snapshot: Arc::new(ArcSwap::from_pointee(Snapshot::build_with_telemetry(
-                config,
-                &loads,
-                Some(&cache_telemetry),
-            ))),
+            snapshot: Arc::new(ArcSwap::from_pointee(snapshot)),
             // opted into by the binary when a snapshot url is configured
             managed_auth: false,
             exposed_bind: false,
@@ -1220,13 +1423,13 @@ impl AppState {
         // effect on the next connect without rebuilding a single client
         self.egress.store(Arc::new(config.egress.clone()));
         crate::example_key::warn_if_exposed(config, self.exposed_bind);
-        self.cache_telemetry.configure(&config.providers);
-        self.health_events.set_provider_orgs(&config.providers);
-        self.snapshot.store(Arc::new(Snapshot::build_with_telemetry(
-            config,
-            &self.loads,
-            Some(&self.cache_telemetry),
-        )));
+        let snapshot =
+            Snapshot::build_with_telemetry(config, &self.loads, Some(&self.cache_telemetry));
+        // both keyed by runtime id, which the snapshot assigns (ADR-0039)
+        self.cache_telemetry.configure(snapshot.providers.values());
+        self.health_events
+            .set_provider_orgs(snapshot.providers.values());
+        self.snapshot.store(Arc::new(snapshot));
         // re-tune the circuit breaker in place (enable/disable + thresholds)
         // without discarding accumulated per-target state; the health prober picks
         // up its tuning from the new snapshot on its next sweep
@@ -1796,7 +1999,7 @@ mod tests {
         let snap = pinning_snapshot();
         // the route name containing '/' is a real route; the handler tries this
         // map before ever calling resolve_pinned, so the named route wins
-        assert!(snap.routes.contains_key("vllm-spb/named-route"));
+        assert!(snap.routes.contains_name("vllm-spb/named-route"));
     }
 
     fn group_snapshot() -> Snapshot {
@@ -2018,7 +2221,7 @@ mod tests {
         let entry = snap.resolve_pinned("vllm-msk-1/m").expect("resolves");
         assert_eq!(entry.route.targets.len(), 1);
         assert_eq!(entry.route.targets[0].provider, "vllm msk 1");
-        assert!(!snap.groups_by_slug.contains_key("vllm-msk-1"));
+        assert!(!snap.groups_by_slug.contains_name("vllm-msk-1"));
     }
 
     /// Providers sharing a slug resolve to the first in file order, on every
@@ -2042,7 +2245,7 @@ mod tests {
         for _ in 0..16 {
             let snap = Snapshot::build(&config, &crate::load::LoadTracker::new());
             assert_eq!(
-                snap.providers_by_slug.get("edge").map(String::as_str),
+                snap.providers_by_slug.get("", "edge").map(String::as_str),
                 Some("bootstrap")
             );
             let entry = snap.resolve_pinned("edge/m").expect("resolves");
@@ -2053,7 +2256,7 @@ mod tests {
     #[test]
     fn empty_group_is_not_indexed() {
         let snap = group_snapshot();
-        assert!(!snap.groups_by_slug.contains_key("empty-group"));
+        assert!(!snap.groups_by_slug.contains_name("empty-group"));
         assert!(snap.resolve_pinned("empty-group/m").is_none());
     }
 

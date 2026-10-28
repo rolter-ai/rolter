@@ -82,8 +82,8 @@ pub struct HealthEventSink {
     metrics: Arc<Metrics>,
     /// stop handle for the writer; `None` on a disabled sink
     tasks: Option<Arc<SinkTasks>>,
-    /// provider name to owning org, swapped on every config reload so an event
-    /// is attributed to the org that owns the provider now
+    /// provider runtime id to owning org, swapped on every config reload so an
+    /// event is attributed to the org that owns the provider now
     orgs: Arc<ArcSwap<HashMap<String, String>>>,
 }
 
@@ -98,11 +98,16 @@ impl HealthEventSink {
         }
     }
 
-    /// Record which org owns each provider, so later events carry it. Providers
-    /// without a tenancy (config file) are left out and keep an empty org.
-    pub fn set_provider_orgs(&self, providers: &[rolter_core::ProviderConfig]) {
+    /// Record which org owns each provider, so later events carry it. A
+    /// provider's `name` is its runtime id, as the snapshot assigns it
+    /// (ADR-0039). Providers without a tenancy (config file) are left out and
+    /// keep an empty org.
+    pub fn set_provider_orgs<'a>(
+        &self,
+        providers: impl IntoIterator<Item = &'a rolter_core::ProviderConfig>,
+    ) {
         let map = providers
-            .iter()
+            .into_iter()
             .filter_map(|p| Some((p.name.clone(), p.tenancy.as_ref()?.org_id.clone())))
             .collect();
         self.orgs.store(Arc::new(map));

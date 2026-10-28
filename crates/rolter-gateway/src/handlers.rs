@@ -25,7 +25,7 @@ use crate::cache::{CachedResponse, ResponseCache};
 use crate::fake_llm;
 use crate::logging::RequestLog;
 use crate::rate_limits::TokenRecorder;
-use crate::state::{AppState, KeyMeta, Snapshot};
+use crate::state::{key_org, AppState, KeyMeta, Snapshot};
 use crate::trace::RequestId;
 use crate::upstream_failure::{self, StatusFailure};
 use rolter_core::failover::Failure;
@@ -122,10 +122,13 @@ pub async fn metrics(State(state): State<AppState>) -> impl IntoResponse {
     );
     body.push_str("# TYPE rolter_adaptive_routing_target_score gauge\n");
     let snap = state.snapshot.load();
-    for (model, entry) in snap.routes.iter() {
+    for entry in snap.routes.values() {
         let Some(counts) = entry.balancer.decisions() else {
             continue;
         };
+        // the namespace, which is the route's name unless another org's route
+        // shares it, so two orgs' series stay apart (ADR-0039)
+        let model = entry.namespace.as_str();
         let label = model.replace('\\', "\\\\").replace('"', "\\\"");
         // the same per-target scores the control plane serves (#751), so a
         // deployment that scrapes prometheus does not need the dashboard to
@@ -199,13 +202,19 @@ pub async fn list_models(State(state): State<AppState>, headers: HeaderMap) -> R
     let mut data: Vec<Value> = snap
         .routes
         .iter()
-        .filter(|(_, entry)| {
-            // the listing only narrows for an authenticated caller; the
-            // request path is what refuses an anonymous one
-            vk.as_ref()
-                .is_none_or(|key| authorize_route(Some(key), entry).is_ok())
+        .filter(|(_, model, entry)| {
+            // only the route this caller's name resolves to: another org's
+            // route of the same name is not this caller's (ADR-0039)
+            snap.routes
+                .get(key_org(vk.as_ref()), model)
+                .is_some_and(|resolved| std::ptr::eq(resolved, *entry))
+                // the listing only narrows for an authenticated caller; the
+                // request path is what refuses an anonymous one
+                && vk
+                    .as_ref()
+                    .is_none_or(|key| authorize_route(Some(key), entry).is_ok())
         })
-        .map(|(model, entry)| (model.clone(), Some(&entry.route.advanced)))
+        .map(|(_, model, entry)| (model.to_string(), Some(&entry.route.advanced)))
         .chain(builtin.map(|model| (model, None)))
         .filter(|(m, _)| vk.as_ref().is_none_or(|vk| vk.model_permitted(m)))
         .map(|(m, advanced)| {
@@ -234,15 +243,18 @@ pub async fn list_models(State(state): State<AppState>, headers: HeaderMap) -> R
         rolter_core::Tenancy::admits_scoped(tenancy, key_org, key_project)
     };
     // another org's providers are neither addressable nor listed (#1844)
+    // nor is a slug this caller resolves to another provider (ADR-0039)
     let name_to_slug: std::collections::HashMap<&str, &str> = snap
         .providers_by_slug
         .iter()
-        .filter(|(_, name)| {
-            snap.providers
-                .get(name.as_str())
-                .is_none_or(|provider| admitted_scoped(provider.tenancy.as_ref()))
+        .filter(|(_, slug, id)| {
+            snap.providers_by_slug.get(key_org, slug) == Some(*id)
+                && snap
+                    .providers
+                    .get(id.as_str())
+                    .is_none_or(|provider| admitted_scoped(provider.tenancy.as_ref()))
         })
-        .map(|(slug, name)| (name.as_str(), slug.as_str()))
+        .map(|(_, slug, id)| (id.as_str(), slug))
         .collect();
     // provider name -> upstream models it serves, reused to expand group ids
     let mut provider_models: std::collections::HashMap<&str, std::collections::BTreeSet<String>> =
@@ -289,7 +301,7 @@ pub async fn list_models(State(state): State<AppState>, headers: HeaderMap) -> R
                 .as_ref()
                 .is_none_or(|vk| vk.model_permitted(&id) && vk.provider_allowed(provider))
             {
-                pinned.insert((id, (*provider).to_string()));
+                pinned.insert((id, snap.provider_name(provider).to_string()));
             }
         }
     }
@@ -304,8 +316,13 @@ pub async fn list_models(State(state): State<AppState>, headers: HeaderMap) -> R
     // a member with an explicit upstream rewrite exposes that rewritten model.
     let mut grouped: std::collections::BTreeSet<(String, String)> =
         std::collections::BTreeSet::new();
-    for (slug, group) in &snap.groups_by_slug {
-        if !admitted_scoped(group.tenancy.as_ref()) {
+    for (_, slug, entry) in snap.groups_by_slug.iter() {
+        let group = &entry.config;
+        let resolved = snap
+            .groups_by_slug
+            .get(key_org, slug)
+            .is_some_and(|own| std::ptr::eq(own, entry));
+        if !resolved || !admitted_scoped(group.tenancy.as_ref()) {
             continue;
         }
         for member in &group.members {
@@ -763,7 +780,7 @@ async fn response_lifecycle(
             call.log(
                 Some(&route),
                 UpstreamLeg::Answered(upstream_status),
-                lifecycle_response(response, &route),
+                lifecycle_response(response, &route, snap.provider_name(&route.provider)),
             )
         }
         Err(err) => {
@@ -901,9 +918,12 @@ fn authorize_lifecycle(
     Ok(())
 }
 
+/// `provider` is the display name of the provider holding the response; the
+/// route carries its runtime id (ADR-0039).
 fn lifecycle_response(
     response: reqwest::Response,
     route: &crate::response_registry::ResponseRoute,
+    provider: &str,
 ) -> Response {
     let status =
         StatusCode::from_u16(response.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
@@ -932,7 +952,7 @@ fn lifecycle_response(
     if let Some(headers) = builder.headers_mut() {
         *headers = upstream_headers;
         for (name, value) in [
-            ("x-rolter-provider", route.provider.as_str()),
+            ("x-rolter-provider", provider),
             ("x-rolter-target", route.target.as_str()),
             ("x-rolter-model", route.model.as_str()),
         ] {
@@ -1777,10 +1797,12 @@ async fn proxy(
             .and_then(|policy| policy.select(body.len()).cloned())
             .map(|tier| (tier.name, tier.route))
     {
-        let selected = snap.routes.get(&tier_route).filter(|candidate| {
-            (!candidate.route.targets.is_empty() || candidate.route.has_variants())
-                && authorize_route(vk.as_ref(), candidate).is_ok()
-        });
+        let selected = snap
+            .named_route_for(&tier_route, vk.as_ref())
+            .filter(|candidate| {
+                (!candidate.route.targets.is_empty() || candidate.route.has_variants())
+                    && authorize_route(vk.as_ref(), candidate).is_ok()
+            });
         let fallback = selected.is_none();
         if let Some(candidate) = selected {
             entry = candidate;
@@ -2651,7 +2673,9 @@ async fn proxy(
         // targets; the count for the chosen target is held for the whole request.
         // scraped upstream queue depth (when enabled) is folded in so the balancer
         // also sees pressure that hasn't reached this gateway's own counters
-        let mut loads = state.loads.snapshot(&model, entry.route.targets.len());
+        let mut loads = state
+            .loads
+            .snapshot(&entry.namespace, entry.route.targets.len());
         for (i, target) in entry.route.targets.iter().enumerate() {
             if let Some(l) = loads.get_mut(i) {
                 *l = l.saturating_add(state.upstream_metrics.queue_depth(&target.provider));
@@ -2686,7 +2710,7 @@ async fn proxy(
                 &state.cooldowns,
                 &state.health,
                 &state.breaker,
-                &model,
+                &entry.namespace,
                 cd_enabled,
                 vk.as_ref(),
                 last_failure.as_ref(),
@@ -2702,7 +2726,7 @@ async fn proxy(
                 .unwrap_or_default();
             // count this attempt as in-flight; the guard falls out of scope (and
             // decrements) on retry, or is moved into the stream wrapper on success
-            let mut guard = state.loads.begin(&model, idx);
+            let mut guard = state.loads.begin(&entry.namespace, idx);
             // the latency model learns cost as a function of prompt size, so it
             // needs this request's size before the guard's drop folds in the
             // sample (#853). inert on every other strategy
@@ -2713,7 +2737,7 @@ async fn proxy(
                 Some(provider) => provider,
                 None => {
                     // nothing was sent, so the probe slot this target took goes back
-                    state.breaker.release(&model, idx);
+                    state.breaker.release(&entry.namespace, idx);
                     last_error = Some("configured target provider not found".to_string());
                     break;
                 }
@@ -2751,8 +2775,8 @@ async fn proxy(
                 otel.name = tracing::field::Empty,
                 otel.kind = "client",
                 gen_ai.operation.name = tracing::field::Empty,
-                gen_ai.provider.name = %target.provider,
-                gen_ai.system = %target.provider,
+                gen_ai.provider.name = %snap.provider_name(&target.provider),
+                gen_ai.system = %snap.provider_name(&target.provider),
                 gen_ai.request.model = %genai_model,
                 gen_ai.output.type = tracing::field::Empty,
                 gen_ai.response.model = tracing::field::Empty,
@@ -2870,7 +2894,7 @@ async fn proxy(
                                 });
                                 last_error = None;
                                 last_failure = Some(failure);
-                                state.breaker.release(&model, idx);
+                                state.breaker.release(&entry.namespace, idx);
                                 continue;
                             }
                             _ => peeked.response,
@@ -2892,7 +2916,7 @@ async fn proxy(
                         tried.pop();
                         // a key-level failure says nothing about the target, so its probe
                         // slot is given back rather than held for the lease
-                        state.breaker.release(&model, idx);
+                        state.breaker.release(&entry.namespace, idx);
                         last_failure = Failure::from_status(status);
                         if attempt < max_retries {
                             // the caller will never see this failure, so record it against the
@@ -2931,11 +2955,11 @@ async fn proxy(
                         // park the failing target so siblings absorb the load
                         if cd_enabled {
                             let secs = cooldown.duration_secs(retry_after_secs(&response));
-                            state.cooldowns.park(&model, idx, secs);
+                            state.cooldowns.park(&entry.namespace, idx, secs);
                             state.metrics.cooldowns_tripped_total.fetch_add(1, Relaxed);
                         }
                         // feed the circuit breaker; a sustained run trips the target open
-                        if state.breaker.on_failure(&model, idx) {
+                        if state.breaker.on_failure(&entry.namespace, idx) {
                             state.metrics.breaker_opened_total.fetch_add(1, Relaxed);
                         }
                         if attempt < max_retries {
@@ -2970,7 +2994,7 @@ async fn proxy(
                             back_off(delay, retrying).await;
                             continue;
                         }
-                    } else if state.breaker.on_success(&model, idx) {
+                    } else if state.breaker.on_success(&entry.namespace, idx) {
                         // a good response closes a breaker that was probing (half-open)
                         state.metrics.breaker_closed_total.fetch_add(1, Relaxed);
                     }
@@ -2994,7 +3018,7 @@ async fn proxy(
                     last_failure = Some(Failure::from_transport_error(&message));
                     if is_queue_admission_error(&message) {
                         // the queue turned the request away before the target saw it
-                        state.breaker.release(&model, idx);
+                        state.breaker.release(&entry.namespace, idx);
                         last_error = Some(message);
                         break;
                     }
@@ -3007,7 +3031,7 @@ async fn proxy(
                         state.metrics.cooldowns_tripped_total.fetch_add(1, Relaxed);
                     }
                     // and counts against the circuit breaker
-                    if state.breaker.on_failure(&model, idx) {
+                    if state.breaker.on_failure(&entry.namespace, idx) {
                         state.metrics.breaker_opened_total.fetch_add(1, Relaxed);
                     }
                     if attempt < max_retries {
@@ -3587,7 +3611,9 @@ async fn proxy_multipart(
     let max_retries = entry.route.advanced.limits.max_retries(retry.max_retries);
     let cooldown = &snap.cooldown;
     let cd_enabled = cooldown.enabled();
-    let mut loads = state.loads.snapshot(&model, entry.route.targets.len());
+    let mut loads = state
+        .loads
+        .snapshot(&entry.namespace, entry.route.targets.len());
     for (i, target) in entry.route.targets.iter().enumerate() {
         if let Some(l) = loads.get_mut(i) {
             *l = l.saturating_add(state.upstream_metrics.queue_depth(&target.provider));
@@ -3619,7 +3645,7 @@ async fn proxy_multipart(
             &state.cooldowns,
             &state.health,
             &state.breaker,
-            &model,
+            &entry.namespace,
             cd_enabled,
             vk.as_ref(),
             last_failure.as_ref(),
@@ -3633,7 +3659,7 @@ async fn proxy_multipart(
             .as_ref()
             .map(Failure::token)
             .unwrap_or_default();
-        let mut guard = state.loads.begin(&model, idx);
+        let mut guard = state.loads.begin(&entry.namespace, idx);
         // the latency model learns cost as a function of prompt size, so it
         // needs this request's size before the guard's drop folds in the
         // sample (#853). inert on every other strategy
@@ -3644,7 +3670,7 @@ async fn proxy_multipart(
             Some(provider) => provider,
             None => {
                 // nothing was sent, so the probe slot this target took goes back
-                state.breaker.release(&model, idx);
+                state.breaker.release(&entry.namespace, idx);
                 last_error = Some("configured target provider not found".to_string());
                 break;
             }
@@ -3713,7 +3739,7 @@ async fn proxy_multipart(
                             });
                             last_error = None;
                             last_failure = Some(failure);
-                            state.breaker.release(&model, idx);
+                            state.breaker.release(&entry.namespace, idx);
                             continue;
                         }
                         _ => peeked.response,
@@ -3734,7 +3760,7 @@ async fn proxy_multipart(
                     tried.pop();
                     // a key-level failure says nothing about the target, so its probe
                     // slot is given back rather than held for the lease
-                    state.breaker.release(&model, idx);
+                    state.breaker.release(&entry.namespace, idx);
                     last_failure = Failure::from_status(status);
                     if attempt < max_retries {
                         // the caller will never see this failure, so record it against the
@@ -3767,10 +3793,10 @@ async fn proxy_multipart(
                     last_failure = Failure::from_status(status);
                     if cd_enabled {
                         let secs = cooldown.duration_secs(retry_after_secs(&response));
-                        state.cooldowns.park(&model, idx, secs);
+                        state.cooldowns.park(&entry.namespace, idx, secs);
                         state.metrics.cooldowns_tripped_total.fetch_add(1, Relaxed);
                     }
-                    if state.breaker.on_failure(&model, idx) {
+                    if state.breaker.on_failure(&entry.namespace, idx) {
                         state.metrics.breaker_opened_total.fetch_add(1, Relaxed);
                     }
                     if attempt < max_retries {
@@ -3800,7 +3826,7 @@ async fn proxy_multipart(
                         back_off(delay, retrying).await;
                         continue;
                     }
-                } else if state.breaker.on_success(&model, idx) {
+                } else if state.breaker.on_success(&entry.namespace, idx) {
                     state.metrics.breaker_closed_total.fetch_add(1, Relaxed);
                 }
                 if status < 400 {
@@ -3817,7 +3843,7 @@ async fn proxy_multipart(
                 last_failure = Some(Failure::from_transport_error(&message));
                 if is_queue_admission_error(&message) {
                     // the queue turned the request away before the target saw it
-                    state.breaker.release(&model, idx);
+                    state.breaker.release(&entry.namespace, idx);
                     last_error = Some(message);
                     break;
                 }
@@ -3828,7 +3854,7 @@ async fn proxy_multipart(
                         .park(&model, idx, cooldown.duration_secs(None));
                     state.metrics.cooldowns_tripped_total.fetch_add(1, Relaxed);
                 }
-                if state.breaker.on_failure(&model, idx) {
+                if state.breaker.on_failure(&entry.namespace, idx) {
                     state.metrics.breaker_opened_total.fetch_add(1, Relaxed);
                 }
                 if attempt < max_retries {
@@ -4213,7 +4239,7 @@ async fn forward_variants(
     let variant_keys: Vec<String> = route
         .variants
         .iter()
-        .map(|v| variant_key(model, &v.name))
+        .map(|v| variant_key(&entry.namespace, &v.name))
         .collect();
     let candidates = variant_candidates(
         state,
@@ -5954,7 +5980,10 @@ struct DecisionHeaders {
 impl DecisionHeaders {
     fn from_log(log: &RequestLog) -> Self {
         Self {
-            provider: log.provider.clone(),
+            // the row carries the runtime id until it is queued; a key reaches
+            // only its own org's providers and global ones, so its org is the
+            // provider's whenever the id is qualified (ADR-0039)
+            provider: rolter_core::namespace::display_name(&log.provider, &log.org_id).to_string(),
             target: log.target.clone(),
             model: log.model.clone(),
             variant: log.variant.clone(),
@@ -6948,6 +6977,7 @@ mod tests {
         let ctx = RouteContext::default();
         // the balancer's pick leads; declared order forms the fallback tail
         let entry = crate::state::RouteEntry {
+            namespace: route.model.clone(),
             project_scope: None,
             overrides: Default::default(),
             throughput: None,
@@ -6962,6 +6992,7 @@ mod tests {
         );
         // an out-of-range pick degrades to plain declared order
         let entry = crate::state::RouteEntry {
+            namespace: route.model.clone(),
             project_scope: None,
             overrides: Default::default(),
             throughput: None,
@@ -6976,6 +7007,7 @@ mod tests {
         );
         // no balancer built for the variant: declared order
         let entry = crate::state::RouteEntry {
+            namespace: route.model.clone(),
             project_scope: None,
             overrides: Default::default(),
             throughput: None,
@@ -7025,6 +7057,7 @@ mod tests {
         let cache_aware = rolter_balancer::CacheAware::new(3, 0.5);
         rolter_balancer::LoadBalancer::observe(&cache_aware, 1, &ctx);
         let entry = crate::state::RouteEntry {
+            namespace: route.model.clone(),
             project_scope: None,
             overrides: Default::default(),
             throughput: None,
@@ -7095,7 +7128,10 @@ mod tests {
             tenancy: None,
         });
         let snap = crate::state::Snapshot::build(&config, &crate::load::LoadTracker::default());
-        assert_eq!(snap.routes["ab"].variant_balancers.len(), 2);
+        assert_eq!(
+            snap.routes.get("", "ab").unwrap().variant_balancers.len(),
+            2
+        );
     }
 
     #[test]
@@ -7125,6 +7161,7 @@ mod tests {
             tenancy: None,
         };
         let entry = crate::state::RouteEntry {
+            namespace: route.model.clone(),
             project_scope: None,
             overrides: Default::default(),
             throughput: None,
@@ -7205,6 +7242,7 @@ mod tests {
             tenancy: None,
         };
         crate::state::RouteEntry {
+            namespace: route.model.clone(),
             project_scope: None,
             overrides: Default::default(),
             throughput: None,
@@ -7518,6 +7556,7 @@ mod tests {
             tenancy: None,
         };
         let entry = crate::state::RouteEntry {
+            namespace: route.model.clone(),
             project_scope: None,
             overrides: Default::default(),
             throughput: None,
@@ -7577,6 +7616,7 @@ mod tests {
             tenancy: None,
         };
         let entry = crate::state::RouteEntry {
+            namespace: route.model.clone(),
             project_scope: None,
             overrides: Default::default(),
             throughput: None,
@@ -7629,6 +7669,7 @@ mod tests {
             tenancy: None,
         };
         let entry = crate::state::RouteEntry {
+            namespace: route.model.clone(),
             project_scope: None,
             overrides: Default::default(),
             throughput: None,
@@ -7701,6 +7742,7 @@ mod tests {
             tenancy: None,
         };
         let entry = crate::state::RouteEntry {
+            namespace: route.model.clone(),
             project_scope: None,
             overrides: Default::default(),
             throughput: None,
@@ -7798,6 +7840,7 @@ mod tests {
             tenancy: None,
         };
         let entry = crate::state::RouteEntry {
+            namespace: route.model.clone(),
             project_scope: None,
             overrides: Default::default(),
             throughput: None,
@@ -7927,6 +7970,7 @@ mod tests {
             tenancy: None,
         };
         let entry = crate::state::RouteEntry {
+            namespace: route.model.clone(),
             project_scope: None,
             overrides: Default::default(),
             throughput: None,
@@ -7985,6 +8029,7 @@ mod tests {
             tenancy: None,
         };
         let entry = crate::state::RouteEntry {
+            namespace: route.model.clone(),
             project_scope: None,
             overrides: Default::default(),
             throughput: None,
@@ -8047,7 +8092,7 @@ mod tests {
             .allowed_key_ids
             .push("allowed-key".to_string());
         let snapshot = crate::state::Snapshot::build(&config, &crate::load::LoadTracker::default());
-        let entry = snapshot.routes.get("gpt-4o").unwrap();
+        let entry = snapshot.routes.get("", "gpt-4o").unwrap();
         assert!(model_visible_to(
             Some(&KeyMeta {
                 id: "allowed-key".to_string(),
@@ -8084,7 +8129,7 @@ mod tests {
         let mut config = config_with_keys();
         config.routes[0].tenancy = owned_by("org-a", Some("proj-a1"));
         let snapshot = crate::state::Snapshot::build(&config, &crate::load::LoadTracker::default());
-        let entry = snapshot.routes.get("gpt-4o").unwrap();
+        let entry = snapshot.routes.get("", "gpt-4o").unwrap();
 
         // org-wide by default: every project of the owning org
         assert!(model_visible_to(Some(&key_in("org-a", "proj-a1")), entry));
@@ -8097,7 +8142,7 @@ mod tests {
         // a key from the gateway's own config file has no org: the operator's
         assert!(model_visible_to(Some(&key_in("", "")), entry));
         // a route with no tenancy (config file) belongs to the deployment
-        let global = snapshot.routes.get("claude").unwrap();
+        let global = snapshot.routes.get("", "claude").unwrap();
         assert!(model_visible_to(Some(&key_in("org-b", "proj-b1")), global));
     }
 
@@ -8107,7 +8152,7 @@ mod tests {
         config.routes[0].tenancy = owned_by("org-a", Some("proj-a1"));
         config.routes[0].advanced.visibility.project_only = true;
         let snapshot = crate::state::Snapshot::build(&config, &crate::load::LoadTracker::default());
-        let entry = snapshot.routes.get("gpt-4o").unwrap();
+        let entry = snapshot.routes.get("", "gpt-4o").unwrap();
 
         assert!(model_visible_to(Some(&key_in("org-a", "proj-a1")), entry));
         assert!(!model_visible_to(Some(&key_in("org-a", "proj-a2")), entry));
@@ -8284,7 +8329,7 @@ mod tests {
             .allowed_key_ids
             .push("allowed-key".to_string());
         let snapshot = crate::state::Snapshot::build(&config, &crate::load::LoadTracker::default());
-        let entry = snapshot.routes.get("gpt-4o").unwrap();
+        let entry = snapshot.routes.get("", "gpt-4o").unwrap();
         let deny_route = rolter_core::ModelPolicy {
             denied_routes: vec!["gpt-4o".to_string()],
             ..Default::default()
@@ -8375,6 +8420,7 @@ mod tests {
                     tenancy: None,
                 };
                 let entry = crate::state::RouteEntry {
+                    namespace: route.model.clone(),
                     project_scope: None,
                     overrides: Default::default(),
                     throughput: None,
@@ -8439,6 +8485,7 @@ mod tests {
             tenancy: None,
         };
         let entry = crate::state::RouteEntry {
+            namespace: route.model.clone(),
             project_scope: None,
             overrides: Default::default(),
             throughput: None,

@@ -61,12 +61,20 @@ pub struct BreakerReport {
 /// would only make a row nobody can act on.
 pub fn collect(state: &AppState) -> Vec<TargetBreaker> {
     let snapshot = state.snapshot.load();
-    label(state.breaker.snapshot(), |model, idx| {
-        let entry = snapshot.routes.get(model)?;
+    // the registry is keyed by route namespace, which is the route's name
+    // unless another org's route shares it (ADR-0039)
+    label(state.breaker.snapshot(), |namespace, idx| {
+        let entry = snapshot
+            .routes
+            .values()
+            .find(|entry| entry.namespace == namespace)?;
         let target = entry.route.targets.get(idx)?;
         Some((
-            target.provider.clone(),
-            target.model.clone().unwrap_or_else(|| model.to_string()),
+            snapshot.provider_name(&target.provider).to_string(),
+            target
+                .model
+                .clone()
+                .unwrap_or_else(|| entry.route.model.clone()),
         ))
     })
 }
