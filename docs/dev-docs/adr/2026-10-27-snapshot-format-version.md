@@ -165,7 +165,9 @@ Everything else is a **format bump**, which increments `SNAPSHOT_FORMAT`:
    `McpAuthKind`; #3347 gave the others an `Unknown` variant and its reading
    (a provider of an unknown kind is omitted, a route of an unknown strategy
    refuses, an unknown budget period refuses, an unknown failure mode fails
-   closed), so a new `ProviderKind` or `BalancingStrategy` is additive. What
+   closed), and #3390 did the same for a route target's `takes_over` class
+   (`FailureClass`, whose unknown token matches no failure), so a new
+   `ProviderKind`, `BalancingStrategy` or failure class is additive. What
    is left are the enums documented as deliberately closed: `ScopeWithin`,
    `WebhookStage`, `WebhookAuth`, `GuardStage`, `BuiltinRule`, `PluginStage`,
    `DecoratorRole`, `DecoratorPosition`, `PromptTemplateActivationScope` and
@@ -526,11 +528,12 @@ for a snapshot (see Context).
   possible) and the docs (finish the rollout first) keep that rare; it cannot
   be made impossible without serving those gateways nothing.
 - The gateway's `/readyz` gains a third answer. The dashboard's status pill
-  (`readinessFrom` in `ui/src/lib/gateway.ts`) reads it as unknown until it
-  learns the body.
-- The cluster inventory's `converged` compares `config_version` only, so a
-  gateway served an older format with an entity omitted reads as converged.
-  Recording each node's format needs a column and is a follow-up.
+  (`readinessFrom` in `ui/src/lib/gateway.ts`) read it as unknown until #3350
+  taught it the body, which it now shows as down.
+- The cluster inventory's `converged` compared `config_version` only, so a
+  gateway served an older format with an entity omitted read as converged.
+  #3351 records each node's stated range and served format, and a node served
+  an older format is no longer converged.
 - The channels in the other direction, `/internal/adaptive-telemetry` and
   `/internal/breaker-state`, stay unversioned. They carry telemetry with
   `#[serde(default)]` fields, and a sample an older control plane misreads
@@ -597,4 +600,6 @@ serializes empty, since it hides the shape of its items), and the guard ignores
 Left out of that PR, each its own follow-up: the dashboard pill (#3350), the
 inventory column (#3351), fail-closed fallbacks for the snapshot's enums
 (#3347), a per-component image tag in the chart (#3352), and the cross-build e2e
-job (#3353).
+job (#3353). #3347, #3350, #3351 and #3352 have since shipped, together with a
+`503 awaiting_snapshot` readiness answer for a gateway that has never applied a
+snapshot for any reason (#3348); #3353 is still open.
