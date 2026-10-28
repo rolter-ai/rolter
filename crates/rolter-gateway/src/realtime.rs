@@ -174,6 +174,33 @@ pub async fn realtime(
     // session opens only while every budget it draws on has room left, and
     // only for a model this deployment is willing to serve unpriced
     let scope = request_scope(virtual_key.as_ref());
+    // a `post_call` semantic guardrail provider judges a whole response, and a
+    // realtime session is never one: refused here rather than relayed with
+    // the response policy skipped, whatever the policy's `streaming` says,
+    // since a session cannot be buffered (#459, ADR-0037)
+    if let Some(policy) = snap
+        .semantic_guards
+        .resolve(&crate::semantic_guards::policy_request(
+            &scope,
+            &entry.route.model,
+        ))
+        .filter(|policy| policy.runs_at(rolter_core::WebhookStage::PostCall))
+    {
+        state
+            .metrics
+            .guardrail_stream_rejections_total
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        return crate::error::ApiError::new(
+            StatusCode::BAD_REQUEST,
+            format!(
+                "the guardrail policy '{}' checks responses, which cannot be applied to a \
+                 realtime session; use a non-realtime endpoint",
+                policy.label()
+            ),
+        )
+        .with_code("guardrail_streaming_unsupported")
+        .into_response();
+    }
     if let Some(refusal) = budget_refusal(&state, &snap, &scope).await {
         return refusal;
     }

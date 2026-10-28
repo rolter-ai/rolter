@@ -1474,6 +1474,75 @@
     "security.required_headers.x-mesh-id": [
       "string"
     ],
+    "semantic_guards": [
+      "object"
+    ],
+    "semantic_guards.policies": [
+      "array"
+    ],
+    "semantic_guards.policies[]": [
+      "object"
+    ],
+    "semantic_guards.policies[].enabled": [
+      "boolean"
+    ],
+    "semantic_guards.policies[].name": [
+      "string"
+    ],
+    "semantic_guards.policies[].on_violation": [
+      "string"
+    ],
+    "semantic_guards.policies[].providers": [
+      "array"
+    ],
+    "semantic_guards.policies[].providers[]": [
+      "string"
+    ],
+    "semantic_guards.policies[].scope": [
+      "string"
+    ],
+    "semantic_guards.policies[].scope_id": [
+      "string"
+    ],
+    "semantic_guards.policies[].streaming": [
+      "string"
+    ],
+    "semantic_guards.policies[].thresholds": [
+      "object"
+    ],
+    "semantic_guards.policies[].thresholds.*": [
+      "number"
+    ],
+    "semantic_guards.providers": [
+      "array"
+    ],
+    "semantic_guards.providers[]": [
+      "object"
+    ],
+    "semantic_guards.providers[].enabled": [
+      "boolean"
+    ],
+    "semantic_guards.providers[].failure_mode": [
+      "string"
+    ],
+    "semantic_guards.providers[].max_body_bytes": [
+      "number"
+    ],
+    "semantic_guards.providers[].max_retries": [
+      "number"
+    ],
+    "semantic_guards.providers[].name": [
+      "string"
+    ],
+    "semantic_guards.providers[].stage": [
+      "string"
+    ],
+    "semantic_guards.providers[].timeout_ms": [
+      "number"
+    ],
+    "semantic_guards.providers[].url": [
+      "string"
+    ],
     "server": [
       "object"
     ],

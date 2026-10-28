@@ -287,7 +287,12 @@ const MANAGED_IN: &[ManagedIn] = &[
         endpoint: None,
     },
     ManagedIn {
-        sections: &["guardrails", "guardrail_webhook", "pii_sanitizer"],
+        sections: &[
+            "guardrails",
+            "guardrail_webhook",
+            "semantic_guards",
+            "pii_sanitizer",
+        ],
         screen: "dashboard Guardrails",
         endpoint: None,
     },

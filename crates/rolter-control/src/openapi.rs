@@ -1908,7 +1908,7 @@ fn operations() -> Vec<Op> {
             Op::get(
                 "/api/v1/guardrails/effective",
                 "getEffectiveGuardrails",
-                "Read the guardrail rules and webhook the gateways run, each with where it comes from (config file or dashboard row)",
+                "Read the guardrail rules, semantic guardrail providers and policies the gateways run, each with where it comes from (config file or dashboard row)",
             ),
             Op::get(
                 "/api/v1/guardrails/providers",
@@ -1929,6 +1929,29 @@ fn operations() -> Vec<Op> {
                 "/api/v1/guardrails/providers/{id}",
                 "deleteGuardrailProvider",
                 "Delete a guardrail provider",
+            )
+            .conflict("a guardrail policy still lists the provider"),
+            Op::get(
+                "/api/v1/guardrails/policies",
+                "listGuardrailPolicies",
+                "List scoped semantic guardrail policies, narrowest scope first",
+            ),
+            Op::post(
+                "/api/v1/guardrails/policies",
+                "createGuardrailPolicy",
+                "Create a guardrail policy scoped to the deployment, an org, a project, a route or a virtual key",
+            )
+            .conflict("a policy of that name, or an enabled policy for the same scope, already exists"),
+            Op::put(
+                "/api/v1/guardrails/policies/{id}",
+                "updateGuardrailPolicy",
+                "Replace a guardrail policy and its ordered provider list",
+            )
+            .conflict("a policy of that name, or an enabled policy for the same scope, already exists"),
+            Op::delete(
+                "/api/v1/guardrails/policies/{id}",
+                "deleteGuardrailPolicy",
+                "Delete a guardrail policy",
             ),
             Op::post(
                 "/api/v1/guardrails/providers/test",

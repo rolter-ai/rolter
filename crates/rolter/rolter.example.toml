@@ -861,13 +861,43 @@ disabled = false # revoke without deleting
 # enabled = true
 # name = "llm-guard"              # recorded with its outcomes in LLM Logs
 # url = "https://guard.internal/check"
-# stage = "pre_call"              # post_call is validated but not yet enforced
+# stage = "pre_call"              # pre_call judges the request, post_call the response
 # timeout_ms = 2000
 # max_retries = 0                 # extra attempts on a transient failure
 # failure_mode = "fail_open"      # fail_open | fail_closed
 # max_body_bytes = 65536          # oversized content is sent as a truncated preview
 # auth = { bearer = { token_env = "GUARD_TOKEN" } }
 #                                 # or: { shared_secret = { secret_env = "GUARD_SECRET" } }
+
+# Semantic guard policies (#459): several guardrail providers side by side,
+# and policies scoped to the deployment, an org, a project, a route or a
+# virtual key that pick which of them judge a request. exactly one policy
+# applies: the most specific enabled match (key > route > project > org >
+# deployment), replacing the broader ones. a provider no policy lists runs on
+# every request no policy matches. `[guardrail_webhook]` above joins the
+# providers under its name. the dashboard's Guardrails -> Policies adds to
+# these
+# [semantic_guards]
+# [[semantic_guards.providers]]   # the same keys as [guardrail_webhook]
+# name = "toxicity"               # required, unique; policies list it by name
+# enabled = true
+# url = "https://guard.internal/toxicity"
+# stage = "post_call"
+# timeout_ms = 2000
+# max_retries = 0
+# failure_mode = "fail_open"      # also applies to an answer that is not a decision
+# max_body_bytes = 65536
+# auth = { bearer = { token_env = "GUARD_TOKEN" } }
+# [[semantic_guards.policies]]
+# name = "support-bot"
+# enabled = true
+# scope = "project"               # deployment | org | project | route | key
+# scope_id = "<project id>"       # none for deployment; a route's model name for route
+# providers = ["toxicity"]        # consulted in this order at each stage
+# thresholds = { violence = 0.8, "*" = 0.95 }  # score >= threshold violates
+# on_violation = "block"          # block | annotate (record only)
+# streaming = "reject"            # reject | buffer: never streams unchecked
+#                                 # when the policy has a post_call provider
 
 # External PII sanitizer: hand request (and optionally response) content to a
 # self-hosted de-identification service — Presidio, or anything speaking the same

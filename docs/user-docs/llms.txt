@@ -96,7 +96,8 @@ prompts below, then the quickstart, then the page for whatever it is wiring.
 - [Two-factor authentication](/security/two-factor-authentication): TOTP second factor for local accounts, recovery codes, org enforcement policy, and the break-glass path back in.
 - [User Provisioning (SCIM)](/security/user-provisioning): Issue an org-scoped SCIM token, wire it into your identity provider, map its groups to teams, and let joiners, movers, and leavers flow into Rolter automatically.
 - [MCP OAuth](/security/mcp-oauth): How Rolter records user consent for MCP servers, what a session holds, why revoking a grant revokes its sessions, and who can see which rows.
-- [Guardrails](/security/guardrails): Manage in-gateway inspection rules and one active external guardrail service without restarting gateways.
+- [Guardrails](/security/guardrails): Manage in-gateway inspection rules and external guardrail services without restarting gateways.
+- [Semantic guard policies](/security/semantic-guard-policies): Run several guardrail providers side by side and pick which ones judge a request with policies scoped to the deployment, an organization, a project, a route or a virtual key.
 - [PII sanitizer](/security/pii-sanitizer): Hand request content to an external de-identification service before it reaches a provider, and optionally reverse the substitution on the way back.
 - [Budgets & Rate Limits](/security/budgets-and-rate-limits): Configure USD spend caps and RPM/TPM throughput limits at org, team, project, or key scope to control LLM costs and prevent runaway usage.
 - [Cost Attribution](/security/cost-attribution): Attribute spend to business units through virtual keys, and to your own customers, without breaking the identity that historical spend was recorded against.

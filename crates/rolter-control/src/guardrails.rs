@@ -11,7 +11,9 @@ use rolter_core::{
     BuiltinRule, FailureMode, GatewayConfig, GuardAction, GuardStage, GuardrailRule,
     GuardrailWebhookConfig, GuardrailsConfig, WebhookAuth, WebhookStage,
 };
-use rolter_store::postgres::models::{GuardrailProvider, GuardrailRule as GuardrailRuleRow};
+use rolter_store::postgres::models::{
+    GuardrailPolicyRow, GuardrailProvider, GuardrailRule as GuardrailRuleRow,
+};
 use rolter_store::postgres::repo::{GuardrailProviderInput, GuardrailRepo, GuardrailRuleInput};
 
 use crate::crud::{invalid_field, log_audit, pool, publish_config_change, ApiResult, SafeJson};
@@ -322,13 +324,51 @@ struct EffectiveGuardrails {
     guardrails: bool,
     streaming_post_call: rolter_core::StreamingPostCall,
     rules: Vec<EffectiveRule>,
-    /// the webhook the gateways run, `null` when none is on
+    /// a single-provider view kept for older clients: the file's
+    /// `[guardrail_webhook]` when it is on, else the first enabled registry
+    /// provider. Several providers can run since #459; `semantic` lists them
     webhook: Option<GuardrailWebhookConfig>,
     source: GuardrailSource,
     /// the registry provider in force, set when `source` is `registry`
     provider_id: Option<Uuid>,
-    /// the enabled registry provider an enabled config-file webhook displaced
+    /// always `null` since #459: an enabled config-file webhook runs beside
+    /// the registry's providers rather than displacing one
     overrides: Option<Uuid>,
+    /// every provider and policy the gateways run (#459)
+    semantic: SemanticView,
+}
+
+/// What the gateways' semantic guards are made of.
+#[derive(Debug, Serialize)]
+struct SemanticView {
+    /// every enabled provider, the file's first
+    providers: Vec<EffectiveProvider>,
+    /// every policy, enabled or not, narrowest scope first
+    policies: Vec<EffectivePolicy>,
+    /// enabled providers no policy lists, which run on every request no policy
+    /// matches
+    unattached: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct EffectiveProvider {
+    name: String,
+    url: String,
+    stage: WebhookStage,
+    failure_mode: FailureMode,
+    timeout_ms: u64,
+    source: GuardrailSource,
+    /// the dashboard row behind a registry provider
+    provider_id: Option<Uuid>,
+}
+
+#[derive(Debug, Serialize)]
+struct EffectivePolicy {
+    #[serde(flatten)]
+    policy: rolter_core::GuardrailPolicy,
+    source: GuardrailSource,
+    /// the dashboard row behind a registry policy
+    policy_id: Option<Uuid>,
 }
 
 /// Work out where the effective rules and webhook come from.
@@ -342,6 +382,7 @@ fn describe_effective(
     owned: &crate::ConfigOwned,
     rules: &[GuardrailRuleRow],
     providers: &[GuardrailProvider],
+    policies: &[GuardrailPolicyRow],
 ) -> EffectiveGuardrails {
     let enabled_row = |name: &str| rules.iter().find(|row| row.enabled && row.name == name);
     let effective = config
@@ -368,21 +409,121 @@ fn describe_effective(
             }
         })
         .collect();
-    let active = providers.iter().find(|provider| provider.enabled);
-    let webhook = config.guardrail_webhook.enabled;
-    let (source, provider_id, overrides) = match (webhook, owned.guardrail_webhook) {
-        (false, _) => (GuardrailSource::None, None, None),
-        (true, true) => (GuardrailSource::File, None, active.map(|row| row.id)),
-        (true, false) => (GuardrailSource::Registry, active.map(|row| row.id), None),
+    let row_id = |name: &str| {
+        providers
+            .iter()
+            .find(|row| row.name.trim() == name)
+            .map(|row| row.id)
+    };
+    let file_owned = |name: &str| owned.semantic_providers.contains(name);
+    let compiled = rolter_core::CompiledSemanticGuards::from_config(
+        &config.semantic_guards,
+        &config.guardrail_webhook,
+    );
+    let unattached = compiled
+        .unattached()
+        .into_iter()
+        .map(|name| name.trim().to_string())
+        .collect();
+    let mut running: Vec<EffectiveProvider> = Vec::new();
+    if config.guardrail_webhook.enabled {
+        let webhook = &config.guardrail_webhook;
+        running.push(EffectiveProvider {
+            name: webhook.name.trim().to_string(),
+            url: webhook.url.clone(),
+            stage: webhook.stage,
+            failure_mode: webhook.failure_mode,
+            timeout_ms: webhook.timeout_ms,
+            source: GuardrailSource::File,
+            provider_id: None,
+        });
+    }
+    for provider in config
+        .semantic_guards
+        .providers
+        .iter()
+        .filter(|p| p.enabled)
+    {
+        let name = provider.name.trim();
+        let from_file = file_owned(name);
+        running.push(EffectiveProvider {
+            name: name.to_string(),
+            url: provider.url.clone(),
+            stage: provider.stage,
+            failure_mode: provider.failure_mode,
+            timeout_ms: provider.timeout_ms,
+            source: if from_file {
+                GuardrailSource::File
+            } else {
+                GuardrailSource::Registry
+            },
+            provider_id: (!from_file).then(|| row_id(name)).flatten(),
+        });
+    }
+    let mut described: Vec<EffectivePolicy> = config
+        .semantic_guards
+        .policies
+        .iter()
+        .map(|policy| {
+            let from_file = owned.semantic_policies.contains(policy.name.trim());
+            EffectivePolicy {
+                policy: policy.clone(),
+                source: if from_file {
+                    GuardrailSource::File
+                } else {
+                    GuardrailSource::Registry
+                },
+                policy_id: (!from_file)
+                    .then(|| {
+                        policies
+                            .iter()
+                            .find(|row| row.name.trim() == policy.name.trim())
+                            .map(|row| row.id)
+                    })
+                    .flatten(),
+            }
+        })
+        .collect();
+    described.sort_by_key(|entry| {
+        let rank = rolter_core::PolicyScope::PRECEDENCE
+            .iter()
+            .position(|scope| *scope == entry.policy.scope)
+            .unwrap_or(usize::MAX);
+        (rank, entry.policy.name.clone())
+    });
+
+    // the legacy single-provider view
+    let legacy = if config.guardrail_webhook.enabled {
+        Some((
+            config.guardrail_webhook.clone(),
+            GuardrailSource::File,
+            None,
+        ))
+    } else {
+        config
+            .semantic_guards
+            .providers
+            .iter()
+            .find(|p| p.enabled && !file_owned(p.name.trim()))
+            .map(|p| (p.clone(), GuardrailSource::Registry, row_id(p.name.trim())))
+    };
+    let (webhook, source, provider_id) = match legacy {
+        Some((webhook, source, id)) => (Some(webhook), source, id),
+        None => (None, GuardrailSource::None, None),
     };
     EffectiveGuardrails {
         guardrails: config.feature_flags.guardrails,
         streaming_post_call: config.guardrails.streaming_post_call,
         rules: effective,
-        webhook: webhook.then_some(config.guardrail_webhook),
+        webhook,
         source,
         provider_id,
-        overrides,
+        overrides: None,
+        semantic: SemanticView {
+            providers: running,
+            policies: described,
+            unattached,
+        },
     }
 }
 
@@ -394,12 +535,14 @@ async fn get_effective(
     let repo = GuardrailRepo(pool(&state));
     let rules = repo.list_rules().await?;
     let providers = repo.list_providers().await?;
+    let policies = repo.list_policies().await?;
     let config = state.store.load().await?;
     Ok(Json(describe_effective(
         config,
         &state.config_owned,
         &rules,
         &providers,
+        &policies,
     )))
 }
 
@@ -546,7 +689,17 @@ async fn delete_provider(
     Path(id): Path<Uuid>,
 ) -> ApiResult<StatusCode> {
     authorize_superadmin(&principal, superadmin_cap!("guardrail_provider", Delete))?;
-    GuardrailRepo(pool(&state)).delete_provider(id).await?;
+    let repo = GuardrailRepo(pool(&state));
+    // a policy that lists the provider would silently stop checking with it,
+    // so the policy has to let go of it first (#459)
+    let listing = repo.policies_listing_provider(id).await?;
+    if !listing.is_empty() {
+        return Err(crate::crud::ApiError::Conflict(format!(
+            "guardrail provider is listed by the policies {}; remove it from them first",
+            listing.join(", ")
+        )));
+    }
+    repo.delete_provider(id).await?;
     publish_config_change(&state).await?;
     log_audit(
         &state,
@@ -629,7 +782,7 @@ mod tests {
         let mut owned = crate::ConfigOwned::default();
         owned.guardrail_rules.insert("email".into());
         let rows = [copy.clone(), row("dashboard-only", true)];
-        let out = describe_effective(config, &owned, &rows, &[]);
+        let out = describe_effective(config, &owned, &rows, &[], &[]);
         assert_eq!(out.rules[0].source, GuardrailSource::File);
         assert_eq!(out.rules[0].rule_id, None);
         assert_eq!(out.rules[0].overrides, Some(copy.id));
@@ -639,24 +792,47 @@ mod tests {
     }
 
     #[test]
-    fn the_webhook_source_follows_who_enabled_it() {
+    fn the_legacy_webhook_view_prefers_the_file_and_displaces_nothing() {
         let row = provider(true);
+        let registry = GuardrailWebhookConfig {
+            name: "hook".into(),
+            ..webhook()
+        };
         let config = GatewayConfig {
-            guardrail_webhook: webhook(),
+            semantic_guards: rolter_core::SemanticGuardsConfig {
+                providers: vec![registry],
+                policies: Vec::new(),
+            },
             ..GatewayConfig::default()
         };
-        let mut owned = crate::ConfigOwned::default();
-        let from_row = describe_effective(config.clone(), &owned, &[], std::slice::from_ref(&row));
+        let owned = crate::ConfigOwned::default();
+        let from_row =
+            describe_effective(config.clone(), &owned, &[], std::slice::from_ref(&row), &[]);
         assert_eq!(from_row.source, GuardrailSource::Registry);
         assert_eq!(from_row.provider_id, Some(row.id));
-        owned.guardrail_webhook = true;
-        let from_file = describe_effective(config, &owned, &[], std::slice::from_ref(&row));
+        assert_eq!(from_row.semantic.providers.len(), 1);
+        assert_eq!(from_row.semantic.unattached, ["hook"]);
+
+        let both = GatewayConfig {
+            guardrail_webhook: webhook(),
+            ..config
+        };
+        let from_file = describe_effective(both, &owned, &[], std::slice::from_ref(&row), &[]);
         assert_eq!(from_file.source, GuardrailSource::File);
         assert_eq!(from_file.provider_id, None);
-        assert_eq!(from_file.overrides, Some(row.id));
-        let none = describe_effective(GatewayConfig::default(), &owned, &[], &[]);
+        assert_eq!(from_file.overrides, None);
+        // both run: the file's webhook no longer displaces the registry's
+        let sources: Vec<GuardrailSource> = from_file
+            .semantic
+            .providers
+            .iter()
+            .map(|p| p.source)
+            .collect();
+        assert_eq!(sources, [GuardrailSource::File, GuardrailSource::Registry]);
+        let none = describe_effective(GatewayConfig::default(), &owned, &[], &[], &[]);
         assert_eq!(none.source, GuardrailSource::None);
         assert!(none.webhook.is_none());
+        assert!(none.semantic.providers.is_empty());
     }
 
     #[test]

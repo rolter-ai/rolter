@@ -277,9 +277,10 @@ pub struct Snapshot {
     /// built-in regex guardrails / PII redaction, compiled once per snapshot and
     /// shared across requests; inert unless enabled (ROL-261)
     pub guardrails: Arc<rolter_core::CompiledGuardrails>,
-    /// custom guardrail webhook config, swapped atomically with the snapshot;
-    /// inert unless enabled (ROL-257)
-    pub guardrail_webhook: rolter_core::GuardrailWebhookConfig,
+    /// semantic guardrail providers — `[guardrail_webhook]` among them — and
+    /// the scoped policies that pick them, compiled once per snapshot so a
+    /// request only resolves; empty unless a provider is enabled (#459)
+    pub semantic_guards: Arc<rolter_core::CompiledSemanticGuards>,
     /// external PII sanitizer config, swapped atomically with the snapshot;
     /// inert unless enabled (#848)
     pub pii_sanitizer: rolter_core::PiiSanitizerConfig,
@@ -675,7 +676,10 @@ impl Snapshot {
             },
             realtime: config.realtime.clone(),
             guardrails: compiled_guardrails,
-            guardrail_webhook: config.guardrail_webhook.clone(),
+            semantic_guards: Arc::new(rolter_core::CompiledSemanticGuards::from_config(
+                &config.semantic_guards,
+                &config.guardrail_webhook,
+            )),
             pii_sanitizer: config.pii_sanitizer.clone(),
             prompt_templates: Arc::new(rolter_core::CompiledTemplates::from_config(
                 &config.prompt_templates,
