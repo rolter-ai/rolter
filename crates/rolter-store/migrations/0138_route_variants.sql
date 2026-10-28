@@ -13,8 +13,9 @@ create table if not exists route_variants (
     id          uuid primary key default gen_random_uuid(),
     route_id    uuid not null references routes (id) on delete cascade,
     name        text not null check (btrim(name) <> ''),
-    -- relative traffic share. zero is allowed for a variant meant only as a
-    -- fallback; the control plane refuses a set whose weights are all zero
+    -- relative traffic share. the api refuses 0 and writes 1 or more; the
+    -- check allows 0 so a rolter.toml variant with weight 0 still imports, and
+    -- the gateway samples such a 0 as 1 until #3341 gives it a meaning
     weight      integer not null default 1 check (weight >= 0),
     -- the declared order: the fallback chain after the sampled primary
     position    integer not null check (position >= 0),

@@ -238,8 +238,8 @@ async fn a_variant_edit_reaches_the_snapshot() {
     assert_eq!(snapped["targets"][0]["provider"], "acme-primary");
 }
 
-/// The write refuses what the gateway could not route: a negative weight, a
-/// set whose weights are all zero, a variant with no target, and a target on
+/// The write refuses what the gateway could not route as written: a negative
+/// weight, a weight of 0 (sampled as 1 until #3341), a variant with no target, and a target on
 /// a provider that is not the route's org's. Each refusal names its field, and
 /// none of them writes anything.
 #[tokio::test]
@@ -266,7 +266,10 @@ async fn a_variant_set_the_gateway_cannot_route_is_refused() {
     let one = |name: &str, weight: i64| json!({"name": name, "weight": weight, "targets": [{"provider_id": primary}]});
     for (body, field) in [
         (json!({"variants": [one("a", -1)]}), "variants[0].weight"),
-        (json!({"variants": [one("a", 0), one("b", 0)]}), "variants"),
+        (
+            json!({"variants": [one("a", 2), one("b", 0)]}),
+            "variants[1].weight",
+        ),
         (
             json!({"variants": [{"name": "a", "targets": []}]}),
             "variants[0].targets",
@@ -304,4 +307,196 @@ async fn a_variant_set_the_gateway_cannot_route_is_refused() {
     );
     let read: Value = client.get(&url).send().await.unwrap().json().await.unwrap();
     assert_eq!(read, json!([]));
+}
+
+/// Variants are part of the route, so they take its permissions: a viewer of
+/// the route's org reads them and cannot write them, an admin of another
+/// project of the same org can do neither, and an access profile that hides a
+/// route hides its variants from `?include=variants` with it.
+#[tokio::test]
+async fn variants_take_the_route_s_permissions() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app =
+        rolter_control::test_app_with_admin_token(pool.clone(), Some(admin_token().to_string()))
+            .await
+            .unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    let send = |method: reqwest::Method, url: String, token: String, body: Option<Value>| {
+        let client = client.clone();
+        async move {
+            let mut request = client.request(method, url).bearer_auth(token);
+            if let Some(body) = body {
+                request = request.json(&body);
+            }
+            let response = request.send().await.unwrap();
+            let status = response.status().as_u16();
+            (
+                status,
+                response.json::<Value>().await.unwrap_or(Value::Null),
+            )
+        }
+    };
+    let admin = || admin_token().to_string();
+    let ok = |(status, body): (u16, Value)| {
+        assert!((200..300).contains(&status), "{status}: {body}");
+        body
+    };
+
+    let org = ok(send(
+        reqwest::Method::POST,
+        format!("{base}/api/v1/orgs"),
+        admin(),
+        Some(json!({"name": "Acme", "slug": "acme"})),
+    )
+    .await);
+    let org_id = org["id"].as_str().unwrap().to_string();
+    let team = ok(send(
+        reqwest::Method::POST,
+        format!("{base}/api/v1/orgs/{org_id}/teams"),
+        admin(),
+        Some(json!({"name": "Platform"})),
+    )
+    .await);
+    let team_id = team["id"].as_str().unwrap().to_string();
+    let mut projects = Vec::new();
+    for name in ["gateway", "elsewhere"] {
+        let project = ok(send(
+            reqwest::Method::POST,
+            format!("{base}/api/v1/teams/{team_id}/projects"),
+            admin(),
+            Some(json!({"name": name})),
+        )
+        .await);
+        projects.push(project["id"].as_str().unwrap().to_string());
+    }
+    let provider = ok(send(
+        reqwest::Method::POST,
+        format!("{base}/api/v1/orgs/{org_id}/providers"),
+        admin(),
+        Some(json!({"name": "primary", "kind": "openai", "api_base": "https://api.openai.com"})),
+    )
+    .await);
+    let provider_id = provider["id"].as_str().unwrap().to_string();
+    let split = json!({"variants": [
+        {"name": "stable", "weight": 3, "targets": [{"provider_id": provider_id}]}
+    ]});
+    let mut route_ids = Vec::new();
+    for model in ["hidden", "shown"] {
+        let route = ok(send(
+            reqwest::Method::POST,
+            format!("{base}/api/v1/projects/{}/routes", projects[0]),
+            admin(),
+            Some(json!({"model": model})),
+        )
+        .await);
+        let id = route["id"].as_str().unwrap().to_string();
+        ok(send(
+            reqwest::Method::PUT,
+            format!("{base}/api/v1/routes/{id}/variants"),
+            admin(),
+            Some(split.clone()),
+        )
+        .await);
+        route_ids.push(id);
+    }
+    let url = format!("{base}/api/v1/routes/{}/variants", route_ids[0]);
+
+    let org_uuid: uuid::Uuid = org_id.parse().unwrap();
+    let viewer = seed_user(&pool, "variants-viewer@example.com", false).await;
+    seed_membership(&pool, viewer, Some(org_uuid), None, None, "viewer").await;
+    let viewer_token = seed_session(&pool, viewer, "variantsviewer").await;
+    let (status, read) = send(
+        reqwest::Method::GET,
+        url.clone(),
+        viewer_token.clone(),
+        None,
+    )
+    .await;
+    assert_eq!(status, 200, "{read}");
+    assert_eq!(read[0]["name"], "stable");
+    let (status, body) = send(
+        reqwest::Method::PUT,
+        url.clone(),
+        viewer_token,
+        Some(json!({"variants": []})),
+    )
+    .await;
+    assert_eq!(status, 403, "{body}");
+
+    let elsewhere: uuid::Uuid = projects[1].parse().unwrap();
+    let neighbour = seed_user(&pool, "variants-neighbour@example.com", false).await;
+    seed_membership(&pool, neighbour, None, None, Some(elsewhere), "admin").await;
+    let neighbour_token = seed_session(&pool, neighbour, "variantsneighbour").await;
+    let (status, body) = send(
+        reqwest::Method::GET,
+        url.clone(),
+        neighbour_token.clone(),
+        None,
+    )
+    .await;
+    assert_eq!(status, 403, "{body}");
+    let (status, body) = send(
+        reqwest::Method::PUT,
+        url.clone(),
+        neighbour_token,
+        Some(json!({"variants": []})),
+    )
+    .await;
+    assert_eq!(status, 403, "{body}");
+
+    // a profile that denies one route: the list leaves it out, and its
+    // variants with it, while the other route's variants are still embedded
+    let profiled = seed_user(&pool, "variants-profiled@example.com", false).await;
+    seed_membership(&pool, profiled, Some(org_uuid), None, None, "viewer").await;
+    let profiled_token = seed_session(&pool, profiled, "variantsprofiled").await;
+    let profile = ok(send(
+        reqwest::Method::POST,
+        format!("{base}/api/v1/orgs/{org_id}/access-profiles"),
+        admin(),
+        Some(json!({"name": "no-hidden", "slug": "no-hidden"})),
+    )
+    .await);
+    let profile_id = profile["id"].as_str().unwrap().to_string();
+    ok(send(
+        reqwest::Method::PUT,
+        format!("{base}/api/v1/access-profiles/{profile_id}/policy"),
+        admin(),
+        Some(json!({"denied_routes": ["hidden"]})),
+    )
+    .await);
+    ok(send(
+        reqwest::Method::POST,
+        format!("{base}/api/v1/access-profiles/{profile_id}/assignments"),
+        admin(),
+        Some(json!({"user_id": profiled})),
+    )
+    .await);
+    let (status, listed) = send(
+        reqwest::Method::GET,
+        format!(
+            "{base}/api/v1/projects/{}/routes?include=variants",
+            projects[0]
+        ),
+        profiled_token,
+        None,
+    )
+    .await;
+    assert_eq!(status, 200, "{listed}");
+    let models: Vec<&str> = listed
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["model"].as_str().unwrap())
+        .collect();
+    assert_eq!(models, ["shown"], "{listed}");
+    assert_eq!(listed[0]["variants"][0]["name"], "stable");
+    assert!(
+        !listed.to_string().contains(&route_ids[0]),
+        "the hidden route's variants leaked: {listed}"
+    );
 }

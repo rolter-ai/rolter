@@ -32,6 +32,11 @@
 //!
 //! Rows present in the database but absent from the file are not deleted: the
 //! file is the desired state for what it names, not an exhaustive inventory.
+//! The one exception is a route's weighted variants (#391): a route whose file
+//! entry declares `[[routes.variants]]` has its stored set replaced by the
+//! file's, since an ordered, weighted set cannot be merged, and the variants
+//! that removes are named in a warning. A route that declares none keeps its
+//! stored variants. See `import_route_variants`.
 //!
 //! That last rule is why `[logging.payload_capture]` is imported on *presence*
 //! rather than on value (#954). Every other section of the file is a list, so
@@ -870,20 +875,40 @@ async fn import_config(
 /// config route moves into the database without losing its split.
 ///
 /// A route whose file entry declares no variants keeps whatever the store
-/// holds: an import never deletes what the file does not mention, and a file
-/// written before variants existed would otherwise wipe a split built in the
-/// dashboard. A route that declares some has them replaced whole, in the
-/// file's order, which is the routing order. When a variant target names a
-/// provider the file does not import, the route's variants are left alone,
-/// for the reason a provider group with an unresolved member is: a partial set
-/// would drop the variants the file could not name.
+/// holds: a file written before variants existed would otherwise wipe a split
+/// built in the dashboard. Those stored variants still decide the route's
+/// routing, so a warning names them when the file gives the route targets of
+/// its own, which they shadow.
+///
+/// A route that declares some has them replaced whole, in the file's order,
+/// which is the routing order. That is the one place an import deletes rows
+/// the file does not name (see the module doc): a variant set is ordered and
+/// weighted as a whole, so merging two of them has no meaning. The variants it
+/// removes are named in a warning. When a variant target names a provider the
+/// file does not import, the route's variants are left alone, for the reason a
+/// provider group with an unresolved member is: a partial set would drop the
+/// variants the file could not name.
 async fn import_route_variants(
     pool: &PgPool,
     route_id: Uuid,
     route: &rolter_core::ModelRoute,
     provider_ids: &HashMap<String, Uuid>,
 ) -> anyhow::Result<()> {
+    let repo = RouteVariantRepo(pool);
     if route.variants.is_empty() {
+        if !route.targets.is_empty() {
+            let stored = repo.list(route_id).await?;
+            if !stored.is_empty() {
+                let names: Vec<&str> = stored.iter().map(|v| v.name.as_str()).collect();
+                tracing::warn!(
+                    model = %route.model,
+                    variants = ?names,
+                    "the file gives this route targets but no variants, and the stored \
+                     variants are kept; while a route has variants its targets are not used, \
+                     so the file's targets do not route until the variants are removed"
+                );
+            }
+        }
         return Ok(());
     }
     let mut specs = Vec::with_capacity(route.variants.len());
@@ -912,7 +937,21 @@ async fn import_route_variants(
             targets,
         });
     }
-    let (_, changed) = RouteVariantRepo(pool).replace(route_id, &specs).await?;
+    let stored = repo.list(route_id).await?;
+    let removed: Vec<&str> = stored
+        .iter()
+        .map(|v| v.name.as_str())
+        .filter(|name| !specs.iter().any(|spec| spec.name == *name))
+        .collect();
+    if !removed.is_empty() {
+        tracing::warn!(
+            model = %route.model,
+            removed = ?removed,
+            "the file's variants replace the route's whole set, so stored variants it \
+             does not declare are deleted"
+        );
+    }
+    let (_, changed) = repo.replace(route_id, &specs).await?;
     if changed {
         tracing::info!(model = %route.model, variants = specs.len(), "set route variants from file");
     } else {
@@ -2427,7 +2466,6 @@ api_key_env = "OPENAI_API_KEY"
         );
     }
 
-    /// A scratch directory for the bootstrap toml a test writes.
     /// The variants half of `rolter.toml` (#391), as one file the tests below
     /// share: a weighted split with variant params and an ordered target list.
     const VARIANT_FILE: &str = r#"
@@ -2614,6 +2652,87 @@ weight = 1
         assert_eq!(edited[0].weight, 5);
     }
 
+    /// The served config drops a variant target whose provider the snapshot
+    /// left out, and an import replaces a route's whole variant set, so an
+    /// export of the served set would delete that target on the next import.
+    /// The export writes the stored set instead, marking the target, and the
+    /// importer then leaves the route's variants as they are.
+    #[tokio::test]
+    async fn an_export_keeps_a_variant_target_on_a_left_out_provider() {
+        let Some(db) = scratch_db().await else {
+            return;
+        };
+        let pool = db.pool().clone();
+        let (org_id, project_id) = bootstrap_org(&pool).await;
+        let dir = tempdir("variants-left-out");
+        let path = dir.join("rolter.toml");
+        std::fs::write(&path, VARIANT_FILE).unwrap();
+        import_bootstrap_toml(&pool, org_id, project_id, &path)
+            .await
+            .unwrap();
+        // a proxy pool that does not parse is one way a provider is left out of
+        // what the store loads; the constraint that stops the api writing one
+        // is dropped so the row can be made
+        sqlx::query("alter table providers drop constraint providers_egress_proxies_strings")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "update providers set egress_proxies = '[\"http://proxy.example.com:3128\", 7]'::jsonb
+             where name = 'secondary'",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        use rolter_store::ConfigStore;
+        let store = rolter_store::PostgresConfigStore::with_kek(pool.clone(), None);
+        let served = store.load().await.unwrap();
+        let route = served.routes.iter().find(|r| r.model == "split").unwrap();
+        assert!(
+            route.variants.iter().all(|v| v.name != "canary"),
+            "the canary's only provider is left out, so it is not served"
+        );
+
+        let exported = crate::config_export::export_document(&pool, &served)
+            .await
+            .unwrap();
+        assert!(
+            exported.contains("# provider 'secondary' is not in this export"),
+            "{exported}"
+        );
+        assert!(exported.contains("name = \"canary\""), "{exported}");
+
+        let before = rolter_store::postgres::repo::RouteVariantRepo(&pool)
+            .list(
+                RouteRepo(&pool)
+                    .list(project_id)
+                    .await
+                    .unwrap()
+                    .into_iter()
+                    .find(|r| r.model == "split")
+                    .unwrap()
+                    .id,
+            )
+            .await
+            .unwrap();
+        std::fs::write(&path, &exported).unwrap();
+        import_bootstrap_toml(&pool, org_id, project_id, &path)
+            .await
+            .unwrap();
+        let after = rolter_store::postgres::repo::RouteVariantRepo(&pool)
+            .list(before[0].route_id)
+            .await
+            .unwrap();
+        assert_eq!(
+            after.iter().map(|v| v.id).collect::<Vec<_>>(),
+            before.iter().map(|v| v.id).collect::<Vec<_>>(),
+            "re-importing the export rewrote the variants"
+        );
+        assert_eq!(after.len(), 3);
+    }
+
+    /// A scratch directory for the bootstrap toml a test writes.
     fn tempdir(label: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!("rolter-seed-{label}-{}", Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();

@@ -3669,7 +3669,7 @@ fn routing_schemas(p: &Prim) -> Value {
             "properties": {
                 "id": uuid, "route_id": uuid,
                 "name": {"type": "string", "description": "the variant's name, unique in its route; request logs and metrics carry it"},
-                "weight": {"type": "integer", "minimum": 0, "description": "relative share of the requests that sample this variant as their primary"},
+                "weight": {"type": "integer", "minimum": 0, "description": "relative share of the requests that sample this variant as their primary. The API writes 1 or more; a 0 imported from rolter.toml is sampled as 1"},
                 "position": {"type": "integer", "description": "the declared order, which is the fallback chain after the sampled primary"},
                 "params": {"type": "object", "description": "variant-scoped default inference params, layered over the route's"},
                 "targets": {
@@ -3697,13 +3697,13 @@ fn routing_schemas(p: &Prim) -> Value {
                 "variants": {
                     "type": "array",
                     "maxItems": 32,
-                    "description": "the route's whole variant set in fallback order. Weights may not be negative, nor all zero; names are unique and not blank; each variant names 1 to 32 targets, each a provider of the route's org its project may use",
+                    "description": "the route's whole variant set in fallback order. A variant's weight is at least 1; names are unique and not blank; each variant names 1 to 32 targets, each a provider of the route's org its project may use",
                     "items": {
                         "type": "object",
                         "required": ["name", "targets"],
                         "properties": {
                             "name": string,
-                            "weight": {"type": "integer", "default": 1, "minimum": 0},
+                            "weight": {"type": "integer", "default": 1, "minimum": 1},
                             "params": {"type": ["object", "null"], "description": "variant-scoped default inference params; omitted or null is none"},
                             "targets": {
                                 "type": "array",

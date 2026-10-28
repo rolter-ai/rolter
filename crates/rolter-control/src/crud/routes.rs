@@ -890,9 +890,9 @@ struct VariantTargetInput {
 }
 
 /// The checks a variant set passes before any provider is looked up, and the
-/// set as the store takes it: unique non-blank names, weights none negative
-/// and not all zero (among the variants, and among each variant's targets),
-/// at least one target per variant, and object params. Every refusal names
+/// set as the store takes it: unique non-blank names, a variant weight of at
+/// least 1, target weights none negative and not all zero within a variant, at
+/// least one target per variant, and object params. Every refusal names
 /// the field it is about, `variants[i].targets[j].weight` say.
 fn variant_specs(variants: Vec<VariantInput>) -> ApiResult<Vec<RouteVariantSpec>> {
     if variants.len() > MAX_VARIANTS {
@@ -917,10 +917,12 @@ fn variant_specs(variants: Vec<VariantInput>) -> ApiResult<Vec<RouteVariantSpec>
                 format!("variant name '{name}' is used twice; names must be unique in a route"),
             ));
         }
-        if variant.weight < 0 {
+        // a 0 would read as "fallback only", but the gateway samples it as a 1
+        // (#3341), so it is refused like a route target's until that changes
+        if variant.weight < 1 {
             return Err(invalid_field(
                 format!("variants[{i}].weight"),
-                "weight must be 0 or more",
+                "weight must be at least 1",
             ));
         }
         if variant.targets.is_empty() {
@@ -965,12 +967,6 @@ fn variant_specs(variants: Vec<VariantInput>) -> ApiResult<Vec<RouteVariantSpec>
                 })
                 .collect(),
         });
-    }
-    if !specs.is_empty() && specs.iter().all(|v| v.weight == 0) {
-        return Err(invalid_field(
-            "variants",
-            "at least one variant needs a weight above 0, or no request has a primary to sample",
-        ));
     }
     Ok(specs)
 }
@@ -1060,7 +1056,7 @@ mod variant_tests {
 
     #[test]
     fn a_valid_set_maps_in_order_with_blank_models_as_none() {
-        let mut canary = variant(" canary ", 0);
+        let mut canary = variant(" canary ", 1);
         canary.targets = vec![
             VariantTargetInput {
                 provider_id: Uuid::nil(),
@@ -1073,7 +1069,6 @@ mod variant_tests {
         assert_eq!(specs.len(), 2);
         assert_eq!(specs[0].name, "stable");
         assert_eq!(specs[1].name, "canary", "the name is trimmed");
-        assert_eq!(specs[1].weight, 0, "a fallback-only variant is allowed");
         assert_eq!(specs[1].targets[0].upstream_model, None);
         assert_eq!(specs[1].params, serde_json::json!({}));
         assert!(
@@ -1088,9 +1083,10 @@ mod variant_tests {
             refused_field(vec![variant("a", -1)]).as_deref(),
             Some("variants[0].weight")
         );
+        // a 0 is sampled as a 1 by the gateway (#3341), so it is refused
         assert_eq!(
-            refused_field(vec![variant("a", 0), variant("b", 0)]).as_deref(),
-            Some("variants")
+            refused_field(vec![variant("a", 3), variant("b", 0)]).as_deref(),
+            Some("variants[1].weight")
         );
         let mut negative_target = variant("a", 1);
         negative_target.targets = vec![target(1), target(-3)];
