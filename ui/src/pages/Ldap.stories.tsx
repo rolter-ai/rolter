@@ -194,6 +194,45 @@ export const NoDefaultRoleAndNoPassword: Story = {
   },
 };
 
+const blocked = recording(api({ directories: () => [] }));
+
+/**
+ * Name, URL and base DN are what Save waits for (#3242): a refused submit names
+ * each of them instead of leaving Add directory quietly dead, and Enter in a
+ * field submits once they are filled in.
+ */
+export const BlockedSubmitNamesTheMandatoryFields: Story = {
+  render: () => (
+    <Harness fetchStub={blocked.stub}>
+      <Ldap />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await userEvent.click(
+      (await within(canvasElement).findAllByRole("button", { name: /Add directory/ }))[0],
+    );
+    await waitFor(() => expect(sheet()).toBeVisible());
+    const panel = within(sheet());
+    for (const label of ["Name", "URL", "Base DN"]) {
+      await expect(panel.getByLabelText(label)).toBeRequired();
+    }
+    await expect(panel.queryByText("Required")).toBeNull();
+
+    await userEvent.click(panel.getByRole("button", { name: "Add directory" }));
+    await waitFor(() => expect(panel.getAllByText("Required")).toHaveLength(3));
+    await waitFor(() => expect(panel.getByLabelText("Name")).toHaveFocus());
+    await expect(await panel.findByRole("status")).toHaveTextContent("3 fields need attention");
+    blocked.expectNotSent("POST", "/orgs/org-1/ldap-directories");
+
+    await userEvent.type(panel.getByLabelText("Name"), "Corporate directory");
+    await userEvent.type(panel.getByLabelText("URL"), "ldaps://dir.acme.example");
+    await userEvent.type(panel.getByLabelText("Base DN"), "ou=people,dc=acme,dc=example{Enter}");
+    await expect(
+      await blocked.expectSentBody("POST", "/orgs/org-1/ldap-directories"),
+    ).toMatchObject({ name: "Corporate directory" });
+  },
+};
+
 const registers = recording(api({ directories: () => [] }));
 
 export const RegistersADirectory: Story = {

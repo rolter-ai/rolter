@@ -392,9 +392,10 @@ export default function Login() {
             />
           </Field>
           <Button
+            variant="brand"
             type="submit"
             disabled={pending || code.trim().length === 0}
-            className="w-full bg-brand-folk text-white hover:bg-brand-press"
+            className="w-full"
           >
             {pending ? (
               <>
@@ -487,9 +488,10 @@ export default function Login() {
             </div>
           )}
           <Button
+            variant="brand"
             type="submit"
             disabled={pending || (tokenMode && adminToken.trim().length === 0)}
-            className="w-full bg-brand-folk text-white hover:bg-brand-press"
+            className="w-full"
           >
             {pending ? (
               <>
@@ -521,11 +523,9 @@ export default function Login() {
               // with no password form, signing in is the one action this screen
               // exists for, so the first provider is the brand button (DESIGN.md)
               className={cn(
-                buttonVariants({ variant: "outline" }),
-                "w-full text-muted-foreground hover:text-foreground",
-                !showPassword &&
-                  i === 0 &&
-                  "border-transparent bg-brand-folk text-white hover:bg-brand-press hover:text-white",
+                buttonVariants({ variant: !showPassword && i === 0 ? "brand" : "outline" }),
+                "w-full",
+                (showPassword || i !== 0) && "text-muted-foreground hover:text-foreground",
               )}
             >
               {t("auth.continueWith", { provider: p.name })}

@@ -136,7 +136,7 @@ Notes:
 
 Stories currently cover the core UI-kit primitives (button, input, textarea,
 select, switch, badge, tag, card, stat-card, empty-state, skeleton, tabs), the
-overlays (dialog, sheet), the charts (sparkline, donut, bar/line), and the
+overlays (dialog, sheet), the charts (sparkline, bar/line, scatter), and the
 navigation shells (`NavSidebar`, `FilterPanel`), under `src/components/ui/`.
 
 ## Structure

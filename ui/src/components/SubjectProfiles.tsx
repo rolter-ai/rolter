@@ -206,7 +206,7 @@ export function AssignSubjectProfileSheet({
       saving={assign.isPending}
       onSubmit={() => assign.mutate()}
     >
-      <Field label={t("subjectProfiles.field")} hint={t("subjectProfiles.fieldHint")}>
+      <Field label={t("subjectProfiles.field")} hint={t("subjectProfiles.fieldHint")} required>
         <Combobox
           options={options}
           value={profileId}

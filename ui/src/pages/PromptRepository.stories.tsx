@@ -1037,6 +1037,34 @@ export const RailListsEachVersionsScopes: Story = {
 };
 
 /**
+ * Enter in the create dialog submits it (#3242), and an empty name refuses the
+ * submit by naming the field instead of leaving Create silently dead.
+ */
+export const CreateDialogNamesTheMissingName: Story = {
+  render: () => <Harness fetchStub={loadedStub()} />,
+  play: async ({ canvas, canvasElement }) => {
+    const index = within(await canvas.findByRole("complementary", { name: "Templates" }));
+    await canvas.findByRole("textbox", { name: /Decorator 1 content/ });
+    await userEvent.click(index.getByRole("button", { name: "Create template" }));
+    const dialog = await openConfirmation(canvasElement);
+    const name = dialog.getByRole("textbox", { name: /^Name/ });
+    await expect(name).toBeRequired();
+    await expect(dialog.queryByText("Required")).toBeNull();
+
+    await userEvent.click(name);
+    await userEvent.keyboard("{Enter}");
+    await waitFor(async () => expect(await dialog.findByText("Required")).toBeVisible());
+    await waitFor(() => expect(name).toHaveFocus());
+    await expect(index.queryByRole("button", { name: /Billing helper/ })).toBeNull();
+
+    await userEvent.type(name, "Billing helper{Enter}");
+    await waitFor(() =>
+      expect(index.getByRole("button", { name: /Billing helper/ })).toBeVisible(),
+    );
+  },
+};
+
+/**
  * Creating a template while the open draft has unsaved edits goes through the
  * same guard as switching (#3118). The template is created either way; Cancel
  * leaves the edits and the selection where they were.

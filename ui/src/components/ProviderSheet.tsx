@@ -63,13 +63,6 @@ const BASE_HINTS: Readonly<Record<string, { hint: string; placeholder: string }>
 };
 
 /**
- * The result of a connection probe.
- *
- * Always names the URL that was tried. "It failed" is not actionable when the
- * operator cannot see how their `api_base` was turned into an endpoint — a
- * doubled `/v1` is the single most common cause and is invisible otherwise.
- */
-/**
  * What a create leaves on screen (#2142).
  *
  * The sheet stays open on the provider it just made, since the next step is to

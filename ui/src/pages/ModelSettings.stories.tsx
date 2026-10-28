@@ -346,6 +346,23 @@ export const SwitchingOffKeepsTheStoredValue: Story = {
   },
 };
 
+const typedModel = recording(answering(CONFIGURED));
+
+// a model name typed and not confirmed with Enter is still the value once focus
+// moves on, so clicking Save sends it rather than saving nothing (#3244)
+export const TypedModelIsSavedWithoutPressingEnter: Story = {
+  render: () => <Harness fetchStub={typedModel.stub} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const model = await canvas.findByLabelText("Default model");
+    await userEvent.clear(model);
+    await userEvent.type(model, "my-fine-tune");
+    await userEvent.click(canvas.getByRole("button", { name: "Save changes" }));
+    const body = await typedModel.expectSentBody<ModelDefaultsDto>("PUT", "model-defaults");
+    await expect(body.default_model).toBe("my-fine-tune");
+  },
+};
+
 // interaction: a valid edit round-trips and confirms
 export const SavesChanges: Story = {
   render: () => {

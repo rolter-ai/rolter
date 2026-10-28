@@ -293,6 +293,37 @@ export const ProfilesFailedToLoad: Story = {
   },
 };
 
+const blockedAssign = teamProfiles();
+
+/** Assigning with no profile picked names the picker instead of doing nothing (#3242). */
+export const AssignWithoutAPickNamesTheField: Story = {
+  render: () => (
+    <Harness fetchStub={blockedAssign.stub} role="admin">
+      <Toasted>
+        <Teams />
+      </Toasted>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByText("Research");
+    await expectAllowed(canvasElement, "Assign an access profile to Research");
+    await userEvent.click(
+      canvas.getByRole("button", { name: "Assign an access profile to Research" }),
+    );
+
+    const form = within(sheet());
+    const picker = await form.findByRole("combobox", { name: "Access profile" });
+    await expect(picker).toBeRequired();
+    await expect(form.queryByText("Required")).toBeNull();
+    await userEvent.click(form.getByRole("button", { name: "Assign profile" }));
+    await waitFor(async () => expect(await form.findByText("Required")).toBeVisible());
+    await waitFor(() => expect(picker).toHaveFocus());
+    await expect(await form.findByRole("status")).toHaveTextContent("1 field needs attention");
+    blockedAssign.expectNotSent("POST", "/access-profiles/p-2/assignments");
+  },
+};
+
 const teamAssign = teamProfiles();
 export const AssignsAProfileToATeam: Story = {
   render: () => (

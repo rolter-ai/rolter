@@ -16,6 +16,7 @@ import {
 } from "./story-harness";
 import type { PreferencesResponse } from "@/lib/api";
 import en from "@/lib/i18n/locales/en.json";
+import { expectFieldHints } from "@/lib/story-hints";
 
 // the screen over `/api/v1/me/preferences`. PUT replaces the whole document and
 // refuses the computed `effective_default_scope`, so the stories that save
@@ -291,5 +292,20 @@ export const PicksAZone: Story = {
     await userEvent.click(await within(document.body).findByRole("option", { name: "Asia/Tokyo" }));
     await expect(zone).toHaveValue("Asia/Tokyo");
     await expect(canvas.getByRole("button", { name: en.common.saveChanges })).toBeEnabled();
+  },
+};
+
+/** The default org, team and project each explain how they depend on one another (#3285). */
+export const ScopeFieldsAreExplainedInAHint: Story = {
+  render: () => <Screen fetchStub={scoped(answer(DOCUMENT))} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByLabelText(en.pages.preferences.playground.label);
+    const s = en.pages.preferences.scope;
+    await expectFieldHints(canvasElement, en.common.aboutField, [
+      [en.scope.org, s.orgInfo],
+      [en.scope.team, s.teamInfo],
+      [en.scope.project, s.projectInfo],
+    ]);
   },
 };

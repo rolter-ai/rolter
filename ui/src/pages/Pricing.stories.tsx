@@ -35,6 +35,8 @@ import {
 } from "./story-harness";
 import type { CurrencySettings, ModelPriceRow, PriceCatalogue } from "@/lib/api";
 import ru from "@/lib/i18n/locales/ru.json";
+import en from "@/lib/i18n/locales/en.json";
+import { expectFieldHints } from "@/lib/story-hints";
 import { UxScreenProvider } from "@/lib/ux-react";
 
 const price = (
@@ -1685,5 +1687,19 @@ export const ImportIsOpenToASuperadmin: Story = {
   ),
   play: async ({ canvasElement }) => {
     await expectAllowed(canvasElement, /import from catalogue/i);
+  },
+};
+
+/** The model name explains itself in an (i) (#3285). */
+export const ExplainsTheModelNameInAHint: Story = {
+  render: () => (
+    <Harness fetchStub={withCurrency(CONFIGURED)}>
+      <Pricing />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await clickWhenEnabled(canvasElement, /add price/i);
+    const p = en.pages.pricing;
+    await expectFieldHints(sheet(), en.common.aboutField, [[p.modelName, p.modelNameInfo]]);
   },
 };

@@ -121,10 +121,7 @@ export function TwoFactorPanel() {
             title={t("account.mfa.off.title")}
             description={<OffBody status={status.data} />}
             actions={
-              <Button
-                onClick={() => setEnrolling(true)}
-                className="bg-brand-folk text-white hover:bg-brand-press"
-              >
+              <Button variant="brand" onClick={() => setEnrolling(true)}>
                 {t("account.mfa.off.cta")}
               </Button>
             }
@@ -284,6 +281,10 @@ function EnrolDialog({
     },
   });
 
+  // not `Dialog onSubmit`: the code step is `EnrolSteps`, which owns its own
+  // <form> (Enter on the code field submits it, and it is shared with the
+  // sign-in enrolment screen), and a form nested in the dialog's would be
+  // invalid markup (#3242)
   return (
     <Dialog open onOpenChange={(open) => !open && onClose()}>
       <DialogHeader>

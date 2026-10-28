@@ -397,7 +397,7 @@ export default function Limits() {
           <CardDescription>{t("pages.limits.scopeBody")}</CardDescription>
         </CardHeader>
         <CardContent className="grid gap-3 sm:grid-cols-2">
-          <Field label={t("pages.limits.scopeTypeLabel")}>
+          <Field label={t("pages.limits.scopeTypeLabel")} info={t("pages.limits.scopeTypeInfo")}>
             <Combobox
               value={scopeType}
               onChange={(picked) => {
@@ -1327,7 +1327,11 @@ function BudgetSheet({
     >
       <div className="space-y-3">
         {userReach && <UserReachFields value={reach} onChange={setReach} options={userReach} />}
-        <Field label={t("pages.limits.budgetLimitLabel", { currency })} required>
+        <Field
+          label={t("pages.limits.budgetLimitLabel", { currency })}
+          info={t("pages.limits.budgetLimitInfo", { currency })}
+          required
+        >
           {/* the ceiling is the numeric(12,4) column's; the server refuses above it */}
           <Input
             type="number"
@@ -1492,12 +1496,15 @@ function RateLimitSheet({
         (!limit || dirty) &&
         (!userReach || reachComplete(reach))
       }
+      // either cap will do, so neither field is `required` on its own: a refused
+      // submit with both empty says so in the footer instead
+      blockedMessage={rpm.trim() || tpm.trim() ? undefined : t("pages.limits.rateLimitNeedsOne")}
       saving={save.isPending}
       onSubmit={() => save.mutate()}
     >
       <div className="space-y-3">
         {userReach && <UserReachFields value={reach} onChange={setReach} options={userReach} />}
-        <Field label={t("pages.limits.rpmLabel")}>
+        <Field label={t("pages.limits.rpmLabel")} info={t("pages.limits.rpmInfo")}>
           {/* the gateway reads a cap below 1 as none, so the server refuses one */}
           <Input
             type="number"
@@ -1508,7 +1515,7 @@ function RateLimitSheet({
             placeholder={t("pages.limits.uncapped")}
           />
         </Field>
-        <Field label={t("pages.limits.tpmLabel")}>
+        <Field label={t("pages.limits.tpmLabel")} info={t("pages.limits.tpmInfo")}>
           <Input
             type="number"
             min={1}

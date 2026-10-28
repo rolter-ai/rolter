@@ -36,6 +36,7 @@ import {
 import type { OrgAuthPolicy, PublicUrl, SsoGroupMappingRow, SsoProviderRow } from "@/lib/api";
 import en from "@/lib/i18n/locales/en.json";
 import ru from "@/lib/i18n/locales/ru.json";
+import { expectFieldHints } from "@/lib/story-hints";
 import { atMobile, expectNoHorizontalOverflow } from "@/lib/story-viewport";
 import { UxScreenProvider } from "@/lib/ux-react";
 
@@ -846,6 +847,41 @@ export const CreatesAProvider: Story = {
       // omitted optionals are left out entirely, so the server applies its own
       // defaults rather than being handed an empty string
     });
+  },
+};
+
+/**
+ * A refused submit names each mandatory field (#3242): the sheet's Save used to
+ * go quietly dead until all four were typed. Enter then submits once they are.
+ */
+const blockedCreate = recording(api({ providers: () => [provider()] }));
+export const BlockedSubmitNamesTheMandatoryFields: Story = {
+  render: () => (
+    <Harness fetchStub={blockedCreate.stub}>
+      <SingleSignOn />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await clickWhenEnabled(canvasElement, /Add provider/);
+    const panel = within(sheet());
+    for (const label of ["Name", "Slug", "Issuer URL", "Client ID"]) {
+      await expect(panel.getByLabelText(label)).toBeRequired();
+    }
+    await expect(panel.queryByText("Required")).toBeNull();
+
+    await userEvent.click(panel.getByRole("button", { name: "Add provider" }));
+    await waitFor(() => expect(panel.getAllByText("Required")).toHaveLength(4));
+    await waitFor(() => expect(panel.getByLabelText("Name")).toHaveFocus());
+    await expect(await panel.findByRole("status")).toHaveTextContent("4 fields need attention");
+    blockedCreate.expectNotSent("POST", `/api/v1/orgs/${ORG.id}/sso-providers`);
+
+    await userEvent.type(panel.getByLabelText("Name"), "Acme Okta");
+    await userEvent.type(panel.getByLabelText("Slug"), "okta");
+    await userEvent.type(panel.getByLabelText("Issuer URL"), "https://acme.okta.com");
+    await userEvent.type(panel.getByLabelText("Client ID"), "0oa1b2c3d4{Enter}");
+    await expect(
+      await blockedCreate.expectSentBody("POST", `/api/v1/orgs/${ORG.id}/sso-providers`),
+    ).toMatchObject({ name: "Acme Okta", slug: "okta", client_id: "0oa1b2c3d4" });
   },
 };
 
@@ -2815,5 +2851,23 @@ export const AddRowFitsAPhoneInRussian: Story = {
     await pickOption(role, ru.shell.roles.admin);
     await waitFor(() => expect(role).toHaveValue(ru.shell.roles.admin));
     await expect(role.scrollWidth).toBeLessThanOrEqual(role.clientWidth);
+  },
+};
+
+/** The group, scope and role of a mapping explain themselves in an (i) (#3285). */
+export const GroupMappingFieldsAreExplainedInAHint: Story = {
+  render: () => (
+    <Harness fetchStub={api({ providers: () => [provider()] })}>
+      <SingleSignOn />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await within(canvasElement).findByLabelText("IdP group");
+    const g = en.groupMappings;
+    await expectFieldHints(canvasElement, en.common.aboutField, [
+      [g.groupLabel, g.groupInfo],
+      [g.scopeLabel, g.scopeInfo],
+      [g.roleLabel, g.roleInfo],
+    ]);
   },
 };

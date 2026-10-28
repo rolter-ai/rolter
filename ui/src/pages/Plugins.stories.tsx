@@ -24,6 +24,8 @@ import {
   type StoryRole,
 } from "./story-harness";
 import type { PluginInstanceRow } from "@/lib/api";
+import en from "@/lib/i18n/locales/en.json";
+import { expectFieldHints } from "@/lib/story-hints";
 
 const PLUGINS: PluginInstanceRow[] = [
   {
@@ -780,5 +782,27 @@ export const CallCountsFailed: Story = {
     await expect(
       redact.getByRole("button", { name: "Configure plugin PII redaction" }),
     ).toBeEnabled();
+  },
+};
+
+/**
+ * Scope, stage, endpoint and failure policy explain themselves in an (i)
+ * (#3285): who the plugin covers, when it runs, what it is sent and what a
+ * failure does to a request.
+ */
+export const ExplainsEachFieldInAHint: Story = {
+  render: () => <Harness fetchStub={withPlugins(PLUGINS)} />,
+  play: async ({ canvasElement }) => {
+    await userEvent.click(
+      await within(canvasElement).findByRole("button", { name: /install plugin/i }),
+    );
+    const dialog = await within(document.body).findByRole("dialog");
+    const p = en.pages.plugins;
+    await expectFieldHints(dialog, en.common.aboutField, [
+      [p.fieldScope, p.fieldScopeInfo],
+      [p.fieldStage, p.fieldStageInfo],
+      [p.fieldEndpoint, p.fieldEndpointInfo],
+      [p.fieldFailure, p.fieldFailureInfo],
+    ]);
   },
 };

@@ -19,6 +19,7 @@ import {
   Harness as ScreenHarness,
   json,
   recording,
+  sheet,
   Toasted,
   type FetchStub,
   type StoryRole,
@@ -27,6 +28,7 @@ import type { ConnectorRow, PublicUrl } from "@/lib/api";
 import { formattersFor } from "@/lib/i18n/format";
 import en from "@/lib/i18n/locales/en.json";
 import ru from "@/lib/i18n/locales/ru.json";
+import { expectFieldHints } from "@/lib/story-hints";
 import {
   atMobile,
   atShort,
@@ -1634,5 +1636,15 @@ export const EditSheetInRussianAtMobile: Story = {
     // nothing in the sheet is a start switch, and nothing left for Create
     await expect(form.queryByRole("switch", { name: copy.form.start })).toBeNull();
     editsInRussian.expectNotSent("PUT", "/connectors/c-1");
+  },
+};
+
+/** The endpoint explains itself in an (i) (#3285). */
+export const EndpointIsExplainedInAHint: Story = {
+  render: () => <Harness fetchStub={async () => json([])} />,
+  play: async ({ canvasElement }) => {
+    await clickWhenEnabled(canvasElement, /add connector/i);
+    const f = en.pages.connectors.form;
+    await expectFieldHints(sheet(), en.common.aboutField, [[f.endpoint, f.endpointInfo]]);
   },
 };
