@@ -2643,11 +2643,14 @@
         "build": "Сборка",
         "config": "Конфигурация",
         "state": "Состояние",
-        "lastSeen": "Последний отклик"
+        "lastSeen": "Последний отклик",
+        "format": "Формат"
       },
       "drain": "Вывести",
       "returnToService": "Вернуть в обслуживание",
       "forget": "Забыть",
+      "formatRefused": "Отклонён",
+      "formatReads": "Читает форматы снимка с {{min}} по {{max}}",
       "summary_one": "{{count}} узел · {{live}} в сети",
       "summary_few": "{{count}} узла · {{live}} в сети",
       "summary_many": "{{count}} узлов · {{live}} в сети",

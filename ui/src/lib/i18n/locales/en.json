@@ -2489,11 +2489,14 @@
         "build": "Build",
         "config": "Config",
         "state": "State",
-        "lastSeen": "Last seen"
+        "lastSeen": "Last seen",
+        "format": "Format"
       },
       "drain": "Drain",
       "returnToService": "Return to service",
       "forget": "Forget",
+      "formatRefused": "Refused",
+      "formatReads": "Reads snapshot formats {{min}} to {{max}}",
       "summary_one": "{{count}} node · {{live}} live",
       "summary_other": "{{count}} nodes · {{live}} live",
       "newest": "newest config v{{version}}",
