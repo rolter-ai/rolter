@@ -12,6 +12,7 @@ use rolter_core::{Error, Result};
 
 use super::super::models::{
     McpGatewaySettings, McpLoginState, McpOAuthGrant, McpOAuthSession, McpServer, McpToolGroup,
+    McpToolGroupAssignment,
 };
 use super::support::{fetch_optional_or_not_found, require_affected, store_err};
 
@@ -688,6 +689,76 @@ impl McpToolGroupRepo<'_> {
             || format!("mcp tool group {id}"),
         )
         .await
+    }
+}
+
+/// The subjects an MCP tool group is assigned to (#3295).
+pub struct McpToolGroupAssignmentRepo<'a>(pub &'a PgPool);
+
+/// What a tool group can be assigned to.
+pub const MCP_ASSIGNMENT_KINDS: &[&str] = &["virtual_key", "project", "team"];
+
+impl McpToolGroupAssignmentRepo<'_> {
+    /// Every assignment of every group of an organization.
+    pub async fn list_for_org(&self, org_id: Uuid) -> Result<Vec<McpToolGroupAssignment>> {
+        sqlx::query_as(
+            "select a.group_id, a.subject_kind, a.subject_id, a.created_at \
+             from mcp_tool_group_assignments a \
+             join mcp_tool_groups g on g.id = a.group_id \
+             where g.org_id = $1 order by a.group_id, a.subject_kind, a.subject_id",
+        )
+        .bind(org_id)
+        .fetch_all(self.0)
+        .await
+        .map_err(store_err)
+    }
+
+    /// Whether `subject_id` is a `kind` that belongs to the organization. A key
+    /// and a project belong to it through their team.
+    pub async fn subject_in_org(&self, kind: &str, subject_id: Uuid, org_id: Uuid) -> Result<bool> {
+        let sql = match kind {
+            "team" => "select 1 from teams where id = $1 and org_id = $2",
+            "project" => {
+                "select 1 from projects p join teams t on t.id = p.team_id \
+                 where p.id = $1 and t.org_id = $2"
+            }
+            "virtual_key" => {
+                "select 1 from virtual_keys k join projects p on p.id = k.project_id \
+                 join teams t on t.id = p.team_id where k.id = $1 and t.org_id = $2"
+            }
+            _ => return Ok(false),
+        };
+        let found: Option<i32> = sqlx::query_scalar(sql)
+            .bind(subject_id)
+            .bind(org_id)
+            .fetch_optional(self.0)
+            .await
+            .map_err(store_err)?;
+        Ok(found.is_some())
+    }
+
+    /// Replace the whole assignment set of a group in one transaction, so a
+    /// gateway never loads half of it.
+    pub async fn replace(&self, group_id: Uuid, subjects: &[(String, Uuid)]) -> Result<()> {
+        let mut tx = self.0.begin().await.map_err(store_err)?;
+        sqlx::query("delete from mcp_tool_group_assignments where group_id = $1")
+            .bind(group_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(store_err)?;
+        for (kind, subject_id) in subjects {
+            sqlx::query(
+                "insert into mcp_tool_group_assignments (group_id, subject_kind, subject_id) \
+                 values ($1, $2, $3) on conflict do nothing",
+            )
+            .bind(group_id)
+            .bind(kind)
+            .bind(subject_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(store_err)?;
+        }
+        tx.commit().await.map_err(store_err)
     }
 }
 

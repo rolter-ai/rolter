@@ -220,6 +220,13 @@ pub struct Snapshot {
     /// groups allow, keyed by server id (#1403). A server absent from the map
     /// is not governed by a group
     pub mcp_governed_tools: HashMap<String, std::collections::HashSet<String>>,
+    /// the tools each enabled tool group allows, by group id then server id
+    /// (#3295); the building block of a caller's assigned groups
+    pub mcp_group_tools: HashMap<String, HashMap<String, std::collections::HashSet<String>>>,
+    /// the ids of the enabled groups assigned to a virtual key, project or team,
+    /// keyed by organization id, subject kind and subject id (#3295). A caller
+    /// found in none of these keeps the organization-wide groups
+    pub mcp_group_assignments: HashMap<(String, String, String), Vec<String>>,
     /// saved MCP settings by organization id (#1404). An organization with
     /// none saved is absent and gets the defaults
     pub mcp_org_settings: HashMap<String, rolter_core::McpOrgSettingsConfig>,
@@ -607,6 +614,12 @@ impl Snapshot {
             .collect();
         let mut mcp_governed_tools: HashMap<String, std::collections::HashSet<String>> =
             HashMap::new();
+        let mut mcp_group_tools: HashMap<
+            String,
+            HashMap<String, std::collections::HashSet<String>>,
+        > = HashMap::new();
+        let mut mcp_group_assignments: HashMap<(String, String, String), Vec<String>> =
+            HashMap::new();
         for group in &config.mcp_tool_groups {
             for reference in &group.tools {
                 if org_of_server.get(reference.server_id.as_str()) == Some(&group.org_id.as_str()) {
@@ -614,7 +627,23 @@ impl Snapshot {
                         .entry(reference.server_id.clone())
                         .or_default()
                         .insert(reference.tool.clone());
+                    mcp_group_tools
+                        .entry(group.id.clone())
+                        .or_default()
+                        .entry(reference.server_id.clone())
+                        .or_default()
+                        .insert(reference.tool.clone());
                 }
+            }
+            for subject in &group.assignments {
+                mcp_group_assignments
+                    .entry((
+                        group.org_id.clone(),
+                        subject.kind.clone(),
+                        subject.id.clone(),
+                    ))
+                    .or_default()
+                    .push(group.id.clone());
             }
         }
         let mcp_org_settings = config
@@ -643,6 +672,8 @@ impl Snapshot {
             keys,
             mcp_servers,
             mcp_governed_tools,
+            mcp_group_tools,
+            mcp_group_assignments,
             mcp_org_settings,
             mcp_oauth_sessions,
             pepper,

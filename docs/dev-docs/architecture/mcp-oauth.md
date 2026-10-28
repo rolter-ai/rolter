@@ -156,8 +156,26 @@ after the caller is authenticated and before anything is forwarded.
   `tools/call` is forwarded only for a tool in the union of those groups, and
   anything else (including a call that names no tool) is refused `403`
   `mcp_tool_denied`. A server no group names is not governed here. "The caller's
-  effective groups" is the organization's enabled set, since groups have no
-  per-key or per-project assignment.
+  effective groups" is the organization's enabled set unless the caller has an
+  assignment (below).
+- **Assignments (#3295).** `mcp_tool_group_assignments` (migration `0150`, with
+  the `bump_config_version()` trigger in `0151`) assigns a group to a
+  `virtual_key`, `project` or `team`. The subject has no foreign key, since it is
+  polymorphic: the control plane refuses one outside the group's organization
+  when it is written, and a deleted subject leaves a row that can never match.
+  Only the assignments of enabled groups travel, as
+  `McpToolGroupConfig::assignments`. The gateway indexes them as
+  `Snapshot::mcp_group_assignments` (organization, kind, subject to group ids) and
+  each group's tools as `mcp_group_tools`. `Caller::assigned_groups` collects the
+  groups assigned to the caller's key, project and team; with none the
+  organization-wide set applies, otherwise the allowed tools on a governed server
+  are the union of those groups' tools there, which is empty when none names it.
+  An assignment therefore only narrows, and an empty table changes nothing. The
+  same set drives the `tools/list` filter. API: `GET
+/api/v1/orgs/{org_id}/mcp/tool-group-assignments` and `PUT
+/api/v1/mcp/tool-groups/{id}/assignments` (replaces the group's whole set in one
+  transaction), under the `mcp_tool_group_assignment` capability; the dashboard's
+  group dialog edits the team and project kinds.
 - **Parsing.** When the rule applies the body is parsed in full, as one message
   or a batch, with no substring shortcut: `tools\/call` and `\u`-escaped spellings
   are the same JSON string, so a byte search would be a bypass. A batch is

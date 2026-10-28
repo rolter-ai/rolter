@@ -57,7 +57,11 @@ import {
   fetchMcpServers,
   fetchMcpSessions,
   fetchMcpSettings,
+  fetchMcpToolGroupAssignments,
   fetchMcpToolGroups,
+  fetchOrgProjects,
+  fetchTeams,
+  replaceMcpToolGroupAssignments,
   MCP_AUTH_KINDS,
   MCP_OAUTH_DISCOVERY_MODES,
   setMcpOAuthClient,
@@ -75,6 +79,8 @@ import {
   type McpServerAuthInput,
   type McpServerInput,
   type McpServerRow,
+  type McpAssignmentSubject,
+  type McpToolGroupAssignmentRow,
   type McpToolGroupRow,
   type McpToolRef,
   type McpTransportOverridesPatch,
@@ -1715,18 +1721,35 @@ export function ToolGroups() {
     enabled: !!orgId,
     retry: false,
   });
+  // who each group is assigned to (#3295). a failed read leaves the dialog
+  // without an assignment editor rather than offering one that would replace
+  // the stored set with an empty one
+  const assignments = useQuery({
+    queryKey: ["mcp-tool-group-assignments", orgId],
+    queryFn: () => fetchMcpToolGroupAssignments(orgId as string),
+    enabled: !!orgId,
+    retry: false,
+  });
   const [editing, setEditing] = React.useState<McpToolGroupRow | null | undefined>(undefined);
   const save = useMutation({
-    mutationFn: ({
+    mutationFn: async ({
       initial,
       input,
+      subjects,
     }: {
       initial: McpToolGroupRow | null;
       input: Omit<McpToolGroupRow, "id" | "org_id" | "created_at" | "updated_at">;
-    }) =>
-      initial ? updateMcpToolGroup(initial.id, input) : createMcpToolGroup(orgId as string, input),
+      subjects: McpAssignmentSubject[] | null;
+    }) => {
+      const group = initial
+        ? await updateMcpToolGroup(initial.id, input)
+        : await createMcpToolGroup(orgId as string, input);
+      if (subjects) await replaceMcpToolGroupAssignments(group.id, subjects);
+      return group;
+    },
     onSuccess: (group, { initial }) => {
       void client.invalidateQueries({ queryKey: ["mcp-tool-groups", orgId] });
+      void client.invalidateQueries({ queryKey: ["mcp-tool-group-assignments", orgId] });
       setEditing(undefined);
       toast.push(
         initial
@@ -1843,6 +1866,13 @@ export function ToolGroups() {
               <p className="mt-2 min-h-10 text-xs leading-relaxed text-muted-foreground">
                 {group.description || t("pages.mcpCatalog.noDescription")}
               </p>
+              {assignments.data && (
+                <p className="mt-3 text-xs text-muted-foreground">
+                  {assignments.data.some((row) => row.group_id === group.id)
+                    ? t("pages.tool-groups.assign.narrowed")
+                    : t("pages.tool-groups.assign.everyone")}
+                </p>
+              )}
               <div className="mt-3 flex flex-wrap gap-1.5">
                 {group.tools.map((item) => (
                   <Badge key={`${item.server_id}/${item.tool}`} tone="outline">
@@ -1900,10 +1930,11 @@ export function ToolGroups() {
         <ToolGroupDialog
           initial={editing}
           servers={servers.data ?? []}
+          assignments={assignments.data}
           pending={save.isPending}
           error={save.error}
           onClose={() => setEditing(undefined)}
-          onSave={(input) => save.mutate({ initial: editing, input })}
+          onSave={(input, subjects) => save.mutate({ initial: editing, input, subjects })}
         />
       )}
     </PageBody>
@@ -1913,6 +1944,7 @@ export function ToolGroups() {
 function ToolGroupDialog({
   initial,
   servers,
+  assignments,
   pending,
   error,
   onClose,
@@ -1920,12 +1952,52 @@ function ToolGroupDialog({
 }: {
   initial: McpToolGroupRow | null;
   servers: McpServerRow[];
+  /** every assignment of the org; absent while unread or when the read failed */
+  assignments: McpToolGroupAssignmentRow[] | undefined;
   pending: boolean;
   error: Error | null;
   onClose: () => void;
-  onSave: (input: Omit<McpToolGroupRow, "id" | "org_id" | "created_at" | "updated_at">) => void;
+  onSave: (
+    input: Omit<McpToolGroupRow, "id" | "org_id" | "created_at" | "updated_at">,
+    /** the whole assignment set to store, or null to leave it alone */
+    subjects: McpAssignmentSubject[] | null,
+  ) => void;
 }) {
   const { t } = useTranslation();
+  const { orgId } = useScope();
+  const mine = (assignments ?? []).filter((row) => row.group_id === initial?.id);
+  const [teamIds, setTeamIds] = React.useState(
+    mine.filter((row) => row.subject_kind === "team").map((row) => row.subject_id),
+  );
+  const [projectIds, setProjectIds] = React.useState(
+    mine.filter((row) => row.subject_kind === "project").map((row) => row.subject_id),
+  );
+  const keyIds = mine
+    .filter((row) => row.subject_kind === "virtual_key")
+    .map((row) => row.subject_id);
+  const canAssign = useCan()("mcp_tool_group_assignment", "update") !== false;
+  const teams = useQuery({
+    queryKey: ["teams", orgId],
+    queryFn: () => fetchTeams(orgId as string),
+    enabled: !!orgId && !!assignments,
+    retry: false,
+  });
+  const projects = useQuery({
+    queryKey: ["org-projects", orgId],
+    queryFn: () => fetchOrgProjects(orgId as string),
+    enabled: !!orgId && !!assignments,
+    retry: false,
+  });
+  const flip = (ids: string[], id: string) =>
+    ids.includes(id) ? ids.filter((current) => current !== id) : [...ids, id];
+  const changed =
+    mine.filter((row) => row.subject_kind === "team").length !== teamIds.length ||
+    mine.filter((row) => row.subject_kind === "project").length !== projectIds.length ||
+    mine.some(
+      (row) =>
+        (row.subject_kind === "team" && !teamIds.includes(row.subject_id)) ||
+        (row.subject_kind === "project" && !projectIds.includes(row.subject_id)),
+    );
   const [name, setName] = React.useState(initial?.name ?? "");
   const [description, setDescription] = React.useState(initial?.description ?? "");
   const [enabled, setEnabled] = React.useState(initial?.enabled ?? true);
@@ -1941,13 +2013,24 @@ function ToolGroupDialog({
       open
       onClose={onClose}
       onSubmit={() =>
-        onSave({
-          name,
-          slug: initial?.slug ?? slugify(name),
-          description,
-          enabled,
-          tools: selected,
-        })
+        onSave(
+          {
+            name,
+            slug: initial?.slug ?? slugify(name),
+            description,
+            enabled,
+            tools: selected,
+          },
+          // sent only when it changed, and only when the stored set was read,
+          // so a failed read can never save an empty one over it
+          assignments && canAssign && (changed || !initial)
+            ? [
+                ...teamIds.map((id) => ({ kind: "team" as const, id })),
+                ...projectIds.map((id) => ({ kind: "project" as const, id })),
+                ...keyIds.map((id) => ({ kind: "virtual_key" as const, id })),
+              ]
+            : null,
+        )
       }
       canSubmit={!!name.trim() && !!selected.length}
       busy={pending}
@@ -1994,6 +2077,42 @@ function ToolGroupDialog({
               />
             ))}
           </div>
+        </fieldset>
+        <fieldset>
+          <legend className="text-sm font-medium">{t("pages.tool-groups.assign.title")}</legend>
+          <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+            {t("pages.tool-groups.assign.hint")}
+          </p>
+          {assignments ? (
+            <div className="mt-2 space-y-3">
+              <ChipGroup
+                label={t("pages.tool-groups.assign.teams")}
+                options={(teams.data ?? []).map((team) => ({ id: team.id, name: team.name }))}
+                selected={teamIds}
+                onToggle={(id) => setTeamIds((current) => flip(current, id))}
+                disabled={!canAssign}
+              />
+              <ChipGroup
+                label={t("pages.tool-groups.assign.projects")}
+                options={(projects.data ?? []).map((project) => ({
+                  id: project.id,
+                  name: `${project.team_name} / ${project.name}`,
+                }))}
+                selected={projectIds}
+                onToggle={(id) => setProjectIds((current) => flip(current, id))}
+                disabled={!canAssign}
+              />
+              {keyIds.length > 0 && (
+                <p className="text-xs text-muted-foreground">
+                  {t("pages.tool-groups.assign.keysKept")}
+                </p>
+              )}
+            </div>
+          ) : (
+            <p className="mt-2 text-xs text-muted-foreground">
+              {t("pages.tool-groups.assign.unavailable")}
+            </p>
+          )}
         </fieldset>
         {error && (
           <p role="alert" className="text-sm text-[color:var(--danger-text)]">

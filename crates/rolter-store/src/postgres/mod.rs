@@ -12,11 +12,11 @@ use rolter_core::{
     BudgetScope, BuiltinRule, Decorator, Error, FailureMode, FeatureFlagsConfig, GatewayConfig,
     GroupMember, GuardAction, GuardStage, GuardrailRule, GuardrailWebhookConfig, GuardrailsConfig,
     McpAuthKind, McpOAuthSessionConfig, McpOrgSettingsConfig, McpServerConfig, McpToolGroupConfig,
-    McpToolRefConfig, ModelPolicy, ModelPriceConfig, ModelRoute, ParamPolicy, PluginInstanceConfig,
-    PluginStage, PluginsConfig, PromptTemplate, PromptTemplateActivationScope,
-    PromptTemplatesConfig, ProviderConfig, ProviderGroupConfig, ProviderKind, RateLimitConfig,
-    Result, ScopeWithin, Target, TemplateVariable, Tenancy, UnpricedPolicy, VirtualKeyRecord,
-    WebhookAuth, WebhookStage,
+    McpToolGroupSubjectConfig, McpToolRefConfig, ModelPolicy, ModelPriceConfig, ModelRoute,
+    ParamPolicy, PluginInstanceConfig, PluginStage, PluginsConfig, PromptTemplate,
+    PromptTemplateActivationScope, PromptTemplatesConfig, ProviderConfig, ProviderGroupConfig,
+    ProviderKind, RateLimitConfig, Result, ScopeWithin, Target, TemplateVariable, Tenancy,
+    UnpricedPolicy, VirtualKeyRecord, WebhookAuth, WebhookStage,
 };
 use rust_decimal::Decimal;
 use sqlx::postgres::PgPoolOptions;
@@ -1213,9 +1213,28 @@ impl PostgresConfigStore {
         .fetch_all(&self.pool)
         .await
         .map_err(store_err)?;
+        // only the assignments of enabled groups travel: a disabled group
+        // governs nothing, assigned or not
+        let assignments: Vec<(Uuid, String, Uuid)> = sqlx::query_as(
+            "select a.group_id, a.subject_kind, a.subject_id \
+             from mcp_tool_group_assignments a \
+             join mcp_tool_groups g on g.id = a.group_id where g.enabled \
+             order by a.group_id, a.subject_kind, a.subject_id",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(store_err)?;
         Ok(rows
             .into_iter()
             .map(|row| {
+                let assignments = assignments
+                    .iter()
+                    .filter(|(group_id, _, _)| *group_id == row.id)
+                    .map(|(_, kind, subject)| McpToolGroupSubjectConfig {
+                        kind: kind.clone(),
+                        id: subject.to_string(),
+                    })
+                    .collect();
                 let tools = match serde_json::from_value::<Vec<McpToolRefConfig>>(row.tools) {
                     Ok(tools) => tools,
                     Err(error) => {
@@ -1232,6 +1251,7 @@ impl PostgresConfigStore {
                     org_id: row.org_id.to_string(),
                     slug: row.slug,
                     tools,
+                    assignments,
                 }
             })
             .collect())

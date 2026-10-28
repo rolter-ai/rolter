@@ -288,6 +288,8 @@ export {
   MCP_PROBE_STATUSES,
   testMcpServerConnection,
   callMcpServerTool,
+  fetchMcpToolGroupAssignments,
+  replaceMcpToolGroupAssignments,
 } from "./mcp";
 export type {
   McpLogRow,
@@ -313,6 +315,9 @@ export type {
   McpLibraryItem,
   McpToolRef,
   McpToolGroupRow,
+  McpAssignmentKind,
+  McpAssignmentSubject,
+  McpToolGroupAssignmentRow,
   McpGatewaySettingsRow,
   McpOAuthGrantRow,
   McpOAuthSessionRow,

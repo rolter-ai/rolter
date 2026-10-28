@@ -305,6 +305,21 @@ export interface McpToolGroupRow {
   updated_at: string;
 }
 
+/** What an MCP tool group can be assigned to (#3295). */
+export type McpAssignmentKind = "virtual_key" | "project" | "team";
+
+export interface McpToolGroupAssignmentRow {
+  group_id: string;
+  subject_kind: McpAssignmentKind;
+  subject_id: string;
+  created_at: string;
+}
+
+export interface McpAssignmentSubject {
+  kind: McpAssignmentKind;
+  id: string;
+}
+
 export interface McpGatewaySettingsRow {
   org_id: string;
   default_transport: string;
@@ -462,6 +477,23 @@ export function updateMcpToolGroup(
 
 export function deleteMcpToolGroup(id: string): Promise<void> {
   return sendJson<void>("DELETE", `/api/v1/mcp/tool-groups/${id}`);
+}
+
+/** Every assignment of every tool group of the org. */
+export function fetchMcpToolGroupAssignments(orgId: string): Promise<McpToolGroupAssignmentRow[]> {
+  return getJson<McpToolGroupAssignmentRow[]>(`/api/v1/orgs/${orgId}/mcp/tool-group-assignments`);
+}
+
+/** Replaces the whole set; an empty one hands the group back to the organization. */
+export function replaceMcpToolGroupAssignments(
+  groupId: string,
+  assignments: McpAssignmentSubject[],
+): Promise<McpToolGroupAssignmentRow[]> {
+  return sendJson<McpToolGroupAssignmentRow[]>(
+    "PUT",
+    `/api/v1/mcp/tool-groups/${groupId}/assignments`,
+    { assignments },
+  );
 }
 
 export function fetchMcpSettings(orgId: string): Promise<McpGatewaySettingsRow> {

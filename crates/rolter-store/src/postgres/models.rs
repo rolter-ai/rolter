@@ -918,6 +918,15 @@ pub struct McpToolGroup {
     pub updated_at: DateTime<Utc>,
 }
 
+/// a virtual key, project or team an MCP tool group is assigned to (#3295)
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+pub struct McpToolGroupAssignment {
+    pub group_id: Uuid,
+    pub subject_kind: String,
+    pub subject_id: Uuid,
+    pub created_at: DateTime<Utc>,
+}
+
 /// organization defaults managed by the MCP Settings screen
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
 pub struct McpGatewaySettings {

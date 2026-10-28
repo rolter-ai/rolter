@@ -29,10 +29,12 @@ use uuid::Uuid;
 use rolter_core::MCP_TRANSPORTS as TRANSPORTS;
 use rolter_store::postgres::models::{
     McpGatewaySettings, McpOAuthGrant, McpOAuthSession, McpServer, McpToolGroup,
+    McpToolGroupAssignment,
 };
 use rolter_store::postgres::repo::{
     McpAuthConfig, McpGatewaySettingsRepo, McpGatewaySettingsUpdate, McpOAuthRepo, McpServerRepo,
-    McpServerUpdate, McpToolGroupRepo, NewMcpServer,
+    McpServerUpdate, McpToolGroupAssignmentRepo, McpToolGroupRepo, NewMcpServer,
+    MCP_ASSIGNMENT_KINDS,
 };
 
 use crate::crud::{
@@ -70,6 +72,14 @@ pub(crate) fn router() -> Router<ControlState> {
         .route(
             "/api/v1/mcp/tool-groups/{id}",
             delete(delete_tool_group).put(update_tool_group),
+        )
+        .route(
+            "/api/v1/orgs/{org_id}/mcp/tool-group-assignments",
+            get(list_tool_group_assignments),
+        )
+        .route(
+            "/api/v1/mcp/tool-groups/{id}/assignments",
+            axum::routing::put(replace_tool_group_assignments),
         )
         .route(
             "/api/v1/orgs/{org_id}/mcp/settings",
@@ -1054,6 +1064,117 @@ async fn delete_tool_group(
     )
     .await;
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// One virtual key, project or team a group is assigned to.
+#[derive(Debug, Deserialize)]
+struct AssignmentSubject {
+    kind: String,
+    id: Uuid,
+}
+
+#[derive(Debug, Deserialize)]
+struct ReplaceAssignments {
+    assignments: Vec<AssignmentSubject>,
+}
+
+/// The most subjects one group may be assigned to; the set travels in every
+/// snapshot, so it is bounded rather than left to grow.
+const MAX_ASSIGNMENTS_PER_GROUP: usize = 500;
+
+async fn list_tool_group_assignments(
+    principal: Principal,
+    State(state): State<ControlState>,
+    Path(org_id): Path<Uuid>,
+) -> ApiResult<Json<Vec<McpToolGroupAssignment>>> {
+    authorize(
+        &state,
+        &principal,
+        ScopeChain::org(org_id),
+        cap!("mcp_tool_group_assignment", Read),
+    )
+    .await?;
+    Ok(Json(
+        McpToolGroupAssignmentRepo(pool(&state))
+            .list_for_org(org_id)
+            .await?,
+    ))
+}
+
+/// Replace the set of keys, projects and teams a group is assigned to (#3295).
+/// An empty set removes every assignment, which hands the group back to the
+/// whole organization.
+async fn replace_tool_group_assignments(
+    principal: Principal,
+    State(state): State<ControlState>,
+    Path(id): Path<Uuid>,
+    SafeJson(body): SafeJson<ReplaceAssignments>,
+) -> ApiResult<Json<Vec<McpToolGroupAssignment>>> {
+    let group = McpToolGroupRepo(pool(&state)).get(id).await?;
+    authorize(
+        &state,
+        &principal,
+        ScopeChain::org(group.org_id),
+        cap!("mcp_tool_group_assignment", Update),
+    )
+    .await?;
+    if body.assignments.len() > MAX_ASSIGNMENTS_PER_GROUP {
+        return Err(invalid_field(
+            "assignments",
+            format!("a group can be assigned to at most {MAX_ASSIGNMENTS_PER_GROUP} subjects"),
+        ));
+    }
+    let repo = McpToolGroupAssignmentRepo(pool(&state));
+    let mut subjects: Vec<(String, Uuid)> = Vec::new();
+    for subject in &body.assignments {
+        if !MCP_ASSIGNMENT_KINDS.contains(&subject.kind.as_str()) {
+            return Err(invalid_field(
+                "assignments",
+                format!(
+                    "assignment kind must be one of {}",
+                    MCP_ASSIGNMENT_KINDS.join(", ")
+                ),
+            ));
+        }
+        if subjects
+            .iter()
+            .any(|(kind, id)| *kind == subject.kind && *id == subject.id)
+        {
+            continue;
+        }
+        if !repo
+            .subject_in_org(&subject.kind, subject.id, group.org_id)
+            .await?
+        {
+            return Err(invalid_field(
+                "assignments",
+                format!(
+                    "{} {} does not exist in this organization",
+                    subject.kind.replace('_', " "),
+                    subject.id
+                ),
+            ));
+        }
+        subjects.push((subject.kind.clone(), subject.id));
+    }
+    repo.replace(id, &subjects).await?;
+    log_audit(
+        &state,
+        &principal,
+        Some(group.org_id),
+        "mcp_tool_group.update",
+        "mcp_tool_group",
+        group.id,
+        serde_json::json!({"assignments": subjects.len()}),
+    )
+    .await;
+    let assigned = repo
+        .list_for_org(group.org_id)
+        .await?
+        .into_iter()
+        .filter(|row| row.group_id == id)
+        .collect();
+    Ok(Json(assigned))
 }
 
 async fn get_mcp_settings(

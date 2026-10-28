@@ -149,9 +149,23 @@ and the proxy enforces them. A server that at least one enabled group names
 serves only the tools those groups list: a `tools/call` for any other tool is
 refused with `403` and the code `mcp_tool_denied` before anything is forwarded,
 and the refusal is recorded in the MCP log as an `auth_denied` row naming the
-tool. A server no group names is not narrowed by groups. The groups an
-organization enables apply to every caller in it; there is no per-key or
-per-project assignment yet. Batches are refused as a whole when any call in
+tool. A server no group names is not narrowed by groups. By default the groups an
+organization enables apply to every caller in it. A group can also be assigned to
+teams, projects or single virtual keys (**Configure** on the group, or
+`PUT /api/v1/mcp/tool-groups/{id}/assignments` with
+`{"assignments":[{"kind":"team","id":"…"}]}`, where `kind` is `team`,
+`project` or `virtual_key`; `GET /api/v1/orgs/{org_id}/mcp/tool-group-assignments`
+lists them). An assignment only ever narrows: a caller whose key, project or team
+is named by the assignments of any enabled group is held to the union of the
+groups assigned to those three, so on a server the organization's groups govern
+it may call only what its own groups list there, and nothing when none of them
+names the server. A caller none of the assignments name keeps the
+organization-wide set, exactly as before, so a deployment that never assigns a
+group behaves as it did. Disabling or deleting a group removes its assignments
+from the snapshot with it, which sends the callers it narrowed back to the
+organization's other groups. The dashboard edits team and project assignments;
+virtual-key assignments are set through the API and kept as they are when a group
+is saved there. Batches are refused as a whole when any call in
 them is refused, and while a group governs a server a request body that cannot
 be read as JSON-RPC is refused with `400` (`mcp_request_unreadable`) rather than
 forwarded unchecked. A body that repeats a key in a message or in its `params`

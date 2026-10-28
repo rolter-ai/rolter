@@ -782,7 +782,7 @@ Not a `rolter.toml` table. MCP servers belong to an organization and are registe
 
 ### \[\[mcp_tool_groups\]\]
 
-Not a `rolter.toml` table. Each entry is an enabled MCP tool group, which the control plane adds to the snapshot and the MCP proxy enforces: a server that at least one group names serves only the tools those groups list. Entries carry `id`, `org_id`, `slug` and `tools`, a list of `server_id` and `tool` pairs. Groups are managed on the dashboard or through the management API; see [MCP](/api/mcp#manage-the-registry).
+Not a `rolter.toml` table. Each entry is an enabled MCP tool group, which the control plane adds to the snapshot and the MCP proxy enforces: a server that at least one group names serves only the tools those groups list. Entries carry `id`, `org_id`, `slug`, `tools`, a list of `server_id` and `tool` pairs, and `assignments`, the `kind` (`virtual_key`, `project` or `team`) and `id` of each caller the group is assigned to, empty for a group that applies to the whole organization. Groups are managed on the dashboard or through the management API; see [MCP](/api/mcp#manage-the-registry).
 
 ---
 

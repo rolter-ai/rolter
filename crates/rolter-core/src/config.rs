@@ -2222,6 +2222,19 @@ pub struct McpToolGroupConfig {
     pub slug: String,
     #[serde(default)]
     pub tools: Vec<McpToolRefConfig>,
+    /// who the group is assigned to (#3295). A caller whose key, project or team
+    /// appears in the assignments of any enabled group is held to the groups
+    /// assigned to it; a caller named by none keeps the organization-wide set
+    #[serde(default)]
+    pub assignments: Vec<McpToolGroupSubjectConfig>,
+}
+
+/// A virtual key, project or team an MCP tool group is assigned to (#3295).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+pub struct McpToolGroupSubjectConfig {
+    /// `virtual_key`, `project` or `team`; any other value matches no caller
+    pub kind: String,
+    pub id: String,
 }
 
 /// A live OAuth session the gateway may spend for one user and MCP server.

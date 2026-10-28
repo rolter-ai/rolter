@@ -22,9 +22,15 @@
 //!   then not be the tool that runs. Unlike an unreadable body, no failure policy
 //!   lets it through: nothing legitimate repeats a key.
 //!
-//! The groups an organization enables apply to every caller in it: there is no
-//! per-key or per-project assignment of a group yet, so "the caller's effective
-//! tool groups" is the organization's enabled set.
+//! The groups an organization enables apply to every caller in it, unless the
+//! caller has an assignment (#3295). A group can be assigned to a virtual key, a
+//! project or a team; a caller whose key, project or team has one is held to
+//! the groups assigned to those three (their union) instead of to the
+//! organization's whole enabled set, so an assignment only ever narrows. A
+//! caller with none keeps the organization-wide set, which is how a deployment
+//! that never assigns a group behaves exactly as before. On a governed server
+//! the assigned caller may call only what its own groups list there, which is
+//! nothing when none of them names the server.
 //!
 //! A `tools/list` reply is narrowed by the same rule ([`list_filter`]), so a
 //! client is not shown a tool it would be refused (#3297).
@@ -35,6 +41,7 @@
 //! optimisation for the log.
 
 // spec-ref: json-rpc, mcp-transport
+use std::borrow::Cow;
 use std::collections::HashSet;
 use std::fmt;
 
@@ -112,10 +119,46 @@ impl Verdict {
     }
 }
 
+/// Who is calling, as far as group assignments are concerned.
+pub(crate) struct Caller<'a> {
+    pub org_id: &'a str,
+    pub key_id: &'a str,
+    pub project_id: &'a str,
+    pub team_id: &'a str,
+}
+
+impl Caller<'_> {
+    /// The enabled groups assigned to the caller's key, project or team, or
+    /// `None` when it has no assignment and so keeps the organization-wide set.
+    fn assigned_groups<'s>(&self, snapshot: &'s Snapshot) -> Option<Vec<&'s String>> {
+        let mut groups = Vec::new();
+        for (kind, id) in [
+            ("virtual_key", self.key_id),
+            ("project", self.project_id),
+            ("team", self.team_id),
+        ] {
+            if id.is_empty() {
+                continue;
+            }
+            let key = (self.org_id.to_string(), kind.to_string(), id.to_string());
+            groups.extend(
+                snapshot
+                    .mcp_group_assignments
+                    .get(&key)
+                    .into_iter()
+                    .flatten(),
+            );
+        }
+        (!groups.is_empty()).then_some(groups)
+    }
+}
+
 /// What a call to one server is judged against.
 struct Rules<'a> {
-    /// the tools the enabled tool groups allow, when any names the server
-    governed: Option<&'a HashSet<String>>,
+    /// the tools the caller's tool groups allow, when any group names the
+    /// server: the organization's set, or the union of the caller's assigned
+    /// groups when it has an assignment
+    governed: Option<Cow<'a, HashSet<String>>>,
     /// the server's declared manifest, when calls must stay inside it: it
     /// declares one and the organization saved settings that do not allow
     /// unlisted tools. An organization that never saved its MCP settings keeps
@@ -125,13 +168,27 @@ struct Rules<'a> {
 }
 
 impl<'a> Rules<'a> {
-    fn of(snapshot: &'a Snapshot, server: &'a McpServerConfig) -> Self {
+    fn of(snapshot: &'a Snapshot, server: &'a McpServerConfig, caller: &Caller<'_>) -> Self {
         let allow_unlisted = snapshot
             .mcp_org_settings
             .get(&server.org_id)
             .is_none_or(|settings| settings.allow_unlisted_tools);
         Self {
-            governed: snapshot.mcp_governed_tools.get(&server.id),
+            governed: snapshot.mcp_governed_tools.get(&server.id).map(|org_wide| {
+                match caller.assigned_groups(snapshot) {
+                    None => Cow::Borrowed(org_wide),
+                    Some(groups) => Cow::Owned(
+                        groups
+                            .into_iter()
+                            .filter_map(|group| {
+                                snapshot.mcp_group_tools.get(group)?.get(&server.id)
+                            })
+                            .flatten()
+                            .cloned()
+                            .collect(),
+                    ),
+                }
+            }),
             declared: (!allow_unlisted && !server.tools.is_empty())
                 .then_some(server.tools.as_slice()),
         }
@@ -145,7 +202,7 @@ impl<'a> Rules<'a> {
 
     /// Judge one tool name.
     fn judge(&self, tool: Option<&str>) -> Option<Denial> {
-        judge(self.governed, self.declared, tool)
+        judge(self.governed.as_deref(), self.declared, tool)
     }
 }
 
@@ -176,14 +233,15 @@ pub(crate) fn judge(
 pub(crate) fn list_filter(
     snapshot: &Snapshot,
     server: &McpServerConfig,
+    caller: &Caller<'_>,
     body: &[u8],
 ) -> Option<ListFilter> {
-    let rules = Rules::of(snapshot, server);
+    let rules = Rules::of(snapshot, server, caller);
     if !rules.any() || body.is_empty() {
         return None;
     }
     ListFilter::new(
-        rules.governed.cloned(),
+        rules.governed.map(Cow::into_owned),
         rules.declared.map(<[String]>::to_vec),
         body,
     )
@@ -306,8 +364,13 @@ fn repeats_a_key(body: &[u8]) -> bool {
 }
 
 /// Apply the policy to a request body bound for `server`.
-pub(crate) fn enforce(snapshot: &Snapshot, server: &McpServerConfig, body: &[u8]) -> Verdict {
-    let rules = Rules::of(snapshot, server);
+pub(crate) fn enforce(
+    snapshot: &Snapshot,
+    server: &McpServerConfig,
+    caller: &Caller<'_>,
+    body: &[u8],
+) -> Verdict {
+    let rules = Rules::of(snapshot, server, caller);
     if !rules.any() || body.is_empty() {
         return Verdict::Allow;
     }
@@ -353,7 +416,24 @@ pub(crate) fn enforce(snapshot: &Snapshot, server: &McpServerConfig, body: &[u8]
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rolter_core::{GatewayConfig, McpOrgSettingsConfig, McpToolGroupConfig, McpToolRefConfig};
+    use rolter_core::{
+        GatewayConfig, McpOrgSettingsConfig, McpToolGroupConfig, McpToolGroupSubjectConfig,
+        McpToolRefConfig,
+    };
+
+    fn caller() -> Caller<'static> {
+        Caller {
+            org_id: "org",
+            key_id: "key-1",
+            project_id: "project-1",
+            team_id: "team-1",
+        }
+    }
+
+    /// the policy for the default caller, which no group is assigned to
+    fn enforce(snapshot: &Snapshot, server: &McpServerConfig, body: &[u8]) -> Verdict {
+        super::enforce(snapshot, server, &caller(), body)
+    }
 
     fn snapshot(groups: Vec<McpToolGroupConfig>) -> (Snapshot, McpServerConfig) {
         let server = McpServerConfig {
@@ -383,7 +463,40 @@ mod tests {
                     tool: (*tool).into(),
                 })
                 .collect(),
+            ..Default::default()
         }
+    }
+
+    /// like [`snapshot`], with a second server of the organization for groups
+    /// that name something else
+    fn world(groups: Vec<McpToolGroupConfig>) -> (Snapshot, McpServerConfig) {
+        let server = McpServerConfig {
+            id: "srv".into(),
+            org_id: "org".into(),
+            slug: "github".into(),
+            ..Default::default()
+        };
+        let elsewhere = McpServerConfig {
+            id: "elsewhere".into(),
+            org_id: "org".into(),
+            slug: "other".into(),
+            ..Default::default()
+        };
+        let mut config = GatewayConfig::default();
+        config.mcp_servers.extend([server.clone(), elsewhere]);
+        config.mcp_tool_groups = groups;
+        (
+            Snapshot::build(&config, &crate::load::LoadTracker::default()),
+            server,
+        )
+    }
+
+    fn assigned(mut group: McpToolGroupConfig, kind: &str, id: &str) -> McpToolGroupConfig {
+        group.assignments.push(McpToolGroupSubjectConfig {
+            kind: kind.into(),
+            id: id.into(),
+        });
+        group
     }
 
     fn call(name: &str) -> String {
@@ -546,6 +659,132 @@ mod tests {
             enforce(&snapshot, &server, body.as_bytes()),
             Verdict::Allow
         ));
+    }
+
+    fn named(mut group: McpToolGroupConfig, id: &str) -> McpToolGroupConfig {
+        group.id = id.into();
+        group
+    }
+
+    fn allowed_for(
+        snapshot: &Snapshot,
+        server: &McpServerConfig,
+        caller: &Caller<'_>,
+    ) -> Vec<bool> {
+        ["a", "b", "c"]
+            .iter()
+            .map(|tool| {
+                matches!(
+                    super::enforce(snapshot, server, caller, call(tool).as_bytes()),
+                    Verdict::Allow
+                )
+            })
+            .collect()
+    }
+
+    /// #3295: a group assigned to a key, a project or a team narrows the callers
+    /// it names; everyone else keeps the organization-wide groups.
+    #[test]
+    fn an_assignment_narrows_its_subject_and_leaves_everyone_else_alone() {
+        for (kind, id) in [
+            ("virtual_key", "key-1"),
+            ("project", "project-1"),
+            ("team", "team-1"),
+        ] {
+            let (snapshot, server) = world(vec![
+                // the organization-wide set is a, b and c
+                named(group("org", "srv", &["a", "b", "c"]), "all"),
+                assigned(named(group("org", "srv", &["a"]), "narrow"), kind, id),
+            ]);
+            assert_eq!(
+                allowed_for(&snapshot, &server, &caller()),
+                [true, false, false],
+                "{kind}"
+            );
+            let other = Caller {
+                key_id: "key-2",
+                project_id: "project-2",
+                team_id: "team-2",
+                ..caller()
+            };
+            assert_eq!(
+                allowed_for(&snapshot, &server, &other),
+                [true, true, true],
+                "{kind}: an unassigned caller keeps the organization's groups"
+            );
+        }
+    }
+
+    #[test]
+    fn several_assignments_union_and_a_server_none_of_them_names_is_closed() {
+        let (snapshot, server) = world(vec![
+            named(group("org", "srv", &["a", "b", "c"]), "all"),
+            assigned(named(group("org", "srv", &["a"]), "g1"), "team", "team-1"),
+            assigned(
+                named(group("org", "srv", &["b"]), "g2"),
+                "project",
+                "project-1",
+            ),
+            assigned(
+                named(group("org", "elsewhere", &["z"]), "g3"),
+                "virtual_key",
+                "key-1",
+            ),
+        ]);
+        assert_eq!(
+            allowed_for(&snapshot, &server, &caller()),
+            [true, true, false]
+        );
+        // the caller's only assignment names another server: this one governed
+        // by the organization's groups, and nothing the caller holds names it
+        let (snapshot, server) = world(vec![
+            named(group("org", "srv", &["a"]), "all"),
+            assigned(
+                named(group("org", "elsewhere", &["z"]), "g3"),
+                "virtual_key",
+                "key-1",
+            ),
+        ]);
+        assert_eq!(
+            allowed_for(&snapshot, &server, &caller()),
+            [false, false, false]
+        );
+    }
+
+    #[test]
+    fn an_assignment_in_another_organization_matches_no_caller() {
+        let (snapshot, server) = world(vec![
+            named(group("org", "srv", &["a", "b", "c"]), "all"),
+            assigned(
+                named(group("other-org", "srv", &["a"]), "foreign"),
+                "virtual_key",
+                "key-1",
+            ),
+        ]);
+        assert_eq!(
+            allowed_for(&snapshot, &server, &caller()),
+            [true, true, true]
+        );
+    }
+
+    #[test]
+    fn a_tools_list_is_narrowed_to_the_assigned_groups() {
+        let (snapshot, server) = world(vec![
+            named(group("org", "srv", &["a", "b"]), "all"),
+            assigned(
+                named(group("org", "srv", &["a"]), "narrow"),
+                "team",
+                "team-1",
+            ),
+        ]);
+        let request = br#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#;
+        let filter = list_filter(&snapshot, &server, &caller(), request).unwrap();
+        let reply = br#"{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"a"},{"name":"b"}]}}"#;
+        let filtered = String::from_utf8(filter.filter_json(reply).unwrap()).unwrap();
+        assert!(
+            filtered.contains("\"a\"") && !filtered.contains("\"b\""),
+            "{filtered}"
+        );
     }
 
     #[test]

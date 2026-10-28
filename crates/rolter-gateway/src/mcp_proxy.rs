@@ -253,8 +253,15 @@ async fn proxy(
     // recorded in the MCP log like any other denial (#1403)
     let mut list_filter = None;
     if method == Method::POST {
-        list_filter = crate::mcp_policy::list_filter(&snapshot, server, &body).map(Arc::new);
-        match crate::mcp_policy::enforce(&snapshot, server, &body) {
+        let caller = crate::mcp_policy::Caller {
+            org_id: &key.org_id,
+            key_id: &key.id,
+            project_id: &key.project_id,
+            team_id: &key.team_id,
+        };
+        list_filter =
+            crate::mcp_policy::list_filter(&snapshot, server, &caller, &body).map(Arc::new);
+        match crate::mcp_policy::enforce(&snapshot, server, &caller, &body) {
             Verdict::Allow => {}
             Verdict::Denied(refused) => {
                 let context = CallContext {
@@ -816,6 +823,7 @@ mod tests {
                         tool: (*tool).to_string(),
                     })
                     .collect(),
+                ..Default::default()
             });
         config
     }
@@ -984,6 +992,39 @@ mod tests {
         let mut config = config("user-1", &["tools:execute"]);
         let (_, body) = list_through(&mut config, false).await;
         assert_eq!(body, LIST_REPLY);
+    }
+
+    /// #3295: a group assigned to the key's project narrows that key below the
+    /// organization-wide groups.
+    #[tokio::test]
+    async fn a_group_assigned_to_the_keys_project_narrows_the_key() {
+        let mut config = with_group(&["get_issue", "list_issues"]);
+        config
+            .mcp_tool_groups
+            .push(rolter_core::McpToolGroupConfig {
+                id: "group-2".to_string(),
+                org_id: "org-1".to_string(),
+                slug: "readers".to_string(),
+                tools: vec![rolter_core::McpToolRefConfig {
+                    server_id: "server-1".to_string(),
+                    tool: "get_issue".to_string(),
+                }],
+                assignments: vec![rolter_core::McpToolGroupSubjectConfig {
+                    kind: "project".to_string(),
+                    id: "project-1".to_string(),
+                }],
+            });
+        let (status, code) =
+            code_of(post(AppState::new(&config), call_body("list_issues")).await).await;
+        assert_eq!(
+            (status, code.as_str()),
+            (StatusCode::FORBIDDEN, "mcp_tool_denied")
+        );
+        // the same tool, with the assignment pointed at someone else
+        config.mcp_tool_groups[1].assignments[0].id = "project-2".to_string();
+        let (status, _) =
+            code_of(post(AppState::new(&config), call_body("list_issues")).await).await;
+        assert_ne!(status, StatusCode::FORBIDDEN);
     }
 
     #[tokio::test]

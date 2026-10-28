@@ -851,6 +851,24 @@
       ]
     },
     {
+      "resource": "mcp_tool_group_assignment",
+      "scope": "org",
+      "actions": [
+        {
+          "action": "read",
+          "minimum_role": "viewer",
+          "superadmin_only": false,
+          "authenticated_only": false
+        },
+        {
+          "action": "update",
+          "minimum_role": "admin",
+          "superadmin_only": false,
+          "authenticated_only": false
+        }
+      ]
+    },
+    {
       "resource": "mcp_settings",
       "scope": "org",
       "actions": [

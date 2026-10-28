@@ -113,6 +113,177 @@ async fn enabled_tool_groups_reach_the_snapshot_and_every_edit_bumps_the_version
         .is_empty());
 }
 
+/// #3295: a group is assigned to a key, project or team of its own organization
+/// only, the assignment reaches the snapshot with the group and bumps the
+/// version, and a disabled group carries none.
+#[tokio::test]
+async fn tool_group_assignments_reach_the_snapshot_and_stay_inside_the_organization() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app = rolter_control::test_app(pool.clone()).await.unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    let mut org_ids = Vec::new();
+    for slug in ["acme", "other"] {
+        let org: Value = client
+            .post(format!("{base}/api/v1/orgs"))
+            .json(&json!({"name": slug, "slug": slug}))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        org_ids.push(org["id"].as_str().unwrap().to_string());
+    }
+    let (org_id, other_org) = (&org_ids[0], &org_ids[1]);
+    let mut subjects = Vec::new();
+    for org in [org_id, other_org] {
+        let team: (uuid::Uuid,) = sqlx::query_as(
+            "insert into teams (org_id, name) values ($1::uuid, 'core') returning id",
+        )
+        .bind(org)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let project: (uuid::Uuid,) =
+            sqlx::query_as("insert into projects (team_id, name) values ($1, 'api') returning id")
+                .bind(team.0)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        let key: (uuid::Uuid,) = sqlx::query_as(
+            "insert into virtual_keys (project_id, key_hash, key_prefix) \
+             values ($1, gen_random_uuid()::text, 'sk-test') returning id",
+        )
+        .bind(project.0)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        subjects.push((team.0, project.0, key.0));
+    }
+    let server: Value = client
+        .post(format!("{base}/api/v1/orgs/{org_id}/mcp-servers"))
+        .json(&json!({
+            "name": "Docs", "slug": "docs", "url": "http://127.0.0.1:9/mcp",
+            "tools": ["search", "fetch"],
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let group: Value = client
+        .post(format!("{base}/api/v1/orgs/{org_id}/mcp/tool-groups"))
+        .json(&json!({
+            "name": "Readers", "slug": "readers",
+            "tools": [{"server_id": server["id"], "tool": "search"}],
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let group_id = group["id"].as_str().unwrap().to_string();
+    let url = format!("{base}/api/v1/mcp/tool-groups/{group_id}/assignments");
+
+    // a subject of another organization is refused, and nothing is written
+    let refused = client
+        .put(&url)
+        .json(&json!({"assignments": [{"kind": "team", "id": subjects[1].0}]}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(refused.status(), 400);
+    let unknown_kind = client
+        .put(&url)
+        .json(&json!({"assignments": [{"kind": "user", "id": subjects[0].0}]}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(unknown_kind.status(), 400);
+
+    let before = config_version(&pool).await;
+    let saved: Value = client
+        .put(&url)
+        .json(&json!({"assignments": [
+            {"kind": "team", "id": subjects[0].0},
+            {"kind": "project", "id": subjects[0].1},
+            {"kind": "virtual_key", "id": subjects[0].2},
+            {"kind": "virtual_key", "id": subjects[0].2},
+        ]}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(saved.as_array().unwrap().len(), 3, "{saved}");
+    assert!(
+        config_version(&pool).await > before,
+        "the edit bumps the version"
+    );
+
+    let listed: Value = client
+        .get(format!(
+            "{base}/api/v1/orgs/{org_id}/mcp/tool-group-assignments"
+        ))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(listed.as_array().unwrap().len(), 3);
+    let other_listed: Value = client
+        .get(format!(
+            "{base}/api/v1/orgs/{other_org}/mcp/tool-group-assignments"
+        ))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(other_listed.as_array().unwrap().is_empty());
+
+    let config = snapshot_config(&client, &base).await;
+    let assignments = config["mcp_tool_groups"][0]["assignments"]
+        .as_array()
+        .unwrap();
+    assert_eq!(assignments.len(), 3, "{config}");
+    assert!(assignments.contains(&json!({"kind": "team", "id": subjects[0].0.to_string()})));
+
+    // a disabled group governs nothing, so it carries no assignment either
+    client
+        .put(format!("{base}/api/v1/mcp/tool-groups/{group_id}"))
+        .json(&json!({"name": "Readers", "enabled": false, "tools": group["tools"]}))
+        .send()
+        .await
+        .unwrap();
+    assert!(snapshot_config(&client, &base).await["mcp_tool_groups"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+
+    // an empty set hands the group back to the whole organization
+    let cleared: Value = client
+        .put(&url)
+        .json(&json!({"assignments": []}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(cleared.as_array().unwrap().is_empty());
+}
+
 #[tokio::test]
 async fn saved_mcp_settings_reach_the_snapshot_and_set_a_new_servers_transport() {
     skip_without_db!();
