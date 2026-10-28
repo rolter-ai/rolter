@@ -88,9 +88,8 @@ export function wholeWeight(weight: string): boolean {
 }
 
 /**
- * A variant weight the control plane accepts: 1 or more. A 0 would read as
- * "fallback only", but the gateway samples it as a 1 (#3341), so the API
- * refuses it, as it refuses a route target's.
+ * A variant weight the control plane accepts: 1 or more. A 0 means "fallback
+ * only" to the gateway, but only an import from `rolter.toml` writes one.
  */
 export function variantWeightValid(weight: string): boolean {
   return wholeWeight(weight) && Number(weight) >= 1;
@@ -99,15 +98,18 @@ export function variantWeightValid(weight: string): boolean {
 /**
  * The share of first attempts each weight gets, as the gateway samples them.
  *
- * The gateway counts a weight of 0 as 1 when it samples a primary
- * (`weighted_index` in `rolter-core`). The sheet refuses a 0, but a variant
- * imported from `rolter.toml` can carry one, and the preview shows the split
- * that happens rather than the one the numbers suggest, until #3341.
+ * The gateway never samples a weight of 0 as a primary while another variant
+ * has a positive weight (it is still tried as a fallback), and samples a set
+ * whose weights are all 0 uniformly (`weighted_index` in `rolter-core`). The
+ * sheet refuses a 0, but a variant imported from `rolter.toml` can carry one.
  */
 export function trafficSplit(weights: number[]): number[] {
-  const sampled = weights.map((w) => Math.max(1, Math.floor(w)));
+  if (weights.length === 0) return [];
+  const whole = weights.map((w) => Math.max(0, Math.floor(w)));
+  const uniform = whole.every((w) => w === 0);
+  const sampled = uniform ? whole.map(() => 1) : whole;
   const total = sampled.reduce((sum, w) => sum + w, 0);
-  return total === 0 ? [] : sampled.map((w) => w / total);
+  return sampled.map((w) => w / total);
 }
 
 /** What is wrong with one variant, each a key under `routeSheet.variants.errors`. */

@@ -140,13 +140,12 @@ curl -s -X PUT "https://control.example.com/api/v1/routes/$ROUTE_ID/variants" \
 | `targets[].upstream_model` | the model name sent upstream; omitted, `null` or blank forwards the route's public name    |
 | `targets[].weight`         | `0` or more (default `1`); at least one target of each variant needs a weight above `0`    |
 
-A route takes at most 32 variants. A variant weight of `0` is refused for now:
-it would read as "fallback only", but the gateway samples a `0` as if it were
-`1`, so such a variant still takes a share of first attempts
-([#3341](https://github.com/rolter-ai/rolter/issues/3341)). A `rolter.toml`
-variant with weight `0` still imports and keeps that sampled-as-`1` meaning;
-the dashboard's split preview shows the share it actually gets, and asks for
-`1` or more before it saves the route's variants.
+A route takes at most 32 variants. The API writes a variant weight of `1` or more.
+A weight of `0`, which a `rolter.toml` variant can carry, gives the variant no
+first attempts while any other variant has a positive weight; it is still tried,
+in the listed order, when the variants before it fail. If every weight is `0`,
+the variants share first attempts equally. The dashboard's split preview shows
+that share, and asks for `1` or more before it saves the route's variants.
 
 The response is the stored list. A set equal to the stored one changes nothing
 and is not audited; any other is recorded as `route.set_variants` with each

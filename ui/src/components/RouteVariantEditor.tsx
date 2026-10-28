@@ -59,7 +59,7 @@ export interface RouteVariantEditorProps {
  * lists move a line up or down rather than sorting. The preview above the list
  * is the split the gateway applies to first attempts, computed the way it
  * samples: a weight of 0, which the sheet refuses but an import can store,
- * counts as 1 (#3341).
+ * takes no first attempts while another variant has a positive weight (#3341).
  */
 export function RouteVariantEditor({
   variants,

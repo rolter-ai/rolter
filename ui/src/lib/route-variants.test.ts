@@ -40,8 +40,12 @@ describe("trafficSplit", () => {
     expect(trafficSplit([9, 1])).toEqual([0.9, 0.1]);
   });
 
-  it("counts a zero weight as 1, the way the gateway samples it", () => {
-    expect(trafficSplit([3, 0])).toEqual([0.75, 0.25]);
+  it("gives a zero weight no first attempts while another weight is positive", () => {
+    expect(trafficSplit([3, 0])).toEqual([1, 0]);
+  });
+
+  it("splits a set of only zero weights uniformly, the way the gateway samples it", () => {
+    expect(trafficSplit([0, 0])).toEqual([0.5, 0.5]);
   });
 
   it("has no split without variants", () => {
@@ -62,7 +66,7 @@ describe("validateVariants", () => {
     expect(result.tooMany).toBe(false);
   });
 
-  it("refuses a variant weight of 0 (sampled as 1, #3341), negative or not whole", () => {
+  it("refuses a variant weight of 0 (only an import writes one), negative or not whole", () => {
     const zero = { ...newVariant("a", "p"), weight: "0" };
     expect(validateVariants([zero]).byVariant.get(zero.key)?.weight).toBe("weight");
     const negative = { ...newVariant("c", "p"), weight: "-1" };

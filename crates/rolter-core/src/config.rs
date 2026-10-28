@@ -1054,7 +1054,7 @@ pub struct ApiKeyConfig {
     /// name of an environment variable to read the key from
     #[serde(default)]
     pub env: Option<String>,
-    /// relative selection weight; clamped to at least 1 when sampling
+    /// relative selection weight; 0 is never picked while another key has a positive weight
     #[serde(default = "default_weight")]
     pub weight: u32,
 }
@@ -1897,7 +1897,8 @@ impl ModelRoute {
 pub struct Variant {
     /// stable identifier for the variant (used in logs/metrics/attribution)
     pub name: String,
-    /// relative traffic share; clamped to at least 1 when sampling
+    /// relative traffic share; 0 takes no first attempts while another variant has
+    /// a positive weight (it is still a fallback), and an all-0 set is uniform
     #[serde(default = "default_weight")]
     pub weight: u32,
     /// ordered upstream targets tried within this variant (provider routing order)
@@ -1908,13 +1909,18 @@ pub struct Variant {
 }
 
 /// Pick an index from a sequence of weights proportional to weight, given a
-/// random draw `r` in `[0.0, 1.0)`. Each weight is clamped to at least 1 so a
-/// zero-weight entry can still be selected as a fallback. Returns `None` for an
-/// empty sequence.
+/// random draw `r` in `[0.0, 1.0)`. An entry with weight 0 is never picked
+/// while any entry has a positive weight (variant fallback goes through
+/// [`ModelRoute::fallback_order`], so it is still tried after a failure); a
+/// sequence whose weights are all 0 is sampled uniformly. Returns `None` for
+/// an empty sequence.
 fn weighted_index(weights: impl Iterator<Item = u32>, r: f64) -> Option<usize> {
-    let clamped: Vec<u64> = weights.map(|w| w.max(1) as u64).collect();
+    let mut clamped: Vec<u64> = weights.map(u64::from).collect();
     if clamped.is_empty() {
         return None;
+    }
+    if clamped.iter().all(|&w| w == 0) {
+        clamped.iter_mut().for_each(|w| *w = 1);
     }
     let total: u64 = clamped.iter().sum();
     // map r into [0, total); guard against r outside [0,1) landing past the end
@@ -7052,8 +7058,24 @@ mod tests {
     fn weighted_index_clamps_out_of_range_and_empty() {
         assert_eq!(weighted_index([1u32, 1].into_iter(), 1.5), Some(1));
         assert_eq!(weighted_index(std::iter::empty::<u32>(), 0.5), None);
-        // zero-weight entries are clamped to 1 so they remain selectable
+        // an all-zero set falls back to uniform
         assert_eq!(weighted_index([0u32, 0].into_iter(), 0.0), Some(0));
+        assert_eq!(weighted_index([0u32, 0].into_iter(), 0.5), Some(1));
+    }
+
+    #[test]
+    fn a_zero_weight_entry_takes_no_first_attempts_while_another_is_positive() {
+        let w = || [0u32, 9, 0].into_iter();
+        for i in 0..=100 {
+            assert_eq!(weighted_index(w(), f64::from(i) / 100.0), Some(1));
+        }
+        // 9:0 never samples the zero-weight variant, which still falls back
+        let mut route = route_with(&[], ParamPolicy::default());
+        route.variants = vec![variant("a", 9), variant("b", 0)];
+        for i in 0..100 {
+            assert_eq!(route.sample_variant(f64::from(i) / 100.0), Some(0));
+        }
+        assert_eq!(route.fallback_order(0), vec![0, 1]);
     }
 
     #[test]
