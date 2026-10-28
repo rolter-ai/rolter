@@ -208,6 +208,13 @@ Validating is optional: an unvalidated check protects new writes just the same. 
 
 Rolter now verifies upstream HTTPS against the host's system trust store (`/etc/ssl/certs`, or the bundle `SSL_CERT_FILE` names) instead of a copy of the public roots built into the binary. The published images ship `ca-certificates`, so they need nothing from you. A binary you run on a host or in an image of your own with no CA store fails every upstream handshake until you install `ca-certificates` or point `SSL_CERT_FILE` at a PEM bundle. `ROLTER_CA_BUNDLE` and `[tls].ca_bundles` still add private CAs on top of that store.
 
+## MCP tool manifests and tool groups
+
+Two MCP rules that were stored but not enforced are enforced from this release:
+
+- **Tool groups.** A server that an enabled tool group names serves only the tools those groups list. A call to any other tool is refused with `403` `mcp_tool_denied`. Check your enabled groups before you upgrade.
+- **Declared manifests.** A server that declares tools serves only those once an organization's saved MCP settings refuse unlisted tools. To keep upgrades from refusing calls, an organization that never saved its MCP settings allows unlisted tools, and the upgrade sets **Allow unlisted tools** on for every organization that had saved them. Turn it off on **MCP → MCP Settings** to enforce a server's manifest.
+
 ## A checklist
 
 1. Back up the control-plane database, and confirm you have `ROLTER_KEK` outside it.

@@ -19,6 +19,48 @@ The virtual key is stripped before forwarding and replaced with the session's
 OAuth bearer. A missing owner, cross-organization server, expired or revoked
 session, or insufficient scope fails before any downstream connection.
 
+### Connection status and trying a tool
+
+**Test connection** on a server's card (or
+`POST /api/v1/mcp-servers/{id}/test`) runs the MCP handshake and tells you which
+of these it was: **reachable** (with the protocol version the server negotiated
+and its name), **unreachable** (nothing answered), **handshake failed** (it
+answered, but not as an MCP server does), **auth rejected** (it answered
+`401` or `403`), or that rolter's egress policy refused the address. The card
+keeps the time it last answered and the time and reason of its last failure, even
+after a later success.
+
+**Try it** runs one tool from the server's list with arguments you supply
+(`POST /api/v1/mcp-servers/{id}/tools/call`) and shows the raw JSON-RPC request
+and reply. A tool that ran and reported an error is shown as **tool errored**,
+separately from the server not answering. For a server behind OAuth both use
+your own signed-in session, so connect first; both need permission to update the
+server. The call goes from the control plane, not through the gateway, so it is
+in the audit log (the tool and its outcome, not the arguments) and not in the MCP
+logs.
+
+### When an upstream asks for a wider scope
+
+If the MCP server refuses a call because the user's token lacks a scope
+(`WWW-Authenticate: Bearer error="insufficient_scope"`) and the server uses
+OAuth, rolter answers `403` with the code `mcp_insufficient_scope`, the scopes
+the server asked for in `error.required_scopes`, and a standard
+`WWW-Authenticate` challenge naming them. The call is recorded in the MCP log as
+`auth_denied`. Nothing is widened automatically: the key's owner has to consent
+again, by calling `POST /api/v1/mcp-servers/{id}/oauth/authorize` with
+`step_up_scopes` set to those scopes. The new consent keeps what they already
+granted and adds the scopes, then the next call works. Until then every such
+call fails the same way. A server with a static credential has no consent to
+repeat, so its `403` is passed through unchanged.
+
+### Which scopes a consent asks for
+
+Unless the request lists `scopes` itself, a consent asks for, in order of
+preference: the `scope` the server names in its `WWW-Authenticate` challenge,
+the server's configured default scopes, then the `scopes_supported` its metadata
+advertises. The server's required scopes are always added to the first and last
+of those.
+
 ## The consent callback
 
 The live OAuth session above comes from a consent the user gives once. The
@@ -87,21 +129,55 @@ or install a reviewed definition from MCP Library. Turning a server off removes
 it from the next gateway snapshot; its grants and sessions remain stored until
 the server is deleted.
 
-Tool Groups bundle exact `server/tool` references into named policy manifests.
-They are useful to MCP-aware clients and future project assignment, but the
-current proxy does not enforce group membership as an access boundary. Access
-continues to be decided by virtual-key owner, server, live OAuth session and
-required scopes.
+### Tool discovery
 
-MCP Settings stores organization defaults for transport, timeout intent,
-retries, failure policy and undeclared tools. The current HTTP proxy continues
-to use deployment-level transport timeouts; the screen calls this out rather
-than implying a saved value has already changed request-path behavior.
+A registered server's tool list comes from the server itself. rolter asks it
+with `tools/list` in the background after you install it, after you set its
+credential, and after a user completes OAuth consent; **Discover now** on the
+card (or `POST /api/v1/mcp-servers/{id}/discover`) asks again. The list a
+catalog entry ships with is only the fallback until the server has answered.
 
-<Warning>
-  **Tool Groups and MCP Settings are experimental** and may change shape or be
-  removed in a minor release. Both are management surfaces the proxy does not
-  read yet, so the shape each stores is likely to move when it starts to. The
-  MCP proxy itself — `/mcp/{server}`, its authorization and its logs — is not
-  experimental.
-</Warning>
+A server that is down never blocks the install: the card says when it was last
+discovered, or that it has not been discovered yet and why. A tool the server
+stops returning is kept and marked stale rather than removed, so a Tool Group
+that names it keeps working until you decide otherwise. A server behind OAuth
+is asked with the signed-in user's own session, so it waits until that user has
+connected.
+
+Tool Groups bundle exact `server/tool` references into named policy manifests,
+and the proxy enforces them. A server that at least one enabled group names
+serves only the tools those groups list: a `tools/call` for any other tool is
+refused with `403` and the code `mcp_tool_denied` before anything is forwarded,
+and the refusal is recorded in the MCP log as an `auth_denied` row naming the
+tool. A server no group names is not narrowed by groups. The groups an
+organization enables apply to every caller in it; there is no per-key or
+per-project assignment yet. Batches are refused as a whole when any call in
+them is refused, and while a group governs a server a request body that cannot
+be read as JSON-RPC is refused with `400` (`mcp_request_unreadable`) rather than
+forwarded unchecked. Disabling or deleting a group lifts its restriction on the
+next snapshot.
+
+MCP Settings holds organization defaults, and the proxy applies them on every
+request once they are saved:
+
+- **Timeouts and retries.** `connect_timeout_ms`, `request_timeout_ms` and
+  `max_retries` apply to a server that has no override of its own. Precedence,
+  highest first: the server's override, these settings, then the deployment's
+  `[timeouts]` default. An organization that never saved settings keeps the
+  deployment default. A retry only ever repeats a connection that was never
+  made; a call that reached the server is not repeated.
+- **Undeclared tools.** Once an organization saves its MCP settings with
+  `allow_unlisted_tools` off, a server that declares tools (discovered or
+  typed) serves only those, and a call naming a tool outside the manifest is
+  refused with `403` `mcp_tool_denied`. An organization that never saved its
+  settings allows unlisted tools, as every organization did before manifests
+  were enforced, so an upgrade does not start refusing calls. A server that
+  declares no tools has nothing to check against.
+- **Failure policy.** `default_failure_mode` decides what happens to a request
+  the proxy cannot read as JSON-RPC, and so cannot check against the rules
+  above: `fail_closed` (the default) refuses it with `400`, `fail_open` forwards
+  it. An upstream that does not answer is always a `502`; a gateway cannot fail
+  open on a server that is down.
+- **Transport.** A server row always names its transport, so the organization's
+  `default_transport` is what a server registered without one gets, at
+  registration.

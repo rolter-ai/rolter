@@ -8,6 +8,7 @@ import {
   Plus,
   Puzzle,
   Radar,
+  ScrollText,
   Server,
   Settings2,
   Wrench,
@@ -21,10 +22,11 @@ import { EditorSheet } from "@/components/EditorSheet";
 import { GatedButton } from "@/components/GatedButton";
 import { GatedSwitch } from "@/components/GatedSwitch";
 import { LoadError } from "@/components/LoadError";
+import { ConnectionHealth, ConnectionTestResult, ToolsSheet } from "@/components/McpServerProbe";
 import { CardGridSkeleton } from "@/components/LoadingState";
 import { PageBody } from "@/components/screen";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { ChipGroup } from "@/components/ui/chip-group";
 import { Combobox } from "@/components/ui/combobox";
 import {
@@ -48,6 +50,7 @@ import {
   createMcpToolGroup,
   deleteMcpServer,
   deleteMcpToolGroup,
+  discoverMcpServerTools,
   fetchMcpGrants,
   fetchMcpLibrary,
   fetchMcpOAuthClient,
@@ -59,11 +62,13 @@ import {
   MCP_OAUTH_DISCOVERY_MODES,
   setMcpOAuthClient,
   setMcpServerAuth,
+  testMcpServerConnection,
   updateMcpServer,
   updateMcpSettings,
   updateMcpToolGroup,
   type McpGatewaySettingsRow,
   type McpAuthKind,
+  type McpConnectionTest,
   type McpLibraryItem,
   type McpOAuthClientInput,
   type McpOAuthDiscovery,
@@ -77,6 +82,7 @@ import {
 import { errorText } from "@/lib/error-copy";
 import { useOptionalAuth } from "@/lib/auth";
 import { useCan } from "@/lib/can";
+import { discoveryReasonKey, discoveryRefetchInterval, discoveryView } from "@/lib/mcp-discovery";
 import { useFormat } from "@/lib/i18n/format";
 import {
   serverConnections,
@@ -157,7 +163,7 @@ function PageLead({ children, action }: { children: React.ReactNode; action?: Re
   );
 }
 
-function ToolBadges({ tools }: { tools: string[] }) {
+function ToolBadges({ tools, stale = [] }: { tools: string[]; stale?: string[] }) {
   const { t } = useTranslation();
   if (!tools.length)
     return (
@@ -165,14 +171,69 @@ function ToolBadges({ tools }: { tools: string[] }) {
         {t("pages.mcpCatalog.noTools")}
       </span>
     );
+  // the last discovery no longer returned these, but they are kept so a tool
+  // group naming one keeps working. the warning tone is the only visual cue,
+  // so the explanation is also text a screen reader gets
+  const gone = new Set(stale);
   return (
     <div className="flex flex-wrap gap-1.5">
-      {tools.map((tool) => (
-        <Badge key={tool} tone="outline">
-          {tool}
-        </Badge>
-      ))}
+      {tools.map((tool) =>
+        gone.has(tool) ? (
+          <Badge key={tool} tone="warning" title={t("pages.mcpCatalog.discovery.staleTitle")}>
+            {tool}
+            <span className="sr-only"> {t("pages.mcpCatalog.discovery.staleTitle")}</span>
+          </Badge>
+        ) : (
+          <Badge key={tool} tone="outline">
+            {tool}
+          </Badge>
+        ),
+      )}
     </div>
+  );
+}
+
+// what tools/list discovery has said about one server. the three states a
+// manifest can be in read differently on purpose: "declares no tools" is an
+// answer, "not discovered yet" is the absence of one
+function DiscoveryLine({ server }: { server: McpServerRow }) {
+  const { t } = useTranslation();
+  const fmt = useFormat();
+  const view = discoveryView(server);
+  const reasonKey = discoveryReasonKey(server.tools_discovery_error);
+  const reason = reasonKey ? t(reasonKey) : null;
+  const last = server.tools_discovered_at
+    ? t("pages.mcpCatalog.discovery.lastSuccess", {
+        when: fmt.dateTime(server.tools_discovered_at),
+      })
+    : null;
+  const text =
+    view === "failed"
+      ? t("pages.mcpCatalog.discovery.failed", {
+          reason: reason ?? t("pages.mcpCatalog.discovery.reasons.unknown"),
+        })
+      : view === "pending"
+        ? server.tools_discovery_attempted_at === null
+          ? t("pages.mcpCatalog.discovery.running")
+          : reason
+            ? t("pages.mcpCatalog.discovery.pendingWhy", { reason })
+            : t("pages.mcpCatalog.discovery.pending")
+        : view === "declaresNone"
+          ? t("pages.mcpCatalog.discovery.declaresNone", {
+              when: fmt.dateTime(server.tools_discovered_at ?? ""),
+            })
+          : t("pages.mcpCatalog.discovery.discovered", {
+              when: fmt.dateTime(server.tools_discovered_at ?? ""),
+            });
+  const warn = view === "failed";
+  return (
+    <p
+      id={`mcp-discovery-${server.id}`}
+      className={`mt-2 text-xs ${warn ? "text-[color:var(--status-warning-text)]" : "text-muted-foreground"}`}
+    >
+      {text}
+      {warn && last ? ` ${last}` : null}
+    </p>
   );
 }
 
@@ -579,6 +640,9 @@ export function McpCatalog() {
     queryFn: () => fetchMcpServers(orgId as string),
     enabled: !!orgId,
     retry: false,
+    // the control plane discovers in the background after an install; keep
+    // reading until every row has an attempt so the result shows without a reload
+    refetchInterval: (q) => discoveryRefetchInterval(q.state.data),
   });
 
   // UX stream (#805); screen key comes from the enclosing UxScreenProvider
@@ -697,6 +761,37 @@ export function McpCatalog() {
         detail: errorText(error, t),
       }),
   });
+  // an error code from the server still answers 200 with the row carrying it,
+  // so only a failed request lands in onError; the card shows the new state
+  const discover = useMutation({
+    mutationFn: (server: McpServerRow) => discoverMcpServerTools(server.id),
+    onSettled: () => void client.invalidateQueries({ queryKey: ["mcp-servers", orgId] }),
+    onError: (error, server) =>
+      toast.push({
+        tone: "error",
+        title: t("pages.mcpCatalog.discovery.failedToast", { name: server.name }),
+        detail: errorText(error, t),
+      }),
+  });
+  // a connection test answers 200 whatever it found, so only a failed request
+  // lands in onError; the result is kept per card until the next test replaces it
+  const [tested, setTested] = React.useState<Record<string, McpConnectionTest>>({});
+  const testConnection = useMutation({
+    mutationFn: (server: McpServerRow) => testMcpServerConnection(server.id),
+    onSuccess: (result, server) => setTested((prev) => ({ ...prev, [server.id]: result })),
+    onSettled: () => void client.invalidateQueries({ queryKey: ["mcp-servers", orgId] }),
+    onError: (error, server) =>
+      toast.push({
+        tone: "error",
+        title: t("pages.mcpCatalog.test.failedToast", { name: server.name }),
+        detail: errorText(error, t),
+      }),
+  });
+  const testing = testConnection.isPending ? testConnection.variables?.id : undefined;
+  // the tools panel follows the list, so a discovery that lands behind it shows
+  const [toolsFor, setToolsFor] = React.useState<string | null>(null);
+  const toolsServer = query.data?.find((server) => server.id === toolsFor);
+  const discovering = discover.isPending ? discover.variables?.id : undefined;
   // only the card whose request is in flight locks; the others stay live
   const toggling = toggle.isPending ? toggle.variables?.id : undefined;
   if (!orgId)
@@ -798,8 +893,20 @@ export function McpCatalog() {
                 {server.description || t("pages.mcpCatalog.noDescription")}
               </p>
               <div className="mt-3">
-                <ToolBadges tools={server.tools} />
+                <ToolBadges tools={server.tools} stale={server.tools_stale} />
+                {server.tools_stale.length > 0 && (
+                  <p className="mt-2 text-xs text-[color:var(--status-warning-text)]">
+                    {t("pages.mcpCatalog.discovery.staleHint", {
+                      count: server.tools_stale.length,
+                    })}
+                  </p>
+                )}
+                <DiscoveryLine server={server} />
               </div>
+              <ConnectionHealth server={server} />
+              {tested[server.id] && (
+                <ConnectionTestResult server={server} result={tested[server.id]} />
+              )}
               {server.auth_kind === "oauth" && (
                 <ConnectionLine
                   id={`mcp-connection-${server.id}`}
@@ -819,6 +926,53 @@ export function McpCatalog() {
                       describedBy={`mcp-connection-${server.id}`}
                     />
                   )}
+                  <GatedButton
+                    gate="mcp_server:update"
+                    control="mcp-server-discover"
+                    variant="outline"
+                    disabled={discovering === server.id}
+                    aria-describedby={`mcp-discovery-${server.id}`}
+                    aria-label={t("pages.mcpCatalog.discovery.discoverAria", { name: server.name })}
+                    onClick={() => discover.mutate(server)}
+                  >
+                    {discovering === server.id && (
+                      <Loader2 className="mr-2 h-4 w-4 motion-safe:animate-spin" aria-hidden />
+                    )}
+                    {discovering === server.id
+                      ? t("pages.mcpCatalog.discovery.discovering")
+                      : t("pages.mcpCatalog.discovery.discover")}
+                  </GatedButton>
+                  <GatedButton
+                    gate="mcp_server:update"
+                    control="mcp-server-test"
+                    variant="outline"
+                    disabled={testing === server.id}
+                    aria-label={t("pages.mcpCatalog.test.aria", { name: server.name })}
+                    onClick={() => testConnection.mutate(server)}
+                  >
+                    {testing === server.id && (
+                      <Loader2 className="mr-2 h-4 w-4 motion-safe:animate-spin" aria-hidden />
+                    )}
+                    {testing === server.id
+                      ? t("pages.mcpCatalog.test.running")
+                      : t("pages.mcpCatalog.test.action")}
+                  </GatedButton>
+                  <Button
+                    variant="outline"
+                    aria-label={t("pages.mcpCatalog.tools.openAria", { name: server.name })}
+                    onClick={() => setToolsFor(server.id)}
+                  >
+                    <Wrench className="mr-2 h-4 w-4" aria-hidden />
+                    {t("pages.mcpCatalog.tools.open")}
+                  </Button>
+                  <Link
+                    to={`/mcp-logs?server=${encodeURIComponent(server.slug)}`}
+                    aria-label={t("pages.mcpCatalog.logs.aria", { name: server.name })}
+                    className={buttonVariants({ variant: "ghost" })}
+                  >
+                    <ScrollText className="mr-2 h-4 w-4" aria-hidden />
+                    {t("pages.mcpCatalog.logs.link")}
+                  </Link>
                   <GatedButton
                     gate="mcp_server:delete"
                     control="mcp-server-delete"
@@ -855,6 +1009,7 @@ export function McpCatalog() {
           onSave={(draft) => save.mutate({ initial: editing, draft })}
         />
       )}
+      {toolsServer && <ToolsSheet server={toolsServer} onClose={() => setToolsFor(null)} />}
       {/* mounted whether or not a server is picked: the dialog reads how the
           delete ended on its own closing edge, which an unmount never has */}
       <ConfirmDialog

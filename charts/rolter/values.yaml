@@ -172,6 +172,12 @@ env:
   redisUrl: ""
   clickhouseUrl: ""
 
+# secrets and other variables the workloads need, as container `env` entries.
+# for example, to email invitation links (#1828):
+#   - name: ROLTER_SMTP_URL
+#     valueFrom: { secretKeyRef: { name: rolter-smtp, key: url } }
+#   - name: ROLTER_SMTP_FROM
+#     value: "Rolter <noreply@example.com>"
 secretEnv: []
 
 ingress:
