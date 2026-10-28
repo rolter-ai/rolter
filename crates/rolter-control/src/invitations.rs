@@ -331,7 +331,8 @@ struct MailCheck {
 
 /// Check the SMTP relay that carries invitations without sending one (#3304):
 /// connect, set up TLS and authenticate, then hang up. Guarded as sending an
-/// invitation at the org is, since it is the relay those invitations use.
+/// invitation at the org is, since it is the relay those invitations use, and
+/// limited to one run per caller every few seconds (`429` with `Retry-After`).
 async fn check_mail_relay(
     principal: Principal,
     State(state): State<ControlState>,
@@ -349,6 +350,12 @@ async fn check_mail_relay(
             "invitation mail is not configured on this control plane (ROLTER_SMTP_URL)".to_string(),
         ));
     };
+    // every run dials the relay, negotiates TLS and authenticates, so a caller
+    // gets one in a few seconds, not as many as it can send (#3394)
+    state
+        .mail_check_gap
+        .claim(&crate::analytics_export::caller_key(&principal))
+        .map_err(|wait| ApiError::TooManyAttempts(wait.max(std::time::Duration::from_secs(1))))?;
     Ok(Json(match mailer.check().await {
         Ok(()) => MailCheck {
             ok: true,

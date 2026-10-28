@@ -226,7 +226,11 @@ fails an invitation.
   mode of `rolter check` run `Mailer::check`: connect, TLS and authentication
   against the relay, no message. A failure names its stage (`connect`, `tls`,
   `auth`, `relay`) with a fixed sentence; the relay's reply, its address and the
-  credential never leave the process.
+  credential never leave the process. Every run dials the relay, so `CallGap`
+  (`call_gap.rs`, held in `ControlState::mail_check_gap`) lets a caller (the
+  `caller_key` the CSV export counts against) run one every five seconds and
+  answers `ApiError::TooManyAttempts` (`429` with `Retry-After`, #3394) in
+  between. It is process-local; the integration suite's app shortens the gap.
 - The send is awaited, bounded by a 15 second timeout, so the response says what
   happened. `Mailer` (`mail.rs`) is the seam the integration suite installs to
   record messages and to fail on demand.

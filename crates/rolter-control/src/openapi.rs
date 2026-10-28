@@ -2764,7 +2764,7 @@ fn operations() -> Vec<Op> {
             Op::post(
                 "/api/v1/orgs/{org_id}/invitations/mail-check",
                 "checkInvitationMailRelay",
-                "Check the mail relay without sending an invitation",
+                "Check the mail relay without sending an invitation (one run per caller every few seconds; `429` with `Retry-After` otherwise)",
             )
             .body(Payload::Empty)
             .ok(Payload::Open)

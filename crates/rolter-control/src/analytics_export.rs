@@ -446,7 +446,7 @@ type Caller = ();
 /// token, or the one shared credential. Open mode and the admin token have no
 /// person behind them, so they share a key.
 #[cfg(feature = "postgres")]
-fn caller_key(caller: &Caller) -> String {
+pub(crate) fn caller_key(caller: &Caller) -> String {
     use crate::rbac::Principal;
     match caller {
         Principal::Superadmin { account: Some(id) } => format!("user:{id}"),
@@ -457,7 +457,7 @@ fn caller_key(caller: &Caller) -> String {
 }
 
 #[cfg(not(feature = "postgres"))]
-fn caller_key(_: &Caller) -> String {
+pub(crate) fn caller_key(_: &Caller) -> String {
     "admin".to_string()
 }
 

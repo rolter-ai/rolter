@@ -364,6 +364,24 @@ async fn the_relay_check_names_the_stage_that_failed_and_nothing_else() {
     assert_eq!(status, 200);
     assert_eq!(body, json!({"ok": true}));
 
+    // a second run straight away is refused, with a wait to honour (#3394)
+    let response = f
+        .client
+        .post(format!("{}{path}", f.base))
+        .bearer_auth(admin_token())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 429);
+    let wait: u64 = response
+        .headers()
+        .get("retry-after")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse().ok())
+        .expect("a refused check says when to retry");
+    assert!(wait >= 1);
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
     *mailer.relay.lock() = Some(RelayFailure {
         stage: RelayStage::Auth,
         reason: "the mail server refused the credential in the relay url".to_string(),

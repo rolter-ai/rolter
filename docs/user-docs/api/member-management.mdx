@@ -88,7 +88,7 @@ that sends invitations in the organization.
 { "ok": false, "stage": "auth", "reason": "the mail server refused the credential in the relay url" }
 ```
 
-The check is not rate limited. `stage` is `connect` (unreachable or no answer in time), `tls`, `auth` or
+A caller can run the check once every five seconds; a faster call is answered `429` with a `Retry-After` header and runs nothing. `stage` is `connect` (unreachable or no answer in time), `tls`, `auth` or
 `relay` (it answered, but not as a mail server does). The reason never contains
 the relay's address, its reply or the credential. A control plane without
 `ROLTER_SMTP_URL` answers `409`. `rolter check --connect` runs the same check
