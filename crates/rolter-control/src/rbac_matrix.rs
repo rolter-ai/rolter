@@ -620,6 +620,17 @@ const CAPABILITIES: &[Capability] = &[
         delete: ADMIN,
         action_scopes: NONE,
     },
+    // which keys, projects and teams a tool group narrows (#3295). It decides
+    // what a caller may call, so it is changed with the same role as the group
+    Capability {
+        resource: "mcp_tool_group_assignment",
+        scope: "org",
+        read: VIEWER,
+        create: NA,
+        update: ADMIN,
+        delete: NA,
+        action_scopes: NONE,
+    },
     Capability {
         resource: "mcp_settings",
         scope: "org",

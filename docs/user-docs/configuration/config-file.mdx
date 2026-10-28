@@ -47,7 +47,9 @@ warn   unrecognised config key providers[0].api_key_evn
 
 Either way you get the full path to every unrecognised key, including keys nested inside tables and inside arrays of tables, plus the nearest real key when one is close enough to be a likely typo.
 
-These are always warnings. The file is valid, the gateway starts, and an import still runs — an unknown key never stops a process. The one exception is deliberate: `--strict` turns them into a non-zero exit, which is what you want in CI when a config change is under review.
+`rolter check --config` also runs the validation the gateway runs at startup, and reports each problem it finds as an error: a route on an unknown provider, a duplicate route model, a target with weight `0`, a budget limit that is not positive, a route whose every target is a [fallback target](/reliability/fallback-targets), and every other setting the gateway would refuse to serve. A file that passes `rolter check` is one the gateway accepts.
+
+Unknown keys are always warnings. The file is valid, the gateway starts, and an import still runs — an unknown key never stops a process. The one exception is deliberate: `--strict` turns them into a non-zero exit, which is what you want in CI when a config change is under review.
 
 ```bash
 rolter check --config rolter.toml --strict
@@ -780,13 +782,13 @@ Not a `rolter.toml` table. Virtual keys created on the dashboard or through the 
 
 ### \[\[mcp_servers\]\]
 
-Not a `rolter.toml` table. MCP servers belong to an organization and are registered on the dashboard or through the management API; the control plane unseals their credentials and ships them in the snapshot. Each entry carries `id`, `org_id`, `slug`, `url`, `transport`, `required_scopes`, `auth_kind`, `auth_header_name`, `credential`, `connect_timeout_ms`, `request_timeout_ms`, `max_retries` and `tools`. With a database, the snapshot carries the control plane's own rows and replaces whatever a bootstrap file holds for this table. See [MCP credentials and transport settings](/configuration/mcp-servers) for what each field means.
+Not a `rolter.toml` table. MCP servers belong to an organization and are registered on the dashboard or through the management API; the control plane unseals their credentials and ships them in the snapshot. Each entry carries `id`, `org_id`, `slug`, `url`, `transport`, `required_scopes`, `auth_kind`, `auth_header_name`, `credential`, `connect_timeout_ms`, `request_timeout_ms`, `max_retries`, `tools` and `enforce_manifest_by_default`, which is true when the server's organization enforces manifests until it saves MCP settings of its own. With a database, the snapshot carries the control plane's own rows and replaces whatever a bootstrap file holds for this table. See [MCP credentials and transport settings](/configuration/mcp-servers) for what each field means.
 
 ---
 
 ### \[\[mcp_tool_groups\]\]
 
-Not a `rolter.toml` table. Each entry is an enabled MCP tool group, which the control plane adds to the snapshot and the MCP proxy enforces: a server that at least one group names serves only the tools those groups list. Entries carry `id`, `org_id`, `slug` and `tools`, a list of `server_id` and `tool` pairs. Groups are managed on the dashboard or through the management API; see [MCP](/api/mcp#manage-the-registry).
+Not a `rolter.toml` table. Each entry is an enabled MCP tool group, which the control plane adds to the snapshot and the MCP proxy enforces: a server that at least one group names serves only the tools those groups list. Entries carry `id`, `org_id`, `slug`, `tools`, a list of `server_id` and `tool` pairs, and `assignments`, the `kind` (`virtual_key`, `project` or `team`) and `id` of each caller the group is assigned to, empty for a group that applies to the whole organization. Groups are managed on the dashboard or through the management API; see [MCP](/api/mcp#manage-the-registry).
 
 ---
 

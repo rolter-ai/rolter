@@ -317,6 +317,10 @@ pub struct RouteVariantTarget {
     pub upstream_model: Option<String>,
     pub weight: i32,
     pub position: i32,
+    /// failure class tokens this target takes over (#3373), as
+    /// [`RouteTarget::takes_over`]; empty for an ordinary member of the variant
+    #[serde(default)]
+    pub takes_over: Vec<String>,
 }
 
 /// A provider group: a fleet of providers addressable as `group-slug/model`
@@ -933,6 +937,15 @@ pub struct McpToolGroup {
     pub tools: serde_json::Value,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+/// a virtual key, project or team an MCP tool group is assigned to (#3295)
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+pub struct McpToolGroupAssignment {
+    pub group_id: Uuid,
+    pub subject_kind: String,
+    pub subject_id: Uuid,
+    pub created_at: DateTime<Utc>,
 }
 
 /// organization defaults managed by the MCP Settings screen

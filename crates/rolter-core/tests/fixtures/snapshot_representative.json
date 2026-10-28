@@ -174,7 +174,8 @@
       "connect_timeout_ms": 1000,
       "request_timeout_ms": 5000,
       "max_retries": 1,
-      "tools": ["search"]
+      "tools": ["search"],
+      "enforce_manifest_by_default": true
     }
   ],
   "mcp_settings": [
@@ -196,6 +197,12 @@
         {
           "server_id": "mcp-1",
           "tool": "search"
+        }
+      ],
+      "assignments": [
+        {
+          "kind": "team",
+          "id": "team-1"
         }
       ]
     }
@@ -292,6 +299,12 @@
                 "provider": "vllm-1",
                 "model": "m",
                 "weight": 1
+              },
+              {
+                "provider": "vllm-1",
+                "model": "m-burst",
+                "weight": 1,
+                "takes_over": ["timeout"]
               }
             ],
             "params": {

@@ -27,7 +27,7 @@ import {
   openOptions,
   stubClipboard,
 } from "./story-harness";
-import { atMobile } from "@/lib/story-viewport";
+import { atMobile, expectNoHorizontalOverflow } from "@/lib/story-viewport";
 import en from "@/lib/i18n/locales/en.json";
 import ru from "@/lib/i18n/locales/ru.json";
 import type {
@@ -1041,8 +1041,8 @@ export const EditsATwoTargetRoute: Story = {
       enabled: false,
       strategy: "round_robin",
       targets: [
-        { provider_id: "prov-1", upstream_model: "gpt-4o-2024-08-06", weight: 80 },
-        { provider_id: "prov-2", upstream_model: null, weight: 30 },
+        { provider_id: "prov-1", upstream_model: "gpt-4o-2024-08-06", weight: 80, takes_over: [] },
+        { provider_id: "prov-2", upstream_model: null, weight: 30, takes_over: [] },
       ],
     });
     await expectToast(canvasElement, /gpt-4o updated/);
@@ -1081,6 +1081,7 @@ export const KeepsAnUpstreamModelEqualToTheRouteName: Story = {
       provider_id: "prov-1",
       upstream_model: "gpt-4o",
       weight: 70,
+      takes_over: [],
     });
     await expect(body.strategy).toBeUndefined();
     await expect(body.enabled).toBeUndefined();
@@ -1111,8 +1112,8 @@ export const AddsAndRemovesATarget: Story = {
       await reshapes.expectSentBody<RouteUpdate>("PUT", "/api/v1/routes/route-1"),
     ).toEqual({
       targets: [
-        { provider_id: "prov-2", upstream_model: null, weight: 20 },
-        { provider_id: "prov-1", upstream_model: null, weight: 1 },
+        { provider_id: "prov-2", upstream_model: null, weight: 20, takes_over: [] },
+        { provider_id: "prov-1", upstream_model: null, weight: 1, takes_over: [] },
       ],
     });
   },
@@ -1285,15 +1286,15 @@ export const EditsAVariantSplit: Story = {
           weight: 3,
           params: {},
           targets: [
-            { provider_id: "prov-1", upstream_model: null, weight: 1 },
-            { provider_id: "prov-2", upstream_model: null, weight: 1 },
+            { provider_id: "prov-1", upstream_model: null, weight: 1, takes_over: [] },
+            { provider_id: "prov-2", upstream_model: null, weight: 1, takes_over: [] },
           ],
         },
         {
           name: "stable",
           weight: 9,
           params: {},
-          targets: [{ provider_id: "prov-1", upstream_model: "gpt-4o", weight: 1 }],
+          targets: [{ provider_id: "prov-1", upstream_model: "gpt-4o", weight: 1, takes_over: [] }],
         },
       ],
     });
@@ -1506,7 +1507,9 @@ export const AddsAVariant: Story = {
           name: "canary",
           weight: 1,
           params: {},
-          targets: [{ provider_id: "prov-1", upstream_model: "gpt-4o-mini", weight: 1 }],
+          targets: [
+            { provider_id: "prov-1", upstream_model: "gpt-4o-mini", weight: 1, takes_over: [] },
+          ],
         },
       ],
     });
@@ -1957,5 +1960,282 @@ export const BreakerStateUnavailable: Story = {
     await canvas.findByRole("list", { name: "Targets of gpt-4o" });
     await expect(canvas.queryByTestId("breaker-badge")).toBeNull();
     await expect(canvas.queryByRole("alert")).toBeNull();
+  },
+};
+
+// ------------------------------------------- fallback targets (#1584, #3319)
+
+/** route-1 with its second target a fallback for throttling */
+const WITH_FALLBACK: RouteTargetRow[] = [
+  TARGETS["route-1"][0],
+  { ...TARGETS["route-1"][1], takes_over: ["throttled"] },
+];
+
+/**
+ * route-1 read with `stored` as its targets; `put` answers the route PUT, which
+ * by default echoes the route
+ */
+const withFallback = (stored: RouteTargetRow[] = WITH_FALLBACK, put?: () => Response) =>
+  recording(
+    scoped(async (input, init) => {
+      const url = String(input);
+      if (init?.method === "PUT" && /\/routes\/route-1$/.test(url)) {
+        return put ? put() : json(ROUTES[0]);
+      }
+      if (/\/routes\/route-1\/targets/.test(url)) return json(stored);
+      if (url.includes("include=targets")) {
+        return json(
+          ROUTES.map((r) => ({
+            ...r,
+            targets: r.id === "route-1" ? stored : (TARGETS[r.id] ?? []),
+          })),
+        );
+      }
+      return answer(ROUTES)(input, init);
+    }),
+  );
+
+/** the fallback set of one target line in the open sheet */
+const fallbackOf = (dialog: ReturnType<typeof within>, name: string) =>
+  within(dialog.getByRole("group", { name }));
+
+/**
+ * A fallback takes no ordinary traffic, so the card marks it and states no
+ * share for it: the ordinary target carries the whole route, and only it has
+ * a share bar.
+ */
+export const FallbackTargetHasNoShare: Story = {
+  render: () => (
+    <Harness fetchStub={withFallback().stub}>
+      <RoutingRules />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const targets = within(await canvas.findByRole("list", { name: "Targets of gpt-4o" }));
+    await expect(targets.getByText("100%")).toBeInTheDocument();
+    await expect(targets.queryByText("20%")).toBeNull();
+    await expect(targets.getAllByTestId("target-share")).toHaveLength(1);
+    const badge = targets.getByTestId("fallback-badge");
+    await expect(badge).toHaveTextContent("fallback");
+    await expect(badge.getAttribute("title")).toContain("throttled");
+  },
+};
+
+/**
+ * A stored set opens unfolded with the target marked; a class toggled on and a
+ * refusal category typed in go out with the whole list, the ordinary target's
+ * empty set included, since an entry without one clears what is stored.
+ */
+let fallbackEdits: Recorder;
+export const EditsAFallbackSet: Story = {
+  render: () => {
+    fallbackEdits = withFallback();
+    return (
+      <Harness fetchStub={fallbackEdits.stub} role="admin">
+        <Toasted>
+          <RoutingRules />
+        </Toasted>
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const dialog = await openRouteSheet(canvasElement);
+    await dialog.findByLabelText("Target 2 weight");
+    const first = fallbackOf(dialog, "Fallback classes of target 1");
+    await expect(first.getByRole("button", { name: "Ordinary target" })).toHaveAttribute(
+      "aria-expanded",
+      "false",
+    );
+    const second = fallbackOf(dialog, "Fallback classes of target 2");
+    await expect(second.getByRole("button", { name: "Fallback for throttled" })).toHaveAttribute(
+      "aria-expanded",
+      "true",
+    );
+    await expect(second.getByRole("button", { name: "throttled" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    await userEvent.click(second.getByRole("button", { name: "timeout" }));
+    await userEvent.type(second.getByLabelText("Refusal category"), "violence{Enter}");
+    await expect(second.getByRole("button", { name: "refusal:violence" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    await userEvent.click(dialog.getByRole("button", { name: "Save route" }));
+    const body = await fallbackEdits.expectSentBody<RouteUpdate>("PUT", "/api/v1/routes/route-1");
+    await expect(body.targets).toEqual([
+      { provider_id: "prov-1", upstream_model: "gpt-4o-2024-08-06", weight: 80, takes_over: [] },
+      {
+        provider_id: "prov-2",
+        upstream_model: null,
+        weight: 20,
+        takes_over: ["throttled", "timeout", "refusal:violence"],
+      },
+    ]);
+    await expectToast(canvasElement, /gpt-4o updated/);
+  },
+};
+
+/**
+ * Making the last ordinary target a fallback would leave the route nothing it
+ * may dial first. The sheet says so at the target list and sends nothing.
+ */
+let onlyFallbacks: Recorder;
+export const RefusesARouteOfOnlyFallbacks: Story = {
+  render: () => {
+    onlyFallbacks = withFallback();
+    return (
+      <Harness fetchStub={onlyFallbacks.stub} role="admin">
+        <RoutingRules />
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const dialog = await openRouteSheet(canvasElement);
+    await dialog.findByLabelText("Target 1 weight");
+    const first = fallbackOf(dialog, "Fallback classes of target 1");
+    await userEvent.click(first.getByRole("button", { name: "Ordinary target" }));
+    await userEvent.click(first.getByRole("button", { name: "refusal" }));
+    await userEvent.click(dialog.getByRole("button", { name: "Save route" }));
+    await waitFor(() => expect(dialog.getByText(/Every target is a fallback/)).toBeVisible());
+    onlyFallbacks.expectNotSent("PUT", "/api/v1/routes/route-1");
+  },
+};
+
+/**
+ * A set the control plane refuses is said under that target's own set, which
+ * opens to show it, and not as a generic failure.
+ */
+export const FallbackSetRefusedByTheControlPlane: Story = {
+  render: () => (
+    <Harness
+      role="admin"
+      fetchStub={
+        withFallback(WITH_FALLBACK, () =>
+          json(
+            {
+              error: {
+                code: "invalid_field",
+                message: "takes_over lists 'throttled' twice",
+                field: "targets[1].takes_over",
+              },
+            },
+            400,
+          ),
+        ).stub
+      }
+    >
+      <RoutingRules />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const dialog = await openRouteSheet(canvasElement);
+    await dialog.findByLabelText("Target 2 weight");
+    await userEvent.clear(dialog.getByLabelText("Target 2 weight"));
+    await userEvent.type(dialog.getByLabelText("Target 2 weight"), "25");
+    await userEvent.click(dialog.getByRole("button", { name: "Save route" }));
+    const second = fallbackOf(dialog, "Fallback classes of target 2");
+    await waitFor(() => expect(second.getByText(/control plane refused this set/)).toBeVisible());
+    await expect(second.getByRole("button", { name: "Fallback for throttled" })).toBeInvalid();
+    await expect(dialog.queryByText(/control plane refused this set/i)).toBeVisible();
+  },
+};
+
+/**
+ * A refusal category the control plane would refuse is caught as it is typed;
+ * a valid one at the 64-character limit is added as a chip of its own.
+ */
+export const RejectsABadRefusalCategory: Story = {
+  render: () => (
+    <Harness fetchStub={withFallback().stub} role="admin">
+      <RoutingRules />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const dialog = await openRouteSheet(canvasElement);
+    await dialog.findByLabelText("Target 2 weight");
+    const second = fallbackOf(dialog, "Fallback classes of target 2");
+    const category = second.getByLabelText("Refusal category");
+    await userEvent.type(category, "Self Harm");
+    await userEvent.click(second.getByRole("button", { name: "Add" }));
+    await expect(second.getByText(/1 to 64 lowercase letters/)).toBeVisible();
+    await expect(category).toBeInvalid();
+    const long = `x${"_content_policy".repeat(4)}`.padEnd(64, "y");
+    await userEvent.clear(category);
+    await userEvent.type(category, long);
+    await userEvent.click(second.getByRole("button", { name: "Add" }));
+    await expect(second.getByRole("button", { name: `refusal:${long}` })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    await expect(category).toHaveValue("");
+  },
+};
+
+/** On a phone a long category wraps inside the sheet instead of widening the page. */
+export const FallbackEditorOnMobile: Story = {
+  ...atMobile,
+  render: () => (
+    <Harness
+      fetchStub={
+        withFallback([
+          TARGETS["route-1"][0],
+          {
+            ...TARGETS["route-1"][1],
+            takes_over: ["throttled", `refusal:${"content_policy_violation_".repeat(2)}sexual`],
+          },
+        ]).stub
+      }
+      role="admin"
+    >
+      <RoutingRules />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const dialog = await openRouteSheet(canvasElement);
+    await dialog.findByLabelText("Target 2 weight");
+    const second = fallbackOf(dialog, "Fallback classes of target 2");
+    await expect(
+      second.getByRole("button", {
+        name: `refusal:${"content_policy_violation_".repeat(2)}sexual`,
+      }),
+    ).toBeVisible();
+    await expectNoHorizontalOverflow();
+  },
+};
+
+/**
+ * A variant target takes over failures like a route target (#3373), and its
+ * set goes out with the variants.
+ */
+let variantFallback: Recorder;
+export const EditsAVariantTargetsFallbackSet: Story = {
+  render: () => {
+    variantFallback = withVariants(SPLIT);
+    return (
+      <Harness fetchStub={variantFallback.stub} role="admin">
+        <Toasted>
+          <RoutingRules />
+        </Toasted>
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const dialog = await openRouteSheet(canvasElement);
+    await dialog.findByLabelText("Variant 2 target 2 provider");
+    const set = fallbackOf(dialog, "Fallback classes of target 2 of variant 2");
+    await userEvent.click(set.getByRole("button", { name: "Ordinary target" }));
+    await userEvent.click(set.getByRole("button", { name: "server_error" }));
+    await expect(set.getByTestId("fallback-badge")).toBeVisible();
+    await userEvent.click(dialog.getByRole("button", { name: "Save route" }));
+    const body = await variantFallback.expectSentBody<{ variants: RouteVariantInput[] }>(
+      "PUT",
+      "/api/v1/routes/route-1/variants",
+    );
+    await expect(body.variants[1].targets.map((tg) => tg.takes_over)).toEqual([
+      [],
+      ["server_error"],
+    ]);
   },
 };

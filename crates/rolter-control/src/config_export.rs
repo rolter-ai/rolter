@@ -360,6 +360,10 @@ fn render_routes(out: &mut String, config: &GatewayConfig) {
                 key(out, "model", model);
             }
             key(out, "weight", &target.weight);
+            // a restricted fallback stays one through a round trip (#1584)
+            if !target.takes_over.is_empty() {
+                key(out, "takes_over", &target.takes_over);
+            }
         }
         // declared order, never sorted: it is the fallback chain, and a
         // variant's targets are its routing order (#391)
@@ -407,6 +411,9 @@ fn render_routes(out: &mut String, config: &GatewayConfig) {
                     key(out, "model", model);
                 }
                 key(out, "weight", &target.weight);
+                if !target.takes_over.is_empty() {
+                    key(out, "takes_over", &target.takes_over);
+                }
             }
         }
     }
@@ -769,8 +776,9 @@ async fn with_stored_variants(
     .fetch_all(pool)
     .await
     .map_err(store_err)?;
-    let targets: Vec<(uuid::Uuid, String, Option<String>, i32)> = sqlx::query_as(
-        "select vt.variant_id, p.name, vt.upstream_model, vt.weight
+    type TargetRow = (uuid::Uuid, String, Option<String>, i32, Vec<String>);
+    let targets: Vec<TargetRow> = sqlx::query_as(
+        "select vt.variant_id, p.name, vt.upstream_model, vt.weight, vt.takes_over
          from route_variant_targets vt join providers p on p.id = vt.provider_id
          order by vt.variant_id, vt.position",
     )
@@ -791,12 +799,27 @@ async fn with_stored_variants(
                 targets: targets
                     .iter()
                     .filter(|t| t.0 == id)
-                    .map(|(_, provider, model, weight)| rolter_core::Target {
-                        provider: provider.clone(),
-                        model: model.clone(),
-                        weight: (*weight).max(0) as u32,
-                        // variant targets store no failure classes yet (#3373)
-                        takes_over: Vec::new(),
+                    .filter_map(|(_, provider, model, weight, takes_over)| {
+                        // a class the gateway cannot read is left out with its
+                        // target, as the snapshot leaves it out (#3373); the
+                        // control plane never stores one
+                        let takes_over = takes_over
+                            .iter()
+                            .map(|token| token.parse())
+                            .collect::<Result<Vec<_>, String>>()
+                            .map_err(|problem| {
+                                tracing::warn!(
+                                    provider = %provider,
+                                    "leaving a variant target out of the export: {problem}"
+                                );
+                            })
+                            .ok()?;
+                        Some(rolter_core::Target {
+                            provider: provider.clone(),
+                            model: model.clone(),
+                            weight: (*weight).max(0) as u32,
+                            takes_over,
+                        })
                     })
                     .collect(),
             });

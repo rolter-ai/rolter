@@ -89,6 +89,12 @@ There is no setting that delivers a stream with the `post_call` providers skippe
 
 A [realtime](/api/realtime) session is a stream that cannot be buffered: its client events go through the `pre_call` providers, and a session whose policy has a `post_call` provider is refused with `400 guardrail_streaming_unsupported`.
 
+## Audio transcriptions and translations
+
+`/v1/audio/transcriptions` and `/v1/audio/translations` take audio and answer with text, so only the response stage applies to them. The policy is resolved exactly as for a chat request, and its `post_call` providers judge the transcript before it is delivered, under the same thresholds, `on_violation` and failure modes. A `json` or `verbose_json` answer is shown to them as the JSON it is; a `text`, `srt` or `vtt` answer as `{"text": "…"}`, and a `transform` that keeps a `text` string is delivered as that text again. A transcript a provider blocks is answered `403 guardrail_blocked`, and is still billed by its audio minutes. A transcription asked for with `stream=true` is held whole and its event text judged before it is delivered, whatever the policy's `streaming` says: it is never delivered unjudged, but `reject` does not refuse it either.
+
+The policy's `pre_call` providers do not run on these requests: the request is an audio file, which no provider can read. The [built-in rules, plugins and PII sanitizer](/security/guardrails#audio-transcriptions-and-translations) treat the endpoints the same way: the response stage runs on the transcript, the request stage does not run.
+
 ## What is recorded
 
 Protected content never reaches a log, a metric or a span. The gateway exports:
@@ -103,12 +109,10 @@ Protected content never reaches a log, a metric or a span. The gateway exports:
 
 `outcome` is `allow`, `block`, `transform`, `violation`, `flagged`, `error_open` or `error_closed`. A `category` label is one the policy sets a threshold for by name, or `other`, so a provider cannot add label values. The latency histogram is in the Prometheus endpoint only; the counters also go to OTLP.
 
-On the request log, `guardrail_events` gains `provider_blocked:<provider>`, `provider_transformed:<provider>`, `provider_error:<provider>`, `policy_blocked:<policy>` and `policy_flagged:<policy>` for the request stage. A response the policy withheld is recorded as `blocked:<provider or policy>` with the withheld reason.
+On the request log, `guardrail_events` gains `provider_blocked:<provider>`, `provider_transformed:<provider>`, `provider_error:<provider>`, `policy_blocked:<policy>` and `policy_flagged:<policy>`, on both stages: a response a provider rewrote, a response flagged under `on_violation = "annotate"` and a response a fail-open provider gave no verdict on are recorded on the row of the delivered response, cached answers included. A response the policy withheld is also recorded as `blocked:<provider or policy>` with the withheld reason.
 
 ## Not covered yet
 
-- `/v1/audio/transcriptions` and `/v1/audio/translations` run no guardrails at all, the semantic policy included ([#3331](https://github.com/rolter-ai/rolter/issues/3331)).
-- On the response stage, only a refusal reaches the request log; a flag, a rewrite or a fail-open error is counted in the metrics only ([#3330](https://github.com/rolter-ai/rolter/issues/3330)).
 - Every provider is an HTTP service; an in-process classifier is tracked in [#3329](https://github.com/rolter-ai/rolter/issues/3329).
 
 ## Configure in the file

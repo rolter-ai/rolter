@@ -20,6 +20,7 @@ export const PROJECT = {
   id: "project-1",
   team_id: TEAM.id,
   name: "Gateway",
+  team_name: TEAM.name,
   created_at: ORG.created_at,
 };
 // what every server row carries since #952: no credential, no overrides
@@ -246,6 +247,7 @@ export function routed(
       | "servers"
       | "library"
       | "groups"
+      | "assignments"
       | "settings"
       | "oauthClient"
       | "authorize"
@@ -263,6 +265,8 @@ export function routed(
     if (url.includes("/mcp/grants")) return over.grants?.(input, init) ?? json([]);
     if (url.includes("/mcp/sessions")) return over.sessions?.(input, init) ?? json([]);
     if (url.includes("/mcp/library")) return over.library?.(input, init) ?? json(LIBRARY);
+    if (url.includes("/mcp/tool-group-assignments") || url.includes("/assignments"))
+      return over.assignments?.(input, init) ?? json([]);
     if (url.includes("/mcp/tool-groups")) return over.groups?.(input, init) ?? json(GROUPS);
     if (url.includes("/mcp/settings")) return over.settings?.(input, init) ?? json(SETTINGS);
     if (url.includes("/oauth-client")) return over.oauthClient?.(input, init) ?? json(OAUTH_CLIENT);

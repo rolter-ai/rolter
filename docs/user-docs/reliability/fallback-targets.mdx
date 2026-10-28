@@ -64,18 +64,25 @@ provider = "burst"
 takes_over = ["throttled", "timeout"]
 ```
 
+In the dashboard, open a route on **Routing Rules** or a model on **Model Catalog**. Each target line says whether it is an **Ordinary target** or a **Fallback for** its classes; open it to pick the classes as chips, or type a refusal category and select **Add** for `refusal:<category>`. Picking nothing keeps the target ordinary. The variants of a route on **Routing Rules** have the same control on each of their targets. A fallback is marked **fallback** on the route's card and in the catalog's target list, and states no share of traffic: the ordinary targets split the route between them. A sheet whose every target is a fallback cannot be saved and says why at the target list.
+
 The same field is `takes_over` on a target in the [routes API](/api/routes), on `POST /api/v1/routes/{route_id}/targets` and in the target list of `PUT /api/v1/routes/{id}`. The routes API returns it on every target, as an empty list for an ordinary one.
 
 ### A route always needs an ordinary target
 
 A route whose every target sets `takes_over` could never dial anything. Rolter refuses one rather than discovering it at request time: `rolter check` and gateway startup reject the file, the seed import refuses it before writing anything, and the API refuses a request that would leave a route that way, whether it adds the last target, replaces the list or deletes the last ordinary target. Each refusal names `all_targets_restricted`.
 
+A database route can still end up that way without a write being refused: a row written by hand or by an older import, or a route whose only ordinary target is on a provider the snapshot leaves out. The gateway then leaves the route out rather than serving it, and drops a target whose stored class it cannot read rather than treating it as an ordinary one. Both are listed among the [configuration problems](/api/config-problems) (`GET /api/v1/config/problems`) of the route's organization, naming the route, and for a dropped target the provider and the class.
+
 ## Seeing why a request reached a fallback
 
-Every request-log row records the failure that sent the request on to the target that answered it, in `fallback_reason`: `refusal:content_policy_violation`, `throttled` and so on, or an empty string when the first dial answered. It is returned on each row of `GET /api/v1/analytics/invocations`, so a request that reached the expensive target because of a content refusal can be told from one that reached it because of load. The column comes from `clickhouse/023_fallback_reason.sql`; see [Upgrading](/deployment/upgrading).
+Every request-log row records the failure that sent the request on to the target that answered it, in `fallback_reason`: `refusal:content_policy_violation`, `throttled` and so on, or an empty string when the first dial answered. **LLM Logs** shows it as **Fallback reason** in the Routing group of a request's details, for a request that reached a fallback. It is returned on each row of `GET /api/v1/analytics/invocations`, so a request that reached the expensive target because of a content refusal can be told from one that reached it because of load. The column comes from `clickhouse/023_fallback_reason.sql`; see [Upgrading](/deployment/upgrading).
+
+## Realtime sessions
+
+A [realtime](/api/realtime) session picks its target while it connects, and a failed upstream handshake is classified like an HTTP failure: no answer is `transport` (or `timeout`), a `429` is `throttled`, a `408` or `504` is `timeout`, and any other `5xx` is `server_error`. The next target is chosen with that failure, so a restricted target that takes it over is reached. A handshake answered with any other status names no class, so only an ordinary target follows it. Once connected, the session stays on its target; a failure later in the session is not taken over. A content refusal cannot happen while connecting, so a target that takes over only refusals is never used by a realtime session.
 
 ## Limits
 
-- Weighted variants honour `takes_over` on their targets the same way, across the whole fallback chain.
-- Realtime (WebSocket) sessions never use a restricted target: their candidates are ordered before any attempt fails.
+- Weighted variants honour `takes_over` on their targets the same way, across the whole fallback chain, for a route in `rolter.toml` and one stored in the database alike: `PUT /api/v1/routes/{id}/variants` takes it on each variant target.
 - A content refusal returned with a `200` (a `finish_reason` of `content_filter` in a completed response) is an answer, not a failure, and is not taken over.

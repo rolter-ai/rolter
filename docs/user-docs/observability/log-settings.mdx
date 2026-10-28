@@ -80,7 +80,7 @@ A key name cannot match a secret that sits inside free text: a key pasted into a
 
 All are on by default. Add patterns of your own as `name=regular expression` lines under **Custom patterns**; the name becomes the marker. The engine runs in time linear in the input, so a pattern cannot be made to stall capture, and it has no look-around or backreferences. A policy holds at most 16 patterns of at most 256 bytes, and a pattern that does not compile is refused with a `422` naming the field. Detectors are heuristics: they catch the common shapes, not every secret, so keep `payload_capture_redact_fields` for keys you know by name.
 
-Both kinds of redaction run on the gateway before the body is truncated and handed to the log writer, so no unredacted copy reaches ClickHouse. Streamed (SSE) responses are scanned as text rather than frame by frame.
+Both kinds of redaction run on the gateway before the body is truncated and handed to the log writer, so no unredacted copy reaches ClickHouse. Streamed (SSE) responses are scanned as text rather than frame by frame. The MCP tool-call log applies the same policy, key names, detectors and your patterns alike, to the arguments and result it stores, so a credential pasted into a tool argument or returned by a tool is stored as its marker.
 
 ### Previewing redaction
 
