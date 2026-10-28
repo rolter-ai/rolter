@@ -1,9 +1,9 @@
 //! Conformance fixtures for each distinct provider auth and path profile
 //! (#3336).
 //!
-//! Each case replays a request and a response in the shape the vendor's own
-//! documentation shows (the `doc` url of the case) through the gateway against a
-//! mock upstream mounted at the vendor's documented base path, and checks the
+//! Each case replays a request and a response shaped after the vendor's own
+//! documentation (the `doc` url of the case) through the gateway against a mock
+//! upstream mounted at the vendor's documented base path, and checks the
 //! three things a profile consists of: the path the upstream receives, the
 //! header that carries the credential, and that the vendor's response reaches
 //! the client with every field it sent, vendor extensions included. They prove
@@ -40,8 +40,18 @@ struct Seen {
     body: Value,
 }
 
+/// How a case was grounded in the vendor's documentation.
+#[derive(Debug, Clone, Copy)]
+enum Source {
+    /// base, path and request read from the documentation page
+    Fetched,
+    /// written from memory of the documentation; not checked against the page
+    Recalled,
+}
+
 struct Profile {
     kind: ProviderKind,
+    source: Source,
     /// the vendor documentation the request and response come from
     doc: &'static str,
     /// the documented base, relative to the host
@@ -125,7 +135,7 @@ async fn replay(profile: &Profile) {
         .send()
         .await
         .unwrap();
-    let kind = profile.kind;
+    let kind = (profile.kind, profile.source);
     assert_eq!(answered.status(), 200, "{kind:?}");
     let body: Value = answered.json().await.unwrap();
     assert_eq!(
@@ -180,6 +190,7 @@ fn messages() -> Value {
 async fn azure_openai_v1_authenticates_with_the_api_key_header() {
     replay(&Profile {
         kind: ProviderKind::AzureOpenai,
+        source: Source::Fetched,
         doc: "https://learn.microsoft.com/en-us/azure/ai-foundry/openai/api-version-lifecycle",
         base: "/openai/v1",
         path: "/chat/completions",
@@ -218,6 +229,7 @@ async fn azure_openai_v1_authenticates_with_the_api_key_header() {
 async fn bedrock_runtime_authenticates_with_a_bearer_api_key_under_openai_v1() {
     replay(&Profile {
         kind: ProviderKind::Bedrock,
+        source: Source::Fetched,
         doc: "https://docs.aws.amazon.com/bedrock/latest/userguide/inference-chat-completions.html",
         base: "/openai/v1",
         path: "/chat/completions",
@@ -244,6 +256,7 @@ async fn bedrock_runtime_authenticates_with_a_bearer_api_key_under_openai_v1() {
 async fn vertex_takes_an_oauth_access_token_as_a_bearer_under_the_project_endpoint() {
     replay(&Profile {
         kind: ProviderKind::Vertex,
+        source: Source::Recalled,
         doc: "https://cloud.google.com/vertex-ai/generative-ai/docs/migrate/openai/overview",
         base: "/v1/projects/PROJECT/locations/global/endpoints/openapi",
         path: "/chat/completions",
@@ -271,6 +284,7 @@ async fn vertex_takes_an_oauth_access_token_as_a_bearer_under_the_project_endpoi
 async fn gigachat_takes_an_oauth_access_token_as_a_bearer() {
     replay(&Profile {
         kind: ProviderKind::Gigachat,
+        source: Source::Recalled,
         doc: "https://developers.sber.ru/docs/ru/gigachat/api/reference/rest/post-chat",
         base: "/api/v1",
         path: "/chat/completions",
@@ -297,6 +311,7 @@ async fn gigachat_takes_an_oauth_access_token_as_a_bearer() {
 async fn gemini_openai_shim_lives_under_v1beta_openai() {
     replay(&Profile {
         kind: ProviderKind::Gemini,
+        source: Source::Recalled,
         doc: "https://ai.google.dev/gemini-api/docs/openai",
         base: "/v1beta/openai",
         path: "/chat/completions",
@@ -328,6 +343,7 @@ async fn gemini_openai_shim_lives_under_v1beta_openai() {
 async fn groq_keeps_the_openai_prefix_of_its_base() {
     replay(&Profile {
         kind: ProviderKind::Groq,
+        source: Source::Recalled,
         doc: "https://console.groq.com/docs/openai",
         base: "/openai/v1",
         path: "/chat/completions",
@@ -366,6 +382,7 @@ async fn groq_keeps_the_openai_prefix_of_its_base() {
 async fn mistral_base_carries_v1_and_the_gateway_prefix_is_not_doubled() {
     replay(&Profile {
         kind: ProviderKind::Mistral,
+        source: Source::Recalled,
         doc: "https://docs.mistral.ai/api/",
         base: "/v1",
         path: "/chat/completions",
@@ -392,6 +409,7 @@ async fn mistral_base_carries_v1_and_the_gateway_prefix_is_not_doubled() {
 async fn deepseek_base_has_no_version_segment() {
     replay(&Profile {
         kind: ProviderKind::Deepseek,
+        source: Source::Recalled,
         doc: "https://api-docs.deepseek.com/",
         base: "",
         path: "/chat/completions",

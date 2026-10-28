@@ -56,8 +56,13 @@ to `ProviderKind::auth_header` and `primary_upstream_path`.
 
 Each distinct auth/path profile also has a conformance fixture in
 `crates/rolter-gateway/tests/provider_profiles.rs` (#3336): a request and a
-response in the shape the vendor's own documentation shows, replayed through the
-gateway against a mock upstream mounted at the documented base. It checks the
+response shaped after the vendor's documentation, replayed through the gateway
+against a mock upstream mounted at the documented base. Each case records its
+`source`: `Fetched` (Azure, Bedrock) means the base, path and request were read
+from the documentation page when the case was written; `Recalled` (the rest)
+means they were written from memory and not checked against the page, and the
+response bodies are illustrative in every case. A recalled case is a regression
+guard for the profile rolter sends, not evidence about the vendor. It checks the
 path the upstream receives, the header the credential travels in, and that the
 response reaches the client whole, vendor extensions included. A kind that
 shares a profile with one of them (every hosted kind whose base ends in `/v1`)
