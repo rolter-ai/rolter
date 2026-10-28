@@ -1213,6 +1213,81 @@ export const RevokeIsConfirmedThenLands: Story = {
   },
 };
 
+/** the fixture's first invitation, mailed once and not delivered (#3304) */
+const withFailedMail = (rows: Invitation[]): Invitation[] =>
+  rows.map((row) =>
+    row.id === "inv-1"
+      ? {
+          ...row,
+          mail_status: "failed" as const,
+          mail_attempted_at: "2026-09-25T00:00:00Z",
+          mail_error: "the mail server could not be reached",
+        }
+      : row,
+  );
+
+/**
+ * A pending invitation whose email failed can be mailed again from its row. The
+ * request names the invitation, the row says it was emailed once the relay
+ * took it, and a row that never went through a relay offers no resend at all.
+ */
+let resendInvite: Recorder;
+export const ResendingAnInvitationMailsItAgain: Story = {
+  render: () => {
+    resendInvite = recording(invitationsApi({ rows: withFailedMail(INVITATIONS) }));
+    return (
+      <Harness fetchStub={resendInvite.stub}>
+        <Toasted>
+          <Users />
+        </Toasted>
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const section = within(await pendingSection(canvasElement));
+    const resend = "Email the link to newcomer@example.com again";
+    await section.findByRole("button", { name: resend });
+    // lead@example.com was never mailed, so there is no link to send again
+    await expect(
+      section.queryByRole("button", { name: "Email the link to lead@example.com again" }),
+    ).toBeNull();
+    await expect(await section.findByText("Not emailed")).toBeVisible();
+
+    await userEvent.click(section.getByRole("button", { name: resend }));
+    await resendInvite.expectSent("POST", "/invitations/inv-1/resend");
+    await expectToast(canvasElement, /Emailed the link to newcomer@example\.com again/);
+    await waitFor(() => expect(section.getByText("Emailed")).toBeVisible());
+  },
+};
+
+/** The relay still refuses: the toast says so, with the reason the row keeps. */
+export const ResendingAnInvitationThatFailsAgain: Story = {
+  render: () => (
+    <Harness
+      fetchStub={invitationsApi({
+        rows: withFailedMail(INVITATIONS),
+        onResend: (row) => json({ ...row, mail_error: "the mail server rejected the message" }),
+      })}
+    >
+      <Toasted>
+        <Users />
+      </Toasted>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const section = within(await pendingSection(canvasElement));
+    await userEvent.click(
+      await section.findByRole("button", { name: "Email the link to newcomer@example.com again" }),
+    );
+    await expectToast(
+      canvasElement,
+      /The link to newcomer@example\.com could not be emailed/,
+      "error",
+    );
+    await expectToast(canvasElement, /the mail server rejected the message/, "error");
+  },
+};
+
 /**
  * The control plane refuses the revoke. The dialog stays open with its message
  * verbatim and a line on what revoking at that scope takes: the gate answered
@@ -1572,6 +1647,8 @@ function invitationsApi(
   answers: {
     rows?: Invitation[];
     onRevoke?: (id: string, rows: Invitation[]) => Promise<Response | null> | Response | null;
+    /** answers a resend of the invitation with this id; the default mails it */
+    onResend?: (row: Invitation) => Response;
   } = {},
 ): FetchStub {
   const rows = (answers.rows ?? INVITATIONS).map((row) => ({ ...row }));
@@ -1585,6 +1662,15 @@ function invitationsApi(
       const row = rows.find((candidate) => candidate.id === revoked[1]);
       if (!row) return json({ error: { message: "not found" } }, 404);
       row.revoked_at = "2026-09-30T00:00:00Z";
+      return json(row);
+    }
+    const resent = url.match(/\/api\/v1\/invitations\/([^/?]+)\/resend$/);
+    if (method === "POST" && resent) {
+      const row = rows.find((candidate) => candidate.id === resent[1]);
+      if (!row) return json({ error: { message: "not found" } }, 404);
+      if (answers.onResend) return answers.onResend(row);
+      row.mail_status = "sent";
+      row.mail_error = null;
       return json(row);
     }
     if (method === "POST" && url.includes("/invitations")) {

@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use parking_lot::Mutex;
-use rolter_control::mail::{MailFailure, Mailer};
+use rolter_control::mail::{MailFailure, Mailer, RelayFailure, RelayStage};
 use serde_json::{json, Value};
 use uuid::Uuid;
 
@@ -17,6 +17,7 @@ use crate::support::*;
 struct Recorder {
     sent: Mutex<Vec<(String, String, String)>>,
     fail_with: Mutex<Option<String>>,
+    relay: Mutex<Option<RelayFailure>>,
 }
 
 #[async_trait]
@@ -30,6 +31,13 @@ impl Mailer for Recorder {
             .push((to.to_string(), subject.to_string(), body.to_string()));
         Ok(())
     }
+
+    async fn check(&self) -> Result<(), RelayFailure> {
+        match self.relay.lock().clone() {
+            Some(failure) => Err(failure),
+            None => Ok(()),
+        }
+    }
 }
 
 struct Fixture {
@@ -41,6 +49,8 @@ struct Fixture {
 }
 
 async fn fixture(mailer: Option<Arc<Recorder>>, org_name: &str) -> Fixture {
+    // a resend reads the link back from its sealed copy, which needs the KEK
+    std::env::set_var("ROLTER_KEK", TEST_KEK);
     let db = fresh_db().await;
     let pool = db.pool().clone();
     let app = match mailer {
@@ -215,4 +225,150 @@ async fn an_organization_name_cannot_inject_a_header() {
         !subject.contains('\r') && !subject.contains('\n'),
         "{subject:?}"
     );
+}
+
+impl Fixture {
+    async fn post(&self, path: &str) -> (u16, Value) {
+        let response = self
+            .client
+            .post(format!("{}{path}", self.base))
+            .bearer_auth(admin_token())
+            .send()
+            .await
+            .unwrap();
+        let status = response.status().as_u16();
+        (status, response.json().await.unwrap_or(Value::Null))
+    }
+}
+
+#[tokio::test]
+async fn a_resend_mails_the_same_link_and_is_audited_like_the_first_send() {
+    skip_without_db!();
+    let mailer = Arc::new(Recorder::default());
+    *mailer.fail_with.lock() = Some("the mail server could not be reached".to_string());
+    let f = fixture(Some(mailer.clone()), "Acme").await;
+    let created = f.invite("new@example.com").await;
+    assert_eq!(created["invitation"]["mail_status"], "failed");
+    let id = created["invitation"]["id"].as_str().unwrap();
+    let url = created["accept_url"].as_str().unwrap();
+
+    // the relay recovers; the admin resends instead of revoking and re-inviting
+    *mailer.fail_with.lock() = None;
+    let (status, resent) = f.post(&format!("/api/v1/invitations/{id}/resend")).await;
+    assert_eq!(status, 200, "{resent}");
+    assert_eq!(resent["mail_status"], "sent");
+    assert!(resent["mail_error"].is_null());
+    assert!(
+        resent.get("token").is_none(),
+        "the link is not handed out twice"
+    );
+
+    let sent = mailer.sent.lock().clone();
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0].0, "new@example.com");
+    assert!(sent[0].2.contains(url), "the same link goes out again");
+
+    // the original token still opens the invitation: nothing was reissued
+    let token = created["token"].as_str().unwrap();
+    let preview = f
+        .client
+        .get(format!("{}/api/v1/invitations/accept/{token}", f.base))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(preview.status(), 200);
+
+    assert_eq!(f.audited("invitation.resend").await.len(), 1);
+    assert_eq!(f.audited("invitation.mail_failed").await.len(), 1);
+    let delivered = f.audited("invitation.mail_sent").await;
+    assert_eq!(delivered.len(), 1);
+    let rendered = delivered[0].to_string();
+    assert!(
+        !rendered.contains("new@example.com") && !rendered.contains(url),
+        "{rendered}"
+    );
+}
+
+#[tokio::test]
+async fn an_invitation_that_cannot_be_resent_says_why() {
+    skip_without_db!();
+    let mailer = Arc::new(Recorder::default());
+    let f = fixture(Some(mailer.clone()), "Acme").await;
+    let created = f.invite("new@example.com").await;
+    let id = created["invitation"]["id"].as_str().unwrap().to_string();
+
+    // a link that was never kept (created before resending existed, say)
+    sqlx::query("update invitations set token_ciphertext = null, token_nonce = null")
+        .execute(&f.pool)
+        .await
+        .unwrap();
+    let (status, body) = f.post(&format!("/api/v1/invitations/{id}/resend")).await;
+    assert_eq!(status, 409, "{body}");
+    assert!(body["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("revoke"));
+
+    // an invitation that was revoked is not pending
+    let second = f.invite("other@example.com").await;
+    let second_id = second["invitation"]["id"].as_str().unwrap().to_string();
+    let revoked = f
+        .client
+        .delete(format!("{}/api/v1/invitations/{second_id}", f.base))
+        .bearer_auth(admin_token())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(revoked.status(), 200);
+    let sealed: Option<Vec<u8>> =
+        sqlx::query_scalar("select token_ciphertext from invitations where id = $1::uuid")
+            .bind(&second_id)
+            .fetch_one(&f.pool)
+            .await
+            .unwrap();
+    assert!(sealed.is_none(), "revoking clears the sealed link");
+    let (status, _) = f
+        .post(&format!("/api/v1/invitations/{second_id}/resend"))
+        .await;
+    assert_eq!(status, 409);
+
+    // and without a relay there is nothing to resend through
+    let bare = fixture(None, "Bare").await;
+    let created = bare.invite("new@example.com").await;
+    let id = created["invitation"]["id"].as_str().unwrap();
+    let (status, body) = bare.post(&format!("/api/v1/invitations/{id}/resend")).await;
+    assert_eq!(status, 409, "{body}");
+    assert!(body["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("not configured"));
+}
+
+#[tokio::test]
+async fn the_relay_check_names_the_stage_that_failed_and_nothing_else() {
+    skip_without_db!();
+    let mailer = Arc::new(Recorder::default());
+    let f = fixture(Some(mailer.clone()), "Acme").await;
+    let path = format!("/api/v1/orgs/{}/invitations/mail-check", f.org);
+
+    let (status, body) = f.post(&path).await;
+    assert_eq!(status, 200);
+    assert_eq!(body, json!({"ok": true}));
+
+    *mailer.relay.lock() = Some(RelayFailure {
+        stage: RelayStage::Auth,
+        reason: "the mail server refused the credential in the relay url".to_string(),
+    });
+    let (status, body) = f.post(&path).await;
+    assert_eq!(status, 200);
+    assert_eq!(body["ok"], false);
+    assert_eq!(body["stage"], "auth");
+    assert!(body["reason"].as_str().unwrap().contains("credential"));
+    assert!(mailer.sent.lock().is_empty(), "a check sends no message");
+
+    let bare = fixture(None, "Bare").await;
+    let (status, _) = bare
+        .post(&format!("/api/v1/orgs/{}/invitations/mail-check", bare.org))
+        .await;
+    assert_eq!(status, 409);
 }

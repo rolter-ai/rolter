@@ -387,6 +387,9 @@ pub struct NewInvitation<'a> {
     pub token_hash: &'a str,
     pub invited_by: Option<Uuid>,
     pub expires_at: chrono::DateTime<chrono::Utc>,
+    /// the token sealed with the KEK as `(ciphertext, nonce)`, so a resend can
+    /// mail the same link (#3304). `None` when nothing could seal it
+    pub sealed_token: Option<(&'a [u8], &'a [u8])>,
 }
 
 impl InvitationRepo<'_> {
@@ -415,6 +418,7 @@ impl InvitationRepo<'_> {
             token_hash,
             invited_by,
             expires_at,
+            sealed_token,
         } = values;
         let mut tx = self.0.begin().await.map_err(store_err)?;
         sqlx::query("select pg_advisory_xact_lock(hashtextextended('invitation:' || $1::text || ':' || lower($2), 0))")
@@ -424,7 +428,8 @@ impl InvitationRepo<'_> {
             .await
             .map_err(store_err)?;
         let replaced: Option<Uuid> = sqlx::query_scalar(
-            "update invitations set revoked_at = now() \
+            "update invitations set revoked_at = now(), \
+                    token_ciphertext = null, token_nonce = null \
              where org_id = $1 and lower(email) = lower($2) \
                and accepted_at is null and revoked_at is null \
              returning id",
@@ -436,8 +441,8 @@ impl InvitationRepo<'_> {
         .map_err(store_err)?;
         let invitation = sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "insert into invitations (org_id, email, role, team_id, project_id, token_hash, \
-                    invited_by, expires_at) \
-             values ($1, $2, $3, $4, $5, $6, $7, $8) \
+                    invited_by, expires_at, token_ciphertext, token_nonce) \
+             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) \
              returning {INVITATION_COLUMNS}"
         )))
         .bind(org_id)
@@ -448,6 +453,8 @@ impl InvitationRepo<'_> {
         .bind(token_hash)
         .bind(invited_by)
         .bind(expires_at)
+        .bind(sealed_token.map(|(ciphertext, _)| ciphertext))
+        .bind(sealed_token.map(|(_, nonce)| nonce))
         .fetch_one(&mut *tx)
         .await
         .map_err(store_err)?;
@@ -510,7 +517,8 @@ impl InvitationRepo<'_> {
     /// single-use even under a race.
     pub async fn mark_accepted(&self, id: Uuid) -> Result<bool> {
         let res = sqlx::query(
-            "update invitations set accepted_at = now() \
+            "update invitations set accepted_at = now(), \
+                    token_ciphertext = null, token_nonce = null \
              where id = $1 and accepted_at is null and revoked_at is null and expires_at > now()",
         )
         .bind(id)
@@ -523,7 +531,8 @@ impl InvitationRepo<'_> {
     pub async fn revoke(&self, id: Uuid) -> Result<Invitation> {
         fetch_optional_or_not_found(
             sqlx::query_as(sqlx::AssertSqlSafe(format!(
-                "update invitations set revoked_at = now() \
+                "update invitations set revoked_at = now(), \
+                    token_ciphertext = null, token_nonce = null \
              where id = $1 and accepted_at is null \
              returning {INVITATION_COLUMNS}"
             )))
@@ -532,6 +541,22 @@ impl InvitationRepo<'_> {
             || format!("pending invitation {id}"),
         )
         .await
+    }
+
+    /// The sealed token of a live invitation as `(ciphertext, nonce)`, for a
+    /// resend (#3304). `None` when the invitation is spent, revoked or expired,
+    /// or never had one sealed.
+    pub async fn sealed_token(&self, id: Uuid) -> Result<Option<(Vec<u8>, Vec<u8>)>> {
+        sqlx::query_as(
+            "select token_ciphertext, token_nonce from invitations \
+             where id = $1 and accepted_at is null and revoked_at is null \
+               and expires_at > now() \
+               and token_ciphertext is not null and token_nonce is not null",
+        )
+        .bind(id)
+        .fetch_optional(self.0)
+        .await
+        .map_err(store_err)
     }
 
     pub async fn get(&self, id: Uuid) -> Result<Invitation> {

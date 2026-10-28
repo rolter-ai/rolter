@@ -207,6 +207,21 @@ fails an invitation.
 - Each delivery is audited as `invitation.mail_sent` or `invitation.mail_failed`
   on the invitation. Neither the address nor the link is in the audit detail or
   in any log line, and neither is the SMTP URL, which can carry a password.
+- `POST /api/v1/invitations/{id}/resend` (#3304) mails the same link again. Only
+  a digest of the token is kept for sign-in, so with a relay and a KEK
+  `create_invitation` also stores the token sealed (`token_ciphertext` and
+  `token_nonce`, migration `0155`, listed in `SEALED_COLUMNS`); a resend opens
+  it, keeps the expiry and records the outcome on the row. Accepting, revoking
+  or replacing an invitation clears the sealed copy. One without it (created
+  before `0155`, without a relay, or without a KEK) answers `409` and has to be
+  revoked and sent again. It is guarded as creating the invitation is, at the
+  invitation's own scope, and audits `invitation.resend` followed by the usual
+  `invitation.mail_sent` or `invitation.mail_failed`.
+- `POST /api/v1/orgs/{org_id}/invitations/mail-check` and the `--connect`
+  mode of `rolter check` run `Mailer::check`: connect, TLS and authentication
+  against the relay, no message. A failure names its stage (`connect`, `tls`,
+  `auth`, `relay`) with a fixed sentence; the relay's reply, its address and the
+  credential never leave the process.
 - The send is awaited, bounded by a 15 second timeout, so the response says what
   happened. `Mailer` (`mail.rs`) is the seam the integration suite installs to
   record messages and to fail on demand.

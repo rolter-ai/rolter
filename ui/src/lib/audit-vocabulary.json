@@ -66,6 +66,7 @@
     "invitation.create",
     "invitation.mail_failed",
     "invitation.mail_sent",
+    "invitation.resend",
     "invitation.revoke",
     "label.create",
     "label.delete",

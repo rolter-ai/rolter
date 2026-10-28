@@ -8,6 +8,7 @@ import {
   KeyRound,
   Pencil,
   Plus,
+  Send,
   Trash2,
   UserCheck,
   UsersRound,
@@ -76,6 +77,7 @@ import {
   inviteUser,
   issuePasswordReset,
   listInvitations,
+  resendInvitation,
   revokeInvitation,
   ROLES,
   updateMembership,
@@ -1956,6 +1958,36 @@ function PendingInvitations({
     },
   });
 
+  // the same link goes out again, so the invitee's first message still works;
+  // the answer says whether the relay took it this time (#3304)
+  const resend = useMutation({
+    mutationFn: (invitation: Invitation) => resendInvitation(invitation.id),
+    onSuccess: (resent, invitation) => {
+      refresh();
+      toast.push(
+        resent.mail_status === "sent"
+          ? {
+              tone: "success",
+              title: t("pages.users.invitations.toastResent", { email: invitation.email }),
+            }
+          : {
+              tone: "error",
+              title: t("pages.users.invitations.toastResendFailed", { email: invitation.email }),
+              detail: resent.mail_error ?? undefined,
+            },
+      );
+    },
+    onError: (error, invitation) => {
+      toast.push({
+        tone: "error",
+        title: t("pages.users.invitations.toastResendFailed", { email: invitation.email }),
+        detail: errorText(error, t),
+      });
+      // accepted or revoked in the meantime: the list is stale
+      if (error instanceof ApiError && error.status === 404) refresh();
+    },
+  });
+
   if (!readable || unreadable) return null;
 
   const pending = invitations.data?.filter(
@@ -2048,7 +2080,27 @@ function PendingInvitations({
                   {expired && <Badge tone="warning">{t("pages.users.invitations.expired")}</Badge>}
                   {fmt.date(invitation.expires_at)}
                 </ListCell>
-                <ListCell className="flex justify-end">
+                <ListCell className="flex justify-end gap-1">
+                  {/* only a link that was mailed once can be mailed again: a row
+                      with no relay behind it has no kept link to send */}
+                  {!expired && invitation.mail_status !== "not_configured" && (
+                    <RowIconButton
+                      gate="invitation:create"
+                      control="invitation-resend"
+                      title={t("pages.users.invitations.resend", { email: invitation.email })}
+                      aria-label={t("pages.users.invitations.resend", {
+                        email: invitation.email,
+                      })}
+                      disabled={resend.isPending}
+                      onClick={() => resend.mutate(invitation)}
+                    >
+                      {resend.isPending && resend.variables?.id === invitation.id ? (
+                        <Loader2 className="h-3.5 w-3.5 motion-safe:animate-spin" />
+                      ) : (
+                        <Send className="h-3.5 w-3.5" />
+                      )}
+                    </RowIconButton>
+                  )}
                   <RowIconButton
                     className="hover:border-[color:var(--status-danger)] hover:text-[color:var(--status-danger-text)]"
                     gate="invitation:delete"
