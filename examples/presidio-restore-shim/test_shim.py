@@ -238,19 +238,43 @@ def test_an_unknown_token_passes_text_through_unchanged(server):
     assert run(go()) == "<PERSON_1> stays"
 
 
-def test_a_reset_mid_stream_drops_the_exchange_and_the_next_one_works(server):
-    async def go() -> str:
+def test_a_reset_mid_stream_ends_quietly_and_the_service_keeps_serving(server, caplog):
+    async def reset() -> None:
         async with Exchange(server.port) as ex:
             reply = await ex.feed("0/content", "half <PERSON")
             assert reply["held"] == 7
-        # the caller disconnected holding state; a new exchange starts clean
-        async with Exchange(server.port) as ex:
-            reply = await ex.feed("0/content", "ON_1> is not a placeholder")
-            await ex.close_channel("0/content")
-            await ex.end()
-        return reply["text"]
+            # a hard reset, as a caller that disconnects mid-stream sends
+            ex.writer.transport.abort()
+        await asyncio.sleep(0.2)
 
-    assert run(go()) == "ON_1> is not a placeholder"
+    async def after() -> str:
+        async with Exchange(server.port) as ex:
+            out = (await ex.feed("0/content", "<PERSON"))["text"]
+            out += (await ex.feed("0/content", "_1> again"))["text"]
+            out += (await ex.close_channel("0/content"))["text"]
+            await ex.end()
+        return out
+
+    with caplog.at_level(logging.DEBUG):
+        run(reset())
+        assert run(after()) == restored("<PERSON_1> again")
+    assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
+
+
+def test_close_restores_a_placeholder_that_is_also_a_prefix_of_a_longer_one(server):
+    server.store.put("tok-prefix", {"PERSON_1": "Jan", "PERSON_10": "Ola"})
+
+    async def go() -> tuple[dict, dict]:
+        async with Exchange(server.port, token="tok-prefix") as ex:
+            fed = await ex.feed("0/content", "hi PERSON_1")
+            closed = await ex.close_channel("0/content")
+            await ex.end()
+        return fed, closed
+
+    fed, closed = run(go())
+    # PERSON_1 could still grow into PERSON_10, so it is held until the close
+    assert (fed["text"], fed["held"]) == ("hi ", 8)
+    assert closed["text"] == "Jan"
 
 
 def test_a_malformed_line_ends_the_exchange_without_echoing_it(server, caplog):

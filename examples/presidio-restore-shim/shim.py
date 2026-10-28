@@ -25,13 +25,13 @@ import threading
 from dataclasses import dataclass, field
 from typing import Protocol
 
+from presidio_anonymizer import DeanonymizeEngine
+from presidio_anonymizer.entities import OperatorConfig, OperatorResult
+from presidio_anonymizer.operators import Operator, OperatorType
 from starlette.applications import Starlette
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 from starlette.types import Receive, Scope, Send
-from presidio_anonymizer import DeanonymizeEngine
-from presidio_anonymizer.entities import OperatorConfig, OperatorResult
-from presidio_anonymizer.operators import Operator, OperatorType
 
 log = logging.getLogger("presidio_restore_shim")
 
@@ -103,9 +103,13 @@ class _Trie:
                 node = node.setdefault(ch, {})
             node[""] = True  # a placeholder ends here
 
-    def walk(self, text: str, start: int) -> tuple[int | None, bool]:
+    def walk(self, text: str, start: int, final: bool = False) -> tuple[int | None, bool]:
         """Match at `start`: the end of the longest whole placeholder there, and
-        whether `text` ran out while still inside one that could grow."""
+        whether `text` ran out while still inside one that could grow.
+
+        With `final` the text is all there will be (the channel closed), so
+        nothing is held and the longest whole placeholder wins even when a
+        longer one shares its prefix."""
         node = self.root
         matched: int | None = None
         i = start
@@ -118,7 +122,7 @@ class _Trie:
                 matched = i
         # out of text: hold it if a longer placeholder is still possible
         growing = any(key != "" for key in node)
-        return (None, True) if growing else (matched, False)
+        return (None, True) if growing and not final else (matched, False)
 
 
 @dataclass
@@ -139,13 +143,30 @@ class Exchange:
         # it is rather than fail the stream
         usable = [p for p in self.mapping if 0 < len(p) <= MAX_HELD]
         if len(usable) != len(self.mapping):
-            log.warning("ignoring %d placeholder(s) over the holdback cap", len(self.mapping) - len(usable))
+            log.warning(
+                "ignoring %d placeholder(s) over the holdback cap",
+                len(self.mapping) - len(usable),
+            )
         self.trie = _Trie(usable)
 
     def feed(self, name: str, text: str, is_json: bool) -> tuple[str, int]:
         channel = self.channels.setdefault(name, Channel(json=is_json))
         channel.json = is_json or channel.json
         channel.pending += text
+        restored, channel.pending = self._scan(channel, final=False)
+        return restored, len(channel.pending)
+
+    def close(self, name: str) -> str:
+        """The channel ended: nothing more can arrive, so what is still held is
+        restored if it is a whole placeholder and released as it is if not."""
+        channel = self.channels.pop(name, None)
+        if channel is None:
+            return ""
+        return self._scan(channel, final=True)[0]
+
+    def _scan(self, channel: Channel, final: bool) -> tuple[str, str]:
+        """Restore the whole placeholders in `channel.pending`; return the text to
+        emit and the suffix to keep holding."""
         pending = channel.pending
         out: list[str] = []
         spans: list[OperatorResult] = []
@@ -153,7 +174,7 @@ class Exchange:
         held = ""
         i = 0
         while i < len(pending):
-            end, hold = self.trie.walk(pending, i)
+            end, hold = self.trie.walk(pending, i, final)
             if hold:
                 held = pending[i:]
                 break
@@ -166,13 +187,7 @@ class Exchange:
                 out.append(pending[i])
                 emitted += 1
                 i += 1
-        channel.pending = held
-        return self._deanonymize("".join(out), spans, channel.json), len(held)
-
-    def close(self, name: str) -> str:
-        """The channel ended: what is still held can no longer become a placeholder."""
-        channel = self.channels.pop(name, None)
-        return channel.pending if channel else ""
+        return self._deanonymize("".join(out), spans, channel.json), held
 
     def _deanonymize(self, text: str, spans: list[OperatorResult], is_json: bool) -> str:
         if not spans:
@@ -206,7 +221,8 @@ def create_app(store: MappingStore) -> Starlette:
 
     async def restore_stream(scope: Scope, receive: Receive, send: Send) -> None:
         if scope["method"] != "POST":
-            await JSONResponse({"error": "method not allowed"}, status_code=405)(scope, receive, send)
+            response = JSONResponse({"error": "method not allowed"}, status_code=405)
+            await response(scope, receive, send)
             return
         await send(
             {
@@ -260,7 +276,9 @@ def create_app(store: MappingStore) -> Starlette:
     )
 
 
-def _handle(store: MappingStore, exchange: Exchange | None, raw: bytes) -> tuple[Exchange, bytes | None]:
+def _handle(
+    store: MappingStore, exchange: Exchange | None, raw: bytes
+) -> tuple[Exchange, bytes | None]:
     """Apply one request line; return the exchange and the reply line, if the
     line is answered (the first one is not)."""
     try:

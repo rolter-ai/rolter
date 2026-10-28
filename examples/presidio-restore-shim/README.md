@@ -43,6 +43,18 @@ TTL that outlives the longest stream, say) and build the app with
 the text passes through and the caller sees placeholders, as with any shim
 failure.
 
+## Before you run it
+
+- **Python 3.10 or newer.**
+- **The service is unauthenticated.** A request that carries a valid
+  `restoration_token` gets the real values back, which is personal data. Run it
+  only on a private network that rolter and nothing else can reach, and put
+  authentication or mutual TLS in front of it before it leaves a loopback or a
+  pod network.
+- **Only the three direct dependencies are pinned** (`requirements.txt`). Their
+  transitive dependencies are not, so a rebuild can pick up newer ones. Generate
+  a lock file (`pip-compile`, `uv pip compile`) for anything you deploy.
+
 ## Run it
 
 ```sh
@@ -76,7 +88,8 @@ is read before the next goes out, so a shim that buffered its answers would hang
 rather than pass. They check, on every segmentation of the text from one
 character up, that the streamed result equals the buffered restore, that
 channels hold back independently, that a JSON channel gets escaped values, that
-`close` releases what could not complete, that an unknown token passes text
+`close` releases what could not complete (and restores a placeholder that only
+a longer one could have outgrown), that an unknown token passes text
 through and that a reset exchange leaves nothing behind for the next.
 
 ## What it never logs
