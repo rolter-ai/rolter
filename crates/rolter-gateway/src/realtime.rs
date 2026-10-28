@@ -16,6 +16,7 @@
 //! task instead, and a shutting-down gateway closes each session and waits for
 //! its meter's last flush before the process exits.
 
+// spec-ref: openai-realtime, websocket
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 use std::sync::Arc;
 use std::time::Duration;

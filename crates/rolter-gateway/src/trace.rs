@@ -329,6 +329,7 @@ impl<B> OnResponse<B> for StatusAwareOnResponse {
     }
 }
 
+// spec-ref: w3c-trace-context, b3
 /// Extract an inbound trace id from a W3C `traceparent`, a B3 single header, or
 /// the `x-b3-traceid` multi-header, normalized to lowercase hex. Returns an
 /// empty string when no well-formed trace id is present.

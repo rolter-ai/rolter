@@ -171,19 +171,20 @@ cache_write_per_mtok = 3.125   # optional; defaults to input_per_mtok when absen
 
 Rolter reads the prompt-cache hit from the field the provider reports it in, and records it as `cache_read_tokens`. Every spelling below counts the hit **inside** the prompt total except Anthropic's, which Rolter adds back in, so `prompt_tokens` is always the whole prompt and the cached share is priced at `cached_input_per_mtok`:
 
-| Provider                                                                                                                                                                                             | Where the cache hit is reported                                                    |
-| ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
-| OpenAI, Azure OpenAI, OpenRouter, Groq, xAI, Qwen, Z.ai/GLM, Mistral, Together, Fireworks, MiniMax, Doubao, Perplexity, Gemini (OpenAI-compatible endpoint), Meta Llama API, Nebius, Sarvam, Hunyuan | `usage.prompt_tokens_details.cached_tokens` (Chat Completions)                     |
-| OpenAI, Bedrock's OpenAI models, Meta Llama API and Sarvam (Responses API)                                                                                                                           | `usage.input_tokens_details.cached_tokens`                                         |
-| Ollama, llama.cpp, vLLM                                                                                                                                                                              | `usage.prompt_tokens_details.cached_tokens`, when the server reports one           |
-| Anthropic                                                                                                                                                                                            | `usage.cache_read_input_tokens`, beside `input_tokens` rather than inside it       |
-| Databricks-hosted Claude                                                                                                                                                                             | `usage.cache_read_input_tokens`, at the top of `usage` beside `prompt_tokens`      |
-| DeepSeek                                                                                                                                                                                             | `usage.prompt_cache_hit_tokens` (`prompt_tokens` is the hits plus the misses)      |
-| Kimi (Moonshot), some Together models                                                                                                                                                                | `usage.cached_tokens`, at the top of `usage`                                       |
-| GigaChat                                                                                                                                                                                             | `usage.precached_prompt_tokens`                                                    |
-| Gemini (native `generateContent`), Gemini Interactions                                                                                                                                               | `cachedContentTokenCount`, `total_cached_tokens`; carried across by the translator |
+| Provider                                                                                                                                                                                             | Where the cache hit is reported                                                      |
+| ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
+| OpenAI, Azure OpenAI, OpenRouter, Groq, xAI, Qwen, Z.ai/GLM, Mistral, Together, Fireworks, MiniMax, Doubao, Perplexity, Gemini (OpenAI-compatible endpoint), Meta Llama API, Nebius, Sarvam, Hunyuan | `usage.prompt_tokens_details.cached_tokens` (Chat Completions)                       |
+| OpenAI, Bedrock's OpenAI models, Meta Llama API and Sarvam (Responses API)                                                                                                                           | `usage.input_tokens_details.cached_tokens`                                           |
+| Ollama, llama.cpp, vLLM                                                                                                                                                                              | `usage.prompt_tokens_details.cached_tokens`, when the server reports one             |
+| Anthropic                                                                                                                                                                                            | `usage.cache_read_input_tokens`, beside `input_tokens` rather than inside it         |
+| Fireworks (dedicated deployments)                                                                                                                                                                    | the `fireworks-cached-prompt-tokens` response header, read when the body states none |
+| Databricks-hosted Claude                                                                                                                                                                             | `usage.cache_read_input_tokens`, at the top of `usage` beside `prompt_tokens`        |
+| DeepSeek                                                                                                                                                                                             | `usage.prompt_cache_hit_tokens` (`prompt_tokens` is the hits plus the misses)        |
+| Kimi (Moonshot), some Together models                                                                                                                                                                | `usage.cached_tokens`, at the top of `usage`                                         |
+| GigaChat                                                                                                                                                                                             | `usage.precached_prompt_tokens`                                                      |
+| Gemini (native `generateContent`), Gemini Interactions                                                                                                                                               | `cachedContentTokenCount`, `total_cached_tokens`; carried across by the translator   |
 
-A provider that caches but is not in the table logs `cache_read_tokens = 0` and is priced as fresh input until its field is added, so report the provider if you run into one. The table lists the providers whose documentation, or a response someone captured, names the field, not every provider that caches. Google documents no `usage` block for its OpenAI-compatible endpoints; Gemini's is in the table from a captured response, but no response with a cache hit was found for Vertex AI's, and Cohere's, Upstage's, OVHcloud's, Scaleway's and Ernie's compatible endpoints are not documented either, so a cache hit from any of them is read only if it uses one of the spellings above.
+A provider that caches but is not in the table logs `cache_read_tokens = 0` and is priced as fresh input until its field is added, so report the provider if you run into one. The table lists the providers whose documentation, or a response someone captured, names the field, not every provider that caches. Google documents no `usage` block for its OpenAI-compatible endpoints; Gemini's is in the table from a captured response, but no response with a cache hit was found for Vertex AI's, and Cohere's, Upstage's, OVHcloud's, Scaleway's and Ernie's compatible endpoints are not documented either, so a cache hit from any of them is read only if it uses one of the spellings above. Doubao's, Hunyuan's and Gemini's compatible endpoints are listed on the strength of the shape they copy, not of a primary source or a captured hit, so check `cache_read_tokens` on a request you know repeats a long prompt before relying on it.
 
 Tokens a provider **wrote** to its cache are recorded as `cache_write_tokens`, and are part of `prompt_tokens`. Rolter reads Anthropic's `usage.cache_creation_input_tokens` and the OpenAI-shaped spellings `usage.prompt_tokens_details.cache_write_tokens` (OpenRouter, Perplexity), `usage.input_tokens_details.cache_write_tokens` (Bedrock's OpenAI models), `usage.prompt_tokens_details.cache_creation_input_tokens` (Qwen's explicit cache) and `usage.prompt_tokens_details.created_cache_tokens` (vLLM). They are priced at `cache_write_per_mtok`, and the share Anthropic reports as written to its 1 hour cache at `cache_write_1h_per_mtok` (see [Cache writes](#cache-writes)).
 
@@ -300,22 +301,73 @@ For how a realtime session is metered, including its input-audio transcription, 
 
 ### Prices are yours, not ours
 
-Rolter ships no pricing catalog and never fetches one. Every rate comes from
-your `[[model_prices]]` entries, or from the dashboard's **Pricing** screen or
-the **Pricing override** section of a model's sheet, which write the same rows. That is deliberate:
-published list prices go stale, and most deployments have a negotiated rate, a
-committed-use discount or a self-hosted model whose real cost is a GPU bill.
-Rolter multiplies the tokens it counted by the number you gave it.
+Rolter fetches no pricing data at runtime, ever. Every rate comes from your
+`[[model_prices]]` entries, from the dashboard's **Pricing** screen or the
+**Pricing override** section of a model's sheet (which write the same rows), or
+from an explicit [catalogue import](#importing-catalogue-prices). That is
+deliberate: published list prices go stale, and most deployments have a
+negotiated rate, a committed-use discount or a self-hosted model whose real
+cost is a GPU bill. Rolter multiplies the tokens it counted by the number it
+holds for the model.
 
 The dashboard's pricing section links here for that reason — it is the answer
-to "where does this number come from", and the answer is "from whoever typed
-it".
+to "where does this number come from": from whoever typed it, or from a
+catalogue snapshot you imported on purpose.
+
+#### Importing catalogue prices
+
+To save typing the list price of a model, you can import it from a catalogue.
+The control plane carries a **vendored snapshot** of [LiteLLM's
+`model_prices_and_context_window.json`](https://github.com/BerriAI/litellm)
+(MIT, notice shipped beside it), cut down to the per-token input, output, cache
+read and cache write costs of the chat, completion, responses and embedding
+models. It is compiled into the binary, so importing works with no network, and
+the snapshot is refreshed by a maintainer running `just refresh-prices`, never
+by your deployment.
+
+- `GET /api/v1/model-prices/catalogue?q=gpt-4o` searches it and states its
+  `source`, `licence`, `currency` and `snapshot` date.
+- `POST /api/v1/model-prices/import` with `{"models": ["gpt-4o", …]}` (at most
+  500 ids; superadmin, like any price write) creates the prices. Each result is
+  `created`, `updated`, `kept_override` or `not_in_catalogue`.
+
+In the dashboard, **Pricing → Import from catalogue** (superadmin) opens a
+searchable list of the snapshot's models with their rates, the snapshot date and
+the source and licence. Pick the models and import them: the result states, per
+model, whether it was created, refreshed from the catalogue, kept as your own
+price or missing from the catalogue. The Source column of the Pricing screen
+marks each price as a catalogue value or as your override.
+
+Three rules hold for every import:
+
+- **Your price wins.** A price you set by hand (the Pricing screen, the API,
+  `[[model_prices]]`) is an _override_: an import reports it as
+  `kept_override` and does not touch it. Editing an imported price in the
+  dashboard turns it into an override. To go back to the catalogue value,
+  delete your price and import the model again.
+- **Catalogue prices are marked.** An imported row carries its `source` and the
+  date of the snapshot it came from (`source_imported_at`), and the dashboard
+  shows both on the Pricing screen and in the model sheet.
+- **They are list prices, subject to change.** The file is a third party's
+  best effort and drifts from the provider's real price list, and the choice of
+  LiteLLM as the source is itself provisional. Check an imported rate against
+  your invoice before you rely on it for budgets.
+
+The file states no currency; the importer states **USD** explicitly, so an
+import needs USD to be convertible in your deployment (it is the default base
+currency).
+
+### Cache hits and overall p95
+
+`GET /api/v1/analytics/summary` also reports `cache_hit_requests`, the requests answered from rolter's response cache (a provider's prompt cache is not counted here; it shows in each row's `cache_read_tokens`), and `p95_latency_ms`, the 95th percentile of latency over the whole window. The hit count is scaled by the log's sampling weight like every other count, so the response-cache hit rate is `cache_hit_requests / requests`; the percentile is read from the sampled rows as they are, since a uniform sample already estimates it. The dashboard home shows both.
 
 ### Withheld and unknown-usage traffic
 
 Two more flags keep a total honest. A **withheld** response is one the provider answered and billed but an output guardrail or a `post_response` plugin refused to deliver: the caller got a 403, and the cost is still in `cost_usd`. **Unknown usage** is the other way round: the upstream answered successfully but reported no token counts, so a zero there means "not reported", not "free".
 
 `GET /api/v1/analytics/summary` and `GET /api/v1/analytics/by-model` report `withheld_requests`, `withheld_cost` (the part of `cost_usd` that bought an answer nobody saw) and `usage_unknown_requests`, scaled by the log's sampling weight like every other count. Every row from `GET /api/v1/analytics/invocations` carries `withheld` and `usage_unknown` as `0` or `1`.
+
+The **Dashboard** says so whenever either count is non-zero in the window: a notice gives the withheld requests and the part of the spend they account for, and another gives the successful requests with no reported usage. Each links to **LLM Logs** over the same window and filters, narrowed to those rows with `withheld=true` or `usage_unknown=true` on `GET /api/v1/analytics/invocations`. The server applies both flags before the page is cut, inside the caller's row scope, so a page of 50 is 50 matching rows.
 
 **LLM Logs** marks a withheld row with its 403, the billed cost and the policy named in `error`, and shows a muted dash with an explanation instead of `0` for a row whose usage is unknown, the way it does for an unpriced one.
 
@@ -432,7 +484,7 @@ That covers a date the calendar does not have (`2026-02-30`), a lowercase `t` or
 - **Status** is one of **All**, **Errors** and **OK**. **Errors** is every request answered with a status of 400 or above, plus every request that got no answer at all (status `0`, shown as `ERR` in the table and **No response** in the drawer), since an upstream that never answered is the failure you are looking for. **OK** is every request answered with a status below 400, which includes a redirect as well as a `2xx`, and never a request that got no answer. **All** applies no filter.
 - **Model** takes one model, because the API filters on one exact model name. Picking a second model replaces the first.
 - **Virtual key** takes one key, picked by name from the keys of the project you are looking at. The address carries it as `key=<id>`.
-- **Cost** has one check, **Unpriced only**, which keeps the requests recorded as unpriced (see [Unpriced traffic](#unpriced-traffic)). The API takes it as `unpriced=true`.
+- **Cost** has three checks. **Unpriced only** keeps the requests recorded as unpriced (see [Unpriced traffic](#unpriced-traffic)); the API takes it as `unpriced=true`. **Withheld responses only** keeps the requests a policy refused to deliver after the provider billed them, and **Unknown usage only** keeps the successes whose upstream reported no usage (see [Withheld and unknown-usage traffic](#withheld-and-unknown-usage-traffic)); the API takes them as `withheld=true` and `usage_unknown=true`. They combine with each other and with every other filter, but a withheld response is a `403` and a response with unknown usage was a success, so ticking both returns nothing. Like every filter here they narrow the rows your roles can read and never widen them.
 - **Business unit** and **Customer** each take several values. A request matches when it was charged to any of the ones you picked.
 - **Plugin** appears when the address names one (`plugin=blocked:<slug>`), and keeps the requests that plugin acted on. **Clear filters** drops it.
 
@@ -444,11 +496,11 @@ The filters are part of the page's address, so a reload keeps them and a copied 
 /logs?status=error&model=gpt-4o&business_unit=<unit-id>&unpriced=true
 ```
 
-A link can outlive what it names. A status value the API does not know is ignored, and so is an `unpriced` value other than `true`, and a model that has since been removed from the catalogue still filters the log and still shows in the picker, so you can see it and clear it. The row open in the detail drawer is not part of the address, except when it was opened by [an id lookup](#looking-a-request-up-in-the-dashboard), whose link opens the drawer again.
+A link can outlive what it names. A status value the API does not know is ignored, and so is an `unpriced`, `withheld` or `usage_unknown` value other than `true`, and a model that has since been removed from the catalogue still filters the log and still shows in the picker, so you can see it and clear it. The row open in the detail drawer is not part of the address, except when it was opened by [an id lookup](#looking-a-request-up-in-the-dashboard), whose link opens the drawer again.
 
 ### Saved views
 
-**Saved views** beside **Filters** keeps the filters you have applied under a name, so you can come back to them in one click. On **LLM Logs** a view holds the time window, status, model, key, business unit and customer; on the Dashboard it holds the window, model, key, business unit and customer. It never holds an id lookup, the page you were on or the **Unpriced only** check. Pick **Apply** to set the screen's filters from the view, **Rename** to change its name, or the bin to delete it. Each account keeps up to 50 views per screen, and a name can be used once.
+**Saved views** beside **Filters** keeps the filters you have applied under a name, so you can come back to them in one click. On **LLM Logs** a view holds the time window, status, model, key, business unit and customer; on the Dashboard it holds the window, model, key, business unit and customer. It never holds an id lookup, the page you were on or the **Cost** checks. Pick **Apply** to set the screen's filters from the view, **Rename** to change its name, or the bin to delete it. Each account keeps up to 50 views per screen, and a name can be used once.
 
 Views are private: they follow your account to any browser you sign in from, and nobody else sees them. They never widen what you can read. If a view names a key, business unit or customer that you can no longer read, it is applied without that filter and the screen says how many it left out, for example _Applied without: 1 key, 2 customers_. The ids are not shown. Saving again keeps only the filters applied at that moment.
 

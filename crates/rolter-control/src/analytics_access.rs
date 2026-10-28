@@ -179,6 +179,17 @@ impl AnalyticsAccess {
         }
     }
 
+    /// A caller holding a viewer-or-better role in each of `orgs` and nothing
+    /// else, for a test outside this module that needs a scoped reach without
+    /// a database.
+    #[cfg(test)]
+    pub(crate) fn member_of_orgs(orgs: &[&str]) -> Self {
+        Self {
+            member_orgs: orgs.iter().map(|org| (org.to_string(), 0)).collect(),
+            ..Self::default()
+        }
+    }
+
     /// The ClickHouse `param_*` bindings for [`ROW_VISIBLE`],
     /// [`PAYLOAD_VISIBLE`] and [`PROVIDER_VISIBLE`]. Every binding is always
     /// present, so a query may use any of the fragments.
@@ -293,12 +304,29 @@ impl FromRequestParts<ControlState> for AnalyticsAccess {
     }
 }
 
+/// The caller's reach for the savings advisor (#1581): the request log's
+/// tenancy rule, floored on `savings:read` rather than `analytics:read` so the
+/// matrix can grant the re-pricing report on its own.
+pub(crate) struct SavingsAccess(pub(crate) AnalyticsAccess);
+
+impl FromRequestParts<ControlState> for SavingsAccess {
+    type Rejection = Response;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &ControlState,
+    ) -> Result<Self, Self::Rejection> {
+        resolve(parts, state, Reads::Savings).await.map(Self)
+    }
+}
+
 /// Which capability floors the read of a table, since the request log and the
 /// MCP tool-call log are scoped the same way but named by different rows of
 /// the matrix.
 #[derive(Clone, Copy)]
 enum Reads {
     Analytics,
+    Savings,
     #[cfg(feature = "postgres")]
     McpLog,
 }
@@ -570,6 +598,7 @@ mod scoped {
             .await?;
         let (resource, read_floor) = match reads {
             super::Reads::Analytics => ("analytics", floor(cap!("analytics", Read))),
+            super::Reads::Savings => ("savings", floor(cap!("savings", Read))),
             super::Reads::McpLog => ("mcp_log", floor(cap!("mcp_log", Read))),
         };
         let mut access = from_roles_for(

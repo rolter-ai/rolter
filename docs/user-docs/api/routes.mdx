@@ -88,14 +88,71 @@ curl -s "https://control.example.com/api/v1/projects/$PROJECT_ID/routes?include=
 | `include` value | adds to each route                                                                                      |
 | --------------- | ------------------------------------------------------------------------------------------------------- |
 | `targets`       | `targets`: the list `GET /api/v1/routes/{route_id}/targets` returns, empty when the route has none      |
+| `variants`      | `variants`: the list `GET /api/v1/routes/{id}/variants` returns, empty when the route has none          |
 | `complexity`    | `complexity`: the policy `GET /api/v1/routes/{id}/complexity` returns, `{"tiers": []}` when none is set |
 
 Values are comma-separated and each is optional. Without `include` the list is
-the route rows alone, as before; a value other than the two above is a `400`
+the route rows alone, as before; a value other than the three above is a `400`
 with the `invalid_field` code. The embedded fields need the same `route:read`
 permission as the list, and a route an access profile hides from the caller is
 left out of the list together with its targets. The per-route endpoints keep
 working.
+
+## Weighted variants
+
+A route defined through the API can carry the same weighted
+[variants](/concepts/providers-and-routes#variants) as a `[[routes.variants]]`
+entry in `rolter.toml`: named buckets with a traffic weight, their own ordered
+targets and optional param defaults. Each request samples one variant by weight
+and falls back through the others in the order they are listed. While a route
+has variants, its own target list is not used.
+
+`GET /api/v1/routes/{id}/variants` lists them in that order, each with its
+targets in routing order. `PUT /api/v1/routes/{id}/variants` replaces the whole
+set; send an empty list to remove the variants and put the route back on its
+own targets.
+
+```bash
+curl -s -X PUT "https://control.example.com/api/v1/routes/$ROUTE_ID/variants" \
+  -H "Authorization: Bearer $ROLTER_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "variants": [
+      {"name": "control", "weight": 9,
+       "targets": [{"provider_id": "'"$OPENAI_ID"'", "upstream_model": "gpt-4o"}]},
+      {"name": "canary", "weight": 1, "params": {"temperature": 0.7},
+       "targets": [
+         {"provider_id": "'"$ANTHROPIC_ID"'", "upstream_model": "claude-sonnet-4-20250514"},
+         {"provider_id": "'"$OPENAI_ID"'", "upstream_model": "gpt-4o"}
+       ]}
+    ]
+  }'
+```
+
+| field                      | meaning                                                                                    |
+| -------------------------- | ------------------------------------------------------------------------------------------ |
+| `name`                     | unique in the route, not blank; request logs and metrics carry it in their `variant` field |
+| `weight`                   | the variant's share of traffic, `1` or more (default `1`)                                  |
+| `params`                   | default inference params for this variant, layered over the route's own; omitted is none   |
+| `targets`                  | 1 to 32 targets in the order they are tried                                                |
+| `targets[].provider_id`    | a provider of the route's organization that the route's project may use                    |
+| `targets[].upstream_model` | the model name sent upstream; omitted, `null` or blank forwards the route's public name    |
+| `targets[].weight`         | `0` or more (default `1`); at least one target of each variant needs a weight above `0`    |
+
+A route takes at most 32 variants. A variant weight of `0` is refused for now:
+it would read as "fallback only", but the gateway samples a `0` as if it were
+`1`, so such a variant still takes a share of first attempts
+([#3341](https://github.com/rolter-ai/rolter/issues/3341)). A `rolter.toml`
+variant with weight `0` still imports and keeps that sampled-as-`1` meaning;
+the dashboard's split preview shows the share it actually gets, and asks for
+`1` or more before it saves the route's variants.
+
+The response is the stored list. A set equal to the stored one changes nothing
+and is not audited; any other is recorded as `route.set_variants` with each
+variant's name, weight and target count, and reaches the gateways with the next
+snapshot. A provider that a variant still targets cannot be deleted, the same as
+one a route target names. `rolter-seed --import` stores a route's
+`[[routes.variants]]` and `rolter config export` writes them back.
 
 ## Disabling complexity routing
 
@@ -140,13 +197,16 @@ entry is checked the way adding a single target is checked.
 | ------ | --------------------------------------------------------------------------------------------------------- |
 | `200`  | saved                                                                                                     |
 | `400`  | an unknown `strategy`, an empty `targets` list, a `weight` below 1, or a field the endpoint does not take |
+| `400`  | for variants: a variant weight below 1, a negative target weight, a blank or repeated name, or no target  |
 | `401`  | no valid session or admin token                                                                           |
 | `403`  | the caller is not an admin of the route's project                                                         |
 | `404`  | no such route, or a `provider_id` that is not a provider of the route's organization                      |
 | `409`  | `scope_mismatch`: a provider scoped to a different project                                                |
 
 A refused weight or an empty list answers with the `invalid_field` code and the
-field's path, such as `targets[1].weight`, so a client can point at the entry.
+field's path, such as `targets[1].weight` or `variants[0].targets[1].weight`, so
+a client can point at the entry. Too many variants names `variants`.
+Variants take the same `route:update` permission as the rest of the route.
 An empty list is refused because it would leave the route nothing to serve;
 set `enabled` to `false` or delete the route instead.
 

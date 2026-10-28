@@ -15,6 +15,7 @@
 //! come from the helpers in `rolter_core::mcp_log`, which the control plane's
 //! ingest route applies too.
 
+// spec-ref: json-rpc
 use std::sync::atomic::Ordering::Relaxed;
 use std::sync::Arc;
 use std::task::{Context, Poll};

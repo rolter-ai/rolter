@@ -375,9 +375,9 @@ export const ScopePopoverChangesTheScope: Story = {
 /**
  * The landing screen's reference render is one day of traffic, not figures
  * over empty charts. The shell's stub answered the summary and nothing else, so
- * the tiles said 132 requests beside a spend chart, a donut, bars and a request
+ * the tiles said 132 requests beside a spend chart, a by-model table and a request
  * log that said there was nothing (#1994), and the latency tile read "0 ms"
- * from a summary with no average.
+ * from a summary with no percentile.
  */
 export const TheLandingScreenHoldsOneDayOfTraffic: Story = {
   render: () => <AppShell route="/dashboard" />,
@@ -385,7 +385,8 @@ export const TheLandingScreenHoldsOneDayOfTraffic: Story = {
     const canvas = within(canvasElement);
     const figures = await canvas.findByTestId("dashboard-figures");
     await expect(await within(figures).findByText("132")).toBeVisible();
-    await expect(figures).toHaveTextContent(/215\s*ms/);
+    // the tile is the 95th percentile of the window, not its mean (#1978)
+    await expect(figures).toHaveTextContent(/980\s*ms/);
     await expect(
       await canvas.findByRole("img", {
         name: en.pages.dashboard.spendChartAria.replace("{{window}}", en.common.timeWindow.last24h),

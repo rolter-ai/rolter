@@ -326,6 +326,8 @@ model = "claude-sonnet-4-20250514"
   The `weight` on each variant controls proportional sampling — `9:1` sends 90 % of requests to `control` and 10 % to `canary`. A route uses either `[[routes.variants]]` _or_ a `[[routes.targets]]` pool, not both.
 </Info>
 
+A route created in the dashboard or through the API can carry variants too: open the route's sheet and use its **Variants** section, which previews the traffic split as you set the weights, or call [`PUT /api/v1/routes/{id}/variants`](/api/routes#weighted-variants). `rolter-seed --import` stores a file route's variants in the database and `rolter config export` writes them back, so a route keeps its split when it moves between the file and the control plane.
+
 ### Variant-level param overrides
 
 ```toml rolter.toml

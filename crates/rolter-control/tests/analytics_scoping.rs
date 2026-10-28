@@ -1291,3 +1291,245 @@ async fn sampled_rows_scale_counts_and_sums_but_not_percentiles() {
     let p50 = row["p50_latency_ms"].as_f64().unwrap();
     assert!((100.0..=300.0).contains(&p50), "{p50}");
 }
+
+/// The summary's cache-hit count is weighted like the other counts and its p95
+/// is read unscaled (#1978). Both sit beside aliased aggregates in one select,
+/// which a fake ClickHouse cannot tell from a real one that nests them.
+#[tokio::test]
+async fn summary_reports_weighted_cache_hits_and_an_overall_p95() {
+    let ch = skip_without_stack!();
+    let http = reqwest::Client::new();
+    ensure_schema(&http, &ch).await;
+
+    let db = TestSchema::create(&test_database::url().await.unwrap()).await;
+    let app = rolter_control::test_app_with_clickhouse_and_admin_token(
+        db.pool().clone(),
+        &ch,
+        Some(ADMIN_TOKEN.to_string()),
+    )
+    .await
+    .unwrap();
+    let addr = serve(app).await;
+
+    let model = format!("cache-{}", Uuid::new_v4().simple());
+    let ts = chrono::Utc::now()
+        .format("%Y-%m-%d %H:%M:%S%.3f")
+        .to_string();
+    // two kept rows weigh two requests each: one hit, one miss
+    let rows: Vec<Value> = [(1, 100), (0, 300)]
+        .iter()
+        .enumerate()
+        .map(|(i, (hit, latency))| {
+            json!({
+                "ts": ts, "request_id": format!("cache-{i}-{}", Uuid::new_v4().simple()),
+                "model": model, "status": 200, "latency_ms": latency, "cache_hit": hit,
+                "sample_weight": 2.0,
+            })
+        })
+        .collect();
+    insert_rows(&http, &ch, "request_logs", &rows).await;
+
+    let response = http
+        .get(format!(
+            "http://{addr}/api/v1/analytics/summary?model={model}"
+        ))
+        .bearer_auth(ADMIN_TOKEN)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let body: Value = response.json().await.unwrap();
+    let row = &body["data"][0];
+    assert_eq!(row["requests"].as_f64(), Some(4.0));
+    assert_eq!(row["cache_hit_requests"].as_f64(), Some(2.0));
+    let p95 = row["p95_latency_ms"].as_f64().unwrap();
+    assert!((100.0..=300.0).contains(&p95), "{p95}");
+}
+
+/// The invocation list's request ids for `token`, among `request_ids`, for one
+/// query string, sorted.
+async fn invocation_ids(
+    client: &reqwest::Client,
+    addr: SocketAddr,
+    token: &str,
+    query: &str,
+    request_ids: &[&str],
+) -> Vec<String> {
+    let response = client
+        .get(format!(
+            "http://{addr}/api/v1/analytics/invocations?limit=200&{query}"
+        ))
+        .bearer_auth(token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200, "invocations {query}");
+    let body: Value = response.json().await.unwrap();
+    let mut ids: Vec<String> = body["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|row| row["request_id"].as_str())
+        .filter(|id| request_ids.contains(id))
+        .map(str::to_string)
+        .collect();
+    ids.sort();
+    ids
+}
+
+/// `withheld=true` and `usage_unknown=true` narrow the list on the flags the
+/// gateway recorded (#3302), inside the caller's row scope: a member of one
+/// project never sees another tenant's withheld row through the filter.
+#[tokio::test]
+async fn withheld_and_unknown_usage_filters_narrow_inside_the_callers_scope() {
+    let ch = skip_without_stack!();
+    let http = reqwest::Client::new();
+    ensure_schema(&http, &ch).await;
+
+    let db = TestSchema::create(&test_database::url().await.unwrap()).await;
+    let pool = db.pool().clone();
+    let app = rolter_control::test_app_with_clickhouse_and_admin_token(
+        pool.clone(),
+        &ch,
+        Some(ADMIN_TOKEN.to_string()),
+    )
+    .await
+    .unwrap();
+    let addr = serve(app).await;
+    let mine = seed_tenant(&pool, "withheld-mine").await;
+    let other = seed_tenant(&pool, "withheld-other").await;
+    let member = seed_user(
+        &pool,
+        Some(mine.org),
+        Some(mine.team),
+        Some(mine.project_a),
+        "member",
+    )
+    .await;
+
+    let ts = chrono::Utc::now()
+        .format("%Y-%m-%d %H:%M:%S%.3f")
+        .to_string();
+    let tag = Uuid::new_v4().simple().to_string();
+    let log = |label: &str, tenant: &Tenant, withheld: u8, usage_unknown: u8| {
+        json!({
+            "ts": ts, "request_id": format!("flag-{label}-{tag}"),
+            "org_id": tenant.org.to_string(), "team_id": tenant.team.to_string(),
+            "project_id": tenant.project_a.to_string(),
+            "model": "fake-llm", "status": if withheld == 1 { 403 } else { 200 },
+            "withheld": withheld, "usage_unknown": usage_unknown,
+        })
+    };
+    insert_rows(
+        &http,
+        &ch,
+        "request_logs",
+        &[
+            log("plain", &mine, 0, 0),
+            log("withheld", &mine, 1, 0),
+            log("unknown", &mine, 0, 1),
+            log("theirs", &other, 1, 1),
+        ],
+    )
+    .await;
+    let id = |label: &str| format!("flag-{label}-{tag}");
+    let all: Vec<String> = ["plain", "withheld", "unknown", "theirs"]
+        .iter()
+        .map(|l| id(l))
+        .collect();
+    let all: Vec<&str> = all.iter().map(String::as_str).collect();
+    let ids = |labels: &[&str]| {
+        let mut v: Vec<String> = labels.iter().map(|l| id(l)).collect();
+        v.sort();
+        v
+    };
+
+    // no filter: the member's three rows, never the other tenant's
+    assert_eq!(
+        invocation_ids(&http, addr, &member, "", &all).await,
+        ids(&["plain", "unknown", "withheld"])
+    );
+    assert_eq!(
+        invocation_ids(&http, addr, &member, "withheld=true", &all).await,
+        ids(&["withheld"])
+    );
+    assert_eq!(
+        invocation_ids(&http, addr, &member, "usage_unknown=true", &all).await,
+        ids(&["unknown"])
+    );
+    // `false` is the filter left off
+    assert_eq!(
+        invocation_ids(&http, addr, &member, "withheld=false", &all).await,
+        ids(&["plain", "unknown", "withheld"])
+    );
+    // the admin token sees the other tenant's row through the same filter
+    assert_eq!(
+        invocation_ids(&http, addr, ADMIN_TOKEN, "withheld=true", &all).await,
+        ids(&["theirs", "withheld"])
+    );
+}
+
+/// The savings advisor's queries against the real engine (#1581). Its unit
+/// tests answer them from a fake, which cannot show that ClickHouse resolves a
+/// bare column name to a select alias first: a summed column read inside the
+/// grouping key or inside another sum only fails on a real server.
+#[tokio::test]
+async fn the_savings_advisor_reads_real_request_logs() {
+    let ch = skip_without_stack!();
+    let http = reqwest::Client::new();
+    ensure_schema(&http, &ch).await;
+
+    let db = TestSchema::create(&test_database::url().await.unwrap()).await;
+    let pool = db.pool().clone();
+    let app = rolter_control::test_app_with_clickhouse_and_admin_token(
+        pool.clone(),
+        &ch,
+        Some(ADMIN_TOKEN.to_string()),
+    )
+    .await
+    .unwrap();
+    let addr = serve(app).await;
+    let acme = seed_tenant(&pool, "savings").await;
+
+    // a fresh route name, so rows other tests left in a shared clickhouse are
+    // never counted
+    let route = format!("savings-{}", Uuid::new_v4().simple());
+    let ts = chrono::Utc::now()
+        .format("%Y-%m-%d %H:%M:%S%.3f")
+        .to_string();
+    let row = |status: u16, prompt: u32, completion: u32, cost: f64| {
+        json!({
+            "ts": ts, "request_id": format!("savings-{}", Uuid::new_v4().simple()),
+            "org_id": acme.org.to_string(), "team_id": acme.team.to_string(),
+            "project_id": acme.project_a.to_string(), "model": route, "target": "big-model",
+            "status": status, "prompt_tokens": prompt, "completion_tokens": completion,
+            "total_tokens": prompt + completion, "cost_usd": cost,
+        })
+    };
+    // one small eligible request, one whose prompt is over the threshold, and
+    // one that failed: three reasons in the grouping key
+    insert_rows(
+        &http,
+        &ch,
+        "request_logs",
+        &[
+            row(200, 100, 20, 1.0),
+            row(200, 9000, 20, 2.0),
+            row(500, 100, 0, 0.5),
+        ],
+    )
+    .await;
+
+    let response = http
+        .get(format!("http://{addr}/api/v1/analytics/savings"))
+        .query(&[("route", route.as_str())])
+        .bearer_auth(ADMIN_TOKEN)
+        .send()
+        .await
+        .unwrap();
+    let status = response.status();
+    let report: Value = response.json().await.unwrap_or(Value::Null);
+    assert_eq!(status, 200, "{report}");
+    assert_eq!(report["spend"]["requests"], 3.0, "{report}");
+    assert_eq!(report["spend"]["cost_usd"], 3.5, "{report}");
+}

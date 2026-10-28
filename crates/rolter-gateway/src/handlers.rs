@@ -146,6 +146,7 @@ pub async fn metrics(State(state): State<AppState>) -> impl IntoResponse {
             u8::from(counts.engaged)
         );
     }
+    // spec-ref: prometheus-text
     ([(header::CONTENT_TYPE, "text/plain; version=0.0.4")], body)
 }
 
@@ -2209,15 +2210,19 @@ async fn proxy(
         );
     }
 
-    // the sanitizer's response leg needs the whole body for the same reason the
-    // output guardrails do: an entity — or a placeholder — can straddle any SSE
-    // chunk boundary, and neither detection nor reversal is correct on a
-    // fragment. same trade-off, same resolution as `streaming_post_call` (#848)
+    // the sanitizer's buffered response leg needs the whole body for the same
+    // reason the output guardrails do: an entity — or a placeholder — can
+    // straddle any SSE chunk boundary, and neither detection nor reversal is
+    // correct on a fragment. `streaming` decides what a stream gets: refused,
+    // passed through, or — for restoration only — restored through the
+    // sanitizer's streaming endpoint (#848, #911)
     let pii_touches_response = snap.pii_sanitizer.touches_response(restore_requested);
-    if pii_touches_response
-        && stream
-        && snap.pii_sanitizer.streaming == rolter_core::StreamingResponse::Reject
-    {
+    let pii_stream_mode = if stream {
+        snap.pii_sanitizer.stream_handling(restore_requested)
+    } else {
+        None
+    };
+    if pii_stream_mode == Some(rolter_core::StreamingResponse::Reject) {
         state
             .metrics
             .pii_stream_rejections_total
@@ -2234,7 +2239,8 @@ async fn proxy(
         );
     }
     // a stream that got here is one the operator opted out of the response leg
-    // for; the request leg still ran, so PII still did not reach the provider
+    // for, or one restored below; the request leg still ran, so PII still did
+    // not reach the provider
     let pii_leg = (pii_touches_response && !stream).then(|| PiiResponseLeg {
         state: &state,
         config: &snap.pii_sanitizer,
@@ -2245,7 +2251,40 @@ async fn proxy(
         scope: &pii_scope,
         ticket: pii_ticket.as_ref(),
         will_restore,
+        // the same decision the log row makes below; with capture off the
+        // pre-restore body has no reader, so it is never kept (#3240)
+        capture: payload_capture_enabled(&snap.logging.payload_capture, &model, &scope.key),
     });
+    // a streamed restore needs a token for this request's own scope; with none
+    // (nothing was replaced, or the service cannot reverse) there is nothing to
+    // restore and the stream is served as it is. taken by whichever path
+    // answers
+    let mut pii_stream = if pii_stream_mode == Some(rolter_core::StreamingResponse::Restore) {
+        let token = pii_ticket.as_ref().and_then(|ticket| {
+            let token = ticket.token_for(&pii_scope);
+            if token.is_none() {
+                // as `pii_sanitizer::restore` does: never reached today, and
+                // counted if a change ever makes it reachable
+                state.metrics.pii_restore_errors_total.fetch_add(1, Relaxed);
+                tracing::warn!(
+                    "refusing to restore a pii token outside the tenant and route that produced it"
+                );
+            }
+            token
+        });
+        token.map(|token| {
+            crate::pii_stream::StreamRestore::new(
+                &snap.pii_sanitizer,
+                &state.side_client,
+                &state.metrics,
+                token,
+                &pii_trace_id,
+                pii_tenant.clone(),
+            )
+        })
+    } else {
+        None
+    };
     // set by the ensure_request_id middleware, under whichever header the
     // snapshot names
     let request_id = request_id.as_str().to_string();
@@ -2435,6 +2474,7 @@ async fn proxy(
                     plugins: post_response_plugins.as_ref(),
                     pii: pii_leg.as_ref(),
                 },
+                pii_stream.take(),
             )
             .await;
         }
@@ -2504,6 +2544,7 @@ async fn proxy(
                             plugins: post_response_plugins.as_ref(),
                             pii: pii_leg.as_ref(),
                         },
+                        pii_stream.take(),
                     )
                     .await;
                 }
@@ -3090,8 +3131,8 @@ async fn proxy(
                             let mut post_events = Vec::new();
                             let applied = policy.apply(status_code, &mut post_events, bytes).await;
                             log.plugin_events.extend(post_events);
-                            let bytes = match applied {
-                                Delivery::Send(bytes) => bytes,
+                            let (bytes, pre_restore) = match applied {
+                                Delivery::Send { body, pre_restore } => (body, pre_restore),
                                 // the upstream call happened and is billed on
                                 // a refusal as on a delivery (#1478)
                                 Delivery::Refuse { response, reason } => {
@@ -3113,6 +3154,7 @@ async fn proxy(
                             };
                             return buffered_response(
                                 bytes,
+                                pre_restore,
                                 billed,
                                 status,
                                 content_type,
@@ -3126,6 +3168,7 @@ async fn proxy(
                                 inflight_guard,
                                 response_observer,
                                 genai_span.clone(),
+                                pii_stream.take(),
                             );
                         }
                         Err(err) => return body_read_failed(&state.log, log, started, &err),
@@ -3149,6 +3192,7 @@ async fn proxy(
                 post_response_plugins.clone(),
                 pii_leg.as_ref(),
                 semantic_leg,
+                pii_stream.take(),
             )
             .await
         }
@@ -3702,6 +3746,7 @@ async fn proxy_multipart(
                 recorder,
                 token_recorder,
                 inflight_guard,
+                None,
                 None,
                 None,
                 None,
@@ -4440,6 +4485,7 @@ async fn stream_response(
     post_response_plugins: Option<crate::plugin_dispatch::PostResponsePlugins<'_>>,
     pii: Option<&PiiResponseLeg<'_>>,
     semantic: Option<SemanticLeg<'_, '_>>,
+    pii_stream: Option<crate::pii_stream::StreamRestore>,
 ) -> Response {
     let status =
         StatusCode::from_u16(response.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
@@ -4454,6 +4500,13 @@ async fn stream_response(
     // whether it was a cache hit (ROL-58). this streamed path is always a live
     // upstream response (a miss); cache hits are served by `cached_response`
     let decision = DecisionHeaders::from_log(&log);
+    // the prompt-cache hit a provider states in a response header (Fireworks,
+    // #2882), which the body parser cannot see
+    let header_cache_read = response
+        .headers()
+        .get(rolter_proxy::CACHED_PROMPT_TOKENS_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .and_then(rolter_proxy::cached_prompt_tokens_header);
     // a non-streamed body is buffered when something has to see all of it: a
     // response translation, or output guardrails (#591). the guard only exists
     // when a post-call rule applies to this route, so an unguarded route keeps
@@ -4508,8 +4561,11 @@ async fn stream_response(
                 // what the provider charged, read before the guardrails,
                 // plugins and sanitizer below can rewrite or withhold the body
                 // (#1478)
-                let billed =
+                let mut billed =
                     crate::logging::parse_usage_with(is_sse, &bytes, translation.thinking_count());
+                billed.fill_cache_read(
+                    header_cache_read.map(|n| u32::try_from(n).unwrap_or(u32::MAX)),
+                );
                 let policy = DeliveryPolicy {
                     output,
                     semantic,
@@ -4520,8 +4576,8 @@ async fn stream_response(
                 let applied = policy.apply(status, &mut post_events, bytes).await;
                 let mut log = log;
                 log.plugin_events.extend(post_events);
-                let bytes = match applied {
-                    Delivery::Send(bytes) => bytes,
+                let (bytes, pre_restore) = match applied {
+                    Delivery::Send { body, pre_restore } => (body, pre_restore),
                     Delivery::Refuse { response, reason } => {
                         return withheld_response(
                             response,
@@ -4541,6 +4597,7 @@ async fn stream_response(
                 };
                 buffered_response(
                     bytes,
+                    pre_restore,
                     billed,
                     status.as_u16(),
                     content_type,
@@ -4554,6 +4611,10 @@ async fn stream_response(
                     inflight_guard,
                     completion_observer,
                     genai_span,
+                    // a buffered stream is replayed through the restore like a
+                    // live one, so the guard judged the placeholders and only
+                    // the caller sees plaintext (ADR-0036, ADR-0037)
+                    pii_stream,
                 )
             }
             Err(err) => body_read_failed(&sink, log, started, &err),
@@ -4582,12 +4643,14 @@ async fn stream_response(
     )
     .with_completion_observer(completion_observer)
     .with_genai_span(genai_span)
-    .with_thinking_count(translation.thinking_count());
+    .with_thinking_count(translation.thinking_count())
+    .with_header_cache_read(header_cache_read);
+    let body = restore_stream_body(body, is_sse, status, pii_stream);
     let mut builder = Response::builder()
         .status(status)
         .header(header::CONTENT_TYPE, content_type);
     decision.apply(builder.headers_mut());
-    builder.body(Body::from_stream(body)).unwrap_or_else(|_| {
+    builder.body(body).unwrap_or_else(|_| {
         error_json(
             StatusCode::INTERNAL_SERVER_ERROR,
             "failed to build response",
@@ -4609,6 +4672,9 @@ struct PiiResponseLeg<'a> {
     scope: &'a rolter_core::TokenScope,
     ticket: Option<&'a rolter_core::RestorationTicket>,
     will_restore: bool,
+    /// payload capture is on for this request, so the pre-restore body is
+    /// worth keeping (#3240)
+    capture: bool,
 }
 
 /// Run the PII sanitizer's response leg over a buffered response body (#848).
@@ -4618,7 +4684,13 @@ struct PiiResponseLeg<'a> {
 /// are best-effort — a failure returns the body unchanged, which is safe: the
 /// worst case is a caller receiving placeholders instead of plaintext, never
 /// the reverse.
-async fn pii_response_leg_apply(leg: &PiiResponseLeg<'_>, bytes: Bytes) -> Bytes {
+///
+/// Returns the body to deliver and, when a restore replaced placeholders and
+/// payload capture is on, the placeholder-bearing body it replaced. That one is
+/// what payload capture stores, so a captured response holds what the request
+/// side holds — the sanitized text — rather than the plaintext the sanitizer
+/// exists to keep out of rolter's stores (#3240).
+async fn pii_response_leg_apply(leg: &PiiResponseLeg<'_>, bytes: Bytes) -> (Bytes, Option<Bytes>) {
     let PiiResponseLeg {
         state,
         config,
@@ -4629,13 +4701,14 @@ async fn pii_response_leg_apply(leg: &PiiResponseLeg<'_>, bytes: Bytes) -> Bytes
         scope,
         ticket,
         will_restore,
+        capture,
     } = leg;
-    let (will_restore, ticket) = (*will_restore, *ticket);
+    let (will_restore, ticket, capture) = (*will_restore, *ticket, *capture);
     let (state, config, scope) = (*state, *config, *scope);
     // a body that does not parse is not JSON we can walk; forwarding it
     // untouched is strictly better than failing a successful response
     let Ok(mut parsed) = serde_json::from_slice::<Value>(&bytes) else {
-        return bytes;
+        return (bytes, None);
     };
 
     if config.sanitizes_response() {
@@ -4667,6 +4740,7 @@ async fn pii_response_leg_apply(leg: &PiiResponseLeg<'_>, bytes: Bytes) -> Bytes
         }
     }
 
+    let mut pre_restore = None;
     if will_restore {
         if let Some(ticket) = ticket {
             if let Some(restored) = crate::pii_sanitizer::restore(
@@ -4681,14 +4755,19 @@ async fn pii_response_leg_apply(leg: &PiiResponseLeg<'_>, bytes: Bytes) -> Bytes
             )
             .await
             {
-                parsed = restored;
+                let before = std::mem::replace(&mut parsed, restored);
+                pre_restore = capture.then_some(before);
             }
         }
     }
 
-    serde_json::to_vec(&parsed)
-        .map(Bytes::from)
-        .unwrap_or(bytes)
+    let encode = |value: &Value| serde_json::to_vec(value).map(Bytes::from).ok();
+    // the capture copy is only worth keeping when it differs from what is
+    // delivered; an unchanged restore leaves nothing to tell apart
+    let pre_restore = pre_restore
+        .filter(|before| before != &parsed)
+        .and_then(|before| encode(&before));
+    (encode(&parsed).unwrap_or(bytes), pre_restore)
 }
 
 /// Replay a buffered (already fully received) response body through the same
@@ -4700,6 +4779,7 @@ async fn pii_response_leg_apply(leg: &PiiResponseLeg<'_>, bytes: Bytes) -> Bytes
 #[allow(clippy::too_many_arguments)]
 fn buffered_response(
     bytes: Bytes,
+    pre_restore: Option<Bytes>,
     billed: crate::logging::Usage,
     status: u16,
     content_type: String,
@@ -4713,9 +4793,15 @@ fn buffered_response(
     inflight_guard: Option<crate::load::LoadGuard>,
     completion_observer: Option<crate::logging::CompletionObserver>,
     genai_span: Option<tracing::Span>,
+    pii_stream: Option<crate::pii_stream::StreamRestore>,
 ) -> Response {
     let status = StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY);
     let decision = DecisionHeaders::from_log(&log);
+    // redacted and cut to `payload_max_bytes` now, so the stream holds no more
+    // than the row will store (#3240)
+    let captured = pre_restore.filter(|_| log.capture_payloads).map(|body| {
+        crate::logging::capture_payload(&body, log.payload_max_bytes, &log.payload_redactor)
+    });
     let stream = futures_util::stream::iter(vec![Ok::<Bytes, reqwest::Error>(bytes)]);
     let body = crate::logging::UsageLoggingStream::new(
         Box::pin(stream),
@@ -4730,17 +4816,51 @@ fn buffered_response(
     )
     .with_completion_observer(completion_observer)
     .with_genai_span(genai_span)
-    .with_billed_usage(billed);
+    .with_billed_usage(billed)
+    .with_captured_payload(captured);
+    let body = restore_stream_body(body, is_sse, status, pii_stream);
     let mut builder = Response::builder()
         .status(status)
         .header(header::CONTENT_TYPE, content_type);
     decision.apply(builder.headers_mut());
-    builder.body(Body::from_stream(body)).unwrap_or_else(|_| {
+    builder.body(body).unwrap_or_else(|_| {
         error_json(
             StatusCode::INTERNAL_SERVER_ERROR,
             "failed to build response",
         )
     })
+}
+
+/// The response body for a stream, restored through the sanitizer when
+/// `pii_stream` is set (#911).
+///
+/// The restore wraps the accounting stream rather than sitting inside it, so
+/// usage, billing, the disconnect row and payload capture all read the
+/// upstream's own (placeholder-bearing) bytes, and only the caller sees the
+/// restored ones. Only a successful SSE body is restored; an error body is
+/// passed on as the upstream sent it, and a successful body that is not a
+/// stream is counted as a restore that could not happen.
+fn restore_stream_body<S>(
+    body: S,
+    is_sse: bool,
+    status: StatusCode,
+    pii_stream: Option<crate::pii_stream::StreamRestore>,
+) -> Body
+where
+    S: futures_util::Stream<Item = reqwest::Result<Bytes>> + Send + 'static,
+{
+    match pii_stream {
+        // boxed only here, so a stream nothing restores costs no allocation
+        Some(restore) if status.is_success() => {
+            if is_sse {
+                Body::from_stream(restore.wrap(Box::pin(body)))
+            } else {
+                restore.not_a_stream();
+                Body::from_stream(body)
+            }
+        }
+        _ => Body::from_stream(body),
+    }
 }
 
 /// Refuse delivery of a response the upstream already produced — and billed —
@@ -5141,6 +5261,7 @@ async fn cached_response(
     sink: &crate::logging::LogSink,
     ctx: RequestLogCtx,
     policy: DeliveryPolicy<'_, '_>,
+    pii_stream: Option<crate::pii_stream::StreamRestore>,
 ) -> Response {
     let status = StatusCode::from_u16(hit.status).unwrap_or(StatusCode::OK);
     let mut post_events = Vec::new();
@@ -5148,7 +5269,8 @@ async fn cached_response(
         .apply(status, &mut post_events, Bytes::from(hit.body))
         .await;
     let (body, withheld) = match applied {
-        Delivery::Send(body) => (body, None),
+        // a hit captures no payload, so the pre-restore copy has no reader
+        Delivery::Send { body, .. } => (body, None),
         Delivery::Refuse { response, reason } => (Bytes::new(), Some((response, reason))),
     };
     let log = RequestLog {
@@ -5178,11 +5300,25 @@ async fn cached_response(
     }
     let decision = DecisionHeaders::from_log(&log);
     sink.log(log);
+    // a replayed stream is restored with the token of the request being
+    // answered, exactly like a live one (#911)
+    let body = match pii_stream {
+        Some(restore) if status.is_success() => {
+            if hit.content_type.contains("text/event-stream") {
+                let replay = futures_util::stream::iter([Ok::<_, reqwest::Error>(body)]);
+                Body::from_stream(restore.wrap(Box::pin(replay)))
+            } else {
+                restore.not_a_stream();
+                Body::from(body)
+            }
+        }
+        _ => Body::from(body),
+    };
     let mut builder = Response::builder()
         .status(status)
         .header(header::CONTENT_TYPE, hit.content_type);
     decision.apply(builder.headers_mut());
-    builder.body(Body::from(body)).unwrap_or_else(|_| {
+    builder.body(body).unwrap_or_else(|_| {
         error_json(
             StatusCode::INTERNAL_SERVER_ERROR,
             "failed to build response",
@@ -5213,7 +5349,10 @@ impl DeliveryPolicy<'_, '_> {
     /// examined; an error body passes through untouched.
     async fn apply(&self, status: StatusCode, events: &mut Vec<String>, bytes: Bytes) -> Delivery {
         if !status.is_success() {
-            return Delivery::Send(bytes);
+            return Delivery::Send {
+                body: bytes,
+                pre_restore: None,
+            };
         }
         let bytes = match self.output {
             Some(guard) => match guard.apply(&bytes) {
@@ -5261,10 +5400,16 @@ impl DeliveryPolicy<'_, '_> {
         };
         // last, so the sanitizer sees the body the caller would have received
         // and a restore is never handed to a plugin
-        Delivery::Send(match self.pii {
-            Some(leg) => pii_response_leg_apply(leg, bytes).await,
-            None => bytes,
-        })
+        match self.pii {
+            Some(leg) => {
+                let (body, pre_restore) = pii_response_leg_apply(leg, bytes).await;
+                Delivery::Send { body, pre_restore }
+            }
+            None => Delivery::Send {
+                body: bytes,
+                pre_restore: None,
+            },
+        }
     }
 }
 
@@ -5342,8 +5487,16 @@ async fn read_bounded(
 /// The outcome of [`DeliveryPolicy::apply`]: the finalised body, or the reply
 /// to send instead of it plus the reason recorded on the withheld log row.
 enum Delivery {
-    Send(Bytes),
-    Refuse { response: Response, reason: String },
+    /// `pre_restore` is the placeholder-bearing body a PII restore replaced,
+    /// the one payload capture keeps (#3240); `None` when nothing was restored
+    Send {
+        body: Bytes,
+        pre_restore: Option<Bytes>,
+    },
+    Refuse {
+        response: Response,
+        reason: String,
+    },
 }
 
 /// The reply when a post-call rule refuses to deliver a completion.

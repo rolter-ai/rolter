@@ -57,3 +57,12 @@ authenticated caller. An anonymous request is refused with `401`.
 A control plane started without a database has no cluster inventory. It still answers, with
 `inventory: false` and zero counts, so a client can tell "nothing was counted" from "no gateway is
 up" and fall back to probing a gateway's `/readyz` instead of reporting an empty fleet.
+
+## Who reads it
+
+The dashboard reads this endpoint every 30 seconds for the gateway pill in every screen header and for
+the **Gateways** tile on the Dashboard, both from one request. A response with `inventory: false`, or
+one that counts no gateway at all (none of them sends a node id), makes the dashboard probe
+`/readyz` through the `/gw` proxy instead, and so does a failed request, which is what a control
+plane older than this endpoint answers with a `404`. See
+[the gateway status in the header](/concepts/dashboard#the-gateway-status-in-the-header).

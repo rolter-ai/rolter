@@ -51,6 +51,9 @@ pub mod model_catalog;
 mod multipart;
 mod openapi;
 mod pii_sanitizer;
+mod pii_stream;
+#[cfg(test)]
+mod pii_stream_tests;
 mod plugin_dispatch;
 mod prompt_affinity;
 mod prompt_templates;

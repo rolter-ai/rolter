@@ -157,6 +157,7 @@ fn validate_key(value: &str, name: &str, required: bool) -> Result<(), String> {
     Ok(())
 }
 
+// spec-ref: rfc3339
 /// The instant to record, in the RFC 3339 form ClickHouse's `best_effort`
 /// parser reads into `DateTime64(3)`.
 ///

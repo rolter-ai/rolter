@@ -2,13 +2,15 @@ import { useQuery, type UseQueryResult } from "@tanstack/react-query";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 import { Filter, FilterX } from "lucide-react";
-import { Link } from "react-router";
+import { Link, useLocation } from "react-router";
 
 import { AnalyticsUnavailable } from "@/components/AnalyticsUnavailable";
 import { PageBody } from "@/components/screen";
+import { FleetHealthTile } from "@/components/FleetHealthTile";
 import { GettingStarted } from "@/components/GettingStarted";
 import { IncompleteSpendNotice } from "@/components/IncompleteSpendNotice";
 import { SampledLogNotice } from "@/components/SampledLogNotice";
+import { WithheldSpendNotice } from "@/components/WithheldSpendNotice";
 import { LoadError } from "@/components/LoadError";
 import { RowFilterPicker, useAddressRowFilters } from "@/components/RowFilters";
 import { SavedViews } from "@/components/SavedViews";
@@ -16,10 +18,9 @@ import { HttpStatusBadge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Combobox } from "@/components/ui/combobox";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Donut } from "@/components/ui/donut";
 import { LineChart } from "@/components/ui/line-chart";
 import { Skeleton } from "@/components/ui/skeleton";
-import { ListSkeleton, LoadingRegion, StatGridSkeleton } from "@/components/LoadingState";
+import { ListSkeleton, LoadingRegion } from "@/components/LoadingState";
 import { STAT_GRID, StatCard } from "@/components/ui/stat-card";
 import { Table } from "@/components/ui/table";
 import {
@@ -33,6 +34,7 @@ import {
   type InvocationRow,
   type SavedViewFilters,
 } from "@/lib/api";
+import { useOptionalAuth } from "@/lib/auth";
 import { useCurrencyCode } from "@/lib/currency";
 import { useFormat } from "@/lib/i18n/format";
 import { modelColor, rankedByRequests } from "@/lib/model-colors";
@@ -89,13 +91,15 @@ const pollEvery =
   (query: { state: { status: string; data: unknown } }): number | false =>
     query.state.status === "error" && query.state.data === undefined ? false : ms;
 
-// the bars show this many models. the donut keeps one more slice than that
-// before it rolls the rest into "Other", so the models on the bars are always
-// the donut's first slices, in the same colours
-const BARS_SHOWN = 6;
+// the by-model card lists this many models, busiest first: the length of the
+// categorical colour sequence, so no two rows share a colour
+const MODELS_SHOWN = 8;
 
-// the models in the order every card colours them by (#1994): the read arrives
-// by cost, and the bars used to re-sort it by requests while the donut kept it
+// six tiles read as three across and two down; the shared strip is four across
+const FIGURES_GRID = cn(STAT_GRID, "xl:grid-cols-3");
+
+// the models in the order the card colours them by (#1994): the read arrives
+// by cost, and the card ranks it by requests
 function byRequests(models: AnalyticsByModelRow[]) {
   return rankedByRequests(models.map((m) => ({ model: m.model, requests: num(m.requests) })));
 }
@@ -112,6 +116,14 @@ const RECENT_TABLE = cn(
   "rounded-md border-0 [&_tbody_tr]:relative",
   "[&_th]:px-2 [&_td]:px-2 sm:[&_th]:px-4 sm:[&_td]:px-4",
   "[&_th:nth-child(2)]:w-full [&_td:nth-child(2)]:max-w-0 [&_td:nth-child(2)]:truncate",
+);
+
+// the by-model card's table, in the card's frame like the recent one. the model
+// column takes what the figures leave and truncates in it
+const MODEL_TABLE = cn(
+  "rounded-md border-0",
+  "[&_th]:px-2 [&_td]:px-2 sm:[&_th]:px-4 sm:[&_td]:px-4",
+  "[&_th:first-child]:w-full [&_td:first-child]:max-w-0 [&_td:first-child]:truncate",
 );
 
 function isUnavailable(err: unknown): boolean {
@@ -193,19 +205,9 @@ function RefreshFailed({
   );
 }
 
-// the by-model bars while they are coming: rows the height of the bars
-function BarsSkeleton() {
-  return (
-    <LoadingRegion className="flex flex-col gap-2">
-      {Array.from({ length: 4 }, (_, i) => (
-        <Skeleton key={i} height={16} radius={3} />
-      ))}
-    </LoadingRegion>
-  );
-}
-
-// live overview: 4 KPIs, hourly spend line, traffic donut, requests-by-model
-// bars, and a recent-requests mini table. all clickhouse-backed. each card
+// live overview, shaped by docs/dev-docs/development/dashboard-home.md: fleet
+// health, p95, error rate and cache-hit rate as tiles, then requests and spend,
+// an hourly spend line, one by-model table and the latest requests. each card
 // reads its own query and owns its loading, empty and error state, so one slow
 // or failing endpoint leaves the rest of the screen up (#1976). a deployment
 // with analytics off gets one calm panel instead of the cards.
@@ -221,6 +223,10 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
   const [timeWindow, setWindow] = useAddressWindow();
   const windowOptions = useTimeWindowOptions();
   const windowLabel = windowOptions.find((o) => o.value === timeWindow)?.label ?? timeWindow;
+  // the figures cover the rows the caller's roles reach, not the org picked in
+  // the scope switcher, so the scope line says that and not the switcher's pick
+  const auth = useOptionalAuth();
+  const { search } = useLocation();
   // the row filters live in the address beside the window and go to every read
   // on the screen (#2725). the query keys carry them, so a pick refetches
   const rowFilters = useAddressRowFilters();
@@ -303,6 +309,11 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
             checklist below reads rows rather than traffic (#1585). an outage
             leaves it as it is for the same reason */}
         <GettingStarted />
+        {/* the gateways do not need analytics to be up or down, and an outage
+            is when an operator opens this screen to find out */}
+        <div className="max-w-sm">
+          <FleetHealthTile />
+        </div>
         {unavailable ? (
           <AnalyticsUnavailable error={unavailable} i18nKey="pages.dashboard.noAnalytics" />
         ) : (
@@ -321,6 +332,21 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
   }
 
   const fmtK = fmt.compact;
+
+  // what the figures cover, stated beside them: whose requests, over which
+  // window, narrowed by how many filters (#1978). "whose" waits for the session
+  // rather than guess, since a member told "every request" would be misled
+  const scopeLine = [
+    auth?.status === "checking"
+      ? undefined
+      : auth?.user && !auth.user.is_superadmin
+        ? t("pages.dashboard.scope.member")
+        : t("pages.dashboard.scope.all"),
+    windowLabel,
+    filtered ? t("pages.dashboard.scope.filters", { count: rowFilters.count }) : undefined,
+  ]
+    .filter(Boolean)
+    .join(" · ");
 
   // "live" is said only while the last read of this card succeeded (#1984), so
   // not before the first one has answered either (#2341). a first load that
@@ -365,6 +391,10 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
           {filtered && ` · ${rowFilters.count}`}
         </Button>
       </div>
+      <p data-testid="dashboard-scope" className="text-xs text-muted-foreground">
+        <span className="sr-only">{t("pages.dashboard.scope.label")}: </span>
+        {scopeLine}
+      </p>
       {filtersOpen && (
         <section
           id={filterRegion}
@@ -388,115 +418,183 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
       )}
       {!served && gettingStarted}
       <div data-testid="dashboard-figures">
-        <CardRead
-          read={summary}
-          resource={t("errors.resources.dashboardFigures")}
-          target="dashboard"
-          // `Skeleton` is `aria-hidden`, so the four bare ones this used to
-          // render were a loading state no screen reader could hear (#1605)
-          skeleton={<StatGridSkeleton cards={4} />}
-        >
-          {(s) => {
-            const requests = num(s?.requests);
-            const errors = num(s?.errors);
-            // an average and a rate over no requests are undefined, not zero:
-            // "0 ms" and "0.00 %" read as a measurement of a quiet deployment
-            const measured = requests > 0;
-            const errorRate = measured ? (errors / requests) * 100 : undefined;
-            const unmeasured = t("pages.dashboard.notMeasured");
-            const why = t("pages.dashboard.noRequestsInWindow");
-            // the window before, when it answered and held any traffic: a
-            // first day compares with nothing rather than rising from zero
-            const p = previous.isSuccess ? previous.data : undefined;
-            const prevRequests = p ? num(p.requests) : 0;
-            const before = prevRequests > 0 ? p : undefined;
-            const was = (v: number | string | undefined) => (before ? num(v) : undefined);
-            const latency = measured ? num(s?.avg_latency_ms) : undefined;
-            const changes = {
-              requests: compare(requests, was(before?.requests)),
-              spend: compare(num(s?.cost_usd), was(before?.cost_usd)),
-              latency: compare(latency, was(before?.avg_latency_ms)),
-              errorRate: compare(
-                errorRate,
-                before ? (num(before.errors) / prevRequests) * 100 : undefined,
-              ),
-            };
-            const said = (c: Comparison) =>
-              t("pages.dashboard.vsPrevious", {
-                change: fmt.number(c.ratio, {
-                  style: "percent",
-                  signDisplay: "exceptZero",
-                  maximumFractionDigits: 1,
-                }),
-              });
-            return (
-              <div className={STAT_GRID}>
-                <StatCard
-                  label={t("pages.dashboard.statRequests")}
-                  value={fmt.number(requests)}
-                  trend={changes.requests?.trend}
-                  tone={changes.requests ? toneOfChange(changes.requests.trend, "good") : undefined}
-                  delta={changes.requests ? said(changes.requests) : undefined}
-                />
-                <StatCard
-                  label={t("pages.dashboard.statSpend")}
-                  value={money(num(s?.cost_usd))}
-                  // more spend is not bad news on its own: it follows traffic
-                  trend={changes.spend?.trend}
-                  tone="neutral"
-                  delta={changes.spend ? said(changes.spend) : undefined}
-                />
-                <StatCard
-                  label={t("pages.dashboard.statAvgLatency")}
-                  value={measured ? fmt.number(Math.round(num(s?.avg_latency_ms))) : unmeasured}
-                  unit={measured ? t("pages.dashboard.colMs") : undefined}
-                  trend={changes.latency?.trend}
-                  tone={changes.latency ? toneOfChange(changes.latency.trend, "bad") : undefined}
-                  delta={measured ? (changes.latency ? said(changes.latency) : undefined) : why}
-                />
-                <StatCard
-                  label={t("pages.dashboard.statErrorRate")}
-                  value={
-                    errorRate === undefined
-                      ? unmeasured
-                      : fmt.number(errorRate, {
-                          minimumFractionDigits: 2,
-                          maximumFractionDigits: 2,
-                        })
-                  }
-                  unit={errorRate === undefined ? undefined : "%"}
-                  // an arrow only for a change measured against the window
-                  // before (#2010). with nothing to compare, above 1% of
-                  // requests the count reads as the problem it is rather than
-                  // as growth (#1974)
-                  trend={changes.errorRate?.trend}
-                  tone={
-                    changes.errorRate
-                      ? toneOfChange(changes.errorRate.trend, "bad")
-                      : errorRate !== undefined && errorRate > 1
-                        ? "bad"
-                        : "neutral"
-                  }
-                  // russian needs four plural forms here where english needs two
-                  delta={
-                    errorRate === undefined
-                      ? why
-                      : errors > 0 && changes.errorRate
-                        ? t("pages.dashboard.withChange", {
-                            detail: t("pages.dashboard.errors", { count: errors }),
-                            change: said(changes.errorRate),
-                          })
-                        : errors > 0
-                          ? t("pages.dashboard.errors", { count: errors })
-                          : changes.errorRate
-                            ? said(changes.errorRate)
-                            : undefined
-                  }
+        <div className={FIGURES_GRID}>
+          {/* the fleet first: mid-incident, whether the gateways are up is the
+              first thing asked, and it is not a figure of the window. it sits
+              outside the summary's read, so a summary that is slow or failing
+              (the heaviest read on the screen) does not take it away; the other
+              five tiles, or their skeleton or alert, fill the rest of the grid */}
+          <FleetHealthTile />
+          <CardRead
+            read={summary}
+            resource={t("errors.resources.dashboardFigures")}
+            target="dashboard"
+            // `Skeleton` is `aria-hidden`, so bare ones are a loading state no
+            // screen reader could hear (#1605); the region lays out as the
+            // tiles it stands in for
+            skeleton={
+              <LoadingRegion className="contents">
+                {Array.from({ length: 5 }, (_, i) => (
+                  <Skeleton key={i} height={96} radius={10} />
+                ))}
+              </LoadingRegion>
+            }
+            failed={
+              <div className="sm:col-span-1 xl:col-span-2">
+                <LoadError
+                  error={summary.error}
+                  resource={t("errors.resources.dashboardFigures")}
+                  onRetry={() => void summary.refetch()}
+                  target="dashboard"
                 />
               </div>
-            );
-          }}
-        </CardRead>
+            }
+          >
+            {(s) => {
+              const requests = num(s?.requests);
+              const errors = num(s?.errors);
+              // an average and a rate over no requests are undefined, not zero:
+              // "0 ms" and "0.00 %" read as a measurement of a quiet deployment
+              const measured = requests > 0;
+              const errorRate = measured ? (errors / requests) * 100 : undefined;
+              const unmeasured = t("pages.dashboard.notMeasured");
+              const why = t("pages.dashboard.noRequestsInWindow");
+              // the window before, when it answered and held any traffic: a
+              // first day compares with nothing rather than rising from zero
+              const p = previous.isSuccess ? previous.data : undefined;
+              const prevRequests = p ? num(p.requests) : 0;
+              const before = prevRequests > 0 ? p : undefined;
+              const was = (v: number | string | undefined) => (before ? num(v) : undefined);
+              // the 95th percentile, not the mean: a mean hides the slow tail an
+              // operator is looking for. an older control plane sends no p95, and
+              // then the tile says it is not measured rather than showing the mean
+              const p95 = measured && s?.p95_latency_ms != null ? num(s.p95_latency_ms) : undefined;
+              const hits = s?.cache_hit_requests != null ? num(s.cache_hit_requests) : undefined;
+              const hitRate = measured && hits !== undefined ? (hits / requests) * 100 : undefined;
+              const prevHitRate =
+                before && before.cache_hit_requests != null
+                  ? (num(before.cache_hit_requests) / prevRequests) * 100
+                  : undefined;
+              const changes = {
+                requests: compare(requests, was(before?.requests)),
+                spend: compare(num(s?.cost_usd), was(before?.cost_usd)),
+                latency: compare(
+                  p95,
+                  before?.p95_latency_ms != null ? num(before.p95_latency_ms) : undefined,
+                ),
+                hitRate: compare(hitRate, prevHitRate),
+                errorRate: compare(
+                  errorRate,
+                  before ? (num(before.errors) / prevRequests) * 100 : undefined,
+                ),
+              };
+              const said = (c: Comparison) =>
+                t("pages.dashboard.vsPrevious", {
+                  change: fmt.number(c.ratio, {
+                    style: "percent",
+                    signDisplay: "exceptZero",
+                    maximumFractionDigits: 1,
+                  }),
+                });
+              // the percentage tiles show one decimal at most
+              const percent = (v: number) =>
+                fmt.number(v, { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+              return (
+                <>
+                  <StatCard
+                    label={t("pages.dashboard.statP95")}
+                    value={p95 !== undefined ? fmt.number(Math.round(p95)) : unmeasured}
+                    unit={p95 !== undefined ? t("pages.dashboard.colMs") : undefined}
+                    trend={changes.latency?.trend}
+                    tone={changes.latency ? toneOfChange(changes.latency.trend, "bad") : undefined}
+                    delta={measured ? (changes.latency ? said(changes.latency) : undefined) : why}
+                  />
+                  <StatCard
+                    label={t("pages.dashboard.statErrorRate")}
+                    value={
+                      errorRate === undefined
+                        ? unmeasured
+                        : fmt.number(errorRate, {
+                            minimumFractionDigits: 2,
+                            maximumFractionDigits: 2,
+                          })
+                    }
+                    unit={errorRate === undefined ? undefined : "%"}
+                    // an arrow only for a change measured against the window
+                    // before (#2010). with nothing to compare, above 1% of
+                    // requests the count reads as the problem it is rather than
+                    // as growth (#1974)
+                    trend={changes.errorRate?.trend}
+                    tone={
+                      changes.errorRate
+                        ? toneOfChange(changes.errorRate.trend, "bad")
+                        : errorRate !== undefined && errorRate > 1
+                          ? "bad"
+                          : "neutral"
+                    }
+                    // russian needs four plural forms here where english needs two
+                    delta={
+                      errorRate === undefined
+                        ? why
+                        : errors > 0 && changes.errorRate
+                          ? t("pages.dashboard.withChange", {
+                              detail: t("pages.dashboard.errors", { count: errors }),
+                              change: said(changes.errorRate),
+                            })
+                          : errors > 0
+                            ? t("pages.dashboard.errors", { count: errors })
+                            : changes.errorRate
+                              ? said(changes.errorRate)
+                              : undefined
+                    }
+                  />
+                  <StatCard
+                    label={t("pages.dashboard.statCacheHit")}
+                    value={hitRate !== undefined ? percent(hitRate) : unmeasured}
+                    unit={hitRate !== undefined ? "%" : undefined}
+                    // more hits is the point of cache-aware balancing
+                    trend={changes.hitRate?.trend}
+                    tone={changes.hitRate ? toneOfChange(changes.hitRate.trend, "good") : undefined}
+                    delta={
+                      !measured
+                        ? why
+                        : hits === undefined
+                          ? undefined
+                          : changes.hitRate
+                            ? t("pages.dashboard.withChange", {
+                                detail:
+                                  hits === 0
+                                    ? t("pages.dashboard.cacheHitsNone")
+                                    : t("pages.dashboard.cacheHits", { count: hits }),
+                                change: said(changes.hitRate),
+                              })
+                            : hits === 0
+                              ? t("pages.dashboard.cacheHitsNone")
+                              : t("pages.dashboard.cacheHits", { count: hits })
+                    }
+                  />
+                  <StatCard
+                    label={t("pages.dashboard.statRequests")}
+                    value={fmt.number(requests)}
+                    trend={changes.requests?.trend}
+                    tone={
+                      changes.requests ? toneOfChange(changes.requests.trend, "good") : undefined
+                    }
+                    delta={changes.requests ? said(changes.requests) : undefined}
+                  />
+                  <StatCard
+                    label={t("pages.dashboard.statSpend")}
+                    value={money(num(s?.cost_usd))}
+                    // more spend is not bad news on its own: it follows traffic
+                    trend={changes.spend?.trend}
+                    tone="neutral"
+                    delta={changes.spend ? said(changes.spend) : undefined}
+                  />
+                </>
+              );
+            }}
+          </CardRead>
+        </div>
         <RefreshFailed read={summary} region="dashboard" />
       </div>
 
@@ -504,6 +602,12 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
       <IncompleteSpendNotice
         requests={num(summary.data?.unpriced_requests)}
         models={num(summary.data?.unpriced_models)}
+      />
+      <WithheldSpendNotice
+        withheld={num(summary.data?.withheld_requests)}
+        withheldCost={num(summary.data?.withheld_cost)}
+        unknownUsage={num(summary.data?.usage_unknown_requests)}
+        search={search}
       />
 
       {served && gettingStarted}
@@ -575,114 +679,129 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
             <RefreshFailed read={series} region="dashboard-spend" />
           </CardContent>
         </Card>
-        <Card data-testid="dashboard-traffic">
-          <CardHeader>
-            <CardDescription className="text-2xs uppercase tracking-[0.07em]">
-              {windowLabel}
-            </CardDescription>
-            <CardTitle>{t("pages.dashboard.trafficTitle")}</CardTitle>
-            <CardDescription>{t("pages.dashboard.trafficSub")}</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <CardRead
-              read={byModel}
-              resource={t("errors.resources.dashboardTrafficShare")}
-              target="dashboard-traffic"
-              skeleton={
-                <LoadingRegion>
-                  <Skeleton height={180} />
-                </LoadingRegion>
-              }
-            >
-              {(models) => {
-                const traffic = byRequests(models).map((m, i) => ({
-                  label: m.model,
-                  value: m.requests,
-                  color: modelColor(i),
-                }));
-                const total = traffic.reduce((a, m) => a + m.value, 0);
-                return traffic.length === 0 ? (
-                  <p className="py-16 text-center text-sm text-muted-foreground">
-                    {filtered ? t("pages.dashboard.noMatch") : t("pages.dashboard.noTraffic")}
-                  </p>
-                ) : (
-                  <Donut
-                    segments={traffic}
-                    size={150}
-                    maxSegments={BARS_SHOWN + 1}
-                    centerLabel={fmtK(total)}
-                    // the caption agrees with the count, and russian has four forms
-                    centerSub={t("pages.dashboard.requests", { count: total })}
-                  />
-                );
-              }}
-            </CardRead>
-            <RefreshFailed read={byModel} region="dashboard-traffic" />
-          </CardContent>
-        </Card>
-      </div>
-
-      <div className="grid gap-3.5 xl:grid-cols-2">
         <Card data-testid="dashboard-by-model">
           <CardHeader>
             <CardDescription className="text-2xs uppercase tracking-[0.07em]">
               {windowLabel}
             </CardDescription>
             <CardTitle>{t("pages.dashboard.byModelTitle")}</CardTitle>
+            <CardDescription>{t("pages.dashboard.byModelSub")}</CardDescription>
           </CardHeader>
-          <CardContent className="flex flex-col gap-2">
+          <CardContent>
             <CardRead
               read={byModel}
               resource={t("errors.resources.dashboardByModel")}
               target="dashboard-by-model"
-              skeleton={<BarsSkeleton />}
-              // the traffic share reads this endpoint and holds the alert with its
-              // retry, so this card says where the failure is and adds none
-              failed={
-                <p className="py-10 text-center text-sm text-muted-foreground">
-                  {t("pages.dashboard.sharedRead", {
-                    card: t("pages.dashboard.trafficTitle"),
-                    retry: t("errors.load.retry"),
-                  })}
-                </p>
-              }
+              skeleton={<ListSkeleton rows={4} />}
             >
               {(models) => {
                 const ranked = byRequests(models);
                 const barMax = Math.max(1, ...ranked.map((m) => m.requests));
-                const bars = ranked.slice(0, BARS_SHOWN).map((m, i) => ({
-                  label: m.model,
-                  value: m.requests,
-                  pct: (m.requests / barMax) * 100,
+                const p95Of = new Map(models.map((m) => [m.model, m.p95_latency_ms]));
+                const costOf = new Map(models.map((m) => [m.model, m.cost_usd]));
+                const rows = ranked.slice(0, MODELS_SHOWN).map((m, i) => ({
+                  model: m.model,
                   color: modelColor(i),
+                  requests: m.requests,
+                  pct: (m.requests / barMax) * 100,
+                  p95: p95Of.get(m.model),
+                  cost: costOf.get(m.model),
                 }));
-                return bars.length === 0 ? (
+                const hidden = ranked.length - rows.length;
+                return rows.length === 0 ? (
                   <p className="py-10 text-center text-sm text-muted-foreground">
                     {filtered ? t("pages.dashboard.noMatch") : t("pages.dashboard.noTraffic")}
                   </p>
                 ) : (
-                  bars.map((b) => (
-                    <div key={b.label} className="flex items-center gap-2.5">
-                      <span className="w-[110px] flex-none truncate text-right font-mono text-xs text-muted-foreground">
-                        {b.label}
-                      </span>
-                      <div className="h-4 flex-1 overflow-hidden rounded-[3px] bg-[color:var(--surface-subtle)]">
-                        <div
-                          className="h-full rounded-[3px]"
-                          style={{ width: `${b.pct}%`, background: b.color }}
-                        />
-                      </div>
-                      <span className="w-[52px] flex-none font-mono text-xs text-[color:var(--text-secondary)]">
-                        {fmtK(b.value)}
-                      </span>
-                    </div>
-                  ))
+                  <>
+                    <Table
+                      rowKey="model"
+                      className={MODEL_TABLE}
+                      columns={[
+                        {
+                          key: "model",
+                          header: t("pages.dashboard.colModel"),
+                          mono: true,
+                          render: (v, row) => (
+                            <span className="inline-flex max-w-full items-center gap-2">
+                              <span
+                                aria-hidden
+                                className="h-2 w-2 flex-none rounded-[2px]"
+                                style={{ background: row.color as string }}
+                              />
+                              <span className="truncate" title={v as string}>
+                                {v as string}
+                              </span>
+                            </span>
+                          ),
+                        },
+                        {
+                          key: "requests",
+                          header: t("pages.dashboard.colRequests"),
+                          align: "right",
+                          mono: true,
+                          render: (v, row) => (
+                            <span className="inline-flex items-center justify-end gap-2">
+                              {/* the bar is the share of the busiest model; the
+                                  number beside it is what a reader takes in */}
+                              <span
+                                aria-hidden
+                                className="hidden h-2 w-16 overflow-hidden rounded-[2px] bg-[color:var(--surface-subtle)] sm:block"
+                              >
+                                <span
+                                  className="block h-full rounded-[2px]"
+                                  style={{
+                                    width: `${row.pct as number}%`,
+                                    background: row.color as string,
+                                  }}
+                                />
+                              </span>
+                              <span>{fmtK(v as number)}</span>
+                            </span>
+                          ),
+                        },
+                        {
+                          key: "p95",
+                          header: t("pages.dashboard.colP95"),
+                          align: "right",
+                          mono: true,
+                          render: (v) =>
+                            v == null ? (
+                              t("pages.dashboard.notMeasured")
+                            ) : (
+                              <>
+                                {fmt.number(Math.round(num(v as number | string)))}{" "}
+                                <span className="text-muted-foreground">
+                                  {t("pages.dashboard.colMs")}
+                                </span>
+                              </>
+                            ),
+                        },
+                        {
+                          key: "cost",
+                          header: t("pages.dashboard.colSpend"),
+                          align: "right",
+                          mono: true,
+                          render: (v) => money(num(v as number | string | undefined)),
+                        },
+                      ]}
+                      data={rows as unknown as Record<string, unknown>[]}
+                    />
+                    {hidden > 0 && (
+                      <p className="mt-2 text-xs text-muted-foreground">
+                        {t("pages.dashboard.byModelMore", { count: hidden })}
+                      </p>
+                    )}
+                  </>
                 );
               }}
             </CardRead>
             <RefreshFailed read={byModel} region="dashboard-by-model" />
           </CardContent>
         </Card>
+      </div>
+
+      <div>
         <Card data-testid="dashboard-recent">
           <CardHeader>
             <CardDescription
@@ -756,6 +875,18 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
                 )
               }
             </CardRead>
+            {/* the whole log, not the eight rows: the address carries the window
+                and the filters the figures above were read with, under the
+                names LLM Logs reads them by (#1978) */}
+            {recent.data && recent.data.length > 0 && (
+              <Link
+                to={{ pathname: "/logs", search }}
+                data-testid="dashboard-recent-all"
+                className="mt-3 inline-block rounded-sm text-xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              >
+                {t("pages.dashboard.recentAll")}
+              </Link>
+            )}
           </CardContent>
         </Card>
       </div>

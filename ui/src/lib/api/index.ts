@@ -141,8 +141,13 @@ export type {
   UpdateRateLimitInput,
   UserScopeNarrowing,
 } from "./budgets";
-export { fetchClusterNodes, setClusterNodeDrain, forgetClusterNode } from "./cluster";
-export type { ClusterNodeRow } from "./cluster";
+export {
+  fetchClusterNodes,
+  fetchClusterSummary,
+  setClusterNodeDrain,
+  forgetClusterNode,
+} from "./cluster";
+export type { ClusterNodeRow, ClusterSummary } from "./cluster";
 export {
   fetchConfig,
   UNNAMED_KEY,
@@ -386,8 +391,18 @@ export {
   isConvertible,
   upsertModelPrice,
   deleteModelPrice,
+  fetchPriceCatalogue,
+  importModelPrices,
 } from "./pricing";
-export type { ModelPriceRow, UpsertModelPriceInput, CurrencySettings } from "./pricing";
+export type {
+  ModelPriceRow,
+  UpsertModelPriceInput,
+  CurrencySettings,
+  CatalogueEntry,
+  PriceCatalogue,
+  ImportOutcome,
+  PriceImportResult,
+} from "./pricing";
 export {
   fetchPromptTemplates,
   createPromptTemplate,
@@ -422,6 +437,9 @@ export {
   deleteProvider,
   testProvider,
   fetchProviderModels,
+  fetchProviderCacheProbes,
+  probeProviderCache,
+  canProbeCache,
   fetchProviderGroups,
   createProviderGroup,
   updateProviderGroup,
@@ -436,6 +454,8 @@ export type {
   UpdateProviderInput,
   ProviderTestResult,
   ProviderModelList,
+  ProviderCacheVerdict,
+  ProviderCacheProbeResult,
   ProviderGroupMember,
   ProviderGroupRow,
   GroupMemberInput,
@@ -486,6 +506,8 @@ export {
   deleteRoute,
   updateRouteParams,
   fetchRouteTargets,
+  fetchRouteVariants,
+  setRouteVariants,
   createRouteTarget,
   deleteRouteTarget,
   fetchModels,
@@ -500,6 +522,9 @@ export type {
   RouteTargetRow,
   RouteInclude,
   RouteTargetInput,
+  RouteVariantRow,
+  RouteVariantTargetRow,
+  RouteVariantInput,
   UpdateRouteInput,
   EffectiveModelDto,
   ComplexityTier,
