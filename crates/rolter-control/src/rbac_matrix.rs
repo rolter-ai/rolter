@@ -2346,6 +2346,10 @@ mod tests {
         ("session_guard.rs", include_str!("session_guard.rs")),
         ("security.rs", include_str!("security.rs")),
         ("seed.rs", include_str!("seed.rs")),
+        (
+            "snapshot_negotiation.rs",
+            include_str!("snapshot_negotiation.rs"),
+        ),
         ("sso.rs", include_str!("sso.rs")),
         ("stability.rs", include_str!("stability.rs")),
         ("telemetry.rs", include_str!("telemetry.rs")),
