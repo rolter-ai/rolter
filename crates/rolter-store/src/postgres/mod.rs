@@ -861,6 +861,18 @@ impl PostgresConfigStore {
 
     /// `left_out` names the providers [`Self::load_providers`] did not return.
     async fn load_routes(&self, left_out: &HashSet<String>) -> Result<Vec<ModelRoute>> {
+        Ok(self.assemble_routes(left_out).await?.0)
+    }
+
+    /// The routes [`Self::load_routes`] serves, and what it dropped from them
+    /// on the way: a target whose `takes_over` does not parse, and a route left
+    /// with only restricted targets (#3321). `load_problem_records` reports the
+    /// second half, so the two cannot disagree about what the snapshot left
+    /// out. Each problem is owned by its route's tenant.
+    async fn assemble_routes(
+        &self,
+        left_out: &HashSet<String>,
+    ) -> Result<(Vec<ModelRoute>, Vec<crate::ConfigProblem>)> {
         let route_rows = self.enabled_route_rows().await?;
 
         let target_rows: Vec<TargetRow> = sqlx::query_as(
@@ -896,7 +908,13 @@ impl PostgresConfigStore {
         .map_err(store_err)?;
 
         let mut routes = Vec::with_capacity(route_rows.len());
+        let mut problems = Vec::new();
         for r in route_rows {
+            let tenancy = Tenancy {
+                org_id: r.org_id.to_string(),
+                project_id: Some(r.project_id.to_string()),
+            };
+            let mut route_problems = Vec::new();
             let strategy = parse_strategy(&r.strategy)?;
             // a route whose settings do not parse is left out, not served on
             // the permissive defaults: those are public visibility, no
@@ -938,8 +956,12 @@ impl PostgresConfigStore {
                     {
                         Ok(classes) => classes,
                         Err(problem) => {
-                            tracing::warn!(route = %r.model, provider = %t.provider_name,
-                                "dropping a route target: {problem}");
+                            let problem = format!(
+                                "route '{}' target on provider '{}' omitted from the snapshot: {problem}",
+                                r.model, t.provider_name
+                            );
+                            tracing::warn!("{problem}");
+                            route_problems.push(problem);
                             return None;
                         }
                     };
@@ -960,12 +982,25 @@ impl PostgresConfigStore {
                 .iter()
                 .chain(variants.iter().flat_map(|v| v.targets.iter()))
                 .peekable();
-            if every_target.peek().is_some() && every_target.all(Target::is_restricted) {
-                tracing::warn!(
-                    route = %r.model,
-                    "{}",
+            let stranded = every_target.peek().is_some() && every_target.all(Target::is_restricted);
+            if stranded {
+                let problem = format!(
+                    "route '{}' omitted from the snapshot: {}",
+                    r.model,
                     rolter_core::failover::all_targets_restricted(&r.model)
                 );
+                tracing::warn!("{problem}");
+                route_problems.push(problem);
+            }
+            problems.extend(
+                route_problems
+                    .into_iter()
+                    .map(|message| crate::ConfigProblem {
+                        message,
+                        owner: crate::ProblemOwner::Tenant(tenancy.clone()),
+                    }),
+            );
+            if stranded {
                 continue;
             }
             routes.push(ModelRoute {
@@ -979,13 +1014,10 @@ impl PostgresConfigStore {
                 // response-cache opt-in is config-only for now; a db-backed
                 // cache policy lands with its own store follow-up
                 cache: None,
-                tenancy: Some(Tenancy {
-                    org_id: r.org_id.to_string(),
-                    project_id: Some(r.project_id.to_string()),
-                }),
+                tenancy: Some(tenancy),
             });
         }
-        Ok(routes)
+        Ok((routes, problems))
     }
 
     /// Load provider groups and their members into `ProviderGroupConfig`
@@ -2303,17 +2335,22 @@ impl ConfigStore for PostgresConfigStore {
         .fetch_all(&self.pool)
         .await
         .map_err(store_err)?;
+        let mut left_out = HashSet::new();
         problems.extend(proxies.iter().filter_map(|(name, org, project, value)| {
-            egress_proxies_from_value(name, value)
-                .err()
-                .map(|message| ConfigProblem {
+            egress_proxies_from_value(name, value).err().map(|message| {
+                // the provider `load_providers` leaves out for it
+                left_out.insert(name.clone());
+                ConfigProblem {
                     message,
                     owner: ProblemOwner::Tenant(rolter_core::Tenancy {
                         org_id: org.to_string(),
                         project_id: project.map(|p| p.to_string()),
                     }),
-                })
+                }
+            })
         }));
+        // a target or route the snapshot drops for `takes_over` (#3321)
+        problems.extend(self.assemble_routes(&left_out).await?.1);
         Ok(problems)
     }
 }
@@ -5402,6 +5439,38 @@ mod tests {
         let bad = &config.routes[0];
         assert_eq!(bad.targets.len(), 1, "the unreadable target is dropped");
         assert_eq!(bad.targets[0].provider, "cheap");
+
+        // both are reported, owned by the route's tenant (#3321)
+        let problems = store.load_problem_records().await.unwrap();
+        let tenant = crate::ProblemOwner::Tenant(Tenancy {
+            org_id: org_id.to_string(),
+            project_id: Some(project_id.to_string()),
+        });
+        let dropped = problems
+            .iter()
+            .find(|p| p.message.contains("route 'bad-class'"))
+            .unwrap_or_else(|| panic!("no problem for the dropped target: {problems:?}"));
+        assert!(
+            dropped.message.contains("provider 'premium'"),
+            "{dropped:?}"
+        );
+        assert!(dropped.message.contains("'bogus'"), "{dropped:?}");
+        assert_eq!(dropped.owner, tenant);
+        let stranded = problems
+            .iter()
+            .find(|p| p.message.contains("route 'stranded'"))
+            .unwrap_or_else(|| panic!("no problem for the left-out route: {problems:?}"));
+        assert!(
+            stranded
+                .message
+                .contains(rolter_core::failover::ALL_TARGETS_RESTRICTED),
+            "{stranded:?}"
+        );
+        assert_eq!(stranded.owner, tenant);
+        assert!(
+            !problems.iter().any(|p| p.message.contains("'guarded'")),
+            "{problems:?}"
+        );
 
         let before = current_version(&pool).await.unwrap();
         sqlx::query(
