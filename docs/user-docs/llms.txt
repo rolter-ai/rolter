@@ -92,6 +92,7 @@ prompts below, then the quickstart, then the page for whatever it is wiring.
 - [Authentication](/security/authentication): Pass a virtual key in every request using the OpenAI or Anthropic header style; manage key access and expiry through virtual key properties.
 - [RBAC](/security/rbac): Assign admin, member, and viewer roles at org, team, or project scope to control what each user can manage in the Rolter control plane.
 - [Single Sign-On](/security/single-sign-on): Register an OIDC provider from the dashboard, map its groups to Rolter roles, and decide whether your organization still accepts passwords.
+- [LDAP](/security/ldap): Register an LDAP directory for an organization, map its groups to Rolter roles, and let directory users sign in with their directory password.
 - [Two-factor authentication](/security/two-factor-authentication): TOTP second factor for local accounts, recovery codes, org enforcement policy, and the break-glass path back in.
 - [User Provisioning (SCIM)](/security/user-provisioning): Issue an org-scoped SCIM token, wire it into your identity provider, map its groups to teams, and let joiners, movers, and leavers flow into Rolter automatically.
 - [MCP OAuth](/security/mcp-oauth): How Rolter records user consent for MCP servers, what a session holds, why revoking a grant revokes its sessions, and who can see which rows.

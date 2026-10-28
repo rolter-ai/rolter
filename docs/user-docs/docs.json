@@ -111,6 +111,7 @@
               "security/authentication",
               "security/rbac",
               "security/single-sign-on",
+              "security/ldap",
               "security/two-factor-authentication",
               "security/user-provisioning",
               "security/mcp-oauth",

@@ -2,7 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { ChevronRight, SearchX, Wrench, X } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
-import { Link } from "react-router";
+import { Link, useSearchParams } from "react-router";
 
 import { Overline } from "@/components/ui/overline";
 import { AnalyticsUnavailable } from "@/components/AnalyticsUnavailable";
@@ -31,6 +31,7 @@ import {
   ApiError,
   fetchMcpLogDetail,
   fetchMcpLogs,
+  fetchMcpServers,
   fetchMcpSummary,
   MCP_STATUSES,
   MCP_TRANSPORTS,
@@ -39,6 +40,7 @@ import {
 import { mcpStatusLabel } from "@/lib/enum-labels";
 import type { CodeLanguage } from "@/lib/code";
 import { useOptionalAuth } from "@/lib/auth";
+import { useScope } from "@/lib/scope";
 import { useFormat } from "@/lib/i18n/format";
 import { useDrawerA11y } from "@/lib/use-drawer-a11y";
 import { BELOW_LG, useMediaQuery } from "@/lib/use-media-query";
@@ -80,6 +82,42 @@ function McpLogsScreen() {
   // account, so it has no calls of its own to narrow to and no shortcut
   const myId = useOptionalAuth()?.user?.id ?? "";
   const [mine, setMine] = React.useState(false);
+  // the server and tool live in the address, so the catalog's "View logs" link
+  // lands on a filtered list and a filtered list can be shared
+  const [params, setParams] = useSearchParams();
+  const server = (params.get("server") ?? "").trim();
+  const tool = (params.get("tool") ?? "").trim();
+  const setParam = (name: "server" | "tool", value: string) => {
+    setParams(
+      (prev) => {
+        // other parameters are left alone, since the address is not only ours
+        const next = new URLSearchParams(prev);
+        if (value) next.set(name, value);
+        else next.delete(name);
+        return next;
+      },
+      { replace: true },
+    );
+    setCursors([]);
+  };
+  // suggestions only: the log keeps slugs of servers since deleted, so a typed
+  // value is accepted whether or not the registry lists it. a registry the
+  // caller cannot read just leaves the fields free-text
+  const { orgId } = useScope();
+  const registry = useQuery({
+    queryKey: ["mcp-servers", orgId],
+    queryFn: () => fetchMcpServers(orgId as string),
+    enabled: !!orgId,
+    retry: false,
+  });
+  const servers = Array.isArray(registry.data) ? registry.data : [];
+  const toolNames = [
+    ...new Set(
+      servers
+        .filter((entry) => !server || entry.slug === server)
+        .flatMap((entry) => (Array.isArray(entry.tools) ? entry.tools : [])),
+    ),
+  ].sort();
   const [cursors, setCursors] = React.useState<string[]>([]);
   const cursor = cursors[cursors.length - 1];
   const [selected, setSelected] = React.useState<string | null>(null);
@@ -97,12 +135,14 @@ function McpLogsScreen() {
   useScreenReady(!summary.isLoading);
 
   const logs = useQuery({
-    queryKey: ["mcp-logs", status, transport, mine ? myId : "", cursor],
+    queryKey: ["mcp-logs", status, transport, server, tool, mine ? myId : "", cursor],
     queryFn: () =>
       fetchMcpLogs({
         since: new Date(Date.now() - 86_400_000).toISOString(),
         status: status || undefined,
         transport: transport || undefined,
+        server: server || undefined,
+        tool: tool || undefined,
         user: mine && myId ? myId : undefined,
         limit: 50,
         cursor,
@@ -134,11 +174,20 @@ function McpLogsScreen() {
   // a filtered page that came back empty is a different answer from a
   // deployment that has never seen an MCP call, and only one of them is fixed
   // by clearing something
-  const filtersActive = !!status || !!transport || mine || cursors.length > 0;
+  const filtersActive = !!status || !!transport || !!server || !!tool || mine || cursors.length > 0;
   const clearFilters = () => {
     setStatus("");
     setTransport("");
     setMine(false);
+    setParams(
+      (prev) => {
+        const next = new URLSearchParams(prev);
+        next.delete("server");
+        next.delete("tool");
+        return next;
+      },
+      { replace: true },
+    );
     resetPaging();
   };
 
@@ -204,6 +253,28 @@ function McpLogsScreen() {
             { value: "", label: t("pages.mcpLogs.allTransports") },
             ...MCP_TRANSPORTS.map((kind) => ({ value: kind, label: kind })),
           ]}
+        />
+        <Combobox
+          className="w-[180px]"
+          aria-label={t("pages.mcpLogs.serverFilterAria")}
+          value={server}
+          onChange={(picked) => setParam("server", picked.trim())}
+          allowCustom
+          commitOnBlur
+          clearable
+          placeholder={t("pages.mcpLogs.allServers")}
+          options={servers.map((entry) => ({ value: entry.slug, label: entry.slug }))}
+        />
+        <Combobox
+          className="w-[200px]"
+          aria-label={t("pages.mcpLogs.toolFilterAria")}
+          value={tool}
+          onChange={(picked) => setParam("tool", picked.trim())}
+          allowCustom
+          commitOnBlur
+          clearable
+          placeholder={t("pages.mcpLogs.allTools")}
+          options={toolNames.map((name) => ({ value: name, label: name }))}
         />
         {/* one click to the caller's own calls, through the `user` filter the
             API already takes. every role that reaches the screen sees it */}
