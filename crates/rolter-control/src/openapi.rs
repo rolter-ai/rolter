@@ -4898,6 +4898,7 @@ mod tests {
             "/api/v1/analytics/summary",
             "/api/v1/analytics/timeseries",
             "/api/v1/analytics/by-model",
+            "/api/v1/analytics/by-variant",
         ] {
             let names = names_of(path);
             for filter in [

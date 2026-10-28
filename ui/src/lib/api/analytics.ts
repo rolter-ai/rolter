@@ -186,10 +186,14 @@ export interface AnalyticsByVariantRow {
   p95_latency_ms: number | string;
 }
 
-/** What each variant of the route `model` served over the window. */
+/**
+ * What each variant of the route `model` served over the window. A route name
+ * is unique per project only, so a caller who reads several projects passes
+ * the route's `project`; without it same-named routes are merged.
+ */
 export function fetchAnalyticsByVariant(
   model: string,
-  window: AnalyticsWindow = {},
+  window: AnalyticsWindow & AnalyticsRowFilters = {},
 ): Promise<AnalyticsByVariantRow[]> {
   return getAnalytics<DataEnvelope<AnalyticsByVariantRow>>(
     `/api/v1/analytics/by-variant${windowParams({ ...window, model })}`,

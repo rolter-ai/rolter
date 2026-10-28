@@ -4,7 +4,7 @@ sidebarTitle: "Dashboard analytics"
 description: "Read the spend, usage and per-model figures the Dashboard shows, over any time window and narrowed to one model, virtual key, business unit or customer."
 ---
 
-The **Dashboard**'s cards and charts are three control-plane reads over the request log in ClickHouse. They need the control plane's `CLICKHOUSE_URL`; without it they answer `503`.
+The **Dashboard**'s cards and charts are three control-plane reads over the request log in ClickHouse (a fourth, `by-variant`, feeds the route sheet). They need the control plane's `CLICKHOUSE_URL`; without it they answer `503`.
 
 | Method | Path                           | What it returns                                                                                                                                       |
 | ------ | ------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------- |

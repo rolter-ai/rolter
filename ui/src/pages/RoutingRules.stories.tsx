@@ -1424,6 +1424,8 @@ export const ShowsTheObservedShareBesideTheConfiguredSplit: Story = {
       "http://x",
     );
     await expect(url.searchParams.get("model")).toBe("gpt-4o");
+    // route names are unique per project only, so the read is narrowed to the route's
+    await expect(url.searchParams.get("project")).toBe("project-1");
   },
 };
 

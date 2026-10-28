@@ -53,10 +53,13 @@ const num = (v: number | string | undefined) => Number(v ?? 0);
  */
 export function RouteVariantTraffic({
   model,
+  projectId,
   saved,
 }: {
   /** the route's public name, which the log records as `model` */
   model: string;
+  /** the route's project: a name is unique per project only, so the read is narrowed to it */
+  projectId: string;
   saved: RouteVariantRow[];
 }) {
   const { t } = useTranslation();
@@ -66,9 +69,10 @@ export function RouteVariantTraffic({
   const fid = React.useId();
 
   const read = useQuery({
-    queryKey: ["analytics-by-variant", model, timeWindow],
+    queryKey: ["analytics-by-variant", projectId, model, timeWindow],
     // the bounds are worked out as the read leaves, so a sheet left open reads the window as it is now
-    queryFn: () => fetchAnalyticsByVariant(model, windowBounds(timeWindow)),
+    queryFn: () =>
+      fetchAnalyticsByVariant(model, { ...windowBounds(timeWindow), project: projectId }),
     enabled: model !== "" && saved.length > 0,
     retry: false,
   });

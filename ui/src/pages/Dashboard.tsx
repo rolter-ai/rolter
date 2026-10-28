@@ -96,9 +96,6 @@ const pollEvery =
 // categorical colour sequence, so no two rows share a colour
 const MODELS_SHOWN = 8;
 
-// the fleet, the providers and the six figures of the window: the shared strip is four across
-const FIGURES_GRID = STAT_GRID;
-
 // the models in the order the card colours them by (#1994): the read arrives
 // by cost, and the card ranks it by requests
 function byRequests(models: AnalyticsByModelRow[]) {
@@ -419,7 +416,7 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
       )}
       {!served && gettingStarted}
       <div data-testid="dashboard-figures">
-        <div className={FIGURES_GRID}>
+        <div className={STAT_GRID}>
           {/* the fleet first: mid-incident, whether the gateways are up is the
               first thing asked, and it is not a figure of the window. it sits
               outside the summary's read, so a summary that is slow or failing

@@ -1,4 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
+import * as React from "react";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import Limits from "./Limits";
@@ -33,6 +34,7 @@ import {
   uxEvents,
   type Recorder,
 } from "./story-harness";
+import { AuthProvider } from "@/lib/auth";
 import type { BudgetRow, BudgetSpendReport, RateLimitRow, VirtualKeyRow } from "@/lib/api";
 import en from "@/lib/i18n/locales/en.json";
 import ru from "@/lib/i18n/locales/ru.json";
@@ -2011,10 +2013,13 @@ export const CreatesAUserBudgetNarrowedToAnOrg: Story = {
     await pickOption(await canvas.findByLabelText("Scope"), /^Ada Lovelace/);
     await clickWhenEnabled(canvasElement, /add budget/i);
     const form = sheet();
-    // the org is already picked, and the un-narrowed reach is not on offer
+    // the org is already picked, and, with no account behind this open-mode
+    // session to refuse it, the un-narrowed reach is on offer
     await waitFor(() => expect(within(form).getByLabelText("Organization")).toHaveValue("Rolter"));
     const reach = await openOptions(within(form).getByLabelText("Counts"));
-    await expect(within(reach).queryByRole("option", { name: "Every key they minted" })).toBeNull();
+    await expect(
+      within(reach).getByRole("option", { name: "Every key they minted" }),
+    ).toBeVisible();
     await userEvent.keyboard("{Escape}");
     const limit = within(form).getByLabelText("Limit (USD)");
     await userEvent.clear(limit);
@@ -2078,5 +2083,51 @@ export const CreatesAUserRateLimitNarrowedToAProject: Story = {
       rpm: 60,
     });
     await expect(body).not.toHaveProperty("within_org_id");
+  },
+};
+
+const MEMBER = { id: "u-member", email: "ada@acme.dev", is_superadmin: false };
+
+// signed in the way a login leaves the browser, minus the token, so the
+// provider knows the account without asking /auth/me for it
+function SignedInMember({ children }: { children: React.ReactNode }) {
+  React.useState(() => {
+    localStorage.setItem("rolter.session.email", MEMBER.email);
+    localStorage.setItem("rolter.session.user", JSON.stringify(MEMBER));
+    localStorage.removeItem("rolter.session.token");
+  });
+  React.useEffect(
+    () => () => {
+      localStorage.removeItem("rolter.session.email");
+      localStorage.removeItem("rolter.session.user");
+    },
+    [],
+  );
+  return <AuthProvider>{children}</AuthProvider>;
+}
+
+/**
+ * #3282: only a superadmin may leave a user cap un-narrowed, so a signed-in
+ * account that is not one is offered the org and the project and not the
+ * "every key" reach. (An open-mode session has no account and is offered all
+ * three, as the story above shows.)
+ */
+export const ASignedInNonSuperadminIsNotOfferedEveryKey: Story = {
+  render: () => (
+    <SignedInMember>
+      <Harness fetchStub={createsUserCaps.stub}>
+        <Limits />
+      </Harness>
+    </SignedInMember>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await pickOption(await canvas.findByLabelText("Scope type"), "User");
+    await pickOption(await canvas.findByLabelText("Scope"), /^Ada Lovelace/);
+    await clickWhenEnabled(canvasElement, /add budget/i);
+    const form = sheet();
+    const reach = await openOptions(await within(form).findByLabelText("Counts"));
+    await expect(within(reach).getByRole("option", { name: /one organization/ })).toBeVisible();
+    await expect(within(reach).queryByRole("option", { name: "Every key they minted" })).toBeNull();
   },
 };

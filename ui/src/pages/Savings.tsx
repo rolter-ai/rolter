@@ -61,6 +61,11 @@ const EXCLUDED_REASONS = [
   "failed",
   "cache_hit",
   "usage_unknown",
+  "uses_tools",
+  "image_input",
+  "audio_input",
+  "structured_output",
+  "multi_turn",
   "not_a_model_call",
   "no_token_usage",
   "prompt_too_large",
@@ -223,7 +228,18 @@ export default function Savings() {
             options={[
               { value: "", label: t("pages.savings.allRoutes") },
               ...options(
-                (models.data ?? []).map((m) => m.model),
+                // route names are unique per project only, and the report filters on the
+                // name, so a picked project narrows the list and a name is offered once
+                [
+                  ...new Set(
+                    (models.data ?? [])
+                      .filter(
+                        (m) =>
+                          !filters.project || !m.project_id || m.project_id === filters.project,
+                      )
+                      .map((m) => m.model),
+                  ),
+                ],
                 filters.route,
               ),
             ]}
@@ -693,7 +709,7 @@ function ExcludedSection({
             {unknown.map((model) => (
               <li key={model}>
                 <Link
-                  to={`/pricing-overrides?model=${encodeURIComponent(model)}`}
+                  to="/pricing-overrides"
                   className="font-mono text-xs underline underline-offset-2"
                 >
                   {model}

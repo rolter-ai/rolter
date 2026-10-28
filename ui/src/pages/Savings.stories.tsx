@@ -12,6 +12,7 @@ import {
   expectSkeleton,
   Harness,
   json,
+  openOptions,
   pending,
   pickOption,
   recording,
@@ -81,7 +82,14 @@ const REPORT: SavingsReport = {
     },
   ],
   excluded: {
-    requests: { unpriced: 300, failed: 120, prompt_too_large: 800, brand_new_reason: 3 },
+    requests: {
+      unpriced: 300,
+      failed: 120,
+      prompt_too_large: 800,
+      multi_turn: 5000,
+      uses_tools: 1200,
+      brand_new_reason: 3,
+    },
     unknown_candidate_prices: ["mystery-1"],
   },
 };
@@ -127,12 +135,14 @@ export const Populated: Story = {
     // a lone figure would read as a promise; only the recorded cost is one
     await expect(canvas.queryByText("$9.75")).toBeNull();
     await expect(canvas.getByText("Prompt over the threshold")).toBeVisible();
+    await expect(canvas.getByText("Was part of a conversation")).toBeVisible();
+    await expect(canvas.getByText("Used tools")).toBeVisible();
     // a reason this dashboard has no copy for is shown as the control plane names it
     await expect(canvas.getByText("brand_new_reason")).toBeVisible();
     const unknown = canvas.getByTestId("savings-unknown-prices");
     await expect(within(unknown).getByRole("link", { name: "mystery-1" })).toHaveAttribute(
       "href",
-      "/pricing-overrides?model=mystery-1",
+      "/pricing-overrides",
     );
   },
 };
@@ -346,5 +356,32 @@ export const PickingAWindowReadsItAgain: Story = {
         }),
       ).toBe(true),
     );
+  },
+};
+
+/** a route name is unique per project only: the picker offers it once, not once per project */
+export const ARouteNameSharedByTwoProjectsIsOfferedOnce: Story = {
+  render: () => (
+    <Harness
+      fetchStub={routes([
+        ["/analytics/savings", () => REPORT],
+        ["/virtual-keys", () => []],
+        [
+          "/models",
+          () => [
+            { model: "chat", strategy: "weighted", targets: 1, project_id: "project-1" },
+            { model: "chat", strategy: "weighted", targets: 1, project_id: "project-2" },
+          ],
+        ],
+      ])}
+    >
+      <Savings />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByTestId("savings-limits");
+    const listbox = await openOptions(await canvas.findByLabelText("Route"));
+    await expect(within(listbox).getAllByRole("option", { name: "chat" })).toHaveLength(1);
   },
 };

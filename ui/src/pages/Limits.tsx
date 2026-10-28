@@ -375,7 +375,9 @@ export default function Limits() {
           entry.projects.map((project) => ({ value: project.id, label: project.name })),
         ),
         orgId: scope.orgId ?? null,
-        canLeaveOpen: !!auth?.user?.is_superadmin,
+        // an open-mode session has no account, and its caller acts as the admin
+        // token, so it may leave a cap un-narrowed; the control plane decides
+        canLeaveOpen: auth?.user ? auth.user.is_superadmin : true,
       }
     : undefined;
   const budgetNames = useBudgetNames(scopeName);

@@ -916,8 +916,10 @@ async fn by_variant(
         Ok(ch) => ch,
         Err(resp) => return resp,
     };
-    // `model` and `variant` are plain columns and no select item aliases
-    // either; the sums alias other names, which their own qualifiers cover
+    // `model` and `variant` are selected under their own names, so both are
+    // qualified with the table: ClickHouse resolves a bare name to the alias
+    // before the column. the sums alias other names, which carry their own
+    // qualifiers where they need them
     let sql = format!(
         "select request_logs.model as model, request_logs.variant as variant, \
                 {REQUESTS} as requests, \

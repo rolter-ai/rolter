@@ -444,7 +444,11 @@ export function RouteSheet({
                 onChange={setVariants}
                 observed={
                   route && variants.data ? (
-                    <RouteVariantTraffic model={route.model} saved={variants.data} />
+                    <RouteVariantTraffic
+                      model={route.model}
+                      projectId={route.project_id}
+                      saved={variants.data}
+                    />
                   ) : undefined
                 }
                 empty={
