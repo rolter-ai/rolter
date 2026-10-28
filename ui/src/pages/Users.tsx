@@ -8,6 +8,7 @@ import {
   KeyRound,
   Pencil,
   Plus,
+  ShieldCheck,
   Trash2,
   UserCheck,
   UsersRound,
@@ -72,6 +73,9 @@ import {
   deleteMembership,
   deleteUser,
   fetchMemberships,
+  fetchOrgMfaStatus,
+  setDeploymentRole,
+  type DeploymentRole,
   fetchUsers,
   inviteUser,
   issuePasswordReset,
@@ -82,6 +86,7 @@ import {
   updateUser,
   type Invitation,
   type MembershipRow,
+  type OrgMemberMfa,
   type Role,
   type UserRow,
 } from "@/lib/api";
@@ -114,9 +119,153 @@ import {
 } from "@/lib/user-scope-filter";
 import { useScreenReady } from "@/lib/ux-react";
 
+const DEPLOYMENT_ROLE_KEY: Record<DeploymentRole, string> = {
+  operator: "pages.users.deploymentRole.operator",
+  security_auditor: "pages.users.deploymentRole.securityAuditor",
+};
+
+const NO_DEPLOYMENT_ROLE = "none";
+
+/**
+ * Give an account a deployment role, or clear it (#3290). Superadmin only
+ * (`deployment_role:update`): neither role can grant itself or the other. The
+ * change reaches the account's next request, with no session to revoke.
+ */
+function DeploymentRoleSheet({
+  target,
+  onClose,
+  onDone,
+}: {
+  target: UserRow | null;
+  onClose: () => void;
+  onDone: () => void;
+}) {
+  const { t } = useTranslation();
+  const toast = useToast();
+  const held = target?.deployment_role ?? NO_DEPLOYMENT_ROLE;
+  const [role, setRole] = React.useState<string>(held);
+  React.useEffect(() => setRole(held), [held, target?.id]);
+
+  const save = useMutation({
+    mutationFn: () =>
+      setDeploymentRole(
+        (target as UserRow).id,
+        role === NO_DEPLOYMENT_ROLE ? null : (role as DeploymentRole),
+      ),
+    onSuccess: (user) => {
+      onDone();
+      toast.push({
+        tone: "success",
+        title: user.deployment_role
+          ? t("pages.users.deploymentRole.toastSet", {
+              email: user.email,
+              role: t(DEPLOYMENT_ROLE_KEY[user.deployment_role]),
+            })
+          : t("pages.users.deploymentRole.toastCleared", { email: user.email }),
+      });
+      onClose();
+    },
+    onError: (error) => {
+      toast.push({
+        tone: "error",
+        title: t("toast.saveFailed", { what: target?.email ?? "" }),
+        detail: errorText(error, t),
+      });
+    },
+  });
+
+  return (
+    <EditorSheet
+      name="user-deployment-role"
+      open={!!target}
+      onOpenChange={(open) => {
+        if (open) return;
+        save.reset();
+        onClose();
+      }}
+      title={t("pages.users.deploymentRole.title")}
+      subtitle={t("pages.users.deploymentRole.subtitle", { email: target?.email ?? "" })}
+      dirty={role !== held}
+      errorMessage={save.isError ? errorText(save.error, t) : undefined}
+      saveLabel={t("common.save")}
+      canSave={role !== held}
+      saving={save.isPending}
+      onSubmit={() => save.mutate()}
+    >
+      <Field
+        label={t("pages.users.deploymentRole.label")}
+        hint={t("pages.users.deploymentRole.hint")}
+      >
+        <Combobox
+          value={role}
+          onChange={setRole}
+          options={[
+            {
+              value: NO_DEPLOYMENT_ROLE,
+              label: t("pages.users.deploymentRole.none"),
+              description: t("pages.users.deploymentRole.noneBody"),
+            },
+            {
+              value: "operator",
+              label: t("pages.users.deploymentRole.operator"),
+              description: t("pages.users.deploymentRole.operatorBody"),
+            },
+            {
+              value: "security_auditor",
+              label: t("pages.users.deploymentRole.securityAuditor"),
+              description: t("pages.users.deploymentRole.securityAuditorBody"),
+            },
+          ]}
+        />
+      </Field>
+      <p className="text-sm text-muted-foreground">{t("pages.users.deploymentRole.scopeNote")}</p>
+    </EditorSheet>
+  );
+}
+
+/**
+ * The Second factor cell (#3264): armed or not set up, from the org's
+ * enrolment roster. While the roster loads it is a skeleton and when it failed
+ * (the `LoadError` above says so) a dash; an account the roster does not list
+ * (deactivated, or holding no grant in the org) is "Not listed" rather than
+ * wrongly "Not set up".
+ */
+function SecondFactorCell({
+  read,
+  row,
+}: {
+  read: { isPending: boolean; isError: boolean };
+  row: OrgMemberMfa | undefined;
+}) {
+  const { t } = useTranslation();
+  if (read.isPending) return <Skeleton width={64} height={20} radius={6} />;
+  if (read.isError) return <span className="text-xs text-muted-foreground">—</span>;
+  if (!row) {
+    return (
+      <Badge tone="neutral" title={t("pages.users.factorNotListedHint")}>
+        {t("pages.users.factorNotListed")}
+      </Badge>
+    );
+  }
+  return row.enabled ? (
+    <Badge
+      dot
+      tone="success"
+      title={t("pages.users.factorArmedHint", { count: row.recovery_codes_remaining })}
+    >
+      {t("pages.users.factorArmed")}
+    </Badge>
+  ) : (
+    <Badge tone="warning" title={t("pages.users.factorNoneHint")}>
+      {t("pages.users.factorNone")}
+    </Badge>
+  );
+}
+
 // admin surface for the user/team lifecycle (ROL-223): invite people into the
 // current org, a team or a project and withdraw invitations still pending,
 // grant/revoke roles at org/team/project scope, and deactivate/delete accounts.
+//
 // everything is scoped to the org selected in the sidebar ScopeSwitcher;
 // account edits (email/password/superadmin) require superadmin on the backend,
 // and an invite or a role grant takes admin at the scope it reaches. what
@@ -159,6 +308,26 @@ export default function Users() {
     enabled: !!orgId,
   });
 
+  // who has an armed second factor (#3264), read with the same gate as the
+  // endpoint (`org_auth_policy:read`). a "no" omits the column rather than
+  // showing it refused on every row, and an answer still in flight holds it
+  // back so it is not shown and then retracted; outside a provider (a story, a
+  // test) no answer is coming, so there is nothing to wait for
+  const can = useCan();
+  const capabilities = useCapabilities();
+  const awaitingGate = capabilities !== null && !capabilities.resolved;
+  const factorReadable = !!orgId && !awaitingGate && can("org_auth_policy", "read") !== false;
+  const factors = useQuery({
+    queryKey: ["mfa-status", orgId],
+    queryFn: () => fetchOrgMfaStatus(orgId as string),
+    enabled: factorReadable,
+    retry: false,
+  });
+  const factorByUser = React.useMemo(
+    () => new Map((factors.data ?? []).map((row) => [row.user_id, row])),
+    [factors.data],
+  );
+
   // every team and project in the org by name, so a grant reads as the scope
   // it is and never as the head of a uuid (#2053)
   const orgScope = useOrgScope(orgId);
@@ -171,6 +340,7 @@ export default function Users() {
 
   const [inviteOpen, setInviteOpen] = React.useState(false);
   const [editUser, setEditUser] = React.useState<UserRow | null>(null);
+  const [deploymentRoleUser, setDeploymentRoleUser] = React.useState<UserRow | null>(null);
   const [roleUser, setRoleUser] = React.useState<UserRow | null>(null);
   const [profileUser, setProfileUser] = React.useState<UserRow | null>(null);
   const [unassignProfile, setUnassignProfile] = React.useState<UnassignTarget | null>(null);
@@ -292,7 +462,9 @@ export default function Users() {
 
   // the roles column holds one line per grant, each with its own two controls,
   // so it takes the widest share and the table a floor that fits a grant line
-  const GRID = `${primaryColumn(1.5)} 2.2fr 1.6fr 110px 0.9fr 110px`;
+  const GRID = factorReadable
+    ? `${primaryColumn(1.5)} 2.2fr 1.6fr 110px 120px 0.9fr 110px`
+    : `${primaryColumn(1.5)} 2.2fr 1.6fr 110px 0.9fr 110px`;
 
   return (
     <PageBody>
@@ -345,6 +517,15 @@ export default function Users() {
           description={scopeMessage ?? t("pages.users.noOrgBody")}
         />
       )}
+      {factors.error && (
+        // load-error-allow: the roster only adds a column to the users list, whose own read pairs as users
+        <LoadError
+          error={factors.error}
+          resource={t("errors.resources.mfaStatus")}
+          onRetry={() => factors.refetch()}
+          target="users-mfa"
+        />
+      )}
       {!!(users.error || memberships.error || (scopeFilter && orgScope.error)) && (
         <LoadError
           error={users.error ?? memberships.error ?? orgScope.error}
@@ -357,12 +538,13 @@ export default function Users() {
         />
       )}
 
-      <ListTable label={t("screens.gov-users.title")} minWidth={1180}>
+      <ListTable label={t("screens.gov-users.title")} minWidth={factorReadable ? 1300 : 1180}>
         <ListHeader grid={GRID}>
           <ListHeaderCell>{t("pages.users.colUser")}</ListHeaderCell>
           <ListHeaderCell>{t("pages.users.colRoles")}</ListHeaderCell>
           <ListHeaderCell>{t("pages.users.colProfiles")}</ListHeaderCell>
           <ListHeaderCell>{t("pages.users.colStatus")}</ListHeaderCell>
+          {factorReadable && <ListHeaderCell>{t("pages.users.colSecondFactor")}</ListHeaderCell>}
           <ListHeaderCell>{t("pages.users.colCreated")}</ListHeaderCell>
           <ListActionsHeader />
         </ListHeader>
@@ -400,6 +582,17 @@ export default function Users() {
                     {user.is_superadmin && (
                       <Badge tone="neutral" className="flex-none">
                         {t("pages.users.superBadge")}
+                      </Badge>
+                    )}
+                    {/* the deployment role (#3290): shown to anyone who can read
+                        the account, changed by a superadmin alone */}
+                    {user.deployment_role && (
+                      <Badge
+                        tone="neutral"
+                        className="flex-none"
+                        title={t("pages.users.deploymentRole.badgeHint")}
+                      >
+                        {t(DEPLOYMENT_ROLE_KEY[user.deployment_role])}
                       </Badge>
                     )}
                   </div>
@@ -443,6 +636,11 @@ export default function Users() {
                     : t("pages.users.rowStatusDeactivated")}
                 </Badge>
               </ListCell>
+              {factorReadable && (
+                <ListCell>
+                  <SecondFactorCell read={factors} row={factorByUser.get(user.id)} />
+                </ListCell>
+              )}
               <ListCell className="font-mono text-xs text-muted-foreground">
                 {fmt.date(user.created_at ?? "")}
               </ListCell>
@@ -478,6 +676,15 @@ export default function Users() {
                     <KeyRound className="h-3.5 w-3.5" />
                   </RowIconButton>
                 )}
+                <RowIconButton
+                  gate="deployment_role:update"
+                  control="user-deployment-role"
+                  title={t("pages.users.deploymentRole.set", { email: user.email })}
+                  aria-label={t("pages.users.deploymentRole.set", { email: user.email })}
+                  onClick={() => setDeploymentRoleUser(user)}
+                >
+                  <ShieldCheck className="h-3.5 w-3.5" />
+                </RowIconButton>
                 <RowIconButton
                   gate="user:update"
                   control="user-deactivate"
@@ -565,6 +772,11 @@ export default function Users() {
         onClose={() => setEditUser(null)}
         onDone={invalidate}
         onDelete={setDeleteTarget}
+      />
+      <DeploymentRoleSheet
+        target={deploymentRoleUser}
+        onClose={() => setDeploymentRoleUser(null)}
+        onDone={invalidate}
       />
       {profileUser && orgId && (
         <AssignSubjectProfileSheet
@@ -1559,7 +1771,8 @@ function RoleGrants({
           email: user.email,
         };
         const last = isLastAdmin(grant);
-        const fromIdp = grant.source === "sso" || grant.source === "scim";
+        const fromIdp =
+          grant.source === "sso" || grant.source === "scim" || grant.source === "ldap";
         return (
           <li key={grant.id} className="flex min-w-0 items-center gap-1.5">
             <span className="flex min-w-0 flex-wrap items-center gap-1.5">
@@ -1571,7 +1784,13 @@ function RoleGrants({
               )}
               {fromIdp && (
                 <span className="text-2xs text-[color:var(--text-subtle)]">
-                  {t(grant.source === "sso" ? "pages.users.viaSso" : "pages.users.viaScim")}
+                  {t(
+                    grant.source === "sso"
+                      ? "pages.users.viaSso"
+                      : grant.source === "ldap"
+                        ? "pages.users.viaLdap"
+                        : "pages.users.viaScim",
+                  )}
                 </span>
               )}
             </span>
@@ -1710,6 +1929,7 @@ function RevokeRoleDialog({
     if (grants.length === 1) body.push(t("pages.users.confirm.revokeLast"));
     if (target.grant.source === "sso") body.push(t("pages.users.confirm.revokeFromSso"));
     if (target.grant.source === "scim") body.push(t("pages.users.confirm.revokeFromScim"));
+    if (target.grant.source === "ldap") body.push(t("pages.users.confirm.revokeFromLdap"));
     if (self && self === target.user.id) body.push(t("pages.users.confirm.revokeSelf"));
   }
 
@@ -1833,6 +2053,7 @@ function ChangeRoleDialog({
     body.push(t("pages.users.confirm.changeBody", names));
     if (target.grant.source === "sso") body.push(t("pages.users.confirm.changeFromSso", names));
     if (target.grant.source === "scim") body.push(t("pages.users.confirm.changeFromScim", names));
+    if (target.grant.source === "ldap") body.push(t("pages.users.confirm.changeFromLdap", names));
     if (self && self === target.user.id) body.push(t("pages.users.confirm.changeSelf"));
   }
 

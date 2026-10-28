@@ -55,7 +55,7 @@ Switches you have flipped are a draft until you save them. Leaving the screen wi
 
 ## API
 
-Both endpoints are **superadmin only**, and every update writes a `feature_flags.update` entry to the audit log.
+Both endpoints are for a **superadmin** or an **operator** (a [deployment role](/security/rbac#deployment-roles)), and every update writes a `feature_flags.update` entry to the audit log.
 
 ```bash
 # read the effective flags plus what this deployment can run

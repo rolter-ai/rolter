@@ -43,6 +43,9 @@ export const NOT_COPY: AllowList = {
     datadog:
       "an example connector name in the name field's placeholder: the vendor's own name, spelled the same in every locale",
   },
+  "src/pages/Ldap.tsx": {
+    mail: "the directory attribute the server defaults the email field to, typed verbatim into the filter",
+  },
   "src/pages/Playground.tsx": {
     nova: "a voice id the speech endpoint takes verbatim (OpenAI's own names), spliced into the translated `voiceOption` label",
     onyx: "a voice id the speech endpoint takes verbatim (OpenAI's own names), spliced into the translated `voiceOption` label",
