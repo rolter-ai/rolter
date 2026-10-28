@@ -504,6 +504,7 @@ supported = [
   "messages, system and developer instructions, images, documents, tools and tool results, in both directions",
   "SSE translated incrementally in both directions",
   "`max_tokens` injected from `[compatibility] default_max_tokens` when an OpenAI request sets none",
+  "Anthropic `tool_choice.disable_parallel_tool_use: true` carried as Chat `parallel_tool_calls: false` on a request with tools (#3325)",
 ]
 omissions = [
   "fields with no counterpart in the target dialect are dropped, never forwarded",
@@ -514,6 +515,7 @@ deviations = [
 tests = [
   "crates/rolter-proxy/src/translation.rs::openai_multimodal_and_tools_become_anthropic_blocks",
   "crates/rolter-proxy/src/translation.rs::chat_to_anthropic_clamps_a_temperature_above_one",
+  "crates/rolter-proxy/src/translation.rs::anthropic_disable_parallel_tool_use_becomes_chat_parallel_tool_calls",
   "crates/rolter-gateway/tests/integration.rs::a_chat_temperature_above_one_is_clamped_for_an_anthropic_upstream",
   "crates/rolter-proxy/src/translation.rs::anthropic_response_becomes_openai_response",
   "crates/rolter-proxy/src/translation.rs::anthropic_sse_translates_across_chunk_boundaries",

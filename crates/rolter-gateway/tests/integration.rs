@@ -2621,8 +2621,17 @@ async fn param_adjustments_name_a_forced_function_an_interactions_upstream_canno
 }
 
 #[tokio::test]
-async fn param_adjustments_name_what_an_openai_upstream_cannot_carry_for_an_anthropic_client() {
-    let upstream = serve(Router::new().route("/v1/chat/completions", post(mock_openai))).await;
+async fn an_anthropic_serial_tool_choice_reaches_an_openai_upstream_as_parallel_tool_calls() {
+    // carried rather than reported since #3325: chat has the same switch as a
+    // top-level flag
+    let upstream = serve(Router::new().route(
+        "/v1/chat/completions",
+        post(|body: Json<Value>| async move {
+            assert_eq!(body["parallel_tool_calls"], false, "{}", body.0);
+            mock_openai(body).await
+        }),
+    ))
+    .await;
     let gw = serve_gateway(&config_for("to-openai", vec![("openai", upstream)])).await;
     let client = reqwest::Client::new();
 
@@ -2639,11 +2648,7 @@ async fn param_adjustments_name_what_an_openai_upstream_cannot_carry_for_an_anth
             .await
             .unwrap();
         assert_eq!(response.status(), 200, "stream={stream}");
-        assert_eq!(
-            param_adjustments(&response).as_deref(),
-            Some("tool_choice=translated"),
-            "stream={stream}"
-        );
+        assert_eq!(param_adjustments(&response), None, "stream={stream}");
     }
 }
 

@@ -151,18 +151,19 @@ so instead of discarding it silently (#1586). Every adapter in
 a `Disposition`: `dropped` (no equivalent, not sent), `clamped` (sent within
 the upstream's range: Chat → Anthropic clamps `temperature`, see below) or `translated` (sent as a lossy
 approximation, such as a forced-function `tool_choice` sent to Gemini as mode
-`ANY`, an Anthropic `tool_choice` carrying `disable_parallel_tool_use`, or a
-tool list with non-function tools). A rename that keeps the meaning
+`ANY`, an Anthropic `tool_choice` carrying `disable_parallel_tool_use` sent to
+Gemini or Interactions, which have no such switch, or a tool list with
+non-function tools). A rename that keeps the meaning
 (`max_completion_tokens` → `max_tokens`, `stop` → `stop_sequences`) is not an
 adjustment. What each adapter reports:
 
-| Pair                         | Reported                                                                                                                                                            |
-| ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Chat → Anthropic             | `n`, `presence_penalty`, `frequency_penalty`, `logprobs` dropped; `max_completion_tokens` dropped when `max_tokens` is also set; `temperature` clamped when above 1 |
-| Anthropic → Chat             | `tool_choice` translated when it carries `disable_parallel_tool_use`                                                                                                |
-| Responses → Chat / Anthropic | `background`, `store`, `previous_response_id`, `reasoning`, `text` dropped, plus the Chat → Anthropic row for Anthropic                                             |
-| any → Gemini generate        | every known parameter the translator does not map (`top_k`, `seed`, `response_format`, …); `tool_choice` and `tools` as above                                       |
-| any → Gemini Interactions    | as Gemini, except that `store` and `previous_response_id` are carried rather than dropped                                                                           |
+| Pair                         | Reported                                                                                                                                                                                |
+| ---------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Chat → Anthropic             | `n`, `presence_penalty`, `frequency_penalty`, `logprobs` dropped; `max_completion_tokens` dropped when `max_tokens` is also set; `temperature` clamped when above 1                     |
+| Anthropic → Chat             | nothing: `tool_choice.disable_parallel_tool_use: true` is carried as top-level `parallel_tool_calls: false` (#3325), and `false`, or `true` on a request with no tools, leaves it unset |
+| Responses → Chat / Anthropic | `background`, `store`, `previous_response_id`, `reasoning`, `text` dropped, plus the Chat → Anthropic row for Anthropic                                                                 |
+| any → Gemini generate        | every known parameter the translator does not map (`top_k`, `seed`, `response_format`, …); `tool_choice` and `tools` as above                                                           |
+| any → Gemini Interactions    | as Gemini, except that `store` and `previous_response_id` are carried rather than dropped                                                                                               |
 
 `temperature` is the one clamp (#3324, the maintainer's decision). OpenAI's Chat
 Completions and Responses accept 0 to 2 and Anthropic Messages 0 to 1, so a

@@ -983,11 +983,23 @@ fn anthropic_request(mut v: Value, adjustments: &mut ParamAdjustments) -> Value 
             *tool = translated;
         }
     }
+    // chat carries anthropic's per-choice switch as a top-level flag (#3325).
+    // `false` is chat's default and is left unset, and so is `true` on a
+    // request with no tools, which openai refuses the flag on and which has no
+    // call to parallelise anyway
+    let serial_calls = obj
+        .get("tool_choice")
+        .and_then(|choice| choice.get("disable_parallel_tool_use"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let has_tools = obj
+        .get("tools")
+        .and_then(Value::as_array)
+        .is_some_and(|tools| !tools.is_empty());
+    if serial_calls && has_tools {
+        obj.insert("parallel_tool_calls".into(), Value::Bool(false));
+    }
     if let Some(choice) = obj.get_mut("tool_choice") {
-        // chat has no per-choice switch for parallel calls
-        if choice.get("disable_parallel_tool_use").is_some() {
-            adjustments.record("tool_choice", Disposition::Translated);
-        }
         *choice = match choice.take() {
             Value::Object(m) if m.get("type") == Some(&json!("any")) => json!("required"),
             Value::Object(m) if m.get("type") == Some(&json!("tool")) => {
@@ -1965,8 +1977,23 @@ fn openai_to_gemini(mut v: Value, adjustments: &mut ParamAdjustments) -> Result<
 }
 
 fn anthropic_to_gemini(v: Value, adjustments: &mut ParamAdjustments) -> Result<Value> {
-    let chat = anthropic_request(v, adjustments);
+    let mut chat = anthropic_request(v, adjustments);
+    lose_the_parallel_switch(&mut chat, adjustments);
     openai_to_gemini(chat, adjustments)
+}
+
+/// Take back the `parallel_tool_calls` that `anthropic_request` carried an
+/// Anthropic `disable_parallel_tool_use` into, for a dialect with no such
+/// switch (#3325). The caller never sent `parallel_tool_calls`, so the loss is
+/// reported against the `tool_choice` it came in on, as before the switch was
+/// carried to Chat.
+fn lose_the_parallel_switch(chat: &mut Value, adjustments: &mut ParamAdjustments) {
+    let carried = chat
+        .as_object_mut()
+        .and_then(|obj| obj.remove("parallel_tool_calls"));
+    if carried.is_some() {
+        adjustments.record("tool_choice", Disposition::Translated);
+    }
 }
 
 fn responses_to_gemini(v: Value, adjustments: &mut ParamAdjustments) -> Result<Value> {
@@ -2257,7 +2284,8 @@ fn openai_to_interactions(mut v: Value, adjustments: &mut ParamAdjustments) -> R
 }
 
 fn anthropic_to_interactions(v: Value, adjustments: &mut ParamAdjustments) -> Result<Value> {
-    let chat = anthropic_request(v, adjustments);
+    let mut chat = anthropic_request(v, adjustments);
+    lose_the_parallel_switch(&mut chat, adjustments);
     openai_to_interactions(chat, adjustments)
 }
 
@@ -6146,17 +6174,87 @@ data: [DONE]
     }
 
     #[test]
-    fn anthropic_to_chat_reports_a_tool_choice_it_cannot_carry_whole() {
-        let (_, entries) = reported(
-            "/v1/messages",
-            ProviderKind::Openai,
-            json!({
-                "model": "m", "max_tokens": 5,
-                "messages": [{"role": "user", "content": "hi"}],
-                "tool_choice": {"type": "auto", "disable_parallel_tool_use": true}
-            }),
-        );
-        assert_eq!(entries, ["translated:tool_choice"]);
+    fn anthropic_disable_parallel_tool_use_becomes_chat_parallel_tool_calls() {
+        let tools = json!([{"name": "lookup", "input_schema": {"type": "object"}}]);
+        for (kind, choice) in [
+            (
+                "auto",
+                json!({"type": "auto", "disable_parallel_tool_use": true}),
+            ),
+            (
+                "any",
+                json!({"type": "any", "disable_parallel_tool_use": true}),
+            ),
+            (
+                "tool",
+                json!({"type": "tool", "name": "lookup", "disable_parallel_tool_use": true}),
+            ),
+        ] {
+            let (sent, entries) = reported(
+                "/v1/messages",
+                ProviderKind::Openai,
+                json!({
+                    "model": "m", "max_tokens": 5, "tools": tools,
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "tool_choice": choice
+                }),
+            );
+            assert_eq!(sent["parallel_tool_calls"], false, "{kind}");
+            assert!(
+                entries.is_empty(),
+                "{kind}: carried, not translated: {entries:?}"
+            );
+            assert!(
+                sent["tool_choice"]
+                    .get("disable_parallel_tool_use")
+                    .is_none(),
+                "{kind}: {sent}"
+            );
+        }
+    }
+
+    /// Gemini has no parallel-calls switch: the loss is still named against the
+    /// `tool_choice` the caller sent, never as a `parallel_tool_calls` it did not
+    #[test]
+    fn a_dialect_without_the_switch_reports_tool_choice_translated() {
+        for kind in [ProviderKind::GeminiNative, ProviderKind::GeminiInteractions] {
+            let (sent, entries) = reported(
+                "/v1/messages",
+                kind,
+                json!({
+                    "model": "m", "max_tokens": 5,
+                    "tools": [{"name": "lookup", "input_schema": {"type": "object"}}],
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "tool_choice": {"type": "auto", "disable_parallel_tool_use": true}
+                }),
+            );
+            assert!(
+                entries.contains(&"translated:tool_choice".to_string()),
+                "{kind:?}: {entries:?}"
+            );
+            assert!(
+                !entries.iter().any(|e| e.contains("parallel_tool_calls")),
+                "{kind:?}: {entries:?}"
+            );
+            assert!(!sent.to_string().contains("parallel"), "{kind:?}: {sent}");
+        }
+    }
+
+    #[test]
+    fn a_disable_parallel_tool_use_of_false_or_without_tools_leaves_chat_unset() {
+        let tools = json!([{"name": "lookup", "input_schema": {"type": "object"}}]);
+        for body in [
+            json!({"model": "m", "max_tokens": 5, "tools": tools,
+                   "messages": [{"role": "user", "content": "hi"}],
+                   "tool_choice": {"type": "auto", "disable_parallel_tool_use": false}}),
+            json!({"model": "m", "max_tokens": 5,
+                   "messages": [{"role": "user", "content": "hi"}],
+                   "tool_choice": {"type": "auto", "disable_parallel_tool_use": true}}),
+        ] {
+            let (sent, entries) = reported("/v1/messages", ProviderKind::Openai, body);
+            assert!(sent.get("parallel_tool_calls").is_none(), "{sent}");
+            assert!(entries.is_empty(), "{entries:?}");
+        }
     }
 
     #[test]
