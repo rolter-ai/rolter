@@ -657,14 +657,16 @@ conformance = "partial"
 modules = [
   "crates/rolter-control/src/proxy.rs",
   "crates/rolter-gateway/src/mcp_proxy.rs",
+  "crates/rolter-proxy/src/hop_by_hop.rs",
 ]
 supported = [
-  "a fixed list of hop-by-hop fields (RFC 9110 §7.6.1) is stripped before a request or response is relayed",
-]
-omissions = [
-  "fields a `Connection` header nominates are not removed, and the control plane's `/gw` relay lists `trailers` where the field is `Trailer` (#3338)",
+  "`Connection`, every field its value nominates and the fixed hop-by-hop set (`Keep-Alive`, `Proxy-Connection`, `TE`, `Trailer`, `Transfer-Encoding`, `Upgrade` and the proxy-auth fields, RFC 9110 §7.6.1) are stripped by one shared helper before a request or response is relayed",
 ]
 tests = [
+  "crates/rolter-proxy/src/hop_by_hop.rs::removes_connection_and_the_fields_it_nominates",
+  "crates/rolter-proxy/src/hop_by_hop.rs::removes_trailer_and_the_fixed_set",
+  "crates/rolter-control/src/proxy.rs::the_relay_drops_nominated_and_trailer_headers_both_ways",
+  "crates/rolter-gateway/src/mcp_proxy.rs::the_relay_drops_nominated_and_trailer_headers",
   "crates/rolter-gateway/src/mcp_proxy.rs::proxy_replaces_client_auth_and_preserves_path_query_and_body",
 ]
 

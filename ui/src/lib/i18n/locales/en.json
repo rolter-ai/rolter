@@ -4251,7 +4251,10 @@
         "emptyTitle": "No pending invitations",
         "emptyBody": "An invitation waits here until it is accepted, expires or is revoked.",
         "revoke": "Revoke the invitation for {{email}}",
-        "toastRevoked": "Revoked the invitation for {{email}}"
+        "toastRevoked": "Revoked the invitation for {{email}}",
+        "resend": "Email the link to {{email}} again",
+        "toastResent": "Emailed the link to {{email}} again",
+        "toastResendFailed": "The link to {{email}} could not be emailed"
       },
       "confirm": {
         "revokeTitle": "Revoke {{role}} on {{scope}} from {{email}}?",
