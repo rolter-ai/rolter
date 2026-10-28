@@ -127,6 +127,17 @@ The file name says what it holds: `<what>_<from>_to_<to>_<CURRENCY>.csv`, such a
 
 **The log is streamed.** The control plane reads it one bounded page at a time with the keyset cursor the JSON list uses and writes each page as it arrives, so a month of requests does not wait for, or hold in memory, the whole result, and rows logged during the export neither repeat nor go missing. ClickHouse failing before the first row answers a JSON error; failing part way ends the body with an error so the download fails instead of passing for a complete file.
 
+**The request log export is bounded.** The log can span the whole retention period, and a stream holds a connection and a run of ClickHouse queries for as long as it takes, so the control plane limits it four ways, each set by an environment variable (`0` turns that limit off):
+
+| Limit                                  | Default   | Variable                                  | Past it                                                            |
+| -------------------------------------- | --------- | ----------------------------------------- | ------------------------------------------------------------------ |
+| rows in one export                     | `1000000` | `ROLTER_EXPORT_MAX_ROWS`                  | the body ends in an error after the last row that fits             |
+| wall-clock time of one export          | `600` s   | `ROLTER_EXPORT_MAX_SECS`                  | the body ends in an error                                          |
+| exports running at once in one process | `4`       | `ROLTER_EXPORT_MAX_CONCURRENT`            | `429 Too Many Requests` with `Retry-After`, before any row is read |
+| exports running at once for one caller | `1`       | `ROLTER_EXPORT_MAX_CONCURRENT_PER_CALLER` | `429 Too Many Requests` with `Retry-After`, before any row is read |
+
+A row or time limit ends the body with the same error a failed page does, so the download fails instead of passing for a complete file: the status line was already `200` by then, and a client that checks only the status would keep a short file. Narrow the window (`since`, `until`) or the filters and export again. A caller is an account or an API token; the admin token and open mode share one. The concurrency counts are per control-plane process, so with several replicas each holds its own.
+
 **Cells are safe to open.** A value a spreadsheet would run as a formula (one starting with `=`, `+`, `-`, `@`, a tab or a carriage return, such as a business unit someone named `=Payments`) is written with a leading `'`. Numbers are written as they are.
 
 ## The savings advisor

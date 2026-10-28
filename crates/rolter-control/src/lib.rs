@@ -326,6 +326,26 @@ pub struct Args {
         default_value_t = false
     )]
     pub login_trust_forwarded_for: bool,
+    /// most rows one request log CSV export may carry before its body ends in
+    /// an error instead of passing for a complete file; `0` for no bound (#3360)
+    #[arg(long, env = "ROLTER_EXPORT_MAX_ROWS", default_value_t = 1_000_000)]
+    pub export_max_rows: u64,
+    /// longest wall-clock time one request log CSV export may run, in seconds,
+    /// before its body ends in an error; `0` for no bound (#3360)
+    #[arg(long, env = "ROLTER_EXPORT_MAX_SECS", default_value_t = 600)]
+    pub export_max_secs: u64,
+    /// request log CSV exports one control-plane process serves at once; a
+    /// further one is answered `429` with `Retry-After`. `0` for no bound
+    #[arg(long, env = "ROLTER_EXPORT_MAX_CONCURRENT", default_value_t = 4)]
+    pub export_max_concurrent: u32,
+    /// of those, the most one caller (an account or an API token) may hold at
+    /// once. `0` for no bound
+    #[arg(
+        long,
+        env = "ROLTER_EXPORT_MAX_CONCURRENT_PER_CALLER",
+        default_value_t = 1
+    )]
+    pub export_max_concurrent_per_caller: u32,
     /// clickhouse http url; when set, the dashboard usage/cost analytics
     /// endpoints (`/api/v1/analytics/*`) query the `request_logs` table
     #[arg(long, env = "CLICKHOUSE_URL", hide_env_values = true)]
@@ -421,6 +441,10 @@ impl Default for Args {
             login_max_lock_secs: 900,
             login_max_delay_ms: 2000,
             login_trust_forwarded_for: false,
+            export_max_rows: 1_000_000,
+            export_max_secs: 600,
+            export_max_concurrent: 4,
+            export_max_concurrent_per_caller: 1,
             clickhouse_url: None,
             admin_token: None,
             internal_token: None,
@@ -616,6 +640,10 @@ struct ControlState {
     /// OTLP histograms for snapshot generation and API latency (#845). Inert,
     /// and free, on every deployment without an OTLP endpoint
     metrics: rolter_core::telemetry::ControlHistograms,
+    /// the bounds on a request log CSV export and the count of those running
+    /// (#3360). Process-local on purpose: it protects this process's
+    /// connections and ClickHouse queries, so replicas each hold their own
+    export_gate: Arc<analytics_export::ExportGate>,
     /// failed-login counters guarding the password endpoints (#1079). Shared
     /// across replicas through redis when one is configured, process-local
     /// otherwise; a default value counts nothing
@@ -825,6 +853,15 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         )
     };
 
+    let export_gate = Arc::new(analytics_export::ExportGate::new(
+        analytics_export::ExportLimits::new(
+            args.export_max_rows,
+            args.export_max_secs,
+            args.export_max_concurrent,
+            args.export_max_concurrent_per_caller,
+        ),
+    ));
+
     let gateway_url = Arc::new(args.gateway_url.trim_end_matches('/').to_string());
     tracing::info!(gateway_url = %gateway_url, "proxying /gw/* to the gateway");
     // one bounded request to github at boot and every few hours, so the
@@ -848,6 +885,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         public_url: public_url_from_env(),
         cors: Arc::default(),
         metrics: metrics.clone(),
+        export_gate: export_gate.clone(),
         login_throttle: login_throttle.clone(),
         trust_forwarded_for: args.login_trust_forwarded_for,
         update_check: update_check.clone(),
@@ -872,6 +910,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         public_url: public_url_from_env(),
         cors: Arc::default(),
         metrics: metrics.clone(),
+        export_gate: export_gate.clone(),
         login_throttle: login_throttle.clone(),
         trust_forwarded_for: args.login_trust_forwarded_for,
         update_check: update_check.clone(),
@@ -1643,6 +1682,7 @@ fn test_state(
         metrics: Default::default(),
         // real, with production defaults: the wiring is part of what these
         // tests cover, and no test signs in wrongly five times by accident
+        export_gate: Default::default(),
         login_throttle: login_throttle::LoginThrottle::new(Default::default(), String::new(), None),
         trust_forwarded_for: false,
         // never on the network from a test; the endpoint's disabled shape is
@@ -3208,6 +3248,16 @@ mod tests {
             ("login_lock_secs", args.login_lock_secs.to_string()),
             ("login_max_lock_secs", args.login_max_lock_secs.to_string()),
             ("login_max_delay_ms", args.login_max_delay_ms.to_string()),
+            ("export_max_rows", args.export_max_rows.to_string()),
+            ("export_max_secs", args.export_max_secs.to_string()),
+            (
+                "export_max_concurrent",
+                args.export_max_concurrent.to_string(),
+            ),
+            (
+                "export_max_concurrent_per_caller",
+                args.export_max_concurrent_per_caller.to_string(),
+            ),
             (
                 "login_trust_forwarded_for",
                 args.login_trust_forwarded_for.to_string(),
@@ -3648,6 +3698,7 @@ mod tests {
             public_url: Arc::new(normalize_public_url(None)),
             cors: Arc::default(),
             metrics: Default::default(),
+            export_gate: Default::default(),
             login_throttle: Default::default(),
             trust_forwarded_for: false,
             update_check: update_check::UpdateChecker::disabled(),

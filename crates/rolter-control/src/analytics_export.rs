@@ -20,6 +20,14 @@
 //!   read before the response starts, so a ClickHouse failure is a JSON error
 //!   and not a truncated file; one part way through ends the body with an
 //!   error so the download fails rather than passing for complete.
+//! * An export is bounded (#3360). The log can span the whole retention period
+//!   and a stream holds a connection and a run of ClickHouse queries for as
+//!   long as the walk takes, so [`ExportLimits`] caps the rows and the wall-clock
+//!   time of one export, and [`ExportGate`] the number running at once, per
+//!   process and per caller. An export past a row or time cap ends its body
+//!   with the error a failed page produces, so the file cannot pass for
+//!   complete; one past the concurrency bound is answered `429` with
+//!   `Retry-After` before it starts.
 //! * A spend figure is only final when every request in it was priced. Every
 //!   export carries `unpriced_requests` and a `cost_is_partial` flag (the log
 //!   carries `unpriced` per row and leaves the cost blank, as the screen does),
@@ -29,6 +37,8 @@
 
 use std::collections::HashMap;
 use std::io;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use axum::body::{Body, Bytes};
 use axum::extract::State;
@@ -50,6 +60,138 @@ use crate::analytics_access::{AnalyticsAccess, ROW_VISIBLE};
 use crate::request_log_columns::Columns;
 use crate::time_bounds::Query;
 use crate::ControlState;
+
+/// What a refused export tells the client to wait, in seconds. A running export
+/// is bounded by [`ExportLimits::max_duration`], which is minutes, so a short
+/// pause is a poll interval and not a promise that a slot has freed.
+const RETRY_AFTER_SECS: u64 = 15;
+
+/// The bounds on one request log export (#3360). A value of `0` for any of them
+/// turns that bound off.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ExportLimits {
+    /// most rows one export carries
+    pub(crate) max_rows: Option<u64>,
+    /// longest wall-clock time one export runs
+    pub(crate) max_duration: Option<Duration>,
+    /// exports running at once in this process
+    pub(crate) max_concurrent: Option<u32>,
+    /// exports running at once for one caller
+    pub(crate) max_per_caller: Option<u32>,
+}
+
+impl ExportLimits {
+    /// The limits from the control plane's settings, `0` meaning unbounded.
+    pub(crate) fn new(rows: u64, secs: u64, concurrent: u32, per_caller: u32) -> Self {
+        Self {
+            max_rows: (rows > 0).then_some(rows),
+            max_duration: (secs > 0).then(|| Duration::from_secs(secs)),
+            max_concurrent: (concurrent > 0).then_some(concurrent),
+            max_per_caller: (per_caller > 0).then_some(per_caller),
+        }
+    }
+}
+
+impl Default for ExportLimits {
+    /// A million rows, ten minutes, four at once and one per caller: a month of
+    /// a busy deployment's log fits, and one caller cannot take the process's
+    /// slots.
+    fn default() -> Self {
+        Self::new(1_000_000, 600, 4, 1)
+    }
+}
+
+/// Which concurrency bound refused an export.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Busy {
+    Process,
+    Caller,
+}
+
+#[derive(Default)]
+struct Running {
+    total: u32,
+    by_caller: HashMap<String, u32>,
+}
+
+/// How many request log exports are running, against [`ExportLimits`] (#3360).
+/// Process-local: it guards this process's connections and its ClickHouse
+/// queries.
+#[derive(Default)]
+pub(crate) struct ExportGate {
+    limits: ExportLimits,
+    running: parking_lot::Mutex<Running>,
+}
+
+impl ExportGate {
+    pub(crate) fn new(limits: ExportLimits) -> Self {
+        Self {
+            limits,
+            running: parking_lot::Mutex::default(),
+        }
+    }
+
+    /// A place for one more export by `caller`, held until the permit drops.
+    fn try_acquire(self: &Arc<Self>, caller: &str) -> Result<ExportPermit, Busy> {
+        let mut running = self.running.lock();
+        if self
+            .limits
+            .max_concurrent
+            .is_some_and(|max| running.total >= max)
+        {
+            return Err(Busy::Process);
+        }
+        let held = running.by_caller.get(caller).copied().unwrap_or(0);
+        if self.limits.max_per_caller.is_some_and(|max| held >= max) {
+            return Err(Busy::Caller);
+        }
+        running.total += 1;
+        running.by_caller.insert(caller.to_string(), held + 1);
+        Ok(ExportPermit {
+            gate: Arc::clone(self),
+            caller: caller.to_string(),
+        })
+    }
+}
+
+/// A running export's place in the [`ExportGate`], given back when the body is
+/// dropped: it finished, failed, or the client went away.
+struct ExportPermit {
+    gate: Arc<ExportGate>,
+    caller: String,
+}
+
+impl Drop for ExportPermit {
+    fn drop(&mut self) {
+        let mut running = self.gate.running.lock();
+        running.total = running.total.saturating_sub(1);
+        if let Some(held) = running.by_caller.get_mut(&self.caller) {
+            *held = held.saturating_sub(1);
+            if *held == 0 {
+                running.by_caller.remove(&self.caller);
+            }
+        }
+    }
+}
+
+/// `429` for an export the gate refused, with `Retry-After`.
+fn too_many_exports(busy: Busy) -> Response {
+    let message = match busy {
+        Busy::Process => "too many request log exports are running; try again shortly",
+        Busy::Caller => "you already have a request log export running; wait for it to finish",
+    };
+    let mut response = (
+        StatusCode::TOO_MANY_REQUESTS,
+        axum::Json(serde_json::json!({"error": {"message": message}})),
+    )
+        .into_response();
+    response.headers_mut().insert(
+        header::RETRY_AFTER,
+        HeaderValue::from_str(&RETRY_AFTER_SECS.to_string())
+            .unwrap_or_else(|_| HeaderValue::from_static("15")),
+    );
+    response
+}
 
 /// Rows read per query while streaming the request log. A page is the unit of
 /// memory, so this bounds what one export holds however long the window is.
@@ -249,6 +391,25 @@ fn bad_request(message: &str) -> Response {
 type Caller = crate::rbac::Principal;
 #[cfg(not(feature = "postgres"))]
 type Caller = ();
+
+/// Who a concurrency bound counts an export against: the account, or the API
+/// token, or the one shared credential. Open mode and the admin token have no
+/// person behind them, so they share a key.
+#[cfg(feature = "postgres")]
+fn caller_key(caller: &Caller) -> String {
+    use crate::rbac::Principal;
+    match caller {
+        Principal::Superadmin { account: Some(id) } => format!("user:{id}"),
+        Principal::Superadmin { account: None } => "admin".to_string(),
+        Principal::User(user) => format!("user:{}", user.id),
+        Principal::Token(token) => format!("token:{}", token.token.id),
+    }
+}
+
+#[cfg(not(feature = "postgres"))]
+fn caller_key(_: &Caller) -> String {
+    "admin".to_string()
+}
 
 /// The names of the business units or customers a rollup refers to, by id,
 /// for the ones the caller may read. A unit's or customer's name is governed
@@ -521,6 +682,15 @@ struct LogWalk {
     /// the keyset position: timestamp, start sequence and request id
     cursor: (String, String, String),
     done: bool,
+    /// the row and time bounds of this export (#3360)
+    max_rows: Option<u64>,
+    deadline: Option<Instant>,
+    /// rows written so far
+    written: u64,
+    /// the log has more rows than `max_rows`: the next chunk is the error
+    over_rows: bool,
+    /// the exports gate's place for this walk, given back when the body drops
+    _permit: Option<ExportPermit>,
 }
 
 impl LogWalk {
@@ -529,12 +699,40 @@ impl LogWalk {
         if self.done {
             return Ok(None);
         }
+        if self.over_rows {
+            anyhow::bail!(
+                "the log holds more rows than the export limit of {}",
+                self.max_rows.unwrap_or_default()
+            );
+        }
+        // one row past the cap tells a log of exactly `max_rows` from a longer
+        // one without reading a page that would be thrown away
+        let remaining = self.max_rows.map(|max| max.saturating_sub(self.written));
+        let page = remaining.map_or(u64::from(PAGE_SIZE), |left| {
+            left.saturating_add(1).min(u64::from(PAGE_SIZE))
+        }) as u32;
         let mut params = self.params.clone();
         params.push(("param_cursor_ts".to_string(), self.cursor.0.clone()));
         params.push(("param_cursor_seq".to_string(), self.cursor.1.clone()));
         params.push(("param_cursor_id".to_string(), self.cursor.2.clone()));
-        params.push(("param_limit".to_string(), PAGE_SIZE.to_string()));
-        let rows = self.ch.query(&self.sql, &params).await?;
+        params.push(("param_limit".to_string(), page.to_string()));
+        let mut rows = match self.deadline {
+            Some(deadline) => {
+                let left = deadline.saturating_duration_since(Instant::now());
+                if left.is_zero() {
+                    anyhow::bail!("the export ran past its time limit");
+                }
+                tokio::time::timeout(left, self.ch.query(&self.sql, &params))
+                    .await
+                    .map_err(|_| anyhow::anyhow!("the export ran past its time limit"))??
+            }
+            None => self.ch.query(&self.sql, &params).await?,
+        };
+        let over_rows = remaining.is_some_and(|left| rows.len() as u64 > left);
+        if let Some(left) = remaining.filter(|_| over_rows) {
+            rows.truncate(left as usize);
+        }
+        self.written += rows.len() as u64;
         let mut out = String::new();
         if !self.header_sent {
             self.header_sent = true;
@@ -549,10 +747,12 @@ impl LogWalk {
             out.push_str(&log_line(row, &self.currency));
         }
         match next_invocations_cursor(&rows) {
+            // past the cap: what fits is written, and the next chunk is the error
+            _ if over_rows => self.over_rows = true,
             // a full page may be followed by older rows; a short one is the end.
             // the cursor is a position in the sort key, so rows the gateway
             // writes while the file is built can neither repeat nor skip one
-            Some(next) if rows.len() == PAGE_SIZE as usize => {
+            Some(next) if rows.len() == page as usize => {
                 self.cursor = next
                     .split_once('|')
                     .map(|(ts, tail)| {
@@ -571,6 +771,7 @@ impl LogWalk {
 /// metadata only, under the filters the screen applies (window, model, key,
 /// project, business unit, customer, status, unpriced, guardrail and plugin).
 async fn export_invocations(
+    principal: Caller,
     access: AnalyticsAccess,
     State(state): State<ControlState>,
     Query(q): Query<InvocationsQuery>,
@@ -614,6 +815,13 @@ async fn export_invocations(
         q.until.as_deref(),
         &currency,
     );
+    // refuse before any ClickHouse work, and hold the place for as long as the
+    // body lives (#3360)
+    let permit = match state.export_gate.try_acquire(&caller_key(&principal)) {
+        Ok(permit) => permit,
+        Err(busy) => return too_many_exports(busy),
+    };
+    let limits = state.export_gate.limits;
     // which optional columns the table has, so the file still builds before an
     // operator applies the sequence column (see `request_log_columns`)
     let columns = match ch.request_log_columns().await {
@@ -628,6 +836,11 @@ async fn export_invocations(
         header_sent: false,
         cursor: (String::new(), "0".to_string(), String::new()),
         done: false,
+        max_rows: limits.max_rows,
+        deadline: limits.max_duration.map(|limit| Instant::now() + limit),
+        written: 0,
+        over_rows: false,
+        _permit: Some(permit),
     };
     // the first page is read before the response starts, so a ClickHouse
     // failure is an error the client can read and not a download that ends
@@ -740,5 +953,199 @@ mod tests {
         // and it binds the same visibility predicate as the JSON list
         assert!(sql.contains(ROW_VISIBLE));
         assert!(sql.contains("order by ts desc, seq desc, request_id desc"));
+    }
+
+    #[test]
+    fn a_zero_bound_is_no_bound_and_the_defaults_are_finite() {
+        let off = ExportLimits::new(0, 0, 0, 0);
+        assert_eq!(off.max_rows, None);
+        assert_eq!(off.max_duration, None);
+        assert_eq!(off.max_concurrent, None);
+        assert_eq!(off.max_per_caller, None);
+        let defaults = ExportLimits::default();
+        assert_eq!(defaults.max_rows, Some(1_000_000));
+        assert_eq!(defaults.max_duration, Some(Duration::from_secs(600)));
+        assert_eq!(defaults.max_concurrent, Some(4));
+        assert_eq!(defaults.max_per_caller, Some(1));
+    }
+
+    #[test]
+    fn the_gate_bounds_exports_per_process_and_per_caller_and_gives_places_back() {
+        let gate = Arc::new(ExportGate::new(ExportLimits::new(0, 0, 3, 2)));
+        let a1 = gate.try_acquire("a").unwrap();
+        let _a2 = gate.try_acquire("a").unwrap();
+        // a third for `a` is over its own bound, though the process has room
+        assert_eq!(gate.try_acquire("a").err(), Some(Busy::Caller));
+        let _b1 = gate.try_acquire("b").unwrap();
+        // the process is now full, whoever asks
+        assert_eq!(gate.try_acquire("c").err(), Some(Busy::Process));
+        assert_eq!(gate.try_acquire("a").err(), Some(Busy::Process));
+        drop(a1);
+        let _c1 = gate.try_acquire("c").unwrap();
+        let running = gate.running.lock();
+        assert_eq!(running.total, 3);
+        assert_eq!(running.by_caller.get("a"), Some(&1));
+    }
+
+    #[test]
+    fn an_unbounded_gate_refuses_nothing() {
+        let gate = Arc::new(ExportGate::new(ExportLimits::new(0, 0, 0, 0)));
+        let permits: Vec<_> = (0..64).map(|_| gate.try_acquire("a").unwrap()).collect();
+        assert_eq!(permits.len(), 64);
+    }
+
+    /// A ClickHouse that holds a request log of `total` rows, `delay` slower on
+    /// every page, answering the keyset walk the export makes.
+    async fn fake_log(total: u64, delay: Duration) -> String {
+        let app = axum::Router::new().fallback(
+            move |axum::extract::Query(params): axum::extract::Query<HashMap<String, String>>,
+                  body: String| async move {
+                if body.contains("system.columns") {
+                    return axum::Json(serde_json::json!({"data": []}));
+                }
+                tokio::time::sleep(delay).await;
+                let number = |key: &str| params.get(key).and_then(|v| v.parse::<u64>().ok());
+                let limit = number("param_limit").unwrap_or(0);
+                // sequences count down from `total`, newest first
+                let first = match number("param_cursor_seq") {
+                    Some(seq) if seq > 0 => seq - 1,
+                    _ => total,
+                };
+                let rows: Vec<Value> = (0..limit)
+                    .map_while(|i| first.checked_sub(i).filter(|seq| *seq >= 1))
+                    .map(|seq| {
+                        serde_json::json!({
+                            "ts": "2026-10-01T00:00:00.000Z", "seq": seq.to_string(),
+                            "request_id": format!("req-{seq}"), "status": 200,
+                        })
+                    })
+                    .collect();
+                axum::Json(serde_json::json!({ "data": rows }))
+            },
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind a local port");
+        let url = format!("http://{}", listener.local_addr().expect("an address"));
+        tokio::spawn(async move { axum::serve(listener, app).await });
+        url
+    }
+
+    fn export_app(clickhouse_url: &str, limits: ExportLimits) -> axum::Router {
+        let mut state = crate::tests::state_with_token(None);
+        state.clickhouse = Some(ClickHouseClient::new(clickhouse_url));
+        state.export_gate = Arc::new(ExportGate::new(limits));
+        router().with_state(state)
+    }
+
+    async fn export(app: &axum::Router) -> Response {
+        use tower::ServiceExt;
+        app.clone()
+            .oneshot(
+                axum::http::Request::get("/api/v1/analytics/invocations/export")
+                    .body(Body::empty())
+                    .expect("a valid request"),
+            )
+            .await
+            .expect("the router answers")
+    }
+
+    /// The data rows a body carries and whether it ended cleanly.
+    async fn drain(response: Response) -> (usize, bool) {
+        let mut stream = response.into_body().into_data_stream();
+        let mut text = String::new();
+        let mut complete = true;
+        while let Some(chunk) = stream.next().await {
+            match chunk {
+                Ok(bytes) => text.push_str(&String::from_utf8_lossy(&bytes)),
+                Err(_) => {
+                    complete = false;
+                    break;
+                }
+            }
+        }
+        (text.lines().count().saturating_sub(1), complete)
+    }
+
+    #[tokio::test]
+    async fn an_export_past_the_row_cap_ends_in_an_error_after_the_cap() {
+        let url = fake_log(2500, Duration::ZERO).await;
+        let app = export_app(&url, ExportLimits::new(1500, 0, 0, 0));
+        let response = export(&app).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        // the rows that fit are written, then the body fails: the download
+        // cannot pass for the whole log
+        assert_eq!(drain(response).await, (1500, false));
+    }
+
+    #[tokio::test]
+    async fn a_log_of_exactly_the_cap_is_a_complete_file() {
+        // on a page boundary, where "a full page" cannot tell the end
+        let url = fake_log(2000, Duration::ZERO).await;
+        let app = export_app(&url, ExportLimits::new(2000, 0, 0, 0));
+        assert_eq!(drain(export(&app).await).await, (2000, true));
+        // and one row over is not
+        let app = export_app(&url, ExportLimits::new(1999, 0, 0, 0));
+        assert_eq!(drain(export(&app).await).await, (1999, false));
+        // and a log under the cap is whole
+        let app = export_app(&url, ExportLimits::new(5000, 0, 0, 0));
+        assert_eq!(drain(export(&app).await).await, (2000, true));
+    }
+
+    #[tokio::test]
+    async fn an_export_past_the_time_limit_ends_in_an_error() {
+        // a log far longer than the pages that fit in the time allowed
+        let url = fake_log(1_000_000_000, Duration::from_millis(150)).await;
+        let limits = ExportLimits {
+            max_duration: Some(Duration::from_millis(400)),
+            ..ExportLimits::new(0, 0, 0, 0)
+        };
+        let app = export_app(&url, limits);
+        let started = Instant::now();
+        let (rows, complete) = drain(export(&app).await).await;
+        assert!(!complete, "a timed out export passed for a complete file");
+        assert!(
+            rows >= PAGE_SIZE as usize && rows < 10 * PAGE_SIZE as usize,
+            "{rows}"
+        );
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    #[tokio::test]
+    async fn a_second_export_over_the_process_bound_is_refused_with_retry_after() {
+        let url = fake_log(10, Duration::ZERO).await;
+        let app = export_app(&url, ExportLimits::new(0, 0, 1, 0));
+        let first = export(&app).await;
+        assert_eq!(first.status(), StatusCode::OK);
+        let refused = export(&app).await;
+        assert_eq!(refused.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(
+            refused
+                .headers()
+                .get(header::RETRY_AFTER)
+                .map(HeaderValue::as_bytes),
+            Some(&b"15"[..])
+        );
+        // the place comes back when the first body ends, or is dropped
+        assert_eq!(drain(first).await, (10, true));
+        let again = export(&app).await;
+        assert_eq!(again.status(), StatusCode::OK);
+        drop(again);
+        assert_eq!(export(&app).await.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn one_caller_cannot_hold_more_than_its_own_bound() {
+        let url = fake_log(10, Duration::ZERO).await;
+        // room in the process, none for the same caller
+        let app = export_app(&url, ExportLimits::new(0, 0, 4, 1));
+        let _held = export(&app).await;
+        let refused = export(&app).await;
+        assert_eq!(refused.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert!(refused.headers().contains_key(header::RETRY_AFTER));
+        let body = axum::body::to_bytes(refused.into_body(), 1 << 16)
+            .await
+            .unwrap();
+        assert!(String::from_utf8_lossy(&body).contains("already have"));
     }
 }
