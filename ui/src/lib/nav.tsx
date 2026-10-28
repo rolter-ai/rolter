@@ -13,6 +13,7 @@ import {
   Eye,
   FileText,
   Flag,
+  Bot,
   Fingerprint,
   FolderTree,
   FolderGit2,
@@ -123,6 +124,7 @@ export const NAV: NavDef[] = [
       { key: "user-provisioning", icon: <BookUser />, resource: "scim_token" },
       { key: "sso", icon: <Fingerprint />, resource: "sso_provider" },
       { key: "ldap", icon: <FolderTree />, resource: "ldap_directory" },
+      { key: "api-tokens", icon: <Bot />, resource: "api_token" },
       /* no resource: the role matrix describes what roles can do, not anyone's
          data, so every signed-in role reads it (#2527). the org's custom roles
          on it stay behind the server's own check */

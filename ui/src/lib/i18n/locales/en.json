@@ -249,6 +249,7 @@
       "ssoProviders": "identity providers",
       "mfaStatus": "the second-factor roster",
       "ldapDirectories": "LDAP directories",
+      "apiTokens": "API tokens",
       "signInPolicy": "the sign-in policy",
       "budgets": "budgets",
       "rateLimits": "rate limits",
@@ -706,6 +707,7 @@
     "user-provisioning": "User Provisioning",
     "sso": "Single Sign-On",
     "ldap": "LDAP",
+    "api-tokens": "API Tokens",
     "rbac": "Roles & Permissions",
     "access-profiles": "Access Profiles",
     "audit-logs": "Audit Logs",
@@ -3373,6 +3375,72 @@
         "confirm": "Delete directory"
       }
     },
+    "apiTokens": {
+      "title": "API tokens",
+      "count_one": "{{count}} token",
+      "count_other": "{{count}} tokens",
+      "customRole": "Custom role",
+      "colName": "Name",
+      "colScope": "Scope",
+      "colRole": "Role",
+      "colPrefix": "Prefix",
+      "colExpires": "Expires",
+      "colLastUsed": "Last used",
+      "colState": "State",
+      "noExpiry": "Never",
+      "neverUsed": "Never used",
+      "state": {
+        "active": "Active",
+        "expired": "Expired",
+        "revoked": "Revoked"
+      },
+      "rotate": "Rotate token {{name}}",
+      "inactiveHint": "A revoked or expired token cannot be rotated; mint a new one.",
+      "revoke": "Revoke token {{name}}",
+      "alreadyRevoked": "This token is already revoked.",
+      "revokedToast": "{{name}} is revoked and stops working on its next request",
+      "empty": {
+        "title": "No API tokens yet",
+        "body": "A token is a named service account that holds one role at one organization, team or project, for the CI jobs and scripts that should not run as the admin token or as a person."
+      },
+      "mint": {
+        "open": "Mint token",
+        "title": "Mint an API token",
+        "subtitle": "A named token that holds one role at the scope you choose.",
+        "save": "Mint token",
+        "name": "Name",
+        "nameHint": "What the audit log shows for this token's changes. At most 80 characters.",
+        "namePlaceholder": "ci-deploy",
+        "scope": "Scope",
+        "scopeHint": "The token reaches this scope and everything below it, never a sibling or the level above.",
+        "role": "Role",
+        "roleHint": "Give automation the narrowest role that does the job. A token never holds more than you do at this scope.",
+        "builtInRoles": "Built-in roles",
+        "customRoles": "Custom roles",
+        "expiry": "Expires",
+        "expiryHint": "The token stops working after this long. 90 days unless you choose otherwise.",
+        "days_one": "In {{count}} day",
+        "days_other": "In {{count}} days",
+        "never": "Never expires",
+        "neverWarning": "A token that never expires stays valid until someone revokes it. Prefer an expiry and rotate it."
+      },
+      "confirm": {
+        "rotateTitle": "Rotate token {{name}}?",
+        "rotateBody": "A new secret is shown once, and the current one stops working in the same instant. Anything still using it fails until it is given the new one.",
+        "rotate": "Rotate token",
+        "revokeTitle": "Revoke token {{name}}?",
+        "revokeBody": "The token stops working on its next request and cannot be restored. It stays in the list as revoked, so the audit trail keeps its name.",
+        "revoke": "Revoke token"
+      },
+      "revealed": {
+        "title": "Token {{name}} is ready",
+        "body": "This is the only time the secret is shown. rolter keeps only a digest of it, so a lost secret is rotated, not looked up.",
+        "rotatedTitle": "Token {{name}} was rotated",
+        "rotatedBody": "This is the only time the new secret is shown. The previous secret no longer works.",
+        "copy": "Copy token",
+        "nextStep": "Send it as Authorization: Bearer <token> on control-plane requests."
+      }
+    },
     "auditLog": {
       "emptyTitle": "No audit entries yet",
       "emptyBody": "Every change made through the control plane is recorded here — who did it, to what, and when.",
@@ -5221,6 +5289,10 @@
     "ldap": {
       "title": "LDAP",
       "subtitle": "Register a directory, map its groups to roles, and let its users sign in with their directory password."
+    },
+    "api-tokens": {
+      "title": "API Tokens",
+      "subtitle": "Scoped tokens for CI jobs and scripts: mint, rotate and revoke them, and see what each holds and when it last ran."
     },
     "rbac": {
       "title": "Roles & Permissions",

@@ -128,6 +128,7 @@ export const SCREENS: Record<string, React.ReactNode> = {
   "user-provisioning": screen(() => import("@/pages/UserProvisioning")),
   sso: screen(() => import("@/pages/SingleSignOn")),
   ldap: screen(() => import("@/pages/Ldap")),
+  "api-tokens": screen(() => import("@/pages/ApiTokens")),
   "prompt-repo": screen(() => import("@/pages/PromptRepository")),
   "skills-repo": screen(() => import("@/pages/SkillsRepository")),
 };

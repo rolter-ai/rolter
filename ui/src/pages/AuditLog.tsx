@@ -75,6 +75,7 @@ const TARGET_PATH: Record<string, string> = {
   sso_group_mapping: "/sso",
   ldap_directory: "/ldap",
   ldap_group_mapping: "/ldap",
+  api_token: "/api-tokens",
   scim_token: "/user-provisioning",
   scim_group: "/user-provisioning",
   scim_group_mapping: "/user-provisioning",
