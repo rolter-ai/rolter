@@ -84,6 +84,7 @@ export const SCREENS: Record<string, React.ReactNode> = {
   dashboard: screen(() => import("@/pages/Dashboard")),
   logs: screen(() => import("@/pages/Logs")),
   "mcp-logs": screen(() => import("@/pages/McpLogs")),
+  savings: screen(() => import("@/pages/Savings")),
   "access-profiles": screen(() => import("@/pages/AccessProfiles")),
   connectors: screen(() => import("@/pages/Connectors")),
   "model-catalog": screen(() => import("@/pages/Models")),

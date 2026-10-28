@@ -1,0 +1,387 @@
+import type { Meta, StoryObj } from "@storybook/react";
+import { expect, userEvent, waitFor, within } from "storybook/test";
+
+import Savings from "./Savings";
+import {
+  expectAnalyticsUnavailable,
+  expectEmptyState,
+  expectForbidden,
+  expectListTable,
+  expectLoadError,
+  expectNoFalseEmpty,
+  expectSkeleton,
+  Harness,
+  json,
+  openOptions,
+  pending,
+  pickOption,
+  recording,
+  routes,
+  scoped,
+} from "./story-harness";
+import type { SavingsReport } from "@/lib/api";
+import en from "@/lib/i18n/locales/en.json";
+import ru from "@/lib/i18n/locales/ru.json";
+import { atMobile, expectNoHorizontalOverflow } from "@/lib/story-viewport";
+
+const REPORT: SavingsReport = {
+  currency: "USD",
+  limits: [
+    "This report re-prices recorded traffic at another model's price. It does not evaluate whether that model answers as well, so it is a shortlist to test, never a recommendation to switch.",
+    "Only models already configured in the same route's pool are considered.",
+  ],
+  assumptions: { max_prompt_tokens: 4000, max_completion_tokens: 1000, output_margin: 0.25 },
+  spend: {
+    requests: 12000,
+    cost_usd: 480.25,
+    unpriced_requests: 300,
+    multi_attempt: { requests: 640, cost_usd: 31.5 },
+    failed: { requests: 120, cost_usd: 4.75 },
+    cache: { hits: 900, misses: 5000, miss_cost_usd: 210 },
+    by_route: [
+      { route: "chat", requests: 9000, cost_usd: 400, unpriced_requests: 0 },
+      { route: "summarize", requests: 3000, cost_usd: 80.25, unpriced_requests: 300 },
+    ],
+    by_model: [
+      { model: "gpt-4o", requests: 9000, cost_usd: 400, unpriced_requests: 0 },
+      { model: "mystery-1", requests: 3000, cost_usd: 80.25, unpriced_requests: 300 },
+    ],
+    by_caller: [
+      {
+        project_id: "project-1",
+        virtual_key_id: "vk-1",
+        requests: 9000,
+        cost_usd: 400,
+        unpriced_requests: 0,
+      },
+    ],
+  },
+  substitutable: {
+    requests: 4000,
+    current_cost_usd: 160,
+    projected_savings_usd: { low: 12.5, high: 98.25 },
+  },
+  candidates: [
+    {
+      route: "chat",
+      current_model: "gpt-4o",
+      requests: 4000,
+      current_cost_usd: 160,
+      candidates: [
+        {
+          model: "gpt-4o-mini",
+          projected_cost_usd: { low: 9.75, high: 147.5 },
+          savings_usd: { low: 12.5, high: 150.25 },
+        },
+        {
+          model: "claude-haiku",
+          projected_cost_usd: { low: 20, high: 190 },
+          savings_usd: { low: -30, high: 140 },
+        },
+      ],
+    },
+  ],
+  excluded: {
+    requests: {
+      unpriced: 300,
+      failed: 120,
+      prompt_too_large: 800,
+      multi_turn: 5000,
+      uses_tools: 1200,
+      brand_new_reason: 3,
+    },
+    unknown_candidate_prices: ["mystery-1"],
+  },
+};
+
+const withReport = (report: SavingsReport) =>
+  routes([
+    ["/analytics/savings", () => report],
+    ["/virtual-keys", () => []],
+    ["/models", () => [{ model: "chat", strategy: "weighted", targets: 1 }]],
+  ]);
+
+const meta = {
+  title: "Screens/Savings",
+  component: Savings,
+  parameters: { layout: "fullscreen" },
+} satisfies Meta<typeof Savings>;
+export default meta;
+type Story = StoryObj<typeof meta>;
+
+/**
+ * #3316: the limits come first, every projected cost and saving is a range
+ * (the pessimistic saving can be negative), and a model with no price is named
+ * with a link to the pricing editor.
+ */
+export const Populated: Story = {
+  render: () => (
+    <Harness fetchStub={withReport(REPORT)}>
+      <Savings />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const limits = await canvas.findByTestId("savings-limits");
+    await expect(limits).toHaveTextContent(/never a recommendation to switch/);
+    await expect(limits).toHaveTextContent(en.pages.savings.limitsTitle);
+    await expectListTable(canvasElement, "Spend by route");
+    await expectListTable(canvasElement, "chat · gpt-4o");
+    await expect(canvas.getByText("$9.75 to $147.50")).toBeVisible();
+    await expect(canvas.getByText("-$30.00 to $140.00")).toBeVisible();
+    await expect(canvas.getByTestId("savings-substitutable")).toHaveTextContent(
+      "saving $12.50 to $98.25",
+    );
+    // a lone figure would read as a promise; only the recorded cost is one
+    await expect(canvas.queryByText("$9.75")).toBeNull();
+    await expect(canvas.getByText("Prompt over the threshold")).toBeVisible();
+    await expect(canvas.getByText("Was part of a conversation")).toBeVisible();
+    await expect(canvas.getByText("Used tools")).toBeVisible();
+    // a reason this dashboard has no copy for is shown as the control plane names it
+    await expect(canvas.getByText("brand_new_reason")).toBeVisible();
+    const unknown = canvas.getByTestId("savings-unknown-prices");
+    await expect(within(unknown).getByRole("link", { name: "mystery-1" })).toHaveAttribute(
+      "href",
+      "/pricing-overrides",
+    );
+  },
+};
+
+export const PopulatedAtMobile: Story = {
+  ...atMobile,
+  render: () => (
+    <Harness fetchStub={withReport(REPORT)}>
+      <Savings />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await within(canvasElement).findByTestId("savings-limits");
+    await expectNoHorizontalOverflow();
+  },
+};
+
+export const PopulatedInRussian: Story = {
+  globals: { locale: "ru" },
+  render: () => (
+    <Harness fetchStub={withReport(REPORT)}>
+      <Savings />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByText(ru.pages.savings.limitsTitle)).toBeVisible();
+    await expect(canvas.getByText(ru.pages.savings.reasons.prompt_too_large)).toBeVisible();
+  },
+};
+
+const EMPTY: SavingsReport = {
+  ...REPORT,
+  spend: {
+    ...REPORT.spend,
+    requests: 0,
+    cost_usd: 0,
+    unpriced_requests: 0,
+    by_route: [],
+    by_model: [],
+    by_caller: [],
+  },
+  substitutable: { requests: 0, current_cost_usd: 0, projected_savings_usd: { low: 0, high: 0 } },
+  candidates: [],
+  excluded: { requests: {}, unknown_candidate_prices: [] },
+};
+
+export const EmptyWindow: Story = {
+  render: () => (
+    <Harness fetchStub={withReport(EMPTY)}>
+      <Savings />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await expectEmptyState(canvasElement, /No requests in this window/, /30 days/);
+  },
+};
+
+export const NoCandidates: Story = {
+  render: () => (
+    <Harness
+      fetchStub={withReport({
+        ...REPORT,
+        candidates: [],
+        excluded: { ...REPORT.excluded, unknown_candidate_prices: [] },
+      })}
+    >
+      <Savings />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByText("No cheaper model would have fit")).toBeVisible();
+    await expect(canvas.queryByTestId("savings-unknown-prices")).toBeNull();
+  },
+};
+
+export const Loading: Story = {
+  render: () => (
+    <Harness fetchStub={pending}>
+      <Savings />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await expectSkeleton(canvasElement);
+    // the limits are the dashboard's own words, so they are there before the figures
+    await expect(within(canvasElement).getByText(en.pages.savings.limitsLead)).toBeVisible();
+  },
+};
+
+export const Error_: Story = {
+  render: () => (
+    <Harness fetchStub={scoped(async () => json({ error: { message: "boom" } }, 500))}>
+      <Savings />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await expectLoadError(canvasElement, /savings report/i);
+    await expectNoFalseEmpty(canvasElement, /no requests in this window/i);
+  },
+};
+
+/** a deployment without ClickHouse is a supported shape, said calmly (#2016) */
+export const NoAnalyticsStore: Story = {
+  render: () => (
+    <Harness fetchStub={scoped(async () => json({ error: { message: "no clickhouse_url" } }, 503))}>
+      <Savings />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await expectAnalyticsUnavailable(
+      canvasElement,
+      en.pages.savings.noAnalytics.title,
+      "no clickhouse_url",
+    );
+  },
+};
+
+/** a caller the `savings` capability refuses is told so, not shown a broken report */
+export const Gated: Story = {
+  render: () => (
+    <Harness fetchStub={scoped(async () => json({ error: { message: "forbidden" } }, 403))}>
+      <Savings />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await expectForbidden(canvasElement);
+  },
+};
+
+const asked = recording(withReport(REPORT));
+
+/** the scope and thresholds in the address are what the read carries, over seven days unless told otherwise */
+export const SendsTheScopeAndThresholds: Story = {
+  render: () => (
+    <Harness
+      fetchStub={asked.stub}
+      route="/savings?route=chat&project=project-1&max_prompt_tokens=2000&output_margin=0.5"
+    >
+      <Savings />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await within(canvasElement).findByTestId("savings-limits");
+    await waitFor(() => {
+      const call = asked.calls.find((c) => c.url.includes("/analytics/savings"));
+      expect(call).toBeDefined();
+      const url = new URL(call!.url, "http://x");
+      expect(url.searchParams.get("route")).toBe("chat");
+      expect(url.searchParams.get("project")).toBe("project-1");
+      expect(url.searchParams.get("max_prompt_tokens")).toBe("2000");
+      expect(url.searchParams.get("output_margin")).toBe("0.5");
+      const days = (Date.now() - Date.parse(url.searchParams.get("since")!)) / 86_400_000;
+      expect(Math.round(days)).toBe(7);
+    });
+  },
+};
+
+const recalculating = recording(withReport(REPORT));
+
+/** the thresholds apply together, and a bad one is said before anything is sent */
+export const RecalculatesWithNewThresholds: Story = {
+  render: () => (
+    <Harness fetchStub={recalculating.stub}>
+      <Savings />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByTestId("savings-limits");
+    const prompt = canvas.getByLabelText("Longest prompt (tokens)");
+    await userEvent.type(prompt, "abc");
+    await userEvent.click(canvas.getByRole("button", { name: "Recalculate" }));
+    await expect(await canvas.findByText(/Enter a whole number of 1 or more/)).toBeVisible();
+    await userEvent.clear(prompt);
+    await userEvent.type(prompt, "2000");
+    await userEvent.type(canvas.getByLabelText("Output margin"), "0.5");
+    await userEvent.click(canvas.getByRole("button", { name: "Recalculate" }));
+    await waitFor(() =>
+      expect(
+        recalculating.calls.some(
+          (c) => c.url.includes("max_prompt_tokens=2000") && c.url.includes("output_margin=0.5"),
+        ),
+      ).toBe(true),
+    );
+  },
+};
+
+const windowed = recording(withReport(REPORT));
+
+export const PickingAWindowReadsItAgain: Story = {
+  render: () => (
+    <Harness fetchStub={windowed.stub}>
+      <Savings />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByTestId("savings-limits");
+    await expect(canvas.getByRole("combobox", { name: "Time window" })).toHaveValue("Last 7 days");
+    await pickOption(canvas.getByRole("combobox", { name: "Time window" }), "Last 30 days");
+    await waitFor(() =>
+      expect(
+        windowed.calls.some((c) => {
+          const since = new URL(c.url, "http://x").searchParams.get("since");
+          return (
+            c.url.includes("/analytics/savings") &&
+            since !== null &&
+            Math.round((Date.now() - Date.parse(since)) / 86_400_000) === 30
+          );
+        }),
+      ).toBe(true),
+    );
+  },
+};
+
+/** a route name is unique per project only: the picker offers it once, not once per project */
+export const ARouteNameSharedByTwoProjectsIsOfferedOnce: Story = {
+  render: () => (
+    <Harness
+      fetchStub={routes([
+        ["/analytics/savings", () => REPORT],
+        ["/virtual-keys", () => []],
+        [
+          "/models",
+          () => [
+            { model: "chat", strategy: "weighted", targets: 1, project_id: "project-1" },
+            { model: "chat", strategy: "weighted", targets: 1, project_id: "project-2" },
+          ],
+        ],
+      ])}
+    >
+      <Savings />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByTestId("savings-limits");
+    const listbox = await openOptions(await canvas.findByLabelText("Route"));
+    await expect(within(listbox).getAllByRole("option", { name: "chat" })).toHaveLength(1);
+  },
+};
