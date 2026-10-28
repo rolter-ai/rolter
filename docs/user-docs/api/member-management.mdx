@@ -66,7 +66,7 @@ It is the same link, so the earlier message still works, and the expiry does not
 move. The request has no body and the response is the invitation, with
 `mail_status`, `mail_attempted_at` and `mail_error` updated. It needs the same
 role as sending the invitation, and is audited as `invitation.resend` followed
-by `invitation.mail_sent` or `invitation.mail_failed`.
+by `invitation.mail_sent` or `invitation.mail_failed`. A resend is refused with `429` and a `Retry-After` header while the invitation's last mail attempt, the first send included, is under a minute old.
 
 ```bash
 curl -X POST "$ROLTER_URL/api/v1/invitations/$INVITATION_ID/resend" \
@@ -88,7 +88,7 @@ that sends invitations in the organization.
 { "ok": false, "stage": "auth", "reason": "the mail server refused the credential in the relay url" }
 ```
 
-`stage` is `connect` (unreachable or no answer in time), `tls`, `auth` or
+The check is not rate limited. `stage` is `connect` (unreachable or no answer in time), `tls`, `auth` or
 `relay` (it answered, but not as a mail server does). The reason never contains
 the relay's address, its reply or the credential. A control plane without
 `ROLTER_SMTP_URL` answers `409`. `rolter check --connect` runs the same check

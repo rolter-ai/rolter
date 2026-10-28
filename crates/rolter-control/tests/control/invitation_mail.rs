@@ -228,6 +228,14 @@ async fn an_organization_name_cannot_inject_a_header() {
 }
 
 impl Fixture {
+    /// make the last mail attempt old enough that a resend is not throttled
+    async fn age_last_attempt(&self) {
+        sqlx::query("update invitations set mail_attempted_at = now() - interval '2 minutes'")
+            .execute(&self.pool)
+            .await
+            .unwrap();
+    }
+
     async fn post(&self, path: &str) -> (u16, Value) {
         let response = self
             .client
@@ -254,6 +262,7 @@ async fn a_resend_mails_the_same_link_and_is_audited_like_the_first_send() {
 
     // the relay recovers; the admin resends instead of revoking and re-inviting
     *mailer.fail_with.lock() = None;
+    f.age_last_attempt().await;
     let (status, resent) = f.post(&format!("/api/v1/invitations/{id}/resend")).await;
     assert_eq!(status, 200, "{resent}");
     assert_eq!(resent["mail_status"], "sent");
@@ -371,4 +380,95 @@ async fn the_relay_check_names_the_stage_that_failed_and_nothing_else() {
         .post(&format!("/api/v1/orgs/{}/invitations/mail-check", bare.org))
         .await;
     assert_eq!(status, 409);
+}
+
+#[tokio::test]
+async fn a_resend_is_refused_while_the_last_attempt_is_under_a_minute_old() {
+    skip_without_db!();
+    let mailer = Arc::new(Recorder::default());
+    let f = fixture(Some(mailer.clone()), "Acme").await;
+    let created = f.invite("new@example.com").await;
+    let id = created["invitation"]["id"].as_str().unwrap().to_string();
+    assert_eq!(mailer.sent.lock().len(), 1);
+
+    // the first send was a moment ago
+    let response = f
+        .client
+        .post(format!("{}/api/v1/invitations/{id}/resend", f.base))
+        .bearer_auth(admin_token())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 429);
+    let wait: u64 = response
+        .headers()
+        .get("retry-after")
+        .expect("a Retry-After")
+        .to_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert!((1..=60).contains(&wait), "{wait}");
+    assert_eq!(
+        mailer.sent.lock().len(),
+        1,
+        "a refused resend sends nothing"
+    );
+
+    // once the minute has passed the same request goes out
+    f.age_last_attempt().await;
+    let (status, _) = f.post(&format!("/api/v1/invitations/{id}/resend")).await;
+    assert_eq!(status, 200);
+    assert_eq!(mailer.sent.lock().len(), 2);
+    // and starts the next minute
+    let (status, _) = f.post(&format!("/api/v1/invitations/{id}/resend")).await;
+    assert_eq!(status, 429);
+}
+
+#[tokio::test]
+async fn a_viewer_cannot_resend_an_invitation() {
+    skip_without_db!();
+    let mailer = Arc::new(Recorder::default());
+    let f = fixture(Some(mailer.clone()), "Acme").await;
+    let created = f.invite("new@example.com").await;
+    let id = created["invitation"]["id"].as_str().unwrap().to_string();
+    f.age_last_attempt().await;
+
+    let viewer: Uuid = sqlx::query_scalar(
+        "insert into users (email, password_hash, is_superadmin) \
+         values ('viewer@example.com', null, false) returning id",
+    )
+    .fetch_one(&f.pool)
+    .await
+    .unwrap();
+    sqlx::query("insert into memberships (user_id, org_id, role) values ($1, $2, 'viewer')")
+        .bind(viewer)
+        .bind(f.org)
+        .execute(&f.pool)
+        .await
+        .unwrap();
+    let session = format!("rolter_sess_resend_{}", Uuid::new_v4().simple());
+    sqlx::query(
+        "insert into sessions (user_id, token_hash, expires_at) \
+         values ($1, $2, now() + interval '1 hour')",
+    )
+    .bind(viewer)
+    .bind(rolter_auth::hash_key("", &session))
+    .execute(&f.pool)
+    .await
+    .unwrap();
+    for path in [
+        format!("/api/v1/invitations/{id}/resend"),
+        format!("/api/v1/orgs/{}/invitations/mail-check", f.org),
+    ] {
+        let response = f
+            .client
+            .post(format!("{}{path}", f.base))
+            .bearer_auth(&session)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 403, "{path}");
+    }
+    assert_eq!(mailer.sent.lock().len(), 1, "nothing was sent for a viewer");
 }

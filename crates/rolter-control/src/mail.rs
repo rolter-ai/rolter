@@ -242,6 +242,29 @@ fn classify_relay(error: &lettre::transport::smtp::Error) -> RelayFailure {
             RelayStage::Auth,
             "the mail server refused the credential in the relay url",
         )
+    } else if error.is_client() {
+        // the server was reached and the client refused to go on: which part of
+        // the relay's configuration it disagreed with is in the cause's text,
+        // which is read here and never repeated
+        let cause = std::error::Error::source(error)
+            .map(|cause| cause.to_string().to_ascii_lowercase())
+            .unwrap_or_default();
+        if cause.contains("starttls") {
+            RelayFailure::new(
+                RelayStage::Tls,
+                "the mail server does not offer the secure connection the relay url asks for",
+            )
+        } else if cause.contains("authentication") {
+            RelayFailure::new(
+                RelayStage::Auth,
+                "the mail server offers no way to sign in that the control plane can use",
+            )
+        } else {
+            RelayFailure::new(
+                RelayStage::Relay,
+                "the mail server answered, but not in a way the control plane can use",
+            )
+        }
     } else if error.is_timeout() {
         RelayFailure::new(
             RelayStage::Connect,
@@ -448,6 +471,26 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(failure.stage, RelayStage::Tls, "{failure:?}");
+        assert!(!failure.reason.contains("pw-1234"), "{}", failure.reason);
+    }
+
+    #[tokio::test]
+    async fn a_relay_without_starttls_fails_at_tls_when_it_is_required() {
+        let port = relay("220 relay ready\r\n", &["250 relay\r\n"]).await;
+        let failure = check_url(&format!("smtp://127.0.0.1:{port}?tls=required"))
+            .await
+            .unwrap_err();
+        assert_eq!(failure.stage, RelayStage::Tls, "{failure:?}");
+        assert!(!failure.reason.contains("127.0.0.1"), "{}", failure.reason);
+    }
+
+    #[tokio::test]
+    async fn a_relay_with_no_auth_fails_at_auth_when_a_credential_is_given() {
+        let port = relay("220 relay ready\r\n", &["250 relay\r\n"]).await;
+        let failure = check_url(&format!("smtp://u:pw-1234@127.0.0.1:{port}"))
+            .await
+            .unwrap_err();
+        assert_eq!(failure.stage, RelayStage::Auth, "{failure:?}");
         assert!(!failure.reason.contains("pw-1234"), "{}", failure.reason);
     }
 

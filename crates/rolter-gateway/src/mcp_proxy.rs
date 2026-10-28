@@ -469,17 +469,9 @@ fn end_to_end_headers(mut headers: HeaderMap) -> HeaderMap {
     for name in [
         "authorization",
         "api-key",
-        "connection",
         "content-length",
         "cookie",
         "host",
-        "keep-alive",
-        "proxy-authenticate",
-        "proxy-authorization",
-        "te",
-        "trailer",
-        "transfer-encoding",
-        "upgrade",
         "x-api-key",
     ] {
         headers.remove(name);

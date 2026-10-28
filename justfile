@@ -248,8 +248,8 @@ dogfood:
     export ROLTER_DATABASE_URL="postgres://$DEV_PG_USER:$DEV_PG_PASSWORD@127.0.0.1:${ROLTER_PG_HOST_PORT:-5432}/rolter"
     export ROLTER_KEK="$kek"
     echo "[dogfood] seeding org + admin user (no providers: add those yourself)"
-    cargo run -q -p rolter-control --features postgres --bin rolter-seed -- \
-      --admin-email "$DEV_EMAIL" --admin-password "$DEV_PASSWORD" >/dev/null
+    printf '%s\n' "$DEV_PASSWORD" | cargo run -q -p rolter-control --features postgres --bin rolter-seed -- \
+      --admin-email "$DEV_EMAIL" --admin-password-stdin >/dev/null
 
     # a worktree's post-start hook can leave a partial node_modules behind, so
     # test for the build tool itself rather than the directory
@@ -451,8 +451,8 @@ dev-creds:
     export ROLTER_DATABASE_URL="postgres://$DEV_PG_USER:$DEV_PG_PASSWORD@127.0.0.1:${ROLTER_PG_HOST_PORT:-5432}/rolter"
     export ROLTER_KEK="$(cat "$d/.kek" 2>/dev/null || true)"
     echo "[dev-creds] rolter admin -> $DEV_EMAIL"
-    cargo run -q -p rolter-control --features postgres --bin rolter-seed -- \
-      --admin-email "$DEV_EMAIL" --admin-password "$DEV_PASSWORD" >/dev/null
+    printf '%s\n' "$DEV_PASSWORD" | cargo run -q -p rolter-control --features postgres --bin rolter-seed -- \
+      --admin-email "$DEV_EMAIL" --admin-password-stdin >/dev/null
 
     # rolter-seed creates the admin but never touches an existing one, so a
     # changed DEV_PASSWORD would leave the old one in force. set it through the

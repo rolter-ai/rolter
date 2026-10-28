@@ -24,12 +24,13 @@ const HOP_BY_HOP: [&str; 8] = [
 /// Removes `Connection`, every field named in its value(s) and the fixed
 /// hop-by-hop set from `headers`. Used on requests and on responses.
 pub fn strip(headers: &mut HeaderMap) {
+    // read as bytes: a value with an obs-text byte is not `to_str`-able, and
+    // dropping the whole value would keep every field it nominates
     let nominated: Vec<HeaderName> = headers
         .get_all(CONNECTION)
         .iter()
-        .filter_map(|value| value.to_str().ok())
-        .flat_map(|value| value.split(','))
-        .filter_map(|token| HeaderName::from_bytes(token.trim().as_bytes()).ok())
+        .flat_map(|value| value.as_bytes().split(|byte| *byte == b','))
+        .filter_map(|token| HeaderName::from_bytes(token.trim_ascii()).ok())
         .collect();
     headers.remove(CONNECTION);
     for name in nominated {
@@ -75,6 +76,20 @@ mod tests {
         assert!(headers.get("content-type").is_some());
         // `trailers` is a value of `TE`, not a field: it is no hop-by-hop name
         assert!(headers.get("trailers").is_some());
+    }
+
+    #[test]
+    fn a_non_ascii_byte_in_connection_does_not_hide_the_other_tokens() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            CONNECTION,
+            HeaderValue::from_bytes(b"x-internal, \x80, x-second").unwrap(),
+        );
+        headers.insert("x-internal", HeaderValue::from_static("secret"));
+        headers.insert("x-second", HeaderValue::from_static("secret"));
+        strip(&mut headers);
+        assert!(headers.get("x-internal").is_none());
+        assert!(headers.get("x-second").is_none());
     }
 
     #[test]

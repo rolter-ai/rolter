@@ -271,7 +271,8 @@ fn take_query_param(query: &str, name: &str) -> (String, Option<String>) {
     (rest, taken)
 }
 
-// host and content-length are recomputed by the client/server on each leg
+// host and content-length are recomputed by the client/server on each leg.
+// spec-ref: http-semantics
 fn strip_hop_by_hop(headers: &mut HeaderMap) {
     rolter_proxy::hop_by_hop::strip(headers);
 }

@@ -88,10 +88,10 @@ pub struct SeedArgs {
     #[arg(long, conflicts_with_all = ["admin_password_stdin", "admin_password_file"])]
     pub admin_password: Option<String>,
     /// read the admin password from standard input (one line)
-    #[arg(long, conflicts_with = "admin_password_file")]
+    #[arg(long, conflicts_with = "admin_password_file", requires = "admin_email")]
     pub admin_password_stdin: bool,
     /// read the admin password from a file (first line)
-    #[arg(long, value_name = "PATH")]
+    #[arg(long, value_name = "PATH", requires = "admin_email")]
     pub admin_password_file: Option<PathBuf>,
     /// bootstrap rolter.toml to import providers/routes from. The file is the
     /// desired state: re-importing an edited file updates the rows it already
@@ -1665,14 +1665,20 @@ mod tests {
         let got = resolve_admin_password(&args, &mut Cursor::new(Vec::new())).unwrap();
         assert_eq!(got.as_deref(), Some("from-flag"));
 
-        let args = parse(&["--admin-password-stdin"]).unwrap();
+        let args = parse(&["--admin-email", "a@example.com", "--admin-password-stdin"]).unwrap();
         let got = resolve_admin_password(&args, &mut Cursor::new(b"from-stdin\r\nrest".to_vec()))
             .unwrap();
         assert_eq!(got.as_deref(), Some("from-stdin"));
 
         let path = std::env::temp_dir().join(format!("rolter-seed-pw-{}", std::process::id()));
         std::fs::write(&path, "from-file\n").unwrap();
-        let args = parse(&["--admin-password-file", path.to_str().unwrap()]).unwrap();
+        let args = parse(&[
+            "--admin-email",
+            "a@example.com",
+            "--admin-password-file",
+            path.to_str().unwrap(),
+        ])
+        .unwrap();
         let got = resolve_admin_password(&args, &mut Cursor::new(Vec::new())).unwrap();
         let _ = std::fs::remove_file(&path);
         assert_eq!(got.as_deref(), Some("from-file"));
@@ -1684,17 +1690,48 @@ mod tests {
 
     #[test]
     fn an_empty_or_missing_password_source_is_refused() {
-        let args = parse(&["--admin-password-stdin"]).unwrap();
+        let args = parse(&["--admin-email", "a@example.com", "--admin-password-stdin"]).unwrap();
         assert!(resolve_admin_password(&args, &mut Cursor::new(b"\n".to_vec())).is_err());
-        let args = parse(&["--admin-password-file", "/nonexistent/rolter-pw"]).unwrap();
+        let args = parse(&[
+            "--admin-email",
+            "a@example.com",
+            "--admin-password-file",
+            "/nonexistent/rolter-pw",
+        ])
+        .unwrap();
         assert!(resolve_admin_password(&args, &mut Cursor::new(Vec::new())).is_err());
     }
 
     #[test]
     fn the_password_sources_exclude_one_another() {
-        assert!(parse(&["--admin-password", "x", "--admin-password-stdin"]).is_err());
-        assert!(parse(&["--admin-password", "x", "--admin-password-file", "f"]).is_err());
-        assert!(parse(&["--admin-password-stdin", "--admin-password-file", "f"]).is_err());
+        assert!(parse(&[
+            "--admin-email",
+            "a@example.com",
+            "--admin-password",
+            "x",
+            "--admin-password-stdin"
+        ])
+        .is_err());
+        assert!(parse(&[
+            "--admin-email",
+            "a@example.com",
+            "--admin-password",
+            "x",
+            "--admin-password-file",
+            "f"
+        ])
+        .is_err());
+        assert!(parse(&[
+            "--admin-email",
+            "a@example.com",
+            "--admin-password-stdin",
+            "--admin-password-file",
+            "f"
+        ])
+        .is_err());
+        // a password with no account to give it to would be read and dropped
+        assert!(parse(&["--admin-password-stdin"]).is_err());
+        assert!(parse(&["--admin-password-file", "f"]).is_err());
     }
 
     use super::{

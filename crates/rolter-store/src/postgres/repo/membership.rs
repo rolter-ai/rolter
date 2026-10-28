@@ -543,6 +543,40 @@ impl InvitationRepo<'_> {
         .await
     }
 
+    /// Claim the right to mail an invitation now, in one statement so two
+    /// concurrent resends cannot both pass (#3304). `None` when claimed: the
+    /// attempt is stamped, and the caller sends. `Some(seconds)` when the last
+    /// attempt is under `min_gap_secs` old: nothing is changed, and the
+    /// caller waits that long.
+    pub async fn claim_mail_attempt(&self, id: Uuid, min_gap_secs: i64) -> Result<Option<i64>> {
+        let claimed: Option<Uuid> = sqlx::query_scalar(
+            "update invitations set mail_attempted_at = now() \
+             where id = $1 \
+               and (mail_attempted_at is null \
+                    or mail_attempted_at <= now() - make_interval(secs => $2)) \
+             returning id",
+        )
+        .bind(id)
+        .bind(min_gap_secs as f64)
+        .fetch_optional(self.0)
+        .await
+        .map_err(store_err)?;
+        if claimed.is_some() {
+            return Ok(None);
+        }
+        let wait: Option<f64> = sqlx::query_scalar(
+            "select extract(epoch from (mail_attempted_at + make_interval(secs => $2) - now()))::float8 \
+             from invitations where id = $1",
+        )
+        .bind(id)
+        .bind(min_gap_secs as f64)
+        .fetch_optional(self.0)
+        .await
+        .map_err(store_err)?
+        .flatten();
+        Ok(Some(wait.map_or(1, |secs| secs.ceil().max(1.0) as i64)))
+    }
+
     /// The sealed token of a live invitation as `(ciphertext, nonce)`, for a
     /// resend (#3304). `None` when the invitation is spent, revoked or expired,
     /// or never had one sealed.

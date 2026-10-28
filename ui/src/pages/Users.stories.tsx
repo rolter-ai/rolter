@@ -2179,16 +2179,18 @@ export const PendingInvitationsHiddenFromAViewer: Story = {
   },
 };
 
-/** An org admin reads the list and may revoke from it. */
+/** An org admin reads the list and may revoke and resend from it. */
 export const PendingInvitationsOpenToAnAdmin: Story = {
   render: () => (
-    <Harness fetchStub={invitationsApi()} role="admin">
+    <Harness fetchStub={invitationsApi({ rows: withFailedMail(INVITATIONS) })} role="admin">
       <Users />
     </Harness>
   ),
   play: async ({ canvasElement }) => {
     const section = await pendingSection(canvasElement);
     await expectAllowed(section, revokeInvitationName("newcomer@example.com"));
+    // resending is `invitation:create`, the bar for sending it the first time
+    await expectAllowed(section, "Email the link to newcomer@example.com again");
   },
 };
 

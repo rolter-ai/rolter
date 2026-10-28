@@ -400,11 +400,12 @@ fn mail_relay_finding(failure: &rolter_control::mail::RelayFailure) -> Finding {
 /// Connect, set up TLS and authenticate against the configured mail relay,
 /// without sending a message (#3304). Behind `--connect` because it opens a
 /// socket, and behind the `postgres` feature because the mailer is part of the
-/// control plane's database-backed build.
+/// control plane's database-backed build. The relay is held to the egress policy
+/// of the file given with `--config`, the one the control plane runs with, so an
+/// address the operator allowed is not reported as denied.
 #[cfg(feature = "postgres")]
-async fn check_mail_relay(out: &mut Vec<Finding>) {
-    let egress = rolter_core::EgressPolicy::default();
-    if let Some(Err(failure)) = rolter_control::mail::check_env_relay(&egress).await {
+async fn check_mail_relay(egress: &rolter_core::EgressPolicy, out: &mut Vec<Finding>) {
+    if let Some(Err(failure)) = rolter_control::mail::check_env_relay(egress).await {
         out.push(mail_relay_finding(&failure));
     }
 }
@@ -784,7 +785,13 @@ pub async fn run(args: CheckArgs) -> anyhow::Result<()> {
         #[cfg(feature = "postgres")]
         if args.role == Role::Control {
             check_kek_opens_the_store(&ProcessEnv, &mut findings).await;
-            check_mail_relay(&mut findings).await;
+            let egress = args
+                .config
+                .as_deref()
+                .and_then(|path| rolter_core::GatewayConfig::load(std::path::Path::new(path)).ok())
+                .map(|config| config.egress)
+                .unwrap_or_default();
+            check_mail_relay(&egress, &mut findings).await;
         }
     }
 

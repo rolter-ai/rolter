@@ -49,6 +49,10 @@ use crate::ControlState;
 /// short enough that a link forwarded on and forgotten stops working
 const INVITE_TTL_HOURS: i64 = 24 * 7;
 
+/// the least time between two mail attempts for one invitation, so a resend
+/// cannot be repeated into a flood (#3304)
+const RESEND_MIN_GAP_SECS: i64 = 60;
+
 /// session handed to a newly created invitee on acceptance, so they land signed
 /// in rather than at a login form they have not used yet
 const SESSION_TTL_HOURS: i64 = 24 * 7;
@@ -288,6 +292,16 @@ async fn resend(
         .and_then(|kek| kek.decrypt(&ciphertext, &nonce).ok())
         .ok_or_else(not_resendable)?;
 
+    // a lost email is fixed with one resend, not a loop of them: the relay's
+    // own limits and the invitee's inbox are not ours to spend
+    if let Some(wait) = InvitationRepo(pool(&state))
+        .claim_mail_attempt(id, RESEND_MIN_GAP_SECS)
+        .await?
+    {
+        return Err(ApiError::TooManyAttempts(std::time::Duration::from_secs(
+            wait.max(1) as u64,
+        )));
+    }
     log_audit(
         &state,
         &principal,

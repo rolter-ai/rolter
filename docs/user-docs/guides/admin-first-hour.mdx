@@ -72,7 +72,7 @@ This guide takes a deployment from nothing to "our people and our applications c
       rolter seed --admin-email you@example.com --admin-password-stdin < password.txt
     ```
 
-    The password is read from standard input (`--admin-password-stdin`, the first line) or from a file (`--admin-password-file <path>`). `--admin-password <value>` still works, but a value on the command line is visible to every user on the host through `ps` and lands in shell history, so the three are mutually exclusive and the first two are the ones to use.
+    The password is read from standard input (`--admin-password-stdin`, the first line) or from a file (`--admin-password-file <path>`). `--admin-password <value>` still works, but a value on the command line is visible to every user on the host through `ps` and lands in shell history, so the three are mutually exclusive and the first two are the ones to use. Write `password.txt` with `chmod 600` (or `umask 077`) before you put the password in it, and delete it as soon as `rolter seed` has run.
 
     It is safe to run again: it creates the org, team, project and administrator once and never touches an existing account. `rolter seed --import rolter.toml` applies a config file as desired state ([Config export](/configuration/config-export)).
 
