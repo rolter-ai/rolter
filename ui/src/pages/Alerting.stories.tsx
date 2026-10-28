@@ -963,9 +963,8 @@ export const AnUntouchedThresholdGoesBackAsStored: Story = {
   },
 };
 
-// the edit takes the authority the switch beside it does. alerting is
-// superadmin-only, so any lesser caller is refused the whole screen before a
-// row renders, and the superadmin is the one role that reaches the control
+// the edit takes the authority the switch beside it does. a superadmin reaches
+// every control
 export const EditIsOfferedToASuperadmin: Story = {
   render: () => (
     <Harness fetchStub={loaded} role="superadmin">
@@ -976,6 +975,23 @@ export const EditIsOfferedToASuperadmin: Story = {
   play: async ({ canvasElement }) => {
     await expectAllowed(canvasElement, "Edit channel ops-slack");
     await expectAllowed(canvasElement, "Edit rule high error rate");
+  },
+};
+
+// a deployment operator holds no membership anywhere, yet runs every rule and
+// channel; the capability table publishes that (#3362), so the controls are
+// enabled for them instead of read as a scoped admin's alone
+export const EditIsOfferedToADeploymentOperator: Story = {
+  render: () => (
+    <Harness fetchStub={loaded} role="operator">
+      <AlertChannels />
+      <AlertRules />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await expectAllowed(canvasElement, "Edit channel ops-slack");
+    await expectAllowed(canvasElement, "Edit rule high error rate");
+    await expectAllowed(canvasElement, "Delete rule high error rate");
   },
 };
 

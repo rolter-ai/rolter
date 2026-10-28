@@ -49,6 +49,26 @@ function StateBadges({ node }: { node: ClusterNodeRow }) {
   );
 }
 
+// the snapshot format the node was last served (ADR-0038, #3351). a node
+// refused one holds no snapshot it can read, which is the red of a fault; the
+// title says which formats it states it reads. nothing is drawn for a control
+// plane too old to record it
+function FormatCell({ node }: { node: ClusterNodeRow }) {
+  const { t } = useTranslation();
+  if (node.served_format === undefined) return null;
+  const reads =
+    node.formats_min === undefined || node.formats_max === undefined
+      ? undefined
+      : t("pages.cluster.formatReads", { min: node.formats_min, max: node.formats_max });
+  return node.served_format === null ? (
+    <span title={reads}>
+      <Badge tone="danger">{t("pages.cluster.formatRefused")}</Badge>
+    </span>
+  ) : (
+    <span title={reads}>{node.served_format}</span>
+  );
+}
+
 // cluster inventory backed by /api/v1/cluster/nodes (superadmin only). nodes
 // are never enrolled here — every gateway identifies itself on its snapshot
 // poll, so this screen only reads the inventory and drains or forgets a node
@@ -126,6 +146,14 @@ function ClusterScreen() {
       align: "right",
       mono: true,
       render: (_v, row) => `v${row.config_version}`,
+    },
+    {
+      key: "served_format",
+      header: t("pages.cluster.columns.format"),
+      width: "1%",
+      align: "right",
+      mono: true,
+      render: (_v, row) => <FormatCell node={row} />,
     },
     {
       key: "state",

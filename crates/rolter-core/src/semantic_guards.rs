@@ -66,6 +66,12 @@ pub struct SemanticGuardsConfig {
 }
 
 /// What a policy is scoped to, from broadest to narrowest.
+///
+/// Deliberately closed (#3347): exactly one policy applies to a request,
+/// chosen by specificity, and an unknown scope has no place in that order: read
+/// as broader it could loosen a narrower policy, read as narrower it could
+/// replace the policy that should apply. A new scope is a snapshot format bump
+/// (ADR-0038).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PolicyScope {
@@ -120,6 +126,10 @@ pub enum ViolationAction {
     Block,
     /// deliver it, and record the violation on the request log and metrics
     Annotate,
+    /// an action this build does not know (#3347); read as
+    /// [`ViolationAction::Block`]
+    #[serde(other)]
+    Unknown,
 }
 
 impl ViolationAction {
@@ -128,6 +138,7 @@ impl ViolationAction {
         match self {
             Self::Block => "block",
             Self::Annotate => "annotate",
+            Self::Unknown => "unknown",
         }
     }
 }
@@ -143,6 +154,10 @@ pub enum StreamingStrategy {
     Reject,
     /// hold the whole stream, check it once, then replay or withhold it
     Buffer,
+    /// a strategy this build does not know (#3347); read as
+    /// [`StreamingStrategy::Reject`]
+    #[serde(other)]
+    Unknown,
 }
 
 impl StreamingStrategy {
@@ -151,6 +166,7 @@ impl StreamingStrategy {
         match self {
             Self::Reject => "reject",
             Self::Buffer => "buffer",
+            Self::Unknown => "unknown",
         }
     }
 }

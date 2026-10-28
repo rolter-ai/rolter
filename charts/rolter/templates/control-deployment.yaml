@@ -28,7 +28,7 @@ spec:
       {{- include "rolter.preflight" (dict "root" . "env" $controlEnv "role" "control") | nindent 6 }}
       containers:
         - name: control
-          image: {{ include "rolter.image" . | quote }}
+          image: {{ include "rolter.image" (dict "root" . "component" "control") | quote }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           command: ["rolter-control"]
           # the chart's own config, not the image's baked /app/rolter.toml: that

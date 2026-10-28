@@ -98,7 +98,8 @@ pub async fn sanitize(
                 // enforcement over availability. this is the mode to pick when
                 // the point of the deployment is that PII must not reach the
                 // provider: forwarding unsanitized on failure would defeat it
-                FailureMode::FailClosed => {
+                // a mode from a newer release reads as closed (#3347)
+                FailureMode::FailClosed | FailureMode::Unknown => {
                     metrics.pii_sanitizer_blocks_total.fetch_add(1, Relaxed);
                     SanitizeOutcome::Block("pii sanitizer unavailable".to_string())
                 }

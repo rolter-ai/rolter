@@ -54,7 +54,21 @@ const HEALTH: Record<GatewayReadiness, GatewayHealth> = {
   ready: "healthy",
   draining: "degraded",
   unreachable: "down",
+  // a gateway with no config refuses every key, which is down for whoever calls
+  // it, however well the process itself is running (#3348, #3350)
+  awaitingSnapshot: "down",
+  snapshotFormatUnsupported: "down",
 };
+
+/** A probe answer that says more than its health does, so the pill words it on its own. */
+export type GatewayRefusal = Extract<
+  GatewayReadiness,
+  "awaitingSnapshot" | "snapshotFormatUnsupported"
+>;
+
+function refusalOf(data: GatewayCheck): GatewayRefusal | null {
+  return data === "awaitingSnapshot" || data === "snapshotFormatUnsupported" ? data : null;
+}
 
 /**
  * What a fleet of gateways adds up to. Down only when none is live: a stale or
@@ -77,6 +91,11 @@ export interface GatewayHealthView {
   answeredAt: number | null;
   /** the fleet's counts when the answer came from the cluster summary, else `null` (a probe) */
   fleet: FleetCounts | null;
+  /**
+   * why a probed gateway refuses every key when it has no config to serve, or
+   * `null`. Its health reads `down` either way; this is what the words say
+   */
+  refusal: GatewayRefusal | null;
 }
 
 /** The slice of a query's state the pill is derived from. */
@@ -103,11 +122,18 @@ export function gatewayHealthFrom(query: GatewayHealthQuery): GatewayHealthView 
       live: false,
       answeredAt: null,
       fleet: null,
+      refusal: null,
     };
   }
   const failedSince = isError && errorUpdatedAt > dataUpdatedAt;
   if (failedSince && errorUpdatedAt - dataUpdatedAt >= GATEWAY_HEALTH_STALE_MS) {
-    return { health: "unknown", live: false, answeredAt: dataUpdatedAt, fleet: null };
+    return {
+      health: "unknown",
+      live: false,
+      answeredAt: dataUpdatedAt,
+      fleet: null,
+      refusal: null,
+    };
   }
   const fleet = typeof data === "string" ? null : data;
   return {
@@ -115,6 +141,7 @@ export function gatewayHealthFrom(query: GatewayHealthQuery): GatewayHealthView 
     live: !failedSince,
     answeredAt: dataUpdatedAt,
     fleet,
+    refusal: refusalOf(data),
   };
 }
 

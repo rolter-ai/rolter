@@ -481,20 +481,6 @@ fn deployment_only(principal: &Principal) -> ApiResult<()> {
     }
 }
 
-/// [`authorize`], except that a superadmin or deployment operator passes every
-/// scope: alerting was theirs before it was delegated.
-async fn authorize_alerting(
-    state: &ControlState,
-    principal: &Principal,
-    chain: ScopeChain,
-    requirement: Requirement,
-) -> ApiResult<()> {
-    if is_deployment_operator(principal) {
-        return Ok(());
-    }
-    authorize(state, principal, chain, requirement).await
-}
-
 /// Guard a channel at its owning org, or at the deployment when it has none.
 async fn authorize_channel(
     state: &ControlState,
@@ -503,7 +489,7 @@ async fn authorize_channel(
     requirement: Requirement,
 ) -> ApiResult<()> {
     match org_id {
-        Some(org) => authorize_alerting(state, principal, ScopeChain::org(org), requirement).await,
+        Some(org) => authorize(state, principal, ScopeChain::org(org), requirement).await,
         None => deployment_only(principal),
     }
 }
@@ -530,7 +516,7 @@ async fn authorize_rule(
     requirement: Requirement,
 ) -> ApiResult<()> {
     match rule_chain(state, rule).await {
-        Some(chain) => authorize_alerting(state, principal, chain, requirement).await,
+        Some(chain) => authorize(state, principal, chain, requirement).await,
         None => deployment_only(principal),
     }
 }
@@ -588,45 +574,102 @@ async fn check_rule_channel(
     }
 }
 
-/// The orgs in which the caller may run alerting: those of every place they
-/// hold an alert-rule admin role. Empty for a caller with none, who is refused
-/// the listing (a superadmin never asks).
-async fn alerting_orgs(
-    state: &ControlState,
-    filter: &ScopeFilter,
-) -> ApiResult<std::collections::HashSet<Uuid>> {
-    let orgs: std::collections::HashSet<Uuid> = filter
+/// Where the caller may run alerting: the chain of every place they hold an
+/// alert-rule admin role, so the orgs, teams and projects their rules live in.
+/// Empty for a caller with none, who is refused the listing (a superadmin never
+/// asks).
+async fn alerting_reach(state: &ControlState, filter: &ScopeFilter) -> ApiResult<Vec<ScopeChain>> {
+    let held: Vec<ScopeChain> = filter
         .reach(pool(state))
         .await?
         .into_iter()
         .filter(|held| filter.allows(*held))
-        .filter_map(|held| held.org)
         .collect();
-    if orgs.is_empty() {
+    if held.iter().all(|held| held.org.is_none()) {
         return Err(ApiError::Forbidden);
     }
-    Ok(orgs)
+    Ok(held)
 }
 
-/// The rules the caller may see: all of them for a superadmin, otherwise those
-/// whose scope the caller is admin of. Deployment-wide rules are never theirs.
+/// The orgs in which the caller may run alerting: those of every place they
+/// hold an alert-rule admin role.
+async fn alerting_orgs(
+    state: &ControlState,
+    filter: &ScopeFilter,
+) -> ApiResult<std::collections::HashSet<Uuid>> {
+    Ok(alerting_reach(state, filter)
+        .await?
+        .into_iter()
+        .filter_map(|held| held.org)
+        .collect())
+}
+
+/// The rules whose scope lies inside one of the places in `reach` (#3361): the
+/// rules of an org, of a team (or of a project or key inside it) and of a
+/// project (or a key inside it), chosen in SQL so a rule of any other org is
+/// never read. A superset of what the caller may see, never a verdict.
+async fn rules_in_reach(state: &ControlState, reach: &[ScopeChain]) -> ApiResult<Vec<Rule>> {
+    let (mut orgs, mut teams, mut projects) = (Vec::new(), Vec::new(), Vec::new());
+    for held in reach {
+        match (held.org, held.team, held.project) {
+            (_, _, Some(project)) => projects.push(project),
+            (_, Some(team), None) => teams.push(team),
+            (Some(org), None, None) => orgs.push(org),
+            (None, None, None) => {}
+        }
+    }
+    sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "select {} from alert_rules where id in ( \
+             select r.id from alert_rules r \
+             left join projects p on r.scope_type = 'project' and p.id = r.scope_id \
+             left join virtual_keys k on r.scope_type = 'virtual_key' and k.id = r.scope_id \
+             left join projects kp on kp.id = k.project_id \
+             where r.org_id = any($1) \
+                or (r.scope_type = 'team' and r.scope_id = any($2)) \
+                or coalesce(p.team_id, kp.team_id) = any($2) \
+                or coalesce(p.id, kp.id) = any($3)) \
+         order by name",
+        rule_columns()
+    )))
+    .bind(orgs)
+    .bind(teams)
+    .bind(projects)
+    .fetch_all(pool(state))
+    .await
+    .map_err(rolter_store::postgres::store_err)
+    .map_err(Into::into)
+}
+
+/// The rules the caller may see: all of them for a superadmin or a deployment
+/// operator, otherwise those whose scope the caller is admin of.
+/// Deployment-wide rules are never theirs.
+///
+/// A scoped caller's rules are chosen in SQL from their reach (#3361): the
+/// rules of the orgs they hold the role at, of the teams, and of the projects,
+/// reading a team or a project (or a key's project) scope through its row. So
+/// what is read, and how many chains are then resolved, follows the caller's
+/// own rules and not the number of rules in other orgs. The reach is a
+/// superset on purpose: the verdict on each rule is still [`ScopeFilter`]'s, so
+/// a more specific lower role, which beats an org admin at that scope, still
+/// hides the rule.
 async fn visible_rules(
     state: &ControlState,
     principal: &Principal,
     requirement: Requirement,
 ) -> ApiResult<Vec<Rule>> {
     let filter = ScopeFilter::load(state, principal, requirement).await?;
-    let rules: Vec<Rule> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
-        "select {} from alert_rules order by name",
-        rule_columns()
-    )))
-    .fetch_all(pool(state))
-    .await
-    .map_err(rolter_store::postgres::store_err)?;
     if is_deployment_operator(principal) {
-        return Ok(rules);
+        return sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "select {} from alert_rules order by name",
+            rule_columns()
+        )))
+        .fetch_all(pool(state))
+        .await
+        .map_err(rolter_store::postgres::store_err)
+        .map_err(Into::into);
     }
-    alerting_orgs(state, &filter).await?;
+    let reach = alerting_reach(state, &filter).await?;
+    let rules = rules_in_reach(state, &reach).await?;
     let mut visible = Vec::new();
     for rule in rules {
         if let Some(chain) = rule_chain(state, &rule).await {
@@ -836,7 +879,7 @@ async fn create_rule(
     let (org_id, scope) = match (input.scope_type.as_deref(), input.scope_id) {
         (Some(scope_type), Some(scope_id)) => {
             let chain = ScopeChain::from_scope(pool(&state), scope_type, scope_id).await?;
-            authorize_alerting(&state, &principal, chain, cap!("alert_rule", Create)).await?;
+            authorize(&state, &principal, chain, cap!("alert_rule", Create)).await?;
             (chain.org, Some((scope_type, scope_id)))
         }
         _ => {
@@ -1562,8 +1605,12 @@ fn metric_sql_scoped(signal: &str, window_secs: i32, column: Option<&str>) -> Ap
     let expression = match signal {
         // a ratio of weighted counts: each kept row stands for `sample_weight`
         // real requests, so a rate change inside the window cannot skew it
-        "error_rate" => "if(sum(sample_weight) = 0, 0, sumIf(sample_weight, status >= 500) / sum(sample_weight))".to_string(),
-        "p95_latency_ms" => "if(count() = 0, 0, quantile(0.95)(latency_ms))".to_string(),
+        // server-side failures: 5xx plus status 0, a request that never got an
+        // answer (#3294). 4xx stays out, it is the caller's own mistake and a
+        // rule on it would page on a client bug
+        "error_rate" => "if(sum(sample_weight) = 0, 0, sumIf(sample_weight, status = 0 or status >= 500) / sum(sample_weight))".to_string(),
+        // weighted by the row's sample weight like the other signals (#3355)
+        "p95_latency_ms" => format!("if(count() = 0, 0, {})", crate::analytics::P95_LATENCY),
         "spend_velocity" => format!("sum(cost_usd * sample_weight) * 3600 / {window}"),
         "request_volume" => "sum(sample_weight)".to_string(),
         "provider_health_flaps" => "countIf(outcome != 'ok')".to_string(),
@@ -2357,6 +2404,14 @@ mod tests {
     }
 
     #[test]
+    fn the_error_rate_counts_server_failures_and_requests_without_a_status() {
+        let sql = metric_sql("error_rate", 300).unwrap();
+        // status 0 never got an answer; a 4xx is the caller's own mistake
+        assert!(sql.contains("status = 0 or status >= 500"), "{sql}");
+        assert!(!sql.contains("status >= 400"), "{sql}");
+    }
+
+    #[test]
     fn metric_sql_uses_expected_tables() {
         assert!(metric_sql("error_rate", 60)
             .unwrap()
@@ -2911,6 +2966,94 @@ mod tests {
             let rows = history(&db, id).await;
             assert_eq!(rows.len(), 1);
             assert_eq!(rows[0].1, "skipped");
+        }
+
+        /// #3361: the rules read for a scoped caller are chosen by their reach in
+        /// SQL, so another org's rules are never loaded, however many there are.
+        #[tokio::test]
+        async fn only_the_rules_inside_the_reach_are_read() {
+            let Some(db) = scratch().await else { return };
+            let pool = db.pool();
+            let mut orgs = Vec::new();
+            for slug in ["mine", "theirs"] {
+                let org: Uuid = sqlx::query_scalar(
+                    "insert into orgs (name, slug) values ($1, $1) returning id",
+                )
+                .bind(slug)
+                .fetch_one(pool)
+                .await
+                .expect("insert an org");
+                let team: Uuid = sqlx::query_scalar(
+                    "insert into teams (org_id, name) values ($1, 'core') returning id",
+                )
+                .bind(org)
+                .fetch_one(pool)
+                .await
+                .expect("insert a team");
+                let project: Uuid = sqlx::query_scalar(
+                    "insert into projects (team_id, name) values ($1, 'app') returning id",
+                )
+                .bind(team)
+                .fetch_one(pool)
+                .await
+                .expect("insert a project");
+                orgs.push((org, team, project));
+            }
+            let add = |name: String, org: Uuid, scope: (&'static str, Uuid)| {
+                sqlx::query(
+                    "insert into alert_rules (name, signal, threshold, window_secs, org_id, scope_type, scope_id) \
+                     values ($1, 'error_rate', 0.5, 300, $2, $3, $4)",
+                )
+                .bind(name)
+                .bind(org)
+                .bind(scope.0)
+                .bind(scope.1)
+                .execute(pool)
+            };
+            let (org_a, team_a, project_a) = orgs[0];
+            let (org_b, team_b, project_b) = orgs[1];
+            add("a org".into(), org_a, ("org", org_a)).await.unwrap();
+            add("a team".into(), org_a, ("team", team_a)).await.unwrap();
+            add("a project".into(), org_a, ("project", project_a))
+                .await
+                .unwrap();
+            for i in 0..25 {
+                add(format!("b project {i}"), org_b, ("project", project_b))
+                    .await
+                    .unwrap();
+            }
+            add("b team".into(), org_b, ("team", team_b)).await.unwrap();
+            // a deployment rule belongs to nobody's reach
+            add_rule(&db, None).await;
+
+            let stub = Stub::start().await;
+            let state = state_with(&db, &stub);
+            let names = |rules: Vec<Rule>| -> Vec<String> {
+                rules.into_iter().map(|rule| rule.name).collect()
+            };
+            // an org admin reads their org's rules and nothing else
+            let rules = rules_in_reach(&state, &[ScopeChain::org(org_a)])
+                .await
+                .unwrap();
+            assert_eq!(names(rules), ["a org", "a project", "a team"]);
+            // a team admin reads the team's, and the projects inside it
+            let team = ScopeChain {
+                org: Some(org_a),
+                team: Some(team_a),
+                project: None,
+            };
+            let rules = rules_in_reach(&state, &[team]).await.unwrap();
+            assert_eq!(names(rules), ["a project", "a team"]);
+            // a project admin reads that project's alone
+            let project = ScopeChain {
+                org: Some(org_a),
+                team: Some(team_a),
+                project: Some(project_a),
+            };
+            let rules = rules_in_reach(&state, &[project]).await.unwrap();
+            assert_eq!(names(rules), ["a project"]);
+            // and no reach reads nothing
+            assert!(rules_in_reach(&state, &[]).await.unwrap().is_empty());
         }
 
         #[tokio::test]

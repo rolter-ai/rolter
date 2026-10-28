@@ -37,15 +37,15 @@ When no virtual keys are configured in `rolter.toml` the gateway runs open, whic
 
 ## Endpoints
 
-| Method | Path                   | Description                                                   |
-| ------ | ---------------------- | ------------------------------------------------------------- |
-| `POST` | `/v1/chat/completions` | OpenAI Chat Completions; streaming via `"stream": true` (SSE) |
-| `POST` | `/v1/completions`      | OpenAI legacy text completions                                |
-| `POST` | `/v1/messages`         | Anthropic Messages API; streaming supported                   |
-| `GET`  | `/v1/models`           | List configured model route names your key can access         |
-| `GET`  | `/healthz`             | Liveness check — returns `200 OK` when the gateway is running |
-| `GET`  | `/readyz`              | Readiness check — `503` while the instance is draining        |
-| `GET`  | `/metrics`             | Prometheus metrics in exposition format                       |
+| Method | Path                   | Description                                                                |
+| ------ | ---------------------- | -------------------------------------------------------------------------- |
+| `POST` | `/v1/chat/completions` | OpenAI Chat Completions; streaming via `"stream": true` (SSE)              |
+| `POST` | `/v1/completions`      | OpenAI legacy text completions                                             |
+| `POST` | `/v1/messages`         | Anthropic Messages API; streaming supported                                |
+| `GET`  | `/v1/models`           | List configured model route names your key can access                      |
+| `GET`  | `/healthz`             | Liveness check — returns `200 OK` when the gateway is running              |
+| `GET`  | `/readyz`              | Readiness check — `503` while draining or before the first config snapshot |
+| `GET`  | `/metrics`             | Prometheus metrics in exposition format                                    |
 
 ## Routing via the `model` field
 

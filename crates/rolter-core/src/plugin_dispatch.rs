@@ -20,6 +20,10 @@ use serde::{Deserialize, Serialize};
 use crate::guardrail_webhook::{FailureMode, WebhookAuth, WebhookTenant};
 
 /// Where in the request lifecycle a plugin runs.
+///
+/// Deliberately closed (#3347): a stage says where a plugin runs, and no
+/// reading of an unknown one is safe to guess. A new stage is a snapshot
+/// format bump (ADR-0038).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PluginStage {

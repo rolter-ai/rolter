@@ -6,6 +6,8 @@ description: "How Rolter carries your configuration across a version boundary, h
 
 Upgrading Rolter should be a change of image tag. Your `rolter.toml` is carried forward for you, and skipping releases costs nothing — you do not have to step through intermediate versions to get from an old build to a current one.
 
+There is one upgrade order, and every note on this page follows it: **the control plane first, then the gateways, and a release's new settings only once every gateway runs it.** [Upgrade order](#upgrade-order) explains why.
+
 This page covers the config half of an upgrade. The database half is separate and already automatic: schema migrations are embedded in the binary and applied on start, and they are append-only, so the same rules apply there.
 
 ## Preview an upgrade before you run it
@@ -58,7 +60,7 @@ There is no version you have to stop at on the way.
 
 ## Rolling back
 
-Rolling back to an older Rolter is supported, and the config will not be what stops you.
+Rolling back to an older Rolter is supported, and the config will not be what stops you. Roll back in the reverse of the [upgrade order](#upgrade-order): the gateways first, then the control plane.
 
 Rolter's config types never reject a key they do not recognise. An older build reading a newer file ignores what it has not heard of and starts. The same holds for the stamp itself: a build that meets a `schema_version` from the future loads the file unchanged rather than refusing.
 
@@ -84,10 +86,27 @@ The control-plane-to-gateway snapshot is negotiated. Each gateway states the sna
 ### Upgrade order
 
 1. **Upgrade the control plane first, then the gateways.** Upgrade every control-plane replica, then every gateway. A gateway may lag behind the control plane, but it may not lead it.
-2. **With the Helm chart, one `helm upgrade` does this**, even though both Deployments move together. When the format changed, a new gateway pod that starts before a new control plane is ready answers `/readyz` with `503 snapshot_format_unsupported`. It stays out of the Service and the rollout waits, while the old pods keep serving. While the rollout waits, capacity drops by at most the Deployment's `maxUnavailable`. `progressDeadlineSeconds` may report the rollout as stalled even though it then completes on its own.
-3. **Do not turn on what a release introduces until every gateway runs it.** An older gateway leaves out any route, key or provider that uses the new feature, and names it in its log. For a deployment-wide setting, it stops receiving config changes until it is upgraded.
+2. **With the Helm chart, one `helm upgrade` does this**, even though both Deployments move together. When the format changed, a new gateway pod that starts before a new control plane is ready answers `/readyz` with `503 snapshot_format_unsupported`. It stays out of the Service and the rollout waits, while the old pods keep serving. While the rollout waits, capacity drops by at most the Deployment's `maxUnavailable`. `progressDeadlineSeconds` may report the rollout as stalled even though it then completes on its own. To avoid that wait, upgrade in two steps with the chart's per-component tags, as in [Two steps with the Helm chart](#two-steps-with-the-helm-chart).
+3. **Do not turn on what a release introduces until every gateway runs it.** An older gateway leaves out any route, key or provider that uses the new feature, and names it in its log. For a deployment-wide setting, it stops receiving config changes until it is upgraded. A new value of an existing setting, such as a new provider kind, balancing strategy or budget period, is read the safe way instead: the gateway does not dial a provider of a kind it does not know, refuses a route whose strategy it does not know, refuses requests under a budget whose period it does not know, and reads an unknown failure mode as fail-closed. A budget or rate limit on a scope it does not know is the one reading that reaches past its own entity: the gateway cannot tell which requests it was meant for, so it counts **every** request it serves, every tenant's, against that cap, which can refuse traffic well beyond the scope you set. A fallback target's failure class it does not know takes over nothing. It logs a warning for each such value and keeps applying the rest of the config, revoked keys included.
 4. **Skipping releases.** A gateway can skip any number of releases. The control plane can skip releases as long as it still serves the oldest gateway's format. The **Deprecations** section of the release notes lists each format that is going away, and when.
 5. **Rolling back goes in reverse:** first the gateways, then the control plane. Rolling the control plane back across a database migration needs the restore described in [Rolling back](#rolling-back).
+
+### Two steps with the Helm chart
+
+The chart tags the control plane and the gateways apart. `control.image.tag` and `gateway.image.tag` each default to `image.tag`, which defaults to the chart's `appVersion`, so a values file that sets neither renders exactly as before. To follow the upgrade order one Deployment at a time, hold the gateways on the release they run while the control plane moves:
+
+```bash
+# 1. the control plane moves; the gateways stay where they are
+helm upgrade rolter ./charts/rolter --reuse-values \
+  --set image.tag=1.4.0 --set gateway.image.tag=1.3.2
+kubectl rollout status deploy/rolter-rolter-control
+
+# 2. the gateways follow, once every control-plane replica is ready
+helm upgrade rolter ./charts/rolter --reuse-values --set gateway.image.tag=
+kubectl rollout status deploy/rolter-rolter-gateway
+```
+
+Clearing `gateway.image.tag` in the second step puts the gateways back on `image.tag`, so the release is again one version. The same setting holds the gateways on an older release on purpose, or rolls them back without touching the control plane: set `gateway.image.tag` to the release to run. Never set it to a release newer than the control plane's, since a gateway may not lead its control plane. Each Deployment's preflight init container runs its own component's image.
 
 A control plane serves an older format for at least two minor releases and 90 days after a newer one replaces it. A gateway newer than its control plane is not supported. It works when the format did not change between the two builds, and is refused when it did. See [Versioning](/community/versioning#control-plane-and-gateway).
 
@@ -111,7 +130,7 @@ A config that the older format cannot express at all is refused with `snapshot_f
 
 ### Captured payloads from older gateways
 
-Roll the gateways out before the control plane when you upgrade from v0.1.0 or earlier with [payload capture](/observability/log-settings#payload-capture) on.
+This section follows the [upgrade order](#upgrade-order) like the rest: the control plane first, then the gateways, then the ClickHouse files below whenever suits you. It explains what you see in the window between those steps, and how to keep that window short.
 
 ClickHouse migrations under `clickhouse/` add columns that newer gateways write, for example `log_id` on `request_logs` and `request_payloads` (`012_request_log_key.sql`). Gateways insert with `input_format_skip_unknown_fields=1`, so a gateway upgraded before the migration is applied keeps logging and simply drops the new field until it is. Apply the migration to keep the new column filled; until you do, captured bodies join their log rows the old way, by request id and timestamp.
 
@@ -127,7 +146,9 @@ None of these files has to come before the control plane, for any of the fifteen
 
 Apply the files to keep the data, not to be allowed to upgrade. A gateway that gets there first is safe: it inserts with `input_format_skip_unknown_fields=1` and drops a field the table has no column for, so every request is still logged and priced. Until you apply a file the dropped fields are the ones it adds: the upstream status and attempts of a request, which call on a stored response a row records, and the 1 hour share of a cache write (only for a request that wrote to the 1 hour cache; the row's cost is computed by the gateway and is the same either way). Until `017` is applied, **LLM Logs** shows no **Cache write by lifetime** line in a row's detail, since the share it splits the write by is `0`; once the file is applied it appears for every new request that wrote to the 1 hour cache. See [Cache writes](/observability/logs-and-cost#cache-writes).
 
-The Logs screen attaches a captured body to its log row by the request id and the row's timestamp. Gateways from v0.1.0 and earlier left both timestamps to ClickHouse, which stamped the log row and the payload row separately, so they never match. Once the control plane is upgraded, bodies those gateways captured stop showing in the log drawer, and they stay hidden until `payload_retention_hours` removes them (7 days by default). Nothing is exposed and nothing is lost from the log rows themselves; only the payload panel goes empty for those requests. Upgrading the gateways first keeps the window of new bodies written that way as short as the rollout.
+The Logs screen attaches a captured body to its log row by the request id and the row's timestamp. Gateways from v0.1.0 and earlier left both timestamps to ClickHouse, which stamped the log row and the payload row separately, so they never match. Once the control plane is upgraded, bodies those gateways captured stop showing in the log drawer, and they stay hidden until `payload_retention_hours` removes them (7 days by default). Nothing is exposed and nothing is lost from the log rows themselves; only the payload panel goes empty for those requests.
+
+Rolling the gateways before the control plane is not the way to shorten this: a gateway that leads its control plane is unsupported, and it is refused as soon as the snapshot format moves. Upgrade the control plane, then roll the gateways straight after it. Every body captured in between is one the old gateways write the old way, so a prompt gateway rollout is what keeps that set small.
 
 ## Model price rates
 
@@ -263,5 +284,6 @@ A [log erasure](/observability/log-erasure) now also deletes (or, for `include_l
 
 1. Back up the control-plane database, and confirm you have `ROLTER_KEK` outside it.
 2. Run `rolter check --config rolter.toml --migrations` with the **new** binary and read the plan.
-3. Roll out. Config migrates in memory on start; database migrations apply on the control plane's start.
-4. Confirm the gateway serves traffic and the dashboard lists your providers.
+3. Roll out the control plane, then the gateways ([Upgrade order](#upgrade-order)). Config migrates in memory on start; database migrations apply on the control plane's start.
+4. Confirm the gateways serve traffic and the dashboard lists your providers.
+5. Only now turn on what the release introduces.

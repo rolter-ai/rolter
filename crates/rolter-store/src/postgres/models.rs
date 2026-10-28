@@ -544,6 +544,14 @@ pub struct ClusterNode {
     pub state_changed_at: DateTime<Utc>,
     pub first_seen_at: DateTime<Utc>,
     pub last_seen_at: DateTime<Utc>,
+    /// the oldest snapshot format the node stated it reads on its last poll
+    /// that stated one; 1 for a node from before negotiation (ADR-0038)
+    pub formats_min: i32,
+    /// the newest snapshot format the node stated it reads
+    pub formats_max: i32,
+    /// the format the node's last poll was answered in, or `None` when that
+    /// poll was refused for its format (or predates this column)
+    pub served_format: Option<i32>,
 }
 
 /// the latest adaptive-routing state one node reported for one route (#751).
