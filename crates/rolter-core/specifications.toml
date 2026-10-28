@@ -460,7 +460,7 @@ conformance = "native-passthrough"
 modules = ["crates/rolter-core/src/upstream.rs"]
 supported = [
   "the OpenAI-compatible `/v1/embeddings` route, and `/health` as the liveness probe",
-  "every other endpoint but `/v1/rerank` refused with `400 unsupported_endpoint` before the upstream on a route that reaches only embedding servers",
+  "every other endpoint, `/v1/rerank` included (TEI has no rerank mapping), refused with `400 unsupported_endpoint` before the upstream on a route that reaches only embedding servers, none of them Infinity",
 ]
 tests = [
   "crates/rolter-gateway/tests/tei.rs",

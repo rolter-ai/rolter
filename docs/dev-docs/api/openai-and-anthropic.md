@@ -312,11 +312,12 @@ Which routes answer which endpoint follows the provider kinds behind them
   `400 unsupported_endpoint`;
 - any other endpoint for a route whose targets are all `system_one` is refused
   the same way, naming `/v1/systemone`;
-- any endpoint but `/v1/embeddings` and `/v1/rerank` for a route whose targets
-  are all text-embeddings servers (`tei`, `infinity`; `ProviderKind::embeddings_only`)
+- any endpoint but `/v1/embeddings` for a route whose targets are all
+  text-embeddings servers (`tei`, `infinity`; `ProviderKind::embeddings_only`)
   is refused the same way, naming `/v1/embeddings`, without calling the
-  upstream (#3247), which also turns the route's `rolter_capabilities.chat`
-  in `GET /v1/models` to `false`;
+  upstream (#3247), and so is `/v1/rerank` unless one of them is `infinity`,
+  the only one with a rerank mapping; this also turns the route's
+  `rolter_capabilities.chat` in `GET /v1/models` to `false`;
 - a route that mixes decision and chat targets balances as usual.
 
 Pre-call guardrails scan every string in `state` and in each question's

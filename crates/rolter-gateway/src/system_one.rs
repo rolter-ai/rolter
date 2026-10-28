@@ -19,7 +19,7 @@ use std::collections::HashMap;
 
 use axum::http::StatusCode;
 use rolter_core::upstream::{EMBEDDINGS_PATH, RERANK_PATH, SYSTEM_ONE_PATH};
-use rolter_core::{ModelRoute, ProviderConfig};
+use rolter_core::{ModelRoute, ProviderConfig, ProviderKind};
 
 use crate::error::ApiError;
 
@@ -61,16 +61,24 @@ pub(crate) fn endpoint_refusal(
         );
     }
     // the iterator is only peeked above, so it is walked once per question
-    let (decision_only, embeddings_only) = kinds.fold((true, true), |(d, e), kind| {
-        (d && kind.decision_only(), e && kind.embeddings_only())
-    });
-    if embeddings_only && path != EMBEDDINGS_PATH && path != RERANK_PATH {
+    let (decision_only, embeddings_only, reranks) =
+        kinds.fold((true, true, false), |(d, e, r), kind| {
+            (
+                d && kind.decision_only(),
+                e && kind.embeddings_only(),
+                r || kind == ProviderKind::Infinity,
+            )
+        });
+    // of the embedding servers only infinity has a rerank mapping; a tei
+    // server would answer the gateway's `/v1/rerank` with a 404
+    let answers = |path: &str| path == EMBEDDINGS_PATH || (path == RERANK_PATH && reranks);
+    if embeddings_only && !answers(path) {
         return Some(
             ApiError::new(
                 StatusCode::BAD_REQUEST,
                 format!(
                     "model '{model}' is an embedding model and only answers POST \
-                     {EMBEDDINGS_PATH} (and {RERANK_PATH} where its server reranks)"
+                     {EMBEDDINGS_PATH} (and {RERANK_PATH} on an infinity server)"
                 ),
             )
             .with_code("unsupported_endpoint")
@@ -148,7 +156,12 @@ mod tests {
             let providers = providers(&[("embed", kind), ("embed-2", kind)]);
             let route = route(&["embed", "embed-2"]);
             assert!(!refused(EMBEDDINGS_PATH, &route, &providers), "{kind:?}");
-            assert!(!refused(RERANK_PATH, &route, &providers), "{kind:?}");
+            // only infinity maps rerank; tei would answer the path with a 404
+            assert_eq!(
+                refused(RERANK_PATH, &route, &providers),
+                kind == ProviderKind::Tei,
+                "{kind:?}"
+            );
             for path in [
                 "/v1/chat/completions",
                 "/v1/completions",
@@ -162,9 +175,11 @@ mod tests {
                 assert!(refused(path, &route, &providers), "{kind:?} {path}");
             }
         }
-        // tei and infinity together are still embedding-only
+        // tei and infinity together are still embedding-only, and rerank goes
+        // through since a target can serve it
         let providers = providers(&[("tei", ProviderKind::Tei), ("inf", ProviderKind::Infinity)]);
         let route = route(&["tei", "inf"]);
+        assert!(!refused(RERANK_PATH, &route, &providers));
         let body = endpoint_refusal("/v1/messages", &route, &providers)
             .expect("refused")
             .body();

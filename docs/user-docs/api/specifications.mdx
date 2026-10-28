@@ -230,7 +230,7 @@ response payload.
 `hf-tei` · Hugging Face · [primary source](https://huggingface.co/docs/text-embeddings-inference/index)
 
 - **Supported:** the OpenAI-compatible `/v1/embeddings` route, and `/health` as the liveness probe
-- **Supported:** every other endpoint but `/v1/rerank` refused with `400 unsupported_endpoint` before the upstream on a route that reaches only embedding servers
+- **Supported:** every other endpoint, `/v1/rerank` included (TEI has no rerank mapping), refused with `400 unsupported_endpoint` before the upstream on a route that reaches only embedding servers, none of them Infinity
 - **Evidence:** `crates/rolter-gateway/tests/tei.rs`<br />`crates/rolter-gateway/tests/embedding_only.rs`
 
 #### System One decision API
