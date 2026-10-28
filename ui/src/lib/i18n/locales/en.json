@@ -633,7 +633,7 @@
       "overridesTargets": "While this route has variants, its targets above are not used. Remove every variant to route through them again.",
       "previewLabel": "Traffic split",
       "previewPending": "Enter a whole-number weight for every variant to see the split.",
-      "zeroWeight": "A weight of 0, which an import from rolter.toml can store, is sampled as 1 by the gateway, so that variant takes the share shown here. Set 1 or more to save.",
+      "zeroWeight": "A weight of 0, which an import from rolter.toml can store, gets no first attempts while another variant has a weight above 0, and is only tried after the others fail. If every weight is 0, the variants share traffic equally. Set 1 or more to save.",
       "unnamed": "Variant {{n}}",
       "nameAria": "Variant {{n}} name",
       "namePlaceholder": "canary",

@@ -239,7 +239,7 @@ async fn a_variant_edit_reaches_the_snapshot() {
 }
 
 /// The write refuses what the gateway could not route as written: a negative
-/// weight, a weight of 0 (sampled as 1 until #3341), a variant with no target, and a target on
+/// weight, a weight of 0 (the API writes 1 or more), a variant with no target, and a target on
 /// a provider that is not the route's org's. Each refusal names its field, and
 /// none of them writes anything.
 #[tokio::test]

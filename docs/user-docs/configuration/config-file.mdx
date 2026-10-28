@@ -262,7 +262,7 @@ Multiple weighted API keys for one provider. When present, this list takes prece
 </ParamField>
 
 <ParamField path="weight" default="1" type="integer">
-  Relative selection share when balancing across keys.
+  Relative selection share when balancing across keys. A key with weight `0` is not picked while another key has a positive weight; if every key has weight `0`, they are picked equally.
 </ParamField>
 
 <Note>
@@ -479,7 +479,7 @@ Variants replace the top-level `targets`/`strategy` pool when you want A/B, cana
 </ParamField>
 
 <ParamField path="weight" default="1" type="u32">
-  The relative traffic share for this variant in the primary draw.
+  The relative traffic share for this variant in the primary draw. A variant with weight `0` gets no first attempts while another variant has a positive weight, and is still tried in declared order when the variants before it fail. If every weight is `0`, the variants share first attempts equally.
 </ParamField>
 
 <ParamField path="targets" type="array" required>
