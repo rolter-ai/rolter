@@ -155,6 +155,7 @@ fn config(upstream: SocketAddr, clickhouse: SocketAddr, org: &str) -> GatewayCon
             provider: "up".into(),
             model: Some("test-model".into()),
             weight: 1,
+            takes_over: Vec::new(),
         }],
         params: Default::default(),
         param_policy: Default::default(),
@@ -164,6 +165,7 @@ fn config(upstream: SocketAddr, clickhouse: SocketAddr, org: &str) -> GatewayCon
         tenancy: None,
     });
     config.db_virtual_keys.push(VirtualKeyRecord {
+        previous: None,
         access_policy: None,
         key_hash: rolter_auth::hash_key(&config.server.resolve_key_pepper(), KEY),
         id: format!("key-{org}"),
@@ -617,6 +619,7 @@ async fn a_retried_then_blocked_answer_is_billed_once() {
             provider: "down".into(),
             model: Some("test-model".into()),
             weight: 1,
+            takes_over: Vec::new(),
         },
     );
     let gw = gateway(&config, None).await;

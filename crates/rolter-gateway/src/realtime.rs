@@ -174,6 +174,33 @@ pub async fn realtime(
     // session opens only while every budget it draws on has room left, and
     // only for a model this deployment is willing to serve unpriced
     let scope = request_scope(virtual_key.as_ref());
+    // a `post_call` semantic guardrail provider judges a whole response, and a
+    // realtime session is never one: refused here rather than relayed with
+    // the response policy skipped, whatever the policy's `streaming` says,
+    // since a session cannot be buffered (#459, ADR-0037)
+    if let Some(policy) = snap
+        .semantic_guards
+        .resolve(&crate::semantic_guards::policy_request(
+            &scope,
+            &entry.route.model,
+        ))
+        .filter(|policy| policy.runs_at(rolter_core::WebhookStage::PostCall))
+    {
+        state
+            .metrics
+            .guardrail_stream_rejections_total
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        return crate::error::ApiError::new(
+            StatusCode::BAD_REQUEST,
+            format!(
+                "the guardrail policy '{}' checks responses, which cannot be applied to a \
+                 realtime session; use a non-realtime endpoint",
+                policy.label()
+            ),
+        )
+        .with_code("guardrail_streaming_unsupported")
+        .into_response();
+    }
     if let Some(refusal) = budget_refusal(&state, &snap, &scope).await {
         return refusal;
     }
@@ -406,6 +433,9 @@ fn realtime_candidates<'a>(
             model,
             snap.cooldown.enabled(),
             key_meta,
+            // the candidate list is ordered before any attempt fails, so a
+            // restricted fallback is never on it (#1584)
+            None,
         ) {
             entry.balancer.observe(index, context);
             tried.push(index);
@@ -442,6 +472,7 @@ fn realtime_candidates<'a>(
             .filter(|&index| {
                 let target = &variant.targets[index];
                 key_meta.is_none_or(|key| key.provider_allowed(&target.provider))
+                    && !target.is_restricted()
                     && (!snap.cooldown.enabled() || !state.cooldowns.is_parked(&namespace, index))
                     && state.health.is_healthy(&target.provider)
                     && state.breaker.allows(&namespace, index)
@@ -453,7 +484,9 @@ fn realtime_candidates<'a>(
             .iter()
             .copied()
             .filter(|&index| {
-                key_meta.is_none_or(|key| key.provider_allowed(&variant.targets[index].provider))
+                let target = &variant.targets[index];
+                key_meta.is_none_or(|key| key.provider_allowed(&target.provider))
+                    && !target.is_restricted()
             })
             .collect();
         for index in if available.is_empty() {

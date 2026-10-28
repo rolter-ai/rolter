@@ -660,6 +660,18 @@ fn mixed_decision_route_findings(config: &rolter_core::GatewayConfig) -> Vec<Fin
         .collect()
 }
 
+/// Every route whose `takes_over` sets the gateway would refuse at startup,
+/// above all one whose every target is restricted and so could never dial
+/// anything (#1584).
+fn takes_over_findings(config: &rolter_core::GatewayConfig) -> Vec<Finding> {
+    config
+        .routes
+        .iter()
+        .flat_map(|route| route.takes_over_problems())
+        .map(|detail| Finding::error("route fallback targets cannot be served", detail))
+        .collect()
+}
+
 /// Render the migration plan for a config file, and the finding that goes with it.
 ///
 /// This is a preview, not an action: nothing is written, here or at load time.
@@ -764,6 +776,7 @@ pub async fn run(args: CheckArgs) -> anyhow::Result<()> {
                 findings.extend(example_key_findings(&config));
                 findings.extend(project_scoped_findings(&config));
                 findings.extend(mixed_decision_route_findings(&config));
+                findings.extend(takes_over_findings(&config));
             }
             Err(error) => findings.push(Finding::error(
                 format!("config file {path} is not usable"),
@@ -784,6 +797,32 @@ pub async fn run(args: CheckArgs) -> anyhow::Result<()> {
 mod tests {
     use super::*;
     use std::collections::HashMap;
+
+    /// #1584: `rolter check` refuses a route whose every target is a
+    /// restricted fallback, by the name the gateway's own validation uses.
+    #[test]
+    fn a_route_of_only_restricted_targets_is_an_error() {
+        let config = rolter_core::GatewayConfig::from_toml_str(
+            r#"
+[[providers]]
+name = "premium"
+kind = "openai"
+api_base = "https://api.openai.com"
+
+[[routes]]
+model = "stranded"
+[[routes.targets]]
+provider = "premium"
+takes_over = ["refusal"]
+"#,
+        )
+        .expect("parses");
+        let findings = takes_over_findings(&config);
+        assert_eq!(findings.len(), 1);
+        let (text, failed) = report(&findings, false);
+        assert!(failed, "{text}");
+        assert!(text.contains("all_targets_restricted"), "{text}");
+    }
 
     #[derive(Default)]
     struct FakeEnv(HashMap<String, String>);

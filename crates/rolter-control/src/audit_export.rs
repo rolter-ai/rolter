@@ -26,6 +26,7 @@ use rolter_store::postgres::repo::{
     AuditLogCursor, AuditLogDirection, AuditLogFilter, AuditLogRepo, OrgRepo, UserRepo,
 };
 
+use crate::analytics_export::csv_cell;
 use crate::crud::{normalized_filter, pool, ApiError, ApiResult};
 use crate::rbac::{authorize, authorize_superadmin, Principal, ScopeChain};
 use crate::rbac_matrix::{cap, superadmin_cap};
@@ -159,22 +160,6 @@ impl ExportRow {
                 other => other.to_string(),
             },
         ]
-    }
-}
-
-/// One CSV field. A spreadsheet runs a cell that starts with `=`, `+`, `-`, `@`,
-/// a tab or a carriage return as a formula, and a target id or an e-mail is
-/// typed by someone other than the reader, so such a cell gets a leading `'`.
-/// Kept identical to `cell` in `ui/src/lib/audit-export.ts`.
-fn csv_cell(value: &str) -> String {
-    let mut text = value.to_string();
-    if text.starts_with(['=', '+', '-', '@', '\t', '\r']) {
-        text.insert(0, '\'');
-    }
-    if text.contains(['"', ',', '\r', '\n']) {
-        format!("\"{}\"", text.replace('"', "\"\""))
-    } else {
-        text
     }
 }
 

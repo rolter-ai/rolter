@@ -44,6 +44,18 @@ screen — the state arrives on the `/internal/snapshot` response the gateway
 already polls. A drained gateway therefore leaves the Service and finishes
 its in-flight requests, instead of being killed with them in progress.
 
+It also answers `503` with the body `snapshot_format_unsupported` while it has
+**never** applied a snapshot and the control plane's last answer was a format
+it cannot read (ADR-0038, `AppState::unready_for_snapshot_format`). Such a pod
+serves its bootstrap file and refuses every key, so removing it from the
+Service costs nothing, and it is what holds a Kubernetes rollout whose new
+gateways start before a new control plane: the new pod never becomes ready, so
+the old ones keep serving. A gateway that _has_ applied a snapshot stays ready
+on a refusal and keeps its last config, since flipping it would turn one
+out-of-order control-plane upgrade into an outage of every gateway at once;
+`rolter_snapshot_format_refused` is the signal for that case. `draining` wins
+when both hold.
+
 ### Control plane
 
 Returns a JSON body describing each check:
@@ -103,13 +115,14 @@ The probe polls the gateway's `/readyz` through the control plane's `/gw/*` prox
 
 `readinessFrom` in `ui/src/lib/gateway.ts` reads the answer strictly:
 
-| Answer                                                    | Pill                                |
-| --------------------------------------------------------- | ----------------------------------- |
-| `200` with the body `ok`                                  | healthy (green dot, breathing)      |
-| `503` with the body `draining`                            | degraded: "gateway draining", amber |
-| `502` with the proxy's own `{"error":{"message":…}}` body | down: "gateway unreachable", red    |
-| anything else, a network error, or no answer within 10 s  | unknown, grey                       |
-| no answer yet                                             | checking, grey                      |
+| Answer                                                    | Pill                                            |
+| --------------------------------------------------------- | ----------------------------------------------- |
+| `200` with the body `ok`                                  | healthy (green dot, breathing)                  |
+| `503` with the body `draining`                            | degraded: "gateway draining", amber             |
+| `503` with the body `snapshot_format_unsupported`         | unknown, grey, until the pill learns it (#3350) |
+| `502` with the proxy's own `{"error":{"message":…}}` body | down: "gateway unreachable", red                |
+| anything else, a network error, or no answer within 10 s  | unknown, grey                                   |
+| no answer yet                                             | checking, grey                                  |
 
 A `200` that is not `ok` is an SPA fallback in front of the control plane, and
 a `502` that is not the proxy's JSON comes from an ingress that could not reach
@@ -163,3 +176,7 @@ a wedged process. Tune the periods under `control.probes` in `values.yaml`.
 - **`/healthz` flapping** — the process itself is crashing or wedging. Page.
 - **`/readyz` down on a _single_ gateway** — usually just a drained instance,
   which is expected during a rolling update. Do not page on this alone.
+- **`rolter_snapshot_format_refused` at `1`** — a gateway leads its control
+  plane, or its format was retired. It keeps its last config but stops
+  receiving changes, revocations included. Ticket, and page if it lasts past a
+  rollout.

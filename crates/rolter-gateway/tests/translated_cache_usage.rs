@@ -176,6 +176,7 @@ fn config(kind: ProviderKind, upstream: SocketAddr, clickhouse: SocketAddr) -> G
             provider: "up".into(),
             model: Some("test-model".into()),
             weight: 1,
+            takes_over: Vec::new(),
         }],
         params: Default::default(),
         param_policy: Default::default(),
@@ -185,6 +186,7 @@ fn config(kind: ProviderKind, upstream: SocketAddr, clickhouse: SocketAddr) -> G
         tenancy: None,
     });
     config.db_virtual_keys.push(VirtualKeyRecord {
+        previous: None,
         access_policy: None,
         key_hash: rolter_auth::hash_key(&config.server.resolve_key_pepper(), &key()),
         id: KEY_ID.into(),

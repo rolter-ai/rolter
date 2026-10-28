@@ -166,6 +166,8 @@ struct Op {
     /// when this operation can answer `409`, what that refusal means, naming
     /// the stable `error.code` where it carries one
     conflict: Option<&'static str>,
+    /// when this operation can answer `406`, what that refusal means
+    not_acceptable: Option<&'static str>,
     /// a ClickHouse-backed read, which can answer `502` or `504`
     clickhouse: bool,
     /// seals a credential with `ROLTER_KEK`, so it can answer `503`
@@ -192,6 +194,7 @@ impl Op {
             public: false,
             see_other: None,
             conflict: None,
+            not_acceptable: None,
             clickhouse: false,
             needs_kek: false,
         }
@@ -245,6 +248,11 @@ impl Op {
 
     fn conflict(mut self, description: &'static str) -> Self {
         self.conflict = Some(description);
+        self
+    }
+
+    fn not_acceptable(mut self, description: &'static str) -> Self {
+        self.not_acceptable = Some(description);
         self
     }
 
@@ -315,6 +323,12 @@ impl Op {
                 json!({"$ref": "#/components/responses/Error", "description": description}),
             );
         }
+        if let Some(description) = self.not_acceptable {
+            responses.insert(
+                "406".into(),
+                json!({"$ref": "#/components/responses/Error", "description": description}),
+            );
+        }
         if self.needs_kek {
             responses.insert(
                 "503".into(),
@@ -371,6 +385,26 @@ const UNTIL: QueryParam = QueryParam::new(
     "exclusive upper bound, in the same forms as `since`; defaults to now, and a value that \
      does not parse is a 400",
 );
+
+/// What a gateway sends on every snapshot poll (ADR-0038).
+const SNAPSHOT_QUERY: &[QueryParam] = &[
+    QueryParam::new(
+        "version",
+        "integer",
+        "the config version the caller already holds; when it is current the answer is a \
+         bodyless `304`",
+    ),
+    QueryParam::new(
+        "formats",
+        "string",
+        "the snapshot formats the caller reads, as one format (`1`) or an inclusive range \
+         (`1-2`); absent means format 1 only. The reply's `format` names the one served, and \
+         a value that does not parse is a 400 `invalid_query`",
+    ),
+];
+
+/// the `406` the snapshot answers when it cannot serve the caller's formats
+const SNAPSHOT_406: &str = "error.code `snapshot_format_unsupported`: the control plane serves no snapshot format the caller reads, also when its `version` is current; or `snapshot_format_inexpressible`: the formats overlap, but the config holds a setting the older format cannot carry. `served` and `requested` give both ranges";
 
 /// The org-wide access profile assignment list: narrow it to one subject.
 const ASSIGNMENT_SUBJECT_QUERY: &[QueryParam] = &[
@@ -924,7 +958,9 @@ fn operations() -> Vec<Op> {
                 "/internal/snapshot",
                 "getSnapshot",
                 "The config snapshot the gateway polls",
-            ),
+            )
+            .query(SNAPSHOT_QUERY)
+            .not_acceptable(SNAPSHOT_406),
             Op::post(
                 "/internal/adaptive-telemetry",
                 "ingestAdaptiveTelemetry",
@@ -1493,6 +1529,10 @@ fn operations() -> Vec<Op> {
                 "/api/v1/route-targets/{id}",
                 "deleteRouteTarget",
                 "Remove an upstream target from a route",
+            )
+            .conflict(
+                "removing the target would leave the route only targets that set `takes_over`, \
+                 which could never be dialled first (`all_targets_restricted`)",
             ),
         ],
     ));
@@ -1546,6 +1586,21 @@ fn operations() -> Vec<Op> {
             )
             .body(Payload::Ref("SetVirtualKeyCache"))
             .ok(Payload::Ref("VirtualKey")),
+            Op::post(
+                "/api/v1/virtual-keys/{id}/rotate",
+                "rotateVirtualKey",
+                "Issue a new secret for a shared key, optionally keeping the old one valid for an overlap",
+            )
+            .body(Payload::Ref("RotateVirtualKey"))
+            .ok(Payload::Ref("CreatedVirtualKey"))
+            .conflict("the key is personal: the member who minted it rotates it from Account"),
+            Op::delete(
+                "/api/v1/virtual-keys/{id}/previous-secret",
+                "revokeVirtualKeyPreviousSecret",
+                "End a rotation's overlap now so the old secret stops authenticating",
+            )
+            .ok(Payload::Ref("VirtualKey"))
+            .conflict("the key is personal: the member who minted it manages its secrets"),
         ],
     ));
 
@@ -1868,7 +1923,7 @@ fn operations() -> Vec<Op> {
             Op::get(
                 "/api/v1/guardrails/effective",
                 "getEffectiveGuardrails",
-                "Read the guardrail rules and webhook the gateways run, each with where it comes from (config file or dashboard row)",
+                "Read the guardrail rules, semantic guardrail providers and policies the gateways run, each with where it comes from (config file or dashboard row)",
             ),
             Op::get(
                 "/api/v1/guardrails/providers",
@@ -1889,6 +1944,29 @@ fn operations() -> Vec<Op> {
                 "/api/v1/guardrails/providers/{id}",
                 "deleteGuardrailProvider",
                 "Delete a guardrail provider",
+            )
+            .conflict("a guardrail policy still lists the provider"),
+            Op::get(
+                "/api/v1/guardrails/policies",
+                "listGuardrailPolicies",
+                "List scoped semantic guardrail policies, narrowest scope first",
+            ),
+            Op::post(
+                "/api/v1/guardrails/policies",
+                "createGuardrailPolicy",
+                "Create a guardrail policy scoped to the deployment, an org, a project, a route or a virtual key",
+            )
+            .conflict("a policy of that name, or an enabled policy for the same scope, already exists"),
+            Op::put(
+                "/api/v1/guardrails/policies/{id}",
+                "updateGuardrailPolicy",
+                "Replace a guardrail policy and its ordered provider list",
+            )
+            .conflict("a policy of that name, or an enabled policy for the same scope, already exists"),
+            Op::delete(
+                "/api/v1/guardrails/policies/{id}",
+                "deleteGuardrailPolicy",
+                "Delete a guardrail policy",
             ),
             Op::post(
                 "/api/v1/guardrails/providers/test",
@@ -2174,12 +2252,12 @@ fn operations() -> Vec<Op> {
             Op::get(
                 "/api/v1/alert-channels",
                 "listAlertChannels",
-                "List alert channels",
+                "List the alert channels the caller may use: their orgs' and the deployment's",
             ),
             Op::post(
                 "/api/v1/alert-channels",
                 "createAlertChannel",
-                "Create an alert channel",
+                "Create an alert channel, owned by an org (org admin) or the deployment (superadmin)",
             )
             .needs_kek(),
             Op::put(
@@ -2193,11 +2271,15 @@ fn operations() -> Vec<Op> {
                 "deleteAlertChannel",
                 "Delete an alert channel",
             ),
-            Op::get("/api/v1/alert-rules", "listAlertRules", "List alert rules"),
+            Op::get(
+                "/api/v1/alert-rules",
+                "listAlertRules",
+                "List the alert rules the caller owns",
+            ),
             Op::post(
                 "/api/v1/alert-rules",
                 "createAlertRule",
-                "Create an alert rule",
+                "Create an alert rule scoped to an org, team, project, key, business unit or customer",
             ),
             Op::put(
                 "/api/v1/alert-rules/{id}",
@@ -2269,7 +2351,32 @@ fn operations() -> Vec<Op> {
                  `cache_write_1h_tokens`, `guardrail_events` (an array of strings, one per guardrail \
                  action) and `plugin_events` (the same for plugin calls) come from ClickHouse files an operator applies by hand \
                  (`clickhouse/015` to `019`): on a table that lacks one the field is still on every row, \
-                 as `0` (an empty string for `lifecycle_operation`), and the list does not fail",
+                 as `0` (an empty string for `lifecycle_operation`), and the list does not fail. \
+                 `fallback_reason` (`clickhouse/023`) is the failure class that sent the request on to \
+                 the target that answered it (`throttled`, `timeout`, `transport`, `server_error`, \
+                 `refusal` or `refusal:<category>`), and an empty string when the first dial answered, \
+                 for a row older than the column, or on a table that lacks it",
+            )
+            .clickhouse_read()
+            .query(INVOCATIONS_QUERY),
+            Op::get(
+                "/api/v1/analytics/by-attribution/export",
+                "exportAnalyticsByAttribution",
+                "The attribution rollup as CSV for a window, flagging totals that hold unpriced requests; the file name carries the window and currency",
+            )
+            .clickhouse_read()
+            .query(ATTRIBUTION_QUERY),
+            Op::get(
+                "/api/v1/analytics/timeseries/export",
+                "exportAnalyticsTimeseries",
+                "Requests, tokens and cost per bucket as CSV, flagging buckets that hold unpriced requests",
+            )
+            .clickhouse_read()
+            .query(DASHBOARD_QUERY),
+            Op::get(
+                "/api/v1/analytics/invocations/export",
+                "exportInvocations",
+                "Stream the request log as CSV, metadata only (never bodies or error text), under the same row scoping as the JSON list; `limit` and `cursor` are ignored",
             )
             .clickhouse_read()
             .query(INVOCATIONS_QUERY),
@@ -3775,6 +3882,11 @@ fn routing_schemas(p: &Prim) -> Value {
                 "id": uuid, "route_id": uuid, "provider_id": uuid,
                 "upstream_model": nullable_string,
                 "weight": {"type": "integer"},
+                "takes_over": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "the failure classes this target is a fallback for; empty for an ordinary member of the pool. A target with classes is never dialled first and is tried only after another target failed with one of them"
+                },
                 "created_at": timestamp
             }
         },
@@ -3849,7 +3961,16 @@ fn routing_schemas(p: &Prim) -> Value {
             "properties": {
                 "provider_id": uuid,
                 "upstream_model": {"type": ["string", "null"], "description": "the model name sent upstream; omitted, null or blank forwards the route's public name"},
-                "weight": {"type": "integer", "default": 1, "minimum": 1}
+                "weight": {"type": "integer", "default": 1, "minimum": 1},
+                "takes_over": {
+                    "type": "array",
+                    "default": [],
+                    "items": {
+                        "type": "string",
+                        "pattern": "^(throttled|timeout|transport|server_error|refusal(:[a-z0-9_-]{1,64})?)$"
+                    },
+                    "description": "the failure classes this target takes over (`throttled`, `timeout`, `transport`, `server_error`, `refusal` or `refusal:<category>`), each at most once. A target with classes is never dialled first and is tried only after another target failed with one of them. A route may not be left with only such targets: that is refused naming `all_targets_restricted`"
+                }
             },
             "additionalProperties": false
         }
@@ -3881,7 +4002,9 @@ fn virtual_key_schemas(p: &Prim) -> Value {
                 "created_by": nullable_uuid,
                 "business_unit_id": nullable_uuid,
                 "customer_id": nullable_uuid,
-                "created_at": timestamp
+                "created_at": timestamp,
+                "previous_key_prefix": {"type": ["string", "null"], "description": "first characters of the secret an admin rotation replaced, while its overlap is open"},
+                "previous_expires_at": {"type": ["string", "null"], "format": "date-time", "description": "when the replaced secret stops authenticating; null when no overlap is running"}
             }
         },
         "CreatedVirtualKey": {
@@ -3942,6 +4065,14 @@ fn virtual_key_schemas(p: &Prim) -> Value {
             "type": "object",
             "required": ["disabled"],
             "properties": {"disabled": {"type": "boolean"}},
+            "additionalProperties": false
+        },
+        "RotateVirtualKey": {
+            "type": "object",
+            "description": "the body may be omitted, which rotates with no overlap",
+            "properties": {
+                "overlap_seconds": {"type": "integer", "minimum": 0, "maximum": 2592000, "description": "how long the replaced secret keeps authenticating; 0 or omitted ends it at once"}
+            },
             "additionalProperties": false
         },
         "SetVirtualKeyCache": {
@@ -4892,12 +5023,6 @@ mod tests {
             "/scim/v2/Groups",
             "get",
             "same: RFC 7644 defines this query string",
-        ),
-        (
-            "/internal/snapshot",
-            "get",
-            "control-plane to data-plane only; `version` is the 304 short-circuit \
-             the gateway sends back, not a public knob",
         ),
         (
             "/auth/mcp/callback",

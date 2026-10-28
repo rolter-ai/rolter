@@ -9,7 +9,7 @@ import {
   confirmDestructive,
   expectAllowed,
   expectClosesWithoutPrompting,
-  expectForbidden,
+  openOptions,
   expectSheetClosed,
   expectListTable,
   expectLoadError,
@@ -2333,46 +2333,67 @@ export const RulesMobile: Story = {
 
 // The rules and the history refused before they ask (#1606).
 //
-// Every alerting resource is superadmin-only, so all three screens carry a
-// `superadminOnly` wrapper. The channels' wrapper is covered in
-// `CapabilityGating.stories.tsx`; these two are not, and their `Forbidden`
-// stories stub the 403 themselves — the old path — so they pass whether the
-// wrapper is there or not. These stubs answer with a good payload instead, so
-// the screen renders it and the story fails the moment the wrapper is dropped.
-export const RulesRefusedToAnAdmin: Story = {
+// Alerting is delegated (#1829): an org, team or project admin owns the rules
+// and channels of their own scope, so the screens are no longer behind a
+// superadmin-only wrapper. A caller who owns nothing is refused by the control
+// plane, which `Forbidden` above covers with the 403 it really answers.
+export const RulesAreAnAdminsToo: Story = {
   render: () => (
     <Harness fetchStub={loaded} role="admin">
       <AlertRules />
     </Harness>
   ),
-  play: async ({ canvasElement }) => expectForbidden(canvasElement),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByText("high error rate")).toBeVisible();
+    // a rule with no scope reads the whole deployment, and says so
+    await expect((await canvas.findAllByText("Whole deployment")).length).toBeGreaterThan(0);
+  },
 };
 
-export const RulesRefusedToAViewer: Story = {
-  render: () => (
-    <Harness fetchStub={loaded} role="viewer">
-      <AlertRules />
-    </Harness>
-  ),
-  play: async ({ canvasElement }) => expectForbidden(canvasElement),
-};
-
-export const HistoryRefusedToAnAdmin: Story = {
+export const HistoryIsAnAdminsToo: Story = {
   render: () => (
     <Harness fetchStub={loaded} role="admin" route="/alerting-history">
       <HistoryScreen />
     </Harness>
   ),
-  play: async ({ canvasElement }) => expectForbidden(canvasElement),
+  play: async ({ canvasElement }) => {
+    await expect(await within(canvasElement).findByRole("table")).toBeVisible();
+  },
 };
 
-export const HistoryRefusedToAViewer: Story = {
+// a scoped admin cannot create a deployment-wide rule, so the sheet does not
+// offer one and sends the scope it opened on
+const adminRuleCreates = recording(
+  scoped(async (input, init) => {
+    if (init?.method === "POST") return json(RULES[0], 201);
+    return String(input).includes("/alert-channels") ? json(CHANNELS) : json(RULES);
+  }),
+);
+
+export const AnAdminsRuleIsCreatedOnAScopeNotTheDeployment: Story = {
   render: () => (
-    <Harness fetchStub={loaded} role="viewer" route="/alerting-history">
-      <HistoryScreen />
+    <Harness fetchStub={adminRuleCreates.stub} role="admin">
+      <AlertRules />
     </Harness>
   ),
-  play: async ({ canvasElement }) => expectForbidden(canvasElement),
+  play: async ({ canvasElement }) => {
+    await clickWhenEnabled(canvasElement, /add rule/i);
+    const form = sheet();
+    await userEvent.type(within(form).getByLabelText("Name"), "team errors");
+    const offered = await openOptions(within(form).getByLabelText("Watches"));
+    await expect(within(offered).queryByRole("option", { name: "Whole deployment" })).toBeNull();
+    await expect(within(offered).getByRole("option", { name: "Team" })).toBeVisible();
+    await userEvent.click(within(offered).getByRole("option", { name: "Team" }));
+    await pickOption(within(form).getByLabelText("Scope"), /./);
+    await userEvent.click(within(form).getByRole("button", { name: "Create" }));
+    const body = await adminRuleCreates.expectSentBody<{ scope_type?: string; scope_id?: string }>(
+      "POST",
+      "/alert-rules",
+    );
+    await expect(body.scope_type).toBe("team");
+    await expect(typeof body.scope_id).toBe("string");
+  },
 };
 
 // the comparison and the no-data policy (#2423)

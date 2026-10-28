@@ -72,4 +72,4 @@ Do not fix this by linting the migrated document. The paths the lint prints are 
 
 ## Not covered here
 
-The control-plane-to-gateway snapshot carries `config_version`, a change counter, not a format version — so a mixed-version fleet during a rolling upgrade has no negotiation. That is #1512, with its own ADR.
+The control-plane-to-gateway snapshot is the other half of #326, and it made the opposite choice. Its `version` is a change counter, so the payload also carries a `format` integer, and the gateway states the formats it reads in `formats=N` on every poll ([ADR-0038](../adr/2026-10-27-snapshot-format-version.md), #1512). A mismatch is refused with `406` rather than loaded with a warning, because a refused snapshot costs staleness (the gateway keeps the config it last applied) where a refused file would cost the process. Where `config_migrate` steps a file _up_ to the running build, the snapshot's `DownStep` chain in `rolter_core::snapshot_format` steps the control plane's config _down_ to what an older gateway reads, so conversion runs where the database is and never in a gateway. See [Configuration & hot reload](config-and-hot-reload.md#snapshot-format).

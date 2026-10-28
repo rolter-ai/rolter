@@ -25,6 +25,7 @@ import { SavedViews } from "@/components/SavedViews";
 import { ListSkeleton } from "@/components/LoadingState";
 import { Badge, HttpStatusBadge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { ExportCsvButton } from "@/components/ExportCsvButton";
 import { CodeBlock } from "@/components/ui/code-block";
 import { Combobox } from "@/components/ui/combobox";
 import { CopyableText } from "@/components/ui/copyable-value";
@@ -34,6 +35,7 @@ import { Segmented } from "@/components/ui/segmented";
 import { Sheet, SheetBody, SheetHeader } from "@/components/ui/sheet";
 import {
   AnalyticsUnavailableError,
+  exportInvocationsCsv,
   fetchInvocationsPage,
   fetchLoggingSettings,
   fetchVirtualKeys,
@@ -964,6 +966,27 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
             {feed.label}
           </span>
           <div className="ml-auto flex flex-wrap items-center gap-2">
+            {/* the whole filtered log as a file, read by the control plane rather
+                than by paging here; a lookup is one request, not a report */}
+            {!lookup && (
+              <ExportCsvButton
+                what={t("errors.resources.requestLogExport")}
+                fallbackName="request-log.csv"
+                run={() =>
+                  exportInvocationsCsv({
+                    ...windowBounds(logWindow),
+                    model: model || undefined,
+                    key: keyId || undefined,
+                    business_unit: unitSel.length ? unitSel : undefined,
+                    customer: customerSel.length ? customerSel : undefined,
+                    unpriced: unpriced || undefined,
+                    guardrail: guardrail || undefined,
+                    plugin: plugin || undefined,
+                    status,
+                  })
+                }
+              />
+            )}
             {/* a lookup does not stream, so there is nothing to pause */}
             {!lookup && (
               <Button size="sm" variant="outline" onClick={() => setStreaming((v) => !v)}>
