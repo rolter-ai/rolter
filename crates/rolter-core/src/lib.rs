@@ -30,9 +30,11 @@ pub mod probe;
 pub mod prompt_templates;
 pub mod redact;
 pub mod secret_env;
+pub mod semantic_guards;
 #[cfg(feature = "shutdown")]
 pub mod shutdown;
 pub mod slug;
+pub mod snapshot_format;
 pub mod spec_registry;
 pub mod stability;
 pub mod telemetry;
@@ -95,6 +97,10 @@ pub use prompt_templates::{
     RenderedMessage, TemplateReport, TemplateVariable, TEMPLATE_VARS_FIELD,
 };
 pub use secret_env::{credential_from_env, is_control_plane_secret, is_secret_unless_allowed};
+pub use semantic_guards::{
+    CompiledPolicy, CompiledSemanticGuards, GuardrailPolicy, PolicyRequest, PolicyScope,
+    ScoredDecision, SemanticGuardsConfig, StreamingStrategy, ViolationAction,
+};
 pub use stability::{
     stability_of, stability_of_nav_key, subsystem, Stability, SubsystemStability, SUBSYSTEMS,
 };

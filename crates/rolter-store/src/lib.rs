@@ -400,9 +400,16 @@ impl ConfigStore for MergedConfigStore {
                     .iter()
                     .any(|item| item.name == rule.name)
             }));
-        if !self.bootstrap.guardrail_webhook.enabled {
-            merged.guardrail_webhook = db.guardrail_webhook;
-        }
+        // semantic guards (#459): the registry's providers and policies join
+        // the file's, and the file wins a name — or, for an enabled policy, a
+        // scope — so adopting the dashboard never displaces what the file
+        // enforces. the file's `[guardrail_webhook]` keeps running beside
+        // them as one more provider
+        merge_semantic_guards(
+            &mut merged.semantic_guards,
+            db.semantic_guards,
+            &self.bootstrap.guardrail_webhook,
+        );
         // Client Settings, Model Settings and Security never reached the
         // gateway in this mode (#2922), and follow the same rule; for
         // `[security]` the alternative was "no rules" on upgrade
@@ -437,6 +444,41 @@ impl ConfigStore for MergedConfigStore {
     }
 }
 
+/// Fold the registry's semantic guards into the file's: a registry provider
+/// or policy whose name the file already uses is dropped, as is a registry
+/// provider named like the file's `[guardrail_webhook]`, and an enabled
+/// registry policy for a scope an enabled file policy already covers.
+fn merge_semantic_guards(
+    file: &mut rolter_core::SemanticGuardsConfig,
+    db: rolter_core::SemanticGuardsConfig,
+    webhook: &rolter_core::GuardrailWebhookConfig,
+) {
+    let webhook_name = webhook.enabled.then(|| webhook.name.trim());
+    let providers: Vec<_> = db
+        .providers
+        .into_iter()
+        .filter(|provider| {
+            let name = provider.name.trim();
+            webhook_name != Some(name) && !file.providers.iter().any(|p| p.name.trim() == name)
+        })
+        .collect();
+    let policies: Vec<_> = db
+        .policies
+        .into_iter()
+        .filter(|policy| {
+            !file.policies.iter().any(|owned| {
+                owned.name.trim() == policy.name.trim()
+                    || (owned.enabled
+                        && policy.enabled
+                        && owned.scope == policy.scope
+                        && owned.scope_id.as_deref().map(str::trim)
+                            == policy.scope_id.as_deref().map(str::trim))
+            })
+        })
+        .collect();
+    file.providers.extend(providers);
+    file.policies.extend(policies);
+}
 #[cfg(test)]
 mod tests {
     use super::*;

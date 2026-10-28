@@ -115,6 +115,7 @@
               "security/user-provisioning",
               "security/mcp-oauth",
               "security/guardrails",
+              "security/semantic-guard-policies",
               "security/pii-sanitizer",
               "security/budgets-and-rate-limits",
               "security/cost-attribution"

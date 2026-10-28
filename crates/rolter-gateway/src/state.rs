@@ -284,9 +284,10 @@ pub struct Snapshot {
     /// built-in regex guardrails / PII redaction, compiled once per snapshot and
     /// shared across requests; inert unless enabled (ROL-261)
     pub guardrails: Arc<rolter_core::CompiledGuardrails>,
-    /// custom guardrail webhook config, swapped atomically with the snapshot;
-    /// inert unless enabled (ROL-257)
-    pub guardrail_webhook: rolter_core::GuardrailWebhookConfig,
+    /// semantic guardrail providers — `[guardrail_webhook]` among them — and
+    /// the scoped policies that pick them, compiled once per snapshot so a
+    /// request only resolves; empty unless a provider is enabled (#459)
+    pub semantic_guards: Arc<rolter_core::CompiledSemanticGuards>,
     /// external PII sanitizer config, swapped atomically with the snapshot;
     /// inert unless enabled (#848)
     pub pii_sanitizer: rolter_core::PiiSanitizerConfig,
@@ -705,7 +706,10 @@ impl Snapshot {
             },
             realtime: config.realtime.clone(),
             guardrails: compiled_guardrails,
-            guardrail_webhook: config.guardrail_webhook.clone(),
+            semantic_guards: Arc::new(rolter_core::CompiledSemanticGuards::from_config(
+                &config.semantic_guards,
+                &config.guardrail_webhook,
+            )),
             pii_sanitizer: config.pii_sanitizer.clone(),
             prompt_templates: Arc::new(rolter_core::CompiledTemplates::from_config(
                 &config.prompt_templates,
@@ -1239,6 +1243,46 @@ impl AppState {
         self.metrics
             .config_reloads_total
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Record the snapshot format of the snapshot just applied, which also
+    /// ends any format refusal (ADR-0038).
+    pub fn record_snapshot_format(&self, format: u32) {
+        use std::sync::atomic::Ordering::Relaxed;
+        self.metrics
+            .snapshot_format
+            .store(u64::from(format), Relaxed);
+        self.metrics.snapshot_format_refused.store(0, Relaxed);
+    }
+
+    /// The control plane answered in a snapshot format this gateway reads,
+    /// so any earlier refusal is over.
+    pub fn clear_snapshot_format_refusal(&self) {
+        self.metrics
+            .snapshot_format_refused
+            .store(0, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// The control plane serves no snapshot format this gateway reads. Returns
+    /// whether this is a transition into that state, which is when the
+    /// watcher says so at `error`.
+    pub fn refuse_snapshot_format(&self) -> bool {
+        self.metrics
+            .snapshot_format_refused
+            .swap(1, std::sync::atomic::Ordering::Relaxed)
+            == 0
+    }
+
+    /// Whether `/readyz` should hold this gateway out of service for its
+    /// snapshot format: it has never applied a snapshot, and the control
+    /// plane's last answer was one it cannot read. A gateway that holds a
+    /// snapshot stays ready on its last config, since flipping it would turn
+    /// one out-of-order control-plane upgrade into an outage of every gateway
+    /// at once (ADR-0038 section 3).
+    pub fn unready_for_snapshot_format(&self) -> bool {
+        use std::sync::atomic::Ordering::Relaxed;
+        self.metrics.snapshot_format_refused.load(Relaxed) == 1
+            && self.metrics.snapshot_format.load(Relaxed) == 0
     }
 
     /// Close every live `/v1/realtime` session and wait, at most `grace`, for

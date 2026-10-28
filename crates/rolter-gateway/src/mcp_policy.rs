@@ -876,7 +876,7 @@ mod tests {
     #[test]
     fn a_new_organization_enforces_its_manifest_until_it_opts_out() {
         let enforcing = |settings: Option<McpOrgSettingsConfig>| {
-            let (mut snapshot_config, mut server) = (
+            let (mut snapshot_config, server) = (
                 GatewayConfig::default(),
                 McpServerConfig {
                     id: "srv".into(),

@@ -911,6 +911,18 @@ const CAPABILITIES: &[Capability] = &[
         action_scopes: NONE,
     },
     Capability {
+        // a policy can be scoped to one org, project, route or key, but it is
+        // still the deployment's enforcement: only a superadmin sets it, and the
+        // security auditor reads it with the other guardrail settings
+        resource: "guardrail_policy",
+        scope: "deployment",
+        read: AUDITOR,
+        create: SUPER,
+        update: SUPER,
+        delete: SUPER,
+        action_scopes: NONE,
+    },
+    Capability {
         // read-only: the data plane writes it over the internal channel, and
         // no operator role edits a measurement
         resource: "adaptive_routing_telemetry",
@@ -2306,6 +2318,10 @@ mod tests {
         ("egress_client.rs", include_str!("egress_client.rs")),
         ("feature_flags.rs", include_str!("feature_flags.rs")),
         ("expiry_sweep.rs", include_str!("expiry_sweep.rs")),
+        (
+            "guardrail_policies.rs",
+            include_str!("guardrail_policies.rs"),
+        ),
         ("guardrail_trial.rs", include_str!("guardrail_trial.rs")),
         ("guardrails.rs", include_str!("guardrails.rs")),
         ("labels.rs", include_str!("labels.rs")),
@@ -2357,6 +2373,10 @@ mod tests {
         ("session_guard.rs", include_str!("session_guard.rs")),
         ("security.rs", include_str!("security.rs")),
         ("seed.rs", include_str!("seed.rs")),
+        (
+            "snapshot_negotiation.rs",
+            include_str!("snapshot_negotiation.rs"),
+        ),
         ("sso.rs", include_str!("sso.rs")),
         ("stability.rs", include_str!("stability.rs")),
         ("telemetry.rs", include_str!("telemetry.rs")),

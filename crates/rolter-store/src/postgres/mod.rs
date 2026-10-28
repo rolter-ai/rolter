@@ -10,13 +10,14 @@ use chrono::{DateTime, Utc};
 use rolter_core::{
     AdvancedModelConfig, BackpressurePolicy, BalancingStrategy, BudgetConfig, BudgetPeriod,
     BudgetScope, BuiltinRule, Decorator, Error, FailureMode, FeatureFlagsConfig, GatewayConfig,
-    GroupMember, GuardAction, GuardStage, GuardrailRule, GuardrailWebhookConfig, GuardrailsConfig,
-    McpAuthKind, McpOAuthSessionConfig, McpOrgSettingsConfig, McpServerConfig, McpToolGroupConfig,
-    McpToolGroupSubjectConfig, McpToolRefConfig, ModelPolicy, ModelPriceConfig, ModelRoute,
-    ParamPolicy, PluginInstanceConfig, PluginStage, PluginsConfig, PromptTemplate,
-    PromptTemplateActivationScope, PromptTemplatesConfig, ProviderConfig, ProviderGroupConfig,
-    ProviderKind, RateLimitConfig, Result, ScopeWithin, Target, TemplateVariable, Tenancy,
-    UnpricedPolicy, VirtualKeyRecord, WebhookAuth, WebhookStage,
+    GroupMember, GuardAction, GuardStage, GuardrailPolicy, GuardrailRule, GuardrailWebhookConfig,
+    GuardrailsConfig, McpAuthKind, McpOAuthSessionConfig, McpOrgSettingsConfig, McpServerConfig,
+    McpToolGroupConfig, McpToolGroupSubjectConfig, McpToolRefConfig, ModelPolicy, ModelPriceConfig,
+    ModelRoute, ParamPolicy, PluginInstanceConfig, PluginStage, PluginsConfig, PolicyScope,
+    PromptTemplate, PromptTemplateActivationScope, PromptTemplatesConfig, ProviderConfig,
+    ProviderGroupConfig, ProviderKind, RateLimitConfig, Result, ScopeWithin, SemanticGuardsConfig,
+    StreamingStrategy, Target, TemplateVariable, Tenancy, UnpricedPolicy, ViolationAction,
+    VirtualKeyRecord, WebhookAuth, WebhookStage,
 };
 use rust_decimal::Decimal;
 use sqlx::postgres::PgPoolOptions;
@@ -725,41 +726,68 @@ impl PostgresConfigStore {
         })
     }
 
-    async fn load_guardrail_webhook(&self) -> Result<GuardrailWebhookConfig> {
-        let row: Option<GuardrailProvider> = sqlx::query_as(
+    /// Every registry guardrail provider and policy, for the gateway's
+    /// semantic guards (#459). Disabled providers are carried too, so a policy
+    /// that names one still validates; the gateway runs enabled ones only.
+    /// Disabled policies are carried for the same reason, and because a
+    /// provider any policy lists is confined to policies.
+    async fn load_semantic_guards(&self) -> Result<SemanticGuardsConfig> {
+        let rows: Vec<GuardrailProvider> = sqlx::query_as(
             "select id, name, enabled, url, stage, timeout_ms, max_retries, failure_mode, \
                     max_body_bytes, auth_kind, auth_env, created_at, updated_at \
-             from guardrail_providers where enabled limit 1",
+             from guardrail_providers order by name",
         )
-        .fetch_optional(&self.pool)
+        .fetch_all(&self.pool)
         .await
         .map_err(store_err)?;
-        let Some(row) = row else {
-            return Ok(GuardrailWebhookConfig::default());
-        };
-        let auth = match (row.auth_kind.as_str(), row.auth_env) {
-            ("bearer", Some(token_env)) => Some(WebhookAuth::Bearer { token_env }),
-            ("shared_secret", Some(secret_env)) => Some(WebhookAuth::SharedSecret { secret_env }),
-            _ => None,
-        };
-        Ok(GuardrailWebhookConfig {
-            enabled: true,
-            name: row.name,
-            url: row.url,
-            stage: if row.stage == "post_call" {
-                WebhookStage::PostCall
-            } else {
-                WebhookStage::PreCall
-            },
-            timeout_ms: row.timeout_ms.max(1) as u64,
-            max_retries: row.max_retries.max(0) as u32,
-            failure_mode: if row.failure_mode == "fail_closed" {
-                FailureMode::FailClosed
-            } else {
-                FailureMode::FailOpen
-            },
-            max_body_bytes: row.max_body_bytes.max(1) as usize,
-            auth,
+        let names: std::collections::HashMap<Uuid, String> =
+            rows.iter().map(|row| (row.id, row.name.clone())).collect();
+        let providers = rows.into_iter().map(provider_from_row).collect();
+        let policies = repo::GuardrailRepo(&self.pool)
+            .list_policies()
+            .await?
+            .into_iter()
+            .map(|row| GuardrailPolicy {
+                name: row.name,
+                enabled: row.enabled,
+                scope: PolicyScope::parse(&row.scope_kind).unwrap_or_default(),
+                scope_id: row.scope_id,
+                providers: row
+                    .provider_ids
+                    .iter()
+                    .filter_map(|id| names.get(id).cloned())
+                    .collect(),
+                // the control plane validated these on the way in; a value
+                // that is not a number in range is left out rather than read
+                // as some other threshold
+                thresholds: row
+                    .thresholds
+                    .as_object()
+                    .map(|map| {
+                        map.iter()
+                            .filter_map(|(category, value)| {
+                                let value = value.as_f64()?;
+                                (value.is_finite() && (0.0..=1.0).contains(&value))
+                                    .then(|| (category.clone(), value))
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+                on_violation: if row.on_violation == "annotate" {
+                    ViolationAction::Annotate
+                } else {
+                    ViolationAction::Block
+                },
+                streaming: if row.streaming == "buffer" {
+                    StreamingStrategy::Buffer
+                } else {
+                    StreamingStrategy::Reject
+                },
+            })
+            .collect();
+        Ok(SemanticGuardsConfig {
+            providers,
+            policies,
         })
     }
 
@@ -2002,6 +2030,34 @@ fn parse_unpriced_policy(value: &str) -> Option<UnpricedPolicy> {
     }
 }
 
+/// A registry provider row as the gateway's provider config.
+fn provider_from_row(row: GuardrailProvider) -> GuardrailWebhookConfig {
+    let auth = match (row.auth_kind.as_str(), row.auth_env) {
+        ("bearer", Some(token_env)) => Some(WebhookAuth::Bearer { token_env }),
+        ("shared_secret", Some(secret_env)) => Some(WebhookAuth::SharedSecret { secret_env }),
+        _ => None,
+    };
+    GuardrailWebhookConfig {
+        enabled: row.enabled,
+        name: row.name,
+        url: row.url,
+        stage: if row.stage == "post_call" {
+            WebhookStage::PostCall
+        } else {
+            WebhookStage::PreCall
+        },
+        timeout_ms: row.timeout_ms.max(1) as u64,
+        max_retries: row.max_retries.max(0) as u32,
+        failure_mode: if row.failure_mode == "fail_closed" {
+            FailureMode::FailClosed
+        } else {
+            FailureMode::FailOpen
+        },
+        max_body_bytes: row.max_body_bytes.max(1) as usize,
+        auth,
+    }
+}
+
 /// Read the current global config version. Bumping happens in the database
 /// itself: migration 0003 installs triggers that increment the version
 /// atomically with any write to providers/routes/route_targets/virtual_keys.
@@ -2028,7 +2084,7 @@ impl ConfigStore for PostgresConfigStore {
         let model_defaults = self.load_model_defaults().await?;
         let adaptive = self.load_adaptive_routing_policy().await?;
         let guardrails = self.load_guardrails().await?;
-        let guardrail_webhook = self.load_guardrail_webhook().await?;
+        let semantic_guards = self.load_semantic_guards().await?;
         let (providers, left_out) = self.load_providers().await?;
         let routes = self.load_routes(&left_out).await?;
         let provider_groups = self.load_provider_groups(&left_out).await?;
@@ -2057,7 +2113,7 @@ impl ConfigStore for PostgresConfigStore {
             rate_limits,
             prompt_templates,
             guardrails,
-            guardrail_webhook,
+            semantic_guards,
             plugins,
             feature_flags: FeatureFlagsConfig {
                 response_cache: flags.response_cache,
@@ -4625,17 +4681,16 @@ mod tests {
             config.guardrails.rules[0].builtin,
             Some(BuiltinRule::Email)
         ));
-        assert!(config.guardrail_webhook.enabled);
-        assert_eq!(
-            config.guardrail_webhook.url,
-            "https://guardrails.internal/evaluate"
-        );
+        // registry providers reach the gateway as semantic guard providers
+        // (#459); `[guardrail_webhook]` is the config file's alone
+        assert!(!config.guardrail_webhook.enabled);
+        let provider = &config.semantic_guards.providers[0];
+        assert!(provider.enabled);
+        assert_eq!(provider.name, "policy-service");
+        assert_eq!(provider.url, "https://guardrails.internal/evaluate");
+        assert!(matches!(provider.failure_mode, FailureMode::FailClosed));
         assert!(matches!(
-            config.guardrail_webhook.failure_mode,
-            FailureMode::FailClosed
-        ));
-        assert!(matches!(
-            config.guardrail_webhook.auth,
+            provider.auth,
             Some(WebhookAuth::Bearer { ref token_env }) if token_env == "ROLTER_GUARDRAIL_TOKEN"
         ));
     }

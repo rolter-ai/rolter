@@ -67,6 +67,7 @@ mod redis_conn;
 mod response_registry;
 mod route_limits;
 mod semantic;
+mod semantic_guards;
 mod sink_drain;
 mod state;
 mod status_page;

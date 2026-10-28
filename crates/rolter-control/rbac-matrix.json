@@ -1511,6 +1511,39 @@
       ]
     },
     {
+      "resource": "guardrail_policy",
+      "scope": "deployment",
+      "actions": [
+        {
+          "action": "read",
+          "minimum_role": null,
+          "superadmin_only": false,
+          "deployment_roles": [
+            "security_auditor"
+          ],
+          "authenticated_only": false
+        },
+        {
+          "action": "create",
+          "minimum_role": null,
+          "superadmin_only": true,
+          "authenticated_only": false
+        },
+        {
+          "action": "update",
+          "minimum_role": null,
+          "superadmin_only": true,
+          "authenticated_only": false
+        },
+        {
+          "action": "delete",
+          "minimum_role": null,
+          "superadmin_only": true,
+          "authenticated_only": false
+        }
+      ]
+    },
+    {
       "resource": "adaptive_routing_telemetry",
       "scope": "deployment",
       "actions": [

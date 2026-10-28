@@ -73,7 +73,35 @@ That last clause is the part to plan around. A rollback starts, but any setting 
 
 During a rolling upgrade your control plane and your gateways are briefly different builds. Config migration is per-process and happens at load, so each replica carries its own file forward independently and a mixed fleet is not a problem for the config.
 
-The control-plane-to-gateway snapshot is a separate matter and is not yet version-negotiated. Until it is, upgrade the gateways and the control plane from the same release rather than leaving a mixed fleet running longer than a rollout takes.
+The control-plane-to-gateway snapshot is negotiated. Each gateway states the snapshot format it reads every time it polls, and the control plane serves that format or refuses with `406 Not Acceptable`. A mismatched pair is therefore either compatible or refused out loud, never a config the gateway applies in part. Most releases do not change the format at all, and the release notes say when one does.
+
+### Upgrade order
+
+1. **Upgrade the control plane first, then the gateways.** Upgrade every control-plane replica, then every gateway. A gateway may lag behind the control plane, but it may not lead it.
+2. **With the Helm chart, one `helm upgrade` does this**, even though both Deployments move together. When the format changed, a new gateway pod that starts before a new control plane is ready answers `/readyz` with `503 snapshot_format_unsupported`. It stays out of the Service and the rollout waits, while the old pods keep serving. While the rollout waits, capacity drops by at most the Deployment's `maxUnavailable`. `progressDeadlineSeconds` may report the rollout as stalled even though it then completes on its own.
+3. **Do not turn on what a release introduces until every gateway runs it.** An older gateway leaves out any route, key or provider that uses the new feature, and names it in its log. For a deployment-wide setting, it stops receiving config changes until it is upgraded.
+4. **Skipping releases.** A gateway can skip any number of releases. The control plane can skip releases as long as it still serves the oldest gateway's format. The **Deprecations** section of the release notes lists each format that is going away, and when.
+5. **Rolling back goes in reverse:** first the gateways, then the control plane. Rolling the control plane back across a database migration needs the restore described in [Rolling back](#rolling-back).
+
+A control plane serves an older format for at least two minor releases and 90 days after a newer one replaces it. A gateway newer than its control plane is not supported. It works when the format did not change between the two builds, and is refused when it did. See [Versioning](/community/versioning#control-plane-and-gateway).
+
+### What a mismatch looks like
+
+On each refused gateway you get one line when the refusal starts, then the usual `config snapshot poll failed` warning on every poll:
+
+```
+ERROR snapshot format refused: the control plane serves formats 2-3 and this gateway
+      reads format 1 (snapshot_format_unsupported). Keeping the config applied at
+      version 41. Upgrade this gateway, or roll the control plane back.
+```
+
+- The `rolter_snapshot_format_refused` gauge reads `1`, and `rolter_config_reload_failures_total` keeps climbing. `rolter_snapshot_format` is the format of the snapshot the gateway holds. See [Metrics](/observability/metrics).
+- A gateway that never received a snapshot answers `/readyz` with `503 snapshot_format_unsupported`. A gateway that did receive one stays ready and keeps serving its last config. It stops picking up changes, revoked keys included, until the mismatch is fixed.
+- The control plane logs a `warn` that names the node, its build and both format ranges, once per node. On the **Cluster** screen, the node shows as not converged once the config moves past the version it holds.
+
+A gateway built before negotiation existed shows only the line it already writes, `config snapshot poll failed: snapshot endpoint returned 406 Not Acceptable:`, followed by the message and what to do.
+
+A config that the older format cannot express at all is refused with `snapshot_format_inexpressible` instead, and the gateway behaves the same way. This happens only for a deployment-wide setting the older gateways cannot carry. A route, key or provider they cannot carry is left out instead (rule 3 above).
 
 ### Captured payloads from older gateways
 
@@ -161,7 +189,7 @@ where advanced ?| array['base_url', 'insecure_tls', 'pricing']
 
 A `rolter.toml` that sets any of them under `[routes.advanced]` still loads. `rolter check` and the gateway's startup log report each one as an unknown key.
 
-**Route limits.** `limits.rpm`, `limits.tpm` and `limits.concurrency` are enforced again, this time with a reader ([#2936](https://github.com/rolter-ai/rolter/issues/2936)): a request over a route's cap is refused with `429` and `Retry-After`. Migration `0090_clear_unread_route_limits.sql` removes the three keys from every stored route first, because a value typed into the old form while nothing read it would otherwise start refusing traffic on the day you deploy. A route that should be limited has to be given its cap again after the upgrade, from the model sheet or the routes API. A `rolter.toml` that sets them is read as written, so check a file you carried over from an older release. Enforcement needs a gateway that has the reader, so roll the gateways before you set a cap, or the cap is stored and not applied until they restart on the new version. `rpm` and `tpm` need `redis_url` to be enforced; `concurrency` does not. See [Route limits](/concepts/providers-and-routes#route-limits).
+**Route limits.** `limits.rpm`, `limits.tpm` and `limits.concurrency` are enforced again, this time with a reader ([#2936](https://github.com/rolter-ai/rolter/issues/2936)): a request over a route's cap is refused with `429` and `Retry-After`. Migration `0090_clear_unread_route_limits.sql` removes the three keys from every stored route first, because a value typed into the old form while nothing read it would otherwise start refusing traffic on the day you deploy. A route that should be limited has to be given its cap again after the upgrade, from the model sheet or the routes API. A `rolter.toml` that sets them is read as written, so check a file you carried over from an older release. Enforcement needs a gateway that has the reader, so finish the upgrade, gateways included, before you set a cap ([rule 3](#upgrade-order)): until a gateway restarts on the new version, the cap is stored and not applied. `rpm` and `tpm` need `redis_url` to be enforced; `concurrency` does not. See [Route limits](/concepts/providers-and-routes#route-limits).
 
 ## Security and egress settings
 
