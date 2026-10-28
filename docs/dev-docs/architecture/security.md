@@ -814,18 +814,21 @@ groups with no owner, so a key from any org could call another org's routes,
 or address its providers directly as `provider-slug/model` or through a group
 as `group-slug/model`, spending that org's credential. Two orgs that picked the
 same provider name also froze config propagation for everyone, because the
-snapshot refuses duplicate names.
+snapshot refused duplicate names.
 
 Every row loaded from the store now carries its org (and a route its project)
 as `tenancy`, and the gateway resolves a model only among the rows the key's
 org may use, on all three address forms and in `GET /v1/models`. Another org's
 row is a miss: it shadows nothing of the caller's own, and the caller gets the
 `404` an unknown model gets. On the write path a route target or group member
-must name a provider in the same org. Names the gateway indexes
-deployment-wide (route and provider names, and the one slug namespace
-providers and groups share) are unique across orgs, and so is a route name
-that would sit on another org's `slug/model` address. A collision is refused
-with a `409` that does not say which org holds the name. The route-name check
+must name a provider in the same org. Names are per org (#1857,
+[ADR-0040](../adr/2026-10-28-per-org-namespaces.md)): two orgs may each have a
+`gpt-4o` route and an `openai` provider, a key resolves its own org's row
+first, and the gateway keeps their breakers, cooldowns, key pools and queues
+apart. Within one org, route and provider names and the one slug namespace
+providers and groups share are unique, and a route name may not sit on
+another org's `slug/model` address. A collision is refused with a `409` that
+does not say which org holds the name. The route-name check
 runs one way: a slug created after another org's `slug/…` route is accepted,
 and keys that carry no org then reach that route rather than the new address
 (the ADR-0017 addendum explains why). An admin can also
@@ -835,7 +838,7 @@ behind it to that project's keys (#1919).
 The contract, the table of which keys admit which rows, and the write-time
 guards are in
 [RBAC & authentication](rbac-and-auth.md#one-org-never-reaches-another-1844-1845);
-per-org namespaces, which would let two orgs reuse a name, are #1857.
+[ADR-0040](../adr/2026-10-28-per-org-namespaces.md) is the naming model.
 
 ## Control↔data-plane trust boundary
 

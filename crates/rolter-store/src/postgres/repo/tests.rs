@@ -1802,3 +1802,116 @@ async fn targeted_providers_are_those_the_scopes_routes_use() {
         .unwrap();
     assert_eq!(by_team, vec![(org.id, "beta".to_string())]);
 }
+
+/// Two orgs may each hold a `gpt-4o` route and an `openai` provider, and the
+/// store composes both into the config the snapshot is built from, each
+/// naming its own org's provider (#1857). The write-time checks answer per org.
+#[tokio::test]
+async fn two_orgs_each_hold_the_same_route_and_provider_names() {
+    if !super::super::test_database::is_configured() {
+        eprintln!("skipping: {} not set", super::super::test_database::URL_ENV);
+        return;
+    }
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let providers = ProviderRepo(&pool);
+    let routes = RouteRepo(&pool);
+    let mut orgs = Vec::new();
+    for slug in ["org-a", "org-b"] {
+        let org = OrgRepo(&pool).create(slug, slug).await.unwrap();
+        let team = TeamRepo(&pool).create(org.id, "core").await.unwrap();
+        let project = ProjectRepo(&pool).create(team.id, "app").await.unwrap();
+        let provider = providers
+            .create(
+                org.id,
+                NewProvider {
+                    name: "openai",
+                    slug: "openai",
+                    kind: "openai_compatible",
+                    api_base: "http://127.0.0.1:9/v1",
+                    api_key_env: None,
+                    egress_proxy: None,
+                    egress_proxies: &[],
+                    kv_events: None,
+                    lmcache: None,
+                    project_id: None,
+                    allow_custom_api_base: false,
+                },
+            )
+            .await
+            .unwrap();
+        let route = routes
+            .create(project.id, "gpt-4o", "round_robin")
+            .await
+            .unwrap();
+        RouteTargetRepo(&pool)
+            .create(route.id, provider.id, None, 1, &[])
+            .await
+            .unwrap();
+        orgs.push(org.id);
+    }
+    let other = OrgRepo(&pool).create("org-c", "org-c").await.unwrap();
+
+    // held in each org, free in a third, and held somewhere when asked broadly
+    for org in orgs.iter().copied() {
+        assert!(providers.name_in_use("openai", Some(org)).await.unwrap());
+        assert!(routes.model_in_use("gpt-4o", Some(org)).await.unwrap());
+        assert!(providers
+            .address_slug_in_use("openai", Some(org), None)
+            .await
+            .unwrap());
+    }
+    assert!(!providers
+        .name_in_use("openai", Some(other.id))
+        .await
+        .unwrap());
+    assert!(!routes.model_in_use("gpt-4o", Some(other.id)).await.unwrap());
+    assert!(!providers
+        .address_slug_in_use("openai", Some(other.id), None)
+        .await
+        .unwrap());
+    assert!(routes.model_in_use("gpt-4o", None).await.unwrap());
+
+    use crate::ConfigStore as _;
+    let config = crate::postgres::PostgresConfigStore::new(pool.clone())
+        .load()
+        .await
+        .unwrap();
+    let owners = |names: Vec<(&str, Option<&rolter_core::Tenancy>)>, name: &str| {
+        let mut owners: Vec<String> = names
+            .into_iter()
+            .filter(|(n, _)| *n == name)
+            .map(|(_, t)| t.map(|t| t.org_id.clone()).unwrap_or_default())
+            .collect();
+        owners.sort();
+        owners
+    };
+    let mut both: Vec<String> = orgs.iter().map(Uuid::to_string).collect();
+    both.sort();
+    assert_eq!(
+        owners(
+            config
+                .routes
+                .iter()
+                .map(|r| (r.model.as_str(), r.tenancy.as_ref()))
+                .collect(),
+            "gpt-4o"
+        ),
+        both
+    );
+    assert_eq!(
+        owners(
+            config
+                .providers
+                .iter()
+                .map(|p| (p.name.as_str(), p.tenancy.as_ref()))
+                .collect(),
+            "openai"
+        ),
+        both
+    );
+    // each route names `openai`, which resolves in its own org
+    let mut config = config;
+    assert!(config.sanitize_for_snapshot().is_empty());
+    config.validate_snapshot().unwrap();
+}

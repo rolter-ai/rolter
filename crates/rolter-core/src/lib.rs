@@ -23,6 +23,7 @@ pub mod guardrail_webhook;
 pub mod guardrails;
 pub mod mcp_challenge;
 pub mod mcp_log;
+pub mod namespace;
 pub mod node_identity;
 pub mod payload_redaction;
 pub mod pii_sanitizer;

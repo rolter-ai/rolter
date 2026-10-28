@@ -28,7 +28,7 @@ use crate::ControlState;
 
 use super::provider_groups::require_address_slug_free;
 
-use super::provider_groups::taken_in_deployment;
+use super::provider_groups::taken_in_org;
 
 pub(super) fn router() -> Router<ControlState> {
     Router::new()
@@ -840,10 +840,10 @@ async fn create_provider(
     )?;
     let slug = resolve_new_slug(&body.name, body.slug.as_deref())?;
     let providers = ProviderRepo(pool(&state));
-    if providers.name_in_use(&body.name).await? {
-        return Err(taken_in_deployment("provider name", &body.name));
+    if providers.name_in_use(&body.name, Some(org_id)).await? {
+        return Err(taken_in_org("provider name", &body.name));
     }
-    require_address_slug_free(&state, "provider slug", &slug, None).await?;
+    require_address_slug_free(&state, "provider slug", &slug, org_id, None).await?;
     // seal before touching the database so a missing KEK leaves no row behind
     let sealed = body.api_key.as_deref().map(seal_api_key).transpose()?;
     let row = ProviderRepo(pool(&state))
@@ -1041,7 +1041,7 @@ async fn update_provider(
     let slug_change =
         resolve_slug_change(body.slug.as_deref(), &existing.slug, body.allow_slug_change)?;
     if let Some(slug) = slug_change.as_deref() {
-        require_address_slug_free(&state, "provider slug", slug, Some(id)).await?;
+        require_address_slug_free(&state, "provider slug", slug, existing.org_id, Some(id)).await?;
     }
     // seal before writing anything so a missing KEK changes nothing
     let sealed = match body.api_key.as_deref().map(str::trim) {

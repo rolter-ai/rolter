@@ -112,9 +112,11 @@ impl CacheTelemetry {
         }
     }
 
-    /// Start one background consumer/poller per configured provider endpoint.
-    /// Request routing only reads local atomics/maps and never performs I/O.
-    pub fn configure(&self, providers: &[ProviderConfig]) {
+    /// Start one background consumer/poller per configured provider endpoint,
+    /// keyed by the provider's `name`, which in a snapshot is its runtime id
+    /// (ADR-0040). Request routing only reads local atomics/maps and never
+    /// performs I/O.
+    pub fn configure<'a>(&self, providers: impl IntoIterator<Item = &'a ProviderConfig>) {
         for provider in providers {
             if let Some(config) = provider.kv_events.clone() {
                 self.start_kv(provider.name.clone(), config);

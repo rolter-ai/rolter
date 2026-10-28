@@ -27,7 +27,7 @@ use crate::ControlState;
 
 use super::provider_groups::require_providers_in_org;
 
-use super::provider_groups::taken_in_deployment;
+use super::provider_groups::taken_in_org;
 
 use super::provider_groups::validate_strategy;
 
@@ -62,9 +62,9 @@ pub(super) fn router() -> Router<ControlState> {
         .route("/api/v1/route-targets/{id}", delete(delete_route_target))
 }
 
-/// Refuse a route name the gateway already answers for someone else.
+/// Refuse a route name the gateway already answers for the caller's org.
 ///
-/// A name is taken when another route has it, when it is the builtin
+/// A name is taken when another route of the org has it, when it is the builtin
 /// `fake-llm` every org can call, or when it has the `slug/model` shape and
 /// the slug belongs to a provider or group of another org or of the bootstrap
 /// file. The gateway already treats a route outside the caller's org as
@@ -89,8 +89,10 @@ async fn require_route_name_free(
         )));
     }
     let routes = RouteRepo(pool(state));
-    if routes.model_in_use(model).await? {
-        return Err(taken_in_deployment("route name", model));
+    // names are per org (#1857): another org's route of the same name is no
+    // conflict, but a key resolves a name per org, so its projects share one
+    if routes.model_in_use(model, org_id).await? {
+        return Err(taken_in_org("route name", model));
     }
     if let Some(slug) = rolter_core::slug::address_slug(model) {
         if state.config_owned.holds_slug(slug)

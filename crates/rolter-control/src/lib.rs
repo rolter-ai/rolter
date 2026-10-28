@@ -1830,11 +1830,12 @@ async fn build_store(
 /// default project no longer has is seeded again, so deleting a default only
 /// lasts until the next restart unless the file drops it too.
 ///
-/// A route name is held once across the deployment, the same rule the API and
-/// `rolter-seed --import` enforce (#1845): a default whose name another org's
-/// route or a readonly route already has, or that is the `slug/…` address of
-/// another org's or a readonly provider or group, is skipped with a warning,
-/// since a duplicate name would stop the snapshot from building for every org.
+/// A route name is held once per org, the same rule the API and
+/// `rolter-seed --import` enforce (#1857): a default whose name another
+/// project of the default org or a readonly route already has, or that is the
+/// `slug/…` address of another org's or a readonly provider or group, is
+/// skipped with a warning. Another org's route of the same name is no reason
+/// to skip it (ADR-0040).
 /// The builtin `fake-llm` is the operator's to replace, so a default of that
 /// name is seeded as before.
 #[cfg(feature = "postgres")]
@@ -1874,14 +1875,14 @@ async fn seed_default_models(pool: &sqlx::PgPool, config: &GatewayConfig) -> any
         }
         if readonly.models.contains(&route.model)
             || readonly.holds_address_of(&route.model)
-            || routes.model_in_use(&route.model).await?
+            || routes.model_in_use(&route.model, Some(org_id)).await?
             || routes
                 .name_takes_address_outside_org(&route.model, Some(org_id))
                 .await?
         {
             tracing::warn!(
                 model = %route.model,
-                "models.default not seeded: the name is already in use elsewhere in this deployment"
+                "models.default not seeded: the name is already in use in the default organization or by a readonly row"
             );
             continue;
         }
@@ -2020,10 +2021,10 @@ fn provider_kind_str(kind: &rolter_core::ProviderKind) -> &'static str {
 /// and one the default org deleted is seeded again on the next restart.
 /// Seeded providers are DB-owned and editable — not config-owned.
 ///
-/// A default whose name another provider holds, or whose slug a provider or
-/// provider group anywhere in the deployment (readonly rows included) already
+/// A default whose name another provider of the default org holds, or whose
+/// slug a provider or provider group of that org or a readonly row already
 /// answers, is skipped with a warning rather than written as a duplicate: the
-/// same deployment-wide rule the API enforces (#1845).
+/// same per-org rule the API enforces (#1857).
 #[cfg(feature = "postgres")]
 async fn seed_default_providers(pool: &sqlx::PgPool, config: &GatewayConfig) -> anyhow::Result<()> {
     if config.provider_defaults.is_empty() {
@@ -2052,13 +2053,13 @@ async fn seed_default_providers(pool: &sqlx::PgPool, config: &GatewayConfig) -> 
         }
         if readonly.providers.contains(&provider.name)
             || readonly.holds_slug(&slug)
-            || repo.name_in_use(&provider.name).await?
-            || repo.address_slug_in_use(&slug, None).await?
+            || repo.name_in_use(&provider.name, Some(org_id)).await?
+            || repo.address_slug_in_use(&slug, Some(org_id), None).await?
         {
             tracing::warn!(
                 provider = %provider.name,
                 %slug,
-                "providers.default not seeded: the name or slug is already in use elsewhere in this deployment"
+                "providers.default not seeded: the name or slug is already in use in the default organization or by a readonly row"
             );
             continue;
         }
@@ -2150,13 +2151,13 @@ async fn seed_default_provider_groups(
         }
         if readonly.holds_slug(&slug)
             || rolter_store::postgres::repo::ProviderRepo(pool)
-                .address_slug_in_use(&slug, None)
+                .address_slug_in_use(&slug, Some(org_id), None)
                 .await?
         {
             tracing::warn!(
                 group = %group.name,
                 %slug,
-                "provider_groups.default not seeded: the slug is already in use elsewhere in this deployment"
+                "provider_groups.default not seeded: the slug is already in use in the default organization or by a readonly row"
             );
             continue;
         }
@@ -2903,6 +2904,14 @@ async fn build_snapshot(
             let omitted = {
                 let _entered = sanitize.enter();
                 let mut omitted = down_omitted;
+                // a gateway that states no formats predates per-org namespaces
+                // and refuses a repeated name, so every org row whose name
+                // another row shares is left out for it, failing closed
+                // (ADR-0040 section 5). before the sanitizer, so its cascade
+                // prunes what referenced a provider left out
+                if query.formats.is_none() {
+                    omitted.extend(rolter_core::namespace::fold_for_legacy_gateway(&mut config));
+                }
                 omitted.extend(sanitize_snapshot(&state, &mut config).problems);
                 omitted
             };
@@ -5041,14 +5050,14 @@ mod tests {
         assert!(!owned.holds_address_of("other/qwen3"));
     }
 
-    /// The startup seeders write into the default org and used to look for a
-    /// collision only there, so a default whose name another org already held
-    /// became a second row, and a duplicate route or provider name makes
-    /// `/internal/snapshot` refuse for every org (#1845). They skip every such
-    /// default now, the free ones still land, and the snapshot still builds.
+    /// The startup seeders write into the default org. Names are per org
+    /// (#1857), so a default whose name or slug another org already holds is
+    /// seeded all the same; one the default org itself already answers, or a
+    /// route on another org's `slug/model` address, is skipped. Both orgs' rows
+    /// reach the snapshot, and it still builds.
     #[cfg(feature = "postgres")]
     #[tokio::test]
-    async fn default_seeds_skip_what_another_org_already_holds() {
+    async fn default_seeds_skip_only_what_the_default_org_already_holds() {
         use rolter_core::{GroupMember, ModelRoute, ProviderConfig, ProviderGroupConfig};
         use rolter_store::postgres::{test_database, test_schema::TestSchema};
 
@@ -5141,14 +5150,15 @@ mod tests {
         };
         let mut config = GatewayConfig {
             provider_defaults: vec![
-                // another org's provider name
+                // another org's provider name: seeded
                 provider("openai", None),
-                // another org's group slug, under a free name
+                // another org's group slug, under a free name: seeded
                 provider("fresh", Some("pool")),
                 provider("seeded", None),
             ],
             provider_group_defaults: vec![
-                // another org's provider slug, and another org's group slug
+                // another org's provider slug: seeded; a slug `fresh` now holds
+                // in the default org: skipped
                 group("edge"),
                 group("pool"),
                 group("seeded-pool"),
@@ -5156,7 +5166,8 @@ mod tests {
             ..Default::default()
         };
         config.models.defaults = vec![
-            // another org's route name, and another org's provider address
+            // another org's route name: seeded; another org's provider address:
+            // skipped
             route("gpt-4o"),
             route("edge/gpt-4o"),
             route("mine"),
@@ -5177,24 +5188,28 @@ mod tests {
             }
         };
         assert_eq!(
-            names("select name from providers where org_id = $1", default_org).await,
-            ["seeded"]
-        );
-        assert_eq!(
             names(
-                "select slug from provider_groups where org_id = $1",
+                "select name from providers where org_id = $1 order by name",
                 default_org
             )
             .await,
-            ["seeded-pool"]
+            ["fresh", "openai", "seeded"]
         );
         assert_eq!(
             names(
-                "select model from routes where project_id = $1",
+                "select slug from provider_groups where org_id = $1 order by slug",
+                default_org
+            )
+            .await,
+            ["edge", "seeded-pool"]
+        );
+        assert_eq!(
+            names(
+                "select model from routes where project_id = $1 order by model",
                 default_project
             )
             .await,
-            ["mine"]
+            ["gpt-4o", "mine"]
         );
 
         // a second start changes nothing, and the fleet's snapshot still builds
@@ -5205,11 +5220,12 @@ mod tests {
             .load()
             .await
             .unwrap();
-        for model in ["gpt-4o", "edge/gpt-4o", "mine"] {
+        for (model, held) in [("gpt-4o", 2), ("edge/gpt-4o", 0), ("mine", 1)] {
             let holders = snapshot.routes.iter().filter(|r| r.model == model).count();
-            assert!(holders <= 1, "{model} is held {holders} times");
+            assert_eq!(holders, held, "{model}");
         }
-        assert_eq!(snapshot.providers.len(), 3, "{:?}", snapshot.providers);
+        // two orgs' `openai`, plus `edge`, `fresh` and `seeded`
+        assert_eq!(snapshot.providers.len(), 5, "{:?}", snapshot.providers);
         snapshot.sanitize_for_snapshot();
         if let Err(problems) = snapshot.validate() {
             panic!("the snapshot no longer builds: {problems:?}");

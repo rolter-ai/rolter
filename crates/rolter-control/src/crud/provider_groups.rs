@@ -66,36 +66,50 @@ fn default_member_weight() -> i32 {
     1
 }
 
-/// The 409 for a name the gateway holds in one namespace across every org.
+/// The 409 for a name a readonly row of the bootstrap file holds, which
+/// every org's rows are kept off.
 ///
-/// It says only that the name is taken, never where: an org may not learn
-/// what another one calls its routes or providers from the refusal (#1845).
+/// It says only that the name is taken, never where (#1845).
 pub(super) fn taken_in_deployment(what: &str, name: &str) -> ApiError {
     name_taken(format!(
         "{what} '{name}' is already in use in this deployment; choose another"
     ))
 }
 
-/// Refuse a provider or group slug that already answers an address.
+/// The 409 for a name the caller's own org already holds. Names are per org
+/// (#1857, ADR-0040), so another org's row of the same name is no conflict,
+/// and the refusal never concerns one.
+pub(super) fn taken_in_org(what: &str, name: &str) -> ApiError {
+    name_taken(format!(
+        "{what} '{name}' is already in use in this organization; choose another"
+    ))
+}
+
+/// Refuse a provider or group slug that already answers an address in
+/// `org_id`.
 ///
-/// Providers and provider groups share one slug namespace at the gateway
-/// (`provider-slug/model`, `group-slug/model`), across every org and the
-/// bootstrap file, and a second holder silently takes the address from the
-/// first: a group whose slug a provider holds is dropped from routing
-/// entirely. `except` is the row being renamed, so it does not collide with
+/// Providers and provider groups share one slug namespace per org at the
+/// gateway (`provider-slug/model`, `group-slug/model`), and a second holder
+/// silently takes the address from the first: a group whose slug a provider
+/// of its org holds is dropped from routing entirely. Another org may hold the
+/// same slug (#1857). A readonly row of the bootstrap file keeps its slug from
+/// every org. `except` is the row being renamed, so it does not collide with
 /// itself.
 pub(super) async fn require_address_slug_free(
     state: &ControlState,
     what: &str,
     slug: &str,
+    org_id: Uuid,
     except: Option<Uuid>,
 ) -> ApiResult<()> {
-    if state.config_owned.holds_slug(slug)
-        || ProviderRepo(pool(state))
-            .address_slug_in_use(slug, except)
-            .await?
-    {
+    if state.config_owned.holds_slug(slug) {
         return Err(taken_in_deployment(what, slug));
+    }
+    if ProviderRepo(pool(state))
+        .address_slug_in_use(slug, Some(org_id), except)
+        .await?
+    {
+        return Err(taken_in_org(what, slug));
     }
     Ok(())
 }
@@ -216,7 +230,7 @@ async fn create_provider_group(
     // a readonly config group with this slug shadows any DB row — refuse early
     require_group_not_config_owned(&state, &slug)?;
     let repo = ProviderGroupRepo(pool(&state));
-    require_address_slug_free(&state, "provider group slug", &slug, None).await?;
+    require_address_slug_free(&state, "provider group slug", &slug, org_id, None).await?;
     let member_providers: Vec<Uuid> = body.members.iter().map(|m| m.provider_id).collect();
     require_providers_in_org(&state, org_id, &member_providers).await?;
     require_providers_usable_from(&state, &member_providers, body.project_id, "this group").await?;
@@ -288,7 +302,14 @@ async fn update_provider_group(
     let slug_change =
         resolve_slug_change(body.slug.as_deref(), &existing.slug, body.allow_slug_change)?;
     if let Some(slug) = slug_change.as_deref() {
-        require_address_slug_free(&state, "provider group slug", slug, Some(id)).await?;
+        require_address_slug_free(
+            &state,
+            "provider group slug",
+            slug,
+            existing.org_id,
+            Some(id),
+        )
+        .await?;
     }
     if let Some(members) = &body.members {
         let member_providers: Vec<Uuid> = members.iter().map(|m| m.provider_id).collect();

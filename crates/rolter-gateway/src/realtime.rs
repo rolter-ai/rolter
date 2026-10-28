@@ -344,7 +344,8 @@ async fn connect_selected(
     session_guard: SessionGuard,
     key_meta: Option<&crate::state::KeyMeta>,
 ) -> Result<SelectedSession, String> {
-    let mut walk = CandidateWalk::new(state, snap, entry, model, context, key_meta);
+    // per-target state is keyed by the route's namespace (ADR-0040)
+    let mut walk = CandidateWalk::new(state, snap, entry, &entry.namespace, context, key_meta);
     let mut last_error = "no target selected".to_string();
     // how the last connect failed, which decides the candidate that may
     // follow it: a restricted fallback is dialled only after a failure it

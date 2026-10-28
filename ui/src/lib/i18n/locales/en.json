@@ -993,7 +993,7 @@
       "edit": "Edit",
       "confirm": {
         "deleteTitle": "Delete model {{model}}?",
-        "deleteBody": "Every route and target for it is removed. This cannot be undone.",
+        "deleteBody": "Every route and target for it in its organization is removed. This cannot be undone.",
         "deleteConfirm": "Delete model"
       },
       "originFilterAria": "Filter by origin"

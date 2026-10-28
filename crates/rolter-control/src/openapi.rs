@@ -448,6 +448,14 @@ const ROUTE_INCLUDE_QUERY: &[QueryParam] = &[QueryParam::new(
      omitted, the list carries none of them, and a value outside those three is a 400",
 )];
 
+/// The model delete's query string: whose model it removes (#1857).
+const DELETE_MODEL_QUERY: &[QueryParam] = &[QueryParam::new(
+    "org_id",
+    "string",
+    "the organization whose routes of that name are deleted, across its projects; may be \
+     omitted only while one organization has the name, otherwise a 400",
+)];
+
 /// The access-profile list's query string: what to embed beside each profile.
 const PROFILE_INCLUDE_QUERY: &[QueryParam] = &[QueryParam::new(
     "include",
@@ -1476,8 +1484,9 @@ fn operations() -> Vec<Op> {
             Op::delete(
                 "/api/v1/models/{model}",
                 "deleteModel",
-                "Delete every route publishing a model name",
-            ),
+                "Delete the routes publishing a model name in one organization; `org_id` names it, and is required once two organizations share the name",
+            )
+            .query(DELETE_MODEL_QUERY),
             Op::get(
                 "/api/v1/projects/{project_id}/routes",
                 "listRoutes",

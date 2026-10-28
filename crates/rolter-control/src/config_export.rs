@@ -756,9 +756,61 @@ pub async fn export_document(
     pool: &sqlx::PgPool,
     config: &GatewayConfig,
 ) -> rolter_core::Result<String> {
+    let clashes = clashing_names(config);
+    if !clashes.is_empty() {
+        return Err(rolter_core::Error::Config(format!(
+            "this deployment cannot be exported as one file yet: two or more organizations \
+             use the same {}, and a file carries no organization, so it would not load \
+             (#3440)",
+            clashes.join(", ")
+        )));
+    }
     let mut config = config.clone();
     with_stored_variants(pool, &mut config).await?;
     Ok(render_with(&config, &load_scope_refs(pool).await?))
+}
+
+/// The names two rows share in `config`, which a flat file cannot carry.
+///
+/// Names are per org (#1857), but the export writes every org's rows into one
+/// file with no org on them, so a route, provider or provider-group name, or a
+/// provider or group slug, that two orgs share (or an org shares with a
+/// readonly row) would make a file `validate` refuses. One entry per clash,
+/// such as `route 'gpt-4o'`, sorted.
+#[cfg(any(feature = "postgres", test))]
+fn clashing_names(config: &GatewayConfig) -> Vec<String> {
+    use std::collections::{BTreeSet, HashSet};
+    fn repeated<'a>(kind: &str, names: impl Iterator<Item = &'a str>, out: &mut BTreeSet<String>) {
+        let mut seen = HashSet::new();
+        for name in names {
+            if !seen.insert(name) {
+                out.insert(format!("{kind} '{name}'"));
+            }
+        }
+    }
+    let mut clashes = BTreeSet::new();
+    repeated(
+        "route",
+        config.routes.iter().map(|r| r.model.as_str()),
+        &mut clashes,
+    );
+    repeated(
+        "provider",
+        config.providers.iter().map(|p| p.name.as_str()),
+        &mut clashes,
+    );
+    let slugs: Vec<String> = config
+        .providers
+        .iter()
+        .map(provider_slug)
+        .chain(config.provider_groups.iter().map(|g| {
+            g.slug
+                .clone()
+                .unwrap_or_else(|| rolter_core::slug::slugify(&g.name))
+        }))
+        .collect();
+    repeated("slug", slugs.iter().map(String::as_str), &mut clashes);
+    clashes.into_iter().collect()
 }
 
 /// Replace each database route's variants with the set as stored (#391).
@@ -879,6 +931,43 @@ async fn export_config(
 mod tests {
     use super::*;
     use rolter_core::{ParamPolicy, ProviderKind, Target};
+
+    /// Two orgs sharing a name is a deployment one flat file cannot carry
+    /// (#1857, #3440): the export names every clash rather than writing a
+    /// file that would not load.
+    #[test]
+    fn names_two_orgs_share_are_named_as_clashes() {
+        let mut config = GatewayConfig::default();
+        for org in ["org-a", "org-b"] {
+            let tenancy = Some(rolter_core::Tenancy {
+                org_id: org.to_string(),
+                project_id: None,
+            });
+            config.providers.push(rolter_core::ProviderConfig {
+                name: "openai".to_string(),
+                kind: ProviderKind::Openai,
+                api_base: "https://api.openai.com".to_string(),
+                tenancy: tenancy.clone(),
+                ..Default::default()
+            });
+            config.routes.push(
+                serde_json::from_value(serde_json::json!({
+                    "model": "gpt-4o",
+                    "targets": [{"provider": "openai"}],
+                    "tenancy": {"org_id": org},
+                }))
+                .unwrap(),
+            );
+        }
+        assert_eq!(
+            clashing_names(&config),
+            ["provider 'openai'", "route 'gpt-4o'", "slug 'openai'"]
+        );
+        config.providers[1].name = "openai-b".to_string();
+        config.providers[1].slug = Some("openai-b".to_string());
+        config.routes[1].model = "gpt-4o-b".to_string();
+        assert!(clashing_names(&config).is_empty());
+    }
 
     /// Everything the export claims to round-trip, in one file.
     ///

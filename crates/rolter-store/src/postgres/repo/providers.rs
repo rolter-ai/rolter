@@ -77,15 +77,19 @@ pub struct ProviderUpdate<'a> {
 }
 
 impl ProviderRepo<'_> {
-    /// Whether any provider in the deployment already has `name`. The gateway
-    /// keys providers by name alone, across every org, so a second one would
-    /// make the snapshot refuse (#1845); per-org names are #1857.
-    pub async fn name_in_use(&self, name: &str) -> Result<bool> {
-        sqlx::query_scalar("select exists(select 1 from providers where name = $1)")
-            .bind(name)
-            .fetch_one(self.0)
-            .await
-            .map_err(store_err)
+    /// Whether a provider of `org_id` already has `name`. Names are per org
+    /// (#1857, ADR-0040): another org may hold the same one. `None` asks
+    /// across every org.
+    pub async fn name_in_use(&self, name: &str, org_id: Option<Uuid>) -> Result<bool> {
+        sqlx::query_scalar(
+            "select exists(select 1 from providers where name = $1 \
+             and ($2::uuid is null or org_id = $2))",
+        )
+        .bind(name)
+        .bind(org_id)
+        .fetch_one(self.0)
+        .await
+        .map_err(store_err)
     }
 
     /// Whether a provider other than `except` already has `slug`, in any org.
@@ -102,23 +106,32 @@ impl ProviderRepo<'_> {
         .map_err(store_err)
     }
 
-    /// Whether a provider or a provider group other than `except` already
-    /// answers `slug`, in any org.
+    /// Whether a provider or a provider group of `org_id` other than `except`
+    /// already answers `slug`.
     ///
     /// The gateway resolves `provider-slug/model` and `group-slug/model` in one
-    /// namespace across the deployment, and a group whose slug a provider holds
-    /// is not addressable at all. So a new or renamed slug has to be free in
-    /// both tables, or the second holder silently takes the address from the
-    /// first. Row ids are unique across the two tables, so one `except` covers
-    /// a rename of either kind.
-    pub async fn address_slug_in_use(&self, slug: &str, except: Option<Uuid>) -> Result<bool> {
+    /// namespace per org (#1857, ADR-0040), and a group whose slug a provider
+    /// of its org holds is not addressable at all. So a new or renamed slug has
+    /// to be free in both tables of the org, or the second holder silently
+    /// takes the address from the first; another org may hold the same slug.
+    /// Row ids are unique across the two tables, so one `except` covers a
+    /// rename of either kind. `None` asks across every org.
+    pub async fn address_slug_in_use(
+        &self,
+        slug: &str,
+        org_id: Option<Uuid>,
+        except: Option<Uuid>,
+    ) -> Result<bool> {
         sqlx::query_scalar(
             "select exists(select 1 from providers where slug = $1 \
-                            and ($2::uuid is null or id <> $2)) \
+                            and ($2::uuid is null or org_id = $2) \
+                            and ($3::uuid is null or id <> $3)) \
                  or exists(select 1 from provider_groups where slug = $1 \
-                            and ($2::uuid is null or id <> $2))",
+                            and ($2::uuid is null or org_id = $2) \
+                            and ($3::uuid is null or id <> $3))",
         )
         .bind(slug)
+        .bind(org_id)
         .bind(except)
         .fetch_one(self.0)
         .await

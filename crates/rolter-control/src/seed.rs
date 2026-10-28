@@ -478,14 +478,12 @@ fn provider_kind_column(kind: ProviderKind) -> &'static str {
     }
 }
 
-/// The import stops rather than write a name another org already holds: the
-/// gateway keeps route, provider and group names in one namespace across every
-/// org, so a second row would make the snapshot refuse for the whole fleet
-/// (#1845). The message does not say whose it is.
-fn taken_elsewhere(kind: &str, name: &str) -> anyhow::Error {
-    anyhow::anyhow!(
-        "{kind} '{name}' is already in use elsewhere in this deployment; rename it in the file"
-    )
+/// The import stops rather than write a name the org it imports into already
+/// holds elsewhere: names are per org (#1857, ADR-0040), so another org may
+/// have the same one, but a route name is one per org across its projects and
+/// a provider and a group of one org share a slug namespace.
+fn taken_in_org(kind: &str, name: &str) -> anyhow::Error {
+    anyhow::anyhow!("{kind} '{name}' is already in use in this organization; rename it in the file")
 }
 
 /// The stored strategy value for a parsed [`BalancingStrategy`]. Routes and
@@ -774,12 +772,14 @@ async fn import_config(
             }
             None => {
                 let slug = p.slug.clone().unwrap_or_else(|| slugify(&p.name));
-                // another org already holds the name; writing it would make the
-                // snapshot refuse for the whole fleet (#1845)
-                if providers.name_in_use(&p.name).await?
-                    || providers.address_slug_in_use(&slug, None).await?
+                // the org already answers the slug, through a group or a
+                // provider the file calls something else
+                if providers.name_in_use(&p.name, Some(org_id)).await?
+                    || providers
+                        .address_slug_in_use(&slug, Some(org_id), None)
+                        .await?
                 {
-                    return Err(taken_elsewhere("provider", &p.name));
+                    return Err(taken_in_org("provider", &p.name));
                 }
                 let created = providers
                     .create(
@@ -840,8 +840,9 @@ async fn import_config(
                 updated
             }
             None => {
-                if routes.model_in_use(&r.model).await? {
-                    return Err(taken_elsewhere("route", &r.model));
+                // another project of the org already has the name
+                if routes.model_in_use(&r.model, Some(org_id)).await? {
+                    return Err(taken_in_org("route", &r.model));
                 }
                 // `slug/model` is another org's provider or group address; the
                 // route would take it from the operator's own keys
@@ -1135,9 +1136,12 @@ async fn import_provider_groups(
                 updated
             }
             None => {
-                // groups share the provider slug namespace at the gateway
-                if ProviderRepo(pool).address_slug_in_use(&slug, None).await? {
-                    return Err(taken_elsewhere("provider group", &g.name));
+                // groups share their org's provider slug namespace at the gateway
+                if ProviderRepo(pool)
+                    .address_slug_in_use(&slug, Some(org_id), None)
+                    .await?
+                {
+                    return Err(taken_in_org("provider group", &g.name));
                 }
                 let created = groups
                     .create(org_id, &g.name, &slug, strategy, scope)

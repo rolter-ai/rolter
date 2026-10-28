@@ -207,7 +207,16 @@ pub struct RequestLog {
     pub business_unit_id: String,
     pub customer_id: String,
     pub model: String,
+    /// the provider's display name. The request path carries its runtime id,
+    /// which [`LogSink`] turns back into the name as the row is queued, and
+    /// fills in `provider_org_id` from the same lookup (ADR-0040)
     pub provider: String,
+    /// the org that owns `provider`, empty for a global provider from the
+    /// gateway's own config file. Left out of the row while empty, so a
+    /// ClickHouse without `clickhouse/037_request_log_provider_org.sql` keeps
+    /// accepting every row (#1857)
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub provider_org_id: String,
     pub target: String,
     /// chosen variant name for A/B attribution; empty on the classic single-pool
     /// path (a route with no variants)
@@ -428,6 +437,7 @@ impl Default for RequestLog {
             customer_id: String::new(),
             model: String::new(),
             provider: String::new(),
+            provider_org_id: String::new(),
             target: String::new(),
             variant: String::new(),
             status: 0,
@@ -1689,6 +1699,23 @@ impl LogSink {
         let Some(tx) = &self.tx else {
             return;
         };
+        // the request path carries the provider's runtime id; the row gets its
+        // display name. the org beside it comes from the snapshot that served
+        // the request wherever the row was built with one; a row built
+        // without it (a lifecycle call, a realtime session) takes the org from
+        // the provider list in force now (ADR-0040)
+        if !record.provider.is_empty() {
+            if record.provider_org_id.is_empty() {
+                if let Some(org) = self.health_events.provider_org(&record.provider) {
+                    record.provider_org_id = org;
+                }
+            }
+            let display =
+                rolter_core::namespace::display_name(&record.provider, &record.provider_org_id);
+            if display.len() != record.provider.len() {
+                record.provider = display.to_string();
+            }
+        }
         // recorded per row because the configured rate can change between
         // writes; the rate in force when the row was kept is the one that
         // applies to it

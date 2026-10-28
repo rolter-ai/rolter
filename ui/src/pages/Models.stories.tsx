@@ -521,6 +521,57 @@ export const SameNameInTwoOrganizations: Story = {
   },
 };
 
+/**
+ * Two organizations share a model name (#1857): each row deletes its own
+ * organization's model, never every route of the name, and only the scope's
+ * own project's row is matched to the scope's route.
+ */
+let sharedNameDeletes: Recorder;
+export const SameNameDeletesOnlyThatOrganizationsModel: Story = {
+  render: () => {
+    const sharedName = routes([
+      ["/model-prices", () => []],
+      ["/currency", () => ({ base: "USD", rates: {} })],
+      ["/health/uptime", () => ({ data: [] })],
+      [
+        "/models",
+        () => [
+          // org-1 named outright, so the not-sent assertion below can fail
+          { ...MODELS[0], org_id: "org-1" },
+          {
+            ...MODELS[0],
+            org_id: "org-2",
+            project_id: "project-9",
+            targets: 1,
+            route_targets: [{ provider: "other-edge", model: null, weight: 1 }],
+          },
+        ],
+      ],
+      ["/providers", () => FANOUT_PROVIDERS],
+      ["/routes", () => [FANOUT_ROUTE]],
+    ]);
+    sharedNameDeletes = recording(
+      scoped(async (input, init) =>
+        init?.method === "DELETE" ? json(null, 204) : sharedName(input, init),
+      ),
+    );
+    return (
+      <Harness fetchStub={sharedNameDeletes.stub}>
+        <Models />
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getAllByText("gpt-4o")).toHaveLength(2));
+    const other = canvas.getByText("other-edge").closest('[role="row"]') as HTMLElement;
+    await userEvent.click(within(other).getByRole("button", { name: "Delete model gpt-4o" }));
+    await confirmDestructive(/every route and target/i, "Delete model");
+    await sharedNameDeletes.expectSent("DELETE", "/models/gpt-4o?org_id=org-2");
+    sharedNameDeletes.expectNotSent("DELETE", "org_id=org-1");
+  },
+};
+
 /** A route with no target has nowhere to send a request, and the row says so. */
 export const RouteWithNoTargets: Story = {
   render: () => (

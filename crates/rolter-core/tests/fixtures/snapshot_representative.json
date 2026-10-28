@@ -471,6 +471,36 @@
     {
       "allow_custom_api_base": false,
       "also_track_via_llm_call": false,
+      "api_base": "https://api.openai.com",
+      "api_key": null,
+      "api_key_env": null,
+      "api_keys": [
+        {
+          "env": "OPENAI_API_KEY",
+          "key": null,
+          "weight": 1
+        }
+      ],
+      "ca_bundles": null,
+      "egress_proxies": [],
+      "egress_proxy": null,
+      "kind": "openai",
+      "kv_events": null,
+      "llm_probe_model": null,
+      "lmcache": null,
+      "model_role_profiles": {},
+      "name": "openai",
+      "role_profile": null,
+      "slug": null,
+      "status_page_url": null,
+      "tenancy": {
+        "org_id": "org-1",
+        "project_id": "project-1"
+      }
+    },
+    {
+      "allow_custom_api_base": false,
+      "also_track_via_llm_call": false,
       "api_base": "https://api.anthropic.com",
       "api_key": null,
       "api_key_env": null,
@@ -591,6 +621,40 @@
         }
       ],
       "variants": []
+    },
+    {
+      "advanced": {
+        "capabilities": [],
+        "guardrails": {},
+        "headers": {},
+        "limits": {},
+        "locked_headers": [],
+        "visibility": {
+          "allowed_key_ids": [],
+          "allowed_team_ids": [],
+          "allowed_user_ids": []
+        }
+      },
+      "cache": null,
+      "model": "gpt-4o",
+      "param_policy": {
+        "allow": [],
+        "deny": [],
+        "mode": "allow"
+      },
+      "params": {},
+      "strategy": "round_robin",
+      "targets": [
+        {
+          "model": "gpt-4o",
+          "provider": "openai",
+          "weight": 1
+        }
+      ],
+      "variants": [],
+      "tenancy": {
+        "org_id": "org-1"
+      }
     },
     {
       "advanced": {

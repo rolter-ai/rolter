@@ -272,10 +272,11 @@ org's provider or group answers the same way. Route names may still contain `/`
 (`Qwen/Qwen2.5-7B`), and a route of the caller's own org still wins over the caller's own
 address.
 
-Until per-org namespaces land (#1857), one slug namespace spans the whole deployment:
-providers and groups of every org plus the bootstrap file's readonly rows. The control
-plane refuses a provider or group slug that any of them holds, and a route name that is
-the `slug/…` address of another org's or a readonly provider or group, or the builtin.
+Per-org namespaces (#1857, ADR-0040) give each org its own slug namespace: providers
+and groups of one org, beside the bootstrap file's readonly rows, which every org's keys
+reach. The control plane refuses a provider or group slug that its own org or a readonly
+row holds, and a route name that is the `slug/…` address of another org's or a readonly
+provider or group, or the builtin.
 Keys from a config file carry no org, so for them every row is in scope, and the same
 holds for anonymous callers when `require_auth` is off. The refusal runs in one direction
 only: it keeps a new route off an address that already exists, but a provider or group

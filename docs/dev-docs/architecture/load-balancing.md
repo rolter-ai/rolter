@@ -90,9 +90,9 @@ that is not free. A group has no configured route: `Snapshot::resolve_pinned`
 builds a _synthetic_ one per request, because the model each member forwards
 depends on what the caller asked for. Only the target list is per request,
 though — the strategy and the member weights are fixed for the life of the
-snapshot, so the group's balancer is built once in `Snapshot::build`, stored in
-`Snapshot::group_balancers` keyed by slug, and shared by every synthetic entry
-built for that group. Before #1655 it was built inside `resolve_pinned`, and a
+snapshot, so the group's balancer is built once in `Snapshot::build`, stored
+with the group in `Snapshot::groups_by_slug` (keyed by `(org, slug)`, #1857),
+and shared by every synthetic entry built for that group. Before #1655 it was built inside `resolve_pinned`, and a
 whole fleet's traffic went to whichever member was listed first, whatever the
 group's strategy and weights said.
 

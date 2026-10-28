@@ -224,7 +224,16 @@ export default function Models() {
   const pricesKnown = prices.isSuccess;
 
   const rows: CatalogRow[] = (models.data ?? []).map((entry) => {
-    const route = routeByModel.get(entry.model) ?? null;
+    // the scope's routes are one project's, and another organization may
+    // serve the same name (#1857): only an entry of that project is its row
+    const route =
+      entry.project_id && entry.project_id === scope.projectId
+        ? (routeByModel.get(entry.model) ?? null)
+        : null;
+    // likewise the provider ids are the scope organization's: another
+    // organization's row is not judged on them (a config-file row, which has
+    // no organization, reads as not probed, as before)
+    const ownOrg = !entry.org_id || entry.org_id === scope.orgId;
     const targets = entry.route_targets
       ? targetViews(
           { model: entry.model, targets: entry.route_targets },
@@ -256,12 +265,13 @@ export default function Models() {
       // the verdicts are read per org, so a row is judged only on the scope's
       // own providers, and not before the provider list that maps names to ids
       // has been read
-      cache: providers.isSuccess
-        ? summarizeCacheReporting(
-            providerNames.map((n) => providerIdByName.get(n)),
-            cacheProbes.byProvider,
-          )
-        : null,
+      cache:
+        providers.isSuccess && ownOrg
+          ? summarizeCacheReporting(
+              providerNames.map((n) => providerIdByName.get(n)),
+              cacheProbes.byProvider,
+            )
+          : null,
       targets,
       targetCount: targets?.length ?? entry.targets,
       strategy: entry.strategy,
@@ -309,7 +319,7 @@ export default function Models() {
   };
 
   const removeModel = useMutation({
-    mutationFn: (model: string) => deleteModel(model),
+    mutationFn: (entry: EffectiveModelDto) => deleteModel(entry.model, entry.org_id),
     onSuccess: invalidate,
   });
 
@@ -637,7 +647,7 @@ export default function Models() {
                       gate="model:delete"
                       control="model-delete"
                       label={t("pages.models.deleteAria", { model: r.name })}
-                      pending={removeModel.isPending && deleteTarget?.model === r.entry.model}
+                      pending={removeModel.isPending && deleteTarget === r.entry}
                       onClick={() => {
                         removeModel.reset();
                         setDeleteTarget(r.entry);
@@ -744,7 +754,7 @@ export default function Models() {
         onConfirm={() => {
           if (!deleteTarget) return;
           const what = deleteTarget.model;
-          removeModel.mutate(what, {
+          removeModel.mutate(deleteTarget, {
             onSuccess: () => {
               setDeleteTarget(null);
               toast.push({ tone: "success", title: t("toast.deleted", { what }) });

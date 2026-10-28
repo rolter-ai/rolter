@@ -28,16 +28,37 @@ const ROUTE_COLUMNS: &str =
 pub struct RouteRepo<'a>(pub &'a PgPool);
 
 impl RouteRepo<'_> {
-    /// Whether any route in the deployment already answers to `model`. The
-    /// gateway keys routes by public name alone, across every org, so a
-    /// second one would make the snapshot refuse (#1845); per-org names are
-    /// #1857.
-    pub async fn model_in_use(&self, model: &str) -> Result<bool> {
-        sqlx::query_scalar("select exists(select 1 from routes where model = $1)")
-            .bind(model)
-            .fetch_one(self.0)
-            .await
-            .map_err(store_err)
+    /// How many orgs have a route answering to `model`.
+    pub async fn orgs_holding_model(&self, model: &str) -> Result<i64> {
+        sqlx::query_scalar(
+            "select count(distinct t.org_id) from routes r \
+               join projects p on p.id = r.project_id \
+               join teams t on t.id = p.team_id \
+              where r.model = $1",
+        )
+        .bind(model)
+        .fetch_one(self.0)
+        .await
+        .map_err(store_err)
+    }
+
+    /// Whether a route of `org_id` already answers to `model`, in any of the
+    /// org's projects. The gateway names routes by `(org, model)` (#1857,
+    /// ADR-0040), so another org may hold the same name, but a key resolves a
+    /// name per org, not per project, so two projects of one org may not.
+    /// `None` asks across every org.
+    pub async fn model_in_use(&self, model: &str, org_id: Option<Uuid>) -> Result<bool> {
+        sqlx::query_scalar(
+            "select exists(select 1 from routes r \
+               join projects p on p.id = r.project_id \
+               join teams t on t.id = p.team_id \
+              where r.model = $1 and ($2::uuid is null or t.org_id = $2))",
+        )
+        .bind(model)
+        .bind(org_id)
+        .fetch_one(self.0)
+        .await
+        .map_err(store_err)
     }
 
     /// Whether a route named `model` in `org_id` would sit on the
@@ -304,14 +325,21 @@ impl RouteRepo<'_> {
         Ok(())
     }
 
-    /// Delete every route serving `model` (a public model name can be routed
-    /// from several projects). Returns how many routes were removed.
-    pub async fn delete_by_model(&self, model: &str) -> Result<u64> {
-        let res = sqlx::query("delete from routes where model = $1")
-            .bind(model)
-            .execute(self.0)
-            .await
-            .map_err(store_err)?;
+    /// Delete the routes serving `model` in `org_id`, whichever of its
+    /// projects they sit in; `None` deletes them in every org. Names are per
+    /// org (#1857), so a caller deleting one org's model names the org.
+    /// Returns how many routes were removed.
+    pub async fn delete_by_model(&self, model: &str, org_id: Option<Uuid>) -> Result<u64> {
+        let res = sqlx::query(
+            "delete from routes r using projects p, teams t \
+              where p.id = r.project_id and t.id = p.team_id \
+                and r.model = $1 and ($2::uuid is null or t.org_id = $2)",
+        )
+        .bind(model)
+        .bind(org_id)
+        .execute(self.0)
+        .await
+        .map_err(store_err)?;
         if res.rows_affected() == 0 {
             return Err(Error::NotFound(format!("model {model}")));
         }

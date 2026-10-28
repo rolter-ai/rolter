@@ -4769,17 +4769,21 @@ impl GatewayConfig {
     /// operator can split the route. A target whose provider is unknown is not
     /// counted on either side.
     pub fn mixed_decision_route_warnings(&self) -> Vec<String> {
-        let kinds: HashMap<&str, ProviderKind> = self
-            .providers
-            .iter()
-            .map(|p| (p.name.as_str(), p.kind))
-            .collect();
+        let mut kinds = crate::namespace::Namespaced::new();
+        for p in &self.providers {
+            let _ = kinds.insert(
+                crate::namespace::org_of(p.tenancy.as_ref()),
+                &p.name,
+                p.kind,
+            );
+        }
         let mut warnings = Vec::new();
         for route in &self.routes {
+            let org = crate::namespace::org_of(route.tenancy.as_ref());
             let mut decision: Vec<&str> = Vec::new();
             let mut generative: Vec<&str> = Vec::new();
             for target in route.every_target() {
-                let Some(kind) = kinds.get(target.provider.as_str()) else {
+                let Some(kind) = kinds.get_ref(org, &target.provider) else {
                     continue;
                 };
                 let side = if kind.decision_only() {
@@ -4970,26 +4974,34 @@ impl GatewayConfig {
         // would be worse than refusing, so `validate` still rejects those.
         self.strip_secret_env_credentials(&mut warnings);
         self.strip_unusable_telemetry(&mut warnings);
-        let mut omitted: std::collections::HashSet<String> = std::collections::HashSet::new();
-        let invalid: Vec<(usize, String, Vec<String>)> = self
+        // every provider as `(org, name)` before any is dropped, so a reference
+        // still resolves to the row it named once that row is gone (#1857)
+        let mut every_provider = crate::namespace::Namespaced::new();
+        for provider in &self.providers {
+            let org = crate::namespace::org_of(provider.tenancy.as_ref());
+            let _ = every_provider.insert(org, &provider.name, ());
+        }
+        let mut omitted: Vec<(String, String)> = Vec::new();
+        let invalid: Vec<(usize, String, String, Vec<String>)> = self
             .providers
             .iter()
             .enumerate()
             .filter_map(|(idx, provider)| {
                 let problems = self.provider_problems(provider);
-                (!problems.is_empty()).then(|| (idx, provider.name.clone(), problems))
+                let org = crate::namespace::org_of(provider.tenancy.as_ref()).to_string();
+                (!problems.is_empty()).then(|| (idx, org, provider.name.clone(), problems))
             })
             .collect();
         if !invalid.is_empty() {
             let dropped: std::collections::HashSet<usize> =
-                invalid.iter().map(|(i, _, _)| *i).collect();
+                invalid.iter().map(|(i, _, _, _)| *i).collect();
             let mut idx = 0;
             self.providers.retain(|_| {
                 let keep = !dropped.contains(&idx);
                 idx += 1;
                 keep
             });
-            for (index, name, problems) in invalid {
+            for (index, org, name, problems) in invalid {
                 let reason = problems.join("; ");
                 warnings.push(format!(
                     "provider '{name}' omitted from the snapshot: {reason}"
@@ -5000,24 +5012,23 @@ impl GatewayConfig {
                     reason,
                     index,
                 });
-                omitted.insert(name);
+                omitted.push((org, name));
             }
         }
-        // a name another provider still carries is not omitted: two rows
-        // sharing a name is a cross-row defect `validate` reports once one
-        // of them is gone, and pruning the references would take the
-        // surviving row's traffic with it
-        for provider in &self.providers {
-            omitted.remove(provider.name.as_str());
-        }
+        // a name another provider of the same org still carries is not
+        // omitted: two rows sharing a name is a cross-row defect `validate`
+        // reports once one of them is gone, and pruning the references would
+        // take the surviving row's traffic with it
+        omitted.retain(|(org, name)| {
+            !self
+                .providers
+                .iter()
+                .any(|p| &p.name == name && crate::namespace::org_of(p.tenancy.as_ref()) == org)
+        });
         // a provider the store loader left out never reached `providers`, so
         // the passes above could not see it (#2950); it is omitted all the same
-        omitted.extend(
-            self.left_out_providers
-                .iter()
-                .filter(|name| !self.providers.iter().any(|p| &p.name == *name))
-                .cloned(),
-        );
+        let omitted =
+            OmittedProviders::new(every_provider, omitted, self.left_out_providers.clone());
 
         self.report_denied_operator_urls(&mut warnings);
         // the omission above leaves every reference to that provider dangling,
@@ -5027,12 +5038,11 @@ impl GatewayConfig {
         self.prune_omitted_provider_targets(&omitted, &mut warnings);
         self.prune_cross_project_targets(&mut warnings);
 
-        let provider_names: std::collections::HashSet<&str> = self
-            .providers
-            .iter()
-            .map(|p| p.name.as_str())
-            .filter(|n| !n.trim().is_empty())
-            .collect();
+        let mut provider_names = crate::namespace::Namespaced::new();
+        for provider in self.providers.iter().filter(|p| !p.name.trim().is_empty()) {
+            let org = crate::namespace::org_of(provider.tenancy.as_ref());
+            let _ = provider_names.insert(org, &provider.name, ());
+        }
 
         // a target can serve traffic only when it points at a known provider
         // with a non-zero weight; a variant needs at least one such target
@@ -5051,16 +5061,16 @@ impl GatewayConfig {
                 ));
                 continue;
             }
+            let org = crate::namespace::org_of(route.tenancy.as_ref());
+            let known = |provider: &str| provider_names.get_ref(org, provider).is_some();
             let servable_target = route
                 .targets
                 .iter()
-                .any(|t| provider_names.contains(t.provider.as_str()) && t.weight > 0);
-            let servable_variant = route.variants.iter().any(|v| {
-                !v.name.trim().is_empty()
-                    && v.targets
-                        .iter()
-                        .any(|t| provider_names.contains(t.provider.as_str()))
-            });
+                .any(|t| known(&t.provider) && t.weight > 0);
+            let servable_variant = route
+                .variants
+                .iter()
+                .any(|v| !v.name.trim().is_empty() && v.targets.iter().any(|t| known(&t.provider)));
             if !servable_target && !servable_variant {
                 drops.push((
                     idx,
@@ -5308,19 +5318,19 @@ impl GatewayConfig {
     /// route or group from a file carries no tenancy, which is org-wide too.
     fn prune_cross_project_targets(&mut self, warnings: &mut Vec<String>) {
         // owned, since the prune below borrows the whole config mutably
-        let scoped: HashMap<String, String> = self
-            .providers
-            .iter()
-            .filter_map(|p| {
-                let scope = p.tenancy.as_ref()?.project_id.clone()?;
-                Some((p.name.clone(), scope))
-            })
-            .collect();
-        if scoped.is_empty() {
+        let mut scoped = crate::namespace::Namespaced::new();
+        let mut any_scoped = false;
+        for p in &self.providers {
+            let org = crate::namespace::org_of(p.tenancy.as_ref()).to_string();
+            let scope = p.tenancy.as_ref().and_then(|t| t.project_id.clone());
+            any_scoped |= scope.is_some();
+            let _ = scoped.insert(&org, &p.name, scope);
+        }
+        if !any_scoped {
             return;
         }
-        self.prune_targets_where(warnings, |provider, owner, owner_kind| {
-            let scope = scoped.get(provider)?;
+        self.prune_targets_where(warnings, |provider, owner_org, owner, owner_kind| {
+            let scope = scoped.get_ref(owner_org, provider)?.as_ref()?;
             (owner != Some(scope.as_str())).then(|| {
                 format!("the provider is scoped to a project other than the {owner_kind}'s")
             })
@@ -5338,24 +5348,23 @@ impl GatewayConfig {
     /// so a route is only ever lost when nothing else on it can serve.
     fn prune_omitted_provider_targets(
         &mut self,
-        omitted: &std::collections::HashSet<String>,
+        omitted: &OmittedProviders,
         warnings: &mut Vec<String>,
     ) {
-        if omitted.is_empty() {
-            return;
-        }
-        self.prune_targets_where(warnings, |provider, _owner, _owner_kind| {
-            omitted
-                .contains(provider)
-                .then(|| "the provider is itself omitted from the snapshot".to_string())
+        // no early return on an empty omission: a reference to another org's
+        // provider is pruned here too
+        self.prune_targets_where(warnings, |provider, owner_org, _owner, _owner_kind| {
+            omitted.refusal(owner_org, provider).map(str::to_string)
         });
     }
 
     /// The pass behind both target prunes: remove every target, variant target
-    /// and group member for which `refuses(provider, owner_project, owner_kind)`
-    /// gives a reason, and report each one.
+    /// and group member for which
+    /// `refuses(provider, owner_org, owner_project, owner_kind)` gives a reason,
+    /// and report each one.
     ///
-    /// `owner_project` is the project the route or group belongs to, and
+    /// `owner_org` is the org the route or group belongs to, which is where its
+    /// provider names resolve first (#1857), `owner_project` its project, and
     /// `owner_kind` is `"route"` or `"group"` so a reason can name which.
     ///
     /// A variant left with no target is removed whole, because `validate` reads
@@ -5365,7 +5374,7 @@ impl GatewayConfig {
     fn prune_targets_where(
         &mut self,
         warnings: &mut Vec<String>,
-        refuses: impl Fn(&str, Option<&str>, &str) -> Option<String>,
+        refuses: impl Fn(&str, &str, Option<&str>, &str) -> Option<String>,
     ) {
         // a free function rather than a closure, since the variant pass below
         // needs the warnings while this one would still hold them
@@ -5388,8 +5397,9 @@ impl GatewayConfig {
         }
         for route in &mut self.routes {
             let owner = route.tenancy.as_ref().and_then(|t| t.project_id.clone());
+            let org = crate::namespace::org_of(route.tenancy.as_ref()).to_string();
             let model = route.model.clone();
-            let refuse = |provider: &str| refuses(provider, owner.as_deref(), "route");
+            let refuse = |provider: &str| refuses(provider, &org, owner.as_deref(), "route");
             prune(
                 &mut route.targets,
                 &format!("route '{model}'"),
@@ -5411,13 +5421,13 @@ impl GatewayConfig {
         }
         for group in &mut self.provider_groups {
             let owner = group.tenancy.as_ref().and_then(|t| t.project_id.clone());
+            let org = crate::namespace::org_of(group.tenancy.as_ref()).to_string();
             let slug = group
                 .slug
                 .clone()
                 .unwrap_or_else(|| crate::slug::slugify(&group.name));
-            group
-                .members
-                .retain(|m| match refuses(&m.provider, owner.as_deref(), "group") {
+            group.members.retain(
+                |m| match refuses(&m.provider, &org, owner.as_deref(), "group") {
                     Some(reason) => {
                         warnings.push(format!(
                             "provider group '{slug}' member '{}' omitted from the snapshot: \
@@ -5427,7 +5437,8 @@ impl GatewayConfig {
                         false
                     }
                     None => true,
-                });
+                },
+            );
         }
     }
 
@@ -5450,13 +5461,12 @@ impl GatewayConfig {
     /// Returns the loaded position of each file key that remains.
     fn prune_omitted_provider_settings(
         &mut self,
-        omitted: &std::collections::HashSet<String>,
+        omitted: &OmittedProviders,
         warnings: &mut Vec<String>,
         records: &mut Vec<OmittedEntry>,
     ) -> Vec<usize> {
-        if omitted.is_empty() {
-            return (0..self.virtual_keys.len()).collect();
-        }
+        // before the early return: a route naming another org's embeddings
+        // provider is repaired even when nothing was omitted
         for route in &mut self.routes {
             let Some(cache) = route.cache.as_mut() else {
                 continue;
@@ -5464,15 +5474,19 @@ impl GatewayConfig {
             let Some(semantic) = cache.semantic.as_ref() else {
                 continue;
             };
-            if omitted.contains(semantic.provider.as_str()) {
+            let org = crate::namespace::org_of(route.tenancy.as_ref());
+            if let Some(reason) = omitted.refusal(org, &semantic.provider) {
                 warnings.push(format!(
                     "route '{}' semantic cache omitted from the snapshot: its embeddings \
-                     provider '{}' is itself omitted from the snapshot, so the route serves \
-                     without semantic lookups",
+                     provider '{}' cannot be used ({reason}), so the route serves without \
+                     semantic lookups",
                     route.model, semantic.provider
                 ));
                 cache.semantic = None;
             }
+        }
+        if omitted.is_empty() {
+            return (0..self.virtual_keys.len()).collect();
         }
         let mut origin = Vec::with_capacity(self.virtual_keys.len());
         let mut index = 0;
@@ -5480,7 +5494,8 @@ impl GatewayConfig {
             let at = index;
             index += 1;
             let label = vk.name.clone().unwrap_or_else(|| UNNAMED_KEY.to_string());
-            match prune_key_allow_list(&mut vk.providers, &label, omitted, warnings) {
+            let omitted = omitted.names_for(crate::namespace::GLOBAL, &vk.providers);
+            match prune_key_allow_list(&mut vk.providers, &label, &omitted, warnings) {
                 Some(reason) => {
                     records.push(OmittedEntry {
                         kind: OmittedKind::VirtualKey,
@@ -5499,7 +5514,8 @@ impl GatewayConfig {
         // a store key is not in the dashboard's config read, so it has no row
         // to point at and stays a line only
         self.db_virtual_keys.retain_mut(|vk| {
-            prune_key_allow_list(&mut vk.providers, &vk.id, omitted, warnings).is_none()
+            let omitted = omitted.names_for(&vk.org_id, &vk.providers);
+            prune_key_allow_list(&mut vk.providers, &vk.id, &omitted, warnings).is_none()
         });
         origin
     }
@@ -5856,12 +5872,14 @@ impl GatewayConfig {
             ));
         }
 
-        let mut provider_names = std::collections::HashSet::new();
+        // names are unique per org, never across orgs (#1857, ADR-0040)
+        let mut provider_names = crate::namespace::Namespaced::new();
         for provider in &self.providers {
+            let org = crate::namespace::org_of(provider.tenancy.as_ref());
             if provider.name.trim().is_empty() {
                 problems.push("provider has an empty name".to_string());
-            } else if !provider_names.insert(provider.name.as_str()) {
-                problems.push(format!("duplicate provider name '{}'", provider.name));
+            } else if provider_names.insert(org, &provider.name, ()).is_err() {
+                problems.push(duplicate_name("provider name", &provider.name, org));
             }
             problems.extend(self.provider_problems(provider));
         }
@@ -5950,12 +5968,15 @@ impl GatewayConfig {
             }
         }
 
-        let mut route_models = std::collections::HashSet::new();
+        let mut route_models = crate::namespace::Namespaced::new();
         for route in &self.routes {
+            // a route's targets name providers of its own org first, then global
+            let org = crate::namespace::org_of(route.tenancy.as_ref());
+            let known = |provider: &str| provider_names.get_ref(org, provider).is_some();
             if route.model.trim().is_empty() {
                 problems.push("route has an empty model name".to_string());
-            } else if !route_models.insert(route.model.as_str()) {
-                problems.push(format!("duplicate route model '{}'", route.model));
+            } else if route_models.insert(org, &route.model, ()).is_err() {
+                problems.push(duplicate_name("route model", &route.model, org));
             }
             if route.targets.is_empty() && route.variants.is_empty() {
                 problems.push(format!(
@@ -5965,7 +5986,7 @@ impl GatewayConfig {
             }
             problems.extend(route.takes_over_problems());
             for target in &route.targets {
-                if !provider_names.contains(target.provider.as_str()) {
+                if !known(&target.provider) {
                     problems.push(format!(
                         "route '{}' targets unknown provider '{}'",
                         route.model, target.provider
@@ -5992,7 +6013,7 @@ impl GatewayConfig {
                     ));
                 }
                 for target in &variant.targets {
-                    if !provider_names.contains(target.provider.as_str()) {
+                    if !known(&target.provider) {
                         problems.push(format!(
                             "route '{}' variant '{}' targets unknown provider '{}'",
                             route.model, variant.name, target.provider
@@ -6001,7 +6022,7 @@ impl GatewayConfig {
                 }
             }
             if let Some(semantic) = route.cache.as_ref().and_then(|c| c.semantic.as_ref()) {
-                if !provider_names.contains(semantic.provider.as_str()) {
+                if !known(&semantic.provider) {
                     problems.push(format!(
                         "route '{}' semantic cache uses unknown embeddings provider '{}'",
                         route.model, semantic.provider
@@ -6035,8 +6056,10 @@ impl GatewayConfig {
             } else if !key_values.insert(vk.key.as_str()) {
                 problems.push("duplicate virtual key value".to_string());
             }
+            // a file key has no org, so it names global providers, or the one
+            // org's provider when only one org has that name
             for provider in &vk.providers {
-                if !provider_names.contains(provider.as_str()) {
+                if !provider_names.contains_name(provider) {
                     problems.push(format!(
                         "virtual key '{}' allows unknown provider '{}'",
                         vk.name.as_deref().unwrap_or("<unnamed>"),
@@ -6155,6 +6178,90 @@ impl GatewayConfig {
         } else {
             Err(problems)
         }
+    }
+}
+
+/// The providers [`GatewayConfig::sanitize_for_snapshot`] left out, and how a
+/// reference to one is recognised: it is resolved the way the gateway would,
+/// in the referencing row's org first, then globally, against every provider
+/// the config held before any was dropped (#1857). A name that resolves to
+/// nothing is left out when the store loader left out a provider by that name
+/// (#2950).
+struct OmittedProviders {
+    every: crate::namespace::Namespaced<()>,
+    omitted: crate::namespace::Namespaced<()>,
+    left_out: std::collections::HashSet<String>,
+}
+
+impl OmittedProviders {
+    fn new(
+        every: crate::namespace::Namespaced<()>,
+        omitted: Vec<(String, String)>,
+        left_out: std::collections::HashSet<String>,
+    ) -> Self {
+        let mut set = crate::namespace::Namespaced::new();
+        for (org, name) in &omitted {
+            let _ = set.insert(org, name, ());
+        }
+        Self {
+            every,
+            omitted: set,
+            left_out,
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.omitted.is_empty() && self.left_out.is_empty()
+    }
+
+    /// Why a row of `org` may not use the provider it calls `name`, if it
+    /// may not: the provider it resolves to (its org's, then a global one)
+    /// was left out, or the only providers by that name belong to other orgs,
+    /// which a row never reaches (ADR-0040 section 1). The second case is a
+    /// deployment-wide row from the bootstrap file naming a database provider,
+    /// pruned rather than refused so the snapshot keeps building.
+    fn refusal(&self, org: &str, name: &str) -> Option<&'static str> {
+        match self.every.resolve_ref(org, name) {
+            Some((owner, ())) => self
+                .omitted
+                .owned_by(owner, name)
+                .map(|()| "the provider is itself omitted from the snapshot"),
+            None if self.left_out.contains(name) => {
+                Some("the provider is itself omitted from the snapshot")
+            }
+            None if self.every.contains_name(name) && org.is_empty() => Some(
+                "a deployment-wide row uses deployment-wide providers only, and this provider \
+                 belongs to an organization",
+            ),
+            None if self.every.contains_name(name) => {
+                Some("the provider belongs to another organization, which this row cannot use")
+            }
+            None => None,
+        }
+    }
+
+    /// The names in a key's allow-list that reach a provider left out, for a
+    /// key of `org`. A key is a caller, so it resolves the way the gateway
+    /// resolves one: the sole org's provider is a match for a key with no org.
+    fn names_for(&self, org: &str, names: &[String]) -> std::collections::HashSet<String> {
+        names
+            .iter()
+            .filter(|name| match self.every.resolve(org, name) {
+                Some((owner, ())) => self.omitted.owned_by(owner, name).is_some(),
+                None => self.left_out.contains(name.as_str()),
+            })
+            .cloned()
+            .collect()
+    }
+}
+
+/// The problem line for a name its namespace holds twice: `what` is the kind,
+/// such as `provider name`, and `org` is empty for the global namespace.
+fn duplicate_name(what: &str, name: &str, org: &str) -> String {
+    if org.is_empty() {
+        format!("duplicate {what} '{name}'")
+    } else {
+        format!("duplicate {what} '{name}' in org '{org}'")
     }
 }
 
@@ -10360,6 +10467,200 @@ mod tests {
         assert!(cfg.sanitize_for_snapshot().is_empty());
         assert_eq!(cfg.providers.len(), before.providers.len());
         assert_eq!(cfg.routes.len(), before.routes.len());
+    }
+
+    /// Two orgs that each have an `openai` provider and a `gpt-4o` route on it,
+    /// as the store composes them (#1857).
+    fn two_orgs_one_name() -> GatewayConfig {
+        let mut cfg: GatewayConfig = toml::from_str(
+            r#"
+            [[providers]]
+            name = "openai"
+            kind = "openai"
+            api_base = "https://api.openai.com/v1"
+
+            [[providers]]
+            name = "openai"
+            kind = "openai"
+            api_base = "https://api.openai.com/v1"
+
+            [[routes]]
+            model = "gpt-4o"
+            [[routes.targets]]
+            provider = "openai"
+
+            [[routes]]
+            model = "gpt-4o"
+            [[routes.targets]]
+            provider = "openai"
+            "#,
+        )
+        .unwrap();
+        for (i, org) in ["org-a", "org-b"].into_iter().enumerate() {
+            let tenancy = Some(Tenancy {
+                org_id: org.to_string(),
+                project_id: None,
+            });
+            cfg.providers[i].tenancy = tenancy.clone();
+            cfg.routes[i].tenancy = tenancy;
+        }
+        cfg
+    }
+
+    #[test]
+    fn two_orgs_may_each_name_a_route_and_a_provider_the_same() {
+        let mut cfg = two_orgs_one_name();
+        assert!(cfg.sanitize_for_snapshot().is_empty());
+        assert_eq!((cfg.providers.len(), cfg.routes.len()), (2, 2));
+        cfg.validate_snapshot().unwrap();
+    }
+
+    #[test]
+    fn one_org_still_may_not_name_two_providers_or_routes_the_same() {
+        let mut cfg = two_orgs_one_name();
+        cfg.providers[1].tenancy = cfg.providers[0].tenancy.clone();
+        cfg.routes[1].tenancy = cfg.routes[0].tenancy.clone();
+        let problems = cfg.validate().unwrap_err();
+        assert!(
+            problems
+                .iter()
+                .any(|p| p == "duplicate provider name 'openai' in org 'org-a'"),
+            "{problems:?}"
+        );
+        assert!(
+            problems
+                .iter()
+                .any(|p| p == "duplicate route model 'gpt-4o' in org 'org-a'"),
+            "{problems:?}"
+        );
+    }
+
+    #[test]
+    fn a_route_resolves_its_own_orgs_provider_then_a_global_one_never_another_orgs() {
+        let mut cfg = two_orgs_one_name();
+        // org-b's provider is renamed away: org-b's route now names nothing of
+        // its own, and org-a's provider is not a fallback for it
+        cfg.providers[1].name = "elsewhere".to_string();
+        let problems = cfg.validate().unwrap_err();
+        assert!(
+            problems
+                .iter()
+                .any(|p| p.contains("route 'gpt-4o' targets unknown provider 'openai'")),
+            "{problems:?}"
+        );
+        // a global provider of that name is one
+        let mut global = cfg.providers[0].clone();
+        global.tenancy = None;
+        cfg.providers.push(global);
+        cfg.validate().unwrap();
+    }
+
+    #[test]
+    fn a_deployment_wide_route_never_reaches_one_orgs_provider() {
+        let mut cfg = two_orgs_one_name();
+        // org-b's provider goes, so org-a is the only org with an `openai`; a
+        // global route naming it with a global fallback beside it
+        cfg.providers.truncate(1);
+        cfg.routes.truncate(1);
+        let mut global: GatewayConfig = toml::from_str(
+            r#"
+            [[providers]]
+            name = "local"
+            kind = "openai"
+            api_base = "http://127.0.0.1:8000/v1"
+
+            [[routes]]
+            model = "shared"
+            [[routes.targets]]
+            provider = "openai"
+            [[routes.targets]]
+            provider = "local"
+            "#,
+        )
+        .unwrap();
+        cfg.providers.append(&mut global.providers);
+        cfg.routes.append(&mut global.routes);
+        let problems = cfg.sanitize_for_snapshot();
+        assert!(
+            problems
+                .iter()
+                .any(|p| p.contains("deployment-wide providers only")),
+            "{problems:?}"
+        );
+        let shared = cfg.routes.iter().find(|r| r.model == "shared").unwrap();
+        let targets: Vec<&str> = shared.targets.iter().map(|t| t.provider.as_str()).collect();
+        assert_eq!(targets, ["local"]);
+        cfg.validate_snapshot().unwrap();
+    }
+
+    #[test]
+    fn sanitizing_one_orgs_broken_provider_leaves_the_other_orgs_namesake_alone() {
+        let mut cfg = two_orgs_one_name();
+        cfg.providers[0].api_base = "not a url".to_string();
+        let problems = cfg.sanitize_for_snapshot();
+        assert!(
+            problems
+                .iter()
+                .any(|p| p.starts_with("provider 'openai' omitted")),
+            "{problems:?}"
+        );
+        // org-a's route lost its only target and went; org-b's kept its own
+        assert_eq!(cfg.providers.len(), 1);
+        assert_eq!(cfg.routes.len(), 1);
+        assert_eq!(
+            cfg.routes[0].tenancy.as_ref().map(|t| t.org_id.as_str()),
+            Some("org-b")
+        );
+        assert_eq!(cfg.routes[0].targets.len(), 1);
+        cfg.validate_snapshot().unwrap();
+    }
+
+    #[test]
+    fn a_gateway_that_predates_namespaces_gets_every_colliding_org_row_left_out() {
+        let mut cfg = two_orgs_one_name();
+        let mut global: GatewayConfig = toml::from_str(
+            r#"
+            [[providers]]
+            name = "local"
+            kind = "openai"
+            api_base = "http://127.0.0.1:8000/v1"
+
+            [[routes]]
+            model = "gpt-4o"
+            [[routes.targets]]
+            provider = "local"
+            "#,
+        )
+        .unwrap();
+        cfg.providers.append(&mut global.providers);
+        cfg.routes.append(&mut global.routes);
+        let mut problems = crate::namespace::fold_for_legacy_gateway(&mut cfg);
+        problems.extend(cfg.sanitize_for_snapshot());
+        // both orgs' rows go, the global ones stay, and nothing is guessed
+        assert_eq!(cfg.providers.len(), 1);
+        assert_eq!(cfg.providers[0].name, "local");
+        assert_eq!(cfg.routes.len(), 1);
+        assert!(cfg.routes[0].tenancy.is_none());
+        assert_eq!(
+            problems
+                .iter()
+                .filter(|p| p.contains("predates per-org namespaces"))
+                .count(),
+            4,
+            "{problems:?}"
+        );
+        cfg.validate_snapshot().unwrap();
+    }
+
+    #[test]
+    fn folding_for_an_older_gateway_costs_nothing_without_a_repeated_name() {
+        let mut cfg = two_orgs_one_name();
+        cfg.providers[1].name = "openai-b".to_string();
+        cfg.providers[1].slug = Some("openai-b".to_string());
+        cfg.routes[1].model = "gpt-4o-b".to_string();
+        cfg.routes[1].targets[0].provider = "openai-b".to_string();
+        assert!(crate::namespace::fold_for_legacy_gateway(&mut cfg).is_empty());
+        assert_eq!((cfg.providers.len(), cfg.routes.len()), (2, 2));
     }
 
     #[test]
