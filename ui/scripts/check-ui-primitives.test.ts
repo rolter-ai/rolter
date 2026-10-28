@@ -76,6 +76,16 @@ describe("the untyped-button rule", () => {
     }
   });
 
+  it("fails a button with no attributes at all, and one whose only type is data-type", () => {
+    for (const source of [
+      `<button>x</button>`,
+      `<button/>`,
+      `<button data-type="submit" aria-type="x">x</button>`,
+    ]) {
+      expect(checkSource(source, SCREEN).violations.map((v) => v.rule)).toEqual(["untyped-button"]);
+    }
+  });
+
   it("accepts a type, a props spread, a capitalised Button and a waiver", () => {
     const sources = [
       `<button type="button" onClick={go} />`,

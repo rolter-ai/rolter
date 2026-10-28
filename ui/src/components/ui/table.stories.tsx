@@ -102,6 +102,11 @@ export const NamedWithRowHeaders: Story = {
     await expect(canvas.getByRole("table", { name: "Models by usage" })).toBeVisible();
     await expect(canvas.getAllByRole("rowheader")).toHaveLength(ROWS.length);
     await expect(canvas.getByRole("rowheader", { name: ROWS[0]!.model as string })).toBeVisible();
+    // the last row draws no rule under any of its cells, the row header included
+    const last = canvas.getByRole("rowheader", { name: ROWS[ROWS.length - 1]!.model as string });
+    for (const cell of last.closest("tr")!.children) {
+      await expect(getComputedStyle(cell).borderBottomWidth).toBe("0px");
+    }
   },
 };
 

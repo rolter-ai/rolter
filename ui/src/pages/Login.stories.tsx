@@ -1250,7 +1250,7 @@ export const PasswordAndProvider: Story = {
     const canvas = within(canvasElement);
     const link = await canvas.findByRole("link", { name: /continue with okta/i });
     await expect(canvas.getByLabelText(/^password/i)).toBeVisible();
-    await expect(link).not.toHaveClass(...BRAND_CLASSES);
+    for (const name of BRAND_CLASSES) await expect(link).not.toHaveClass(name);
   },
 };
 

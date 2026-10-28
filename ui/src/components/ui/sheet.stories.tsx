@@ -291,8 +291,15 @@ export const NoteOpenedWhileTheSheetSlidesInSitsBesideItsAnchor: Story = {
     await userEvent.click(within(canvasElement).getByRole("button", { name: "Edit route" }));
     const sheet = within(document.body);
     const anchor = await sheet.findByRole("button", { name: "About Model name" });
-    // no wait for the slide: the point is the first frames of it, while the sheet is
-    // still mostly off screen and the note is clamped to the window
+    // hold the slide at its first frame, so the hover is certain to land inside
+    // it and not by luck of timing: the sheet is mostly off screen and the note
+    // is clamped to the window
+    const slide = document
+      .getAnimations()
+      .find((a) => a instanceof CSSAnimation && a.animationName === "rl-sheet-in");
+    await expect(slide).toBeDefined();
+    slide!.pause();
+    slide!.currentTime = 0;
     await userEvent.hover(anchor);
     const note = await sheet.findByRole("tooltip");
     const besideAnchor = async () => {
@@ -303,6 +310,7 @@ export const NoteOpenedWhileTheSheetSlidesInSitsBesideItsAnchor: Story = {
       await expect(gap).toBeGreaterThanOrEqual(0);
       await expect(gap).toBeLessThan(16);
     };
+    slide!.play();
     await animationsSettled();
     // placed again on the slide's `animationend`, a frame after it finishes
     await waitFor(besideAnchor);

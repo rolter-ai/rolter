@@ -403,12 +403,13 @@ export function checkSource(
   // like the animation rule, a primitive's own file is not exempt: the
   // sidebar and filter panel are where the untyped buttons were found
   maskedLines.forEach((line, index) => {
-    if (!/<button(?:\s|$)/.test(line)) return;
+    if (!/<button(?:[\s/>]|$)/.test(line)) return;
     const from = maskedLines.slice(0, index).join("\n").length + (index > 0 ? 1 : 0);
     const start = from + line.indexOf("<button");
     const tag = masked.slice(start, endOfTag(masked, start));
     // a props spread may carry the type, so it is given the benefit of the doubt
-    if (/\btype\s*=/.test(tag) || /\{\s*\.\.\./.test(tag)) return;
+    // `data-type=` and `aria-type=` are not the attribute
+    if (/(?<![\w-])type\s*=(?!=)/.test(tag) || /\{\s*\.\.\./.test(tag)) return;
     const reason = waiverAbove(lines, index);
     if (reason !== null) {
       waivers.push({ file, line: index + 1, rule: reason ? "untyped-button" : "unknown", reason });

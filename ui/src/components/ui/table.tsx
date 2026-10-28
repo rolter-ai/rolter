@@ -137,7 +137,7 @@ export function Table<T extends Record<string, unknown>>({
                 <tr
                   className={cn(
                     "transition-colors",
-                    !detail && "[&:last-child>td]:border-b-0",
+                    !detail && "[&:last-child>:is(td,th)]:border-b-0",
                     hover && "hover:bg-muted",
                   )}
                 >

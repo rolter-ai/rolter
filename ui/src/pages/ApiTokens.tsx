@@ -204,7 +204,11 @@ function MintSheet({
       saving={mint.isPending}
       onSubmit={() => mint.mutate()}
     >
-      <Field label={t("pages.apiTokens.mint.name")} hint={t("pages.apiTokens.mint.nameHint")}>
+      <Field
+        label={t("pages.apiTokens.mint.name")}
+        hint={t("pages.apiTokens.mint.nameHint")}
+        required
+      >
         <Input
           value={name}
           maxLength={80}
