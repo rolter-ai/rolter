@@ -275,6 +275,13 @@ async fn proxy(
                 }
                 return error(StatusCode::FORBIDDEN, message, "mcp_tool_denied");
             }
+            Verdict::Ambiguous => {
+                return error(
+                    StatusCode::FORBIDDEN,
+                    Verdict::ambiguous_message(&server.slug),
+                    "mcp_tool_denied",
+                );
+            }
             Verdict::Unreadable => {
                 return error(
                     StatusCode::BAD_REQUEST,
@@ -840,6 +847,21 @@ mod tests {
         assert_eq!(
             (status, code.as_str()),
             (StatusCode::BAD_REQUEST, "mcp_request_unreadable")
+        );
+    }
+
+    /// #3298: a repeated key is refused like a forbidden tool, and nothing is
+    /// forwarded.
+    #[tokio::test]
+    async fn a_body_repeating_the_tool_name_is_refused_like_a_forbidden_tool() {
+        let state = AppState::new(&with_group(&["get_issue"]));
+        let body = Bytes::from_static(
+            br#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"drop","name":"get_issue"}}"#,
+        );
+        let (status, code) = code_of(post(state, body).await).await;
+        assert_eq!(
+            (status, code.as_str()),
+            (StatusCode::FORBIDDEN, "mcp_tool_denied")
         );
     }
 

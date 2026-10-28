@@ -154,7 +154,10 @@ organization enables apply to every caller in it; there is no per-key or
 per-project assignment yet. Batches are refused as a whole when any call in
 them is refused, and while a group governs a server a request body that cannot
 be read as JSON-RPC is refused with `400` (`mcp_request_unreadable`) rather than
-forwarded unchecked. Disabling or deleting a group lifts its restriction on the
+forwarded unchecked. A body that repeats a key in a message or in its `params`
+(two `name` entries, say) is refused with `403` `mcp_tool_denied` whatever the
+failure policy says, because parsers disagree about which copy wins and the
+tool judged could then differ from the tool that runs. Disabling or deleting a group lifts its restriction on the
 next snapshot.
 
 MCP Settings holds organization defaults, and the proxy applies them on every

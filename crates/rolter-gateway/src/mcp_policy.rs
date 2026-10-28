@@ -16,6 +16,11 @@
 //!   (#1404). A server declaring none has nothing to check against.
 //! - a body that cannot be read as JSON-RPC cannot be checked; the
 //!   organization's failure policy decides, and the default refuses.
+//! - a body that repeats a key in a message or in its `params` is refused
+//!   outright (#3298). `serde_json` keeps the *last* of a repeated key, an
+//!   upstream parser may keep the first, and the tool the policy judged would
+//!   then not be the tool that runs. Unlike an unreadable body, no failure policy
+//!   lets it through: nothing legitimate repeats a key.
 //!
 //! The groups an organization enables apply to every caller in it: there is no
 //! per-key or per-project assignment of a group yet, so "the caller's effective
@@ -28,7 +33,9 @@
 
 // spec-ref: json-rpc, mcp-transport
 use std::collections::HashSet;
+use std::fmt;
 
+use serde::de::{DeserializeSeed, IgnoredAny, MapAccess, SeqAccess, Visitor};
 use serde_json::{Map, Value};
 
 use rolter_core::McpServerConfig;
@@ -86,6 +93,19 @@ pub(crate) enum Verdict {
     Denied(Vec<Refused>),
     /// the policy applies but the body is not a JSON-RPC message it can read
     Unreadable,
+    /// a message in the body, or its `params`, repeats a key, so the tool it
+    /// names depends on which copy a parser keeps (#3298)
+    Ambiguous,
+}
+
+impl Verdict {
+    /// What the caller is told when the body repeats a key.
+    pub(crate) fn ambiguous_message(server: &str) -> String {
+        format!(
+            "the request to MCP server '{server}' repeats a JSON key, so the tool it names is \
+             ambiguous and it is refused"
+        )
+    }
 }
 
 /// What a call to one server is judged against.
@@ -156,6 +176,101 @@ fn tool_calls(body: &[u8]) -> Option<Vec<Map<String, Value>>> {
     Some(calls)
 }
 
+/// Where in a JSON-RPC body a repeated key is looked for.
+#[derive(Clone, Copy)]
+enum Level {
+    /// the body: a message, or a batch of them
+    Body,
+    /// one message
+    Message,
+    /// the `params` of a message
+    Params,
+}
+
+/// Walks a body and reports whether a message, or the `params` of one, repeats
+/// a key. Keys deeper than `params` (tool `arguments`) are the tool's own data
+/// and are not the policy's to judge.
+struct RepeatedKey(Level);
+
+impl<'de> DeserializeSeed<'de> for RepeatedKey {
+    type Value = bool;
+
+    fn deserialize<D: serde::Deserializer<'de>>(self, deserializer: D) -> Result<bool, D::Error> {
+        deserializer.deserialize_any(self)
+    }
+}
+
+impl<'de> Visitor<'de> for RepeatedKey {
+    type Value = bool;
+
+    fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("any JSON value")
+    }
+
+    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<bool, A::Error> {
+        let mut seen = HashSet::new();
+        let mut repeated = false;
+        while let Some(key) = map.next_key::<String>()? {
+            let child = match (self.0, key.as_str()) {
+                (Level::Body | Level::Message, "params") => Some(Level::Params),
+                _ => None,
+            };
+            repeated |= !seen.insert(key);
+            match child {
+                Some(level) => repeated |= map.next_value_seed(RepeatedKey(level))?,
+                None => {
+                    map.next_value::<IgnoredAny>()?;
+                }
+            }
+        }
+        Ok(repeated)
+    }
+
+    fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<bool, A::Error> {
+        let level = match self.0 {
+            Level::Body => Level::Message,
+            // an array anywhere else is data
+            _ => {
+                while seq.next_element::<IgnoredAny>()?.is_some() {}
+                return Ok(false);
+            }
+        };
+        let mut repeated = false;
+        while let Some(found) = seq.next_element_seed(RepeatedKey(level))? {
+            repeated |= found;
+        }
+        Ok(repeated)
+    }
+
+    fn visit_bool<E>(self, _: bool) -> Result<bool, E> {
+        Ok(false)
+    }
+    fn visit_i64<E>(self, _: i64) -> Result<bool, E> {
+        Ok(false)
+    }
+    fn visit_u64<E>(self, _: u64) -> Result<bool, E> {
+        Ok(false)
+    }
+    fn visit_f64<E>(self, _: f64) -> Result<bool, E> {
+        Ok(false)
+    }
+    fn visit_str<E>(self, _: &str) -> Result<bool, E> {
+        Ok(false)
+    }
+    fn visit_unit<E>(self) -> Result<bool, E> {
+        Ok(false)
+    }
+}
+
+/// Whether a message of `body`, or the `params` of one, repeats a key. A body
+/// that does not parse has none to report: the caller has already refused it.
+fn repeats_a_key(body: &[u8]) -> bool {
+    let mut parser = serde_json::Deserializer::from_slice(body);
+    RepeatedKey(Level::Body)
+        .deserialize(&mut parser)
+        .unwrap_or(false)
+}
+
 /// Apply the policy to a request body bound for `server`.
 pub(crate) fn enforce(snapshot: &Snapshot, server: &McpServerConfig, body: &[u8]) -> Verdict {
     let rules = Rules::of(snapshot, server);
@@ -175,6 +290,9 @@ pub(crate) fn enforce(snapshot: &Snapshot, server: &McpServerConfig, body: &[u8]
             Verdict::Unreadable
         };
     };
+    if repeats_a_key(body) {
+        return Verdict::Ambiguous;
+    }
     let refused: Vec<Refused> = calls
         .into_iter()
         .filter_map(|request| {
@@ -345,6 +463,55 @@ mod tests {
             denied_tools(enforce(&snapshot, &server, body.as_bytes())),
             [Some("drop".to_string())]
         );
+    }
+
+    #[test]
+    fn a_repeated_key_in_a_message_is_refused_whichever_copy_wins() {
+        let (snapshot, server) = snapshot(vec![group("org", "srv", &["get_issue"])]);
+        // serde_json keeps the last copy, so each of these reads as an allowed
+        // call (or not a call at all) here while a first-wins upstream sees a
+        // call for `drop`
+        for body in [
+            // `name`
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"drop","name":"get_issue"}}"#,
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_issue","name":"drop"}}"#,
+            // `params`
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"drop"},"params":{"name":"get_issue"}}"#,
+            // `method`
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","method":"tools/list","params":{"name":"drop"}}"#,
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/list","method":"tools/call","params":{"name":"get_issue"}}"#,
+            // a repeat inside a batch
+            r#"[{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_issue"}},{"id":1,"id":2,"method":"tools/call","params":{"name":"get_issue"}}]"#,
+        ] {
+            assert!(
+                matches!(
+                    enforce(&snapshot, &server, body.as_bytes()),
+                    Verdict::Ambiguous
+                ),
+                "{body}"
+            );
+        }
+    }
+
+    #[test]
+    fn no_failure_policy_lets_a_repeated_key_through() {
+        let (open, server) = with_manifest(&["a"], Some(settings(false, true)));
+        let body =
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"a","name":"b"}}"#;
+        assert!(matches!(
+            enforce(&open, &server, body.as_bytes()),
+            Verdict::Ambiguous
+        ));
+    }
+
+    #[test]
+    fn a_repeated_key_inside_tool_arguments_is_the_tools_own_business() {
+        let (snapshot, server) = snapshot(vec![group("org", "srv", &["get_issue"])]);
+        let body = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_issue","arguments":{"q":1,"q":2}}}"#;
+        assert!(matches!(
+            enforce(&snapshot, &server, body.as_bytes()),
+            Verdict::Allow
+        ));
     }
 
     #[test]
