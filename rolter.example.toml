@@ -1,7 +1,7 @@
 # rolter bootstrap config
 #
 # copy to rolter.toml and adjust. secrets should come from environment variables
-# referenced by `api_key_env`, not be written inline.
+# referenced by `env` in `api_keys`, not be written inline.
 #
 # every table a file can set has a block below, most of them commented out with
 # their defaults. the control plane builds five tables from its database and a
@@ -60,21 +60,26 @@ port = 4000
 name = "openai"
 kind = "openai"
 api_base = "https://api.openai.com"
-api_key_env = "OPENAI_API_KEY"
-# egress_proxy = "http://corp-proxy:3128"   # legacy one-element proxy pool
+api_keys = [{ env = "OPENAI_API_KEY" }]
 # egress_proxies = ["${PROVIDER_PROXY_EU}", "socks5h://proxy-us:1080"]
 # ca_bundles = ["/etc/rolter/ca/openai.pem"] # optional provider override
-# api_key = "..."                            # inline key; prefer api_key_env
+# api_keys = [{ key = "..." }]               # inline key; prefer env
+# deprecated singular spellings, still read; `rolter check --migrations` shows
+# the rewrite to the plural keys above
+# api_key_env = "OPENAI_API_KEY"
+# api_key = "..."
+# egress_proxy = "http://corp-proxy:3128"
 # active health checks send a real max_tokens = 1 completion to this provider
 # instead of the free liveness probe, which costs a few tokens per sweep
 # also_track_via_llm_call = true
 # llm_probe_model = "gpt-4o-mini"            # required when the flag is on
 # a statuspage.io-style status.json; polled as a secondary health signal
 # status_page_url = "https://status.openai.com/api/v2/status.json"
-# several weighted keys instead of the single pair above; rolter picks one per
+# several weighted keys instead of the single one above; rolter picks one per
 # request by weight and parks a key that gets 429/401 on a cooldown. the control
 # plane stores one credential per provider, so rolter-seed --import keeps only
-# the first entry that names an `env`.
+# the first entry that names an `env`. a weight of 0 takes no first attempts
+# while another key has a positive weight
 # [[providers.api_keys]]
 # env = "OPENAI_API_KEY_PRIMARY"
 # weight = 3
@@ -83,13 +88,13 @@ api_key_env = "OPENAI_API_KEY"
 name = "anthropic"
 kind = "anthropic"
 api_base = "https://api.anthropic.com"
-api_key_env = "ANTHROPIC_API_KEY"
+api_keys = [{ env = "ANTHROPIC_API_KEY" }]
 
 [[providers]]
 name = "openrouter"
 kind = "openrouter"
 api_base = "https://openrouter.ai/api/v1"
-api_key_env = "OPENROUTER_API_KEY"
+api_keys = [{ env = "OPENROUTER_API_KEY" }]
 # A hosted kind is pinned to its vendor's host, so a config edit cannot redirect
 # the key somewhere else. Set `allow_custom_api_base = true` when the endpoint
 # genuinely is elsewhere — an egress proxy in front of the vendor, a compatible
@@ -113,28 +118,28 @@ api_key_env = "OPENROUTER_API_KEY"
 # name = "azure"
 # kind = "azure_openai"
 # api_base = "https://RESOURCE.openai.azure.com/openai/v1"
-# api_key_env = "AZURE_OPENAI_API_KEY"
+# api_keys = [{ env = "AZURE_OPENAI_API_KEY" }]
 #
 # [[providers]]
 # name = "bedrock"
 # kind = "bedrock"
 # api_base = "https://bedrock-runtime.us-east-1.amazonaws.com/v1"
-# api_key_env = "AWS_BEARER_TOKEN_BEDROCK"
+# api_keys = [{ env = "AWS_BEARER_TOKEN_BEDROCK" }]
 #
 # [[providers]]
 # name = "vertex"
 # kind = "vertex"
 # api_base = "https://aiplatform.googleapis.com/v1/projects/PROJECT/locations/global/endpoints/openapi"
-# api_key_env = "VERTEX_ACCESS_TOKEN"
+# api_keys = [{ env = "VERTEX_ACCESS_TOKEN" }]
 
-# Hosted OpenAI-compatible clouds (bearer key from api_key_env; inline keys
+# Hosted OpenAI-compatible clouds (bearer key from `api_keys`; inline keys
 # rejected). rolter strips the leading /v1 from the gateway path and appends it
 # to the version already in api_base.
 # [[providers]]
 # name = "gemini"
 # kind = "gemini"
 # api_base = "https://generativelanguage.googleapis.com/v1beta/openai"
-# api_key_env = "GEMINI_API_KEY"
+# api_keys = [{ env = "GEMINI_API_KEY" }]
 #
 # gemini_native talks Gemini's native generateContent wire format: rolter
 # translates OpenAI/Anthropic requests to `:generateContent` (SSE:
@@ -144,7 +149,7 @@ api_key_env = "OPENROUTER_API_KEY"
 # name = "gemini-native"
 # kind = "gemini_native"
 # api_base = "https://generativelanguage.googleapis.com/v1beta"
-# api_key_env = "GEMINI_API_KEY"
+# api_keys = [{ env = "GEMINI_API_KEY" }]
 #
 # gemini_interactions talks Gemini's stateful Interactions API: rolter maps
 # OpenAI/Anthropic/Responses requests onto `{api_base}/interactions` and back.
@@ -154,7 +159,7 @@ api_key_env = "OPENROUTER_API_KEY"
 # name = "gemini-interactions"
 # kind = "gemini_interactions"
 # api_base = "https://generativelanguage.googleapis.com/v1beta"
-# api_key_env = "GEMINI_API_KEY"
+# api_keys = [{ env = "GEMINI_API_KEY" }]
 #
 # system_one fronts a decision model: typed answers to choice, score and yes/no
 # questions on POST /v1/systemone instead of generated text. One kind covers
@@ -165,7 +170,7 @@ api_key_env = "OPENROUTER_API_KEY"
 # name = "typesafe"
 # kind = "system_one"
 # api_base = "https://api.typesafe.ai"
-# api_key_env = "TYPESAFE_API_KEY"
+# api_keys = [{ env = "TYPESAFE_API_KEY" }]
 #
 # [[providers]]
 # name = "vllm-sr"
@@ -181,32 +186,32 @@ api_key_env = "OPENROUTER_API_KEY"
 # name = "infinity"
 # kind = "infinity"
 # api_base = "http://infinity:7997"
-# # api_key_env = "INFINITY_API_KEY"
+# # api_keys = [{ env = "INFINITY_API_KEY" }]
 #
 # [[providers]]
 # name = "mistral"
 # kind = "mistral"
 # api_base = "https://api.mistral.ai/v1"
-# api_key_env = "MISTRAL_API_KEY"
+# api_keys = [{ env = "MISTRAL_API_KEY" }]
 #
 # [[providers]]
 # name = "groq"
 # kind = "groq"
 # api_base = "https://api.groq.com/openai/v1"
-# api_key_env = "GROQ_API_KEY"
+# api_keys = [{ env = "GROQ_API_KEY" }]
 #
 # [[providers]]
 # name = "xai"
 # kind = "xai"
 # api_base = "https://api.x.ai/v1"
-# api_key_env = "XAI_API_KEY"
+# api_keys = [{ env = "XAI_API_KEY" }]
 
 # direct Cloud access requires an environment-sourced bearer key
 [[providers]]
 name = "ollama-cloud"
 kind = "ollama_cloud"
 api_base = "https://ollama.com"
-api_key_env = "OLLAMA_API_KEY"
+api_keys = [{ env = "OLLAMA_API_KEY" }]
 
 [[providers]]
 name = "vllm-1"

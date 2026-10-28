@@ -188,6 +188,21 @@ none of this: that document is JSON assembled from database rows, every column
 of which is already constrained by the schema and by the CRUD API that wrote it.
 There is no hand-typed key in it to misspell.
 
+## Deprecated spellings are not a `rolter check` finding (#3303)
+
+The singular `api_key` / `api_key_env` and `egress_proxy` are deprecated in favour of `api_keys` and
+`egress_proxies` (config schema 3). `rolter check` does not report them, deliberately: a finding is
+either an error or a warning, and `--strict` fails on every warning. A deprecated spelling is still
+read and still correct, and a config that has not been migrated yet is the common case during an
+upgrade, so a finding here would make a CI config lint fail on files that work. There is no
+lower, informational severity that `--strict` ignores, and adding one only for this would be a new
+concept in the report for one rule.
+
+The spellings are surfaced where they cannot fail anything: a `WARN` per key when any process loads
+the file, and `rolter check --migrations`, which previews the schema-3 rewrite. The shipped
+`rolter.example.toml` uses the plural spellings, so a deployment started from it carries none. If a
+non-failing severity is ever added to the report, this is the first rule to put on it.
+
 ## Generating the configuration (`rolter init`)
 
 `rolter check` failing on a missing `ROLTER_KEK` and suggesting `openssl rand
