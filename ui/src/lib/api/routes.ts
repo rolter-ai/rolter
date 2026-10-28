@@ -236,8 +236,14 @@ export function fetchModels(): Promise<EffectiveModelDto[]> {
   return getJson<EffectiveModelDto[]>("/api/v1/models");
 }
 
-export function deleteModel(model: string): Promise<void> {
-  return sendJson<void>("DELETE", `/api/v1/models/${encodeURIComponent(model)}`);
+/**
+ * Delete a database model: its routes in one organization (#1857). Names are
+ * per organization, so `orgId` says whose; the control plane refuses a delete
+ * without it once two organizations share the name.
+ */
+export function deleteModel(model: string, orgId?: string): Promise<void> {
+  const query = orgId ? `?org_id=${encodeURIComponent(orgId)}` : "";
+  return sendJson<void>("DELETE", `/api/v1/models/${encodeURIComponent(model)}${query}`);
 }
 
 export interface ComplexityTier {
