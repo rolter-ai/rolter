@@ -616,34 +616,11 @@ async fn an_orgs_alert_changes_are_in_that_orgs_audit_log() {
         .all(|e| !e["action"].as_str().unwrap_or("").starts_with("alert.")));
 }
 
-/// Counts the statements sqlx runs on this thread while it is the default
-/// subscriber: a `#[tokio::test]` runs the server and the client on one thread.
-struct Statements(std::sync::Arc<std::sync::atomic::AtomicUsize>);
-
-impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Statements {
-    fn on_event(&self, event: &tracing::Event<'_>, _: tracing_subscriber::layer::Context<'_, S>) {
-        if event.metadata().target() == "sqlx::query" {
-            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        }
-    }
-}
-
-/// One read as `bearer`, and how many statements it cost.
-async fn counted(t: &Tenants, path: &str, bearer: &str) -> (Value, usize) {
-    use tracing_subscriber::layer::SubscriberExt;
-    let seen = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let _guard = tracing::subscriber::set_default(
-        tracing_subscriber::registry().with(Statements(seen.clone())),
-    );
-    let (status, body) = get(t, path, bearer).await;
-    assert_eq!(status, 200, "{path}: {body}");
-    (body, seen.load(std::sync::atomic::Ordering::SeqCst))
-}
-
-/// #3361: a scoped admin's rules are chosen in SQL from their reach, so what a
-/// listing costs follows their own rules and not the rules of every other org.
+/// #3361: a scoped admin's rules are chosen in SQL from their reach. Whatever
+/// other orgs hold, the listings answer the same (what is read from the table is
+/// pinned by `alerting::tests::delivery::only_the_rules_inside_the_reach_are_read`).
 #[tokio::test]
-async fn the_cost_of_a_listing_does_not_grow_with_other_orgs_rules() {
+async fn other_orgs_rules_do_not_change_a_scoped_admins_listings() {
     skip_without_db!();
     let t = tenants().await;
     for (bearer, name, scope) in [
@@ -669,9 +646,9 @@ async fn the_cost_of_a_listing_does_not_grow_with_other_orgs_rules() {
     let paths = ["/api/v1/alert-rules", "/api/v1/alert-notifications"];
     let mut before = Vec::new();
     for path in paths {
-        let (body, statements) = counted(&t, path, &t.admin_a).await;
-        assert!(statements > 0, "the counter saw nothing for {path}");
-        before.push((names(&body), statements));
+        let (status, body) = get(&t, path, &t.admin_a).await;
+        assert_eq!(status, 200, "{path}: {body}");
+        before.push(names(&body));
     }
 
     // another org's project rules, each of which the old walk resolved with
@@ -686,12 +663,12 @@ async fn the_cost_of_a_listing_does_not_grow_with_other_orgs_rules() {
         .await;
         assert_eq!(status, 200, "{body}");
     }
-    for (path, (was_names, was_statements)) in paths.iter().zip(before) {
-        let (body, statements) = counted(&t, path, &t.admin_a).await;
-        assert_eq!(statements, was_statements, "{path} grew with org B's rules");
+    for (path, was_names) in paths.iter().zip(before) {
+        let (status, body) = get(&t, path, &t.admin_a).await;
+        assert_eq!(status, 200, "{path}: {body}");
         assert_eq!(names(&body), was_names, "{path}");
     }
-    let (rules, _) = counted(&t, "/api/v1/alert-rules", &t.admin_a).await;
+    let (_, rules) = get(&t, "/api/v1/alert-rules", &t.admin_a).await;
     assert_eq!(names(&rules), ["a project", "a team"]);
 }
 
