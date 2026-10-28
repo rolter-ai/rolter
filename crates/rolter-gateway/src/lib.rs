@@ -34,6 +34,7 @@ pub mod cooldowns;
 mod egress_client;
 mod error;
 mod example_key;
+mod failover;
 mod fake_llm;
 mod genai;
 mod guardrail_webhook;

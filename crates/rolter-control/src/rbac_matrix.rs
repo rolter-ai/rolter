@@ -1000,31 +1000,38 @@ const CAPABILITIES: &[Capability] = &[
         delete: OPERATOR,
         action_scopes: NONE,
     },
+    // alerting is delegated to the people who own a slice of spend or
+    // reliability (#1829). A channel belongs to one org, so an org admin owns
+    // it; a rule is scoped to an org, team, project, key, business unit or
+    // customer and is an admin's of that scope. A deployment-wide channel or
+    // rule (no owning org) stays a superadmin's: the handlers refuse it for
+    // anyone else, since no membership could satisfy it
     Capability {
         resource: "alert_channel",
-        scope: "deployment",
-        read: OPERATOR,
-        create: OPERATOR,
-        update: OPERATOR,
-        delete: OPERATOR,
+        scope: "org",
+        read: ADMIN,
+        create: ADMIN,
+        update: ADMIN,
+        delete: ADMIN,
         action_scopes: NONE,
     },
     Capability {
         resource: "alert_rule",
-        scope: "deployment",
-        read: OPERATOR,
-        create: OPERATOR,
-        update: OPERATOR,
-        delete: OPERATOR,
+        scope: "project",
+        read: ADMIN,
+        create: ADMIN,
+        update: ADMIN,
+        delete: ADMIN,
         action_scopes: NONE,
     },
     // notification history is append-only; "create" is asking the deployment to
-    // evaluate a rule now, which can emit one
+    // evaluate a rule now, which can emit one. Both are decided at the rule's
+    // own scope
     Capability {
         resource: "alert_history",
-        scope: "deployment",
-        read: OPERATOR,
-        create: OPERATOR,
+        scope: "project",
+        read: ADMIN,
+        create: ADMIN,
         update: NA,
         delete: NA,
         action_scopes: NONE,
@@ -1120,6 +1127,8 @@ const MULTI_SCOPE: &[&str] = &[
     "provider_group",
     "budget",
     "rate_limit",
+    "alert_rule",
+    "alert_history",
     "membership",
     "invitation",
     "api_token",
@@ -1795,13 +1804,21 @@ mod tests {
             "cluster_node:update",
             "runtime_policy:update",
             "feature_flags:update",
-            "alert_channel:create",
-            "alert_rule:update",
             "connector:update",
         ] {
             assert!(
                 operator.contains(&pair.to_string()),
                 "operator lacks {pair}"
+            );
+        }
+        // alerting is delegated to scoped admins (#1829), so its rows are scoped
+        // roles in the table. An operator still runs every rule and channel:
+        // the alerting handlers let a deployment operator through (see
+        // `alerting::authorize_alerting`), which the matrix does not publish
+        for pair in ["alert_channel:create", "alert_rule:update"] {
+            assert!(
+                !operator.contains(&pair.to_string()),
+                "{pair} is a scoped admin's row; an operator's reach is the handlers' own"
             );
         }
         // the auditor reads and never writes
@@ -2277,6 +2294,7 @@ mod tests {
         ("api_tokens.rs", include_str!("api_tokens.rs")),
         ("analytics.rs", include_str!("analytics.rs")),
         ("analytics_access.rs", include_str!("analytics_access.rs")),
+        ("analytics_export.rs", include_str!("analytics_export.rs")),
         ("audit_export.rs", include_str!("audit_export.rs")),
         ("auth.rs", include_str!("auth.rs")),
         ("auth_policy.rs", include_str!("auth_policy.rs")),

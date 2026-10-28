@@ -117,6 +117,7 @@ fn backpressure_config(model: &str, upstream: SocketAddr) -> GatewayConfig {
             provider: "hold".to_string(),
             model: None,
             weight: 1,
+            takes_over: Vec::new(),
         }],
         params: Default::default(),
         param_policy: Default::default(),

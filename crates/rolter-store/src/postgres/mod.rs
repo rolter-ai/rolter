@@ -7,6 +7,7 @@ pub mod repo;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
+use rolter_core::failover::FailureClass;
 use rolter_core::{
     AdvancedModelConfig, BackpressurePolicy, BalancingStrategy, BudgetConfig, BudgetPeriod,
     BudgetScope, BuiltinRule, Decorator, Error, FailureMode, FeatureFlagsConfig, GatewayConfig,
@@ -368,6 +369,7 @@ struct TargetRow {
     provider_name: String,
     upstream_model: Option<String>,
     weight: i32,
+    takes_over: Vec<String>,
 }
 
 #[derive(FromRow)]
@@ -422,6 +424,8 @@ struct VirtualKeyRow {
     created_by: Option<Uuid>,
     business_unit_id: Option<Uuid>,
     customer_id: Option<Uuid>,
+    previous_key_hash: Option<String>,
+    previous_expires_at: Option<DateTime<Utc>>,
 }
 
 /// One access-profile policy row, tagged with the user it reaches. A user
@@ -862,7 +866,7 @@ impl PostgresConfigStore {
 
         let target_rows: Vec<TargetRow> = sqlx::query_as(
             "select rt.route_id, p.org_id as provider_org_id, p.name as provider_name,
-                    rt.upstream_model, rt.weight
+                    rt.upstream_model, rt.weight, rt.takes_over
              from route_targets rt
              join providers p on p.id = rt.provider_id
              order by rt.route_id, rt.created_at, rt.id",
@@ -923,13 +927,48 @@ impl PostgresConfigStore {
                     }
                     same_org
                 })
-                .map(|t| Target {
-                    provider: t.provider_name.clone(),
-                    model: t.upstream_model.clone(),
-                    weight: t.weight.max(0) as u32,
+                .filter_map(|t| {
+                    // a class the gateway cannot read leaves the target out
+                    // rather than serving it as an ordinary member of the
+                    // pool: an expensive fallback must fail closed (#1584)
+                    let takes_over = match t
+                        .takes_over
+                        .iter()
+                        .map(|token| token.parse::<FailureClass>())
+                        .collect::<std::result::Result<Vec<_>, _>>()
+                    {
+                        Ok(classes) => classes,
+                        Err(problem) => {
+                            tracing::warn!(route = %r.model, provider = %t.provider_name,
+                                "dropping a route target: {problem}");
+                            return None;
+                        }
+                    };
+                    Some(Target {
+                        provider: t.provider_name.clone(),
+                        model: t.upstream_model.clone(),
+                        weight: t.weight.max(0) as u32,
+                        takes_over,
+                    })
                 })
-                .collect();
+                .collect::<Vec<_>>();
             let variants = route_variants(&r, &variant_rows, &variant_target_rows, left_out);
+            // a route left with only restricted targets could never dial
+            // anything, and one such route would fail validation of the whole
+            // snapshot, so it is left out instead (#1584). the classic pool and
+            // every variant count together, as validation counts them
+            let mut every_target = targets
+                .iter()
+                .chain(variants.iter().flat_map(|v| v.targets.iter()))
+                .peekable();
+            if every_target.peek().is_some() && every_target.all(Target::is_restricted) {
+                tracing::warn!(
+                    route = %r.model,
+                    "{}",
+                    rolter_core::failover::all_targets_restricted(&r.model)
+                );
+                continue;
+            }
             routes.push(ModelRoute {
                 model: r.model,
                 strategy,
@@ -1034,7 +1073,8 @@ impl PostgresConfigStore {
         let rows: Vec<VirtualKeyRow> = sqlx::query_as(
             "select vk.id, vk.key_hash, vk.models, vk.providers, vk.disabled, vk.expires_at, \
                     vk.cache_enabled, vk.project_id, p.team_id, t.org_id, vk.created_by, \
-                    vk.business_unit_id, vk.customer_id \
+                    vk.business_unit_id, vk.customer_id, \
+                    vk.previous_key_hash, vk.previous_expires_at \
              from virtual_keys vk \
              join projects p on p.id = vk.project_id \
              join teams t on t.id = p.team_id \
@@ -1096,6 +1136,13 @@ impl PostgresConfigStore {
                     .map(|id| id.to_string())
                     .unwrap_or_default(),
                 customer_id: r.customer_id.map(|id| id.to_string()).unwrap_or_default(),
+                previous: match (r.previous_key_hash, r.previous_expires_at) {
+                    (Some(key_hash), Some(valid_until)) => Some(rolter_core::PreviousKeySecret {
+                        key_hash,
+                        valid_until,
+                    }),
+                    _ => None,
+                },
             })
             .collect())
     }
@@ -1713,6 +1760,9 @@ fn route_variants(
                 provider: t.provider_name.clone(),
                 model: t.upstream_model.clone(),
                 weight: t.weight.max(0) as u32,
+                // `route_variant_targets` stores no failure classes yet, so a
+                // variant target is an ordinary pool member
+                takes_over: Vec::new(),
             })
             .collect();
         if targets.is_empty() {
@@ -5284,6 +5334,108 @@ mod tests {
             .map(|p| p.slug.as_str())
             .collect();
         assert_eq!(plugins, ["audit", "from-file"]);
+    }
+
+    /// #1584: `takes_over` reaches the snapshot, a change to it bumps
+    /// `config_version`, and both ways a stored row could leave a route unable
+    /// to dial anything fail closed: a class the gateway cannot read drops its
+    /// target rather than serving it as an ordinary one, and a route whose
+    /// every remaining target is restricted is left out rather than failing
+    /// validation of the whole snapshot.
+    #[tokio::test]
+    async fn takes_over_reaches_the_snapshot_and_fails_closed() {
+        if !test_database::is_configured() {
+            eprintln!("skipping: {} not set", test_database::URL_ENV);
+            return;
+        }
+        let db = fresh_db().await;
+        let pool = db.pool().clone();
+        let org_id: Uuid = sqlx::query_scalar(
+            "insert into orgs (name, slug) values ('acme', 'acme') returning id",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let team_id: Uuid =
+            sqlx::query_scalar("insert into teams (org_id, name) values ($1, 'core') returning id")
+                .bind(org_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        let project_id: Uuid = sqlx::query_scalar(
+            "insert into projects (team_id, name) values ($1, 'api') returning id",
+        )
+        .bind(team_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let mut providers = HashMap::new();
+        for name in ["cheap", "premium"] {
+            let id: Uuid = sqlx::query_scalar(
+                "insert into providers (org_id, name, slug, kind, api_base)
+                 values ($1, $2, $2, 'openai', 'https://api.openai.com') returning id",
+            )
+            .bind(org_id)
+            .bind(name)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            providers.insert(name, id);
+        }
+        // (route, [(provider, takes_over)])
+        type Targets<'a> = &'a [(&'a str, &'a [&'a str])];
+        let routes: [(&str, Targets); 3] = [
+            ("guarded", &[("cheap", &[]), ("premium", &["refusal"])]),
+            ("bad-class", &[("cheap", &[]), ("premium", &["bogus"])]),
+            ("stranded", &[("premium", &["refusal"])]),
+        ];
+        for (model, targets) in routes {
+            let route_id: Uuid = sqlx::query_scalar(
+                "insert into routes (project_id, model, strategy) values ($1, $2, 'round_robin')
+                 returning id",
+            )
+            .bind(project_id)
+            .bind(model)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            for (provider, takes_over) in targets {
+                sqlx::query(
+                    "insert into route_targets (route_id, provider_id, weight, takes_over)
+                     values ($1, $2, 1, $3)",
+                )
+                .bind(route_id)
+                .bind(providers[provider])
+                .bind(takes_over)
+                .execute(&pool)
+                .await
+                .unwrap();
+            }
+        }
+
+        let store = PostgresConfigStore::new(pool.clone());
+        let config = store.load().await.unwrap();
+        let models: Vec<&str> = config.routes.iter().map(|r| r.model.as_str()).collect();
+        assert_eq!(models, ["bad-class", "guarded"]);
+        assert_eq!(config.validate_snapshot(), Ok(()));
+        let guarded = &config.routes[1];
+        assert_eq!(guarded.targets.len(), 2);
+        assert_eq!(
+            guarded.targets[1].takes_over,
+            vec!["refusal".parse().unwrap()]
+        );
+        let bad = &config.routes[0];
+        assert_eq!(bad.targets.len(), 1, "the unreadable target is dropped");
+        assert_eq!(bad.targets[0].provider, "cheap");
+
+        let before = current_version(&pool).await.unwrap();
+        sqlx::query(
+            "update route_targets set takes_over = '{throttled}' where takes_over = '{refusal}'",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        assert!(current_version(&pool).await.unwrap() > before);
     }
 
     /// #2938: a route whose jsonb settings do not parse used to load on the

@@ -156,6 +156,33 @@ Expiry is enforced by the gateway, not merely recorded: an expired key is
 refused at the data plane with a 401 that does not say which key it was or when
 it lapsed.
 
+### Rotating a shared key
+
+A key an admin minted for a project (**Governance → Virtual Keys**) can be
+rotated in place with the **Rotate** button on its row, or
+`POST /api/v1/virtual-keys/{id}/rotate`. The rotation issues a new secret for the
+**same key**: its models, providers, cache setting, attribution, limits, expiry
+and history all carry over, so there is nothing to copy by hand and nothing to
+miss. The new secret is shown once, like a mint.
+
+By default the old secret stops authenticating at the next snapshot. To roll a
+fleet out gradually, choose an **overlap** (1 hour, 24 hours or 7 days in the
+dashboard; `overlap_seconds` in the API, up to 30 days). During the overlap the
+old secret authenticates as the same key, with the same limits and attribution,
+and it never outlives the key's own expiry. The row names the old secret's
+prefix and when it stops working, and **Revoke now**
+(`DELETE /api/v1/virtual-keys/{id}/previous-secret`) ends the overlap early.
+Rotating again while an overlap is running replaces the old secret with the
+latest one: a key holds at most one previous secret.
+
+Rotation takes the same role as editing the key (admin on its project), and only for a shared key: a key a member minted for themself answers `409`, because the secret would run as that member, so they rotate it from **Account**. Disabling a key also ends its overlap, so re-enabling it later does not bring the old secret back. Both the
+rotation and an early revoke are recorded in the audit log as
+`virtual_key.rotate` and `virtual_key.revoke_previous_secret`; only the secrets'
+prefixes are recorded, and only peppered digests are ever stored.
+
+A key you minted for yourself is rotated from **Account** instead, which issues a
+second key and disables the first.
+
 ### After the key is minted
 
 The key is shown in a dialog, once, with a **Copy** button. Under it the dialog

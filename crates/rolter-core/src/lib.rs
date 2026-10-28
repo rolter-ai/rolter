@@ -18,6 +18,7 @@ pub mod config_lint;
 pub mod config_migrate;
 pub mod currency;
 pub mod error;
+pub mod failover;
 pub mod guardrail_webhook;
 pub mod guardrails;
 pub mod mcp_challenge;
@@ -53,10 +54,10 @@ pub use config::{
     LoggingConfig, McpAuthKind, McpOAuthSessionConfig, McpOrgSettingsConfig, McpServerConfig,
     McpToolGroupConfig, McpToolGroupSubjectConfig, McpToolRefConfig, MetricsScrapeConfig,
     ModelDefaultsConfig, ModelLimits, ModelPriceConfig, ModelRoute, ModelVisibility, OverrideMode,
-    ParamPolicy, PayloadCaptureConfig, ProviderConfig, ProviderGroupConfig, ProviderKind,
-    QueueConfig, RateLimitConfig, RealtimeConfig, ResponsesConfig, RetryConfig, RoleProfile,
-    RouteCache, ScopeWithin, SecurityPolicyConfig, SemanticCacheConfig, ServerConfig, Target,
-    Tenancy, TimeoutConfig, TlsConfig, UnpricedPolicy, UsageRecordingConfig, Variant,
+    ParamPolicy, PayloadCaptureConfig, PreviousKeySecret, ProviderConfig, ProviderGroupConfig,
+    ProviderKind, QueueConfig, RateLimitConfig, RealtimeConfig, ResponsesConfig, RetryConfig,
+    RoleProfile, RouteCache, ScopeWithin, SecurityPolicyConfig, SemanticCacheConfig, ServerConfig,
+    Target, Tenancy, TimeoutConfig, TlsConfig, UnpricedPolicy, UsageRecordingConfig, Variant,
     VirtualKeyConfig, VirtualKeyRecord, MAX_EXPLORATION_RATIO, MAX_ROUTE_RETRIES,
     MAX_ROUTE_THROUGHPUT, MCP_TRANSPORTS, PUBLIC_EXAMPLE_KEY, RESERVED_PATHS,
     RESERVED_ROUTE_HEADERS,

@@ -72,6 +72,10 @@
         "denied_models": ["x"],
         "allowed_routes": ["llama"],
         "denied_routes": ["y"]
+      },
+      "previous": {
+        "key_hash": "hash-retired",
+        "valid_until": "2030-01-01T00:00:00Z"
       }
     }
   ],
@@ -571,6 +575,12 @@
           "model": "gpt-4o",
           "provider": "openai",
           "weight": 1
+        },
+        {
+          "model": "burst-model",
+          "provider": "anthropic",
+          "weight": 1,
+          "takes_over": ["throttled", "refusal:violence"]
         }
       ],
       "variants": []
