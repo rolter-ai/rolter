@@ -1264,7 +1264,7 @@ impl TimeBounds for InvocationsQuery {
 /// is not a total order and ClickHouse may return tied rows in any order it
 /// likes (#1344). With `request_id` in both the sort and the cursor, tied
 /// timestamps have one order and the cursor names exactly one row.
-fn invocations_sql(status_expr: &str, columns: &Columns) -> String {
+pub(crate) fn invocations_sql(status_expr: &str, columns: &Columns) -> String {
     let cursor = invocations_keyset_predicate(&columns.expr("seq"));
     let seq = columns.select("seq");
     let seq_order = columns.expr("seq");
@@ -1342,7 +1342,7 @@ pub(crate) fn outcome_filter_values() -> Vec<&'static str> {
 /// Whether `outcome` is a value the `outcome` filter accepts; empty is no
 /// filter. Checked before the query so a typo answers 400 rather than an
 /// empty page that reads as "no such requests".
-fn is_outcome_filter(outcome: &str) -> bool {
+pub(crate) fn is_outcome_filter(outcome: &str) -> bool {
     outcome.is_empty() || outcome_filter_values().contains(&outcome)
 }
 
@@ -2872,6 +2872,35 @@ mod optional_column_tests {
         assert_eq!(status, StatusCode::OK, "{body}");
         assert_eq!(body["recorded"], false, "{body}");
         assert_eq!(body["data"], json!([]), "{body}");
+    }
+
+    /// An outcome the gateway never writes is a 400 on the list and on its
+    /// export alike, before ClickHouse is asked anything (#3307, #3386).
+    #[tokio::test]
+    async fn an_unknown_outcome_is_refused_by_the_list_and_the_export() {
+        let stub = Stub::start(REQUIRED).await;
+        let app = app_over(ClickHouseClient::new(&stub.url));
+        for path in [
+            "/api/v1/analytics/invocations",
+            "/api/v1/analytics/invocations/export",
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::get(format!("{path}?outcome=refused_everything"))
+                        .body(Body::empty())
+                        .expect("a valid request"),
+                )
+                .await
+                .expect("the router answers");
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{path}");
+            let body = to_bytes(response.into_body(), 1 << 20)
+                .await
+                .expect("a readable body");
+            let body: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
+            let message = body["error"]["message"].as_str().unwrap_or_default();
+            assert!(message.contains("refused_budget"), "{path}: {body}");
+        }
     }
 
     async fn adjustment_rollup(app: &Router) -> (StatusCode, Value) {

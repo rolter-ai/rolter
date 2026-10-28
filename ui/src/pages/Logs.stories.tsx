@@ -3900,7 +3900,7 @@ let logExport: Recorder;
 export const ExportSendsTheFiltersOnScreenAndKeepsTheServersFileName: Story = {
   parameters: {
     address:
-      "/logs?status=error&unpriced=true&model=internal-llama&guardrail=blocked:pii&plugin=blocked:acme",
+      "/logs?status=error&unpriced=true&withheld=true&usage_unknown=true&outcome=refused_budget&model=internal-llama&guardrail=blocked:pii&plugin=blocked:acme",
   },
   render: () => {
     logExport = recording(
@@ -3935,6 +3935,10 @@ export const ExportSendsTheFiltersOnScreenAndKeepsTheServersFileName: Story = {
     // the guardrail and plugin filters travel too, or the file would hold the unfiltered log
     await expect(params.get("guardrail")).toBe("blocked:pii");
     await expect(params.get("plugin")).toBe("blocked:acme");
+    // and so do the delivery flags and the outcome (#3386)
+    await expect(params.get("withheld")).toBe("true");
+    await expect(params.get("usage_unknown")).toBe("true");
+    await expect(params.get("outcome")).toBe("refused_budget");
     await expect(params.has("cursor")).toBe(false);
     await expect(params.has("limit")).toBe(false);
   },

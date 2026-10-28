@@ -43,15 +43,21 @@ export function exportInvocationsCsv(
     AnalyticsRowFilters & {
       status?: "all" | "error" | "success";
       unpriced?: boolean;
+      withheld?: boolean;
+      usage_unknown?: boolean;
       guardrail?: string;
       plugin?: string;
+      outcome?: string;
     },
 ): Promise<AnalyticsExportFile> {
   const params = windowParams(query);
   setRowFilterParams(params, query);
   if (query.status) params.set("status", query.status);
   if (query.unpriced) params.set("unpriced", "true");
+  if (query.withheld) params.set("withheld", "true");
+  if (query.usage_unknown) params.set("usage_unknown", "true");
   if (query.guardrail) params.set("guardrail", query.guardrail);
   if (query.plugin) params.set("plugin", query.plugin);
+  if (query.outcome) params.set("outcome", query.outcome);
   return download("/api/v1/analytics/invocations/export", params);
 }

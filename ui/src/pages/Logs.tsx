@@ -1046,8 +1046,13 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
                     business_unit: unitSel.length ? unitSel : undefined,
                     customer: customerSel.length ? customerSel : undefined,
                     unpriced: unpriced || undefined,
+                    // the whole rail travels, so a filtered view never
+                    // exports unfiltered (#3386)
+                    withheld: withheld || undefined,
+                    usage_unknown: usageUnknown || undefined,
                     guardrail: guardrail || undefined,
                     plugin: plugin || undefined,
+                    outcome: outcome || undefined,
                     status,
                   })
                 }
