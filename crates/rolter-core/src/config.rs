@@ -1061,8 +1061,8 @@ pub struct ApiKeyConfig {
 
 /// A defaulted entry carries no secret and the neutral weight the TOML
 /// `#[serde(default)]` would apply, so a fixture can name only the field it
-/// cares about. Derived `Default` would give `weight = 0`, which every sampler
-/// then has to clamp.
+/// cares about. Derived `Default` would give `weight = 0`, which now means
+/// "never picked while another key has a positive weight".
 impl Default for ApiKeyConfig {
     fn default() -> Self {
         Self {
@@ -1136,7 +1136,7 @@ impl ProviderConfig {
         }
         self.api_keys
             .iter()
-            .filter_map(|k| k.resolve().map(|s| (s, k.weight.max(1))))
+            .filter_map(|k| k.resolve().map(|s| (s, k.weight)))
             .collect()
     }
 
@@ -1915,27 +1915,27 @@ pub struct Variant {
 /// sequence whose weights are all 0 is sampled uniformly. Returns `None` for
 /// an empty sequence.
 fn weighted_index(weights: impl Iterator<Item = u32>, r: f64) -> Option<usize> {
-    let mut clamped: Vec<u64> = weights.map(u64::from).collect();
-    if clamped.is_empty() {
+    let mut shares: Vec<u64> = weights.map(u64::from).collect();
+    if shares.is_empty() {
         return None;
     }
-    if clamped.iter().all(|&w| w == 0) {
-        clamped.iter_mut().for_each(|w| *w = 1);
+    if shares.iter().all(|&w| w == 0) {
+        shares.iter_mut().for_each(|w| *w = 1);
     }
-    let total: u64 = clamped.iter().sum();
+    let total: u64 = shares.iter().sum();
     // map r into [0, total); guard against r outside [0,1) landing past the end
     let mut point = (r.clamp(0.0, 1.0) * total as f64) as u64;
     if point >= total {
         point = total - 1;
     }
     let mut acc = 0u64;
-    for (i, w) in clamped.iter().enumerate() {
+    for (i, w) in shares.iter().enumerate() {
         acc += w;
         if point < acc {
             return Some(i);
         }
     }
-    Some(clamped.len() - 1)
+    Some(shares.len() - 1)
 }
 
 /// Default override mode for a route's params: whether callers may override the
@@ -6937,14 +6937,14 @@ mod tests {
             ApiKeyConfig {
                 key: Some("k2".to_string()),
                 env: None,
-                weight: 0, // clamped to 1
+                weight: 0,
             },
         ]);
         // the legacy pair is ignored once api_keys is non-empty
         assert_eq!(p.resolve_api_key().as_deref(), Some("k1"));
         assert_eq!(
             p.resolve_api_keys(),
-            vec![("k1".to_string(), 3), ("k2".to_string(), 1)]
+            vec![("k1".to_string(), 3), ("k2".to_string(), 0)]
         );
     }
 
@@ -7021,6 +7021,37 @@ mod tests {
             single.pick_api_key_indexed(0.9, |_| true).unwrap(),
             (0, "legacy".to_string())
         );
+    }
+
+    #[test]
+    fn a_zero_weight_key_is_picked_only_when_no_other_key_can_be() {
+        let keys = |weights: [u32; 2]| {
+            provider_with_keys(
+                weights
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &weight)| ApiKeyConfig {
+                        key: Some(format!("k{i}")),
+                        env: None,
+                        weight,
+                    })
+                    .collect(),
+            )
+        };
+        let draws = || (0..=100).map(|i| f64::from(i) / 100.0);
+        // [0, 9]: key 0 never takes a first pick
+        let skewed = keys([0, 9]);
+        for r in draws() {
+            assert_eq!(skewed.pick_api_key_indexed(r, |_| false).unwrap().0, 1);
+        }
+        // [0, 0]: uniform
+        let flat = keys([0, 0]);
+        assert_eq!(flat.pick_api_key_indexed(0.1, |_| false).unwrap().0, 0);
+        assert_eq!(flat.pick_api_key_indexed(0.9, |_| false).unwrap().0, 1);
+        // the 9-weight key parked on a cooldown: the zero-weight key is used
+        for r in draws() {
+            assert_eq!(skewed.pick_api_key_indexed(r, |i| i == 1).unwrap().0, 0);
+        }
     }
 
     #[test]
