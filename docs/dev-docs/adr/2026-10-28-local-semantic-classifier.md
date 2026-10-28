@@ -131,15 +131,16 @@ holds an empty registry.
 `/internal/snapshot` inside format 1. The kind enum has an `unknown` fallback
 (`#[serde(other)]`) that fails closed: a provider of a kind this gateway does
 not know blocks the stage whatever its `failure_mode`, so a future kind is
-additive under ADR-0038. A gateway older than this change ignores `kind`, sees a
-webhook with no URL, gets no verdict and applies the provider's
-`failure_mode` — the behaviour the operator chose for a provider that cannot
-answer; mixed fleets are covered in the rolling-upgrade note of the user docs.
+additive under ADR-0038. It joins the other fallback enums of #3347:
+`GatewayConfig::fail_closed_unknown_values` names it in the gateway's warn line
+(and leaves the value in place, since no known kind is a safe reading of it),
+and a config file spelling an unknown kind is refused with the accepted values.
+No released gateway predates the kind, since 1.0.0 serves format 1 with it.
 
 **Control plane.** Dashboard-registered providers store `kind`,
 `model_path` and `model_sha256` (migration 0190, relaxing the `url` check for
-local rows). The provider trial endpoint refuses a local provider: the model
-lives on the gateways' file system, not the control plane's.
+local rows). The provider trial endpoint stays webhook-only: the model lives
+on the gateways' file system, not the control plane's.
 
 ## Consequences
 

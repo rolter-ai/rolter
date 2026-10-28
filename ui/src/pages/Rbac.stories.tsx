@@ -174,6 +174,84 @@ const MATRIX: RbacMatrix = {
   custom_roles: [],
 };
 
+// #3362: a row that takes a scoped role *or* a deployment role (the alert rows,
+// "an admin at the scope, or an operator") carries both on the wire. The role
+// columns decide it like any scoped row, and a custom role can still be granted
+// it, unlike the deployment-only row beside it that no scope reaches
+const WITH_OPERATOR_ROWS: RbacMatrix = {
+  ...MATRIX,
+  resources: [
+    ...MATRIX.resources,
+    {
+      resource: "alert_rule",
+      scope: "project",
+      actions: [
+        {
+          action: "update",
+          minimum_role: "admin",
+          superadmin_only: false,
+          deployment_roles: ["operator"],
+          authenticated_only: false,
+        },
+      ],
+    },
+    {
+      resource: "cluster_node",
+      scope: "deployment",
+      actions: [
+        {
+          action: "update",
+          minimum_role: null,
+          superadmin_only: false,
+          deployment_roles: ["operator"],
+          authenticated_only: false,
+        },
+      ],
+    },
+  ],
+};
+
+export const ARowAScopedRoleOrAnOperatorReachesIsDecidedByTheRoleColumns: Story = {
+  render: () => (
+    <Harness fetchStub={stub(WITH_OPERATOR_ROWS)}>
+      <Rbac />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await within(canvasElement).findByText("alert_rule");
+    // an admin at the scope reaches it, a member does not: the deployment role
+    // does not turn the row into a superadmin's
+    await expect(matrixCell(canvasElement, "alert_rule", "admin")).toHaveAccessibleName(
+      /Update: allowed/,
+    );
+    await expect(matrixCell(canvasElement, "alert_rule", "member")).toHaveAccessibleName(
+      /Update: not allowed/,
+    );
+    // while a row only a deployment role reaches is nobody's scoped role
+    await expect(matrixCell(canvasElement, "cluster_node", "admin")).toHaveAccessibleName(
+      /Update: superadmin only/,
+    );
+  },
+};
+
+export const ACustomRoleCanBeGrantedARowAnOperatorAlsoReaches: Story = {
+  render: () => (
+    <Harness fetchStub={withRoles([], WITH_OPERATOR_ROWS)}>
+      <Rbac />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await openCustomTab(canvasElement);
+    await clickNewRole(canvasElement);
+    const form = within(sheet());
+    // story-wait-allow: a checkbox the matrix enables, not a gated control
+    await expect(await form.findByLabelText("Update on alert_rule")).not.toBeDisabled();
+    // and the deployment-only row stays out of reach of any custom role
+    // story-wait-allow: disabled by the matrix row (deployment-only) from the first paint, not by a gate
+    await expect(form.getByLabelText("Update on cluster_node")).toBeDisabled();
+  },
+};
+
 // a viewer that may also mint keys, plus a grant naming a resource this build
 // retired — reported rather than hidden, because it silently allows nothing
 const WITH_CUSTOM_ROLE: RbacMatrix = {

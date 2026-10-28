@@ -194,7 +194,7 @@ impl SemanticGuard<'_> {
                             );
                             continue;
                         }
-                        FailureMode::FailClosed => {
+                        FailureMode::FailClosed | FailureMode::Unknown => {
                             self.metrics.observe_guard_decision(
                                 policy_label,
                                 label,
@@ -239,7 +239,7 @@ impl SemanticGuard<'_> {
                     );
                 }
                 match action {
-                    ViolationAction::Block => {
+                    ViolationAction::Block | ViolationAction::Unknown => {
                         self.metrics.observe_guard_decision(
                             policy_label,
                             label,

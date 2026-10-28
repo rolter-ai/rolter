@@ -34,7 +34,7 @@ spec:
       {{- include "rolter.preflight" (dict "root" . "env" $gatewayEnv "role" "gateway") | nindent 6 }}
       containers:
         - name: gateway
-          image: {{ include "rolter.image" . | quote }}
+          image: {{ include "rolter.image" (dict "root" . "component" "gateway") | quote }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           command: ["rolter-gateway"]
           args: ["--config", "/etc/rolter/rolter.toml", "--snapshot-url", "http://{{ include "rolter.fullname" . }}-control:{{ .Values.control.service.port }}/internal/snapshot", "--admin-url", "http://{{ include "rolter.fullname" . }}-control:{{ .Values.control.service.port }}"]

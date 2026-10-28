@@ -6722,3 +6722,75 @@ async fn readyz_holds_a_gateway_refused_its_snapshot_format_only_before_a_first_
         Some("1")
     );
 }
+
+/// #3348: a gateway started with `--snapshot-url` is not ready until it applies
+/// its first snapshot, since its bootstrap file holds no key and a managed
+/// gateway refuses every request on an empty key set. A refused format is the
+/// more specific answer. Once a snapshot is applied it stays ready.
+#[tokio::test]
+async fn readyz_holds_a_managed_gateway_until_its_first_snapshot() {
+    let mut state = rolter_gateway::AppState::with_logging(&GatewayConfig::default(), None);
+    state.managed_auth = true;
+    let gw = serve(rolter_gateway::build_router(
+        state.clone(),
+        "/metrics",
+        32 * 1024 * 1024,
+    ))
+    .await;
+    let readyz = || async {
+        let response = reqwest::get(format!("http://{gw}/readyz")).await.unwrap();
+        (
+            response.status().as_u16(),
+            response.text().await.unwrap_or_default(),
+        )
+    };
+
+    assert_eq!(readyz().await, (503, "awaiting_snapshot".to_string()));
+    // a format refusal says more about why no snapshot arrived
+    assert!(state.refuse_snapshot_format());
+    assert_eq!(
+        readyz().await,
+        (503, "snapshot_format_unsupported".to_string())
+    );
+    state.clear_snapshot_format_refusal();
+    assert_eq!(readyz().await, (503, "awaiting_snapshot".to_string()));
+
+    // applied once: ready, and a snapshot that empties the key set later does
+    // not take it back out, since it keeps serving what it was given
+    state.reload(&GatewayConfig::default(), 3);
+    state.record_snapshot_format(1);
+    assert_eq!(readyz().await, (200, "ok".to_string()));
+}
+
+/// #3348: a managed gateway whose bootstrap file carries a virtual key, or
+/// opens auth on purpose, can serve before its first snapshot, so it is ready.
+#[tokio::test]
+async fn readyz_counts_a_managed_gateway_with_bootstrap_keys_as_ready() {
+    let keyed = GatewayConfig {
+        virtual_keys: vec![VirtualKeyConfig {
+            key: "vk-bootstrap".to_string(),
+            name: None,
+            models: vec![],
+            providers: vec![],
+            disabled: false,
+            expires_at: None,
+            cache: None,
+        }],
+        ..GatewayConfig::default()
+    };
+    let mut open = GatewayConfig::default();
+    open.server.require_auth = Some(false);
+    for config in [keyed, open] {
+        let mut state = rolter_gateway::AppState::with_logging(&config, None);
+        state.managed_auth = true;
+        let gw = serve(rolter_gateway::build_router(
+            state,
+            "/metrics",
+            32 * 1024 * 1024,
+        ))
+        .await;
+        let response = reqwest::get(format!("http://{gw}/readyz")).await.unwrap();
+        assert_eq!(response.status().as_u16(), 200);
+        assert_eq!(response.text().await.unwrap(), "ok");
+    }
+}

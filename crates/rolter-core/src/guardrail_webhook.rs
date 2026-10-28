@@ -19,6 +19,11 @@ pub const DEFAULT_TIMEOUT_MS: u64 = 2_000;
 pub const DEFAULT_MAX_BODY_BYTES: usize = 64 * 1024;
 
 /// Stage at which the webhook is consulted.
+///
+/// Deliberately closed (#3347): a stage says where the gateway calls the
+/// service, and no reading of an unknown one narrows what is served without
+/// guessing what the service inspects. A new stage is a snapshot format bump
+/// (ADR-0038).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WebhookStage {
@@ -40,6 +45,10 @@ pub enum FailureMode {
     FailOpen,
     /// reject the request with an OpenAI-compatible error (enforcement over availability)
     FailClosed,
+    /// a mode this build does not know (#3347); read as
+    /// [`FailureMode::FailClosed`]
+    #[serde(other)]
+    Unknown,
 }
 
 /// Where a guardrail provider's verdict comes from (#3329, ADR-0039).
@@ -89,6 +98,9 @@ pub fn is_sha256_hex(value: &str) -> bool {
 
 /// Credential attached to the webhook call. The secret is never inlined in
 /// config; it is resolved from the named environment variable at call time.
+///
+/// Deliberately closed (#3347): it carries data, which `#[serde(other)]` cannot
+/// stand in for. A new scheme is a snapshot format bump (ADR-0038).
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WebhookAuth {
@@ -215,8 +227,8 @@ impl GuardrailWebhookConfig {
             // not a problem here: a snapshot from a newer control plane may
             // carry a kind this build does not know, and refusing the whole
             // snapshot over it would freeze every other setting. it fails
-            // closed at request time instead, and a config file naming one is
-            // refused by `GatewayConfig::validate`
+            // closed at request time instead (`fail_closed_unknown_values` names
+            // it), and a config file naming one is refused at load as a typo
             GuardProviderKind::Unknown => {}
         }
         if self.timeout_ms == 0 {

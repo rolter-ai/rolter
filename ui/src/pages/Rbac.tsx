@@ -133,7 +133,10 @@ function cellState(resource: RbacResourceView, action: RbacAction, column: RoleC
   if (!view) return "na";
   // a deployment role (#1834) is held on the account, never at a scope, so no
   // column of this table reaches such a row either
-  if (view.superadmin_only || view.deployment_roles?.length) return "superadmin";
+  // unless it also takes a scoped role (#3362), which the columns below decide
+  if (view.superadmin_only || (view.deployment_roles?.length && view.minimum_role === null)) {
+    return "superadmin";
+  }
   if (view.authenticated_only) return "allowed";
   if (view.minimum_role !== null && column.rank >= RANK[view.minimum_role]) {
     return "allowed";
@@ -1016,7 +1019,9 @@ function GrantGrid({
                       </span>
                     );
                   }
-                  const deploymentWide = view.superadmin_only || !!view.deployment_roles?.length;
+                  const deploymentWide =
+                    view.superadmin_only ||
+                    (!!view.deployment_roles?.length && view.minimum_role === null);
                   return (
                     <span key={action} className="flex w-6 justify-center">
                       <Checkbox

@@ -541,6 +541,10 @@ struct RouteScopeRow {
 /// still rejected them, and because every route loads through one query, a
 /// single route on a new strategy failed `/internal/snapshot` outright. The
 /// whole fleet then held its last good config with nothing but a 500 to say why.
+///
+/// A value this build does not know, one a newer release wrote, reads as
+/// [`BalancingStrategy::Unknown`] (#3347): the snapshot sanitizer then omits
+/// that route and names it, and the rest of the config still loads.
 fn parse_strategy(s: &str) -> Result<BalancingStrategy> {
     serde_json::from_value(serde_json::Value::String(s.to_string()))
         .map_err(|_| Error::Store(format!("unknown balancing strategy '{s}'")))
@@ -1760,9 +1764,21 @@ fn route_settings_from_row(row: &RouteRow) -> std::result::Result<RouteSettings,
             )
         })
     }
+    let param_policy: ParamPolicy = column(row, "param_policy", &row.param_policy)?;
+    // a mode this build does not know decodes as `Unknown` rather than failing
+    // (#3347); the store still reads it as a row it cannot read, so it is left
+    // out and named like any other
+    if param_policy.mode == rolter_core::OverrideMode::Unknown {
+        return Err(format!(
+            "route '{}' ({}) has a param_policy value that does not parse (a mode this build \
+             does not know), so the route is left out of the snapshot and its model is not \
+             served; repair the param_policy value or delete the route",
+            row.model, row.id
+        ));
+    }
     Ok(RouteSettings {
         params: column(row, "params", &row.params)?,
-        param_policy: column(row, "param_policy", &row.param_policy)?,
+        param_policy,
         advanced: column(row, "advanced", &row.advanced)?,
     })
 }
@@ -2469,6 +2485,8 @@ mod tests {
             BalancingStrategy::Adaptive => "adaptive",
             BalancingStrategy::LoraAware => "lora_aware",
             BalancingStrategy::PredictedLatency => "predicted_latency",
+            // never stored: it stands for a value a newer release wrote (#3347)
+            BalancingStrategy::Unknown => unreachable!("Unknown has no column value"),
         }
     }
 
@@ -2511,12 +2529,13 @@ mod tests {
         }
     }
 
+    /// A strategy a newer release stored reads as `Unknown`, which the snapshot
+    /// sanitizer omits, rather than failing the whole load (#3347).
     #[test]
-    fn an_unknown_strategy_is_still_an_error() {
-        let err = parse_strategy("teleport").expect_err("unknown strategy must not parse");
-        assert!(
-            err.to_string().contains("teleport"),
-            "the message should name the offending value, got: {err}"
+    fn an_unknown_strategy_reads_as_unknown_rather_than_failing_the_load() {
+        assert_eq!(
+            parse_strategy("teleport").expect("a strategy from a newer release still loads"),
+            BalancingStrategy::Unknown
         );
     }
 
@@ -5647,10 +5666,11 @@ mod tests {
         assert!(current_version(&pool).await.unwrap() > before);
     }
 
-    /// #3321: a route the assembly cannot read at all (a strategy no build
-    /// knows) fails the routes' own part of the problem list, not the list:
-    /// every other explanation is still there, with a line saying the routes
-    /// could not be read.
+    /// #3321: when the assembly cannot read the routes at all, only the
+    /// routes' own part of the problem list fails, not the list: every other
+    /// explanation is still there, with a line saying the routes could not be
+    /// read. A strategy no build knows no longer fails the read since #3347 (it
+    /// loads as `Unknown`), so a table the assembly reads is taken away instead.
     #[tokio::test]
     async fn an_unreadable_route_keeps_the_other_problems() {
         if !test_database::is_configured() {
@@ -5678,28 +5698,20 @@ mod tests {
         .fetch_one(&pool)
         .await
         .unwrap();
-        // the constraint that stops a write of an unknown strategy is dropped
-        // so the row can be made, as a downgrade could leave one
-        sqlx::query("alter table routes drop constraint routes_strategy_check")
+        sqlx::query(
+            "insert into routes (project_id, model, strategy, params)
+             values ($1, 'bad-params', 'round_robin', '[\"max_tokens\"]'::jsonb)",
+        )
+        .bind(project_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        // the assembly reads the variant targets, so without the table it
+        // cannot read the routes at all. the schema is this test's own
+        sqlx::query("drop table route_variant_targets")
             .execute(&pool)
             .await
             .unwrap();
-        for (model, strategy, params) in [
-            ("bad-params", "round_robin", r#"["max_tokens"]"#),
-            ("teleported", "teleport", "{}"),
-        ] {
-            sqlx::query(
-                "insert into routes (project_id, model, strategy, params)
-                 values ($1, $2, $3, $4::jsonb)",
-            )
-            .bind(project_id)
-            .bind(model)
-            .bind(strategy)
-            .bind(params)
-            .execute(&pool)
-            .await
-            .unwrap();
-        }
 
         let store = PostgresConfigStore::new(pool.clone());
         let problems = store.load_problem_records().await.unwrap();
@@ -5711,7 +5723,7 @@ mod tests {
             problems
                 .iter()
                 .any(|p| p.message.contains("the routes could not be read")
-                    && p.message.contains("teleport")),
+                    && p.message.contains("route_variant_targets")),
             "{problems:?}"
         );
     }

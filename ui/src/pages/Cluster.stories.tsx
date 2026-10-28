@@ -97,6 +97,35 @@ export const Loaded: Story = {
   },
 };
 
+/**
+ * Each node's snapshot format (#3351): gw-1 is served the current one, gw-2
+ * an older one, which leaves it lagging on the current config version, and
+ * gw-3 was refused one. The title of each cell names the formats it reads.
+ */
+export const SnapshotFormats: Story = {
+  render: () => (
+    <Harness
+      fetchStub={async () =>
+        json([
+          node({ formats_min: 2, formats_max: 2, served_format: 2 }),
+          node({ id: "gw-2", formats_min: 1, formats_max: 1, served_format: 1, converged: false }),
+          node({ id: "gw-3", formats_min: 3, formats_max: 3, served_format: null }),
+        ])
+      }
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getByRole("columnheader", { name: "Format" })).toBeVisible());
+    await expect(canvas.getByText("Lagging")).toBeVisible();
+    const refused = canvas.getByText("Refused");
+    await expect(refused).toBeVisible();
+    await expect(getComputedStyle(refused).color).toBe(resolveColorToken("--status-danger-text"));
+    await expect(refused.parentElement).toHaveAttribute("title", "Reads snapshot formats 3 to 3");
+    await expect(canvas.getByTitle("Reads snapshot formats 1 to 1")).toHaveTextContent("1");
+  },
+};
+
 export const LoadedInRussian: Story = {
   globals: { locale: "ru" },
   render: () => <Harness fetchStub={async () => json(FLEET)} />,

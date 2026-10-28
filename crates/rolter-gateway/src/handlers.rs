@@ -46,11 +46,16 @@ pub async fn readyz(State(state): State<AppState>) -> impl IntoResponse {
     if state.draining.load(std::sync::atomic::Ordering::Relaxed) {
         return (StatusCode::SERVICE_UNAVAILABLE, "draining");
     }
+    // the more specific of the two answers for a gateway with no snapshot:
+    // it says why none arrived and what to do about it
     if state.unready_for_snapshot_format() {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
             "snapshot_format_unsupported",
         );
+    }
+    if state.awaiting_first_snapshot() {
+        return (StatusCode::SERVICE_UNAVAILABLE, "awaiting_snapshot");
     }
     (StatusCode::OK, "ok")
 }

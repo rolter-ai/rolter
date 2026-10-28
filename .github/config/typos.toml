@@ -55,6 +55,11 @@ extend-ignore-re = [
   "connect_timout_ms",
   "wieght",
   "defualt",
+  # "blok"/"fail_closd": deliberately-misspelled enum values in the config-file
+  # typo test (#3347), which asserts an unknown value is refused with the
+  # accepted ones listed. correcting them would delete the test's subject
+  '\\"blok\\"',
+  '\\"fail_closd\\"',
   # "nam": a truncated `name` in the suggestion-distance test, which pins that a
   # three-letter key still gets its obvious match
   "\"nam\"",

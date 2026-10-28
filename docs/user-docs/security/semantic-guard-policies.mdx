@@ -174,8 +174,6 @@ The pin is required. A file whose digest differs is not loaded, so replacing a m
 
 **CPU.** Inference runs off the request workers, behind one limit per gateway shared by every local provider: `[semantic_guards] local_concurrency`, by default the number of CPUs the process may use. A call waits for a slot at most its provider's `timeout_ms`, which also bounds the inference; a call that gets no slot is `overloaded` and follows the provider's `failure_mode`, exactly like a webhook that answered `503`. A typical 64 KiB body takes well under a millisecond, so `timeout_ms` of a few tens of milliseconds is plenty. The limit is per gateway replica.
 
-**Rolling upgrades.** A gateway older than local providers ignores `kind` and sees a provider with no URL: it gets no verdict and applies the provider's `failure_mode`. Upgrade the gateways before you add a local provider with `fail_open`, or they skip it until they are upgraded.
-
 **On the dashboard**, choose **Local classifier** as the provider's kind and enter the path and digest. The control plane never opens the file, so the provider test is for webhooks only.
 
 ## Streamed responses
