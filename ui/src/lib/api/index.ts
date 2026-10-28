@@ -76,6 +76,7 @@ export {
   fetchAttributionSpend,
   fetchGuardrailOutcomes,
   fetchPluginOutcomes,
+  fetchParamAdjustments,
 } from "./analytics";
 export type {
   AnalyticsWindow,
@@ -90,6 +91,8 @@ export type {
   GuardrailOutcomes,
   PluginOutcomeRow,
   PluginOutcomes,
+  ParamAdjustmentRow,
+  ParamAdjustments,
 } from "./analytics";
 export { fetchAuditLogPage, fetchDeploymentAuditLogPage, fetchAuditLogExport } from "./audit";
 export type { AuditLogEntry, AuditLogPage, AuditLogQuery, AuditLogExportFile } from "./audit";
@@ -264,6 +267,8 @@ export {
 export type { LabelRow, LabelFilter } from "./labels";
 export { fetchInvocations, fetchInvocationsPage } from "./logs";
 export type { InvocationRow, InvocationsQuery, InvocationsPage } from "./logs";
+export { REQUEST_OUTCOMES } from "./logs";
+export type { RequestOutcome } from "./logs";
 export {
   MCP_TRANSPORTS,
   MCP_STATUSES,
@@ -289,6 +294,7 @@ export {
   fetchMcpSettings,
   updateMcpSettings,
   fetchMcpGrants,
+  startMcpStepUp,
   revokeMcpGrant,
   fetchMcpSessions,
   revokeMcpSession,
@@ -379,8 +385,9 @@ export {
   confirmMfaEnrolment,
   regenerateRecoveryCodes,
   disableMfa,
+  fetchOrgMfaStatus,
 } from "./mfa";
-export type { MfaPolicy, MfaStatus, MfaEnrolment, RecoveryCodes } from "./mfa";
+export type { MfaPolicy, MfaStatus, MfaEnrolment, RecoveryCodes, OrgMemberMfa } from "./mfa";
 export { fetchPlugins, createPlugin, updatePlugin, deletePlugin } from "./plugins";
 export type { PluginInstanceRow, PluginInstanceInput } from "./plugins";
 export {
@@ -631,6 +638,36 @@ export type {
   CreateSsoGroupMappingInput,
   OrgAuthPolicy,
 } from "./sso";
+export {
+  fetchLdapDirectories,
+  createLdapDirectory,
+  updateLdapDirectory,
+  deleteLdapDirectory,
+  fetchLdapGroupMappings,
+  createLdapGroupMapping,
+  deleteLdapGroupMapping,
+} from "./ldap";
+export type {
+  LdapDirectoryRow,
+  LdapDirectoryInput,
+  LdapGroupMappingRow,
+  CreateLdapGroupMappingInput,
+} from "./ldap";
+export {
+  apiTokenState,
+  fetchApiTokens,
+  mintApiToken,
+  rotateApiToken,
+  revokeApiToken,
+} from "./api-tokens";
+export type { ApiTokenRow, ApiTokenState, MintedApiToken, MintApiTokenInput } from "./api-tokens";
+export { createLogErasure, fetchLogErasure, fetchLogErasures } from "./log-erasure";
+export type {
+  CreateLogErasureInput,
+  LogErasureRow,
+  LogErasureScope,
+  LogErasureStatus,
+} from "./log-erasure";
 export { fetchVersion, fetchStability, fetchPublicUrl } from "./system";
 export type { SubsystemStability, VersionStatus, PublicUrl } from "./system";
 export {
@@ -671,6 +708,7 @@ export {
   MEMBERSHIP_SCOPE_TYPES,
   fetchUsers,
   fetchDeploymentUsers,
+  setDeploymentRole,
   inviteUser,
   updateUser,
   deleteUser,

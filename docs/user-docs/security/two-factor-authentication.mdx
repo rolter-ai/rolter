@@ -236,7 +236,7 @@ curl -sS -X PUT https://rolter.example.com/api/v1/orgs/$ORG/auth-policy \
 
 ### See who a policy would lock out
 
-Before you choose a `required_*` value, read who in the org has an armed factor:
+Before you choose a `required_*` value, read who in the org has an armed factor. The dashboard shows the same roster as a **Second factor** column on **Governance › Users** (armed or not set up, for admins), and the confirmation for a `required_*` policy on **Single Sign-On → Sign-in policy** says how many of the members it binds have none (for `required_superadmin`, only superadmins are counted):
 
 ```bash
 curl -sS https://rolter.example.com/api/v1/orgs/$ORG/mfa-status \

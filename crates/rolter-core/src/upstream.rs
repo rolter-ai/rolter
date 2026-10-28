@@ -88,6 +88,16 @@ impl ProviderKind {
         self == ProviderKind::SystemOne
     }
 
+    /// Whether this kind answers only embeddings (and, for Infinity, reranking).
+    ///
+    /// A text-embeddings server has no chat, messages, responses, image or
+    /// audio endpoint, so the gateway refuses those for a route whose targets
+    /// are all of this kind instead of forwarding a request the upstream would
+    /// `404` (#3247). [`EMBEDDINGS_PATH`] and [`RERANK_PATH`] are left alone.
+    pub fn embeddings_only(self) -> bool {
+        matches!(self, ProviderKind::Tei | ProviderKind::Infinity)
+    }
+
     /// Whether a request for [`SYSTEM_ONE_PATH`] can be forwarded to this kind.
     ///
     /// The dedicated kind, and the two self-hosted kinds known to serve the
@@ -140,6 +150,17 @@ mod tests {
         );
         assert_eq!(path(ProviderKind::GeminiInteractions), "/interactions");
         assert_eq!(path(ProviderKind::SystemOne), "/v1/systemone");
+    }
+
+    #[test]
+    fn the_embeddings_only_kinds_are_the_ones_that_chiefly_embed() {
+        for kind in ProviderKind::ALL {
+            assert_eq!(
+                kind.embeddings_only(),
+                kind.primary_request() == RequestKind::Embeddings,
+                "{kind:?}"
+            );
+        }
     }
 
     #[test]

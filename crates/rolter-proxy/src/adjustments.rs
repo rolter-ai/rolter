@@ -34,6 +34,13 @@ pub enum Disposition {
 }
 
 impl Disposition {
+    /// The disposition named `name`, `None` for any other string.
+    pub fn parse(name: &str) -> Option<Self> {
+        [Self::Dropped, Self::Clamped, Self::Translated]
+            .into_iter()
+            .find(|disposition| disposition.as_str() == name)
+    }
+
     /// The disposition's published name.
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -88,6 +95,25 @@ impl ParamAdjustments {
         if let Some(param) = known_param(name) {
             self.record(param, disposition);
         }
+    }
+
+    /// Rebuild a record from its [`ParamAdjustments::log_entries`], as a
+    /// response cache entry keeps it (#3326). An entry that does not read as
+    /// `<disposition>:<known parameter>` is left out, so a stored value can
+    /// never put a name outside the fixed list into a header.
+    pub fn from_log_entries<'a>(entries: impl IntoIterator<Item = &'a str>) -> Self {
+        let mut adjustments = Self::default();
+        for entry in entries {
+            let Some((disposition, param)) = entry.split_once(':') else {
+                continue;
+            };
+            if let (Some(disposition), Some(param)) =
+                (Disposition::parse(disposition), known_param(param))
+            {
+                adjustments.record(param, disposition);
+            }
+        }
+        adjustments
     }
 
     /// Withdraw an entry a later translation stage restored after all.
@@ -189,6 +215,29 @@ fn known_param(name: &str) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_record_round_trips_through_its_log_entries() {
+        let mut adjustments = ParamAdjustments::default();
+        adjustments.record("top_k", Disposition::Dropped);
+        adjustments.record("temperature", Disposition::Clamped);
+        adjustments.record("tool_choice", Disposition::Translated);
+        let entries = adjustments.log_entries();
+        let restored = ParamAdjustments::from_log_entries(entries.iter().map(String::as_str));
+        assert_eq!(restored, adjustments);
+        assert_eq!(restored.header_value(), adjustments.header_value());
+    }
+
+    #[test]
+    fn an_entry_outside_the_vocabulary_is_never_restored() {
+        let restored = ParamAdjustments::from_log_entries([
+            "dropped:x-caller-secret",
+            "vanished:top_k",
+            "top_k",
+            "dropped:top_k",
+        ]);
+        assert_eq!(restored.header_value().as_deref(), Some("top_k=dropped"));
+    }
 
     #[test]
     fn an_empty_record_has_no_header_and_no_allocation() {

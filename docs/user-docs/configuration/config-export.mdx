@@ -162,7 +162,7 @@ Identity is always a slug or a public model name, never a database id, which is 
 
 **Settings → Effective Config** carries an **Export rolter.toml** button beside the header. It calls the same endpoint and saves the document as `rolter-config-YYYY-MM-DD.toml`, dated so successive exports of one deployment sit side by side instead of overwriting each other.
 
-The button is superadmin-only, matching the endpoint. A scoped role sees it disabled with a tooltip saying so rather than a "forbidden" error after the click. If the export fails, the dashboard says why in a notification — a browser download that produces nothing has no other way to report it.
+The button is for a superadmin or a security auditor (a [deployment role](/security/rbac#deployment-roles)), matching the endpoint. Any other role sees it disabled with a tooltip saying so rather than a "forbidden" error after the click. If the export fails, the dashboard says why in a notification — a browser download that produces nothing has no other way to report it.
 
 ---
 
@@ -179,6 +179,6 @@ curl -H "Authorization: Bearer $ROLTER_ADMIN_TOKEN" \
   http://localhost:4001/api/v1/config/export -o rolter.toml
 ```
 
-The response is `application/toml` with a `rolter.toml` download filename. The endpoint is whole-deployment and superadmin-only: one document spans every org's providers, groups and routes, so there is no tenancy scope narrow enough to delegate it.
+The response is `application/toml` with a `rolter.toml` download filename. The endpoint is whole-deployment and read-only for a superadmin or a security auditor ([deployment role](/security/rbac#deployment-roles)): one document spans every org's providers, groups and routes, so there is no tenancy scope narrow enough to delegate it.
 
 The CLI does not call this endpoint — it reads the store directly, the same way `rolter-seed` writes to it directly, so an export works during a bootstrap or an incident when the control plane is not serving. Both paths render through the same code, so they cannot drift.

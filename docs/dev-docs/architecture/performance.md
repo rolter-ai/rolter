@@ -73,8 +73,10 @@ steady-state operation in `counting(...)` and asserts zero.
 path a request takes to a target, and prints an **allocs/op table before the
 timings**. It installs the same per-thread counting allocator as
 `hot_path_allocations.rs`, but only for the bench binary, so it reports counts
-for paths too large to assert zero on (a pipeline pick allocates its candidate
-and score vectors) and a regression shows up as a number that moved. It covers:
+for paths too large to assert zero on (a pick over 128 targets, a pool past the
+one-word eligibility mask) and a regression shows up as a number that moved.
+A pipeline pick up to 64 targets allocates nothing since #3249 and is asserted
+in `hot_path_allocations.rs`, beside the key-pool mask read. It covers:
 
 - `admission` — `Breaker::allows`, `Cooldowns::is_parked` and `Health::is_healthy`
   for an 8-target route, all healthy.
@@ -84,6 +86,8 @@ and score vectors) and a regression shows up as a number that moved. It covers:
   reads them as the emptiest.
 - `snapshot_read` — `AppState.snapshot.load()` plus the route lookup, over 10 and
   1000 routes.
+- `key_pool` — a multi-key provider's key pick asking which of its 8 keys are
+  parked, once per key and as one mask read (#3249).
 
 The load harness is not duplicated: `just load-sim` (above) already drives
 `fake-llm`-style traffic through `/v1/*` for throughput and p50/p99, and is the

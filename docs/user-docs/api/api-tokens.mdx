@@ -19,6 +19,10 @@ The control plane resolves the token to that role, so every permission check wor
 
 It is not a virtual key (the data plane, `/v1/*`) and not a SCIM token (provisioning, `/scim/v2/*`); each is refused at the other's door. See [which key do I need](/security/which-key).
 
+## In the dashboard
+
+**Governance › API tokens** lists the organization's tokens with their scope, role, prefix, expiry, last use and state (active, expired or revoked), mints one (the secret is shown once, with a copy button), and rotates or revokes one after a confirmation. It takes the same roles as the API: minting, rotating and revoking need admin at the token's own scope. A revoked or expired token cannot be rotated.
+
 ## Mint a token
 
 Minting takes an **admin of the token's own scope**: an org admin mints org-wide, team and project tokens, and a project admin mints tokens for that project only. A token therefore never holds more than the person who made it.

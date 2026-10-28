@@ -119,6 +119,7 @@ export const SCREENS: Record<string, React.ReactNode> = {
   "guardrail-providers": screen(() => import("@/pages/GuardrailProviders")),
   "guardrail-policies": screen(() => import("@/pages/GuardrailPolicies")),
   "logs-settings": screen(() => import("@/pages/LogsSettings")),
+  "log-erasure": screen(() => import("@/pages/LogErasure")),
   performance: screen(() => import("@/pages/Performance")),
   compatibility: screen(() => import("@/pages/Compatibility")),
   cluster: screen(() => import("@/pages/Cluster")),
@@ -128,6 +129,8 @@ export const SCREENS: Record<string, React.ReactNode> = {
   customers: named(() => import("@/pages/CostAttribution"), "Customers"),
   "user-provisioning": screen(() => import("@/pages/UserProvisioning")),
   sso: screen(() => import("@/pages/SingleSignOn")),
+  ldap: screen(() => import("@/pages/Ldap")),
+  "api-tokens": screen(() => import("@/pages/ApiTokens")),
   "prompt-repo": screen(() => import("@/pages/PromptRepository")),
   "skills-repo": screen(() => import("@/pages/SkillsRepository")),
 };

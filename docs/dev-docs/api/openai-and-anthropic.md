@@ -149,20 +149,31 @@ so instead of discarding it silently (#1586). Every adapter in
 `crates/rolter-proxy/src/translation.rs` records into one
 `rolter_proxy::ParamAdjustments` (`adjustments.rs`), an entry per parameter with
 a `Disposition`: `dropped` (no equivalent, not sent), `clamped` (sent within
-the upstream's range; no adapter clamps today, see #3324) or `translated` (sent as a lossy
+the upstream's range: Chat → Anthropic clamps `temperature`, see below) or `translated` (sent as a lossy
 approximation, such as a forced-function `tool_choice` sent to Gemini as mode
-`ANY`, an Anthropic `tool_choice` carrying `disable_parallel_tool_use`, or a
-tool list with non-function tools). A rename that keeps the meaning
+`ANY`, an Anthropic `tool_choice` carrying `disable_parallel_tool_use` sent to
+Gemini or Interactions, which have no such switch, or a tool list with
+non-function tools). A rename that keeps the meaning
 (`max_completion_tokens` → `max_tokens`, `stop` → `stop_sequences`) is not an
 adjustment. What each adapter reports:
 
-| Pair                         | Reported                                                                                                                        |
-| ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
-| Chat → Anthropic             | `n`, `presence_penalty`, `frequency_penalty`, `logprobs` dropped; `max_completion_tokens` dropped when `max_tokens` is also set |
-| Anthropic → Chat             | `tool_choice` translated when it carries `disable_parallel_tool_use`                                                            |
-| Responses → Chat / Anthropic | `background`, `store`, `previous_response_id`, `reasoning`, `text` dropped, plus the Chat → Anthropic row for Anthropic         |
-| any → Gemini generate        | every known parameter the translator does not map (`top_k`, `seed`, `response_format`, …); `tool_choice` and `tools` as above   |
-| any → Gemini Interactions    | as Gemini, except that `store` and `previous_response_id` are carried rather than dropped                                       |
+| Pair                         | Reported                                                                                                                                                                                |
+| ---------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Chat → Anthropic             | `n`, `presence_penalty`, `frequency_penalty`, `logprobs` dropped; `max_completion_tokens` dropped when `max_tokens` is also set; `temperature` clamped when above 1                     |
+| Anthropic → Chat             | nothing: `tool_choice.disable_parallel_tool_use: true` is carried as top-level `parallel_tool_calls: false` (#3325), and `false`, or `true` on a request with no tools, leaves it unset |
+| Responses → Chat / Anthropic | `background`, `store`, `previous_response_id`, `reasoning`, `text` dropped, plus the Chat → Anthropic row for Anthropic                                                                 |
+| any → Gemini generate        | every known parameter the translator does not map (`top_k`, `seed`, `response_format`, …); `tool_choice` and `tools` as above                                                           |
+| any → Gemini Interactions    | as Gemini, except that `store` and `previous_response_id` are carried rather than dropped                                                                                               |
+
+`temperature` is the one clamp (#3324, the maintainer's decision). OpenAI's Chat
+Completions and Responses accept 0 to 2 and Anthropic Messages 0 to 1, so a
+caller routed to Anthropic with `temperature: 1.3` used to get Anthropic's 400
+for a request valid in the dialect it speaks. `clamp_temperature` sends 1
+instead and records `temperature=clamped`; a value at or below 1, or one that is
+not a number, is forwarded as sent for the upstream to judge. Scaling (`t / 2`)
+was weighed and rejected, since it would change every request's temperature,
+including the ones Anthropic accepts as they are. Responses → Anthropic goes
+through the same Chat → Anthropic translator and clamps the same way.
 
 Gemini and Interactions build their body afresh, so the parameters left over in
 the source object are the dropped ones. Only names from `KNOWN_PARAMS` are
@@ -181,8 +192,16 @@ streamed, buffered and cached-store paths alike. The log row writes
 `<disposition>:<param>` entries to `request_logs.param_adjustments`
 (`clickhouse/022_param_adjustments.sql`, `Array(String)`, serialized only when
 non-empty, so a ClickHouse without the column keeps accepting every other row).
-A response served from the response cache did not go through translation and
-carries neither (#3326).
+A response served from the response cache did not go through translation, so
+the store keeps the record instead (#3326): `CachedResponse::param_adjustments`
+holds the miss's `log_entries()` (`#[serde(default)]` and skipped when empty, so
+an entry an older gateway stored reads as nothing adjusted and an unadjusted one
+is byte for byte what it was), and `cached_response` rebuilds it with
+`ParamAdjustments::from_log_entries`, which keeps only `<disposition>:<known
+parameter>` entries, onto the hit's log row and its header. The miss path does
+no extra work beyond rendering the entries it already writes to the log row. A
+semantic hit replays the adjustments of the request that produced the stored
+answer, which is what that answer was generated under.
 
 The common path pays nothing: a plan that does not translate returns an empty
 record, an empty `Vec` does not allocate, nothing is inserted into the response
@@ -293,6 +312,12 @@ Which routes answer which endpoint follows the provider kinds behind them
   `400 unsupported_endpoint`;
 - any other endpoint for a route whose targets are all `system_one` is refused
   the same way, naming `/v1/systemone`;
+- any endpoint but `/v1/embeddings` for a route whose targets are all
+  text-embeddings servers (`tei`, `infinity`; `ProviderKind::embeddings_only`)
+  is refused the same way, naming `/v1/embeddings`, without calling the
+  upstream (#3247), and so is `/v1/rerank` unless one of them is `infinity`,
+  the only one with a rerank mapping; this also turns the route's
+  `rolter_capabilities.chat` in `GET /v1/models` to `false`;
 - a route that mixes decision and chat targets balances as usual.
 
 Pre-call guardrails scan every string in `state` and in each question's
