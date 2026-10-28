@@ -4799,23 +4799,6 @@
       "bypassRoutesHint": "One exact /v1 path per line that skips the auth middleware. System routes like /health and the login endpoints are always open.",
       "bypassRoutesPlaceholder": "/v1/models\n/v1/ping",
       "edited": "Edited",
-      "discard": "Discard changes",
-      "status": {
-        "invalid_one": "Fix {{count}} entry to save.",
-        "invalid_other": "Fix {{count}} entries to save.",
-        "changed_one": "{{count}} setting changed, not saved yet.",
-        "changed_other": "{{count}} settings changed, not saved yet.",
-        "saved": "Saved at {{time}}."
-      },
-      "pickup": {
-        "checking": "Checking which gateways run it…",
-        "converged_one": "{{count}} live gateway is running it.",
-        "converged_other": "All {{count}} live gateways are running it.",
-        "lagging_one": "{{converged}} of {{count}} live gateway is running it; the rest pick it up on their next config poll.",
-        "lagging_other": "{{converged}} of {{count}} live gateways are running it; the rest pick it up on their next config poll.",
-        "none": "No live gateway has reported to this control plane, so pickup cannot be confirmed. A gateway applies it on its next config poll, 5 s by default.",
-        "unavailable": "The live gateways could not be read, so pickup cannot be confirmed. A gateway applies it on its next config poll, 5 s by default."
-      },
       "confirm": {
         "title_one": "Save a change that loosens security?",
         "title_other": "Save changes that loosen security?",

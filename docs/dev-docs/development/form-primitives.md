@@ -474,7 +474,7 @@ const { draft: form, fields, changed, set } = sf;
   the old value until Save, so `SettingsPanel unsaved` and `SwitchRow unsaved` draw a `Not saved` chip
   (`UnsavedBadge`) beside the title while the field differs from the baseline: `unsaved={changed.includes("enabled")}`.
 
-The Security screen predates this and keeps its own footer; it can move onto the same pieces.
+The Security screen uses the same pieces (#3243): its lists feed `useFieldErrors` through `local` (one message per list, with the full per-entry problems still drawn under the field), and its Save asks the loosening confirmation from `security-loosening.ts` before the request, like Feature Flags asks its own.
 
 ## The versioned-repository kit
 

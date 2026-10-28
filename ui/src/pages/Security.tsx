@@ -1,6 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { SettingsBody } from "@/components/screen";
-import type { TFunction } from "i18next";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 
@@ -8,13 +7,12 @@ import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { superadminOnly } from "@/components/ForbiddenScreen";
 import { LoadError } from "@/components/LoadError";
 import { PanelSkeleton } from "@/components/LoadingState";
+import { SettingsSaveBar } from "@/components/SettingsSaveBar";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import { FieldError, describedBy } from "@/components/ui/field-error";
 import { SettingsPanel } from "@/components/ui/settings-panel";
 import { Textarea } from "@/components/ui/textarea";
 import {
-  fetchClusterNodes,
   fetchSecuritySettings,
   updateSecuritySettings,
   type SecuritySettingsDto,
@@ -22,15 +20,12 @@ import {
 } from "@/lib/api";
 import { errorText } from "@/lib/error-copy";
 import { useErrorVisibility } from "@/lib/error-visibility";
-import { gatewayPickup, type Pickup } from "@/lib/gateway-pickup";
-import { useFormat } from "@/lib/i18n/format";
 import {
   entriesOf,
   listToText,
   normalizeRequiredHeaders,
   parseLists,
   parseRequiredHeaders,
-  problemCount,
   requiredHeadersPayload,
   requiredHeadersToText,
   type EntryProblem,
@@ -42,7 +37,8 @@ import {
   type SecurityPolicy,
 } from "@/lib/security-loosening";
 import { useToast } from "@/lib/toast";
-import { useDraft, type FieldEquality } from "@/lib/use-draft";
+import type { FieldEquality } from "@/lib/use-draft";
+import { useSettingsForm } from "@/lib/use-settings-form";
 import { useScreenReady } from "@/lib/ux-react";
 
 // every field holds one entry per line
@@ -72,14 +68,20 @@ const EQUALS: FieldEquality<FormState> = {
   bypassRoutes: sameEntries,
 };
 
-// the cards of the screen, by the fields each one holds: a card is marked when
-// any of its fields changed, and the footer counts cards
-const SECTIONS: (keyof FormState)[][] = [
-  ["allowedOrigins"],
-  ["allowedHeaders"],
-  ["requiredHeaders"],
-  ["bypassRoutes"],
+// the lists in the order they sit on the screen, so focus lands on the first
+// one at fault, and the control each one's focus goes to
+const ORDER: readonly ListKey[] = [
+  "allowedOrigins",
+  "allowedHeaders",
+  "requiredHeaders",
+  "bypassRoutes",
 ];
+const CONTROL_ID: Record<ListKey, string> = {
+  allowedOrigins: "security-allowed-origins",
+  allowedHeaders: "security-allowed-headers",
+  requiredHeaders: "security-required-headers",
+  bypassRoutes: "security-bypass-routes",
+};
 
 const policyOf = (form: FormState): SecurityPolicy => ({
   authBypassRoutes: entriesOf(form.bypassRoutes),
@@ -101,17 +103,10 @@ function toInput(form: FormState): UpdateSecuritySettingsInput {
 
 // a pasted list of two hundred bad lines should not be a wall of red
 const MAX_PROBLEMS_SHOWN = 3;
-// after a save, how often the gateways are asked whether they run it yet, and
-// for how long. a gateway polls every few seconds, so a minute and a half with
-// one still behind is a gateway that is not picking config up
-const PICKUP_POLL_MS = 4_000;
-const PICKUP_WATCH_MS = 90_000;
-
 // global gateway security policy, persisted via /api/v1/security-settings
 // (superadmin only).
 function SecurityScreen() {
   const { t } = useTranslation();
-  const fmt = useFormat();
   const queryClient = useQueryClient();
   const toast = useToast();
   const settings = useQuery({
@@ -128,21 +123,41 @@ function SecurityScreen() {
     () => (settings.data ? fromDto(settings.data) : undefined),
     [settings.data],
   );
-  const { draft: form, saved, changed, dirty, set, reset, commit } = useDraft(source, EQUALS);
   // a list is checked as it is typed, but its errors wait for the caret to
   // leave it: `h` on the way to `https://` is not a mistake yet. a problem the
   // form was loaded with is shown from the start, since nobody typed it
   const visibility = useErrorVisibility<ListKey>();
+  const sf = useSettingsForm<FormState, ListKey>({
+    source,
+    equals: EQUALS,
+    fieldErrors: (draft) => {
+      const lists = draft ? parseLists(draft) : null;
+      const first = (key: ListKey) => {
+        const problem = lists?.[key].problems[0];
+        return problem
+          ? t(`pages.security.errors.${problem.code}`, { line: problem.line, entry: problem.entry })
+          : undefined;
+      };
+      return {
+        order: ORDER,
+        wire: {},
+        idOf: (key) => CONTROL_ID[key],
+        local: Object.fromEntries(ORDER.map((key) => [key, first(key)])),
+        // a problem in a list nobody has edited came from the store
+        shows: (key) =>
+          visibility.shows(key) || !draft || !source || EQUALS[key]!(draft[key], source[key]),
+      };
+    },
+  });
+  const { draft: form, saved, changed, set } = sf;
   // the loosenings a save is waiting on, kept after the dialog closes so its
   // body does not empty while it fades
   const [confirming, setConfirming] = React.useState<{ open: boolean; items: Loosening[] }>({
     open: false,
     items: [],
   });
-  const [savedAt, setSavedAt] = React.useState<number | null>(null);
 
   const parsed = React.useMemo(() => (form ? parseLists(form) : null), [form]);
-  const invalid = parsed ? problemCount(parsed) : 0;
 
   const save = useMutation({
     mutationFn: (f: FormState) => updateSecuritySettings(toInput(f)),
@@ -151,10 +166,9 @@ function SecurityScreen() {
       // the cached write alone left every other reader of this key on the
       // value it already had; the refetch is what makes the save stick (#1197)
       void queryClient.invalidateQueries({ queryKey: ["security-settings"] });
-      commit(fromDto(dto));
+      sf.commit(fromDto(dto));
       visibility.reset();
       setConfirming((c) => ({ ...c, open: false }));
-      setSavedAt(Date.now());
       toast.push({
         tone: "success",
         title: t("toast.saved"),
@@ -169,24 +183,6 @@ function SecurityScreen() {
       });
     },
   });
-
-  // which gateways run the save. keyed on the save's own time so an inventory
-  // read before it, from the Cluster screen or an earlier save, is never
-  // mistaken for an answer to it
-  const inventory = useQuery({
-    queryKey: ["security-pickup", savedAt],
-    queryFn: fetchClusterNodes,
-    enabled: savedAt !== null,
-    retry: false,
-    refetchInterval: (query) => {
-      const { state } = gatewayPickup(query.state.data, query.state.status === "error");
-      const waiting = state === "checking" || state === "lagging";
-      return waiting && savedAt !== null && Date.now() - savedAt < PICKUP_WATCH_MS
-        ? PICKUP_POLL_MS
-        : false;
-    },
-  });
-  const pickup = gatewayPickup(inventory.data, inventory.isError);
 
   if (settings.isLoading) {
     return (
@@ -209,9 +205,6 @@ function SecurityScreen() {
   }
   if (!form || !saved || !parsed) return null;
 
-  const isChanged = (keys: (keyof FormState)[]) => keys.some((key) => changed.includes(key));
-  const changedCards = SECTIONS.filter(isChanged).length;
-
   const listProps = (key: ListKey, id: string, problems: EntryProblem[]) => ({
     id,
     value: form[key],
@@ -224,7 +217,7 @@ function SecurityScreen() {
   });
 
   const discard = () => {
-    reset();
+    sf.discard();
     visibility.reset();
     save.reset();
   };
@@ -233,7 +226,6 @@ function SecurityScreen() {
   // what it opens. a tightening, or an edit that changes nothing of the kind,
   // goes straight out: one request either way
   const requestSave = () => {
-    if (invalid > 0) return;
     const opened = loosenings(policyOf(saved), policyOf(form));
     if (opened.length === 0) {
       save.mutate(form);
@@ -243,19 +235,8 @@ function SecurityScreen() {
     setConfirming({ open: true, items: opened });
   };
 
-  const statusTone =
-    invalid > 0 ? "text-[color:var(--status-danger-text)]" : "text-[color:var(--text-subtle)]";
-  let status: string | null = null;
-  if (invalid > 0) {
-    status = t("pages.security.status.invalid", { count: invalid });
-  } else if (dirty) {
-    status = t("pages.security.status.changed", { count: changedCards });
-  } else if (savedAt !== null) {
-    status = `${t("pages.security.status.saved", { time: fmt.time(savedAt) })} ${pickupLine(t, pickup)}`;
-  }
-
   return (
-    <SettingsBody>
+    <SettingsBody onSubmit={() => sf.fields.submit(requestSave)}>
       <ListCard
         title={t("pages.security.allowedOrigins")}
         desc={t("pages.security.allowedOriginsHint")}
@@ -285,26 +266,11 @@ function SecurityScreen() {
         {...listProps("bypassRoutes", "security-bypass-routes", parsed.bypassRoutes.problems)}
       />
 
-      <div className="sticky bottom-0 flex flex-wrap items-center justify-end gap-3 border-t border-[color:var(--border-subtle)] bg-background py-3">
-        {status && (
-          <p
-            id="security-save-status"
-            className={`min-w-0 basis-full text-xs sm:mr-auto sm:basis-auto ${statusTone}`}
-          >
-            {status}
-          </p>
-        )}
-        <Button variant="outline" disabled={!dirty || save.isPending} onClick={discard}>
-          {t("pages.security.discard")}
-        </Button>
-        <Button
-          disabled={!dirty || invalid > 0 || save.isPending}
-          aria-describedby={status ? "security-save-status" : undefined}
-          onClick={requestSave}
-        >
-          {save.isPending && !confirming.open ? t("common.saving") : t("common.saveChanges")}
-        </Button>
-      </div>
+      <SettingsSaveBar
+        form={{ ...sf, discard }}
+        pending={save.isPending && !confirming.open}
+        updatedAt={settings.data?.updated_at}
+      />
 
       {/* mounted beside the form, not inside it, so it can report the landing
           on the render that closes it */}
@@ -333,26 +299,6 @@ function SecurityScreen() {
       </ConfirmDialog>
     </SettingsBody>
   );
-}
-
-// what the gateways say about the save just made, in words that are true of
-// each answer: only a gateway the control plane has heard from can be counted
-function pickupLine(t: TFunction, pickup: Pickup): string {
-  switch (pickup.state) {
-    case "checking":
-      return t("pages.security.pickup.checking");
-    case "unavailable":
-      return t("pages.security.pickup.unavailable");
-    case "none":
-      return t("pages.security.pickup.none");
-    case "converged":
-      return t("pages.security.pickup.converged", { count: pickup.total });
-    case "lagging":
-      return t("pages.security.pickup.lagging", {
-        count: pickup.total,
-        converged: pickup.converged,
-      });
-  }
 }
 
 function ChangedBadge() {
