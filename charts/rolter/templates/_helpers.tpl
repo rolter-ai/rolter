@@ -23,8 +23,20 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{- default (printf "%s-config" (include "rolter.fullname" .)) .Values.config.existingConfigMap }}
 {{- end }}
 
+{{/*
+The image of one component, `control` or `gateway` (#3352). Its own
+`<component>.image.tag` wins, then the shared `image.tag`, then the chart's
+appVersion, so a values file that sets neither component tag renders exactly
+as before. Telling the two apart is what lets an upgrade move the control
+plane first and the gateways after it (ADR-0038), and hold or roll back the
+gateways alone.
+
+Called with (dict "root" . "component" "control").
+*/}}
 {{- define "rolter.image" -}}
-{{ printf "%s:%s" .Values.image.repository (default .Chart.AppVersion .Values.image.tag) }}
+{{- $values := .root.Values -}}
+{{- $own := ((index $values .component).image | default dict).tag -}}
+{{ printf "%s:%s" $values.image.repository (default .root.Chart.AppVersion (default $values.image.tag $own)) }}
 {{- end }}
 
 {{/*
@@ -46,7 +58,7 @@ to skip it entirely.
 {{- if .root.Values.preflight.enabled }}
 initContainers:
 - name: preflight
-  image: {{ include "rolter.image" .root | quote }}
+  image: {{ include "rolter.image" (dict "root" .root "component" .role) | quote }}
   imagePullPolicy: {{ .root.Values.image.pullPolicy }}
   command: ["/usr/local/bin/rolter"]
   args:

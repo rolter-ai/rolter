@@ -23,8 +23,10 @@ const TONE: Record<GatewayHealth, StatTone> = {
 export function FleetHealthTile() {
   const { t } = useTranslation();
   const fmt = useFormat();
-  const { health, fleet } = useGatewayHealth();
-  const value = fleet ? fmt.number(fleet.live) : t(`pages.dashboard.fleet.probe.${health}`);
+  const { health, fleet, refusal } = useGatewayHealth();
+  const value = fleet
+    ? fmt.number(fleet.live)
+    : t(`pages.dashboard.fleet.probe.${refusal ?? health}`);
   const unit = fleet ? t("pages.dashboard.fleet.liveUnit") : undefined;
   let delta: string | undefined;
   if (fleet) {

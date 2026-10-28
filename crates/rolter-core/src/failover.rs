@@ -26,6 +26,12 @@ pub const MAX_REFUSAL_CATEGORY_LEN: usize = 64;
 pub const ALL_TARGETS_RESTRICTED: &str = "all_targets_restricted";
 
 /// What kind of failure an attempt ended with.
+///
+/// The gateway classifies a failure into one of these itself; a failure is
+/// never read from the wire, so the set of kinds a [`Failure`] can carry is
+/// closed. What the snapshot carries is a [`FailureClass`], and a class a newer
+/// release names decodes as [`FailureKind::Unknown`] rather than failing the
+/// whole snapshot (#3347, #3390).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum FailureKind {
     /// the upstream answered `429`
@@ -40,6 +46,10 @@ pub enum FailureKind {
     ServerError,
     /// the upstream refused the request on its content policy
     Refusal,
+    /// a class this build does not know, read from a newer control plane's
+    /// snapshot. No failure is ever of this kind, so a target that takes it
+    /// over takes over nothing for it, and stays out of the pool
+    Unknown,
 }
 
 impl FailureKind {
@@ -51,6 +61,7 @@ impl FailureKind {
             Self::Transport => "transport",
             Self::ServerError => "server_error",
             Self::Refusal => "refusal",
+            Self::Unknown => "unknown",
         }
     }
 
@@ -206,7 +217,8 @@ impl FailureClass {
     /// Whether this class covers `failure`: the kinds match and, when the class
     /// is narrowed to a category, the failure names it.
     pub fn matches(&self, failure: &Failure) -> bool {
-        self.kind == failure.kind
+        self.kind != FailureKind::Unknown
+            && self.kind == failure.kind
             && self
                 .category
                 .as_ref()
@@ -216,6 +228,11 @@ impl FailureClass {
 
 impl fmt::Display for FailureClass {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // an unknown class keeps the token it was read from, so a control plane
+        // that does not know it still serves it on unchanged
+        if self.kind == FailureKind::Unknown {
+            return f.write_str(self.category.as_deref().unwrap_or("unknown"));
+        }
         match &self.category {
             Some(category) => write!(f, "{}:{category}", self.kind.as_str()),
             None => f.write_str(self.kind.as_str()),
@@ -263,10 +280,22 @@ impl Serialize for FailureClass {
     }
 }
 
+/// Lenient where [`FromStr`] is strict (#3390). A snapshot from a newer
+/// control plane may name a class this build does not know; failing the decode
+/// would keep the gateway on its last config, revoked keys included. Such a
+/// token reads as [`FailureKind::Unknown`], which matches no failure, so the
+/// target keeps its `takes_over` set and stays a remedy that is never dialled
+/// for it. Dropping the class instead would empty a set and turn the target
+/// into an ordinary member of the pool. A config file refuses the token as a
+/// typo (`GatewayConfig::from_toml_str`), and the routes API parses with
+/// [`FromStr`].
 impl<'de> Deserialize<'de> for FailureClass {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let token = String::deserialize(deserializer)?;
-        token.parse().map_err(serde::de::Error::custom)
+        Ok(token.parse().unwrap_or(Self {
+            kind: FailureKind::Unknown,
+            category: Some(token),
+        }))
     }
 }
 
@@ -465,5 +494,35 @@ mod tests {
         let problems = takes_over_problems("m", [("a", &[][..]), ("b", &twice[..])]);
         assert_eq!(problems.len(), 1);
         assert!(problems[0].contains("twice"));
+    }
+
+    /// #3390: a class a newer release names must not fail the snapshot decode,
+    /// and must not empty the set either, which would make the target an
+    /// ordinary member of the pool.
+    #[test]
+    fn an_unknown_class_decodes_matches_nothing_and_keeps_its_token() {
+        let classes: Vec<FailureClass> =
+            serde_json::from_value(serde_json::json!(["throttled", "quantum_flux"])).unwrap();
+        assert_eq!(classes[1].kind, FailureKind::Unknown);
+        assert_eq!(classes[1].to_string(), "quantum_flux");
+        assert_eq!(
+            serde_json::to_value(&classes).unwrap(),
+            serde_json::json!(["throttled", "quantum_flux"])
+        );
+        let only_unknown = &classes[1..];
+        for kind in [
+            FailureKind::Throttled,
+            FailureKind::Timeout,
+            FailureKind::Transport,
+            FailureKind::ServerError,
+            FailureKind::Refusal,
+        ] {
+            assert!(!classes[1].matches(&Failure::of(kind)));
+            assert!(!may_dial(only_unknown, Some(&Failure::of(kind))));
+        }
+        // still a restricted target: never dialled first
+        assert!(!may_dial(only_unknown, None));
+        // the API and the store stay strict
+        assert!("quantum_flux".parse::<FailureClass>().is_err());
     }
 }

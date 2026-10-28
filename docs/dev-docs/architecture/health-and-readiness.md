@@ -56,6 +56,20 @@ out-of-order control-plane upgrade into an outage of every gateway at once;
 `rolter_snapshot_format_refused` is the signal for that case. `draining` wins
 when both hold.
 
+More generally, a gateway started with `--snapshot-url` answers `503` with the
+body `awaiting_snapshot` until it applies its first snapshot
+(`AppState::awaiting_first_snapshot`, #3348). Until then it serves its
+bootstrap file, and a managed gateway treats an empty key set as closed, so it
+refuses every `/v1` request: a Service would send traffic to a pod that turns
+all of it away for as long as the control plane is slow or unreachable at
+start. Two cases are ready all the same, because they can serve: a bootstrap
+file that carries virtual keys, and one that sets `server.require_auth = false`
+on purpose. Once a snapshot is applied (`rolter_snapshot_format` is no longer
+`0`), the gateway stays ready on every later failed poll and keeps its last
+config, as before. `snapshot_format_unsupported` is the more specific answer of
+the two and wins when both hold, since it names why no snapshot arrived; a
+gateway without `--snapshot-url` never answers either.
+
 ### Control plane
 
 Returns a JSON body describing each check:
@@ -119,10 +133,18 @@ The probe polls the gateway's `/readyz` through the control plane's `/gw/*` prox
 | --------------------------------------------------------- | ----------------------------------------------- |
 | `200` with the body `ok`                                  | healthy (green dot, breathing)                  |
 | `503` with the body `draining`                            | degraded: "gateway draining", amber             |
-| `503` with the body `snapshot_format_unsupported`         | unknown, grey, until the pill learns it (#3350) |
+| `503` with the body `snapshot_format_unsupported`         | down: "gateway cannot read config", red (#3350) |
+| `503` with the body `awaiting_snapshot`                   | down: "gateway has no config", red (#3350)      |
 | `502` with the proxy's own `{"error":{"message":…}}` body | down: "gateway unreachable", red                |
 | anything else, a network error, or no answer within 10 s  | unknown, grey                                   |
 | no answer yet                                             | checking, grey                                  |
+
+A gateway with no config refuses every key, so both `503` bodies that say so
+read as down; `gatewayHealthFrom` keeps the probe's answer as `refusal`, and the
+pill and the Dashboard's Gateways tile word it on its own rather than as
+"unreachable", which would send the operator to the network. The
+`snapshot_format_unsupported` tooltip points at the upgrade order
+(`/deployment/upgrading#upgrade-order`).
 
 A `200` that is not `ok` is an SPA fallback in front of the control plane, and
 a `502` that is not the proxy's JSON comes from an ingress that could not reach

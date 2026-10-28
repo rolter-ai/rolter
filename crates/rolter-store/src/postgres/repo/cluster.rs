@@ -14,35 +14,64 @@ pub struct ClusterNodeRepo<'a>(pub &'a PgPool);
 impl ClusterNodeRepo<'_> {
     /// Record a node sighting. `first_seen_at` is preserved across restarts of
     /// the same node id so an operator can tell a flapping node from a new one.
+    ///
+    /// `formats` is the snapshot format range the poll stated (ADR-0038,
+    /// #3351): `None` when the statement did not parse, which leaves the range
+    /// already recorded. `served_format` is the format the poll was answered
+    /// in, `None` when it was refused one.
     pub async fn heartbeat(
         &self,
         id: &str,
         role: &str,
         build_version: &str,
         config_version: i64,
+        formats: Option<(i32, i32)>,
+        served_format: Option<i32>,
     ) -> Result<ClusterNode> {
         sqlx::query_as(
-            "insert into cluster_nodes (id, role, build_version, config_version) \
-             values ($1, $2, $3, $4) \
+            "insert into cluster_nodes \
+                (id, role, build_version, config_version, formats_min, formats_max, \
+                 served_format) \
+             values ($1, $2, $3, $4, coalesce($5, 1), coalesce($6, 1), $7) \
              on conflict (id) do update set \
                 role = excluded.role, build_version = excluded.build_version, \
-                config_version = excluded.config_version, last_seen_at = now() \
+                config_version = excluded.config_version, \
+                formats_min = coalesce($5, cluster_nodes.formats_min), \
+                formats_max = coalesce($6, cluster_nodes.formats_max), \
+                served_format = excluded.served_format, last_seen_at = now() \
              returning id, role, build_version, config_version, desired_state, \
-                state_changed_at, first_seen_at, last_seen_at",
+                state_changed_at, first_seen_at, last_seen_at, formats_min, formats_max, \
+                served_format",
         )
         .bind(id)
         .bind(role)
         .bind(build_version)
         .bind(config_version)
+        .bind(formats.map(|(min, _)| min))
+        .bind(formats.map(|(_, max)| max))
+        .bind(served_format)
         .fetch_one(self.0)
         .await
         .map_err(store_err)
     }
 
+    /// Record that the format a node was just told it would be served could not
+    /// express the config after all (`snapshot_format_inexpressible`), so it
+    /// was served nothing.
+    pub async fn clear_served_format(&self, id: &str) -> Result<()> {
+        sqlx::query("update cluster_nodes set served_format = null where id = $1")
+            .bind(id)
+            .execute(self.0)
+            .await
+            .map_err(store_err)?;
+        Ok(())
+    }
+
     pub async fn list(&self) -> Result<Vec<ClusterNode>> {
         sqlx::query_as(
             "select id, role, build_version, config_version, desired_state, \
-                    state_changed_at, first_seen_at, last_seen_at \
+                    state_changed_at, first_seen_at, last_seen_at, formats_min, formats_max, \
+                    served_format \
              from cluster_nodes order by role, id",
         )
         .fetch_all(self.0)
@@ -58,7 +87,8 @@ impl ClusterNodeRepo<'_> {
                 "update cluster_nodes set desired_state = $2, state_changed_at = now() \
              where id = $1 \
              returning id, role, build_version, config_version, desired_state, \
-                       state_changed_at, first_seen_at, last_seen_at",
+                       state_changed_at, first_seen_at, last_seen_at, formats_min, \
+                       formats_max, served_format",
             )
             .bind(id)
             .bind(desired_state),

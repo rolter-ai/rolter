@@ -2542,7 +2542,8 @@ fn operations() -> Vec<Op> {
                 "/api/v1/cluster/nodes",
                 "listClusterNodes",
                 "List gateway nodes that have registered",
-            ),
+            )
+            .ok(Payload::List("ClusterNode")),
             Op::get(
                 "/api/v1/cluster/summary",
                 "getClusterSummary",
@@ -2552,7 +2553,8 @@ fn operations() -> Vec<Op> {
                 "/api/v1/cluster/nodes/{id}/drain",
                 "setClusterNodeDrain",
                 "Drain or un-drain a gateway node",
-            ),
+            )
+            .ok(Payload::Ref("ClusterNode")),
             Op::delete(
                 "/api/v1/cluster/nodes/{id}",
                 "forgetClusterNode",
@@ -3200,6 +3202,7 @@ fn schemas() -> Value {
         stability_schemas(&p),
         alerting_schemas(&p),
         config_problem_schemas(&p),
+        cluster_schemas(&p),
     ] {
         if let Value::Object(entries) = group {
             out.extend(entries);
@@ -3303,6 +3306,53 @@ fn config_problem_schemas(p: &Prim) -> Value {
                     "type": "integer",
                     "minimum": 0,
                     "description": "the row's position in the matching list of GET /api/v1/config (providers, routes or virtual_keys); a name alone can match several rows, as tenancy is not in that response"
+                }
+            }
+        }
+    })
+}
+
+/// One node of the cluster inventory (#543), with the snapshot formats it reads
+/// and was last served (ADR-0038, #3351).
+fn cluster_schemas(p: &Prim) -> Value {
+    let string = &p.string;
+    let timestamp = &p.timestamp;
+    json!({
+        "ClusterNode": {
+            "type": "object",
+            "required": [
+                "id", "role", "build_version", "config_version", "desired_state",
+                "state_changed_at", "first_seen_at", "last_seen_at", "formats_min",
+                "formats_max", "served_format", "live", "converged"
+            ],
+            "properties": {
+                "id": string,
+                "role": {"type": "string", "enum": ["gateway", "control"]},
+                "build_version": string,
+                "config_version": {"type": "integer", "format": "int64"},
+                "desired_state": {"type": "string", "enum": ["active", "draining"]},
+                "state_changed_at": timestamp,
+                "first_seen_at": timestamp,
+                "last_seen_at": timestamp,
+                "formats_min": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "the oldest snapshot format the node stated it reads; 1 for a node that states none"
+                },
+                "formats_max": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "the newest snapshot format the node stated it reads"
+                },
+                "served_format": {
+                    "type": ["integer", "null"],
+                    "minimum": 1,
+                    "description": "the format the node's last poll was answered in; null when that poll was refused for its format"
+                },
+                "live": {"type": "boolean"},
+                "converged": {
+                    "type": "boolean",
+                    "description": "the node reported the current config version and was not last served an older snapshot format"
                 }
             }
         }

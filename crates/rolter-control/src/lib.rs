@@ -1860,6 +1860,9 @@ async fn seed_default_models(pool: &sqlx::PgPool, config: &GatewayConfig) -> any
             rolter_core::BalancingStrategy::Adaptive => "adaptive",
             rolter_core::BalancingStrategy::LoraAware => "lora_aware",
             rolter_core::BalancingStrategy::PredictedLatency => "predicted_latency",
+            // parsing a file refuses an unknown strategy (#3347); the column's
+            // check constraint would refuse it if it got here
+            rolter_core::BalancingStrategy::Unknown => "unknown",
         };
         let created = routes.create(project_id, &route.model, strategy).await?;
         let params = serde_json::to_value(&route.params)?;
@@ -1965,6 +1968,9 @@ fn provider_kind_str(kind: &rolter_core::ProviderKind) -> &'static str {
         Falcon => "falcon",
         SystemOne => "system_one",
         Infinity => "infinity",
+        // parsing a file refuses an unknown kind (#3347); the column's check
+        // constraint would refuse it if it got here
+        Unknown => "unknown",
     }
 }
 
@@ -2170,6 +2176,9 @@ fn balancing_strategy_str(strategy: rolter_core::BalancingStrategy) -> &'static 
         Adaptive => "adaptive",
         LoraAware => "lora_aware",
         PredictedLatency => "predicted_latency",
+        // parsing a file refuses an unknown strategy (#3347); the column's
+        // check constraint would refuse it if it got here
+        Unknown => "unknown",
     }
 }
 
@@ -2736,41 +2745,49 @@ async fn build_snapshot(
 ) -> BuiltSnapshot {
     use rolter_core::snapshot_format::{self as format, NegotiationError};
 
-    // a node that identifies itself is recorded in the cluster inventory; the
-    // poll it already makes is the heartbeat, so there is no second channel
-    #[cfg(feature = "postgres")]
-    let desired_state = cluster::record_heartbeat(&state, &headers, query.version).await;
-    #[cfg(not(feature = "postgres"))]
-    let desired_state: Option<String> = None;
     // the format comes before the `304` and before the store is read, so a
     // gateway that cannot be served learns it on its next poll even when
     // nothing changed, at no database cost (ADR-0038 section 3)
-    let (served_format, requested) =
-        match format::negotiate(query.formats.as_deref(), formats.served) {
-            Ok(negotiated) => negotiated,
-            Err(NegotiationError::Invalid(invalid)) => {
-                return BuiltSnapshot::refused(
-                    with_node_state(
-                        snapshot_negotiation::invalid(invalid.to_string()),
-                        &desired_state,
-                    ),
-                    0,
-                );
-            }
-            Err(NegotiationError::Unsupported(refusal)) => {
-                snapshot_negotiation::log_refusal(
-                    &headers,
-                    snapshot_negotiation::UNSUPPORTED,
-                    refusal.served,
-                    refusal.requested,
-                    &refusal.to_string(),
-                );
-                return BuiltSnapshot::refused(
-                    with_node_state(snapshot_negotiation::unsupported(&refusal), &desired_state),
-                    0,
-                );
-            }
+    let negotiated = format::negotiate(query.formats.as_deref(), formats.served);
+    // a node that identifies itself is recorded in the cluster inventory; the
+    // poll it already makes is the heartbeat, so there is no second channel.
+    // It records the formats the node reads and the one it is served (#3351)
+    #[cfg(feature = "postgres")]
+    let desired_state = {
+        let (stated, served) = match &negotiated {
+            Ok((served, requested)) => (Some(*requested), Some(*served)),
+            Err(NegotiationError::Invalid(_)) => (None, None),
+            Err(NegotiationError::Unsupported(refusal)) => (Some(refusal.requested), None),
         };
+        cluster::record_heartbeat(&state, &headers, query.version, stated, served).await
+    };
+    #[cfg(not(feature = "postgres"))]
+    let desired_state: Option<String> = None;
+    let (served_format, requested) = match negotiated {
+        Ok(negotiated) => negotiated,
+        Err(NegotiationError::Invalid(invalid)) => {
+            return BuiltSnapshot::refused(
+                with_node_state(
+                    snapshot_negotiation::invalid(invalid.to_string()),
+                    &desired_state,
+                ),
+                0,
+            );
+        }
+        Err(NegotiationError::Unsupported(refusal)) => {
+            snapshot_negotiation::log_refusal(
+                &headers,
+                snapshot_negotiation::UNSUPPORTED,
+                refusal.served,
+                refusal.requested,
+                &refusal.to_string(),
+            );
+            return BuiltSnapshot::refused(
+                with_node_state(snapshot_negotiation::unsupported(&refusal), &desired_state),
+                0,
+            );
+        }
+    };
     // a deprecated format says so on every answer it is served with, the 304
     // that confirms one included, so a long-idle gateway learns it too
     let finish = |response: Response| {
@@ -2817,6 +2834,8 @@ async fn build_snapshot(
             ) {
                 Ok(lines) => lines,
                 Err(refusal) => {
+                    #[cfg(feature = "postgres")]
+                    cluster::record_format_refused(&state, &headers).await;
                     snapshot_negotiation::log_refusal(
                         &headers,
                         snapshot_negotiation::INEXPRESSIBLE,
