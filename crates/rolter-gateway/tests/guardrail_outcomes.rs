@@ -190,6 +190,8 @@ async fn a_pre_call_block_leaves_a_row_naming_the_rule_and_never_the_text() {
     assert_eq!(status, 400);
     assert_eq!(row["status"], 400, "{row}");
     assert_eq!(row["guardrail_events"], json!(["blocked:email"]), "{row}");
+    // refused before routing, and named for why (#3307)
+    assert_eq!(row["outcome"], "refused_guardrail", "{row}");
     assert!(!row.to_string().contains("secret.example"), "{row}");
 }
 
@@ -203,6 +205,7 @@ async fn a_pre_call_redaction_is_recorded_on_the_delivered_request() {
     .await;
     assert_eq!(status, 200);
     assert_eq!(row["guardrail_events"], json!(["redacted:email"]), "{row}");
+    assert_eq!(row["outcome"], "served", "{row}");
 }
 
 #[tokio::test]
@@ -230,6 +233,7 @@ async fn a_post_call_block_names_the_rule_on_the_withheld_row() {
     assert_eq!(status, 403);
     assert_eq!(row["withheld"], 1, "{row}");
     assert_eq!(row["guardrail_events"], json!(["blocked:email"]), "{row}");
+    assert_eq!(row["outcome"], "withheld", "{row}");
 }
 
 /// Runs one request against `config` and returns the status and the one row.

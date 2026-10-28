@@ -53,6 +53,8 @@ granted and adds the scopes, then the next call works. Until then every such
 call fails the same way. A server with a static credential has no consent to
 repeat, so its `403` is passed through unchanged.
 
+In the dashboard, the server's card on **MCP → MCP Catalog** names the scopes the server declares that your connection lacks, with a **Reconnect with more access** button that sends that `step_up_scopes` request. The detail of an `auth_denied` call in **MCP Logs** offers the same to the key's owner. The log records the refusal and not the scope the upstream asked for, so when the connection already holds everything the server declares, the owner names the scope to add.
+
 ### Which scopes a consent asks for
 
 Unless the request lists `scopes` itself, a consent asks for, in order of

@@ -28,7 +28,7 @@ In the dashboard it is the **Alerting** group, with one screen for each:
 - A route from the control plane to each channel endpoint that the
   [egress policy](#endpoints-and-the-egress-policy) permits.
 - An organization, team or project admin for the scope you want to watch, or a
-  superadmin account or the deployment admin token for the whole deployment
+  superadmin account, an operator (a [deployment role](/security/rbac#deployment-roles)) or the deployment admin token for the whole deployment
   (see [Scopes and ownership](#scopes-and-ownership) and
   [Permissions](#permissions-and-audit)).
 
@@ -640,7 +640,7 @@ as it may carry a token. A caller who administers nothing gets `403`.
 
 Every operation is decided at the owner of the row, as described above, and the
 dashboard shows the Alerting group to anyone who administers a scope. Deployment
-rows and channels are superadmin-only like the other deployment-wide settings in
+rows and channels are for a superadmin or an operator (a [deployment role](/security/rbac#deployment-roles)), like the other deployment-wide settings in
 [RBAC](/security/rbac).
 
 | Endpoint                                    | Capability                     |

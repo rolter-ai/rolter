@@ -110,7 +110,7 @@ A request can also have one body and not the other. Capture stores the two toget
 
 Bodies captured by a gateway from v0.1.0 or earlier also stop showing once the control plane is upgraded; see [Upgrading](/deployment/upgrading#captured-payloads-from-older-gateways).
 
-The log row does not record which of the first three applies, so the note names all three. A superadmin — the only role that can read this policy — sees the answer narrowed to the actual reason, because the screen reads the live setting for them, and gets a link straight to this page's settings screen. Everyone else is told that a superadmin sets payload capture, since the link would only lead them to a refusal.
+The log row does not record which of the first three applies, so the note names all three. A superadmin or a security auditor — the only roles that can read this policy ([deployment roles](/security/rbac#deployment-roles)) — sees the answer narrowed to the actual reason, because the screen reads the live setting for them, and gets a link straight to this page's settings screen. Everyone else is told that a superadmin sets payload capture, since the link would only lead them to a refusal.
 
 ### Capture in the dogfooding profile
 
@@ -152,7 +152,7 @@ Switching it off makes the ingest endpoint answer `202` and store nothing, from 
 
 ## API
 
-Both endpoints are **superadmin only**, and every update is audited.
+Reading is for a **superadmin** or a **security auditor** (a [deployment role](/security/rbac#deployment-roles)); updating is **superadmin only**. Every update is audited.
 
 ```bash
 curl -H "Authorization: Bearer $ROLTER_ADMIN_TOKEN" \

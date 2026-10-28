@@ -4,6 +4,7 @@ import * as React from "react";
 import { Trans, useTranslation } from "react-i18next";
 
 import { superadminOnly } from "@/components/ForbiddenScreen";
+import { ParamAdjustmentsPanel } from "@/components/ParamAdjustmentsPanel";
 import { LoadError } from "@/components/LoadError";
 import { PanelSkeleton } from "@/components/LoadingState";
 import { Badge } from "@/components/ui/badge";
@@ -204,6 +205,10 @@ function CompatibilityScreen() {
           error={fields.errorOf("defaultMaxTokens")}
         />
       </SettingsPanel>
+
+      {/* read-only: what translation does to callers' parameters per route,
+          beside the settings that shape that translation (#3323) */}
+      <ParamAdjustmentsPanel />
 
       {restartRequired.length > 0 && (
         <section className="flex items-start gap-3 rounded-lg border border-[color:var(--border-subtle)] p-4">

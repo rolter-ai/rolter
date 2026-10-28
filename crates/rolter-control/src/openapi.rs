@@ -838,6 +838,14 @@ const INVOCATIONS_QUERY: &[QueryParam] = &[
          `blocked:<slug>`, `transformed:<slug>`, `annotated:<slug>` or `error:<slug>:<kind>`; \
          omit for every request",
     ),
+    QueryParam::new(
+        "outcome",
+        "string",
+        "only requests the gateway recorded with this outcome: `served`, `upstream_error`, \
+         `withheld`, `cancelled`, `refused_budget`, `refused_rate_limit`, `refused_guardrail`, \
+         `refused_plugin`, `refused_access`, `refused_invalid`, `refused`, or `unknown` for rows \
+         written before the outcome was recorded; any other value is a 400; omit for every request",
+    ),
     QueryParam::new("limit", "integer", "page size, 1..=200; defaults to 50"),
     QueryParam::new(
         "cursor",
@@ -2365,7 +2373,16 @@ fn operations() -> Vec<Op> {
                  `fallback_reason` (`clickhouse/023`) is the failure class that sent the request on to \
                  the target that answered it (`throttled`, `timeout`, `transport`, `server_error`, \
                  `refusal` or `refusal:<category>`), and an empty string when the first dial answered, \
-                 for a row older than the column, or on a table that lacks it",
+                 for a row older than the column, or on a table that lacks it. \
+                 `outcome` (a string, `clickhouse/030`) names what happened to the request: `served`, \
+                 `upstream_error`, `withheld`, `cancelled` or a `refused_*` reason, and `unknown` for a \
+                 row written before the gateway recorded one or on a table without the column. \
+                 `has_tools`, `has_image_input`, `has_audio_input`, `has_response_schema` (each `0` or \
+                 `1`) and `turns` (`clickhouse/031`) say what the request asked the model to do beyond \
+                 its tokens, `0` on an older row or a table without the columns. \
+                 `param_adjustments` (an array of `<disposition>:<param>` strings, `clickhouse/022`) \
+                 lists the request parameters dialect translation dropped, clamped or translated, \
+                 empty when every parameter went through",
             )
             .clickhouse_read()
             .query(INVOCATIONS_QUERY),
@@ -2414,6 +2431,18 @@ fn operations() -> Vec<Op> {
                  `status_<code>` or `body`) name the newest failure and are `null` and empty when `errors` is \
                  `0`. `recorded` is `false` when the ClickHouse table lacks \
                  `clickhouse/019_plugin_events.sql`, in which case `data` is empty",
+            )
+            .clickhouse_read()
+            .query(WINDOW_QUERY),
+            Op::get(
+                "/api/v1/analytics/param-adjustments",
+                "getAnalyticsParamAdjustments",
+                "Which request parameters dialect translation did not forward as sent, per route \
+                 and provider, in the window: one row per `route` (the public model), `provider`, \
+                 `disposition` (`dropped`, `clamped` or `translated`) and `param`, with the \
+                 `requests` that had it, the `route_requests` that route sent that provider in all \
+                 and their ratio as `share`. `recorded` is `false` when the ClickHouse table lacks \
+                 `clickhouse/022_param_adjustments.sql`, in which case `data` is empty",
             )
             .clickhouse_read()
             .query(WINDOW_QUERY),
@@ -4390,7 +4419,7 @@ fn governance_schemas(p: &Prim) -> Value {
                 },
                 "excluded": {
                     "type": "object",
-                    "description": "`requests` counts what was not re-priced by reason (`unpriced`, `failed`, `cache_hit`, `usage_unknown`, `not_a_model_call`, `no_token_usage`, `prompt_too_large`, `output_too_large`, `route_not_configured`, `no_cheaper_candidate`); `unknown_candidate_prices` names pool models with no price",
+                    "description": "`requests` counts what was not re-priced by reason (`unpriced`, `failed`, `cache_hit`, `usage_unknown`, `not_a_model_call`, `uses_tools`, `image_input`, `audio_input`, `structured_output`, `multi_turn`, `no_token_usage`, `prompt_too_large`, `output_too_large`, `route_not_configured`, `no_cheaper_candidate`); `unknown_candidate_prices` names pool models with no price",
                     "properties": {
                         "requests": {"type": "object", "additionalProperties": {"type": "number"}},
                         "unknown_candidate_prices": {"type": "array", "items": {"type": "string"}}
@@ -4895,6 +4924,8 @@ mod tests {
         // and so can the withheld and the unknown-usage ones (#3302)
         assert!(names.contains("withheld"), "{names:?}");
         assert!(names.contains("usage_unknown"), "{names:?}");
+        // and by the outcome the gateway recorded (#3307)
+        assert!(names.contains("outcome"), "{names:?}");
         // the list no longer pages on an offset, so documenting one would send
         // a caller down a path that silently returns the same page (#1394)
         assert!(!names.contains("offset"), "{names:?}");

@@ -607,6 +607,18 @@ export function startMcpOAuth(serverId: string, scopes?: string[]): Promise<McpA
   );
 }
 
+/**
+ * Consent again for more access (#3296, RFC 6749 §3.3 step-up): the scopes the
+ * grant already holds and the server requires are kept and `scopes` are added,
+ * so the re-consent widens the grant instead of replacing it with the narrower
+ * set. Answered like `startMcpOAuth`, with the url to open.
+ */
+export function startMcpStepUp(serverId: string, scopes: string[]): Promise<McpAuthorizeStarted> {
+  return sendJson<McpAuthorizeStarted>("POST", `/api/v1/mcp-servers/${serverId}/oauth/authorize`, {
+    step_up_scopes: scopes,
+  });
+}
+
 // renews one session from its stored refresh token. a refusal from the
 // authorization server revokes the session rather than being retried, so a
 // failure here can legitimately mean "consent is gone, ask for it again"

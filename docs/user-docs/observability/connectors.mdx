@@ -42,7 +42,7 @@ Run a collector with that document as its config file and Rolter's own
 `OTEL_EXPORTER_OTLP_*` export, which already targets that collector, fans out
 from there.
 
-The endpoint answers a superadmin principal only, and a collector has no session
+The endpoint answers a superadmin or an operator ([deployment role](/security/rbac#deployment-roles)) only, and a collector has no session
 to sign in with, so do not point a collector at it: that would put the admin token
 in the collector's own deployment. Fetch the document with your own tooling, or
 from the dashboard (below), save it as the collector's config file, and save it
@@ -74,7 +74,7 @@ built from the control plane's public base URL (`ROLTER_PUBLIC_URL`). When that
 variable is unset the panel says so, because the default address,
 `http://localhost:4001`, can only be reached from the control plane's own host.
 The panel does not suggest pointing a collector at the URL, since reading it
-takes a superadmin credential. With no connectors defined, or with every
+takes a superadmin or operator credential. With no connectors defined, or with every
 connector switched off, the panel says so instead of showing a document with no
 exporters in it, because a collector running that would deliver nothing. The
 second case is the one you meet right after adding your first connector, since
@@ -187,5 +187,5 @@ connector starts off, so its first test runs before its first request log leaves
 ## Permissions
 
 Connectors are a deployment-wide egress decision, so all four operations
-require superadmin — the same level as the security settings, rather than
+are for a superadmin or an operator (a [deployment role](/security/rbac#deployment-roles)), rather than
 something delegable per organization.

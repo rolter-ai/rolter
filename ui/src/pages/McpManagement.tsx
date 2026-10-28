@@ -88,6 +88,7 @@ import {
 import { errorText } from "@/lib/error-copy";
 import { useOptionalAuth } from "@/lib/auth";
 import { useCan } from "@/lib/can";
+import { ServerStepUp } from "@/components/McpStepUp";
 import { discoveryReasonKey, discoveryRefetchInterval, discoveryView } from "@/lib/mcp-discovery";
 import { useFormat } from "@/lib/i18n/format";
 import {
@@ -919,6 +920,14 @@ export function McpCatalog() {
                   server={server}
                   connection={connections.get(server.id)}
                   known={connectionKnown}
+                />
+              )}
+              {server.auth_kind === "oauth" && (
+                <ServerStepUp
+                  server={server}
+                  grants={grants.data}
+                  sessions={sessions.data}
+                  userId={auth?.user?.id}
                 />
               )}
               <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-[color:var(--border-subtle)] pt-3">

@@ -20,6 +20,7 @@ import { AnalyticsUnavailable } from "@/components/AnalyticsUnavailable";
 import { FilterCheckList, FilterPanel, FilterSection } from "@/components/ui/filter-panel";
 import { RowFilterSections, useRowFilterData } from "@/components/RowFilters";
 import { LoadError } from "@/components/LoadError";
+import { ErasePayloadAction } from "@/components/LogErasure";
 import { SampledLogNotice } from "@/components/SampledLogNotice";
 import { SavedViews } from "@/components/SavedViews";
 import { ListSkeleton } from "@/components/LoadingState";
@@ -39,11 +40,14 @@ import {
   fetchInvocationsPage,
   fetchLoggingSettings,
   fetchVirtualKeys,
+  REQUEST_OUTCOMES,
   type InvocationRow,
+  type RequestOutcome,
   type SavedViewFilters,
 } from "@/lib/api";
 import type { CodeLanguage } from "@/lib/code";
 import { useCan } from "@/lib/can";
+import { dispositionLabel, parseAdjustment } from "@/lib/param-adjustments";
 import { useCurrencyCode } from "@/lib/currency";
 import { useFormat } from "@/lib/i18n/format";
 import { parseLogLookup, type LogLookup } from "@/lib/log-lookup";
@@ -173,6 +177,19 @@ function readStatus(raw: string | null): StatusFilter {
   return raw === "error" || raw === "success" ? raw : "all";
 }
 
+// one outcome the gateway recorded (#3307); anything else reads as no filter,
+// since the control plane would answer it with a 400
+function readOutcome(raw: string | null): RequestOutcome | "" {
+  return REQUEST_OUTCOMES.find((outcome) => outcome === raw) ?? "";
+}
+
+// a row's outcome in words. a name this build has no copy for is printed as
+// the control plane sent it, so an outcome a newer gateway adds is still read
+function outcomeLabel(t: TFunction, outcome: string): string {
+  const known = REQUEST_OUTCOMES.find((name) => name === outcome);
+  return known ? t(`pages.logs.outcomes.${known}`) : outcome;
+}
+
 type FilterParam =
   | "window"
   | "status"
@@ -185,6 +202,7 @@ type FilterParam =
   | "usage_unknown"
   | "guardrail"
   | "plugin"
+  | "outcome"
   | "request_id"
   | "trace_id";
 
@@ -225,6 +243,7 @@ function useLogFilters() {
   const guardrail = (params.get("guardrail") ?? "").trim();
   // one plugin outcome, as the plugin rollup names it (#2243)
   const plugin = (params.get("plugin") ?? "").trim();
+  const outcome = readOutcome(params.get("outcome"));
   const requestId = (params.get("request_id") ?? "").trim();
   const traceId = (params.get("trace_id") ?? "").trim();
   // memoised on the raw value: a fresh array every render would look like a
@@ -268,6 +287,7 @@ function useLogFilters() {
     usageUnknown,
     guardrail,
     plugin,
+    outcome,
     /** the id being looked up, if any */
     lookup,
     /** changes whenever any filter does */
@@ -283,6 +303,7 @@ function useLogFilters() {
       usageUnknown,
       guardrail,
       plugin,
+      outcome,
       lookup?.kind,
       lookup?.value,
     ].join("|"),
@@ -319,6 +340,7 @@ function useLogFilters() {
       }),
     clearGuardrail: () => update({ guardrail: "" }),
     clearPlugin: () => update({ plugin: "" }),
+    setOutcome: (next: RequestOutcome | "") => update({ outcome: next }),
     clear: () =>
       update({
         status: "",
@@ -331,6 +353,7 @@ function useLogFilters() {
         usage_unknown: "",
         guardrail: "",
         plugin: "",
+        outcome: "",
       }),
     setLookup: (next: LogLookup | null) =>
       update({
@@ -350,6 +373,7 @@ function useLogFilters() {
               usage_unknown: "",
               guardrail: "",
               plugin: "",
+              outcome: "",
             }
           : {}),
       }),
@@ -429,6 +453,7 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
     usageUnknown,
     guardrail,
     plugin,
+    outcome,
     lookup,
   } = filters;
   const windowOptions = useTimeWindowOptions();
@@ -482,6 +507,7 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
       usageUnknown,
       guardrail,
       plugin,
+      outcome,
       cursors[page - 1] ?? "",
       lookupKey,
     ],
@@ -504,6 +530,7 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
         usage_unknown: usageUnknown || undefined,
         guardrail: guardrail || undefined,
         plugin: plugin || undefined,
+        outcome: outcome || undefined,
         status,
         limit: PAGE_SIZE,
         cursor: cursors[page - 1],
@@ -617,7 +644,8 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
     (withheld ? 1 : 0) +
     (usageUnknown ? 1 : 0) +
     (guardrail ? 1 : 0) +
-    (plugin ? 1 : 0);
+    (plugin ? 1 : 0) +
+    (outcome ? 1 : 0);
   // what a saved view keeps of the screen: the lookup, the page and the
   // unpriced flag are not filters it holds, and an `all` status or an empty
   // value is left out rather than saved as a filter that filters nothing
@@ -709,6 +737,10 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
         {selectedLifecycle && (
           <DetailRow label={t("pages.logs.detail.lifecycle.label")}>{selectedLifecycle}</DetailRow>
         )}
+        {/* absent from a control plane that predates the column (#3307) */}
+        {selected.outcome && (
+          <DetailRow label={t("pages.logs.outcome")}>{outcomeLabel(t, selected.outcome)}</DetailRow>
+        )}
         <DetailRow label={t("pages.logs.detail.providerTarget")} mono>
           {selected.provider || selected.target ? (
             t("pages.logs.detail.providerToTarget", {
@@ -722,6 +754,25 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
         <DetailRow label={t("pages.logs.detail.variant")} mono>
           {selected.variant || <Absent />}
         </DetailRow>
+        {/* what dialect translation did to the caller's parameters (#3323):
+            only a translated request that lost or changed one has the row */}
+        {(selected.param_adjustments?.length ?? 0) > 0 && (
+          <DetailRow label={t("pages.logs.detail.paramAdjustments")}>
+            <ul className="flex flex-col gap-1">
+              {selected.param_adjustments?.map((entry) => {
+                const { disposition, param } = parseAdjustment(entry);
+                return (
+                  <li key={entry}>
+                    {t("pages.logs.detail.paramAdjustment", {
+                      param,
+                      disposition: dispositionLabel(t, disposition),
+                    })}
+                  </li>
+                );
+              })}
+            </ul>
+          </DetailRow>
+        )}
         {/* rolter's own response cache: a hit never reached the upstream. the
             provider's prompt cache is a token count, under usage */}
         <DetailRow label={t("pages.logs.detail.responseCache")}>
@@ -820,6 +871,7 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
         </DetailRow>
       </DetailSection>
       <Payloads row={selected} />
+      <ErasePayloadAction row={selected} />
     </div>
   );
 
@@ -888,6 +940,22 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
                   options={windowOptions}
                   value={logWindow}
                   onChange={(next) => filters.setWindow(readTimeWindow(next))}
+                />
+              </FilterSection>
+              {/* what the gateway recorded happened to each request (#3307),
+                so a refusal is picked by its reason rather than inferred */}
+              <FilterSection title={t("pages.logs.outcome")} defaultOpen count={outcome ? 1 : 0}>
+                <Combobox
+                  aria-label={t("pages.logs.outcome")}
+                  options={[
+                    { value: "", label: t("pages.logs.outcomeAny") },
+                    ...REQUEST_OUTCOMES.map((name) => ({
+                      value: name,
+                      label: outcomeLabel(t, name),
+                    })),
+                  ]}
+                  value={outcome}
+                  onChange={(next) => filters.setOutcome(readOutcome(next))}
                 />
               </FilterSection>
               <RowFilterSections
@@ -980,8 +1048,13 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
                     business_unit: unitSel.length ? unitSel : undefined,
                     customer: customerSel.length ? customerSel : undefined,
                     unpriced: unpriced || undefined,
+                    // the whole rail travels, so a filtered view never
+                    // exports unfiltered (#3386)
+                    withheld: withheld || undefined,
+                    usage_unknown: usageUnknown || undefined,
                     guardrail: guardrail || undefined,
                     plugin: plugin || undefined,
+                    outcome: outcome || undefined,
                     status,
                   })
                 }
