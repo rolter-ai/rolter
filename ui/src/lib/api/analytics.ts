@@ -20,10 +20,13 @@ export async function getAnalytics<T>(
   // is a genuine not-found the caller should surface as such
   { notFoundIsUnavailable = true }: { notFoundIsUnavailable?: boolean } = {},
 ): Promise<T> {
-  // an analytics read never signs the session out: a 401 here is the caller's
-  // to show, as it always was
+  // a 401 on an analytics read made with a session token signs the session out
+  // like every other control-plane call (#3226): the dead token would otherwise
+  // stay attached while each screen shows its own error. the one 401 that does
+  // not mean an expired session is the coded `admin_token_required` a control
+  // plane with no database answers with (#1909); `noteUnauthorized` already
+  // exempts it, so the screen's LoadError explains the admin token instead
   return request<T>(url, {
-    expireSession: false,
     mapError: (res, err) =>
       res.status === 503 || (res.status === 404 && notFoundIsUnavailable)
         ? new AnalyticsUnavailableError(err.message)

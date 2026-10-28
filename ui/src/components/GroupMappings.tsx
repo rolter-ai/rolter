@@ -45,6 +45,7 @@ const STARTING_ROLE = "viewer";
 const GATES = {
   scim: { create: "scim_group_mapping:create", delete: "scim_group_mapping:delete" },
   sso: { create: "sso_group_mapping:create", delete: "sso_group_mapping:delete" },
+  ldap: { create: "ldap_group_mapping:create", delete: "ldap_group_mapping:delete" },
 } as const satisfies Record<string, Record<string, Capability>>;
 
 /** what the list shows of a mapping: both APIs answer with these and more */
@@ -92,7 +93,7 @@ function grantReasons({ role, target }: Pick<Draft, "role" | "target">): GrantRe
 
 export interface GroupMappingsProps {
   /**
-   * SCIM or SSO: picks the capability each control is gated on and the name the
+   * SCIM, SSO or LDAP: picks the capability each control is gated on and the name the
    * confirmations report under. The control slugs are the same for both, since
    * a refused click also records the capability, which says which one it was.
    */

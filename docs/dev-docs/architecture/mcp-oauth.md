@@ -390,6 +390,8 @@ not present sees: no scope is ever added without a person consenting to it. A
 server with a static credential has no consent to repeat, so its `403` is
 relayed as the upstream sent it.
 
+The dashboard half (#3296) is `ui/src/components/McpStepUp.tsx` and `ui/src/lib/mcp-step-up.ts`. `mcp_insufficient_scope` is an answer to the gateway's caller and the log row keeps only `auth_denied`, so the dashboard cannot read the upstream's scopes back: it offers the server's declared `required_scopes` that the caller's longest-lived live session does not hold (the check the gateway makes before forwarding), on the server card and in the detail of an `auth_denied` log row, and lets the key's owner name a scope when nothing declared is missing. The action is `startMcpStepUp`, the same pop-up flow as Connect (`useMcpConnect`) carrying `step_up_scopes`.
+
 ### Fetching from the control plane, and SSRF
 
 Discovery means the control plane now fetches URLs it did not fetch before: one
