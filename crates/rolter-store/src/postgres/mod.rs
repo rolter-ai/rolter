@@ -388,6 +388,7 @@ struct VariantTargetRow {
     provider_name: String,
     upstream_model: Option<String>,
     weight: i32,
+    takes_over: Vec<String>,
 }
 
 #[derive(FromRow)]
@@ -898,7 +899,7 @@ impl PostgresConfigStore {
         .map_err(store_err)?;
         let variant_target_rows: Vec<VariantTargetRow> = sqlx::query_as(
             "select vt.variant_id, p.org_id as provider_org_id, p.name as provider_name,
-                    vt.upstream_model, vt.weight
+                    vt.upstream_model, vt.weight, vt.takes_over
              from route_variant_targets vt
              join providers p on p.id = vt.provider_id
              order by vt.variant_id, vt.position",
@@ -973,7 +974,13 @@ impl PostgresConfigStore {
                     })
                 })
                 .collect::<Vec<_>>();
-            let variants = route_variants(&r, &variant_rows, &variant_target_rows, left_out);
+            let variants = route_variants(
+                &r,
+                &variant_rows,
+                &variant_target_rows,
+                left_out,
+                &mut route_problems,
+            );
             // a route left with only restricted targets could never dial
             // anything, and one such route would fail validation of the whole
             // snapshot, so it is left out instead (#1584). the classic pool and
@@ -1738,11 +1745,15 @@ fn route_settings_from_row(row: &RouteRow) -> std::result::Result<RouteSettings,
 /// since validation reads a targetless variant as a defect of the snapshot.
 /// The params column is held to a json object by a check constraint
 /// (`0138`), and any object reads as a param map, so it cannot fail to parse.
+///
+/// A target whose stored `takes_over` does not parse is left out, as on the
+/// classic pool, with a line in `problems` (#3373).
 fn route_variants(
     r: &RouteRow,
     variant_rows: &[VariantRow],
     target_rows: &[VariantTargetRow],
     left_out: &HashSet<String>,
+    problems: &mut Vec<String>,
 ) -> Vec<rolter_core::Variant> {
     use serde::Deserialize;
 
@@ -1763,13 +1774,33 @@ fn route_variants(
                 }
                 same_org
             })
-            .map(|t| Target {
-                provider: t.provider_name.clone(),
-                model: t.upstream_model.clone(),
-                weight: t.weight.max(0) as u32,
-                // `route_variant_targets` stores no failure classes yet, so a
-                // variant target is an ordinary pool member
-                takes_over: Vec::new(),
+            .filter_map(|t| {
+                // a class the gateway cannot read leaves the target out rather
+                // than serving it as an ordinary member (#1584, #3373)
+                let takes_over = match t
+                    .takes_over
+                    .iter()
+                    .map(|token| token.parse::<FailureClass>())
+                    .collect::<std::result::Result<Vec<_>, _>>()
+                {
+                    Ok(classes) => classes,
+                    Err(problem) => {
+                        let problem = format!(
+                            "route '{}' variant '{}' target on provider '{}' omitted from the \
+                             snapshot: {problem}",
+                            r.model, v.name, t.provider_name
+                        );
+                        tracing::warn!("{problem}");
+                        problems.push(problem);
+                        return None;
+                    }
+                };
+                Some(Target {
+                    provider: t.provider_name.clone(),
+                    model: t.upstream_model.clone(),
+                    weight: t.weight.max(0) as u32,
+                    takes_over,
+                })
             })
             .collect();
         if targets.is_empty() {
@@ -3203,6 +3234,7 @@ mod tests {
             provider_id,
             upstream_model: None,
             weight: 1,
+            takes_over: Vec::new(),
         };
         let variant =
             |name: &str, targets: Vec<repo::RouteVariantTargetSpec>| repo::RouteVariantSpec {
@@ -5425,10 +5457,72 @@ mod tests {
             }
         }
 
+        // a variant's targets carry the same classes (#3373): `split` has a
+        // guarded variant, a variant whose only readable target is ordinary,
+        // and `split-stranded` only a restricted target across its variants
+        type VariantTargets<'a> = &'a [(&'a str, &'a [(&'a str, &'a [&'a str])])];
+        let variant_routes: [(&str, VariantTargets); 2] = [
+            (
+                "split",
+                &[
+                    ("a", &[("cheap", &[]), ("premium", &["throttled"])]),
+                    ("b", &[("cheap", &[]), ("premium", &["bogus"])]),
+                ],
+            ),
+            ("split-stranded", &[("a", &[("premium", &["refusal"])])]),
+        ];
+        for (model, variants) in variant_routes {
+            let route_id: Uuid = sqlx::query_scalar(
+                "insert into routes (project_id, model, strategy) values ($1, $2, 'round_robin')
+                 returning id",
+            )
+            .bind(project_id)
+            .bind(model)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            for (position, (name, targets)) in variants.iter().enumerate() {
+                let variant_id: Uuid = sqlx::query_scalar(
+                    "insert into route_variants (route_id, name, weight, position)
+                     values ($1, $2, 1, $3) returning id",
+                )
+                .bind(route_id)
+                .bind(name)
+                .bind(position as i32)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+                for (position, (provider, takes_over)) in targets.iter().enumerate() {
+                    sqlx::query(
+                        "insert into route_variant_targets
+                             (variant_id, provider_id, weight, position, takes_over)
+                         values ($1, $2, 1, $3, $4)",
+                    )
+                    .bind(variant_id)
+                    .bind(providers[provider])
+                    .bind(position as i32)
+                    .bind(takes_over)
+                    .execute(&pool)
+                    .await
+                    .unwrap();
+                }
+            }
+        }
+
         let store = PostgresConfigStore::new(pool.clone());
         let config = store.load().await.unwrap();
         let models: Vec<&str> = config.routes.iter().map(|r| r.model.as_str()).collect();
-        assert_eq!(models, ["bad-class", "guarded"]);
+        assert_eq!(models, ["bad-class", "guarded", "split"]);
+        let split = &config.routes[2];
+        assert_eq!(
+            split.variants[0].targets[1].takes_over,
+            vec!["throttled".parse().unwrap()]
+        );
+        assert_eq!(
+            split.variants[1].targets.len(),
+            1,
+            "the unreadable variant target is dropped"
+        );
         assert_eq!(config.validate_snapshot(), Ok(()));
         let guarded = &config.routes[1];
         assert_eq!(guarded.targets.len(), 2);
@@ -5471,6 +5565,23 @@ mod tests {
             !problems.iter().any(|p| p.message.contains("'guarded'")),
             "{problems:?}"
         );
+        let variant_dropped = problems
+            .iter()
+            .find(|p| p.message.contains("route 'split' variant 'b'"))
+            .unwrap_or_else(|| panic!("no problem for the variant target: {problems:?}"));
+        assert!(
+            variant_dropped.message.contains("'bogus'"),
+            "{variant_dropped:?}"
+        );
+        assert_eq!(variant_dropped.owner, tenant);
+        assert!(
+            problems
+                .iter()
+                .any(|p| p.message.contains("route 'split-stranded'")
+                    && p.message
+                        .contains(rolter_core::failover::ALL_TARGETS_RESTRICTED)),
+            "{problems:?}"
+        );
 
         let before = current_version(&pool).await.unwrap();
         sqlx::query(
@@ -5479,6 +5590,13 @@ mod tests {
         .execute(&pool)
         .await
         .unwrap();
+        assert!(current_version(&pool).await.unwrap() > before);
+        // the variant targets' existing trigger (0139) covers the new column
+        let before = current_version(&pool).await.unwrap();
+        sqlx::query("update route_variant_targets set takes_over = '{timeout}' where takes_over = '{throttled}'")
+            .execute(&pool)
+            .await
+            .unwrap();
         assert!(current_version(&pool).await.unwrap() > before);
     }
 

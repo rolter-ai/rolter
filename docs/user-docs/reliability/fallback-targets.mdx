@@ -82,5 +82,5 @@ A [realtime](/api/realtime) session picks its target while it connects, and a fa
 
 ## Limits
 
-- Weighted variants honour `takes_over` on their targets the same way, across the whole fallback chain.
+- Weighted variants honour `takes_over` on their targets the same way, across the whole fallback chain, for a route in `rolter.toml` and one stored in the database alike: `PUT /api/v1/routes/{id}/variants` takes it on each variant target.
 - A content refusal returned with a `200` (a `finish_reason` of `content_filter` in a completed response) is an answer, not a failure, and is not taken over.

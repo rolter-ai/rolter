@@ -3796,6 +3796,17 @@ fn routing_schemas(p: &Prim) -> Value {
     let timestamp = &p.timestamp;
     let string = &p.string;
     let nullable_string = &p.nullable_string;
+    // a variant target's classes (#3373), built apart: the schema below is
+    // already as deep as `json!` expands
+    let variant_takes_over = json!({
+        "type": "array",
+        "default": [],
+        "items": {
+            "type": "string",
+            "pattern": "^(throttled|timeout|transport|server_error|refusal(:[a-z0-9_-]{1,64})?)$"
+        },
+        "description": "the failure classes this target takes over, as on a route target. The route's own targets and every variant's count together: a set that leaves the route only such targets is refused naming `all_targets_restricted`"
+    });
     json!({
         "Route": {
             "type": "object",
@@ -3909,12 +3920,13 @@ fn routing_schemas(p: &Prim) -> Value {
         },
         "RouteVariantTarget": {
             "type": "object",
-            "required": ["id", "variant_id", "provider_id", "weight", "position"],
+            "required": ["id", "variant_id", "provider_id", "weight", "position", "takes_over"],
             "properties": {
                 "id": uuid, "variant_id": uuid, "provider_id": uuid,
                 "upstream_model": nullable_string,
                 "weight": {"type": "integer", "minimum": 0},
-                "position": {"type": "integer"}
+                "position": {"type": "integer"},
+                "takes_over": {"type": "array", "items": string, "description": "the failure classes this target takes over; empty for an ordinary target"}
             }
         },
         "SetRouteVariants": {
@@ -3943,7 +3955,8 @@ fn routing_schemas(p: &Prim) -> Value {
                                     "properties": {
                                         "provider_id": uuid,
                                         "upstream_model": {"type": ["string", "null"], "description": "the model name sent upstream; omitted, null or blank forwards the route's public name"},
-                                        "weight": {"type": "integer", "default": 1, "minimum": 0}
+                                        "weight": {"type": "integer", "default": 1, "minimum": 0},
+                                        "takes_over": variant_takes_over
                                     },
                                     "additionalProperties": false
                                 }
