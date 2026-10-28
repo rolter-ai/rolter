@@ -142,6 +142,57 @@ Blocks with no equivalent in the target protocol (for example OpenAI input
 audio sent to an Anthropic Messages upstream) are preserved as opaque content
 blocks; the target may reject them rather than rolter silently dropping data.
 
+### Parameters translation did not forward as sent
+
+A translator that cannot carry a caller parameter to the upstream dialect says
+so instead of discarding it silently (#1586). Every adapter in
+`crates/rolter-proxy/src/translation.rs` records into one
+`rolter_proxy::ParamAdjustments` (`adjustments.rs`), an entry per parameter with
+a `Disposition`: `dropped` (no equivalent, not sent), `clamped` (sent within
+the upstream's range; no adapter clamps today, see #3324) or `translated` (sent as a lossy
+approximation, such as a forced-function `tool_choice` sent to Gemini as mode
+`ANY`, an Anthropic `tool_choice` carrying `disable_parallel_tool_use`, or a
+tool list with non-function tools). A rename that keeps the meaning
+(`max_completion_tokens` → `max_tokens`, `stop` → `stop_sequences`) is not an
+adjustment. What each adapter reports:
+
+| Pair                         | Reported                                                                                                                        |
+| ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| Chat → Anthropic             | `n`, `presence_penalty`, `frequency_penalty`, `logprobs` dropped; `max_completion_tokens` dropped when `max_tokens` is also set |
+| Anthropic → Chat             | `tool_choice` translated when it carries `disable_parallel_tool_use`                                                            |
+| Responses → Chat / Anthropic | `background`, `store`, `previous_response_id`, `reasoning`, `text` dropped, plus the Chat → Anthropic row for Anthropic         |
+| any → Gemini generate        | every known parameter the translator does not map (`top_k`, `seed`, `response_format`, …); `tool_choice` and `tools` as above   |
+| any → Gemini Interactions    | as Gemini, except that `store` and `previous_response_id` are carried rather than dropped                                       |
+
+Gemini and Interactions build their body afresh, so the parameters left over in
+the source object are the dropped ones. Only names from `KNOWN_PARAMS` are
+recorded, so a key the caller invented never reaches a header or a log row, and
+`model`, `stream` and `stream_options` are left out because rolter carries or
+answers them itself.
+
+The record is made at request-translation time:
+`TranslationPlan::translate_request_reporting` returns it beside the body, and
+`Forwarder::forward_json_with` inserts it into the upstream `reqwest::Response`'s
+extensions when it is not empty. The gateway takes it off the response before
+reading a byte, puts it on `RequestLog::param_adjustments`, and
+`DecisionHeaders` renders it as `x-rolter-param-adjustments:
+top_k=dropped, tool_choice=translated` (an RFC 8941 dictionary of tokens) on the
+streamed, buffered and cached-store paths alike. The log row writes
+`<disposition>:<param>` entries to `request_logs.param_adjustments`
+(`clickhouse/022_param_adjustments.sql`, `Array(String)`, serialized only when
+non-empty, so a ClickHouse without the column keeps accepting every other row).
+A response served from the response cache did not go through translation and
+carries neither (#3326).
+
+The common path pays nothing: a plan that does not translate returns an empty
+record, an empty `Vec` does not allocate, nothing is inserted into the response
+extensions, and `DecisionHeaders` builds no header string. Under ADR-0032 the
+header is a rolter-specific response header whose name and grammar are
+promised; the parameters it names and the dispositions it uses are an open
+vocabulary, so a new disposition is additive, not breaking. Tests: the
+`reported` cases in `translation.rs`, `adjustments.rs`, and the
+`param_adjustments_*` cases in `crates/rolter-gateway/tests/integration.rs`.
+
 ### Token usage and the prompt cache across dialects
 
 A translated answer carries the upstream's prompt-cache split in the usage
