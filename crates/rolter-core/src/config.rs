@@ -178,6 +178,12 @@ pub struct GatewayConfig {
     /// proxying, vendor-neutral. Disabled by default (ROL-257)
     #[serde(default)]
     pub guardrail_webhook: crate::guardrail_webhook::GuardrailWebhookConfig,
+    /// semantic guardrail providers that can run side by side, and the
+    /// policies scoped to the deployment, an org, a project, a route or a
+    /// virtual key that pick which of them judge a request (#459). Empty by
+    /// default
+    #[serde(default)]
+    pub semantic_guards: crate::semantic_guards::SemanticGuardsConfig,
     /// external PII sanitizer: a self-hosted service that returns *transformed*
     /// content (placeholders) rather than an allow/block decision, with
     /// opt-in restoration. Disabled by default (#848)
@@ -5037,6 +5043,12 @@ impl GatewayConfig {
                 self.egress_problem(self.guardrail_webhook.url.trim(), "guardrail_webhook.url"),
             );
         }
+        for provider in self.semantic_guards.providers.iter().filter(|p| p.enabled) {
+            problems.extend(self.egress_problem(
+                provider.url.trim(),
+                &format!("semantic_guards.providers '{}' url", provider.name),
+            ));
+        }
         if self.pii_sanitizer.enabled {
             problems
                 .extend(self.egress_problem(self.pii_sanitizer.url.trim(), "pii_sanitizer.url"));
@@ -5395,6 +5407,7 @@ impl GatewayConfig {
 
         // validate the custom guardrail webhook (url/timeout/auth) at load time
         problems.append(&mut self.guardrail_webhook.validate());
+        problems.append(&mut self.semantic_guards.validate(&self.guardrail_webhook));
         problems.append(&mut self.pii_sanitizer.validate());
 
         // validate every enabled plugin instance's endpoint at load time
