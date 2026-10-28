@@ -107,6 +107,26 @@ With a [`sample_rate`](/observability/log-settings#sampling) below `1` the gatew
 
 `calls` is every consultation, and `blocked`, `transformed`, `annotated` and `errors` are the parts of it that ended that way; the rest were allowed. A call that got no verdict is an `errors` one, so a fail-closed plugin that refused traffic because its endpoint was down counts there and not under `blocked`. `last_error_kind` is `refused`, `timeout`, `connect`, `status_<code>` or `body`; `last_error_at` and `last_error_kind` are `null` and empty while `errors` is `0`. Counts are scaled by the log's sampling weight and limited to the request log you can read, like every other count here. `recorded` is `false`, with `data` empty, when the ClickHouse table lacks `clickhouse/019_plugin_events.sql`. Each row of `GET /api/v1/analytics/invocations` carries `plugin_events`, the entries behind the counts.
 
+## CSV exports
+
+Three reads have a file form, for the spreadsheet a chargeback or an invoice reconciliation ends in. Each is the same read as its JSON twin, so it takes the same window and filters and shows a caller exactly the rows they could page through: a project member exports their project's requests, an org viewer their org's, and nobody another tenant's. The Export CSV button on **Cost Attribution** and **LLM Logs** calls them.
+
+| Route                                         | File                                                                                              |
+| --------------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| `GET /api/v1/analytics/by-attribution/export` | one row per business unit or customer (`dimension`, `include_unattributed`), with the unit's name |
+| `GET /api/v1/analytics/timeseries/export`     | one row per `bucket`, under the Dashboard's filters                                               |
+| `GET /api/v1/analytics/invocations/export`    | the request log, newest first, under the LLM Logs filters; `limit` and `cursor` are ignored       |
+
+The file name says what it holds: `<what>_<from>_to_<to>_<CURRENCY>.csv`, such as `cost-attribution-business_unit_2026-10-01_to_2026-11-01_USD.csv`. The `cost` columns are in the deployment's base currency, named in the `currency` column of every row.
+
+**Unpriced requests are flagged, never folded in.** The rollups carry `unpriced_requests` and `cost_is_partial` (`true` when that count is above zero), so a total that leaves out requests with no price is not read as final. In the request log, `unpriced` is `1` on such a row and its `cost` is left blank rather than written as `0`, as the screen shows it as unpriced instead of free.
+
+**The request log is metadata only.** The columns are fixed: identifiers, model, provider, status, token counts, cost, currency, `unpriced`, latency and `sample_weight`. No captured request or response body, error text, guardrail or plugin detail is ever in the file, whatever the caller's payload role. Counts and sums in the rollups are scaled by the sampling weight like the JSON reads, while each log row is one stored row.
+
+**The log is streamed.** The control plane reads it one bounded page at a time with the keyset cursor the JSON list uses and writes each page as it arrives, so a month of requests does not wait for, or hold in memory, the whole result, and rows logged during the export neither repeat nor go missing. ClickHouse failing before the first row answers a JSON error; failing part way ends the body with an error so the download fails instead of passing for a complete file.
+
+**Cells are safe to open.** A value a spreadsheet would run as a formula (one starting with `=`, `+`, `-`, `@`, a tab or a carriage return, such as a business unit someone named `=Payments`) is written with a leading `'`. Numbers are written as they are.
+
 ## The savings advisor
 
 `GET /api/v1/analytics/savings` re-prices the same rows at the cheaper models already configured in each route's pool, and says where the window's spend went. It takes the window plus `org`, `project`, `route` and `key`, answers one object rather than `{"data": [...]}`, and is gated by the `savings` capability. It re-prices and never evaluates quality; see [Savings advisor](/observability/savings-advisor) for how to read it and what it does not claim.

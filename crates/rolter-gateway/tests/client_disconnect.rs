@@ -114,6 +114,7 @@ fn config(upstream: SocketAddr, clickhouse: SocketAddr) -> GatewayConfig {
             provider: "slow".into(),
             model: Some("slow-chat".into()),
             weight: 1,
+            takes_over: Vec::new(),
         }],
         params: Default::default(),
         param_policy: Default::default(),
@@ -239,6 +240,7 @@ async fn a_caller_that_leaves_during_a_retry_backoff_is_not_charged_to_the_targe
         provider: "sibling".into(),
         model: Some("slow-chat".into()),
         weight: 1,
+        takes_over: Vec::new(),
     });
     let gateway = serve(rolter_gateway::build_router_from_config(&config)).await;
 

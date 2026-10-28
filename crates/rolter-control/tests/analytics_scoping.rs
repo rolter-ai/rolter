@@ -1507,6 +1507,161 @@ async fn withheld_and_unknown_usage_filters_narrow_inside_the_callers_scope() {
     );
 }
 
+/// The request ids a caller's CSV export of the log carries, among `ids`.
+async fn exported(
+    client: &reqwest::Client,
+    addr: SocketAddr,
+    token: &str,
+    ids: &[(String, String)],
+) -> Vec<String> {
+    let response = client
+        .get(format!("http://{addr}/api/v1/analytics/invocations/export"))
+        .bearer_auth(token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200, "export");
+    let csv = response.text().await.unwrap();
+    // metadata only: whatever the caller's role, no captured body is in the file
+    assert!(
+        !csv.contains("prompt-") && !csv.contains("completion-"),
+        "{csv}"
+    );
+    let mut labels: Vec<String> = ids
+        .iter()
+        .filter(|(_, id)| csv.contains(id.as_str()))
+        .map(|(label, _)| label.clone())
+        .collect();
+    labels.sort();
+    labels
+}
+
+/// A caller exports exactly the rows they can list, never one outside their
+/// scope (#1838): the export binds the same predicate as the JSON read.
+#[tokio::test]
+async fn the_export_returns_only_the_rows_the_caller_can_list() {
+    let ch = skip_without_stack!();
+    let http = reqwest::Client::new();
+    ensure_schema(&http, &ch).await;
+
+    let db = TestSchema::create(&test_database::url().await.unwrap()).await;
+    let pool = db.pool().clone();
+    let app = rolter_control::test_app_with_clickhouse_and_admin_token(
+        pool.clone(),
+        &ch,
+        Some(ADMIN_TOKEN.to_string()),
+    )
+    .await
+    .unwrap();
+    let addr = serve(app).await;
+    let acme = seed_tenant(&pool, "acme").await;
+    let umbrella = seed_tenant(&pool, "umbrella").await;
+    let ids = seed_logs(&http, &ch, &[("acme", &acme), ("umbrella", &umbrella)]).await;
+
+    let everything = exported(&http, addr, ADMIN_TOKEN, &ids).await;
+    assert_eq!(everything.len(), 5, "{everything:?}");
+
+    let project_member = seed_user(&pool, None, None, Some(acme.project_a), "member").await;
+    assert_eq!(
+        exported(&http, addr, &project_member, &ids).await,
+        ["acme-a"]
+    );
+    let org_viewer = seed_user(&pool, Some(acme.org), None, None, "viewer").await;
+    assert_eq!(
+        exported(&http, addr, &org_viewer, &ids).await,
+        ["acme-a", "acme-b"]
+    );
+    let team_member = seed_user(&pool, None, Some(umbrella.team), None, "member").await;
+    assert_eq!(
+        exported(&http, addr, &team_member, &ids).await,
+        ["umbrella-a", "umbrella-b"]
+    );
+    // the rollup exports are scoped the same way: another org's spend is not in
+    // a caller's chargeback file
+    let rollup = http
+        .get(format!(
+            "http://{addr}/api/v1/analytics/by-attribution/export?include_unattributed=true"
+        ))
+        .bearer_auth(&project_member)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(rollup.status(), 200);
+}
+
+/// Requests that began inside one millisecond are listed in the order they
+/// began, and paging through them neither repeats nor skips one (#1392). The
+/// `ts` of all three is identical, their request ids sort the opposite way to
+/// their start sequence, and a page holds one row, so every step of the walk
+/// is decided by `seq` alone.
+#[tokio::test]
+async fn requests_in_one_millisecond_list_by_their_start_sequence() {
+    let ch = skip_without_stack!();
+    let http = reqwest::Client::new();
+    ensure_schema(&http, &ch).await;
+
+    let db = TestSchema::create(&test_database::url().await.unwrap()).await;
+    let pool = db.pool().clone();
+    let app = rolter_control::test_app_with_clickhouse_and_admin_token(
+        pool.clone(),
+        &ch,
+        Some(ADMIN_TOKEN.to_string()),
+    )
+    .await
+    .unwrap();
+    let addr = serve(app).await;
+    let tenant = seed_tenant(&pool, "seq").await;
+    let ts = chrono::Utc::now()
+        .format("%Y-%m-%d %H:%M:%S%.3f")
+        .to_string();
+    let tag = Uuid::new_v4().simple().to_string();
+    // started first to last: first (seq 10), second (seq 20), third (seq 30)
+    let started = [("zzz-first", 10u64), ("mmm-second", 20), ("aaa-third", 30)];
+    let rows: Vec<Value> = started
+        .iter()
+        .map(|(name, seq)| {
+            json!({
+                "ts": ts, "seq": seq, "request_id": format!("{name}-{tag}"),
+                "org_id": tenant.org.to_string(), "team_id": tenant.team.to_string(),
+                "project_id": tenant.project_a.to_string(),
+                "model": "fake-llm", "status": 200,
+            })
+        })
+        .collect();
+    insert_rows(&http, &ch, "request_logs", &rows).await;
+
+    let mut seen = Vec::new();
+    let mut cursor = String::new();
+    for _ in 0..5 {
+        let response = http
+            .get(format!("http://{addr}/api/v1/analytics/invocations"))
+            .query(&[
+                ("limit", "1"),
+                ("model", "fake-llm"),
+                ("cursor", cursor.as_str()),
+            ])
+            .bearer_auth(ADMIN_TOKEN)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        let body: Value = response.json().await.unwrap();
+        let page = body["data"].as_array().unwrap();
+        let Some(row) = page.first() else { break };
+        if row["request_id"].as_str().unwrap().ends_with(&tag) {
+            seen.push(
+                row["request_id"]
+                    .as_str()
+                    .unwrap()
+                    .replace(&format!("-{tag}"), ""),
+            );
+        }
+        cursor = body["next_cursor"].as_str().unwrap().to_string();
+    }
+    // newest start first, each exactly once
+    assert_eq!(seen, ["aaa-third", "mmm-second", "zzz-first"]);
+}
+
 /// The savings advisor's queries against the real engine (#1581). Its unit
 /// tests answer them from a fake, which cannot show that ClickHouse resolves a
 /// bare column name to a select alias first: a summed column read inside the

@@ -73,6 +73,7 @@ fn target() -> Target {
         provider: "up".into(),
         model: Some("test-model".into()),
         weight: 1,
+        takes_over: Vec::new(),
     }
 }
 
@@ -213,6 +214,7 @@ async fn a_failover_to_a_sibling_target_still_waits() {
         provider: "sibling".into(),
         model: Some("test-model".into()),
         weight: 1,
+        takes_over: Vec::new(),
     });
     let gw = gateway(&config).await;
 
@@ -303,6 +305,7 @@ fn with_a_sibling_target(config: &mut GatewayConfig, addr: SocketAddr) {
         provider: "sibling".into(),
         model: Some("test-model".into()),
         weight: 1,
+        takes_over: Vec::new(),
     });
 }
 

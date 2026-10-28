@@ -81,6 +81,7 @@ prompts below, then the quickstart, then the page for whatever it is wiring.
 ### Reliability
 
 - [Retries & Cooldowns](/reliability/retries-and-cooldowns): Configure automatic retries and per-target cooldowns so Rolter handles transient upstream failures transparently, without changes to your client code.
+- [Fallback Targets](/reliability/fallback-targets): Keep an expensive or special-purpose route target out of normal traffic and reach it only when another target fails in a way it is meant to fix, such as a content refusal or throttling.
 - [Circuit Breakers](/reliability/circuit-breakers): Use Rolter's per-target circuit breakers to automatically shed traffic from upstream models that are consistently failing, protecting latency and capacity.
 - [Health Checks](/reliability/health-checks): Enable Rolter's background health probing to automatically skip unavailable upstream providers during routing, before a real request ever fails.
 - [Performance Tuning](/reliability/performance-tuning): Tune Rolter's upstream retry budget, connect and request timeouts, and the per-provider bounded admission queue from the dashboard or the management API.

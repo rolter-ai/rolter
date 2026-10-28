@@ -141,6 +141,10 @@ The rollup needs ClickHouse. A deployment with no `clickhouse_url` shows a "Spen
 
 ---
 
+## Exporting for chargeback
+
+**Export CSV** on Business Units and Customers downloads the rollup for the window on screen, unattributed spend included, as `cost-attribution-<dimension>_<from>_to_<to>_<CURRENCY>.csv`. A row whose spend leaves out requests with no price is marked `cost_is_partial`, so a partial total is never read as final. **Export CSV** on LLM Logs downloads the request log under the filters on screen, metadata only. Both show only the rows you could list yourself. See [CSV exports](/api/dashboard-analytics#csv-exports).
+
 ## Attribution in the request log
 
 Every row in `request_logs` carries `business_unit_id` and `customer_id`, so **LLM Logs** can be read per unit or per customer. The filter rail offers both dimensions, and the detail drawer names the unit and the customer a request was charged to.

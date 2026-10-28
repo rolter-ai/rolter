@@ -95,6 +95,7 @@ fn config(clickhouse: SocketAddr) -> GatewayConfig {
     config.logging.flush_ms = 20;
     config.logging.batch_max = 1;
     config.db_virtual_keys.push(VirtualKeyRecord {
+        previous: None,
         access_policy: None,
         key_hash: rolter_auth::hash_key(&config.server.resolve_key_pepper(), KEY),
         id: KEY_ID.into(),
@@ -406,6 +407,7 @@ async fn a_configured_route_named_fake_llm_is_logged_as_its_provider() {
             provider: "shadow".into(),
             model: Some("fake-llm".into()),
             weight: 1,
+            takes_over: Vec::new(),
         }],
         params: Default::default(),
         param_policy: Default::default(),
@@ -464,6 +466,7 @@ async fn rows_carry_the_id_from_the_configured_request_id_header() {
             provider: "upstream".into(),
             model: None,
             weight: 1,
+            takes_over: Vec::new(),
         }],
         params: Default::default(),
         param_policy: Default::default(),
