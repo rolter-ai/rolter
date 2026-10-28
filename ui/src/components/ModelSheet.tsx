@@ -12,6 +12,7 @@ import { RouteTargetList } from "@/components/RouteTargetList";
 import { StrategyPicker } from "@/components/StrategyPicker";
 import { useDiscardGuard } from "@/components/DiscardGuard";
 import { DocsLink } from "@/components/DocsLink";
+import { TakesOverField } from "@/components/TakesOverField";
 import { ProviderLogo } from "@/components/ui/provider-logo";
 import { Button } from "@/components/ui/button";
 import { ChipGroup } from "@/components/ui/chip-group";
@@ -66,6 +67,7 @@ import { errorText } from "@/lib/error-copy";
 import { readEffectivePolicy } from "@/lib/guardrail-policy";
 import { keptRatePatches, type KeptRates } from "@/lib/cache-write-rate";
 import { useErrorVisibility } from "@/lib/error-visibility";
+import { ALL_TARGETS_RESTRICTED, allRestricted, isRestricted } from "@/lib/failure-classes";
 import { providersUsableFrom } from "@/lib/provider-scope";
 import type { RouteTargetView } from "@/lib/route-targets";
 import { usesWeights } from "@/lib/strategies";
@@ -112,6 +114,11 @@ export interface DraftTarget {
   /** the model id sent upstream; blank sends the public name through as-is */
   upstream: string;
   weight: string;
+  /**
+   * the failure classes the target is a fallback for (#1584, #3319); empty
+   * for an ordinary member of the pool
+   */
+  takesOver: string[];
 }
 
 let targetKeys = 0;
@@ -120,9 +127,10 @@ export function newTarget(
   upstream = "",
   weight = "1",
   id?: string,
+  takesOver: string[] = [],
 ): DraftTarget {
   targetKeys += 1;
-  return { key: `t${targetKeys}`, id, providerId, upstream, weight };
+  return { key: `t${targetKeys}`, id, providerId, upstream, weight, takesOver };
 }
 
 interface Caps {
@@ -551,10 +559,11 @@ function targetInput(target: DraftTarget, publicName: string) {
     provider_id: target.providerId,
     upstream_model: upstreamFor(target.upstream, publicName),
     weight: Number(target.weight),
+    takes_over: target.takesOver,
   };
 }
 
-export type RefusalField = "targets" | "provider" | "weight";
+export type RefusalField = "targets" | "provider" | "weight" | "takesOver";
 
 /**
  * A refusal the control plane pinned to one part of the target list: the whole
@@ -565,16 +574,28 @@ export type RefusalField = "targets" | "provider" | "weight";
 export interface ServerRefusal {
   field: RefusalField;
   key?: string;
+  /**
+   * the list was refused because every target is a restricted fallback
+   * (`all_targets_restricted`), which the sheet words apart from an empty list
+   */
+  allRestricted?: boolean;
 }
 
-/** `targets`, `targets[2].weight`, `targets[0].provider_id` */
+/** `targets`, `targets[2].weight`, `targets[0].provider_id`, `targets[1].takes_over` */
 export function refusalOf(error: unknown, targets: DraftTarget[]): ServerRefusal | null {
   if (!(error instanceof ApiError) || error.code !== "invalid_field" || !error.field) return null;
-  const match = /^targets(?:\[(\d+)\]\.(weight|provider_id))?$/.exec(error.field);
+  const match = /^targets(?:\[(\d+)\]\.(weight|provider_id|takes_over))?$/.exec(error.field);
   if (!match) return null;
-  if (match[1] === undefined) return { field: "targets" };
+  if (match[1] === undefined) {
+    return error.message.includes(ALL_TARGETS_RESTRICTED)
+      ? { field: "targets", allRestricted: true }
+      : { field: "targets" };
+  }
   const key = targets[Number(match[1])]?.key;
-  return key ? { field: match[2] === "weight" ? "weight" : "provider", key } : null;
+  if (!key) return null;
+  const field: RefusalField =
+    match[2] === "weight" ? "weight" : match[2] === "takes_over" ? "takesOver" : "provider";
+  return { field, key };
 }
 
 /**
@@ -596,6 +617,8 @@ function targetsToApi(targets: DraftTarget[], publicName: string): RouteTargetIn
         : tg.upstream
       : (upstreamFor(tg.upstream, publicName) ?? null),
     weight: Number(tg.weight),
+    // always sent: an entry without it clears the stored set
+    takes_over: tg.takesOver,
   }));
 }
 
@@ -691,6 +714,7 @@ function buildPreview(
         ? targetsToApi([tg], publicName)[0].upstream_model
         : upstreamFor(tg.upstream, publicName),
       weight: weightValid(tg.weight) ? Number(tg.weight) : tg.weight,
+      takes_over: tg.takesOver.length > 0 ? tg.takesOver : undefined,
     })),
     params,
     param_policy: paramPolicy,
@@ -736,6 +760,7 @@ export function TargetEditor({
   shown,
   providerInvalid,
   weightInvalid,
+  takesOverError,
   onChange,
   onTouch,
 }: {
@@ -756,6 +781,8 @@ export function TargetEditor({
   shown: TargetErrorsShown;
   providerInvalid: (target: DraftTarget) => boolean;
   weightInvalid: (target: DraftTarget) => boolean;
+  /** what is wrong with a target's `takes_over`, if anything; already translated */
+  takesOverError?: (target: DraftTarget) => string | undefined;
   onChange: (next: DraftTarget[]) => void;
   /** a provider or weight field was visited, so its error may show */
   onTouch: (field: "provider" | "weight") => void;
@@ -838,6 +865,7 @@ export function TargetEditor({
             badWeight={shown.weight && weightInvalid(tg)}
             providerErrorId={providerErrorId}
             weightErrorId={weightErrorId}
+            takesOverError={takesOverError?.(tg)}
             onChange={(patch) => update(i, patch)}
             onRemove={() => onChange(targets.filter((_, idx) => idx !== i))}
             onTouch={onTouch}
@@ -876,6 +904,7 @@ function TargetRow({
   badWeight,
   providerErrorId,
   weightErrorId,
+  takesOverError,
   onChange,
   onRemove,
   onTouch,
@@ -889,6 +918,7 @@ function TargetRow({
   badWeight: boolean;
   providerErrorId: string;
   weightErrorId: string;
+  takesOverError?: string;
   onChange: (patch: Partial<DraftTarget>) => void;
   onRemove: () => void;
   onTouch: (field: "provider" | "weight") => void;
@@ -1028,6 +1058,12 @@ function TargetRow({
           )}
         </div>
       )}
+      <TakesOverField
+        groupLabel={t("fallbackTargets.groupAria", { n })}
+        value={target.takesOver}
+        error={takesOverError}
+        onChange={(takesOver) => onChange({ takesOver })}
+      />
     </li>
   );
 }
@@ -1223,7 +1259,13 @@ export function ModelSheet({
       // every target the route has, not only the first: editing one line of a
       // fleet used to rewrite target 0 and never show the rest (#1979)
       d.targets = (targets.data ?? []).map((tg) =>
-        newTarget(tg.provider_id, tg.upstream_model ?? "", String(tg.weight), tg.id),
+        newTarget(
+          tg.provider_id,
+          tg.upstream_model ?? "",
+          String(tg.weight),
+          tg.id,
+          tg.takes_over ?? [],
+        ),
       );
       d.enabled = route.enabled;
       seedAdvanced(d, route.advanced ?? {});
@@ -1347,10 +1389,22 @@ export function ModelSheet({
   // a route with no target is accepted by the API and answers every request
   // with an error, so the sheet does not create one
   // a refusal from the control plane marks the same fields until the list is edited
-  const errTargets =
-    !readonly && (draft.targets.length === 0 || refusal?.field === "targets")
-      ? t("modelSheet.errors.targets")
-      : "";
+  // a list of nothing but fallbacks could never dial anything, which the
+  // control plane refuses as `all_targets_restricted` (#1584)
+  const onlyFallbacks =
+    allRestricted(draft.targets.map((tg) => tg.takesOver)) || !!refusal?.allRestricted;
+  const errTargets = readonly
+    ? ""
+    : onlyFallbacks
+      ? t("fallbackTargets.errors.allRestricted")
+      : draft.targets.length === 0 || refusal?.field === "targets"
+        ? t("modelSheet.errors.targets")
+        : "";
+  // a set the control plane refused, said under that target's own set
+  const takesOverError = (tg: DraftTarget) =>
+    refusal?.field === "takesOver" && refusal.key === tg.key
+      ? t("fallbackTargets.errors.refused")
+      : undefined;
   // a target with no provider is not a target: the control plane would refuse
   // it, and a default that picked one for the operator sent traffic to the
   // wrong provider (#2810). only a blank line counts: a stored target whose
@@ -1533,8 +1587,15 @@ export function ModelSheet({
           model: publicName,
           strategy: draft.strategy,
         });
-        // one at a time, so the targets are stored in the order they are listed
-        for (const target of draft.targets) {
+        // one at a time, so the targets are stored in the order they are
+        // listed, the ordinary ones first: a fallback added to a route with no
+        // ordinary target yet is refused (`all_targets_restricted`), and a
+        // fallback is never dialled first, so this moves no traffic
+        const ordered = [
+          ...draft.targets.filter((tg) => !isRestricted(tg.takesOver)),
+          ...draft.targets.filter((tg) => isRestricted(tg.takesOver)),
+        ];
+        for (const target of ordered) {
           await createRouteTarget(created.id, targetInput(target, publicName));
         }
         if (Object.keys(params).length > 0 || draft.paramMode !== "unlockAll") {
@@ -1700,7 +1761,13 @@ export function ModelSheet({
       // renamed next, so it names that model outright instead
       if (srcTargets.length > 0) {
         next.targets = srcTargets.map((tg) =>
-          newTarget(tg.provider_id, tg.upstream_model || src.model, String(tg.weight)),
+          newTarget(
+            tg.provider_id,
+            tg.upstream_model || src.model,
+            String(tg.weight),
+            undefined,
+            tg.takes_over ?? [],
+          ),
         );
       }
       seedParams(next, src.params ?? {}, src.param_policy ?? {});
@@ -2045,6 +2112,7 @@ export function ModelSheet({
               }}
               providerInvalid={providerRowInvalid}
               weightInvalid={weightRowInvalid}
+              takesOverError={takesOverError}
               onChange={(next) => {
                 set({ targets: next });
                 setRefusal(null);

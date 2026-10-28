@@ -1863,6 +1863,8 @@ export const TheDrawerGroupsRoutingUsageAndAttribution: Story = {
     const routing = drawer.getByRole("region", { name: "Routing" });
     await expect(valueOf(routing, "Provider → target")).toBe("openai → openai/gpt-4o");
     await expect(valueOf(routing, "Variant")).toBe("canary");
+    // the first dial answered, so no fallback reason is stated (#3319)
+    await expect(within(routing).queryByText("Fallback reason")).toBeNull();
     await expect(valueOf(routing, "Response cache")).toBe("Hit");
     await expect(valueOf(routing, "Stream")).toBe("Streamed");
     await expect(valueOf(routing, "Time to first token")).toBe(`${fmt.number(120)} ms`);
@@ -1884,6 +1886,45 @@ export const TheDrawerGroupsRoutingUsageAndAttribution: Story = {
     await expect(within(attribution).queryByText("vk-ci")).toBeNull();
     await expect(valueOf(attribution, "Business unit")).toBe("Platform Engineering");
     await expect(valueOf(attribution, "Customer")).toBe("Acme Corp");
+  },
+};
+
+/**
+ * #3319: a request a fallback target answered names the failure that sent it
+ * there in its Routing group, beside the attempts it took.
+ */
+export const TheDrawerNamesTheFallbackReason: Story = {
+  render: () => (
+    <Harness
+      fetchStub={routes([
+        [
+          "/api/v1/analytics/invocations",
+          () => ({
+            data: [
+              row({
+                request_id: "req-fallback",
+                provider: "anthropic-burst",
+                upstream_status: 200,
+                attempts: 2,
+                fallback_reason: "refusal:content_policy_violation",
+              }),
+            ],
+          }),
+        ],
+        ["/api/v1/currency", () => ({ base: "USD", codes: ["USD"], rates: {} })],
+      ])}
+    >
+      <Logs />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(
+      await canvas.findByRole("button", { name: /Open request details for gpt-4o/i }),
+    );
+    const panel = await canvas.findByRole("complementary", { name: "Details" });
+    const routing = within(panel).getByRole("region", { name: "Routing" });
+    await expect(valueOf(routing, "Fallback reason")).toBe("refusal:content_policy_violation");
   },
 };
 

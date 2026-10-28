@@ -3852,7 +3852,8 @@ fn routing_schemas(p: &Prim) -> Value {
                         "properties": {
                             "provider": string,
                             "model": nullable_string,
-                            "weight": {"type": "integer"}
+                            "weight": {"type": "integer"},
+                            "takes_over": {"type": "array", "items": string, "description": "the failure classes the target is a fallback for; absent for an ordinary target"}
                         }
                     }
                 },

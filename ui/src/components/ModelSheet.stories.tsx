@@ -784,7 +784,7 @@ export const AddsAModel: Story = {
       upstream_model?: string;
       weight: number;
     };
-    await expect(target).toEqual({ provider_id: "prov-2", weight: 1 });
+    await expect(target).toEqual({ provider_id: "prov-2", weight: 1, takes_over: [] });
   },
 };
 
@@ -821,9 +821,60 @@ export const AddsACacheAwareFleet: Story = {
     await expect(route.strategy).toBe("cache_aware");
     await waitFor(() => expect(sentBodies("POST", "/routes/route-new/targets")).toHaveLength(2));
     await expect(sentBodies("POST", "/routes/route-new/targets")).toEqual([
-      { provider_id: "prov-2", upstream_model: "meta-llama/Llama-3.1-70B", weight: 1 },
-      { provider_id: "prov-1", weight: 3 },
+      {
+        provider_id: "prov-2",
+        upstream_model: "meta-llama/Llama-3.1-70B",
+        weight: 1,
+        takes_over: [],
+      },
+      { provider_id: "prov-1", weight: 3, takes_over: [] },
     ]);
+  },
+};
+
+/**
+ * A fallback target is created after the ordinary ones (#3319): the control
+ * plane refuses a fallback on a route with no ordinary target yet, and a
+ * fallback is never dialled first, so the order moves no traffic. Its classes
+ * go out with it.
+ */
+export const AddsAModelWithAFallbackTarget: Story = {
+  render: () => <Stage mode="add" />,
+  play: async () => {
+    const dialog = within(sheet());
+    await seededBlank(dialog);
+    await userEvent.type(dialog.getByLabelText("Route name"), "gpt-burst");
+    await pickOption(dialog.getByLabelText("Target 1 provider"), "vllm-cluster");
+    const first = within(dialog.getByRole("group", { name: "Fallback classes of target 1" }));
+    await userEvent.click(first.getByRole("button", { name: "Ordinary target" }));
+    await userEvent.click(first.getByRole("button", { name: "throttled" }));
+    await expect(first.getByTestId("fallback-badge")).toBeVisible();
+    await userEvent.click(dialog.getByRole("button", { name: "Add target" }));
+    await pickOption(await dialog.findByLabelText("Target 2 provider"), "openai-prod");
+
+    await userEvent.click(dialog.getByRole("button", { name: "Add route" }));
+    await waitFor(() => expect(sentBodies("POST", "/routes/route-new/targets")).toHaveLength(2));
+    await expect(sentBodies("POST", "/routes/route-new/targets")).toEqual([
+      { provider_id: "prov-1", weight: 1, takes_over: [] },
+      { provider_id: "prov-2", weight: 1, takes_over: ["throttled"] },
+    ]);
+  },
+};
+
+/** A sheet whose every target is a fallback cannot be saved, and says why at the list. */
+export const RefusesAModelOfOnlyFallbacks: Story = {
+  render: () => <Stage mode="add" />,
+  play: async () => {
+    const dialog = within(sheet());
+    await seededBlank(dialog);
+    await userEvent.type(dialog.getByLabelText("Route name"), "gpt-stranded");
+    await pickOption(dialog.getByLabelText("Target 1 provider"), "vllm-cluster");
+    const first = within(dialog.getByRole("group", { name: "Fallback classes of target 1" }));
+    await userEvent.click(first.getByRole("button", { name: "Ordinary target" }));
+    await userEvent.click(first.getByRole("button", { name: "refusal" }));
+    await userEvent.click(dialog.getByRole("button", { name: "Add route" }));
+    await waitFor(() => expect(dialog.getByText(/Every target is a fallback/)).toBeVisible());
+    calls.expectNotSent("POST", `/projects/${PROJECT.id}/routes`);
   },
 };
 
@@ -901,6 +952,7 @@ export const PickingASuggestionSendsItUpstream: Story = {
       provider_id: "prov-2",
       upstream_model: "meta-llama/Llama-3.1-8B",
       weight: 1,
+      takes_over: [],
     });
   },
 };
@@ -1046,6 +1098,7 @@ function refusedListing(status: number, message: string): Story {
         provider_id: "prov-2",
         upstream_model: "meta-llama/Llama-3.1-8B",
         weight: 1,
+        takes_over: [],
       });
     },
   };
@@ -1138,8 +1191,13 @@ export const EditsEveryTargetOfAFleet: Story = {
     const body = await routeUpdate("route-2");
     await expect(body).toEqual({
       targets: [
-        { provider_id: "prov-2", upstream_model: "meta-llama/Llama-3.1-70B", weight: 1 },
-        { provider_id: "prov-1", upstream_model: null, weight: 2 },
+        {
+          provider_id: "prov-2",
+          upstream_model: "meta-llama/Llama-3.1-70B",
+          weight: 1,
+          takes_over: [],
+        },
+        { provider_id: "prov-1", upstream_model: null, weight: 2, takes_over: [] },
       ],
     });
     calls.expectNotSent("POST", "/routes/route-2/targets");
@@ -1177,7 +1235,7 @@ export const KeepsAStoredUpstreamEqualToTheRouteName: Story = {
     await userEvent.type(weight, "4");
     await userEvent.click(dialog.getByRole("button", { name: "Save route" }));
     await expect(await routeUpdate("route-1")).toEqual({
-      targets: [{ provider_id: "prov-1", upstream_model: "gpt-4o", weight: 4 }],
+      targets: [{ provider_id: "prov-1", upstream_model: "gpt-4o", weight: 4, takes_over: [] }],
     });
     calls.expectNotSent("POST", "/routes/route-1/targets");
     calls.expectNotSent("DELETE", "/route-targets/");
@@ -1194,7 +1252,7 @@ export const ChangesTheStrategy: Story = {
     await userEvent.click(dialog.getByRole("button", { name: "Save route" }));
     await expect(await routeUpdate("route-1")).toEqual({
       strategy: "weighted",
-      targets: [{ provider_id: "prov-1", upstream_model: null, weight: 1 }],
+      targets: [{ provider_id: "prov-1", upstream_model: null, weight: 1, takes_over: [] }],
     });
   },
 };
@@ -1888,7 +1946,7 @@ export const LeavesTheAdvancedBlobAloneWhenUntouched: Story = {
     calls.expectNotSent("PUT", "/routes/route-1/advanced");
     // the targets go back unchanged in the one update call, never line by line
     await expect(await routeUpdate("route-1")).toEqual({
-      targets: [{ provider_id: "prov-1", upstream_model: null, weight: 1 }],
+      targets: [{ provider_id: "prov-1", upstream_model: null, weight: 1, takes_over: [] }],
     });
     calls.expectNotSent("POST", "/routes/route-1/targets");
     calls.expectNotSent("DELETE", "/route-targets/");

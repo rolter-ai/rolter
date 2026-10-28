@@ -67,6 +67,11 @@ export interface RouteTargetRow {
   provider_id: string;
   upstream_model?: string | null;
   weight: number;
+  /**
+   * the failure classes this target is a fallback for (#1584); empty for an
+   * ordinary member of the pool. Absent from a control plane that predates it
+   */
+  takes_over?: string[];
   created_at: string;
 }
 
@@ -96,6 +101,12 @@ export interface RouteTargetInput {
   /** null or blank forwards the route's own name; a stored value is sent back unchanged */
   upstream_model?: string | null;
   weight: number;
+  /**
+   * the failure classes the target takes over; omitted or empty makes it an
+   * ordinary target. Sent on every entry, since an entry without it clears a
+   * stored set
+   */
+  takes_over?: string[];
 }
 
 /**
@@ -161,6 +172,8 @@ export interface RouteVariantTargetRow {
   upstream_model?: string | null;
   weight: number;
   position: number;
+  /** the failure classes this target takes over (#3373); empty for an ordinary target */
+  takes_over?: string[];
 }
 
 /** One variant as `PUT /api/v1/routes/{id}/variants` takes it. */

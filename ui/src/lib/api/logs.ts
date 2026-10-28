@@ -35,6 +35,11 @@ export interface InvocationRow {
   /// missing field as 0 and says nothing extra
   upstream_status?: number | string;
   attempts?: number | string;
+  /// the failure class that sent the request on to the target that answered
+  /// it (#1584): `throttled`, `refusal:content_policy_violation` and so on.
+  /// "" when the first dial answered, and absent from a control plane that
+  /// predates it, so a reader shows the row only when it is non-empty
+  fallback_reason?: string;
   cache_read_tokens: number | string;
   cache_write_tokens: number | string;
   /// the part of `cache_write_tokens` Anthropic reports as written to its

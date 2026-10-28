@@ -11,6 +11,7 @@ import { FieldLabel } from "@/components/ui/field-label";
 import { Input } from "@/components/ui/input";
 import { ProviderLogo } from "@/components/ui/provider-logo";
 import { SurfacePanel } from "@/components/ui/surface-panel";
+import { TakesOverField } from "@/components/TakesOverField";
 import type { ProviderRow } from "@/lib/api";
 import { useFormat } from "@/lib/i18n/format";
 import { shareBarColor } from "@/lib/share-bars";
@@ -456,6 +457,16 @@ function VariantCard({
                   onClick={() =>
                     onChange({ targets: variant.targets.filter((_, idx) => idx !== j) })
                   }
+                />
+                <TakesOverField
+                  groupLabel={t("fallbackTargets.variantGroupAria", { n, m })}
+                  value={tg.takesOver}
+                  error={
+                    refusal?.field === "takesOver" && refusal.targetKey === tg.key
+                      ? t("fallbackTargets.errors.refused")
+                      : undefined
+                  }
+                  onChange={(takesOver) => updateTarget(j, { takesOver })}
                 />
               </li>
             );

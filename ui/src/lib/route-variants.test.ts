@@ -108,9 +108,27 @@ describe("round trip", () => {
         name: "stable",
         weight: 9,
         params: { temperature: 0.7 },
-        targets: [{ provider_id: "prov-1", upstream_model: null, weight: 2 }],
+        targets: [{ provider_id: "prov-1", upstream_model: null, weight: 2, takes_over: [] }],
       },
     ]);
+  });
+
+  it("keeps a target's fallback classes (#3373)", () => {
+    const stored = row("burst", 1);
+    stored.targets[0].takes_over = ["throttled", "refusal:violence"];
+    const [variant] = variantsToApi(variantsFromRows([stored]));
+    expect(variant.targets[0].takes_over).toEqual(["throttled", "refusal:violence"]);
+  });
+});
+
+describe("refusals", () => {
+  it("maps a refused fallback set onto its target", () => {
+    const drafts = variantsFromRows([row("stable", 9)]);
+    expect(variantRefusalOf("variants[0].targets[0].takes_over", drafts)).toEqual({
+      variantKey: drafts[0].key,
+      targetKey: drafts[0].targets[0].key,
+      field: "takesOver",
+    });
   });
 });
 

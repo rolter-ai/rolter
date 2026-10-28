@@ -64,6 +64,8 @@ provider = "burst"
 takes_over = ["throttled", "timeout"]
 ```
 
+In the dashboard, open a route on **Routing Rules** or a model on **Model Catalog**. Each target line says whether it is an **Ordinary target** or a **Fallback for** its classes; open it to pick the classes as chips, or type a refusal category and select **Add** for `refusal:<category>`. Picking nothing keeps the target ordinary. The variants of a route on **Routing Rules** have the same control on each of their targets. A fallback is marked **fallback** on the route's card and in the catalog's target list, and states no share of traffic: the ordinary targets split the route between them. A sheet whose every target is a fallback cannot be saved and says why at the target list.
+
 The same field is `takes_over` on a target in the [routes API](/api/routes), on `POST /api/v1/routes/{route_id}/targets` and in the target list of `PUT /api/v1/routes/{id}`. The routes API returns it on every target, as an empty list for an ordinary one.
 
 ### A route always needs an ordinary target
@@ -74,7 +76,7 @@ A database route can still end up that way without a write being refused: a row 
 
 ## Seeing why a request reached a fallback
 
-Every request-log row records the failure that sent the request on to the target that answered it, in `fallback_reason`: `refusal:content_policy_violation`, `throttled` and so on, or an empty string when the first dial answered. It is returned on each row of `GET /api/v1/analytics/invocations`, so a request that reached the expensive target because of a content refusal can be told from one that reached it because of load. The column comes from `clickhouse/023_fallback_reason.sql`; see [Upgrading](/deployment/upgrading).
+Every request-log row records the failure that sent the request on to the target that answered it, in `fallback_reason`: `refusal:content_policy_violation`, `throttled` and so on, or an empty string when the first dial answered. **LLM Logs** shows it as **Fallback reason** in the Routing group of a request's details, for a request that reached a fallback. It is returned on each row of `GET /api/v1/analytics/invocations`, so a request that reached the expensive target because of a content refusal can be told from one that reached it because of load. The column comes from `clickhouse/023_fallback_reason.sql`; see [Upgrading](/deployment/upgrading).
 
 ## Realtime sessions
 

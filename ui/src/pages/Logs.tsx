@@ -722,6 +722,14 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
         <DetailRow label={t("pages.logs.detail.variant")} mono>
           {selected.variant || <Absent />}
         </DetailRow>
+        {/* why a fallback target answered: the failure class the request
+            was walked away from. a request the first dial answered says
+            nothing here (#1584, #3319) */}
+        {selected.fallback_reason && (
+          <DetailRow label={t("pages.logs.detail.fallbackReason")} mono>
+            {selected.fallback_reason}
+          </DetailRow>
+        )}
         {/* rolter's own response cache: a hit never reached the upstream. the
             provider's prompt cache is a token count, under usage */}
         <DetailRow label={t("pages.logs.detail.responseCache")}>

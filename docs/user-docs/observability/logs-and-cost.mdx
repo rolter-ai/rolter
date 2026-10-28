@@ -550,7 +550,7 @@ Seven fields of a row come from ClickHouse files that an existing deployment app
 
 `guardrail_events` lists what each guardrail did to the request, as `<action>:<rule name>` entries (`blocked:`, `redacted:` or `annotated:`) and `provider_blocked:<provider name>` / `provider_transformed:<provider name>` for the guardrail provider (the bare `provider_blocked` / `provider_transformed` on rows that predate the name, or for a provider with none); it is empty for a request no guardrail touched. See [What each rule did](/security/guardrails#what-each-rule-did).
 
-`fallback_reason` is the class of the failure that sent the request on to the target that answered it: `throttled`, `timeout`, `transport`, `server_error`, `refusal` or `refusal:<category>`. It is empty when the first dial answered. See [Fallback targets](/reliability/fallback-targets#seeing-why-a-request-reached-a-fallback).
+`fallback_reason` is the class of the failure that sent the request on to the target that answered it: `throttled`, `timeout`, `transport`, `server_error`, `refusal` or `refusal:<category>`. It is empty when the first dial answered. **LLM Logs** shows a non-empty one as **Fallback reason** in the **Routing** group of the detail drawer. See [Fallback targets](/reliability/fallback-targets#seeing-why-a-request-reached-a-fallback).
 
 `plugin_events` lists what each plugin did to the request, as `<outcome>:<slug>` entries (`allowed`, `blocked`, `transformed` or `annotated`) and `error:<slug>:<kind>` for a call that got no verdict; it is empty for a request no plugin was consulted on. See [What each plugin did](/configuration/plugins#what-each-plugin-did).
 

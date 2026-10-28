@@ -39,6 +39,45 @@ export const Weighted: Story = {
 };
 
 /**
+ * A fallback target (#3319) takes no ordinary traffic: it is marked as one,
+ * states no share, and the ordinary targets split the whole route between
+ * them.
+ */
+export const WithAFallbackTarget: Story = {
+  args: {
+    targets: [
+      FLEET[0],
+      FLEET[2],
+      { ...FLEET[1], provider: "openai-burst", takesOver: ["throttled", "timeout"] },
+    ],
+  },
+  play: async ({ canvas }) => {
+    const lines = within(canvas.getByRole("list", { name: "Targets of llama-70b" })).getAllByRole(
+      "listitem",
+    );
+    await expect(lines[0]).toHaveTextContent(/vllm-a.*33% of traffic/);
+    await expect(lines[1]).toHaveTextContent(/vllm-c.*67% of traffic/);
+    await expect(lines[2]).toHaveTextContent(/openai-burst.*fallback/);
+    await expect(lines[2]).not.toHaveTextContent(/of traffic/);
+    await expect(within(lines[2]).getByTestId("fallback-badge").getAttribute("title")).toContain(
+      "throttled, timeout",
+    );
+  },
+};
+
+/** Under a strategy that ignores weights a fallback is still marked as one. */
+export const FallbackUnderIgnoredWeights: Story = {
+  args: {
+    strategy: "cache_aware",
+    targets: [FLEET[0], { ...FLEET[1], takesOver: ["refusal:violence"] }],
+  },
+  play: async ({ canvas }) => {
+    await expect(canvas.getByTestId("fallback-badge")).toBeVisible();
+    await expect(canvas.queryByText(/of traffic/)).toBeNull();
+  },
+};
+
+/**
  * `cache_aware` is built from the target count alone, so the weights are
  * listed as stored and no split is claimed for them.
  */
