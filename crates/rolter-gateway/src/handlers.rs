@@ -5380,7 +5380,7 @@ impl DeliveryPolicy<'_, '_> {
         let bytes = match self.semantic {
             Some(leg) => match leg.apply(bytes).await {
                 Ok(bytes) => bytes,
-                Err(refusal) => return refusal,
+                Err(refusal) => return *refusal,
             },
             None => bytes,
         };
@@ -5433,8 +5433,9 @@ impl SemanticLeg<'_, '_> {
     /// assembled text; any other body as its JSON, or as `{"text": …}` when it
     /// is UTF-8 but not JSON. A binary body (audio, an image) is no text a
     /// classifier can judge and passes. Response-stage events are counted in
-    /// the metrics; the log row records a refusal through its reason.
-    async fn apply(&self, bytes: Bytes) -> Result<Bytes, Delivery> {
+    /// the metrics; the log row records a refusal through its reason. The
+    /// refusal is boxed: it is the rare arm, and `Delivery` is large.
+    async fn apply(&self, bytes: Bytes) -> Result<Bytes, Box<Delivery>> {
         let content = if self.stream {
             crate::semantic_guards::stream_content(&bytes)
         } else if let Ok(value) = serde_json::from_slice::<Value>(&bytes) {
@@ -5463,12 +5464,14 @@ impl SemanticLeg<'_, '_> {
                     .map(Bytes::from)
                     .unwrap_or(bytes))
             }
-            crate::semantic_guards::Verdict::Block { who, reason } => Err(Delivery::Refuse {
-                response: crate::error::ApiError::new(StatusCode::FORBIDDEN, reason)
-                    .with_code("guardrail_blocked")
-                    .into_response(),
-                reason: guardrail_withheld_reason(&who),
-            }),
+            crate::semantic_guards::Verdict::Block { who, reason } => {
+                Err(Box::new(Delivery::Refuse {
+                    response: crate::error::ApiError::new(StatusCode::FORBIDDEN, reason)
+                        .with_code("guardrail_blocked")
+                        .into_response(),
+                    reason: guardrail_withheld_reason(&who),
+                }))
+            }
         }
     }
 }
