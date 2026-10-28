@@ -178,6 +178,12 @@ pub struct GatewayConfig {
     /// proxying, vendor-neutral. Disabled by default (ROL-257)
     #[serde(default)]
     pub guardrail_webhook: crate::guardrail_webhook::GuardrailWebhookConfig,
+    /// semantic guardrail providers that can run side by side, and the
+    /// policies scoped to the deployment, an org, a project, a route or a
+    /// virtual key that pick which of them judge a request (#459). Empty by
+    /// default
+    #[serde(default)]
+    pub semantic_guards: crate::semantic_guards::SemanticGuardsConfig,
     /// external PII sanitizer: a self-hosted service that returns *transformed*
     /// content (placeholders) rather than an allow/block decision, with
     /// opt-in restoration. Disabled by default (#848)
@@ -2078,6 +2084,22 @@ pub struct VirtualKeyRecord {
     /// does any key with no owner, since a policy is a property of a user.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub access_policy: Option<crate::access_policy::ModelPolicy>,
+    /// the secret this key was rotated away from, while its overlap window is
+    /// still open (#1837). `None` once the window closes or the old secret is
+    /// revoked early
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous: Option<PreviousKeySecret>,
+}
+
+/// The secret a rotated virtual key used to carry. It authenticates as the same
+/// key, with the same limits and attribution, until `valid_until`.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct PreviousKeySecret {
+    /// `rolter_auth::hash_key(pepper, key)` of the retired secret
+    pub key_hash: String,
+    /// last instant the retired secret authenticates; the key's own
+    /// `expires_at` still caps it when that is earlier
+    pub valid_until: DateTime<Utc>,
 }
 
 /// How the gateway authenticates to an MCP server.
@@ -5037,6 +5059,12 @@ impl GatewayConfig {
                 self.egress_problem(self.guardrail_webhook.url.trim(), "guardrail_webhook.url"),
             );
         }
+        for provider in self.semantic_guards.providers.iter().filter(|p| p.enabled) {
+            problems.extend(self.egress_problem(
+                provider.url.trim(),
+                &format!("semantic_guards.providers '{}' url", provider.name),
+            ));
+        }
         if self.pii_sanitizer.enabled {
             problems
                 .extend(self.egress_problem(self.pii_sanitizer.url.trim(), "pii_sanitizer.url"));
@@ -5395,6 +5423,7 @@ impl GatewayConfig {
 
         // validate the custom guardrail webhook (url/timeout/auth) at load time
         problems.append(&mut self.guardrail_webhook.validate());
+        problems.append(&mut self.semantic_guards.validate(&self.guardrail_webhook));
         problems.append(&mut self.pii_sanitizer.validate());
 
         // validate every enabled plugin instance's endpoint at load time
@@ -9175,6 +9204,7 @@ mod tests {
             "#,
         );
         let db_key = |id: &str, providers: &[&str]| VirtualKeyRecord {
+            previous: None,
             key_hash: format!("hash-{id}"),
             id: id.to_string(),
             org_id: String::new(),

@@ -1582,6 +1582,21 @@ fn operations() -> Vec<Op> {
             )
             .body(Payload::Ref("SetVirtualKeyCache"))
             .ok(Payload::Ref("VirtualKey")),
+            Op::post(
+                "/api/v1/virtual-keys/{id}/rotate",
+                "rotateVirtualKey",
+                "Issue a new secret for a shared key, optionally keeping the old one valid for an overlap",
+            )
+            .body(Payload::Ref("RotateVirtualKey"))
+            .ok(Payload::Ref("CreatedVirtualKey"))
+            .conflict("the key is personal: the member who minted it rotates it from Account"),
+            Op::delete(
+                "/api/v1/virtual-keys/{id}/previous-secret",
+                "revokeVirtualKeyPreviousSecret",
+                "End a rotation's overlap now so the old secret stops authenticating",
+            )
+            .ok(Payload::Ref("VirtualKey"))
+            .conflict("the key is personal: the member who minted it manages its secrets"),
         ],
     ));
 
@@ -1904,7 +1919,7 @@ fn operations() -> Vec<Op> {
             Op::get(
                 "/api/v1/guardrails/effective",
                 "getEffectiveGuardrails",
-                "Read the guardrail rules and webhook the gateways run, each with where it comes from (config file or dashboard row)",
+                "Read the guardrail rules, semantic guardrail providers and policies the gateways run, each with where it comes from (config file or dashboard row)",
             ),
             Op::get(
                 "/api/v1/guardrails/providers",
@@ -1925,6 +1940,29 @@ fn operations() -> Vec<Op> {
                 "/api/v1/guardrails/providers/{id}",
                 "deleteGuardrailProvider",
                 "Delete a guardrail provider",
+            )
+            .conflict("a guardrail policy still lists the provider"),
+            Op::get(
+                "/api/v1/guardrails/policies",
+                "listGuardrailPolicies",
+                "List scoped semantic guardrail policies, narrowest scope first",
+            ),
+            Op::post(
+                "/api/v1/guardrails/policies",
+                "createGuardrailPolicy",
+                "Create a guardrail policy scoped to the deployment, an org, a project, a route or a virtual key",
+            )
+            .conflict("a policy of that name, or an enabled policy for the same scope, already exists"),
+            Op::put(
+                "/api/v1/guardrails/policies/{id}",
+                "updateGuardrailPolicy",
+                "Replace a guardrail policy and its ordered provider list",
+            )
+            .conflict("a policy of that name, or an enabled policy for the same scope, already exists"),
+            Op::delete(
+                "/api/v1/guardrails/policies/{id}",
+                "deleteGuardrailPolicy",
+                "Delete a guardrail policy",
             ),
             Op::post(
                 "/api/v1/guardrails/providers/test",
@@ -2210,12 +2248,12 @@ fn operations() -> Vec<Op> {
             Op::get(
                 "/api/v1/alert-channels",
                 "listAlertChannels",
-                "List alert channels",
+                "List the alert channels the caller may use: their orgs' and the deployment's",
             ),
             Op::post(
                 "/api/v1/alert-channels",
                 "createAlertChannel",
-                "Create an alert channel",
+                "Create an alert channel, owned by an org (org admin) or the deployment (superadmin)",
             )
             .needs_kek(),
             Op::put(
@@ -2229,11 +2267,15 @@ fn operations() -> Vec<Op> {
                 "deleteAlertChannel",
                 "Delete an alert channel",
             ),
-            Op::get("/api/v1/alert-rules", "listAlertRules", "List alert rules"),
+            Op::get(
+                "/api/v1/alert-rules",
+                "listAlertRules",
+                "List the alert rules the caller owns",
+            ),
             Op::post(
                 "/api/v1/alert-rules",
                 "createAlertRule",
-                "Create an alert rule",
+                "Create an alert rule scoped to an org, team, project, key, business unit or customer",
             ),
             Op::put(
                 "/api/v1/alert-rules/{id}",
@@ -2306,6 +2348,27 @@ fn operations() -> Vec<Op> {
                  action) and `plugin_events` (the same for plugin calls) come from ClickHouse files an operator applies by hand \
                  (`clickhouse/015` to `019`): on a table that lacks one the field is still on every row, \
                  as `0` (an empty string for `lifecycle_operation`), and the list does not fail",
+            )
+            .clickhouse_read()
+            .query(INVOCATIONS_QUERY),
+            Op::get(
+                "/api/v1/analytics/by-attribution/export",
+                "exportAnalyticsByAttribution",
+                "The attribution rollup as CSV for a window, flagging totals that hold unpriced requests; the file name carries the window and currency",
+            )
+            .clickhouse_read()
+            .query(ATTRIBUTION_QUERY),
+            Op::get(
+                "/api/v1/analytics/timeseries/export",
+                "exportAnalyticsTimeseries",
+                "Requests, tokens and cost per bucket as CSV, flagging buckets that hold unpriced requests",
+            )
+            .clickhouse_read()
+            .query(DASHBOARD_QUERY),
+            Op::get(
+                "/api/v1/analytics/invocations/export",
+                "exportInvocations",
+                "Stream the request log as CSV, metadata only (never bodies or error text), under the same row scoping as the JSON list; `limit` and `cursor` are ignored",
             )
             .clickhouse_read()
             .query(INVOCATIONS_QUERY),
@@ -3917,7 +3980,9 @@ fn virtual_key_schemas(p: &Prim) -> Value {
                 "created_by": nullable_uuid,
                 "business_unit_id": nullable_uuid,
                 "customer_id": nullable_uuid,
-                "created_at": timestamp
+                "created_at": timestamp,
+                "previous_key_prefix": {"type": ["string", "null"], "description": "first characters of the secret an admin rotation replaced, while its overlap is open"},
+                "previous_expires_at": {"type": ["string", "null"], "format": "date-time", "description": "when the replaced secret stops authenticating; null when no overlap is running"}
             }
         },
         "CreatedVirtualKey": {
@@ -3978,6 +4043,14 @@ fn virtual_key_schemas(p: &Prim) -> Value {
             "type": "object",
             "required": ["disabled"],
             "properties": {"disabled": {"type": "boolean"}},
+            "additionalProperties": false
+        },
+        "RotateVirtualKey": {
+            "type": "object",
+            "description": "the body may be omitted, which rotates with no overlap",
+            "properties": {
+                "overlap_seconds": {"type": "integer", "minimum": 0, "maximum": 2592000, "description": "how long the replaced secret keeps authenticating; 0 or omitted ends it at once"}
+            },
             "additionalProperties": false
         },
         "SetVirtualKeyCache": {

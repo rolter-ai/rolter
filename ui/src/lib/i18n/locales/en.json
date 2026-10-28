@@ -330,8 +330,11 @@
       "yourProfile": "your profile",
       "auditLogExport": "the audit log export",
       "unpricedModels": "unpriced models",
+      "attributionExport": "cost attribution export",
+      "requestLogExport": "request log export",
       "mcpServerTools": "tools of the MCP server",
       "priceCatalogue": "price catalogue",
+      "guardrailPolicies": "guardrail policies",
       "yourBudget": "your budget",
       "routeVariants": "route variants"
     },
@@ -731,7 +734,8 @@
     "api-keys": "Account & keys",
     "performance": "Performance Tuning",
     "feature-flags": "Feature Flags",
-    "preferences": "Preferences"
+    "preferences": "Preferences",
+    "guardrail-policies": "Policies"
   },
   "pages": {
     "gettingStarted": {
@@ -1658,9 +1662,30 @@
       "confirm": {
         "deleteTitle": "Delete virtual key {{name}}?",
         "deleteBody": "<0>{{prefix}}</0> stops authenticating immediately, so every client still sending it is refused. This cannot be undone.",
-        "deleteConfirm": "Delete key"
+        "deleteConfirm": "Delete key",
+        "rotateTitle": "Rotate virtual key {{name}}?",
+        "rotateBody": "A new secret is issued for this key. Its models, providers, limits and attribution stay as they are. Clients must switch to the new secret.",
+        "rotateConfirm": "Rotate key",
+        "overlapLabel": "Keep the old secret working for",
+        "overlap": {
+          "none": "Not at all, revoke it now",
+          "hour": "1 hour",
+          "day": "24 hours",
+          "week": "7 days"
+        },
+        "revokePreviousTitle": "Revoke the old secret of {{name}}?",
+        "revokePreviousBody": "<0>{{prefix}}</0> stops authenticating immediately, so every client still sending it is refused. The new secret is unaffected.",
+        "revokePreviousConfirm": "Revoke old secret"
       },
-      "exportCsvFiltered": "Export matching keys as CSV"
+      "exportCsvFiltered": "Export matching keys as CSV",
+      "rotate": "Rotate key",
+      "rotateKey": "Rotate key {{name}}",
+      "previousSecret": "old secret {{prefix}}… valid until {{date}}",
+      "revokePrevious": "Revoke now",
+      "revokePreviousAria": "Revoke the old secret of {{name}} now",
+      "rotatedTitle": "Key rotated",
+      "rotatedBody": "This is the only time the new key is shown. Copy it now. The old secret stopped authenticating immediately.",
+      "rotatedBodyOverlap": "This is the only time the new key is shown. Copy it now. The old secret keeps working until {{date}}, or until you revoke it."
     },
     "acceptInvite": {
       "invalidLink": "This invitation link is not valid. It may have been used, revoked or expired. If you already accepted it, sign in; otherwise ask whoever invited you for a new link.",
@@ -1729,7 +1754,13 @@
         "secretSet": "secret set",
         "kinds": {
           "webhook": "Webhook"
-        }
+        },
+        "addressHidden": "address withheld (deployment channel)",
+        "ownerDeployment": "Deployment",
+        "ownerOrg": "Org: {{name}}",
+        "fieldOwner": "Owner",
+        "ownerDeploymentHint": "A deployment channel is managed by superadmins and any rule can notify it.",
+        "ownerOrgHint": "Only rules of this organization can notify it. Organization admins manage it."
       },
       "rules": {
         "emptyTitle": "No alert rules",
@@ -1789,7 +1820,16 @@
           "above": "above {{value}}",
           "below": "below {{value}}"
         },
-        "noDataReading": "No data"
+        "noDataReading": "No data",
+        "statScope": "Scope",
+        "scopeDeployment": "Whole deployment",
+        "fieldScopeType": "Watches",
+        "fieldScope": "Scope",
+        "scopePlaceholder": "Pick one",
+        "scopeNone": "Nothing to pick here",
+        "scopeHint": "The rule evaluates only this scope's requests. It cannot be changed later. Creating it takes admin at the scope.",
+        "scopeDeploymentHint": "Reads every tenant's traffic, so only a superadmin can create it.",
+        "scopeFixed": "Watches {{scope}}. The scope is fixed when the rule is created."
       },
       "signals": {
         "error_rate": {
@@ -1901,6 +1941,17 @@
           "query_failed": "the analytics query failed; the control plane log has the cause",
           "unknown_signal": "this build does not know the signal {{signal}}"
         }
+      },
+      "scope": {
+        "types": {
+          "org": "Organization",
+          "team": "Team",
+          "project": "Project",
+          "virtual_key": "Virtual key",
+          "business_unit": "Business unit",
+          "customer": "Customer"
+        },
+        "named": "{{type}}: {{name}}"
       }
     },
     "connectors": {
@@ -2799,53 +2850,50 @@
     "guardrailProviders": {
       "confirm": {
         "title": "Delete {{name}}?",
-        "body": "External enforcement through this provider stops immediately; traffic it was screening is no longer sent to it.",
+        "body": "This provider stops being consulted immediately, for every policy that lists it and for the requests it covers on its own. Policies that list it keep their other providers.",
         "activateTitle": "Activate {{name}}?",
-        "activateReplaces": "It takes enforcement over from {{current}}, which is paused.",
-        "activateNoneActive": "No provider is active now, so none is paused.",
-        "activateOwnerUnknown": "The provider list did not load, so this screen cannot say which provider it replaces.",
         "activateFailClosed": "Every request then waits for {{name}} before it goes upstream. It fails closed: when {{name}} times out or errors, the request is refused with <0>guardrail_blocked</0>.",
         "activateFailOpen": "Every request then waits for {{name}} before it goes upstream. It fails open: when {{name}} times out or errors, the request goes upstream unchecked.",
-        "activatePostCall": "It runs before the response, a stage the gateway does not run yet, so no request is sent to it and its failure policy never applies.",
-        "activateFileWins": "The config-file webhook stays in force while it is enabled, so {{name}} is ignored until that webhook is turned off.",
+        "activatePostCall": "It checks the response body. A streamed response is held or refused according to the policy's streaming setting.",
+        "activateFileWins": "A provider named {{name}} from the config file is already running and wins the name, so this one is ignored until that name is free.",
         "activateConfirm": "Save and activate",
         "pauseTitle": "Pause {{name}}?",
-        "pauseUnchecked": "No other provider takes its place, so no external guardrail checks requests afterwards. Every request goes upstream without one.",
-        "pauseFileStays": "The config-file webhook stays in force while it is enabled. It already overrides {{name}}, so pausing it changes nothing for requests.",
-        "pauseUnknown": "The effective configuration did not confirm which webhook is in force, so this screen cannot say whether a config-file webhook checks requests afterwards. If none is enabled, no external guardrail does.",
-        "pauseConfirm": "Save and pause"
+        "pauseUnchecked": "No other provider is active, so no external guardrail checks requests afterwards. Every request goes upstream without one.",
+        "pauseUnknown": "The effective configuration did not say which other providers are running, so this screen cannot say whether any still checks requests afterwards.",
+        "pauseConfirm": "Save and pause",
+        "activateOthersUnknown": "The effective configuration did not say which providers are running, so this screen cannot name the ones that stay active.",
+        "activateAlone": "No other provider is active now. This one is added and nothing is paused.",
+        "activateAlongside": "It is added to the active providers ({{names}}). None of them is paused.",
+        "reachUnknown": "The policies did not load, so this screen cannot say which requests it will see.",
+        "reachUnattached": "No policy lists it, so it will check every request that no policy covers (reported as \"default\").",
+        "reachPaused": "Policies list it, but all of them are paused, so it checks no request until one is enabled.",
+        "reachScoped": "Policies list it, so it will check only the requests they apply to: {{scopes}}.",
+        "pauseOthersKeep": "The other active providers keep running: {{names}}.",
+        "pausePolicies": "These policies lose it and stop consulting it: {{policies}}."
       },
       "deleteAria": "Delete provider {{name}}",
       "editAria": "Edit provider {{name}}",
-      "intro": "Register services freely; activate one at a time. Enabling a provider atomically hands enforcement over from the current service.",
+      "intro": "Register as many services as you need and enable any number of them; saving one never changes another. Which requests a provider sees is decided by guardrail policies: one that policies list runs only for the requests they apply to, and an enabled provider no policy lists runs on every request no policy covers.",
       "addProvider": "Add provider",
-      "activeBanner": "{{name}} owns external enforcement",
-      "activeFailClosed": "Requests stop when the service cannot decide.",
-      "activeFailOpen": "Requests continue when the service cannot decide.",
-      "inertBanner": "{{name}} is not enforcing",
-      "inertBody": "It runs before the response, a stage the gateway does not run yet, so no request is sent to it. Switch it to Before upstream, or activate a provider that runs before upstream.",
-      "fileBanner": "The config-file webhook owns external enforcement",
-      "fileInertBanner": "The config-file webhook is not enforcing",
-      "fileInertBody": "It sets stage = \"post_call\", which the gateway does not run yet, so no request is sent to it. Set stage = \"pre_call\" in the config file to enforce it.",
-      "fileNote": "Registry providers are ignored while the config-file webhook is enabled.",
-      "overriddenNote": "{{name}} is active here but ignored while the config-file webhook is enabled.",
+      "activeBanner": "Running: {{names}}",
+      "activeFailClosed": "{{names}}: requests stop when the service cannot decide.",
+      "activeFailOpen": "{{names}}: requests continue when the service cannot decide.",
+      "fileNote": "Defined in the config file: {{names}}. A file provider wins a name shared with a registry row.",
       "offBanner": "No external guardrail is enforcing",
-      "offBody": "No provider is active and the config file enables no webhook, so no request is sent to a guardrail service.",
+      "offBody": "No provider is enabled and the config file defines none, so no request is sent to a guardrail service.",
       "unknownBanner": "External enforcement status unknown",
-      "unknownBody": "The control plane's effective configuration did not confirm which webhook is in force, so this screen cannot say what the gateway enforces.",
+      "unknownBody": "The control plane's effective configuration did not say which providers the gateways run, so this screen cannot say what is enforced.",
       "emptyTitle": "No guardrail providers",
       "emptyBody": "Register a self-hosted HTTP guardrail service. Credentials remain environment references, never stored secret values.",
       "emptyAction": "Register first provider",
       "detailLine_one": "{{timeout}} ms timeout · {{count}} retry · {{kib}} KiB cap",
       "detailLine_other": "{{timeout}} ms timeout · {{count}} retries · {{kib}} KiB cap",
-      "postCallCardNote": "Runs before the response, a stage the gateway does not run yet, so it checks nothing.",
-      "statusInert": "not enforcing",
       "statusOverridden": "overridden by config file",
       "statusUnknown": "status unknown",
       "editProvider": "Edit provider",
       "dialogEditTitle": "Edit guardrail provider",
       "dialogAddTitle": "Register guardrail provider",
-      "dialogBody": "Use an HTTP endpoint and reference credentials by environment variable. Activating this provider pauses the current one.",
+      "dialogBody": "Use an HTTP endpoint and reference credentials by environment variable. Enabling this provider adds it to the active ones without pausing any other.",
       "fieldName": "Provider name",
       "nameInfo": "Recorded on the request log beside this provider's outcomes, so choose a name you will recognise there.",
       "fieldUrl": "Evaluation URL",
@@ -2853,11 +2901,9 @@
       "urlRequired": "Enter the URL the gateway posts each request to.",
       "urlInvalid": "Start the URL with http:// or https://.",
       "fieldStage": "Stage",
-      "stageInfo": "When the gateway asks this service for a decision. Only Before upstream, the prompt before it reaches the model provider, is enforced today.",
+      "stageInfo": "When the gateway asks this service for a decision: on the request body before it goes upstream, or on the response body before it reaches the client.",
       "stagePre": "Before upstream",
       "stagePost": "Before response",
-      "stagePostUnsupported": "Not enforced yet",
-      "postCallDialogNote": "The gateway does not run the Before response stage yet, so this provider checks nothing, and activating it pauses the provider that enforces now. Choose Before upstream to enforce it.",
       "fieldFailure": "Failure policy",
       "failureInfo": "What happens to a request when this service times out or errors. Fail closed refuses it; fail open lets it through unchecked.",
       "failClosed": "Fail closed",
@@ -2875,11 +2921,10 @@
       "authSharedSecret": "Shared secret header",
       "fieldEnv": "Secret environment variable",
       "envHint": "Only the variable name is stored.",
-      "activateLabel": "Activate provider",
-      "activateHint": "Takes enforcement ownership from the currently active provider.",
-      "activateHintReplaces": "Takes enforcement over from {{name}}, which is then paused.",
-      "activateHintNone": "No provider is active now, so this one would be the only one.",
-      "activateHintSelf": "This provider is active. Turning it off pauses it, and no other provider takes its place.",
+      "activateLabel": "Enable provider",
+      "activateHint": "Adds this provider to the active ones; no other provider is paused.",
+      "activateHintNone": "No other provider is active now, so this one would be the only one.",
+      "activateHintSelf": "This provider is enabled. Turning it off pauses only this one; the other active providers keep running.",
       "failOpenWarning": "Fail-open favors availability: traffic continues if this provider times out or errors.",
       "publishing": "Publishing…",
       "save": "Save provider",
@@ -2924,7 +2969,9 @@
           "failOpen": "On live traffic this failure lets the request through (fail open).",
           "failClosed": "On live traffic this failure rejects the request (fail closed)."
         }
-      }
+      },
+      "unattachedNote": "Not listed by any policy, so they check every request no policy covers: {{names}}.",
+      "activateHintAlongside": "Runs alongside {{names}}. None of them is paused."
     },
     "adaptiveDashboard": {
       "reportingGateways_one": "{{count}} reporting gateway",
@@ -4828,6 +4875,90 @@
         "unknown": "This browser does not know the zone “{{zone}}”, so times follow its own zone instead."
       },
       "discard": "Discard changes"
+    },
+    "guardrailPolicies": {
+      "intro": "A policy pins a set of guardrail providers, score thresholds and a violation action to a scope: the whole deployment, an organization, a project, a route or a virtual key.",
+      "precedence": "Exactly one policy applies to a request: the most specific enabled one that matches it (key, then route, project, organization, deployment). It replaces the broader ones rather than merging with them, so a narrower policy must list every provider it wants. A request no policy matches is checked only by providers no policy lists, with no thresholds. Thresholds act only on the scored categories a provider returns; a provider's own block always blocks.",
+      "addPolicy": "Add policy",
+      "columns": {
+        "name": "Policy",
+        "scope": "Scope",
+        "providers": "Providers",
+        "thresholds": "Thresholds",
+        "onViolation": "On violation",
+        "streaming": "Streaming",
+        "state": "State"
+      },
+      "noProviders": "No providers",
+      "noThresholds": "No thresholds",
+      "scopes": {
+        "deployment": "Deployment",
+        "org": "Organization",
+        "project": "Project",
+        "route": "Route",
+        "key": "Virtual key"
+      },
+      "onViolationValues": {
+        "block": "Block",
+        "annotate": "Annotate"
+      },
+      "streamingValues": {
+        "reject": "Reject streams",
+        "buffer": "Buffer streams"
+      },
+      "enabled": "Enabled",
+      "paused": "Paused",
+      "edit": "Edit",
+      "editOne": "Edit policy {{name}}",
+      "deleteOne": "Delete policy {{name}}",
+      "emptyTitle": "No guardrail policies",
+      "emptyBody": "Without a policy, every enabled provider runs on every request. Add one to scope providers to a route, project or key, or to set score thresholds.",
+      "emptyAction": "Add first policy",
+      "confirm": {
+        "deleteTitle": "Delete {{name}}?",
+        "deleteBody": "Requests in this {{scope}} scope stop following this policy and fall back to the next broader enabled policy, or to the providers no policy lists."
+      },
+      "sheet": {
+        "titleAdd": "Add guardrail policy",
+        "titleEdit": "Edit {{name}}",
+        "subtitle": "One policy applies per request",
+        "name": "Name",
+        "description": "Description (optional)",
+        "scope": "Scope",
+        "scopeInfo": "Which requests the policy applies to. Only one enabled policy may exist per scope and scope id.",
+        "scopeId": {
+          "org": "Organization id",
+          "project": "Project id",
+          "route": "Public model name",
+          "key": "Virtual key id"
+        },
+        "scopeIdRequired": "Enter the id this scope is pinned to.",
+        "providers": "Providers",
+        "providersHint": "Pick the providers this policy consults. A narrower policy replaces broader ones, so list every provider it needs.",
+        "order": "Providers in the order they are consulted",
+        "moveUp": "Move {{name}} up",
+        "moveDown": "Move {{name}} down",
+        "thresholds": "Thresholds",
+        "thresholdsInfo": "Category to score in 0 to 1. A provider score at or above the threshold is a violation. Use * for any category not listed. Only scored categories a provider returns are compared.",
+        "addThreshold": "Add threshold",
+        "noThresholds": "No thresholds. Only a provider's own block decision blocks.",
+        "category": "Category",
+        "threshold": "Threshold",
+        "removeThreshold": "Remove threshold",
+        "problem": {
+          "category": "Name the category, or * for any other.",
+          "duplicate": "This category is already listed.",
+          "range": "Enter a number from 0 to 1."
+        },
+        "onViolation": "On violation",
+        "onViolationInfo": "Block refuses the request. Annotate records the violation in the log and metrics without blocking.",
+        "streaming": "Streaming",
+        "streamingInfo": "Matters only when the policy lists a post-call provider. Reject refuses requests with stream set to true (400). Buffer holds the whole stream, checks it once, then delivers or withholds it: nothing is delivered incrementally.",
+        "enabled": "Enabled",
+        "enabledHint": "A paused policy applies to nothing, and its providers do not fall back to all traffic.",
+        "save": "Save policy",
+        "create": "Create policy"
+      }
     }
   },
   "playground": {
@@ -5496,6 +5627,10 @@
     "preferences": {
       "title": "Preferences",
       "subtitle": "Your language, default scope, Playground model and time zone, kept with your account."
+    },
+    "guardrail-policies": {
+      "title": "Guardrail Policies",
+      "subtitle": "Decide which guardrail providers check which traffic, and at what score."
     }
   },
   "shell": {
@@ -5880,6 +6015,11 @@
     "ms": "{{value}} ms",
     "unpriced": "unpriced",
     "unpricedHint": "No price is configured for this model, so this request was recorded as unpriced rather than as free.",
+    "export": {
+      "csv": "Export CSV",
+      "pending": "Exporting…",
+      "downloaded": "Export downloaded. Its name gives the window and currency; a row marked partial holds unpriced requests."
+    },
     "withheld": "withheld",
     "withheldHint": "The provider answered and billed for this response, but an output guardrail or plugin refused to deliver it: the caller received a 403. The cost is real; the policy that refused is named in the error.",
     "usageUnknownHint": "The upstream answered but reported no usage, so the tokens and cost are unknown, not zero."

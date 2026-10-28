@@ -117,6 +117,7 @@ export const SCREENS: Record<string, React.ReactNode> = {
   "feature-flags": screen(() => import("@/pages/FeatureFlags")),
   "guardrail-rules": screen(() => import("@/pages/GuardrailRules")),
   "guardrail-providers": screen(() => import("@/pages/GuardrailProviders")),
+  "guardrail-policies": screen(() => import("@/pages/GuardrailPolicies")),
   "logs-settings": screen(() => import("@/pages/LogsSettings")),
   "log-erasure": screen(() => import("@/pages/LogErasure")),
   performance: screen(() => import("@/pages/Performance")),

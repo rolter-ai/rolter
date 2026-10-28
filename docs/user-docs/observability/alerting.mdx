@@ -27,9 +27,10 @@ In the dashboard it is the **Alerting** group, with one screen for each:
   delivery time to unseal it.
 - A route from the control plane to each channel endpoint that the
   [egress policy](#endpoints-and-the-egress-policy) permits.
-- A superadmin account, an operator (a [deployment role](/security/rbac#deployment-roles)) or the
-  deployment admin token. Alerting is deployment-wide, so no organization role
-  reaches it (see [Permissions](#permissions-and-audit)).
+- An organization, team or project admin for the scope you want to watch, or a
+  superadmin account, an operator (a [deployment role](/security/rbac#deployment-roles)) or the deployment admin token for the whole deployment
+  (see [Scopes and ownership](#scopes-and-ownership) and
+  [Permissions](#permissions-and-audit)).
 
 Rules read the request log, and the log can be sampled. With a
 [`sample_rate`](/observability/log-settings#sampling) below `1`, each kept row
@@ -53,10 +54,9 @@ does. A window with nothing to measure is handled by the rule's
 longer than a minute overlap from one pass to the next, so a 5-minute rule
 looks at a sliding 5 minutes each time.
 
-One limit follows from that:
-
-- Every signal is deployment-wide. A rule cannot be narrowed to one provider,
-  model, route, virtual key or organization.
+A rule without a scope reads the whole deployment. To watch a slice, give it a
+[scope](#scopes-and-ownership). A rule still cannot be narrowed to one
+provider, model or route.
 
 For alerts that need that, use the gateway's Prometheus
 [metrics](/observability/metrics), which carry per-model and per-provider
@@ -599,12 +599,49 @@ curl -s "https://control.example.com/api/v1/alert-notifications?delivery_status=
   -H "Authorization: Bearer $ROLTER_TOKEN"
 ```
 
+## Scopes and ownership
+
+A rule can watch one **scope** instead of the deployment: an organization, a
+team, a project, a virtual key, a business unit or a customer. It then
+evaluates only the request-log rows of that scope, so a team lead's error-rate
+rule sees their team's traffic and nothing else. The scope is set when the rule
+is created (`scope_type` and `scope_id` in the body, given together) and cannot
+be changed afterwards; create a new rule to watch another scope.
+`provider_health_flaps` is recorded per organization, so it can only watch an
+organization or the whole deployment. An organization's rule counts the health
+events of the providers that organization owns; providers defined in the
+gateway's own config file belong to no organization and are counted only by a
+deployment-wide rule. A rule whose team, project or key has
+since been deleted reports a scope error (`scope_gone`) and does not fire;
+delete it.
+
+Creating, editing, deleting and evaluating a rule takes **admin at its scope**:
+an organization admin for an organization rule, a team admin for a team's, and
+so on. A rule for a business unit or a customer is the organization admin's. A
+rule with no scope, which reads every tenant, stays superadmin-only.
+
+A **channel** belongs to one organization or to the deployment. An organization
+admin owns the channels of their organization (`org_id` in the create body); a
+deployment channel is created by a superadmin and can be named by any rule. A
+rule can notify only a channel of its own organization or a deployment channel,
+and a deployment-wide rule only a deployment channel. The control plane refuses
+anything else with a `400` on `channel_id`, answering an unknown channel the
+same way so the id cannot be probed, and it checks again at delivery. Names
+are unique per owner, so two organizations can each have a rule called
+`prod errors`.
+
+The lists are narrowed to what the caller may use. Rules and notification
+history show only the scopes the caller administers. Channels show the
+caller's organizations' channels and the deployment's, but a deployment
+channel's address is withheld (`endpoint` is empty and `manageable` is false),
+as it may carry a token. A caller who administers nothing gets `403`.
+
 ## Permissions and audit
 
-Alerting has no tenancy scope, so every operation is for a superadmin or an
-operator (a [deployment role](/security/rbac#deployment-roles)), the same as the other deployment-wide
-settings in [RBAC](/security/rbac). The dashboard hides the Alerting group from
-other roles.
+Every operation is decided at the owner of the row, as described above, and the
+dashboard shows the Alerting group to anyone who administers a scope. Deployment
+rows and channels are for a superadmin or an operator (a [deployment role](/security/rbac#deployment-roles)), like the other deployment-wide settings in
+[RBAC](/security/rbac).
 
 | Endpoint                                    | Capability                     |
 | ------------------------------------------- | ------------------------------ |
@@ -620,7 +657,7 @@ row.
 
 Every create, update and delete of a channel or rule writes an audit entry
 (`alert.channel.create`, `alert.rule.delete` and so on). Create and update
-entries carry the name, the enabled flag and, for a rule, the signal. A channel
+entries carry the name, the enabled flag and, for a rule, the signal and scope. A channel
 update entry also records `endpoint_changed`, `secret_replaced` and
 `secret_cleared`, as booleans. Neither a channel secret nor its endpoint ever
 appears in one, since an endpoint's query string can carry a token.

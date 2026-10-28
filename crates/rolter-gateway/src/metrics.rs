@@ -23,6 +23,9 @@ const LABELLED_FAIL_OPEN: &str = "rolter_fail_open_total";
 const LABELLED_PROVIDER_INFLIGHT: &str = "rolter_provider_inflight";
 const LABELLED_PROVIDER_QUEUE_DEPTH: &str = "rolter_provider_queue_depth";
 const LABELLED_REDIS_CONNECTED: &str = "rolter_redis_connected";
+const LABELLED_GUARD_DECISIONS: &str = "rolter_guardrail_policy_decisions_total";
+const LABELLED_GUARD_VIOLATIONS: &str = "rolter_guardrail_policy_violations_total";
+const GUARD_PROVIDER_LATENCY: &str = "rolter_guardrail_provider_latency_ms";
 
 /// The labelled counter families, declared up front for the OTLP exporter. At
 /// install time the gateway has served nothing, so every family is
@@ -59,6 +62,14 @@ pub const LABELLED_FAMILIES: &[rolter_core::telemetry::LabelledFamily] = &[
     (
         LABELLED_FAIL_OPEN,
         "requests a budget or rate limit let through unchecked because redis was unavailable",
+    ),
+    (
+        LABELLED_GUARD_DECISIONS,
+        "semantic guardrail provider calls by policy, provider, stage and outcome",
+    ),
+    (
+        LABELLED_GUARD_VIOLATIONS,
+        "scored categories that crossed a semantic guardrail policy threshold, by policy, category and action",
     ),
 ];
 
@@ -349,8 +360,12 @@ pub struct Metrics {
     pub guardrail_output_blocks_total: AtomicU64,
     /// individual guardrail redactions applied to response content
     pub guardrail_output_redactions_total: AtomicU64,
-    /// streamed requests refused because the route has post-call rules
+    /// streamed requests refused because the route has post-call rules, or
+    /// because their semantic guardrail policy refuses streams (#459)
     pub guardrail_stream_rejections_total: AtomicU64,
+    /// streamed responses held in full so a `post_call` semantic guardrail
+    /// provider could judge them (ADR-0037)
+    pub guardrail_streams_buffered_total: AtomicU64,
     /// streamed requests refused because a fail-closed `post_response` plugin
     /// applies to them and cannot inspect a stream (#1776)
     pub plugin_stream_rejections_total: AtomicU64,
@@ -476,6 +491,17 @@ pub struct Metrics {
     /// is built against a redis url. A deployment without redis registers
     /// none and reports none (#1772)
     redis: DashMap<RedisConsumer, Arc<RedisConnStats>>,
+    /// semantic guardrail calls keyed by (policy, provider, stage, outcome)
+    /// (#459). Policy and provider names come from the configuration; stage
+    /// and outcome are fixed vocabularies
+    by_guard_decision: DashMap<(String, String, &'static str, &'static str), AtomicU64>,
+    /// threshold violations keyed by (policy, category, action). The category
+    /// is one the policy names a threshold for, or `other`, so a provider can
+    /// never mint a label value
+    by_guard_violation: DashMap<(String, String, &'static str), AtomicU64>,
+    /// how long each semantic guardrail provider took to answer, failures
+    /// included, keyed by provider name
+    by_guard_latency: DashMap<String, Histogram>,
 }
 
 /// One scalar metric: its Prometheus type, name, help text, and current value.
@@ -572,6 +598,42 @@ impl Metrics {
     /// Record a request refused by `route`'s own `kind` cap (#2936). Also
     /// counted in `rolter_rate_limit_blocks_total`, which stays the total of
     /// every throughput refusal.
+    /// Count one semantic guardrail provider call (#459). Carries names and a
+    /// fixed outcome only, never content.
+    pub fn observe_guard_decision(
+        &self,
+        policy: &str,
+        provider: &str,
+        stage: &'static str,
+        outcome: &'static str,
+    ) {
+        self.by_guard_decision
+            .entry((policy.to_string(), provider.to_string(), stage, outcome))
+            .or_default()
+            .fetch_add(1, Relaxed);
+    }
+
+    /// Count one scored category over a policy threshold (#459). `category`
+    /// must already be bounded by the policy (see `CompiledPolicy::category_label`).
+    pub fn observe_guard_violation(&self, policy: &str, category: &str, action: &'static str) {
+        self.by_guard_violation
+            .entry((policy.to_string(), category.to_string(), action))
+            .or_default()
+            .fetch_add(1, Relaxed);
+    }
+
+    /// Record how long one semantic guardrail provider call took.
+    pub fn observe_guard_latency(&self, provider: &str, ms: u32) {
+        if let Some(hist) = self.by_guard_latency.get(provider) {
+            hist.observe(ms);
+            return;
+        }
+        self.by_guard_latency
+            .entry(provider.to_string())
+            .or_insert_with(Histogram::new)
+            .observe(ms);
+    }
+
     pub fn observe_route_limit(&self, route: &str, kind: &'static str) {
         self.rate_limit_blocks_total.fetch_add(1, Relaxed);
         self.by_route_limit
@@ -776,6 +838,12 @@ impl Metrics {
                 name: "rolter_guardrail_stream_rejections_total",
                 help: "streamed requests refused because the route has post-call rules",
                 value: self.guardrail_stream_rejections_total.load(Relaxed),
+            },
+            Scalar {
+                kind: "counter",
+                name: "rolter_guardrail_streams_buffered_total",
+                help: "streamed responses buffered in full for a post_call semantic guardrail provider",
+                value: self.guardrail_streams_buffered_total.load(Relaxed),
             },
             Scalar {
                 kind: "counter",
@@ -1095,6 +1163,31 @@ impl Metrics {
                 entry.value().load(Relaxed),
             ));
         }
+        for entry in self.by_guard_decision.iter() {
+            let (policy, provider, stage, outcome) = entry.key();
+            out.push((
+                LABELLED_GUARD_DECISIONS,
+                vec![
+                    ("policy", policy.clone()),
+                    ("provider", provider.clone()),
+                    ("stage", (*stage).to_string()),
+                    ("outcome", (*outcome).to_string()),
+                ],
+                entry.value().load(Relaxed),
+            ));
+        }
+        for entry in self.by_guard_violation.iter() {
+            let (policy, category, action) = entry.key();
+            out.push((
+                LABELLED_GUARD_VIOLATIONS,
+                vec![
+                    ("policy", policy.clone()),
+                    ("category", category.clone()),
+                    ("action", (*action).to_string()),
+                ],
+                entry.value().load(Relaxed),
+            ));
+        }
         for entry in self.by_route_limit.iter() {
             let (route, kind) = entry.key();
             out.push((
@@ -1223,6 +1316,7 @@ impl Metrics {
         self.render_variant_counters(&mut out);
         self.render_complexity_counters(&mut out);
         self.render_route_limit_counters(&mut out);
+        self.render_guard_series(&mut out);
         self.render_rejection_counters(&mut out);
         self.render_provider_load(&mut out);
         self.render_redis(&mut out);
@@ -1308,6 +1402,47 @@ impl Metrics {
                     entry.value().fail_open.load(Relaxed)
                 );
             }
+        }
+    }
+
+    /// Append the semantic guardrail decision and violation counters and the
+    /// per-provider latency histogram (#459).
+    fn render_guard_series(&self, out: &mut String) {
+        let name = LABELLED_GUARD_DECISIONS;
+        let _ = writeln!(out, "# HELP {name} {}", family_help(name));
+        let _ = writeln!(out, "# TYPE {name} counter");
+        for entry in self.by_guard_decision.iter() {
+            let (policy, provider, stage, outcome) = entry.key();
+            let _ = writeln!(
+                out,
+                "{name}{{policy=\"{}\",provider=\"{}\",stage=\"{stage}\",outcome=\"{outcome}\"}} {}",
+                escape_label(policy),
+                escape_label(provider),
+                entry.value().load(Relaxed)
+            );
+        }
+        let name = LABELLED_GUARD_VIOLATIONS;
+        let _ = writeln!(out, "# HELP {name} {}", family_help(name));
+        let _ = writeln!(out, "# TYPE {name} counter");
+        for entry in self.by_guard_violation.iter() {
+            let (policy, category, action) = entry.key();
+            let _ = writeln!(
+                out,
+                "{name}{{policy=\"{}\",category=\"{}\",action=\"{action}\"}} {}",
+                escape_label(policy),
+                escape_label(category),
+                entry.value().load(Relaxed)
+            );
+        }
+        let name = GUARD_PROVIDER_LATENCY;
+        let _ = writeln!(
+            out,
+            "# HELP {name} semantic guardrail provider call latency in milliseconds, failures included"
+        );
+        let _ = writeln!(out, "# TYPE {name} histogram");
+        for entry in self.by_guard_latency.iter() {
+            let provider = escape_label(entry.key());
+            write_histogram_series(out, name, "provider", &provider, entry.value());
         }
     }
 
@@ -1617,6 +1752,8 @@ mod tests {
         m.observe_variant("gpt-4o", "b");
         m.observe_complexity("gpt-4o", "cheap", "mini", false);
         m.observe_route_limit("gpt-4o", "concurrency");
+        m.observe_guard_decision("support", "toxicity", "post_call", "allow");
+        m.observe_guard_violation("support", "violence", "block");
         m.observe_rejection("missing_key");
         let _load = m.provider_load("vllm");
         watch_all_redis_consumers(&m);

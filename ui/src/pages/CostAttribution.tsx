@@ -7,6 +7,7 @@ import { Link } from "react-router";
 import { AnalyticsUnavailable } from "@/components/AnalyticsUnavailable";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { EditorSheet } from "@/components/EditorSheet";
+import { ExportCsvButton } from "@/components/ExportCsvButton";
 import { GatedButton } from "@/components/GatedButton";
 import { LoadError } from "@/components/LoadError";
 import { LoadingRegion, TableSkeleton } from "@/components/LoadingState";
@@ -25,6 +26,7 @@ import {
   createCustomer,
   deleteBusinessUnit,
   deleteCustomer,
+  exportAttributionCsv,
   fetchAttributionSpend,
   fetchBusinessUnits,
   fetchCustomers,
@@ -632,6 +634,17 @@ function AttributionScreen<T extends BusinessUnitRow | CustomerRow>({
             value={spendWindow}
             onChange={(next) => isTimeWindow(next) && onSpendWindowChange(next)}
             options={windowOptions}
+          />
+          <ExportCsvButton
+            what={t("errors.resources.attributionExport")}
+            fallbackName="cost-attribution.csv"
+            disabled={disabled}
+            run={() =>
+              exportAttributionCsv(
+                windowBounds(spendWindow),
+                kind === "unit" ? "business_unit" : "customer",
+              )
+            }
           />
           <GatedButton
             gate={gate}

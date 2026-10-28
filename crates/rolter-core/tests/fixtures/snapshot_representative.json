@@ -72,6 +72,10 @@
         "denied_models": ["x"],
         "allowed_routes": ["llama"],
         "denied_routes": ["y"]
+      },
+      "previous": {
+        "key_hash": "hash-retired",
+        "valid_until": "2030-01-01T00:00:00Z"
       }
     }
   ],
@@ -648,6 +652,34 @@
       "x-mesh-id": "edge"
     },
     "auth_bypass_routes": ["llama"]
+  },
+  "semantic_guards": {
+    "providers": [
+      {
+        "enabled": true,
+        "name": "classifier",
+        "url": "https://guard.example.com/check",
+        "stage": "post_call",
+        "timeout_ms": 2000,
+        "max_retries": 1,
+        "failure_mode": "fail_closed",
+        "max_body_bytes": 65536
+      }
+    ],
+    "policies": [
+      {
+        "name": "strict",
+        "enabled": true,
+        "scope": "org",
+        "scope_id": "org-1",
+        "providers": ["classifier"],
+        "thresholds": {
+          "*": 0.8
+        },
+        "on_violation": "block",
+        "streaming": "buffer"
+      }
+    ]
   },
   "server": {
     "host": "0.0.0.0",

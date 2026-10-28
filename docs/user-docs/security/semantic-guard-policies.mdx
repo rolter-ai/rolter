@@ -1,0 +1,158 @@
+---
+title: "Semantic guard policies"
+description: "Run several guardrail providers side by side and pick which ones judge a request with policies scoped to the deployment, an organization, a project, a route or a virtual key."
+---
+
+A semantic guard is a guardrail provider that judges content by meaning — "is this a prompt injection", "is this answer toxic", "does it leak the system prompt" — rather than by a pattern. Rolter speaks to it over the vendor-neutral webhook contract described in [Guardrails](/security/guardrails#external-providers): the gateway posts a JSON envelope and the provider answers `allow`, `block`, `transform` or `annotate`, optionally with scored `categories`.
+
+Several providers can be enabled at once. A **policy** decides which of them judge a request and what their scores mean. Open **Guardrails → Policies** in the dashboard; the screen needs superadmin access.
+
+<Note>
+  Guards decide; sanitizers transform. A semantic guard blocks, flags or rewrites a request or
+  response by what it means. Removing or restoring personal data is the [PII
+  sanitizer](/security/pii-sanitizer)'s job, and masking with patterns is the job of the built-in
+  [inspection rules](/security/guardrails#inspection-rules). Payload capture has its own redaction
+  ([logs and cost](/observability/logs-and-cost)). The three run independently: the built-in rules
+  first, then the semantic policy, then the sanitizer.
+</Note>
+
+## Which policy applies
+
+A policy is scoped to one of:
+
+| Scope        | `scope_id`                                        |
+| ------------ | ------------------------------------------------- |
+| `key`        | a virtual key's id                                |
+| `route`      | a route's public model name, such as `gpt-4o`     |
+| `project`    | a project's id (the project of the calling key)   |
+| `org`        | an organization's id (the org of the calling key) |
+| `deployment` | none: every request                               |
+
+**Exactly one policy applies to a request: the most specific enabled one that matches it, in the order key, route, project, org, deployment.** It replaces the broader policies rather than merging with them, so the policy in force can be read off one row: a project policy that should still run the deployment's prompt-injection check lists that provider too. Only one enabled policy may exist per scope.
+
+A provider that **no policy lists** — enabled or paused — is _unattached_. Unattached providers run on every request that no policy matches, with no thresholds, which is how a single deployment-wide guardrail webhook behaved before policies existed. They are reported under the policy name `default`. Once a policy lists a provider, the provider only runs where a policy puts it, and pausing that policy does not widen it back to every request.
+
+Keys defined in the config file have no id, so they only reach route and deployment policies.
+
+Each provider still runs at its own stage: a `pre_call` provider judges the request before it goes upstream, a `post_call` provider judges the response before it is delivered. A policy runs its providers of each stage in the order it lists them; a `transform` from one is what the next one sees.
+
+## Thresholds and categories
+
+A provider may score categories alongside, or instead of, an action:
+
+```json
+{ "action": "allow", "categories": { "violence": 0.91, "self_harm": 0.02 } }
+```
+
+A body with `categories` and no `action` is an allow carrying scores. Scores are numbers from 0 to 1; anything else is ignored.
+
+A policy's `thresholds` turn scores into violations: a category scored **at or above** its threshold violates the policy. `"*"` is the threshold for every category the policy does not name; a category covered by neither never violates. `on_violation` says what a violation does:
+
+- `block` (the default) — the request is refused with `400 guardrail_blocked`, or the response is withheld with `403 guardrail_blocked`, naming the policy and the category.
+- `annotate` — the request goes through; the violation is counted in the metrics and, on a request, recorded on the request log.
+
+A provider's own `block` always blocks, whatever the thresholds. Scores are judged before a `transform` is applied, so a provider cannot launder a violating body by rewriting it.
+
+### Choosing a threshold
+
+Every threshold trades false positives against false negatives. A low threshold blocks more harmful content and more legitimate content with it; a high one lets more through on both counts. A few practical rules:
+
+- Start with `on_violation = "annotate"`, watch `rolter_guardrail_policy_violations_total` for a week against real traffic, then switch to `block` at a threshold you have seen.
+- Set thresholds per category rather than one `"*"`: classifiers are calibrated differently per category, and a value that is strict for `violence` can be loose for `prompt_injection`.
+- Scope strict thresholds narrowly. A customer-facing project can afford false positives that an internal coding assistant cannot.
+- A false negative on the request side is caught nowhere else; one on the response side can still be caught by a `post_call` provider. Running both stages costs latency on every request.
+
+## Failure handling
+
+Every call is bounded by the provider's `timeout_ms` and retried up to `max_retries` times. A call that gives no verdict resolves through **that provider's** `failure_mode` — `fail_open` moves on to the next provider as if it had allowed, `fail_closed` refuses the request (`400 guardrail_blocked`, naming the provider and the failure) or withholds the response:
+
+| What happened                                                                                 | Retried | Counted as   |
+| --------------------------------------------------------------------------------------------- | ------- | ------------ |
+| the call outlived `timeout_ms`                                                                | yes     | `timeout`    |
+| the connection failed                                                                         | yes     | `connect`    |
+| the provider answered `429` or `503` (overloaded)                                             | yes     | `overloaded` |
+| any other non-2xx status                                                                      | no      | `status`     |
+| the body could not be read                                                                    | yes     | `body`       |
+| the body is not a decision (not JSON, an unknown `action`, neither `action` nor `categories`) | no      | `unparsable` |
+| the [egress policy](/configuration/egress) refused the URL                                    | no      | `refused`    |
+
+An answer that is not a decision follows the failure mode too: a `fail_closed` provider that starts returning garbage refuses traffic rather than waving it through. (Before policies, an unreadable answer always read as allow.)
+
+## Streamed responses
+
+A `post_call` provider judges a whole response, and a streamed response is never whole while it is being delivered. A client's `"stream": true` never switches the response check off; the policy's `streaming` setting decides instead ([ADR-0037](https://github.com/rolter-ai/rolter/blob/master/docs/dev-docs/adr/2026-10-27-semantic-guard-streaming.md)):
+
+- `reject` (the default) — a streamed request whose policy has a `post_call` provider is refused with `400 guardrail_streaming_unsupported` before the upstream call, so nothing is billed. The caller can retry without `"stream": true`.
+- `buffer` — the gateway lets the upstream stream, holds every event (up to 16 MiB), shows the providers the assembled text as `{"stream": true, "text": "…"}` with `streamed: true` on the envelope, and then replays the events unchanged or answers `403 guardrail_blocked` in their place. The caller keeps its SSE client but receives nothing until the whole answer exists, so time to first token becomes time to last token; a client or proxy with an idle timeout shorter than the generation can give up first. A stream larger than the cap is withheld, and so is a stream a provider answers with `transform`, since a rewritten body cannot be re-encoded as the original event sequence.
+
+There is no setting that delivers a stream with the `post_call` providers skipped. To let a scope stream, give it a policy without `post_call` providers. A policy with only `pre_call` providers leaves streaming untouched.
+
+A [realtime](/api/realtime) session is a stream that cannot be buffered: its client events go through the `pre_call` providers, and a session whose policy has a `post_call` provider is refused with `400 guardrail_streaming_unsupported`.
+
+## What is recorded
+
+Protected content never reaches a log, a metric or a span. The gateway exports:
+
+| Metric                                     | Labels                                    |
+| ------------------------------------------ | ----------------------------------------- |
+| `rolter_guardrail_policy_decisions_total`  | `policy`, `provider`, `stage`, `outcome`  |
+| `rolter_guardrail_policy_violations_total` | `policy`, `category`, `action`            |
+| `rolter_guardrail_provider_latency_ms`     | `provider` (histogram, failures included) |
+| `rolter_guardrail_stream_rejections_total` | —                                         |
+| `rolter_guardrail_streams_buffered_total`  | —                                         |
+
+`outcome` is `allow`, `block`, `transform`, `violation`, `flagged`, `error_open` or `error_closed`. A `category` label is one the policy sets a threshold for by name, or `other`, so a provider cannot add label values. The latency histogram is in the Prometheus endpoint only; the counters also go to OTLP.
+
+On the request log, `guardrail_events` gains `provider_blocked:<provider>`, `provider_transformed:<provider>`, `provider_error:<provider>`, `policy_blocked:<policy>` and `policy_flagged:<policy>` for the request stage. A response the policy withheld is recorded as `blocked:<provider or policy>` with the withheld reason.
+
+## Not covered yet
+
+- `/v1/audio/transcriptions` and `/v1/audio/translations` run no guardrails at all, the semantic policy included ([#3331](https://github.com/rolter-ai/rolter/issues/3331)).
+- On the response stage, only a refusal reaches the request log; a flag, a rewrite or a fail-open error is counted in the metrics only ([#3330](https://github.com/rolter-ai/rolter/issues/3330)).
+- Every provider is an HTTP service; an in-process classifier is tracked in [#3329](https://github.com/rolter-ai/rolter/issues/3329).
+
+## Configure in the file
+
+```toml
+[[semantic_guards.providers]]
+name = "injection"
+enabled = true
+url = "https://guard.internal/injection"
+stage = "pre_call"
+failure_mode = "fail_closed"
+
+[[semantic_guards.providers]]
+name = "toxicity"
+enabled = true
+url = "https://guard.internal/toxicity"
+stage = "post_call"
+timeout_ms = 1500
+failure_mode = "fail_open"
+
+[[semantic_guards.policies]]
+name = "everyone"
+scope = "deployment"
+providers = ["injection"]
+
+[[semantic_guards.policies]]
+name = "support-bot"
+scope = "project"
+scope_id = "1f0e…"
+providers = ["injection", "toxicity"]
+thresholds = { violence = 0.8, "*" = 0.95 }
+on_violation = "block"
+streaming = "buffer"
+```
+
+`[guardrail_webhook]` keeps working and joins the providers under its `name` (or `guardrail_webhook` when it has none). The keys are listed in the [configuration reference](/configuration/config-file). Dashboard policies and providers extend the file's; the file wins a name, and an enabled file policy wins its scope.
+
+## API
+
+| Method          | Endpoint                           | Purpose                    |
+| --------------- | ---------------------------------- | -------------------------- |
+| `GET`, `POST`   | `/api/v1/guardrails/policies`      | List or create policies    |
+| `PUT`, `DELETE` | `/api/v1/guardrails/policies/{id}` | Replace or delete a policy |
+
+A policy body has `name`, `enabled`, `scope_kind`, `scope_id` (omitted or `null` for `deployment`), `provider_ids` (registry provider ids, in order), `thresholds`, `on_violation`, `streaming` and an optional `description`. A field the control plane cannot accept is a `400` naming it; a second enabled policy for the same scope, or a name already taken, is a `409`. Deleting a provider that a policy still lists is a `409` naming the policies. Every change is audit logged as `guardrail_policy.create`, `.update` or `.delete` and reaches the gateways through the next snapshot, without a restart.
+
+`GET /api/v1/guardrails/effective` carries a `semantic` object: `providers` (every provider the gateways run, with `source` and `provider_id`), `policies` (with `source` and `policy_id`) and `unattached`.

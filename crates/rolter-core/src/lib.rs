@@ -30,6 +30,7 @@ pub mod probe;
 pub mod prompt_templates;
 pub mod redact;
 pub mod secret_env;
+pub mod semantic_guards;
 #[cfg(feature = "shutdown")]
 pub mod shutdown;
 pub mod slug;
@@ -52,12 +53,12 @@ pub use config::{
     LoggingConfig, McpAuthKind, McpOAuthSessionConfig, McpOrgSettingsConfig, McpServerConfig,
     McpToolGroupConfig, McpToolRefConfig, MetricsScrapeConfig, ModelDefaultsConfig, ModelLimits,
     ModelPriceConfig, ModelRoute, ModelVisibility, OverrideMode, ParamPolicy, PayloadCaptureConfig,
-    ProviderConfig, ProviderGroupConfig, ProviderKind, QueueConfig, RateLimitConfig,
-    RealtimeConfig, ResponsesConfig, RetryConfig, RoleProfile, RouteCache, ScopeWithin,
-    SecurityPolicyConfig, SemanticCacheConfig, ServerConfig, Target, Tenancy, TimeoutConfig,
-    TlsConfig, UnpricedPolicy, UsageRecordingConfig, Variant, VirtualKeyConfig, VirtualKeyRecord,
-    MAX_EXPLORATION_RATIO, MAX_ROUTE_RETRIES, MAX_ROUTE_THROUGHPUT, MCP_TRANSPORTS,
-    PUBLIC_EXAMPLE_KEY, RESERVED_PATHS, RESERVED_ROUTE_HEADERS,
+    PreviousKeySecret, ProviderConfig, ProviderGroupConfig, ProviderKind, QueueConfig,
+    RateLimitConfig, RealtimeConfig, ResponsesConfig, RetryConfig, RoleProfile, RouteCache,
+    ScopeWithin, SecurityPolicyConfig, SemanticCacheConfig, ServerConfig, Target, Tenancy,
+    TimeoutConfig, TlsConfig, UnpricedPolicy, UsageRecordingConfig, Variant, VirtualKeyConfig,
+    VirtualKeyRecord, MAX_EXPLORATION_RATIO, MAX_ROUTE_RETRIES, MAX_ROUTE_THROUGHPUT,
+    MCP_TRANSPORTS, PUBLIC_EXAMPLE_KEY, RESERVED_PATHS, RESERVED_ROUTE_HEADERS,
 };
 pub use config::{OmittedEntry, OmittedKind, SnapshotReport};
 pub use config_lint::{unknown_keys, UnknownKey};
@@ -95,6 +96,10 @@ pub use prompt_templates::{
     RenderedMessage, TemplateReport, TemplateVariable, TEMPLATE_VARS_FIELD,
 };
 pub use secret_env::{credential_from_env, is_control_plane_secret, is_secret_unless_allowed};
+pub use semantic_guards::{
+    CompiledPolicy, CompiledSemanticGuards, GuardrailPolicy, PolicyRequest, PolicyScope,
+    ScoredDecision, SemanticGuardsConfig, StreamingStrategy, ViolationAction,
+};
 pub use stability::{
     stability_of, stability_of_nav_key, subsystem, Stability, SubsystemStability, SUBSYSTEMS,
 };

@@ -87,6 +87,7 @@ const TARGET_PATH: Record<string, string> = {
   provider_group: "/provider-groups",
   guardrail_rule: "/guardrail-rules",
   guardrail_provider: "/guardrail-providers",
+  guardrail_policy: "/guardrail-policies",
   mcp_server: "/mcp-catalog",
   plugin: "/plugins",
   prompt_template: "/prompt-repo",

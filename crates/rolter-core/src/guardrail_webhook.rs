@@ -25,11 +25,9 @@ pub enum WebhookStage {
     /// inspect the request before proxying upstream
     #[default]
     PreCall,
-    /// inspect the non-streaming response before delivery.
-    ///
-    /// Reserved: validated and carried in the config, but the gateway does not yet
-    /// run the output stage. Streaming/SSE buffering is deferred, mirroring the
-    /// built-in guardrail phasing.
+    /// inspect the response before delivery (#459). A streamed response is
+    /// refused or buffered per the policy's `streaming` strategy (ADR-0037),
+    /// never delivered unchecked
     PostCall,
 }
 
@@ -192,6 +190,14 @@ pub struct WebhookRequest<'a> {
     pub truncated: bool,
     /// the request or response body under inspection (already size-bounded)
     pub content: &'a serde_json::Value,
+    /// the scoped policy that selected this provider (#459); absent for the
+    /// unattached providers' implicit policy
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub policy: Option<&'a str>,
+    /// true when `content` is a buffered streamed response, sent as
+    /// `{"stream": true, "text": "…"}` rather than the event sequence
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub streamed: bool,
 }
 
 /// The webhook's decision. `action` selects the variant; unknown actions

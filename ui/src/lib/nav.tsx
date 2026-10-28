@@ -23,6 +23,7 @@ import {
   History,
   KeyRound,
   Landmark,
+  ListChecks,
   Layers,
   LayoutGrid,
   Megaphone,
@@ -141,6 +142,7 @@ export const NAV: NavDef[] = [
     children: [
       { key: "guardrail-rules", icon: <Gavel />, resource: "guardrail_rule" },
       { key: "guardrail-providers", icon: <Boxes />, resource: "guardrail_provider" },
+      { key: "guardrail-policies", icon: <ListChecks />, resource: "guardrail_policy" },
     ],
   },
   { key: "cluster", icon: <Network />, resource: "cluster_node" },
