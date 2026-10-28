@@ -1608,6 +1608,69 @@ export const SavesTheThroughputCaps: Story = {
 };
 
 /**
+ * A route's context window is typed in the sheet and travels in the advanced
+ * blob as `context_length` (#3265): the stored value seeds the row, an edit is
+ * sent as a number, and a cleared field drops it rather than sending a zero.
+ */
+export const EditsTheContextLength: Story = {
+  render: () => (
+    <Stage
+      mode="edit"
+      route={{ ...LEGACY_ROUTE, advanced: { ...LEGACY_ROUTE.advanced, context_length: 200000 } }}
+    />
+  ),
+  play: async () => {
+    const dialog = within(sheet());
+    await seeded(dialog);
+    await userEvent.click(dialog.getByRole("button", { name: "Capabilities" }));
+    const field = await dialog.findByLabelText("Context length (tokens)");
+    await expect(field).toHaveValue(200000);
+    await expect(field).toHaveAccessibleDescription(/served on GET \/v1\/models/);
+    await userEvent.clear(field);
+    await userEvent.type(field, "128000");
+    await userEvent.click(dialog.getByRole("button", { name: "Save route" }));
+    const body = (await calls.expectSentBody("PUT", "/routes/route-1/advanced")) as {
+      advanced: Record<string, unknown>;
+    };
+    await expect(body.advanced.context_length).toBe(128000);
+  },
+};
+
+export const ClearingTheContextLengthDropsIt: Story = {
+  render: () => (
+    <Stage
+      mode="edit"
+      route={{ ...LEGACY_ROUTE, advanced: { ...LEGACY_ROUTE.advanced, context_length: 200000 } }}
+    />
+  ),
+  play: async () => {
+    const dialog = within(sheet());
+    await seeded(dialog);
+    await userEvent.click(dialog.getByRole("button", { name: "Capabilities" }));
+    await userEvent.clear(await dialog.findByLabelText("Context length (tokens)"));
+    await userEvent.click(dialog.getByRole("button", { name: "Save route" }));
+    const body = (await calls.expectSentBody("PUT", "/routes/route-1/advanced")) as {
+      advanced: Record<string, unknown>;
+    };
+    await expect(body.advanced).not.toHaveProperty("context_length");
+  },
+};
+
+export const ContextLengthOfZeroIsRefused: Story = {
+  render: () => <Stage mode="add" />,
+  play: async () => {
+    const dialog = within(sheet());
+    await seededBlank(dialog);
+    await userEvent.click(dialog.getByRole("button", { name: "Capabilities" }));
+    const field = await dialog.findByLabelText("Context length (tokens)");
+    await userEvent.type(field, "0");
+    await userEvent.tab();
+    await waitFor(() => expect(field).toHaveAttribute("aria-invalid", "true"));
+    await expect(field).toHaveAccessibleDescription(/whole number of tokens, 1 or more/);
+  },
+};
+
+/**
  * A cap the control plane would refuse is said at its field before the save
  * (#2936): zero would turn every request away, and blank is the way to say
  * "no cap". Each message is stated once and the save puts focus on the field.

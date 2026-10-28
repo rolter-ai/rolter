@@ -58,6 +58,16 @@ export function revokeInvitation(id: string): Promise<Invitation> {
   return sendJson<Invitation>("DELETE", `/api/v1/invitations/${id}`);
 }
 
+/**
+ * Email a pending invitation's link again (#3304). It is the same link, so the
+ * earlier message still works. The answer is the invitation with its mail
+ * outcome updated; `409` is an invitation that is no longer pending, has no
+ * kept link, or a control plane with no relay.
+ */
+export function resendInvitation(id: string): Promise<Invitation> {
+  return sendJson<Invitation>("POST", `/api/v1/invitations/${id}/resend`);
+}
+
 export interface InvitationPreview {
   org_name: string;
   email: string;

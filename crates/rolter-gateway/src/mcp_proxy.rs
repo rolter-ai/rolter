@@ -499,20 +499,13 @@ fn downstream_url(base: &str, tail: Option<&str>, query: Option<&str>) -> Option
 
 // spec-ref: http-semantics
 fn end_to_end_headers(mut headers: HeaderMap) -> HeaderMap {
+    rolter_proxy::hop_by_hop::strip(&mut headers);
     for name in [
         "authorization",
         "api-key",
-        "connection",
         "content-length",
         "cookie",
         "host",
-        "keep-alive",
-        "proxy-authenticate",
-        "proxy-authorization",
-        "te",
-        "trailer",
-        "transfer-encoding",
-        "upgrade",
         "x-api-key",
     ] {
         headers.remove(name);
@@ -726,6 +719,20 @@ mod tests {
         )
         .await;
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[test]
+    fn the_relay_drops_nominated_and_trailer_headers() {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::CONNECTION, HeaderValue::from_static("x-internal"));
+        headers.insert("x-internal", HeaderValue::from_static("secret"));
+        headers.insert(header::TRAILER, HeaderValue::from_static("x-checksum"));
+        headers.insert("x-kept", HeaderValue::from_static("kept"));
+        let headers = end_to_end_headers(headers);
+        assert!(headers.get(header::CONNECTION).is_none());
+        assert!(headers.get("x-internal").is_none());
+        assert!(headers.get(header::TRAILER).is_none());
+        assert_eq!(headers.get("x-kept").unwrap(), "kept");
     }
 
     #[tokio::test]

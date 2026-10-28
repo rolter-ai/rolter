@@ -494,6 +494,7 @@ pub fn router() -> Router<crate::ControlState> {
         .route("/api/v1/analytics/summary", get(summary))
         .route("/api/v1/analytics/timeseries", get(timeseries))
         .route("/api/v1/analytics/by-model", get(by_model))
+        .route("/api/v1/analytics/by-variant", get(by_variant))
         .route("/api/v1/analytics/by-attribution", get(by_attribution))
         .route("/api/v1/analytics/invocations", get(invocations))
         .route("/api/v1/analytics/guardrails", get(guardrails))
@@ -784,6 +785,7 @@ async fn summary(
                 {TOKENS} as tokens, \
                 {PROMPT_TOKENS} as prompt_tokens, \
                 {COMPLETION_TOKENS} as completion_tokens, \
+                {CACHE_READ_TOKENS} as cache_read_tokens, \
                 {COST} as cost_usd, \
                 {UNPRICED} as unpriced_requests, \
                 uniqIf(model, unpriced = 1) as unpriced_models, \
@@ -810,6 +812,13 @@ pub(crate) const REQUESTS: &str = "round(sum(sample_weight))";
 pub(crate) const TOKENS: &str = "round(sum(total_tokens * sample_weight))";
 pub(crate) const PROMPT_TOKENS: &str = "round(sum(prompt_tokens * sample_weight))";
 pub(crate) const COMPLETION_TOKENS: &str = "round(sum(completion_tokens * sample_weight))";
+/// Prompt tokens the provider served from its own prompt cache (#3356), the
+/// numerator of a read share over `prompt_tokens`. This is the provider's
+/// cache, not rolter's response cache (`cache_hit`). The column is qualified
+/// because the summary also selects this sum as `cache_read_tokens`, and
+/// ClickHouse resolves a bare name to the select alias before the column.
+pub(crate) const CACHE_READ_TOKENS: &str =
+    "round(sum(request_logs.cache_read_tokens * sample_weight))";
 pub(crate) const COST: &str = "round(sum(cost_usd * sample_weight), 6)";
 pub(crate) const UNPRICED: &str = "round(sumIf(sample_weight, unpriced = 1))";
 /// Requests whose provider answered, and billed, but whose response a post-call
@@ -884,6 +893,45 @@ async fn by_model(
                 round(quantile(0.95)(latency_ms), 1) as p95_latency_ms \
          from request_logs where {WHERE_WINDOW} and {ROW_VISIBLE} and {ROW_FILTERS} \
          group by model order by cost_usd desc format JSON"
+    );
+    run(ch.query(&sql, &with_access(q.params(), &access)).await)
+}
+
+/// Per-variant aggregates (#3342): what each weighted variant of a route
+/// served, so an operator running an A/B split or a canary can compare the
+/// observed share, errors, latency and cost with the configured split.
+///
+/// A variant name means something only inside its route, so rows are keyed by
+/// `(model, variant)` and a caller reading one route passes `model`. Rows the
+/// gateway served without a variant (the classic single pool, or traffic from
+/// before the route had variants) come back under the empty string, so a
+/// route's shares add up to its whole traffic. Everything else is
+/// [`by_model`]'s: the same window, row filters and `AnalyticsAccess` scoping.
+async fn by_variant(
+    access: AnalyticsAccess,
+    State(state): State<crate::ControlState>,
+    Query(q): Query<DashboardQuery>,
+) -> Response {
+    let ch = match client_or_503(&state) {
+        Ok(ch) => ch,
+        Err(resp) => return resp,
+    };
+    // `model` and `variant` are selected under their own names, so both are
+    // qualified with the table: ClickHouse resolves a bare name to the alias
+    // before the column. the sums alias other names, which carry their own
+    // qualifiers where they need them
+    let sql = format!(
+        "select request_logs.model as model, request_logs.variant as variant, \
+                {REQUESTS} as requests, \
+                {TOKENS} as tokens, \
+                {COST} as cost_usd, \
+                {UNPRICED} as unpriced_requests, \
+                {ERRORS} as errors, \
+                round(quantile(0.5)(latency_ms), 1) as p50_latency_ms, \
+                round(quantile(0.95)(latency_ms), 1) as p95_latency_ms \
+         from request_logs where {WHERE_WINDOW} and {ROW_VISIBLE} and {ROW_FILTERS} \
+         group by request_logs.model, request_logs.variant \
+         order by requests desc, model, variant format JSON"
     );
     run(ch.query(&sql, &with_access(q.params(), &access)).await)
 }
@@ -1865,8 +1913,8 @@ mod tests {
             ))
             .count();
         assert_eq!(
-            rollups, 5,
-            "summary, timeseries, by-model, by-attribution, param-adjustments"
+            rollups, 6,
+            "summary, timeseries, by-model, by-variant, by-attribution, param-adjustments"
         );
         assert_eq!(filtered, rollups);
     }
@@ -1948,7 +1996,7 @@ mod tests {
                 "from {table} where {{WHERE_WINDOW}} and {{ROW_VISIBLE}} and {{ROW_FILTERS}}"
             ))
             .count();
-        assert_eq!(filtered, 3, "summary, timeseries, by-model");
+        assert_eq!(filtered, 4, "summary, timeseries, by-model, by-variant");
     }
 
     #[test]

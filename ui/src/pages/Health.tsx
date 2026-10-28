@@ -32,6 +32,7 @@ import {
   type SlaState,
 } from "@/lib/route-targets";
 import { cn } from "@/lib/utils";
+import { eventAt, groupByProvider, headline } from "@/lib/provider-health";
 import { useNow } from "@/lib/use-now";
 import { useScreenReady } from "@/lib/ux-react";
 
@@ -41,12 +42,6 @@ const REFETCH_MS = 30_000;
 // a provider that has reported nothing for this long is quiet enough to say so:
 // several probe sweeps, and long enough that a lull in passive traffic is not
 const STALE_AFTER_MS = 15 * 60 * 1000;
-
-/** when a rollup row last saw an event, in ms; the zone-less ClickHouse form is read as UTC */
-function eventAt(row: UptimeRow): number | undefined {
-  const at = bucketStart(row.last_event);
-  return Number.isNaN(at) ? undefined : at;
-}
 
 /** the status fill for a state's dots and border */
 const SLA_FILL: Record<SlaState, string> = {
@@ -86,112 +81,6 @@ function pct(fmt: Formatters, v: number | undefined): string {
 
 function mttrLabel(fmt: Formatters, seconds: number | undefined): string {
   return seconds === undefined ? "—" : fmt.duration(seconds);
-}
-
-/**
- * The two grains the gateway observes a provider at, as returned by the
- * rollups. `provider` rows come from probes and status-page polls and describe
- * the provider as a whole; `target` rows come from real traffic and describe
- * one route through it. Before #1257 the screen laid both out as peer cards,
- * so one dead provider rendered as several unrelated cards with contradictory
- * counts. They are never summed together — a probe every interval and a
- * per-request observation count different things — so a provider's target rows
- * are nested inside its own card instead.
- */
-type Grain = "provider" | "target";
-
-interface ProviderGroup {
-  provider: string;
-  /** the provider-grain row, when probes or a status page feed this provider */
-  overall: UptimeRow | undefined;
-  targets: UptimeRow[];
-}
-
-interface Headline {
-  /** undefined when no event was observed: a figure nobody measured is not shown */
-  uptime: number | undefined;
-  /** the newest event behind the card, in ms */
-  lastEvent: number | undefined;
-  events: number;
-  failures: number;
-  burn: number;
-  breached: boolean;
-  /** true when there is no provider-grain row and the numbers are a roll-up */
-  derived: boolean;
-  sources: string[];
-}
-
-/**
- * The card's top-line numbers. A provider-grain row is used verbatim when one
- * exists. Without one, the target rows are disjoint views of the same provider
- * — every request went through exactly one of them — so summing them is the
- * honest roll-up; `derived` says so and the card labels it.
- */
-function headline(group: ProviderGroup): Headline {
-  const row = group.overall;
-  if (row) {
-    return {
-      uptime: row.events === 0 ? undefined : row.uptime,
-      lastEvent: eventAt(row),
-      events: row.events,
-      failures: row.errors + row.timeouts,
-      burn: row.error_budget_burn,
-      breached: row.sla_breached === 1,
-      derived: false,
-      sources: row.sources ?? [],
-    };
-  }
-  let events = 0;
-  let ok = 0;
-  let failures = 0;
-  let burn = 0;
-  let lastEvent: number | undefined;
-  const sources = new Set<string>();
-  for (const t of group.targets) {
-    events += t.events;
-    ok += t.ok;
-    failures += t.errors + t.timeouts;
-    // the budget is per target, so the card reports the worst one rather than
-    // an average that would hide it
-    burn = Math.max(burn, t.error_budget_burn);
-    const at = eventAt(t);
-    if (at !== undefined) lastEvent = Math.max(lastEvent ?? at, at);
-    for (const s of t.sources ?? []) sources.add(s);
-  }
-  return {
-    // no events is no data, not a perfect score
-    uptime: events === 0 ? undefined : ok / events,
-    lastEvent,
-    events,
-    failures,
-    burn,
-    breached: group.targets.some((t) => t.sla_breached === 1),
-    derived: true,
-    sources: [...sources].sort(),
-  };
-}
-
-function groupByProvider(rows: UptimeRow[]): ProviderGroup[] {
-  const byProvider = new Map<string, ProviderGroup>();
-  for (const row of rows) {
-    let group = byProvider.get(row.provider);
-    if (!group) {
-      group = { provider: row.provider, overall: undefined, targets: [] };
-      byProvider.set(row.provider, group);
-    }
-    // fall back on the id comparison the server derives `grain` from, so a
-    // control plane that predates the column still groups correctly
-    const grain: Grain = (row.grain ??
-      (row.target_id === row.provider ? "provider" : "target")) as Grain;
-    if (grain === "provider") group.overall = row;
-    else group.targets.push(row);
-  }
-  const groups = [...byProvider.values()];
-  for (const group of groups) group.targets.sort((a, b) => a.uptime - b.uptime);
-  // worst first, the same intent as the server's `order by uptime asc`; a
-  // provider with nothing measured goes last
-  groups.sort((a, b) => (headline(a).uptime ?? 2) - (headline(b).uptime ?? 2));
-  return groups;
 }
 
 /** Merge timeline rows that share a bucket, for a card's roll-up strip. */
