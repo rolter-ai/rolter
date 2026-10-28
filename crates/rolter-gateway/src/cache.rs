@@ -30,6 +30,13 @@ pub struct CachedResponse {
     pub content_type: String,
     /// raw response body bytes
     pub body: Vec<u8>,
+    /// What translation did to the request that produced this answer, as
+    /// `ParamAdjustments::log_entries` (`dropped:top_k`), so a hit discloses it
+    /// in `x-rolter-param-adjustments` the way the miss did (#3326). Absent
+    /// from an entry an older gateway stored, which reads as nothing adjusted,
+    /// and left out of an entry with none, so it is byte for byte what it was
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub param_adjustments: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -428,6 +435,7 @@ mod tests {
             status: 200,
             content_type: "text/event-stream".to_string(),
             body: sse.as_bytes().to_vec(),
+            param_adjustments: vec!["dropped:top_k".to_string()],
         };
         let blob = serde_json::to_vec(&original).unwrap();
         let decoded: CachedResponse = serde_json::from_slice(&blob).unwrap();
@@ -436,7 +444,18 @@ mod tests {
         // byte-for-byte identical framing so UsageLoggingStream sees the same
         // events it would on a live miss
         assert_eq!(decoded.body, original.body);
+        assert_eq!(decoded.param_adjustments, original.param_adjustments);
         assert_eq!(String::from_utf8(decoded.body).unwrap(), sse);
+    }
+
+    /// An entry stored before #3326, or one with nothing adjusted, has no
+    /// `param_adjustments` key and reads as nothing adjusted.
+    #[test]
+    fn an_entry_without_adjustments_is_byte_for_byte_what_it_was() {
+        let older = br#"{"status":200,"content_type":"application/json","body":[123,125]}"#;
+        let decoded: CachedResponse = serde_json::from_slice(older).unwrap();
+        assert!(decoded.param_adjustments.is_empty());
+        assert_eq!(serde_json::to_vec(&decoded).unwrap(), older.to_vec());
     }
 
     #[tokio::test]
@@ -452,6 +471,7 @@ mod tests {
                     status: 200,
                     content_type: "application/json".to_string(),
                     body: b"{}".to_vec(),
+                    param_adjustments: Vec::new(),
                 },
                 60,
             )
@@ -481,6 +501,7 @@ mod tests {
             status: 200,
             content_type: "application/json".to_string(),
             body: body.as_bytes().to_vec(),
+            param_adjustments: Vec::new(),
         };
         let before = testing::unique("rolter:test:cache:before");
         cache.put(&before, &response("{\"n\":1}"), 60).await;

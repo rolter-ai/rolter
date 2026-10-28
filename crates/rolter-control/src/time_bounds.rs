@@ -409,6 +409,7 @@ mod tests {
         ("/api/v1/analytics/invocations/export", None),
         ("/api/v1/analytics/guardrails", None),
         ("/api/v1/analytics/plugins", None),
+        ("/api/v1/analytics/param-adjustments", None),
         ("/api/v1/analytics/savings", None),
         ("/api/v1/health/uptime", None),
         ("/api/v1/health/mttr", None),
