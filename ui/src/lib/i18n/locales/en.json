@@ -327,6 +327,7 @@
       "auditLogExport": "the audit log export",
       "unpricedModels": "unpriced models",
       "mcpServerTools": "tools of the MCP server",
+      "priceCatalogue": "price catalogue",
       "yourBudget": "your budget"
     },
     "requestFailed": "request failed: {{status}}",
@@ -876,7 +877,24 @@
         "more_one": "and {{count}} more",
         "more_other": "and {{count}} more"
       },
-      "colScope": "Scope"
+      "colScope": "Scope",
+      "colCache": "Cache metrics",
+      "probeCache": "Probe",
+      "probeOne": "Probe cache reporting of {{name}}",
+      "probe": {
+        "title": "Probe cache reporting of {{name}}",
+        "body": "Sends one real one-token completion to this provider and records whether the answer reports prompt-cache usage. It costs a token and uses the provider's credential.",
+        "model": "Upstream model",
+        "modelHint": "The model id this provider serves. A provider that adds the field only on a cache hit reads as not reporting, so note the model beside the verdict.",
+        "modelPlaceholder": "gpt-4o-mini",
+        "run": "Run probe",
+        "recordedReports": "Recorded: the provider reports prompt-cache usage ({{spelling}}).",
+        "recordedNone": "Recorded: the answer carried no prompt-cache usage field.",
+        "notRecorded": "Nothing learned, the earlier verdict is unchanged. {{error}}",
+        "noReason": "The provider did not answer with a completion that has a usage object.",
+        "answered": "{{url}} answered {{status}} in {{ms}} ms",
+        "noAnswer": "{{url}} gave no answer after {{ms}} ms"
+      }
     },
     "plugins": {
       "intro": "Request and response middleware the gateway consults on live traffic. Enabled plugins run at their stage, in position order.",
@@ -1074,7 +1092,8 @@
         "audioIn": "Audio input",
         "audioOut": "Audio output",
         "cachedAudio": "Cached audio input",
-        "currency": "Currency"
+        "currency": "Currency",
+        "source": "Source"
       },
       "searchPlaceholder": "Search models",
       "noMatchTitle": "No prices match",
@@ -1090,6 +1109,30 @@
       "noAnalytics": {
         "title": "Unpriced traffic needs ClickHouse",
         "body": "This control plane runs without <0>CLICKHOUSE_URL</0>, or is older than the endpoint this list reads, so it cannot say which models carry traffic with no price. Models can still be priced below."
+      },
+      "import": {
+        "action": "Import from catalogue",
+        "title": "Import prices from the catalogue",
+        "body": "Copy list prices for the models you pick from the price catalogue shipped with this control plane. Nothing is fetched from the internet.",
+        "noticeLead": "Catalogue values are third-party list prices, subject to change.",
+        "notice": "The source is provisional. An imported price is marked as a catalogue value with its snapshot date, and a price you set yourself is never replaced.",
+        "sourceLine": "Source: {{source}} ({{licence}}) · snapshot {{date}} · {{total}} models",
+        "searchPlaceholder": "Search the catalogue by model name",
+        "listLabel": "Catalogue models",
+        "rates": "input {{input}} · output {{output}} · cached input {{cached}} {{currency}}/Mtok",
+        "overrideKept": "You already set a price for this model; an import keeps it.",
+        "noMatchTitle": "No catalogue model matches",
+        "noMatchBody": "Nothing in the catalogue matches \"{{query}}\".",
+        "emptyBody": "The catalogue snapshot holds no models.",
+        "truncated": "Showing the first {{shown}} matches. Narrow the search to see others.",
+        "run": "Import selected ({{n}})",
+        "resultTitle": "Imported from {{source}}, snapshot {{date}}. These remain catalogue values, subject to change.",
+        "outcome": {
+          "created": "Created:",
+          "updated": "Refreshed from the catalogue:",
+          "kept_override": "Kept your own price:",
+          "not_in_catalogue": "Not in the catalogue:"
+        }
       }
     },
     "playground": {
@@ -3618,7 +3661,8 @@
         "strategy": "Strategy",
         "address": "Address",
         "members": "Members",
-        "scope": "Scope"
+        "scope": "Scope",
+        "cache": "Cache metrics"
       },
       "copyAddress": "Copy address prefix",
       "address": "{{slug}}/<model>",
@@ -5692,6 +5736,33 @@
         "same": "unchanged"
       }
     }
+  },
+  "cacheReporting": {
+    "reports": "Reports cache",
+    "none": "No cache metrics",
+    "unprobed": "Not probed yet",
+    "withTime": "{{label}} · {{when}}",
+    "hint": {
+      "reports": "Responses carried a prompt-cache usage field",
+      "none": "Responses carried no prompt-cache usage field",
+      "unprobed": "Never probed, so nothing is known about its cache reporting"
+    },
+    "established": "Established {{when}}",
+    "model": "Model: {{model}}",
+    "spelling": "Field: {{spelling}}",
+    "coverage": "{{count}} of {{total}} providers",
+    "coverageProbed": "{{count}} of {{total}} providers probed"
+  },
+  "priceProvenance": {
+    "catalogue": "Catalogue",
+    "override": "Override",
+    "catalogueSource": "Source: {{source}}",
+    "catalogueSnapshot": "Snapshot: {{date}}",
+    "catalogueHint": "A third-party list price, subject to change.",
+    "overrideHint": "A price set by an operator. It wins over the catalogue and is never replaced by an import.",
+    "lineCatalogue": "Catalogue price from {{source}}, snapshot {{date}} — subject to change.",
+    "lineCatalogueUndated": "Catalogue price from {{source}} — subject to change.",
+    "lineOverride": "Your price (override)."
   },
   "keyCaps": {
     "spend": "Spend cap {{amount}} ({{period}})",

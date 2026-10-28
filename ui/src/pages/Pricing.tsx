@@ -1,9 +1,11 @@
 import { useMutation, useQuery, useQueryClient, type UseQueryResult } from "@tanstack/react-query";
-import { CircleDollarSign, Plus } from "lucide-react";
+import { CircleDollarSign, Download, Plus } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 
 import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { ImportPricesDialog } from "@/components/ImportPricesDialog";
+import { PriceProvenanceBadge } from "@/components/PriceProvenance";
 import { GatedButton } from "@/components/GatedButton";
 import { DeleteIconButton } from "@/components/ui/delete-icon-button";
 import { LoadError } from "@/components/LoadError";
@@ -88,7 +90,7 @@ const PRICE_COLUMNS = [
 type PriceColumn = (typeof PRICE_COLUMNS)[number]["col"];
 type PriceSortColumn = "model" | "currency" | PriceColumn;
 
-const GRID = `${primaryColumn(1.5)} repeat(${PRICE_COLUMNS.length}, minmax(5.5rem, 1fr)) 5rem 168px`;
+const GRID = `${primaryColumn(1.5)} repeat(${PRICE_COLUMNS.length}, minmax(5.5rem, 1fr)) 5rem 7rem 168px`;
 const UNPRICED_GRID = `${primaryColumn(1.5)} minmax(7rem, 0.6fr) 168px`;
 
 // the window the unpriced list reads: long enough to catch a model that is
@@ -133,6 +135,7 @@ export default function Pricing() {
   const [editTarget, setEditTarget] = React.useState<ModelPriceRow | null>(null);
   // the model an "Add price" from the unpriced list opens the sheet with
   const [seedModel, setSeedModel] = React.useState("");
+  const [importOpen, setImportOpen] = React.useState(false);
   const [search, setSearch] = React.useState("");
   const { sort, cycle, apply } = useSort<PriceSortColumn>();
   const fmt = useFormat();
@@ -176,8 +179,17 @@ export default function Pricing() {
             create capability to gate on (#1258) */}
         <GatedButton
           gate="model_price:update"
-          control="price-new"
+          control="price-import"
+          variant="outline"
           className="ml-auto"
+          onClick={() => setImportOpen(true)}
+        >
+          <Download className="h-4 w-4" />
+          {t("pages.pricing.import.action")}
+        </GatedButton>
+        <GatedButton
+          gate="model_price:update"
+          control="price-new"
           onClick={() => {
             setEditTarget(null);
             setSeedModel("");
@@ -207,7 +219,7 @@ export default function Pricing() {
         />
       )}
 
-      <ListTable label={t("screens.pricing-overrides.title")} minWidth={1180}>
+      <ListTable label={t("screens.pricing-overrides.title")} minWidth={1300}>
         <ListHeader grid={GRID}>
           <SortLabel
             label={t("pages.pricing.columns.model")}
@@ -231,6 +243,7 @@ export default function Pricing() {
             sort={sort}
             onCycle={(c) => cycle(c as PriceSortColumn)}
           />
+          <ListHeaderCell>{t("pages.pricing.columns.source")}</ListHeaderCell>
           <ListActionsHeader className={STICKY_ACTIONS.header} />
         </ListHeader>
         <ListLoadingRow read={prices}>
@@ -256,6 +269,9 @@ export default function Pricing() {
             ))}
             <ListCell className="font-mono text-xs text-[color:var(--text-secondary)]">
               {price.currency}
+            </ListCell>
+            <ListCell className="flex items-center">
+              <PriceProvenanceBadge price={price} />
             </ListCell>
             <ListCell className={`flex items-center justify-end gap-2 ${STICKY_ACTIONS.cell}`}>
               <GatedButton
@@ -329,6 +345,13 @@ export default function Pricing() {
         existing={editTarget}
         seedModel={seedModel}
         currency={currency.data}
+        onDone={invalidate}
+      />
+
+      <ImportPricesDialog
+        open={importOpen}
+        onOpenChange={setImportOpen}
+        existing={prices.data}
         onDone={invalidate}
       />
 

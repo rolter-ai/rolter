@@ -497,3 +497,9 @@ signoz-reset:
 # tear the dogfooding stack down (keeps volumes, so the KEK stays valid)
 dogfood-down:
     docker compose -f docker/docker-compose.yml -f docker/docker-compose.signoz.yml down
+
+# re-vendor the model price catalogue (LiteLLM's price file, MIT) from upstream,
+# cut down to the fields the importer reads (#966). the only place it is fetched,
+# and only when you run it: the control plane reads the committed snapshot
+refresh-prices:
+    bun scripts/refresh-price-catalogue.ts

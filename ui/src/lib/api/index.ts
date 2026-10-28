@@ -378,8 +378,18 @@ export {
   isConvertible,
   upsertModelPrice,
   deleteModelPrice,
+  fetchPriceCatalogue,
+  importModelPrices,
 } from "./pricing";
-export type { ModelPriceRow, UpsertModelPriceInput, CurrencySettings } from "./pricing";
+export type {
+  ModelPriceRow,
+  UpsertModelPriceInput,
+  CurrencySettings,
+  CatalogueEntry,
+  PriceCatalogue,
+  ImportOutcome,
+  PriceImportResult,
+} from "./pricing";
 export {
   fetchPromptTemplates,
   createPromptTemplate,
@@ -414,6 +424,9 @@ export {
   deleteProvider,
   testProvider,
   fetchProviderModels,
+  fetchProviderCacheProbes,
+  probeProviderCache,
+  canProbeCache,
   fetchProviderGroups,
   createProviderGroup,
   updateProviderGroup,
@@ -428,6 +441,8 @@ export type {
   UpdateProviderInput,
   ProviderTestResult,
   ProviderModelList,
+  ProviderCacheVerdict,
+  ProviderCacheProbeResult,
   ProviderGroupMember,
   ProviderGroupRow,
   GroupMemberInput,
