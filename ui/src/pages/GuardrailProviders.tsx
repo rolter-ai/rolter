@@ -36,6 +36,7 @@ import { Combobox } from "@/components/ui/combobox";
 import { Field } from "@/components/ui/field";
 import { FormSection } from "@/components/ui/form-section";
 import { Input } from "@/components/ui/input";
+import { Segmented } from "@/components/ui/segmented";
 
 import { SwitchRow } from "@/components/ui/switch-row";
 import {
@@ -61,6 +62,7 @@ import { errorText } from "@/lib/error-copy";
 import { useFormat } from "@/lib/i18n/format";
 import { useToast } from "@/lib/toast";
 import { useScreenReady } from "@/lib/ux-react";
+import { cn } from "@/lib/utils";
 
 // the shape of an evaluation URL, shown as a placeholder and never as a value:
 // a prefilled host saves as the endpoint when nobody edits it, and a
@@ -68,11 +70,15 @@ import { useScreenReady } from "@/lib/ux-react";
 // request (#2163)
 const URL_EXAMPLE = "https://guardrails.internal/v1/evaluate";
 const HTTP_URL = /^https?:\/\//;
+const SHA256 = /^[0-9a-fA-F]{64}$/;
 
 const EMPTY: GuardrailProviderInput = {
   name: "",
   enabled: false,
+  kind: "webhook",
   url: "",
+  model_path: null,
+  model_sha256: null,
   stage: "pre_call",
   timeout_ms: 2000,
   max_retries: 0,
@@ -245,7 +251,7 @@ function GuardrailProvidersScreen() {
             <PolicyCard
               key={provider.id}
               title={provider.name}
-              description={provider.url}
+              description={provider.kind === "local" ? (provider.model_path ?? "") : provider.url}
               descriptionMono
               enabled={provider.enabled}
               status={
@@ -258,19 +264,29 @@ function GuardrailProvidersScreen() {
                     {provider.failure_mode.replace("_", "-")}
                   </Badge>
                   <Badge tone="outline">{provider.stage.replace("_", "-")}</Badge>
-                  {/* colour says a credential is attached; no auth says nothing */}
-                  <Badge tone={provider.auth_kind === "none" ? "outline" : "info"}>
-                    {provider.auth_kind.replace("_", " ")}
+                  <Badge tone={provider.kind === "local" ? "info" : "outline"}>
+                    {t(`pages.guardrailProviders.kind.${provider.kind}`)}
                   </Badge>
+                  {/* colour says a credential is attached; no auth says nothing */}
+                  {provider.kind === "webhook" && (
+                    <Badge tone={provider.auth_kind === "none" ? "outline" : "info"}>
+                      {provider.auth_kind.replace("_", " ")}
+                    </Badge>
+                  )}
                 </>
               }
               details={
                 <>
-                  {t("pages.guardrailProviders.detailLine", {
-                    timeout: number(provider.timeout_ms),
-                    count: provider.max_retries,
-                    kib: number(Math.round(provider.max_body_bytes / 1024)),
-                  })}
+                  {provider.kind === "local"
+                    ? t("pages.guardrailProviders.detailLineLocal", {
+                        timeout: number(provider.timeout_ms),
+                        kib: number(Math.round(provider.max_body_bytes / 1024)),
+                      })
+                    : t("pages.guardrailProviders.detailLine", {
+                        timeout: number(provider.timeout_ms),
+                        count: provider.max_retries,
+                        kib: number(Math.round(provider.max_body_bytes / 1024)),
+                      })}
                   {/* outcomes are recorded under the provider's name, so a card
                       counts its own and a switched-away provider's history
                       stays off the new one's. a paused provider the gateway
@@ -656,7 +672,31 @@ function ProviderDialog({
   const set = (patch: Partial<GuardrailProviderInput>) =>
     setForm((value) => ({ ...value, ...patch }));
   const [trialOpen, setTrialOpen] = React.useState(false);
+  const local = form.kind === "local";
+  // a kind switch resets the fields the other kind owns, so a stale URL never
+  // rides along with a local provider (the server rejects it) and vice versa
+  const setKind = (kind: GuardrailProviderInput["kind"]) =>
+    set(
+      kind === "local"
+        ? {
+            kind,
+            url: "",
+            auth_kind: "none",
+            auth_env: null,
+            max_retries: 0,
+            model_path: form.model_path ?? "",
+            model_sha256: form.model_sha256 ?? "",
+          }
+        : { kind, model_path: null, model_sha256: null },
+    );
   const urlValid = HTTP_URL.test(form.url);
+  const pathValid = (form.model_path ?? "").trim() !== "";
+  const shaValid = SHA256.test(form.model_sha256 ?? "");
+  const [pathLeft, setPathLeft] = React.useState(false);
+  const [shaLeft, setShaLeft] = React.useState(false);
+  const pathError =
+    pathLeft && !pathValid ? t("pages.guardrailProviders.modelPathRequired") : undefined;
+  const shaError = shaLeft && !shaValid ? t("pages.guardrailProviders.modelShaInvalid") : undefined;
   // said once the field is left, not on the first keystroke of a URL that is
   // still being typed
   const [urlLeft, setUrlLeft] = React.useState(false);
@@ -668,7 +708,7 @@ function ProviderDialog({
       : undefined;
   const valid =
     form.name.trim() !== "" &&
-    urlValid &&
+    (local ? pathValid && shaValid : urlValid) &&
     form.timeout_ms > 0 &&
     form.max_body_bytes > 0 &&
     (form.auth_kind === "none" || Boolean(form.auth_env?.trim()));
@@ -686,7 +726,17 @@ function ProviderDialog({
     <Dialog
       open={open}
       onOpenChange={(value) => !value && onClose()}
-      onSubmit={() => onSave(form)}
+      onSubmit={() =>
+        onSave(
+          local
+            ? {
+                ...form,
+                model_path: (form.model_path ?? "").trim(),
+                model_sha256: (form.model_sha256 ?? "").toLowerCase(),
+              }
+            : form,
+        )
+      }
       canSubmit={valid}
       busy={pending}
     >
@@ -712,22 +762,72 @@ function ProviderDialog({
           />
         </Field>
         <Field
-          label={t("pages.guardrailProviders.fieldUrl")}
-          htmlFor="provider-url"
-          hint={t("pages.guardrailProviders.urlHint")}
-          error={urlError}
-          required
+          label={t("pages.guardrailProviders.fieldKind")}
+          info={t("pages.guardrailProviders.kindInfo")}
         >
-          <Input
-            id="provider-url"
-            type="url"
-            className="font-mono"
-            placeholder={URL_EXAMPLE}
-            value={form.url}
-            onChange={(event) => set({ url: event.target.value })}
-            onBlur={() => setUrlLeft(true)}
+          <Segmented<GuardrailProviderInput["kind"]>
+            ariaLabel={t("pages.guardrailProviders.fieldKind")}
+            value={form.kind}
+            options={[
+              { value: "webhook", label: t("pages.guardrailProviders.kind.webhook") },
+              { value: "local", label: t("pages.guardrailProviders.kind.local") },
+            ]}
+            onChange={setKind}
           />
         </Field>
+        {local ? (
+          <>
+            <Field
+              label={t("pages.guardrailProviders.fieldModelPath")}
+              htmlFor="provider-model-path"
+              hint={t("pages.guardrailProviders.modelPathHint")}
+              error={pathError}
+              required
+            >
+              <Input
+                id="provider-model-path"
+                className="font-mono"
+                placeholder="/etc/rolter/models/injection.json"
+                value={form.model_path ?? ""}
+                onChange={(event) => set({ model_path: event.target.value })}
+                onBlur={() => setPathLeft(true)}
+              />
+            </Field>
+            <Field
+              label={t("pages.guardrailProviders.fieldModelSha")}
+              htmlFor="provider-model-sha"
+              hint={t("pages.guardrailProviders.modelShaHint")}
+              error={shaError}
+              required
+            >
+              <Input
+                id="provider-model-sha"
+                className="font-mono"
+                value={form.model_sha256 ?? ""}
+                onChange={(event) => set({ model_sha256: event.target.value.trim() })}
+                onBlur={() => setShaLeft(true)}
+              />
+            </Field>
+          </>
+        ) : (
+          <Field
+            label={t("pages.guardrailProviders.fieldUrl")}
+            htmlFor="provider-url"
+            hint={t("pages.guardrailProviders.urlHint")}
+            error={urlError}
+            required
+          >
+            <Input
+              id="provider-url"
+              type="url"
+              className="font-mono"
+              placeholder={URL_EXAMPLE}
+              value={form.url}
+              onChange={(event) => set({ url: event.target.value })}
+              onBlur={() => setUrlLeft(true)}
+            />
+          </Field>
+        )}
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <Field
             label={t("pages.guardrailProviders.fieldStage")}
@@ -781,7 +881,7 @@ function ProviderDialog({
             {t("pages.guardrailProviders.failOpenWarning")}
           </p>
         )}
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+        <div className={cn("grid grid-cols-1 gap-3", local ? "sm:grid-cols-2" : "sm:grid-cols-3")}>
           <Field
             label={t("pages.guardrailProviders.fieldTimeout")}
             htmlFor="provider-timeout"
@@ -795,19 +895,21 @@ function ProviderDialog({
               onChange={(event) => set({ timeout_ms: Number(event.target.value) })}
             />
           </Field>
-          <Field
-            label={t("pages.guardrailProviders.fieldRetries")}
-            htmlFor="provider-retries"
-            info={t("pages.guardrailProviders.retriesInfo")}
-          >
-            <Input
-              id="provider-retries"
-              type="number"
-              min={0}
-              value={form.max_retries}
-              onChange={(event) => set({ max_retries: Number(event.target.value) })}
-            />
-          </Field>
+          {!local && (
+            <Field
+              label={t("pages.guardrailProviders.fieldRetries")}
+              htmlFor="provider-retries"
+              info={t("pages.guardrailProviders.retriesInfo")}
+            >
+              <Input
+                id="provider-retries"
+                type="number"
+                min={0}
+                value={form.max_retries}
+                onChange={(event) => set({ max_retries: Number(event.target.value) })}
+              />
+            </Field>
+          )}
           <Field
             label={t("pages.guardrailProviders.fieldBodyCap")}
             htmlFor="provider-cap"
@@ -822,29 +924,31 @@ function ProviderDialog({
             />
           </Field>
         </div>
-        <Field
-          label={t("pages.guardrailProviders.fieldAuth")}
-          htmlFor="provider-auth"
-          info={t("pages.guardrailProviders.authInfo")}
-        >
-          <Combobox
-            id="provider-auth"
-            value={form.auth_kind}
-            onChange={(picked) => {
-              const auth_kind = picked as GuardrailProviderInput["auth_kind"];
-              set({
-                auth_kind,
-                auth_env: auth_kind === "none" ? null : form.auth_env,
-              });
-            }}
-            options={[
-              { value: "none", label: t("pages.guardrailProviders.authNone") },
-              { value: "bearer", label: t("pages.guardrailProviders.authBearer") },
-              { value: "shared_secret", label: t("pages.guardrailProviders.authSharedSecret") },
-            ]}
-          />
-        </Field>
-        {form.auth_kind !== "none" && (
+        {!local && (
+          <Field
+            label={t("pages.guardrailProviders.fieldAuth")}
+            htmlFor="provider-auth"
+            info={t("pages.guardrailProviders.authInfo")}
+          >
+            <Combobox
+              id="provider-auth"
+              value={form.auth_kind}
+              onChange={(picked) => {
+                const auth_kind = picked as GuardrailProviderInput["auth_kind"];
+                set({
+                  auth_kind,
+                  auth_env: auth_kind === "none" ? null : form.auth_env,
+                });
+              }}
+              options={[
+                { value: "none", label: t("pages.guardrailProviders.authNone") },
+                { value: "bearer", label: t("pages.guardrailProviders.authBearer") },
+                { value: "shared_secret", label: t("pages.guardrailProviders.authSharedSecret") },
+              ]}
+            />
+          </Field>
+        )}
+        {!local && form.auth_kind !== "none" && (
           <Field
             label={t("pages.guardrailProviders.fieldEnv")}
             htmlFor="provider-env"
@@ -865,13 +969,19 @@ function ProviderDialog({
           checked={form.enabled}
           onChange={(enabled) => set({ enabled })}
         />
-        <FormSection
-          title={t("pages.guardrailProviders.trial.title")}
-          open={trialOpen}
-          onToggle={() => setTrialOpen((value) => !value)}
-        >
-          <GuardrailProviderTrial draft={form} />
-        </FormSection>
+        {local ? (
+          <p className="text-xs text-muted-foreground">
+            {t("pages.guardrailProviders.trial.localNote")}
+          </p>
+        ) : (
+          <FormSection
+            title={t("pages.guardrailProviders.trial.title")}
+            open={trialOpen}
+            onToggle={() => setTrialOpen((value) => !value)}
+          >
+            <GuardrailProviderTrial draft={form} />
+          </FormSection>
+        )}
         {error && (
           <p role="alert" className="text-xs text-[color:var(--status-danger-text)]">
             {error}

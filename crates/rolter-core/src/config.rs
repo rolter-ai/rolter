@@ -4117,6 +4117,7 @@ impl KnownValues for ProviderKind {
 mod known_values {
     use super::*;
     use crate::guardrail_webhook::FailureMode;
+    use crate::guardrail_webhook::GuardProviderKind;
     use crate::guardrails::{GuardAction, StreamingPostCall};
     use crate::pii_sanitizer::{RestorationPolicy, SanitizeDirection, StreamingResponse};
     use crate::semantic_guards::{StreamingStrategy, ViolationAction};
@@ -4193,6 +4194,7 @@ mod known_values {
     });
     known_values!(ViolationAction { Block, Annotate });
     known_values!(StreamingStrategy { Reject, Buffer });
+    known_values!(GuardProviderKind { Webhook, Local });
 }
 
 /// Every `takes_over` class of `route` this build does not know, with the
@@ -4408,6 +4410,25 @@ impl GatewayConfig {
                 || format!("semantic guard policy '{name}' streaming"),
             );
         }
+        // a guard provider of an unknown kind keeps its value: no known kind
+        // is a safe reading of it, so it blocks its stage per request instead,
+        // whatever its failure_mode (ADR-0039)
+        let guard_providers = std::iter::once(&self.guardrail_webhook)
+            .filter(|webhook| webhook.enabled)
+            .chain(&self.semantic_guards.providers);
+        for provider in guard_providers {
+            if provider.kind == crate::guardrail_webhook::GuardProviderKind::Unknown {
+                problems.push(format!(
+                    "semantic guard provider '{}' kind has a value this gateway does not know; \
+                     it blocks its stage until the gateway is upgraded",
+                    if provider.name.trim().is_empty() {
+                        "guardrail_webhook"
+                    } else {
+                        provider.name.trim()
+                    }
+                ));
+            }
+        }
         let pii = &mut self.pii_sanitizer;
         resolve_unknown(
             &mut pii.direction,
@@ -4531,7 +4552,13 @@ impl GatewayConfig {
         unknown_value(&mut p, &self.guardrail_webhook.failure_mode, || {
             "guardrail_webhook.failure_mode".to_string()
         });
+        unknown_value(&mut p, &self.guardrail_webhook.kind, || {
+            "guardrail_webhook.kind".to_string()
+        });
         for provider in &self.semantic_guards.providers {
+            unknown_value(&mut p, &provider.kind, || {
+                format!("semantic guard provider '{}' kind", provider.name)
+            });
             unknown_value(&mut p, &provider.failure_mode, || {
                 format!("semantic guard provider '{}' failure_mode", provider.name)
             });
@@ -5733,12 +5760,19 @@ impl GatewayConfig {
     /// [`provider_problems`](Self::provider_problems).
     pub fn operator_url_problems(&self) -> Vec<String> {
         let mut problems = Vec::new();
-        if self.guardrail_webhook.enabled {
+        // a local provider has no url: it runs in the gateway process (#3329)
+        let webhook = crate::guardrail_webhook::GuardProviderKind::Webhook;
+        if self.guardrail_webhook.enabled && self.guardrail_webhook.kind == webhook {
             problems.extend(
                 self.egress_problem(self.guardrail_webhook.url.trim(), "guardrail_webhook.url"),
             );
         }
-        for provider in self.semantic_guards.providers.iter().filter(|p| p.enabled) {
+        for provider in self
+            .semantic_guards
+            .providers
+            .iter()
+            .filter(|p| p.enabled && p.kind == webhook)
+        {
             problems.extend(self.egress_problem(
                 provider.url.trim(),
                 &format!("semantic_guards.providers '{}' url", provider.name),
@@ -11381,5 +11415,39 @@ mod tests {
     #[test]
     fn an_unknown_unpriced_policy_outranks_block() {
         assert!(UnpricedPolicy::Unknown > UnpricedPolicy::Block);
+    }
+
+    #[test]
+    fn an_unknown_guard_provider_kind_is_named_and_left_to_fail_closed() {
+        use crate::guardrail_webhook::GuardProviderKind;
+        let mut cfg: GatewayConfig = serde_json::from_value(serde_json::json!({
+            "semantic_guards": {"providers": [
+                {"name": "future", "enabled": true, "kind": "quantum", "failure_mode": "fail_open"}
+            ]}
+        }))
+        .expect("an unknown kind must not fail the decode");
+        let problems = cfg.fail_closed_unknown_values().join("\n");
+        assert!(
+            problems.contains("semantic guard provider 'future' kind"),
+            "{problems}"
+        );
+        // kept as it is: the gateway blocks its stage per request
+        assert_eq!(
+            cfg.semantic_guards.providers[0].kind,
+            GuardProviderKind::Unknown
+        );
+        assert!(
+            cfg.validate_snapshot().is_ok(),
+            "{:?}",
+            cfg.validate_snapshot()
+        );
+
+        // a file is written by hand: the typo is refused with the list
+        let err = GatewayConfig::from_toml_str(
+            "[[semantic_guards.providers]]\nname = \"x\"\nkind = \"locl\"\n",
+        )
+        .err()
+        .unwrap_or_else(|| panic!("a typo must not load"));
+        assert!(err.to_string().contains("webhook, local"), "{err}");
     }
 }

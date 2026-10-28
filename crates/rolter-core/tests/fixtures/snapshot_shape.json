@@ -1510,6 +1510,9 @@
     "semantic_guards": [
       "object"
     ],
+    "semantic_guards.local_concurrency": [
+      "number"
+    ],
     "semantic_guards.policies": [
       "array"
     ],
@@ -1558,11 +1561,20 @@
     "semantic_guards.providers[].failure_mode": [
       "string"
     ],
+    "semantic_guards.providers[].kind": [
+      "string"
+    ],
     "semantic_guards.providers[].max_body_bytes": [
       "number"
     ],
     "semantic_guards.providers[].max_retries": [
       "number"
+    ],
+    "semantic_guards.providers[].model_path": [
+      "string"
+    ],
+    "semantic_guards.providers[].model_sha256": [
+      "string"
     ],
     "semantic_guards.providers[].name": [
       "string"

@@ -58,6 +58,7 @@
   - [ADR-0036 — PII restoration on streamed responses: the sanitizer restores the stream](adr/2026-10-27-pii-streaming-restoration.md)
   - [ADR-0037 — Semantic guard policies on streamed responses: refuse or buffer, never bypass](adr/2026-10-27-semantic-guard-streaming.md)
   - [ADR-0038 — A negotiated format version for /internal/snapshot](adr/2026-10-27-snapshot-format-version.md)
+  - [ADR-0039 — An in-process local classifier for semantic guard policies](adr/2026-10-28-local-semantic-classifier.md)
 
 # API
 

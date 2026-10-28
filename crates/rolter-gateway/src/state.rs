@@ -1012,6 +1012,10 @@ pub struct AppState {
     /// `api_base` (guardrail webhook, pii sanitizer, plugins, status pages),
     /// bound to the same live policy so a reload re-tunes it too
     pub side_client: crate::egress_client::EgressClient,
+    /// the models `local` semantic guard providers run in process and the
+    /// per-gateway cap on their concurrent calls; loaded when a configuration
+    /// is applied, never on the request path (#3329, ADR-0039)
+    pub local_classifiers: crate::local_classifier::LocalClassifiers,
     pub forwarder: Arc<Forwarder>,
     /// bounded worker queues keyed by provider; queue settings come from the
     /// live snapshot so a hot reload takes effect for subsequent requests
@@ -1187,6 +1191,8 @@ impl AppState {
         health_events.set_provider_orgs(&config.providers);
         let provider_queues = ProviderQueues::new(forwarder.clone(), metrics.clone());
         let side_client = crate::egress_client::EgressClient::new(egress.clone());
+        let local_classifiers = crate::local_classifier::LocalClassifiers::default();
+        local_classifiers.configure(&config.semantic_guards, &config.guardrail_webhook);
         let cache_telemetry =
             crate::cache_telemetry::CacheTelemetry::new(metrics.clone(), side_client.clone());
         cache_telemetry.configure(&config.providers);
@@ -1202,6 +1208,7 @@ impl AppState {
             draining: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             egress,
             side_client,
+            local_classifiers,
             forwarder,
             provider_queues,
             metrics,
@@ -1267,6 +1274,11 @@ impl AppState {
         crate::example_key::warn_if_exposed(config, self.exposed_bind);
         self.cache_telemetry.configure(&config.providers);
         self.health_events.set_provider_orgs(&config.providers);
+        // installed before the snapshot that names them is published, so a
+        // new local provider never meets a registry that lacks its model. no
+        // file is read here: the watcher preloads on the blocking pool first
+        self.local_classifiers
+            .apply(&config.semantic_guards, &config.guardrail_webhook);
         self.snapshot.store(Arc::new(Snapshot::build_with_telemetry(
             config,
             &self.loads,
