@@ -404,7 +404,47 @@ async fn an_mcp_grant_revocation_records_the_superadmin_session_that_made_it() {
 /// A stub OAuth 2.0 authorization server for the MCP consent flow (#707).
 /// It records the last form it was posted so PKCE, scope and grant type can be
 /// asserted, and its next answer is set by the test.
-mod stub_authz {
+/// A server registered through the API is asked for its tools in the
+/// background (#1283), which writes the row and so bumps `config_version`. A
+/// test that counts bumps waits for that to finish first, or it counts it.
+pub(crate) async fn wait_for_discovery(pool: &sqlx::PgPool, id: uuid::Uuid) {
+    for _ in 0..200 {
+        let attempted: bool = sqlx::query_scalar(
+            "select tools_discovery_attempted_at is not null from mcp_servers where id = $1",
+        )
+        .bind(id)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        if attempted {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    panic!("background discovery never finished");
+}
+
+/// The config version once background discovery (#1283) has stopped writing:
+/// consent starts one, and it bumps the version whenever it lands. A test that
+/// counts the bumps one of its own edits causes must not start counting while
+/// that is still in flight.
+async fn settled_config_version(pool: &sqlx::PgPool) -> i64 {
+    let mut seen = config_version(pool).await;
+    let mut quiet = 0;
+    while quiet < 6 {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let now = config_version(pool).await;
+        if now == seen {
+            quiet += 1;
+        } else {
+            seen = now;
+            quiet = 0;
+        }
+    }
+    seen
+}
+
+pub(crate) mod stub_authz {
     use super::*;
     use axum::Router;
     use std::sync::{Arc, Mutex};
@@ -1871,6 +1911,7 @@ async fn moving_an_mcp_server_url_invalidates_its_discovery_cache() {
         .unwrap();
     let server_id = server["id"].as_str().unwrap().to_string();
     let server_uuid = uuid::Uuid::parse_str(&server_id).unwrap();
+    wait_for_discovery(&pool, server_uuid).await;
 
     let registered = client
         .put(format!(
@@ -1937,7 +1978,7 @@ async fn moving_an_mcp_server_url_invalidates_its_discovery_cache() {
     // an edit that leaves the url where it is keeps the cache: re-discovering
     // on every rename would put an upstream probe on a path that has no reason
     // to touch one
-    let before = config_version(&pool).await;
+    let before = settled_config_version(&pool).await;
     let renamed = client
         .patch(format!("{base}/api/v1/mcp-servers/{server_id}"))
         .bearer_auth(admin_token())
@@ -1959,7 +2000,7 @@ async fn moving_an_mcp_server_url_invalidates_its_discovery_cache() {
 
     // moving the url drops every discovered column, so the next refresh
     // re-discovers instead of posting to the previous server's token endpoint
-    let before = config_version(&pool).await;
+    let before = settled_config_version(&pool).await;
     let moved = client
         .patch(format!("{base}/api/v1/mcp-servers/{server_id}"))
         .bearer_auth(admin_token())
@@ -2079,6 +2120,7 @@ async fn repinning_the_oauth_issuer_invalidates_its_discovery_cache() {
         .unwrap();
     let server_id = server["id"].as_str().unwrap().to_string();
     let server_uuid = uuid::Uuid::parse_str(&server_id).unwrap();
+    wait_for_discovery(&pool, server_uuid).await;
 
     let registered = client
         .put(format!(
@@ -2147,7 +2189,7 @@ async fn repinning_the_oauth_issuer_invalidates_its_discovery_cache() {
     // an edit that touches neither the issuer nor the discovery mode must not
     // invalidate the cache — re-registering the same client with a rotated
     // secret is exactly this kind of edit
-    let before = config_version(&pool).await;
+    let before = settled_config_version(&pool).await;
     let resecreted = client
         .put(format!(
             "{base}/api/v1/mcp-servers/{server_id}/oauth-client"
@@ -2167,15 +2209,16 @@ async fn repinning_the_oauth_issuer_invalidates_its_discovery_cache() {
         cached_first,
         "an edit that left the issuer and discovery mode alone must not invalidate the cache"
     );
-    assert_eq!(
-        config_version(&pool).await - before,
-        1,
-        "one edit must bump config_version exactly once"
+    // an OAuth client is not something the gateway reads, so since 0115 this
+    // edit bumps nothing; what must never happen is more than once
+    assert!(
+        config_version(&pool).await - before <= 1,
+        "one edit must not bump config_version more than once"
     );
 
     // the operator rotates to a different authorization server: a new issuer
     // and fallback endpoints, discovery left on "auto"
-    let before = config_version(&pool).await;
+    let before = settled_config_version(&pool).await;
     let repinned = client
         .put(format!(
             "{base}/api/v1/mcp-servers/{server_id}/oauth-client"
@@ -2199,9 +2242,8 @@ async fn repinning_the_oauth_issuer_invalidates_its_discovery_cache() {
     );
     // the clearing rides on the update that wrote the issuer; a second
     // statement would bump config_version twice for one logical edit
-    assert_eq!(
-        config_version(&pool).await - before,
-        1,
+    assert!(
+        config_version(&pool).await - before <= 1,
         "clearing the cache must not cost a second config_version bump"
     );
 

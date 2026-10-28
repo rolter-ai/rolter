@@ -71,6 +71,21 @@ pub struct McpEventSink {
 }
 
 impl McpEventSink {
+    /// A sink that hands its events to a channel instead of ClickHouse, for the
+    /// proxy's tests to read back what was recorded.
+    #[cfg(test)]
+    pub(crate) fn capturing(metrics: Arc<Metrics>) -> (Self, mpsc::Receiver<McpEvent>) {
+        let (tx, rx) = mpsc::channel(16);
+        (
+            Self {
+                tx: Some(tx),
+                metrics,
+                tasks: None,
+            },
+            rx,
+        )
+    }
+
     /// A sink that discards everything (no ClickHouse configured / tests).
     pub fn disabled(metrics: Arc<Metrics>) -> Self {
         Self {
@@ -294,13 +309,31 @@ impl PendingCall {
         if !sink.enabled() || !body.windows(NEEDLE.len()).any(|w| w == NEEDLE) {
             return None;
         }
-        let Value::Object(mut request) = serde_json::from_slice::<Value>(body).ok()? else {
+        let Value::Object(request) = serde_json::from_slice::<Value>(body).ok()? else {
             return None;
         };
         if request.get("method")?.as_str()? != "tools/call" {
             return None;
         }
-        let rpc_id = request.remove("id").filter(|id| !id.is_null())?;
+        if request.get("id").is_none_or(Value::is_null) {
+            return None;
+        }
+        Self::from_request(sink, request, context)
+    }
+
+    /// A pending call for one already-parsed `tools/call` request, whether or
+    /// not it has an id. The policy check uses it to record a call it refused
+    /// (#1403), including one inside a batch or sent as a notification, which
+    /// [`Self::parse`] leaves alone because there is no reply to wait for.
+    pub(crate) fn from_request(
+        sink: &McpEventSink,
+        mut request: serde_json::Map<String, Value>,
+        context: &CallContext<'_>,
+    ) -> Option<Self> {
+        if !sink.enabled() {
+            return None;
+        }
+        let rpc_id = request.remove("id").unwrap_or(Value::Null);
         let Value::Object(mut params) = request.remove("params")? else {
             return None;
         };

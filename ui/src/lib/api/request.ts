@@ -62,6 +62,16 @@ export function isOpenModeNoSession(error: unknown): boolean {
   return error instanceof ApiError && error.code === "open_mode_no_session";
 }
 
+/**
+ * The control plane has no database, so it has no sessions, and the admin token
+ * is the only credential its analytics and health routes accept (#1909). A
+ * plain 401 means "sign in again"; here signing in again with an e-mail cannot
+ * work, and only entering the token can.
+ */
+export function isAdminTokenRequired(error: unknown): boolean {
+  return error instanceof ApiError && error.code === "admin_token_required";
+}
+
 // the shell's "this token is dead" handler, registered by AuthProvider (#1196).
 // a module-level callback rather than an import so the api client keeps knowing nothing
 // about react, and so a request that 401s in a screen nobody is watching still
@@ -99,6 +109,10 @@ function noteUnauthorized(url: string, authed: boolean, err: ApiError) {
   // open mode has no accounts at all, so there is no session to have expired
   // and no sign-in that would help (#942)
   if (isOpenModeNoSession(err)) return;
+  // a missing or wrong admin token is explained where it is hit, with the
+  // screen's own LoadError, rather than by signing out and showing the same
+  // prompt again (#1909)
+  if (isAdminTokenRequired(err)) return;
   if (SESSION_EXEMPT_PATHS.some((path) => url.includes(path))) return;
   sessionExpiredHandler?.();
 }

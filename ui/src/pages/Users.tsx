@@ -669,6 +669,8 @@ function InviteUserDialog({
   // knows their password
   const [method, setMethod] = React.useState<"link" | "password">("link");
   const [link, setLink] = React.useState<string | null>(null);
+  // how emailing that link went, kept beside it so the dialog can say so (#1828)
+  const [mail, setMail] = React.useState<Invitation | null>(null);
 
   React.useEffect(() => {
     if (open) {
@@ -678,6 +680,7 @@ function InviteUserDialog({
       setTarget(ORG_TARGET);
       setMethod("link");
       setLink(null);
+      setMail(null);
     }
   }, [open]);
 
@@ -719,7 +722,7 @@ function InviteUserDialog({
           role: role as Role,
           ...scope,
         });
-        return created.accept_url;
+        return created;
       }
       await inviteUser(orgId, {
         email: email.trim(),
@@ -728,13 +731,15 @@ function InviteUserDialog({
       });
       return null;
     },
-    onSuccess: (accept_url) => {
+    onSuccess: (created) => {
       onDone();
       toast.push({ tone: "success", title: t("toast.created", { what: email.trim() }) });
       // the link is shown once and never recoverable, so the dialog stays open
       // until it has been copied somewhere
-      if (accept_url) setLink(accept_url);
-      else onOpenChange(false);
+      if (created) {
+        setLink(created.accept_url);
+        setMail(created.invitation);
+      } else onOpenChange(false);
     },
     onError: (error) => {
       toast.push({
@@ -780,6 +785,17 @@ function InviteUserDialog({
           <p className="text-sm text-muted-foreground">
             {t("pages.users.linkGrants", { role: roleLabel(t, role), scope: pickedScope })}
           </p>
+          {/* the link is the fallback whatever happened to the email, and the
+              dialog says which of the three it was (#1828) */}
+          {mail && (
+            <p className="text-sm text-muted-foreground">
+              {mail.mail_status === "sent"
+                ? t("pages.users.linkMailSent", { email: email.trim() })
+                : mail.mail_status === "failed"
+                  ? t("pages.users.linkMailFailed", { reason: mail.mail_error ?? "" })
+                  : t("pages.users.linkMailNotConfigured")}
+            </p>
+          )}
         </div>
       </SecretRevealDialog>
     );
@@ -2004,8 +2020,16 @@ function PendingInvitations({
             const expired = isExpired(invitation);
             return (
               <ListRow key={invitation.id} grid={PENDING_GRID}>
-                <ListCell className="min-w-0 truncate font-mono text-sm">
-                  {invitation.email}
+                <ListCell className="flex min-w-0 items-center gap-2">
+                  <span className="min-w-0 truncate font-mono text-sm">{invitation.email}</span>
+                  {invitation.mail_status === "sent" && (
+                    <Badge tone="success">{t("pages.users.invitations.mailSent")}</Badge>
+                  )}
+                  {invitation.mail_status === "failed" && (
+                    <span title={invitation.mail_error ?? undefined}>
+                      <Badge tone="warning">{t("pages.users.invitations.mailFailed")}</Badge>
+                    </span>
+                  )}
                 </ListCell>
                 <ListCell>
                   <Badge tone="neutral">{roleLabel(t, invitation.role)}</Badge>

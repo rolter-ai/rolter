@@ -77,7 +77,9 @@ struct CreateInvitation {
     scope_id: Option<Uuid>,
 }
 
-/// the invitation plus the token, which is shown exactly once
+/// the invitation plus the token, which is shown exactly once. The invitation
+/// row says whether the link was also emailed (`mail_status`, #1828); the link
+/// is here whatever that says
 #[derive(Debug, Serialize)]
 struct CreatedInvitation {
     invitation: Invitation,
@@ -153,11 +155,88 @@ async fn create_invitation(
     )
     .await;
 
+    let accept_url = accept_url(crate::sso::public_base_url(&state), &token);
+    let invitation = deliver(&state, &principal, invitation, &accept_url).await;
+
     Ok(Json(CreatedInvitation {
-        accept_url: accept_url(crate::sso::public_base_url(&state), &token),
+        accept_url,
         invitation,
         token,
     }))
+}
+
+/// Email the invitee their link, when the deployment has a mail transport
+/// (#1828), and record the outcome on the row.
+///
+/// A failure is a status on the invitation and an audit entry, never an error:
+/// the invitation exists and its link is returned to the admin either way, so a
+/// relay that is down costs the convenience and not the ability to invite.
+/// Without a transport the row stays `not_configured` and nothing is audited,
+/// which is exactly the behaviour before mail existed.
+async fn deliver(
+    state: &ControlState,
+    principal: &Principal,
+    mut invitation: Invitation,
+    accept_url: &str,
+) -> Invitation {
+    let Some(mailer) = state.mailer.as_ref() else {
+        return invitation;
+    };
+    let org_name = match OrgRepo(pool(state)).get(invitation.org_id).await {
+        Ok(org) => org.name,
+        // the name only decorates the message; its absence must not stop it
+        Err(_) => "your organization".to_string(),
+    };
+    let (subject, body) = message(&org_name, &invitation, accept_url);
+    let outcome = mailer.send(&invitation.email, &subject, &body).await;
+    let (status, error) = match &outcome {
+        Ok(()) => ("sent", None),
+        Err(failure) => ("failed", Some(failure.reason.as_str())),
+    };
+    if let Err(err) = InvitationRepo(pool(state))
+        .record_mail(invitation.id, status, error)
+        .await
+    {
+        tracing::warn!(error = %err, invitation_id = %invitation.id, "could not record the invitation mail outcome");
+    }
+    invitation.mail_status = status.to_string();
+    invitation.mail_attempted_at = Some(Utc::now());
+    invitation.mail_error = error.map(str::to_string);
+    // neither the address nor the link: the invitation id names the row, and
+    // the reason is the one an admin sees on it
+    log_audit(
+        state,
+        principal,
+        Some(invitation.org_id),
+        if outcome.is_ok() {
+            "invitation.mail_sent"
+        } else {
+            "invitation.mail_failed"
+        },
+        "invitation",
+        invitation.id,
+        serde_json::json!({ "reason": error }),
+    )
+    .await;
+    invitation
+}
+
+/// The subject and plain-text body of an invitation email. The link is the
+/// message; everything around it says who it is from and when it stops working.
+fn message(org_name: &str, invitation: &Invitation, accept_url: &str) -> (String, String) {
+    // an organization name is an admin's text going into a header: control
+    // characters have no business there, and a line break would end the header
+    let org: String = org_name.chars().filter(|c| !c.is_control()).collect();
+    let subject = format!("You have been invited to {org} on Rolter");
+    let body = format!(
+        "You have been invited to join {org} on Rolter as {role}.\n\n\
+         Accept the invitation and choose your password here:\n{accept_url}\n\n\
+         The link works once and expires on {expires}. If you were not expecting \
+         this, you can ignore this message.\n",
+        role = invitation.role,
+        expires = invitation.expires_at.format("%Y-%m-%d %H:%M UTC"),
+    );
+    (subject, body)
 }
 
 async fn list_invitations(

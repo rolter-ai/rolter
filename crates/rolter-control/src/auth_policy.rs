@@ -58,6 +58,11 @@ struct AuthMethods {
     /// sso to offer", which is the default deployment. a provider of an org
     /// that turned sso off is left out rather than shown and refused (#2339)
     sso: Vec<SsoOption>,
+    /// whether a directory (LDAP) is enabled. The login screen needs no new
+    /// shape for it, since a directory user signs in through the same password
+    /// form; this only says the form is worth showing when no local password
+    /// login is on offer (#1826)
+    ldap: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -73,10 +78,14 @@ async fn methods(State(state): State<ControlState>) -> ApiResult<Json<AuthMethod
     let password = OrgAuthPolicyRepo(pool(&state))
         .any_password_login_allowed()
         .await?;
+    // a build without the `ldap` feature cannot reach a directory, so it does
+    // not offer one
+    let ldap = crate::ldap_signin::any_enabled(&state).await;
     Ok(Json(AuthMethods {
         // an empty deployment (no orgs yet) must still be able to log the
         // seeded superadmin in
-        password: password || providers.is_empty(),
+        password: password || providers.is_empty() || ldap,
+        ldap,
         sso: providers
             .into_iter()
             .map(|p| SsoOption {

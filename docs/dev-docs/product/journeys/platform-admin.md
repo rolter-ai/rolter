@@ -104,9 +104,11 @@ trust?** Branches A1-a to A1-c are alternatives; A1-d and A1-e combine with any.
 
 ### A1-c — an LDAP / Active Directory directory
 
-| #     | step                                         | where | expect | status      |
-| ----- | -------------------------------------------- | ----- | ------ | ----------- |
-| A1c.1 | point rolter at the directory and bind users | —     | —      | gap — #1826 |
+| #     | step                                              | where                                               | expect                                                                   | status                                           |
+| ----- | ------------------------------------------------- | --------------------------------------------------- | ------------------------------------------------------------------------ | ------------------------------------------------ |
+| A1c.1 | point rolter at the directory                     | `POST /api/v1/orgs/{org_id}/ldap-directories`       | the directory, with `has_bind_password` and no password                  | works — API only, the Governance screen is a gap |
+| A1c.2 | map directory groups to roles                     | `POST /api/v1/ldap-directories/{id}/group-mappings` | a group worth a role at the org, a team or a project                     | works                                            |
+| A1c.3 | sign in as a directory user from the login screen | the login screen                                    | the dashboard, scoped to what the mapping granted; the form is unchanged | works                                            |
 
 ### A1-d — provisioning from the IdP (SCIM), with any of the above
 
