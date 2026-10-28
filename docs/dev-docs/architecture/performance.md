@@ -226,6 +226,12 @@ just integration-vllm
 just integration-sglang
 ```
 
+The SGLang profile in `docker/docker-compose.engines.yml` is a **Xeon CPU**
+build, not a portable x86 smoke. It remains intentionally pinned to v0.5.21:
+the v0.5.22 kernels target AVX-512/BF16 and AMX, which the Ryzen 5900X on rtx
+does not expose. No SGLang runtime success on that host is claimed, for either
+version. #3414 tracks validation and the next bump on compatible hardware.
+
 Each command boots routes for every balancing strategy (round-robin, random,
 power-of-two, consistent-hash, cache-aware, weighted, pipeline, cheapest, and
 fastest). It verifies `/v1/models`, non-streaming chat, and SSE both directly

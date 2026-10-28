@@ -2,29 +2,6 @@
 
 ## Compose (full stack)
 
-The optional SigNoz overlay waits for its schema migrator to complete before
-starting either the collector or the query service. The migrator first runs
-`migrate ready`; the collector also checks `migrate sync check` before accepting
-OTLP. A fresh volume therefore does not rely on a collector crash and restart
-to wait for missing databases or tables. The same ordering applies to `just dogfood`.
-
-The overlay deliberately does not enable Foundry's `signozspanmapper` or
-`signozllmpricing` processors: Rolter emits canonical `gen_ai.*` attributes,
-and request-log costs use the deployment's configured prices rather than a
-second catalogue of model-pattern rules in the collector. It also omits the
-`histogramQuantile` executable ClickHouse function; the bundled dogfood boards
-compute quantiles in SQL and need no startup binary download. SigNoz features
-that require that function or collector-generated `signoz.gen_ai.usage.*.cost`
-attributes are not provided by this overlay. Those are explicit differences
-from Foundry, not claims of feature parity (#2929).
-
-The optional SGLang profile in `docker-compose.engines.yml` is a **Xeon CPU**
-build, not a portable x86 smoke. It remains intentionally pinned to v0.5.21:
-the v0.5.22 kernels target AVX-512/BF16 and AMX, which the Ryzen 5900X on rtx
-does not expose. No SGLang runtime success on that host is claimed, for either
-version. #3414 tracks validation and the next bump on compatible hardware.
-The Ollama smoke is independently verified against 0.40.12.
-
 `docker/docker-compose.yml` brings up Postgres, Redis, ClickHouse, and the rolter `gateway` + `control` services. It is the **local stack**, open on purpose: no admin token (`ROLTER_ALLOW_OPEN_MODE=1` acknowledges the `0.0.0.0` bind), the example `rolter`/`rolter` Postgres login, no Redis password, a passwordless ClickHouse user, every port published on every interface.
 
 ```bash
@@ -161,6 +138,24 @@ those files itself would bypass sqlx's `_sqlx_migrations` bookkeeping and make
 the next startup replay every migration against a populated database (#499).
 ClickHouse has no such runner, so `clickhouse/` _is_ mounted into its initdb
 directory and is that schema's only provisioning path.
+
+### SigNoz overlay
+
+The optional SigNoz overlay waits for its schema migrator to complete before
+starting either the collector or the query service. The migrator first runs
+`migrate ready`; the collector also checks `migrate sync check` before accepting
+OTLP. A fresh volume therefore does not rely on a collector crash and restart
+to wait for missing databases or tables. The same ordering applies to `just dogfood`.
+
+The overlay deliberately does not enable Foundry's `signozspanmapper` or
+`signozllmpricing` processors: Rolter emits canonical `gen_ai.*` attributes,
+and request-log costs use the deployment's configured prices rather than a
+second catalogue of model-pattern rules in the collector. It also omits the
+`histogramQuantile` executable ClickHouse function; the bundled dogfood boards
+compute quantiles in SQL and need no startup binary download. SigNoz features
+that require that function or collector-generated `signoz.gen_ai.usage.*.cost`
+attributes are not provided by this overlay. Those are explicit differences
+from Foundry, not claims of feature parity (#2929).
 
 ## Image
 

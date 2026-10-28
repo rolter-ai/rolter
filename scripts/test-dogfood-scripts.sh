@@ -20,17 +20,26 @@
 # that cannot be run against the stub goes in `not_covered_reason` instead, with
 # the reason: the run fails for an integration/dogfood/*.sh that is neither (#2693).
 #
-# needs python3, curl and the docker compose CLI (no daemon). bash 3.2 compatible.
+# needs python3 and curl, plus the docker compose CLI (no daemon) for the
+# SigNoz startup check. bash 3.2 compatible, so it runs on a stock mac too.
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/.." && pwd)
 dogfood="$root/integration/dogfood"
 
 # the same overlay `just dogfood` starts must retain its migration ordering
-# rendering compose needs the cli only, not a running docker daemon
-docker compose -f "$root/docker/docker-compose.yml" \
-  -f "$root/docker/docker-compose.signoz.yml" config --format json \
-  | python3 "$root/scripts/test-signoz-startup.py"
+# rendering compose needs the cli only, not a running docker daemon. CI always
+# has the cli; a machine without it skips this one check rather than the suite
+if docker compose version >/dev/null 2>&1; then
+  docker compose -f "$root/docker/docker-compose.yml" \
+    -f "$root/docker/docker-compose.signoz.yml" config --format json \
+    | python3 "$root/scripts/test-signoz-startup.py"
+elif [ -n "${CI:-}" ]; then
+  echo "docker compose cli not found; the signoz startup check needs it in CI" >&2
+  exit 1
+else
+  echo "skip: SigNoz startup contract (no docker compose cli)"
+fi
 
 work=$(mktemp -d)
 server_pid=""
