@@ -12,7 +12,10 @@
 
 use std::path::{Path, PathBuf};
 
-/// Every `.rs` file under the crate's `src/`.
+/// Every `.rs` file under the `src/` of the gateway and of `rolter-balancer`.
+/// The balancer runs inside the gateway's request path (every pick of a route
+/// reads it, every completed request writes it), so it is held to the same rule
+/// (#3388).
 fn sources() -> Vec<PathBuf> {
     fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
         for entry in std::fs::read_dir(dir).expect("src/ is readable") {
@@ -25,9 +28,27 @@ fn sources() -> Vec<PathBuf> {
         }
     }
     let mut out = Vec::new();
-    walk(&Path::new(env!("CARGO_MANIFEST_DIR")).join("src"), &mut out);
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    walk(&manifest.join("src"), &mut out);
+    walk(&manifest.join("../rolter-balancer/src"), &mut out);
     out.sort();
     out
+}
+
+#[test]
+fn the_guard_reads_the_balancer_as_well() {
+    let files = sources();
+    for expected in [
+        "rolter-balancer/src/predictor.rs",
+        "rolter-gateway/src/lib.rs",
+    ] {
+        assert!(
+            files
+                .iter()
+                .any(|path| path.to_string_lossy().contains(expected)),
+            "{expected} is not scanned"
+        );
+    }
 }
 
 /// `std::sync::Mutex` is the poisonable one. It must not come back, in either
@@ -45,6 +66,8 @@ fn the_gateway_never_uses_a_poisonable_mutex() {
             if line.contains("std::sync::Mutex")
                 || line.contains("use std::sync::{Arc, Mutex}")
                 || line.contains("std::sync::MutexGuard")
+                // a grouped import, e.g. `use std::sync::{atomic::AtomicU64, Mutex}`
+                || (line.starts_with("use std::sync::{") && line.contains("Mutex"))
             {
                 offenders.push(format!("{}:{}: {line}", path.display(), n + 1));
             }
