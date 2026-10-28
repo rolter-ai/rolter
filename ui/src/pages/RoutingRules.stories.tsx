@@ -1537,11 +1537,14 @@ export const RefusesASplitTheGatewayCannotRoute: Story = {
     const second = await dialog.findByLabelText("Variant 2 weight");
     await userEvent.clear(second);
     await userEvent.type(second, "0");
-    // a 0 is sampled as a 1 (#3341): the preview shows that share and says so
-    await expect(await dialog.findByText(/is sampled as 1 by the gateway/)).toBeVisible();
+    // a 0 takes no first attempts while another weight is positive (#3341): the
+    // preview shows that and says so
     await expect(
-      within(dialog.getByRole("list", { name: "Traffic split" })).getByText("10%"),
-    ).toBeInTheDocument();
+      await dialog.findByText(/gets no first attempts while another variant/),
+    ).toBeVisible();
+    const split = within(dialog.getByRole("list", { name: "Traffic split" }));
+    await expect(split.getByText("100%")).toBeInTheDocument();
+    await expect(split.getByText("0%")).toBeInTheDocument();
     const name = dialog.getByLabelText("Variant 2 name");
     await userEvent.clear(name);
     await userEvent.type(name, "stable");
