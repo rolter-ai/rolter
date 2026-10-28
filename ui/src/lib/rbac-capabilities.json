@@ -1487,7 +1487,10 @@
         {
           "action": "read",
           "minimum_role": null,
-          "superadmin_only": true,
+          "superadmin_only": false,
+          "deployment_roles": [
+            "security_auditor"
+          ],
           "authenticated_only": false
         },
         {
