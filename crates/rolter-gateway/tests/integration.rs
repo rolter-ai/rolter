@@ -2441,6 +2441,301 @@ async fn response_carries_routing_decision_headers() {
     assert!(!resp.headers().contains_key("x-rolter-variant"));
 }
 
+/// The `x-rolter-param-adjustments` value of `response`, `None` when absent.
+fn param_adjustments(response: &reqwest::Response) -> Option<String> {
+    response
+        .headers()
+        .get("x-rolter-param-adjustments")
+        .map(|value| value.to_str().unwrap().to_string())
+}
+
+/// An Anthropic Messages upstream that fails the test if a dropped parameter
+/// reaches it, answering JSON or SSE as asked.
+async fn anthropic_strict(Json(body): Json<Value>) -> axum::response::Response {
+    for dropped in ["n", "presence_penalty", "logprobs"] {
+        assert!(body.get(dropped).is_none(), "{dropped} reached anthropic");
+    }
+    if body["stream"] == json!(true) {
+        let sse = concat!(
+            "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"model\":\"claude\",\"usage\":{\"input_tokens\":2}}}\n\n",
+            "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"pong\"}}\n\n",
+            "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":1}}\n\n",
+            "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+        );
+        return (
+            [(axum::http::header::CONTENT_TYPE, "text/event-stream")],
+            sse,
+        )
+            .into_response();
+    }
+    Json(json!({
+        "id":"msg_1","type":"message","role":"assistant","model":"claude",
+        "content":[{"type":"text","text":"pong"}],
+        "stop_reason":"end_turn","usage":{"input_tokens":2,"output_tokens":1}
+    }))
+    .into_response()
+}
+
+/// A Gemini `generateContent` / `streamGenerateContent` upstream that fails
+/// the test if `top_k` reaches it in any form.
+async fn gemini_strict(
+    OriginalUri(uri): OriginalUri,
+    Json(body): Json<Value>,
+) -> axum::response::Response {
+    assert!(
+        !body.to_string().contains("top_k"),
+        "top_k reached gemini: {body}"
+    );
+    let answer = json!({
+        "candidates":[{"content":{"role":"model","parts":[{"text":"pong"}]},"finishReason":"STOP"}],
+        "usageMetadata":{"promptTokenCount":2,"candidatesTokenCount":1,"totalTokenCount":3}
+    });
+    if uri.path().contains("streamGenerateContent") {
+        return (
+            [(axum::http::header::CONTENT_TYPE, "text/event-stream")],
+            format!("data: {answer}\n\n"),
+        )
+            .into_response();
+    }
+    Json(answer).into_response()
+}
+
+#[tokio::test]
+async fn param_adjustments_name_what_an_anthropic_upstream_drops() {
+    let upstream = serve(Router::new().route("/v1/messages", post(anthropic_strict))).await;
+    let mut config = config_for("to-anthropic", vec![("anthropic", upstream)]);
+    config.providers[0].kind = ProviderKind::Anthropic;
+    let gw = serve_gateway(&config).await;
+    let client = reqwest::Client::new();
+
+    for stream in [false, true] {
+        let response = client
+            .post(format!("http://{gw}/v1/chat/completions"))
+            .json(&json!({
+                "model":"to-anthropic","stream":stream,"max_tokens":16,
+                "messages":[{"role":"user","content":"ping"}],
+                "n":1,"presence_penalty":0.4,"temperature":0.2
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200, "stream={stream}");
+        assert_eq!(
+            param_adjustments(&response).as_deref(),
+            Some("n=dropped, presence_penalty=dropped"),
+            "stream={stream}"
+        );
+        // names only: nothing the caller sent as a value is echoed
+        let text = response.text().await.unwrap();
+        assert!(text.contains("pong"), "stream={stream}: {text}");
+    }
+}
+
+#[tokio::test]
+async fn param_adjustments_name_what_a_gemini_upstream_drops_for_an_anthropic_client() {
+    let upstream = serve(Router::new().fallback(post(gemini_strict))).await;
+    let mut config = config_for("to-gemini", vec![("gemini", upstream)]);
+    config.providers[0].kind = ProviderKind::GeminiNative;
+    config.providers[0].api_key = Some("test-key".to_string());
+    let gw = serve_gateway(&config).await;
+    let client = reqwest::Client::new();
+
+    for stream in [false, true] {
+        let response = client
+            .post(format!("http://{gw}/v1/messages"))
+            .json(&json!({
+                "model":"to-gemini","stream":stream,"max_tokens":16,"top_k":40,
+                "messages":[{"role":"user","content":"ping"}]
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200, "stream={stream}");
+        assert_eq!(
+            param_adjustments(&response).as_deref(),
+            Some("top_k=dropped"),
+            "stream={stream}"
+        );
+        assert!(response.text().await.unwrap().contains("pong"));
+    }
+}
+
+#[tokio::test]
+async fn param_adjustments_name_a_forced_function_an_interactions_upstream_cannot_force() {
+    async fn interactions(Json(body): Json<Value>) -> Json<Value> {
+        assert_eq!(body["generation_config"]["tool_choice"], "any");
+        assert!(body.get("seed").is_none());
+        Json(json!({
+            "id":"int_1","status":"completed",
+            "steps":[{"type":"text","text":"pong"}]
+        }))
+    }
+    let upstream = serve(Router::new().route("/interactions", post(interactions))).await;
+    let mut config = config_for("to-interactions", vec![("gemini", upstream)]);
+    config.providers[0].kind = ProviderKind::GeminiInteractions;
+    config.providers[0].api_key = Some("test-key".to_string());
+    let gw = serve_gateway(&config).await;
+
+    let response = reqwest::Client::new()
+        .post(format!("http://{gw}/v1/chat/completions"))
+        .json(&json!({
+            "model":"to-interactions","seed":7,
+            "messages":[{"role":"user","content":"ping"}],
+            "tools":[{"type":"function","function":{"name":"lookup"}}],
+            "tool_choice":{"type":"function","function":{"name":"lookup"}}
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    assert_eq!(
+        param_adjustments(&response).as_deref(),
+        Some("tool_choice=translated, seed=dropped")
+    );
+}
+
+#[tokio::test]
+async fn param_adjustments_name_what_an_openai_upstream_cannot_carry_for_an_anthropic_client() {
+    let upstream = serve(Router::new().route("/v1/chat/completions", post(mock_openai))).await;
+    let gw = serve_gateway(&config_for("to-openai", vec![("openai", upstream)])).await;
+    let client = reqwest::Client::new();
+
+    for stream in [false, true] {
+        let response = client
+            .post(format!("http://{gw}/v1/messages"))
+            .json(&json!({
+                "model":"to-openai","max_tokens":16,"stream":stream,
+                "messages":[{"role":"user","content":"ping"}],
+                "tools":[{"name":"lookup","input_schema":{"type":"object"}}],
+                "tool_choice":{"type":"auto","disable_parallel_tool_use":true}
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200, "stream={stream}");
+        assert_eq!(
+            param_adjustments(&response).as_deref(),
+            Some("tool_choice=translated"),
+            "stream={stream}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn param_adjustments_are_absent_when_every_parameter_went_through() {
+    let anthropic = serve(Router::new().route("/v1/messages", post(anthropic_strict))).await;
+    let openai = serve(Router::new().route("/v1/chat/completions", post(mock_openai))).await;
+    let mut config = config_for("to-anthropic", vec![("anthropic", anthropic)]);
+    config.providers[0].kind = ProviderKind::Anthropic;
+    let passthrough = config_for("to-openai", vec![("openai", openai)]);
+    config.providers.extend(passthrough.providers);
+    config.routes.extend(passthrough.routes);
+    let gw = serve_gateway(&config).await;
+    let client = reqwest::Client::new();
+
+    // translated, but every parameter has an anthropic equivalent (a rename is
+    // not an adjustment)
+    for stream in [false, true] {
+        let response = client
+            .post(format!("http://{gw}/v1/chat/completions"))
+            .json(&json!({
+                "model":"to-anthropic","stream":stream,"max_completion_tokens":16,
+                "stop":"x","temperature":0.2,
+                "messages":[{"role":"user","content":"ping"}]
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200, "stream={stream}");
+        assert_eq!(param_adjustments(&response), None, "stream={stream}");
+    }
+    // same dialect on both ends: nothing is translated, so nothing is dropped,
+    // whatever the body holds
+    for (path, body) in [
+        (
+            "/v1/chat/completions",
+            json!({"model":"to-openai","n":2,"top_k":5,"messages":[{"role":"user","content":"ping"}]}),
+        ),
+        (
+            "/v1/messages",
+            json!({"model":"to-anthropic","max_tokens":16,"top_k":5,"messages":[{"role":"user","content":"ping"}]}),
+        ),
+    ] {
+        let response = client
+            .post(format!("http://{gw}{path}"))
+            .json(&body)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200, "{path}");
+        assert_eq!(param_adjustments(&response), None, "{path}");
+    }
+}
+
+#[tokio::test]
+async fn param_adjustments_are_recorded_on_the_request_log() {
+    let upstream = serve(Router::new().route("/v1/messages", post(anthropic_strict))).await;
+    let (clickhouse, seen) = serve_clickhouse().await;
+    let mut config = config_for("to-anthropic", vec![("anthropic", upstream)]);
+    config.providers[0].kind = ProviderKind::Anthropic;
+    config.logging.clickhouse_url = Some(format!("http://{clickhouse}"));
+    config.logging.flush_ms = 10;
+    let gw = serve_gateway(&config).await;
+    let client = reqwest::Client::new();
+
+    for (request_id, extra) in [("adjusted", json!(0.4)), ("untouched", Value::Null)] {
+        let mut body = json!({
+            "model":"to-anthropic","max_tokens":16,
+            "messages":[{"role":"user","content":"ping"}]
+        });
+        if !extra.is_null() {
+            body["presence_penalty"] = extra;
+        }
+        let response = client
+            .post(format!("http://{gw}/v1/chat/completions"))
+            .header("x-request-id", request_id)
+            .json(&body)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        response.text().await.unwrap();
+    }
+
+    let rows = || -> Vec<Value> {
+        seen.lock()
+            .iter()
+            .filter(|(query, _)| query.contains("INTO request_logs"))
+            .flat_map(|(_, body)| {
+                body.lines()
+                    .map(|line| serde_json::from_str::<Value>(line).unwrap())
+                    .collect::<Vec<_>>()
+            })
+            .collect()
+    };
+    let mut found = Vec::new();
+    for _ in 0..200 {
+        found = rows();
+        if found.len() >= 2 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    let row = |id: &str| {
+        found
+            .iter()
+            .find(|row| row["request_id"] == id)
+            .unwrap_or_else(|| panic!("no row for {id}: {found:?}"))
+            .clone()
+    };
+    assert_eq!(
+        row("adjusted")["param_adjustments"],
+        json!(["dropped:presence_penalty"])
+    );
+    // left out entirely, so a clickhouse without the column accepts the row
+    assert!(row("untouched").get("param_adjustments").is_none());
+}
+
 #[tokio::test]
 async fn complexity_policy_selects_routes_for_openai_and_anthropic_requests() {
     async fn openai_response() -> Json<Value> {

@@ -167,6 +167,13 @@ fn is_zero(n: &u32) -> bool {
     *n == 0
 }
 
+fn serialize_param_adjustments<S: serde::Serializer>(
+    adjustments: &rolter_proxy::ParamAdjustments,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    serializer.collect_seq(adjustments.log_entries())
+}
+
 /// One row of the ClickHouse `request_logs` table. Field names match the column
 /// names so the struct serializes directly as a `JSONEachRow` line.
 #[derive(Debug, Clone, Serialize)]
@@ -296,6 +303,17 @@ pub struct RequestLog {
     /// every request no plugin saw
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub plugin_events: Vec<String>,
+    /// Every request parameter dialect translation did not forward as sent,
+    /// one `<disposition>:<param>` entry each (`dropped`, `clamped`,
+    /// `translated`; #1586). Names only, never values. Skipped when empty, for
+    /// the reason `guardrail_events` is, so a ClickHouse without
+    /// `clickhouse/022_param_adjustments.sql` keeps accepting the rows of every
+    /// request whose parameters all went through
+    #[serde(
+        skip_serializing_if = "rolter_proxy::ParamAdjustments::is_empty",
+        serialize_with = "serialize_param_adjustments"
+    )]
+    pub param_adjustments: rolter_proxy::ParamAdjustments,
     /// what the request is billed by besides tokens (#2937), known once the
     /// request is parsed and finished off against the response when the stream
     /// ends. Not a column: the cost it produces is
@@ -372,6 +390,7 @@ impl Default for RequestLog {
             lifecycle_operation: String::new(),
             guardrail_events: Vec::new(),
             plugin_events: Vec::new(),
+            param_adjustments: rolter_proxy::ParamAdjustments::default(),
             unit_basis: crate::unit_billing::UnitBasis::Tokens,
             request_payload: String::new(),
             response_payload: String::new(),

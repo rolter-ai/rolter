@@ -2938,7 +2938,13 @@ async fn proxy(
     match outcome {
         // token counts, latency and ttft are filled by the stream wrapper once
         // the body has been fully forwarded to the client
-        Some((response, status, is_sse)) => {
+        Some((mut response, status, is_sse)) => {
+            // what translation did to the caller's parameters, decided before
+            // the upstream was called, so it heads a stream too (#1586)
+            let param_adjustments = response
+                .extensions_mut()
+                .remove::<rolter_proxy::ParamAdjustments>()
+                .unwrap_or_default();
             let translation = if status < 400 {
                 snap.providers
                     .get(&last_provider)
@@ -3019,6 +3025,7 @@ async fn proxy(
                 sample_rate: snap.logging.sample_rate,
                 guardrail_events,
                 plugin_events,
+                param_adjustments,
                 ..Default::default()
             };
             // on a cache-eligible route, buffer a successful response (JSON or a
@@ -5389,6 +5396,9 @@ struct DecisionHeaders {
     model: String,
     variant: String,
     cache_hit: bool,
+    /// the `x-rolter-param-adjustments` value, `None` (and never built) when
+    /// translation forwarded every parameter as sent (#1586)
+    param_adjustments: Option<String>,
 }
 
 impl DecisionHeaders {
@@ -5399,6 +5409,7 @@ impl DecisionHeaders {
             model: log.model.clone(),
             variant: log.variant.clone(),
             cache_hit: log.cache_hit != 0,
+            param_adjustments: log.param_adjustments.header_value(),
         }
     }
 
@@ -5425,6 +5436,13 @@ impl DecisionHeaders {
             "x-rolter-cache",
             HeaderValue::from_static(if self.cache_hit { "HIT" } else { "MISS" }),
         );
+        if let Some(value) = self
+            .param_adjustments
+            .as_deref()
+            .and_then(|value| HeaderValue::from_str(value).ok())
+        {
+            headers.insert(rolter_proxy::PARAM_ADJUSTMENTS_HEADER, value);
+        }
     }
 }
 
