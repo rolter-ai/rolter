@@ -652,6 +652,16 @@ jobs:
       - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
         with:
           tool: nextest
+      - name: set up uv
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+      # the gateway's presidio_shim test spawns the reference shim under uvicorn
+      # (#3444). naming the interpreter makes a missing dependency fail that test
+      # instead of skipping it
+      - name: presidio shim virtualenv
+        run: |
+          uv venv --python 3.13 "${RUNNER_TEMP}/shim-venv"
+          uv pip install --python "${RUNNER_TEMP}/shim-venv" -r examples/presidio-restore-shim/requirements.txt
+          echo "ROLTER_TEST_SHIM_PYTHON=${RUNNER_TEMP}/shim-venv/bin/python" >> "${GITHUB_ENV}"
       - name: nextest (workspace, all features)
         # `shell: bash` adds pipefail, so the `| tee` keeps nextest's exit status
         shell: bash
@@ -669,8 +679,6 @@ jobs:
         run: cargo test --doc --workspace --all-features
       # the chart's own preflight must pass on the env it renders (#1939). it
       # needs the built launcher, which nextest has just compiled
-      - name: set up uv
-        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
       - name: set up helm
         uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
         with:

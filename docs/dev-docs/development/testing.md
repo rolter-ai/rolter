@@ -400,6 +400,17 @@ It is part of `quality`, so `ci-ok` waits on it. dependabot's `pip` ecosystem co
 example's directory, so a new example with a `requirements.txt` needs its own entry in
 `.github/dependabot.yml`.
 
+The gateway's `presidio_shim` test (#3444) runs the real reference shim from `examples/`. It
+reads `ROLTER_TEST_SHIM_PYTHON`, the interpreter to start it with; CI builds a virtualenv from the
+shim's `requirements.txt` and sets it, and a value that cannot import the shim's dependencies fails
+the test. Left unset, the test tries `python3` and skips with the reason when it cannot import them,
+so a machine without Python still runs the suite. Locally:
+
+```sh
+uv venv /tmp/shim-venv && uv pip install --python /tmp/shim-venv -r examples/presidio-restore-shim/requirements.txt
+ROLTER_TEST_SHIM_PYTHON=/tmp/shim-venv/bin/python cargo test -p rolter-gateway --test presidio_shim
+```
+
 ## Layout
 
 - **Unit tests** live next to the code in `#[cfg(test)] mod tests`. Current coverage: balancer strategies (round-robin cycling, consistent-hash stability, cache-aware affinity, empty targets), the prefix trie, config parsing, model rewrite, auth checks, and the in-memory store.
