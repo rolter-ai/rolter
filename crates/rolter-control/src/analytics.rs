@@ -546,9 +546,23 @@ pub(crate) fn clamp_limit(limit: Option<u32>) -> u32 {
 /// The timestamp half has to be one [`is_time_bound`] accepts. It reaches the
 /// same `OrZero` parse as a window bound, so a cursor edited by hand used to
 /// resume from the epoch and read as the end of the list (#1192).
+#[cfg(any(test, feature = "postgres"))]
 pub(crate) fn parse_keyset_cursor(
     cursor: Option<&str>,
     id_label: &str,
+) -> Result<(String, String), String> {
+    parse_keyset_cursor_within(cursor, id_label, MAX_CURSOR_ID_LEN)
+}
+
+/// The longest id half a keyset cursor may carry.
+const MAX_CURSOR_ID_LEN: usize = 256;
+
+/// [`parse_keyset_cursor`] with its own bound on the id half, for a list whose
+/// id half also holds something besides the id.
+pub(crate) fn parse_keyset_cursor_within(
+    cursor: Option<&str>,
+    id_label: &str,
+    max_id_len: usize,
 ) -> Result<(String, String), String> {
     let Some(cursor) = cursor.filter(|value| !value.is_empty()) else {
         return Ok((String::new(), String::new()));
@@ -557,7 +571,7 @@ pub(crate) fn parse_keyset_cursor(
     let Some((timestamp, id)) = cursor.split_once('|') else {
         return Err(malformed());
     };
-    if timestamp.is_empty() || id.is_empty() || timestamp.len() > 64 || id.len() > 256 {
+    if timestamp.is_empty() || id.is_empty() || timestamp.len() > 64 || id.len() > max_id_len {
         return Err(malformed());
     }
     if !is_time_bound(timestamp) {
@@ -619,6 +633,9 @@ pub(crate) fn invocations_keyset_predicate(seq: &str) -> String {
                        or ({seq} = {{cursor_seq:UInt64}} and request_id < {{cursor_id:String}}))))"
     )
 }
+
+/// `<seq>|` at its longest: twenty digits and the bar.
+const MAX_CURSOR_SEQ_LEN: usize = 21;
 
 /// The `seq` a cursor from before the sequence existed resumes from: past every
 /// row of its millisecond, so such a cursor can repeat rows of that one
@@ -1242,7 +1259,13 @@ async fn invocations(
         )
             .into_response();
     };
-    let (cursor_ts, cursor_tail) = match parse_keyset_cursor(q.cursor.as_deref(), "request_id") {
+    // the id half is `<seq>|<request_id>`: room for the number, while the
+    // request id keeps the limit it always had
+    let (cursor_ts, cursor_tail) = match parse_keyset_cursor_within(
+        q.cursor.as_deref(),
+        "request_id",
+        MAX_CURSOR_ID_LEN + MAX_CURSOR_SEQ_LEN,
+    ) {
         Ok(cursor) => cursor,
         Err(message) => return InvalidParam::cursor(message).into_response(),
     };
@@ -1251,6 +1274,10 @@ async fn invocations(
     } else {
         split_invocations_cursor(&cursor_tail)
     };
+    if cursor_id.len() > MAX_CURSOR_ID_LEN {
+        return InvalidParam::cursor("cursor must be timestamp|request_id".to_string())
+            .into_response();
+    }
     let limit = clamp_limit(q.limit);
     // after the request is known to be well formed, so a refused one costs
     // ClickHouse nothing
@@ -1999,6 +2026,23 @@ mod tests {
         let lacking = invocations_sql("1", &Columns::lacking(&["seq"]));
         assert!(lacking.contains("toUInt64(0) as seq"), "{lacking}");
         assert!(lacking.contains("order by ts desc, toUInt64(0) desc, request_id desc"));
+    }
+
+    #[test]
+    fn the_sequence_does_not_shrink_the_request_id_a_cursor_may_name() {
+        // a 256 character request id used to page; with `<seq>|` in front of it
+        // the whole tail is longer than 256, and must still parse
+        let id = "r".repeat(MAX_CURSOR_ID_LEN);
+        let cursor = format!("2026-10-01T10:00:00.123Z|18446744073709551615|{id}");
+        let (_, tail) = parse_keyset_cursor_within(
+            Some(&cursor),
+            "request_id",
+            MAX_CURSOR_ID_LEN + MAX_CURSOR_SEQ_LEN,
+        )
+        .expect("the longest sequence and request id parse");
+        assert_eq!(split_invocations_cursor(&tail).1, id);
+        // the plain parse keeps its old limit for the lists that use it
+        assert!(parse_keyset_cursor(Some(&cursor), "request_id").is_err());
     }
 
     #[test]

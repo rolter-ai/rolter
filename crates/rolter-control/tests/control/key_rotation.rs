@@ -238,3 +238,124 @@ async fn rotation_needs_admin_and_bounds_the_overlap() {
         .unwrap();
     assert_eq!(created["key_hash"], key_hash.as_str());
 }
+
+#[tokio::test]
+async fn a_personal_key_is_never_rotated_by_a_project_admin() {
+    skip_without_db!();
+    let f = fixture().await;
+    let client = reqwest::Client::new();
+    // a key a member minted for themself: it carries its creator
+    let member = seed_user(&f.pool, "member@acme.test", false).await;
+    seed_membership(&f.pool, member, None, None, Some(f.project), "member").await;
+    let key_id: uuid::Uuid = sqlx::query_scalar(
+        "insert into virtual_keys (project_id, key_hash, key_prefix, name, created_by)
+         values ($1, 'personal-hash', 'sk-rolter-per', 'mine', $2) returning id",
+    )
+    .bind(f.project)
+    .bind(member)
+    .fetch_one(&f.pool)
+    .await
+    .unwrap();
+
+    let rotate = client
+        .post(format!("{}/api/v1/virtual-keys/{key_id}/rotate", f.base))
+        .bearer_auth(&f.admin)
+        .json(&json!({"overlap_seconds": 60}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(rotate.status(), 409);
+    let revoke = client
+        .delete(format!(
+            "{}/api/v1/virtual-keys/{key_id}/previous-secret",
+            f.base
+        ))
+        .bearer_auth(&f.admin)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(revoke.status(), 409);
+    // and nothing about the key changed
+    let hash: String = sqlx::query_scalar("select key_hash from virtual_keys where id = $1")
+        .bind(key_id)
+        .fetch_one(&f.pool)
+        .await
+        .unwrap();
+    assert_eq!(hash, "personal-hash");
+}
+
+#[tokio::test]
+async fn a_viewer_is_refused_before_the_overlap_is_checked() {
+    skip_without_db!();
+    let f = fixture().await;
+    let client = reqwest::Client::new();
+    let created: Value = client
+        .post(format!(
+            "{}/api/v1/projects/{}/virtual-keys",
+            f.base, f.project
+        ))
+        .bearer_auth(&f.admin)
+        .json(&json!({"name": "billing"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let id = created["id"].as_str().unwrap();
+    // an oversized overlap from someone who may not rotate at all is a 403, not
+    // a 400 that tells them what the limit is
+    let denied = client
+        .post(format!("{}/api/v1/virtual-keys/{id}/rotate", f.base))
+        .bearer_auth(&f.viewer)
+        .json(&json!({"overlap_seconds": 99_999_999_999u64}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(denied.status(), 403);
+}
+
+#[tokio::test]
+async fn disabling_a_key_ends_the_overlap_so_re_enabling_does_not_revive_the_old_secret() {
+    skip_without_db!();
+    let f = fixture().await;
+    let client = reqwest::Client::new();
+    let created: Value = client
+        .post(format!(
+            "{}/api/v1/projects/{}/virtual-keys",
+            f.base, f.project
+        ))
+        .bearer_auth(&f.admin)
+        .json(&json!({"name": "billing"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let id = created["id"].as_str().unwrap().to_string();
+    client
+        .post(format!("{}/api/v1/virtual-keys/{id}/rotate", f.base))
+        .bearer_auth(&f.admin)
+        .json(&json!({"overlap_seconds": 3600}))
+        .send()
+        .await
+        .unwrap();
+    assert!(snapshot_key(&f, &id).await.get("previous").is_some());
+
+    for disabled in [true, false] {
+        let row: Value = client
+            .put(format!("{}/api/v1/virtual-keys/{id}", f.base))
+            .bearer_auth(&f.admin)
+            .json(&json!({"disabled": disabled}))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert!(row["previous_expires_at"].is_null(), "disabled={disabled}");
+    }
+    // enabled again, and the old secret is still gone
+    assert!(snapshot_key(&f, &id).await.get("previous").is_none());
+}

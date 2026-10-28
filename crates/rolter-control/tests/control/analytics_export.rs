@@ -370,6 +370,26 @@ async fn the_rollup_exports_flag_a_partial_total_and_name_the_window_and_currenc
     );
     assert!(lines[2].ends_with(",0.25,USD,0,false"), "{}", lines[2]);
 
+    // a caller who cannot read the org's business units gets the id and no name
+    let (viewer, _) = project_viewer(&app, "elsewhere").await;
+    let csv = client
+        .get(format!(
+            "{}/api/v1/analytics/by-attribution/export?include_unattributed=true",
+            app.base
+        ))
+        .bearer_auth(&viewer)
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(
+        csv.contains(&format!("business_unit,{unit},,10,")),
+        "the name is withheld: {csv}"
+    );
+    assert!(!csv.contains("Payments"), "{csv}");
+
     let response = client
         .get(format!(
             "{}/api/v1/analytics/timeseries/export?bucket=day&since=2026-10-01",

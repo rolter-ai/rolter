@@ -90,6 +90,7 @@ import { useFormat } from "@/lib/i18n/format";
 import { useScope } from "@/lib/scope";
 import { describeError, errorText } from "@/lib/error-copy";
 import { useToast } from "@/lib/toast";
+import { useNow } from "@/lib/use-now";
 import { useScreenReady } from "@/lib/ux-react";
 
 const KEYS_QUERY_KEY = ["virtual-keys"];
@@ -108,6 +109,8 @@ export default function Keys() {
   // the same short date the mint sheet previews, so a row and its preview
   // cannot disagree about when the key stops working (#1182)
   const fmt = useFormat();
+  // an overlap that has ended is no longer shown, even before the list refetches
+  const now = useNow();
   const queryClient = useQueryClient();
   const scope = useScope();
   // the scope hook names a catalog key rather than carrying english copy
@@ -372,29 +375,31 @@ export default function Keys() {
               {/* a rotation's overlap: the replaced secret still works, so
                   the row says which one and until when, and offers to end it
                   early rather than leaving the date to be waited out */}
-              {key.previous_expires_at && key.previous_key_prefix && (
-                <div className="flex min-w-0 items-center gap-1 text-2xs text-muted-foreground">
-                  <span className="truncate">
-                    {t("pages.virtualKeys.previousSecret", {
-                      prefix: key.previous_key_prefix,
-                      date: fmt.dateTime(key.previous_expires_at),
-                    })}
-                  </span>
-                  <GatedButton
-                    gate="virtual_key:update"
-                    control="key-revoke-previous"
-                    variant="ghost"
-                    size="sm"
-                    className="h-5 px-1 text-2xs"
-                    aria-label={t("pages.virtualKeys.revokePreviousAria", {
-                      name: key.name ?? key.key_prefix,
-                    })}
-                    onClick={() => setRevokeTarget(key)}
-                  >
-                    {t("pages.virtualKeys.revokePrevious")}
-                  </GatedButton>
-                </div>
-              )}
+              {key.previous_expires_at &&
+                key.previous_key_prefix &&
+                new Date(key.previous_expires_at).getTime() > now && (
+                  <div className="flex min-w-0 items-center gap-1 text-2xs text-muted-foreground">
+                    <span className="truncate">
+                      {t("pages.virtualKeys.previousSecret", {
+                        prefix: key.previous_key_prefix,
+                        date: fmt.dateTime(key.previous_expires_at),
+                      })}
+                    </span>
+                    <GatedButton
+                      gate="virtual_key:update"
+                      control="key-revoke-previous"
+                      variant="ghost"
+                      size="sm"
+                      className="h-5 px-1 text-2xs"
+                      aria-label={t("pages.virtualKeys.revokePreviousAria", {
+                        name: key.name ?? key.key_prefix,
+                      })}
+                      onClick={() => setRevokeTarget(key)}
+                    >
+                      {t("pages.virtualKeys.revokePrevious")}
+                    </GatedButton>
+                  </div>
+                )}
             </ListCell>
             <ListCell className="flex min-w-0 items-center gap-0.5">
               <code className="min-w-0 flex-1 truncate font-mono text-xs text-[color:var(--text-secondary)]">

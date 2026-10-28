@@ -243,43 +243,68 @@ fn bad_request(message: &str) -> Response {
         .into_response()
 }
 
-/// The names of the business units or customers a rollup refers to, by id.
-/// An id with no row (deleted since) stays unnamed. A control plane with no
-/// database has no names to give, and the id column still identifies the row.
+/// Who is asking, for the one read that is governed beyond the request log: a
+/// control plane with no database has no accounts, so no caller to check.
+#[cfg(feature = "postgres")]
+type Caller = crate::rbac::Principal;
+#[cfg(not(feature = "postgres"))]
+type Caller = ();
+
+/// The names of the business units or customers a rollup refers to, by id,
+/// for the ones the caller may read. A unit's or customer's name is governed
+/// data of its org, so it needs `business_unit:read` / `customer:read` there:
+/// a caller without it gets the id alone, as the row's other columns are theirs
+/// to see but the name is not. An id with no row (deleted since) stays unnamed,
+/// and a control plane with no database has no names to give.
 #[cfg(feature = "postgres")]
 async fn names_for(
     state: &ControlState,
+    principal: &Caller,
     dimension: &str,
     ids: &[String],
 ) -> HashMap<String, String> {
+    use crate::rbac::{ScopeChain, ScopeFilter};
+    use crate::rbac_matrix::cap;
+
     let ids: Vec<uuid::Uuid> = ids.iter().filter_map(|id| id.parse().ok()).collect();
     if ids.is_empty() {
         return HashMap::new();
     }
-    let sql = match dimension {
-        "customer" => "select id, name from customers where id = any($1)",
-        _ => "select id, name from business_units where id = any($1)",
+    let (sql, requirement) = match dimension {
+        "customer" => (
+            "select id, name, org_id from customers where id = any($1)",
+            cap!("customer", Read),
+        ),
+        _ => (
+            "select id, name, org_id from business_units where id = any($1)",
+            cap!("business_unit", Read),
+        ),
     };
-    sqlx::query_as::<_, (uuid::Uuid, String)>(sql)
+    let Ok(filter) = ScopeFilter::load(state, principal, requirement).await else {
+        return HashMap::new();
+    };
+    sqlx::query_as::<_, (uuid::Uuid, String, uuid::Uuid)>(sql)
         .bind(ids)
         .fetch_all(crate::crud::pool(state))
         .await
         .map(|rows| {
             rows.into_iter()
-                .map(|(id, name)| (id.to_string(), name))
+                .filter(|(_, _, org)| filter.allows(ScopeChain::org(*org)))
+                .map(|(id, name, _)| (id.to_string(), name))
                 .collect()
         })
         .unwrap_or_default()
 }
 
 #[cfg(not(feature = "postgres"))]
-async fn names_for(_: &ControlState, _: &str, _: &[String]) -> HashMap<String, String> {
+async fn names_for(_: &ControlState, _: &Caller, _: &str, _: &[String]) -> HashMap<String, String> {
     HashMap::new()
 }
 
 /// `GET /api/v1/analytics/by-attribution/export`: the Cost Attribution rollup,
 /// one row per business unit or customer.
 async fn export_attribution(
+    principal: Caller,
     access: AnalyticsAccess,
     State(state): State<ControlState>,
     Query(q): Query<AttributionQuery>,
@@ -322,7 +347,7 @@ async fn export_attribution(
         .iter()
         .filter_map(|r| Some(r.get("id")?.as_str()?.to_string()))
         .collect();
-    let names = names_for(&state, dimension, &ids).await;
+    let names = names_for(&state, &principal, dimension, &ids).await;
     let currency = state.currency.base_code();
     let mut out = line(
         &[
@@ -442,6 +467,10 @@ fn log_sql(status_expr: &str, columns: &Columns) -> String {
     let cursor = invocations_keyset_predicate(&columns.expr("seq"));
     let seq = columns.select("seq");
     let seq_order = columns.expr("seq");
+    // a column an older table lacks matches nothing, which is true: no event
+    // was ever recorded there
+    let guardrail_filter = columns.expr("guardrail_events");
+    let plugin_filter = columns.expr("plugin_events");
     format!(
         "select ts, request_id, trace_id, org_id, team_id, project_id, virtual_key_id, \
                 business_unit_id, customer_id, model, provider, target, variant, status, \
@@ -453,6 +482,8 @@ fn log_sql(status_expr: &str, columns: &Columns) -> String {
            and {ROW_VISIBLE} \
            and {ROW_FILTERS} \
            and ({{unpriced:UInt8}} = 0 or unpriced = 1) \
+           and ({{guardrail:String}} = '' or has({guardrail_filter}, {{guardrail:String}})) \
+           and ({{plugin:String}} = '' or has({plugin_filter}, {{plugin:String}})) \
            and {status_expr} \
            and {cursor} \
          order by ts desc, {seq_order} desc, request_id desc \
@@ -538,7 +569,7 @@ impl LogWalk {
 
 /// `GET /api/v1/analytics/invocations/export`: the LLM Logs list as a file,
 /// metadata only, under the filters the screen applies (window, model, key,
-/// project, business unit, customer, status and unpriced).
+/// project, business unit, customer, status, unpriced, guardrail and plugin).
 async fn export_invocations(
     access: AnalyticsAccess,
     State(state): State<ControlState>,
@@ -560,6 +591,14 @@ async fn export_invocations(
     params.push((
         "param_unpriced".to_string(),
         u8::from(q.unpriced.unwrap_or(false)).to_string(),
+    ));
+    params.push((
+        "param_guardrail".to_string(),
+        q.guardrail.clone().unwrap_or_default(),
+    ));
+    params.push((
+        "param_plugin".to_string(),
+        q.plugin.clone().unwrap_or_default(),
     ));
     params.extend(row_filter_params(
         q.model.as_deref(),

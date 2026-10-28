@@ -175,7 +175,7 @@ prefix and when it stops working, and **Revoke now**
 Rotating again while an overlap is running replaces the old secret with the
 latest one: a key holds at most one previous secret.
 
-Rotation takes the same role as editing the key (admin on its project). Both the
+Rotation takes the same role as editing the key (admin on its project), and only for a shared key: a key a member minted for themself answers `409`, because the secret would run as that member, so they rotate it from **Account**. Disabling a key also ends its overlap, so re-enabling it later does not bring the old secret back. Both the
 rotation and an early revoke are recorded in the audit log as
 `virtual_key.rotate` and `virtual_key.revoke_previous_secret`; only the secrets'
 prefixes are recorded, and only peppered digests are ever stored.

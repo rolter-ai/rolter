@@ -608,7 +608,10 @@ rule sees their team's traffic and nothing else. The scope is set when the rule
 is created (`scope_type` and `scope_id` in the body, given together) and cannot
 be changed afterwards; create a new rule to watch another scope.
 `provider_health_flaps` is recorded per organization, so it can only watch an
-organization or the whole deployment. A rule whose team, project or key has
+organization or the whole deployment. An organization's rule counts the health
+events of the providers that organization owns; providers defined in the
+gateway's own config file belong to no organization and are counted only by a
+deployment-wide rule. A rule whose team, project or key has
 since been deleted reports a scope error (`scope_gone`) and does not fire;
 delete it.
 

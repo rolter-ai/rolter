@@ -1370,3 +1370,29 @@ export const CapValidationErrors: Story = {
     );
   },
 };
+
+/**
+ * An overlap whose date has passed is over: the row stops naming the old secret
+ * (and offering to revoke it) even though the list still carries the columns.
+ */
+export const AnOverlapThatHasEndedIsNotShown: Story = {
+  render: () => (
+    <Harness
+      fetchStub={withKeys([
+        {
+          ...KEYS[0],
+          previous_key_prefix: "sk-rolter-oldold",
+          previous_expires_at: "2020-01-01T12:00:00Z",
+        },
+      ])}
+    >
+      <Keys />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByText("backend service");
+    await expect(canvas.queryByText(/old secret/)).toBeNull();
+    await expect(canvas.queryByRole("button", { name: /Revoke the old secret/ })).toBeNull();
+  },
+};

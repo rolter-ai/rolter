@@ -699,6 +699,7 @@ async fn create_channel(
     audit(
         &state,
         &principal,
+        channel.org_id,
         "alert.channel.create",
         channel.id,
         serde_json::json!({"name": channel.name, "enabled": channel.enabled, "org_id": channel.org_id}),
@@ -769,6 +770,7 @@ async fn update_channel(
     audit(
         &state,
         &principal,
+        owner,
         "alert.channel.update",
         id,
         serde_json::json!({
@@ -805,6 +807,7 @@ async fn delete_channel(
     audit(
         &state,
         &principal,
+        owner,
         "alert.channel.delete",
         id,
         serde_json::json!({}),
@@ -849,6 +852,7 @@ async fn create_rule(
     audit(
         &state,
         &principal,
+        rule.org_id,
         "alert.rule.create",
         rule.id,
         serde_json::json!({"name": rule.name, "signal": rule.signal, "enabled": rule.enabled, "scope_type": rule.scope_type, "scope_id": rule.scope_id}),
@@ -880,6 +884,7 @@ async fn update_rule(
     audit(
         &state,
         &principal,
+        stored.org_id,
         "alert.rule.update",
         id,
         serde_json::json!({"name": rule.name, "signal": rule.signal, "enabled": rule.enabled}),
@@ -908,6 +913,7 @@ async fn delete_rule(
     audit(
         &state,
         &principal,
+        stored.org_id,
         "alert.rule.delete",
         id,
         serde_json::json!({}),
@@ -1983,9 +1989,13 @@ fn delivery_client(egress: &Arc<EgressPolicy>) -> Option<reqwest::Client> {
         .ok()
 }
 
+/// Record an alert change in the audit log of the org that owns the row, or in
+/// the deployment's alone (`org: None`) for a deployment-wide channel or rule,
+/// so an org admin's changes show in their own org's log and export (#1829).
 async fn audit(
     state: &ControlState,
     principal: &Principal,
+    org: Option<Uuid>,
     action: &str,
     target: Uuid,
     detail: serde_json::Value,
@@ -1993,7 +2003,7 @@ async fn audit(
     let actor = principal.account_id();
     if let Err(error) = AuditLogRepo(pool(state))
         .create(
-            None,
+            org,
             actor,
             action,
             Some("alerting"),
@@ -2294,6 +2304,27 @@ mod tests {
     fn rules_accept_every_supported_signal() {
         for signal in SIGNALS {
             assert!(validate_rule(&rule(signal, 0.5, 60)).is_ok());
+        }
+    }
+
+    #[test]
+    fn a_rule_notifies_its_own_orgs_channel_or_a_deployment_one_and_no_other() {
+        let a = Some(Uuid::from_u128(1));
+        let b = Some(Uuid::from_u128(2));
+        // channel owner, rule owner, may notify
+        for (channel, rule, expected) in [
+            (None, None, true),
+            (None, a, true),
+            (a, a, true),
+            (a, None, false),
+            (a, b, false),
+            (b, a, false),
+        ] {
+            assert_eq!(
+                channel_reaches(channel, rule),
+                expected,
+                "{channel:?} {rule:?}"
+            );
         }
     }
 
@@ -2828,6 +2859,58 @@ mod tests {
                 .await
                 .expect("the evaluation succeeds")
                 .expect("the rule exists")
+        }
+
+        /// The API refuses a rule that names another org's channel, and the
+        /// evaluator holds the line if a row got past it (#1829): the channel
+        /// of another org is treated as no channel, so nothing is delivered
+        /// and the transition is recorded as skipped.
+        #[tokio::test]
+        async fn a_channel_of_another_org_is_never_delivered_to_even_if_a_rule_names_it() {
+            let Some(db) = scratch().await else { return };
+            let stub = Stub::start().await;
+            let state = state_with(&db, &stub);
+            let mut orgs = Vec::new();
+            for slug in ["mine", "theirs"] {
+                let org: Uuid = sqlx::query_scalar(
+                    "insert into orgs (name, slug) values ($1, $1) returning id",
+                )
+                .bind(slug)
+                .fetch_one(db.pool())
+                .await
+                .expect("insert an org");
+                orgs.push(org);
+            }
+            let theirs = add_channel(&db, &stub.hook_url(), true, false).await;
+            sqlx::query("update alert_channels set org_id = $2 where id = $1")
+                .bind(theirs)
+                .bind(orgs[1])
+                .execute(db.pool())
+                .await
+                .expect("give the channel an owner");
+            // the rule belongs to the other org, and the channel is put on it by
+            // SQL, the way the API would never allow
+            let id = add_rule(&db, Some(theirs)).await;
+            sqlx::query(
+                "update alert_rules set org_id = $2, scope_type = 'org', scope_id = $2 where id = $1",
+            )
+            .bind(id)
+            .bind(orgs[0])
+            .execute(db.pool())
+            .await
+            .expect("scope the rule to the first org");
+
+            stub.read(0.9);
+            let evaluation = run(&state, id, None).await;
+            assert_eq!(evaluation.rule.state, "firing");
+            assert!(!evaluation.notified);
+            assert!(
+                stub.hooks().is_empty(),
+                "nothing reached the other org's channel"
+            );
+            let rows = history(&db, id).await;
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0].1, "skipped");
         }
 
         #[tokio::test]

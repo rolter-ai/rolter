@@ -40,11 +40,18 @@ export function exportAttributionCsv(
 /** The request log under the LLM Logs filters, metadata only, streamed by the server. */
 export function exportInvocationsCsv(
   query: AnalyticsWindow &
-    AnalyticsRowFilters & { status?: "all" | "error" | "success"; unpriced?: boolean },
+    AnalyticsRowFilters & {
+      status?: "all" | "error" | "success";
+      unpriced?: boolean;
+      guardrail?: string;
+      plugin?: string;
+    },
 ): Promise<AnalyticsExportFile> {
   const params = windowParams(query);
   setRowFilterParams(params, query);
   if (query.status) params.set("status", query.status);
   if (query.unpriced) params.set("unpriced", "true");
+  if (query.guardrail) params.set("guardrail", query.guardrail);
+  if (query.plugin) params.set("plugin", query.plugin);
   return download("/api/v1/analytics/invocations/export", params);
 }

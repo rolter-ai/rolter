@@ -184,6 +184,18 @@ struct RotateVirtualKey {
     overlap_seconds: u64,
 }
 
+/// A personal key (one a member minted for themself) rotates from Account, never
+/// here: a project admin who rotated it would hold a working secret the gateway
+/// attributes to that member and runs under their access policy.
+fn refuse_personal(key: &VirtualKey) -> ApiResult<()> {
+    if key.created_by.is_some() {
+        return Err(ApiError::Conflict(
+            "this key belongs to the member who minted it; they rotate it from Account".to_string(),
+        ));
+    }
+    Ok(())
+}
+
 /// Issue a new secret for a shared key (#1837): the same row, so limits,
 /// attribution, allow-lists, cache setting and history all carry over, with an
 /// optional window during which the previous secret still authenticates.
@@ -196,6 +208,8 @@ async fn rotate_virtual_key(
     Path(id): Path<Uuid>,
     body: Option<SafeJson<RotateVirtualKey>>,
 ) -> ApiResult<Json<CreatedVirtualKey>> {
+    let org_id = authorize_virtual_key(&state, &principal, id, cap!("virtual_key", Update)).await?;
+    refuse_personal(&VirtualKeyRepo(pool(&state)).get(id).await?)?;
     let body = body.map(|SafeJson(body)| body).unwrap_or_default();
     if body.overlap_seconds > MAX_ROTATION_OVERLAP_SECONDS {
         return Err(invalid_field(
@@ -203,7 +217,6 @@ async fn rotate_virtual_key(
             "overlap_seconds must be at most 2592000 (30 days)",
         ));
     }
-    let org_id = authorize_virtual_key(&state, &principal, id, cap!("virtual_key", Update)).await?;
     let overlap_until = (body.overlap_seconds > 0).then(|| {
         chrono::Utc::now()
             + chrono::Duration::seconds(i64::try_from(body.overlap_seconds).unwrap_or(0))
@@ -240,6 +253,7 @@ async fn revoke_previous_secret(
     let org_id = authorize_virtual_key(&state, &principal, id, cap!("virtual_key", Update)).await?;
     let repo = VirtualKeyRepo(pool(&state));
     let before = repo.get(id).await?;
+    refuse_personal(&before)?;
     let row = repo.revoke_previous(id).await?;
     publish_config_change(&state).await?;
     log_audit(

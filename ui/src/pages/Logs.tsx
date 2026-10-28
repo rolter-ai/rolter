@@ -940,6 +940,8 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
                     business_unit: unitSel.length ? unitSel : undefined,
                     customer: customerSel.length ? customerSel : undefined,
                     unpriced: unpriced || undefined,
+                    guardrail: guardrail || undefined,
+                    plugin: plugin || undefined,
                     status,
                   })
                 }

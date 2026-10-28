@@ -1768,13 +1768,21 @@ mod tests {
             "cluster_node:update",
             "runtime_policy:update",
             "feature_flags:update",
-            "alert_channel:create",
-            "alert_rule:update",
             "connector:update",
         ] {
             assert!(
                 operator.contains(&pair.to_string()),
                 "operator lacks {pair}"
+            );
+        }
+        // alerting is delegated to scoped admins (#1829), so its rows are scoped
+        // roles in the table. An operator still runs every rule and channel:
+        // the alerting handlers let a deployment operator through (see
+        // `alerting::authorize_alerting`), which the matrix does not publish
+        for pair in ["alert_channel:create", "alert_rule:update"] {
+            assert!(
+                !operator.contains(&pair.to_string()),
+                "{pair} is a scoped admin's row; an operator's reach is the handlers' own"
             );
         }
         // the auditor reads and never writes

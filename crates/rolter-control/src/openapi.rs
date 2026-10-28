@@ -1459,13 +1459,15 @@ fn operations() -> Vec<Op> {
                 "Issue a new secret for a shared key, optionally keeping the old one valid for an overlap",
             )
             .body(Payload::Ref("RotateVirtualKey"))
-            .ok(Payload::Ref("CreatedVirtualKey")),
+            .ok(Payload::Ref("CreatedVirtualKey"))
+            .conflict("the key is personal: the member who minted it rotates it from Account"),
             Op::delete(
                 "/api/v1/virtual-keys/{id}/previous-secret",
                 "revokeVirtualKeyPreviousSecret",
                 "End a rotation's overlap now so the old secret stops authenticating",
             )
-            .ok(Payload::Ref("VirtualKey")),
+            .ok(Payload::Ref("VirtualKey"))
+            .conflict("the key is personal: the member who minted it manages its secrets"),
         ],
     ));
 

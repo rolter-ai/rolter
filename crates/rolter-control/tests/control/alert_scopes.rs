@@ -516,3 +516,102 @@ async fn lists_are_narrowed_to_what_the_caller_owns() {
     let (_, rules) = get(&t, "/api/v1/alert-rules", &t.root).await;
     assert_eq!(rules.as_array().unwrap().len(), 3);
 }
+
+#[tokio::test]
+async fn an_orgs_alert_changes_are_in_that_orgs_audit_log() {
+    skip_without_db!();
+    let t = tenants().await;
+    // an org-scoped channel and rule: create, update and delete
+    let (_, channel) = post(
+        &t,
+        "/api/v1/alert-channels",
+        &t.admin_a,
+        channel("a hook", Some(t.org_a)),
+    )
+    .await;
+    let channel_id = channel["id"].as_str().unwrap().to_string();
+    let (_, created) = post(
+        &t,
+        "/api/v1/alert-rules",
+        &t.admin_a,
+        rule("a org", Some(("org", t.org_a)), None),
+    )
+    .await;
+    let id = created["id"].as_str().unwrap().to_string();
+    let mut edit = rule("a org renamed", None, None);
+    edit["threshold"] = json!(0.2);
+    let (status, _) = send(
+        &t,
+        reqwest::Method::PUT,
+        &format!("/api/v1/alert-rules/{id}"),
+        &t.admin_a,
+        Some(edit),
+    )
+    .await;
+    assert_eq!(status, 200);
+    let (status, _) = send(
+        &t,
+        reqwest::Method::DELETE,
+        &format!("/api/v1/alert-rules/{id}"),
+        &t.admin_a,
+        None,
+    )
+    .await;
+    assert_eq!(status, 204);
+    let (status, _) = send(
+        &t,
+        reqwest::Method::DELETE,
+        &format!("/api/v1/alert-channels/{channel_id}"),
+        &t.admin_a,
+        None,
+    )
+    .await;
+    assert_eq!(status, 204);
+    // a deployment-wide rule is not any org's to read about
+    post(
+        &t,
+        "/api/v1/alert-rules",
+        &t.root,
+        rule("everything", None, None),
+    )
+    .await;
+
+    let (status, log) = get(
+        &t,
+        &format!("/api/v1/orgs/{}/audit-log?limit=100", t.org_a),
+        &t.admin_a,
+    )
+    .await;
+    assert_eq!(status, 200, "{log}");
+    let mut actions: Vec<String> = log["items"]
+        .as_array()
+        .unwrap_or_else(|| panic!("no items in {log}"))
+        .iter()
+        .filter_map(|e| e["action"].as_str())
+        .filter(|a| a.starts_with("alert."))
+        .map(String::from)
+        .collect();
+    actions.sort();
+    assert_eq!(
+        actions,
+        [
+            "alert.channel.create",
+            "alert.channel.delete",
+            "alert.rule.create",
+            "alert.rule.delete",
+            "alert.rule.update"
+        ]
+    );
+    // and they are in no other org's log
+    let (_, other) = get(
+        &t,
+        &format!("/api/v1/orgs/{}/audit-log?limit=100", t.org_b),
+        &t.admin_b,
+    )
+    .await;
+    assert!(other["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|e| !e["action"].as_str().unwrap_or("").starts_with("alert.")));
+}

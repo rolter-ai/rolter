@@ -247,10 +247,17 @@ impl VirtualKeyRepo<'_> {
             .map_err(store_err)
     }
 
+    /// Disable or re-enable a key. Disabling also ends a rotation's overlap:
+    /// re-enabling the key later must not bring back a secret that was only
+    /// ever meant to work for a window (#1837).
     pub async fn set_disabled(&self, id: Uuid, disabled: bool) -> Result<VirtualKey> {
         fetch_optional_or_not_found(
             sqlx::query_as(sqlx::AssertSqlSafe(format!(
-                "update virtual_keys set disabled = $2 where id = $1
+                "update virtual_keys set disabled = $2,
+                    previous_key_hash = case when $2 then null else previous_key_hash end,
+                    previous_key_prefix = case when $2 then null else previous_key_prefix end,
+                    previous_expires_at = case when $2 then null else previous_expires_at end
+             where id = $1
              returning {VIRTUAL_KEY_COLUMNS}"
             )))
             .bind(id)
