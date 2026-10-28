@@ -67,3 +67,8 @@
 
 **Learning:** `proxy_ws` in `crates/rolter-control/src/proxy.rs` previously logged raw `tungstenite` error messages with `tracing::warn!(%error, ...)` when WebSocket client requests failed URL parsing. Because `tungstenite` quotes the entire URL in its error message, any sensitive query parameters (like virtual keys or session tokens) were logged unredacted in server log streams.
 **Prevention:** Always run error strings generated from client or upstream URL parsing through `rolter_core::redact::redact_urls_in_text` before logging them with `tracing`.
+
+## 2026-10-25 - Redact Sensitive URL Credentials in MCP OAuth Discovery Errors
+
+**Learning:** MCP OAuth discovery in `crates/rolter-control/src/mcp_oauth_discovery.rs` constructed `DiscoveryError::Refused` and `tracing::debug!` messages using raw unredacted URLs and reqwest error strings. When discovery failed against URLs containing sensitive query parameters or userinfo credentials, those secrets could be exposed in API error messages and debug logs.
+**Prevention:** Always sanitize URLs and HTTP client error strings using `rolter_core::redact::redact_urls_in_text` before embedding them into `DiscoveryError::Refused` variants or `tracing` logs.
