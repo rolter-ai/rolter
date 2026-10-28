@@ -170,24 +170,33 @@ after the caller is authenticated and before anything is forwarded.
   the `bump_config_version()` trigger in `0151`) assigns a group to a
   `virtual_key`, `project` or `team`. The subject has no foreign key, since it is
   polymorphic: the control plane refuses one outside the group's organization
-  when it is written, and a deleted subject leaves a row that can never match.
-  Only the assignments of enabled groups travel, as
-  `McpToolGroupConfig::assignments`. The gateway indexes them as
-  `Snapshot::mcp_group_assignments` (organization, kind, subject to group ids) and
-  each group's tools as `mcp_group_tools`. `Caller::assigned_groups` collects the
-  groups assigned to the caller's key, project and team; with none the
-  organization-wide set applies, otherwise the allowed tools on a governed server
-  are the union of those groups' tools there, which is empty when none names it.
-  An assignment therefore only narrows, and an empty table changes nothing. The
-  same set drives the `tools/list` filter. API: `GET
-/api/v1/orgs/{org_id}/mcp/tool-group-assignments` and `PUT
-/api/v1/mcp/tool-groups/{id}/assignments` (replaces the group's whole set in one
-  transaction), under the `mcp_tool_group_assignment` capability; the dashboard's
-  group dialog edits the team and project kinds.
-  Both snapshot fields added for assignments and the manifest default restrict
-  what the gateway serves, which ADR-0038 would call a format bump; they stay in
-  format 1 because everything before the 1.0.0 tag does, and the shape fixture
-  carries them.
+  when it is written, and a deleted subject leaves a row that can never match
+  (the next save of the group drops it, and #3382 tracks sweeping it sooner).
+  Assignments travel as `McpToolGroupConfig::assignments`. A disabled group
+  travels too, with its assignments and **no tools**, so the callers assigned to
+  it stay narrowed to nothing from that group instead of falling back to the
+  organization-wide set; deleting a group removes its assignments with it
+  (cascade), and its callers return to the organization-wide set. The gateway
+  indexes them as `Snapshot::mcp_group_assignments` (subject id to
+  `(kind, organization, group)`) and each group's tools as `mcp_group_tools`.
+  `Caller::assigned_groups` collects the groups assigned to the caller's key,
+  project and team and returns at once when nothing is assigned anywhere; with
+  none the organization-wide set applies, otherwise the allowed tools on a
+  governed server are the union of those groups' tools there, which is empty
+  when none names it. An assignment therefore only narrows, and an empty table
+  changes nothing. The same set drives the `tools/list` filter. API:
+  `GET /api/v1/orgs/{org_id}/mcp/tool-group-assignments` and
+  `PUT /api/v1/mcp/tool-groups/{id}/assignments` (replaces the group's whole set
+  in one transaction; a stored subject that no longer exists is dropped rather
+  than refused), under the `mcp_tool_group_assignment` capability. The create body
+  takes `assignments` too and writes them in the group's own transaction, so a
+  group meant to be narrowed is never visible as organization-wide. The
+  dashboard's group dialog edits the team and project kinds and mounts its editor
+  only once the stored assignments are read, so it can never save an empty set
+  over them. Both snapshot fields added for assignments and the manifest default
+  restrict what the gateway serves, which ADR-0038 would call a format bump; they
+  stay in format 1 because everything before the 1.0.0 tag does, and the shape
+  fixture carries them.
 - **Parsing.** When the rule applies the body is parsed in full, as one message
   or a batch, with no substring shortcut: `tools\/call` and `\u`-escaped spellings
   are the same JSON string, so a byte search would be a bypass. A batch is
@@ -195,20 +204,33 @@ after the caller is authenticated and before anything is forwarded.
   refused too. A body that is not JSON is refused `400`
   `mcp_request_unreadable`; an empty body is not a call and is forwarded.
 - **Repeated keys (#3298).** `serde_json` keeps the last copy of a repeated key
-  and another parser may keep the first, so the tool the policy judged could
-  differ from the tool that runs. A message, or its `params`, that repeats a key
-  is refused `403` `mcp_tool_denied` (`Verdict::Ambiguous`) whatever the
-  failure policy says; keys inside tool `arguments` are the tool's own data and
-  are not checked.
-- **`tools/list` (#3297).** A reply to a `tools/list` request is narrowed by the
-  same `judge` rule (`mcp_list_filter.rs`), matched to its request by JSON-RPC
-  id, so a client is not shown a tool it would be refused. It only happens when a
-  rule applies to the server and the request holds a `tools/list`; everything
-  else streams through unread. A JSON reply is buffered (16 MiB at most), an SSE
-  reply is rewritten event by event so a stream is not held back, and each page
+  and another parser may keep the first, and a Go decoder (`encoding/json`, so
+  mcp-go, go-sdk and the GitHub MCP server) matches keys case-insensitively and
+  keeps the last. A message, or its `params`, that repeats a key once ASCII case
+  is folded (plus U+017F to `s` and U+212A to `k`) is refused `403`
+  `mcp_tool_denied` whatever the failure policy says, and the refused
+  `tools/call` requests are logged like any other refusal (#3381). For the same
+  reason the policy reads `method`, `params`, `name` and `id` the way such a
+  decoder would, whatever their case, so a lone `Method` is judged rather than
+  ignored. Keys inside tool `arguments` are the tool's own data and are not
+  checked. The body is parsed once, building the `Value` and noting repeats in the
+  same pass (`Parse`).
+- **`tools/list` (#3297).** A reply that lists tools is narrowed by the same
+  `judge` rule (`mcp_list_filter.rs`). It is recognised by its shape, a
+  `result.tools` array, and not by its id: ids compare as JSON values (`1` is not
+  `1.0`), may be `null` or absent, and a Go decoder reads `ID` as `id`, so
+  matching replies to requests could be bypassed. The filter is built only when a
+  rule applies to the server and the request holds a `tools/list` (any id), or
+  for a `GET` stream, which can carry the reply to a request posted elsewhere (a
+  legacy `sse` server answers every `POST` with `202` and sends the reply on its
+  stream). `202`, `204` and empty bodies pass through untouched. A JSON reply is
+  buffered (16 MiB at most), an SSE reply is rewritten event by event
+  (`EventScanner` ends an event at any empty line, `\n`, `\r\n` or `\r`, and
+  resumes where it stopped; an event over 16 MiB cuts the stream), and each page
   of a paginated listing is filtered on its own with its `nextCursor` kept. The
   request goes out with `Accept-Encoding: identity`; a reply that is still
-  encoded, too large or not JSON is refused `502` rather than forwarded unfiltered.
+  encoded, too large or not JSON is refused `502` rather than forwarded
+  unfiltered.
 - **Logging.** Each refused call becomes an `auth_denied` row in
   `mcp_tool_call_logs` with the tool name and the caller's attribution, via
   `PendingCall::from_request`; the closed status set is unchanged.

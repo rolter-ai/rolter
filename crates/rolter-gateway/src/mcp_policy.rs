@@ -32,7 +32,7 @@
 //! the assigned caller may call only what its own groups list there, which is
 //! nothing when none of them names the server.
 //!
-//! A `tools/list` reply is narrowed by the same rule ([`list_filter`]), so a
+//! A `tools/list` reply is narrowed by the same rule ([`ListFilter`]), so a
 //! client is not shown a tool it would be refused (#3297).
 //!
 //! The request body is parsed in full whenever the rule applies, with no
@@ -45,7 +45,7 @@ use std::borrow::Cow;
 use std::collections::HashSet;
 use std::fmt;
 
-use serde::de::{DeserializeSeed, IgnoredAny, MapAccess, SeqAccess, Visitor};
+use serde::de::{DeserializeSeed, MapAccess, SeqAccess, Visitor};
 use serde_json::{Map, Value};
 
 use rolter_core::McpServerConfig;
@@ -61,6 +61,9 @@ pub(crate) enum Denial {
     /// the server declares a manifest, the tool is not in it, and the
     /// organization does not allow unlisted tools
     Undeclared,
+    /// the body repeats a key, so the tool it names depends on which copy a
+    /// parser keeps (#3298)
+    Ambiguous,
 }
 
 /// A `tools/call` the policy refused, kept whole so the refusal can be logged
@@ -87,6 +90,7 @@ impl Refused {
                 "the request names no tool that the organization's tool groups allow on MCP \
                  server '{server}'"
             ),
+            (Denial::Ambiguous, _) => ambiguous_message(server),
             (Denial::Undeclared, tool) => format!(
                 "tool '{}' is not declared by MCP server '{server}'; declare it on the server or \
                  allow unlisted tools in the organization's MCP settings",
@@ -105,18 +109,17 @@ pub(crate) enum Verdict {
     /// the policy applies but the body is not a JSON-RPC message it can read
     Unreadable,
     /// a message in the body, or its `params`, repeats a key, so the tool it
-    /// names depends on which copy a parser keeps (#3298)
-    Ambiguous,
+    /// names depends on which copy a parser keeps (#3298). Holds the body's
+    /// `tools/call` requests so they can be logged like any refusal
+    Ambiguous(Vec<Refused>),
 }
 
-impl Verdict {
-    /// What the caller is told when the body repeats a key.
-    pub(crate) fn ambiguous_message(server: &str) -> String {
-        format!(
-            "the request to MCP server '{server}' repeats a JSON key, so the tool it names is \
-             ambiguous and it is refused"
-        )
-    }
+/// What the caller is told when the body repeats a key.
+pub(crate) fn ambiguous_message(server: &str) -> String {
+    format!(
+        "the request to MCP server '{server}' repeats a JSON key, so the tool it names is \
+         ambiguous and it is refused"
+    )
 }
 
 /// Who is calling, as far as group assignments are concerned.
@@ -128,9 +131,14 @@ pub(crate) struct Caller<'a> {
 }
 
 impl Caller<'_> {
-    /// The enabled groups assigned to the caller's key, project or team, or
-    /// `None` when it has no assignment and so keeps the organization-wide set.
+    /// The groups assigned to the caller's key, project or team, or `None` when
+    /// it has no assignment and so keeps the organization-wide set. A disabled
+    /// group is among them, with no tools: its callers stay narrowed.
     fn assigned_groups<'s>(&self, snapshot: &'s Snapshot) -> Option<Vec<&'s String>> {
+        // nothing is assigned in most deployments, and this runs per request
+        if snapshot.mcp_group_assignments.is_empty() {
+            return None;
+        }
         let mut groups = Vec::new();
         for (kind, id) in [
             ("virtual_key", self.key_id),
@@ -140,14 +148,13 @@ impl Caller<'_> {
             if id.is_empty() {
                 continue;
             }
-            let key = (self.org_id.to_string(), kind.to_string(), id.to_string());
-            groups.extend(
-                snapshot
-                    .mcp_group_assignments
-                    .get(&key)
-                    .into_iter()
-                    .flatten(),
-            );
+            for (assigned_kind, org_id, group) in
+                snapshot.mcp_group_assignments.get(id).into_iter().flatten()
+            {
+                if assigned_kind == kind && org_id == self.org_id {
+                    groups.push(group);
+                }
+            }
         }
         (!groups.is_empty()).then_some(groups)
     }
@@ -209,6 +216,15 @@ impl<'a> Rules<'a> {
     fn judge(&self, tool: Option<&str>) -> Option<Denial> {
         judge(self.governed.as_deref(), self.declared, tool)
     }
+
+    /// The filter for a reply that lists this server's tools. Owns its copy of
+    /// the rules, so it is only built once something needs it.
+    fn list_filter(self) -> ListFilter {
+        ListFilter::new(
+            self.governed.map(Cow::into_owned),
+            self.declared.map(<[String]>::to_vec),
+        )
+    }
 }
 
 /// Judge one tool name against a server's groups and manifest. A `tools/call`
@@ -232,45 +248,29 @@ pub(crate) fn judge(
     None
 }
 
-/// The filter a `tools/list` reply from `server` must pass through, or `None`
-/// when the request holds no `tools/list` or no rule applies to the server and
-/// the reply can be forwarded untouched (#3297).
-pub(crate) fn list_filter(
-    snapshot: &Snapshot,
-    server: &McpServerConfig,
-    caller: &Caller<'_>,
-    body: &[u8],
-) -> Option<ListFilter> {
-    let rules = Rules::of(snapshot, server, caller);
-    if !rules.any() || body.is_empty() {
-        return None;
-    }
-    ListFilter::new(
-        rules.governed.map(Cow::into_owned),
-        rules.declared.map(<[String]>::to_vec),
-        body,
-    )
+/// The key a Go-style decoder would match `key` to: ASCII case folded, plus the
+/// two non-ASCII characters (U+017F, U+212A) that fold to `s` and `k`.
+/// `encoding/json` matches struct fields this way and keeps the last copy, so
+/// `"NAME"` is `"name"` to an upstream written in Go (#3298).
+fn fold_key(key: &str) -> String {
+    key.chars()
+        .map(|c| match c {
+            '\u{17f}' => 's',
+            '\u{212a}' => 'k',
+            c => c.to_ascii_lowercase(),
+        })
+        .collect()
 }
 
-/// The `tools/call` requests in a JSON-RPC body, which is one message or a
-/// batch of them. `None` when the body is not JSON-RPC at all.
-fn tool_calls(body: &[u8]) -> Option<Vec<Map<String, Value>>> {
-    let messages = match serde_json::from_slice::<Value>(body).ok()? {
-        Value::Array(items) => items,
-        other => vec![other],
-    };
-    let mut calls = Vec::new();
-    for message in messages {
-        // a batch may hold anything; only an object can be a call, and an
-        // entry that is not one is the upstream's to reject
-        let Value::Object(request) = message else {
-            continue;
-        };
-        if request.get("method").and_then(Value::as_str) == Some("tools/call") {
-            calls.push(request);
-        }
+/// The value of the key a decoder would take for `name`, whatever its case.
+fn get_folded<'a>(object: &'a Map<String, Value>, name: &str) -> Option<&'a Value> {
+    match object.get(name) {
+        Some(value) => Some(value),
+        None => object
+            .iter()
+            .find(|(key, _)| key.len() >= name.len() && fold_key(key) == name)
+            .map(|(_, value)| value),
     }
-    Some(calls)
 }
 
 /// Where in a JSON-RPC body a repeated key is looked for.
@@ -282,127 +282,226 @@ enum Level {
     Message,
     /// the `params` of a message
     Params,
+    /// anything deeper, which is the tool's own data
+    Plain,
 }
 
-/// Walks a body and reports whether a message, or the `params` of one, repeats
-/// a key. Keys deeper than `params` (tool `arguments`) are the tool's own data
+/// Parses a body into a [`Value`] and, in the same pass, notes whether a
+/// message or the `params` of one repeats a key (compared as a Go decoder folds
+/// them). Keys deeper than `params` (tool `arguments`) are the tool's own data
 /// and are not the policy's to judge.
-struct RepeatedKey(Level);
+struct Parse(Level);
 
-impl<'de> DeserializeSeed<'de> for RepeatedKey {
-    type Value = bool;
+impl<'de> DeserializeSeed<'de> for Parse {
+    type Value = (Value, bool);
 
-    fn deserialize<D: serde::Deserializer<'de>>(self, deserializer: D) -> Result<bool, D::Error> {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        self,
+        deserializer: D,
+    ) -> Result<(Value, bool), D::Error> {
         deserializer.deserialize_any(self)
     }
 }
 
-impl<'de> Visitor<'de> for RepeatedKey {
-    type Value = bool;
+impl<'de> Visitor<'de> for Parse {
+    type Value = (Value, bool);
 
     fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("any JSON value")
     }
 
-    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<bool, A::Error> {
+    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<(Value, bool), A::Error> {
+        let checked = !matches!(self.0, Level::Plain);
         let mut seen = HashSet::new();
         let mut repeated = false;
+        let mut object = Map::new();
         while let Some(key) = map.next_key::<String>()? {
-            let child = match (self.0, key.as_str()) {
-                (Level::Body | Level::Message, "params") => Some(Level::Params),
-                _ => None,
-            };
-            repeated |= !seen.insert(key);
-            match child {
-                Some(level) => repeated |= map.next_value_seed(RepeatedKey(level))?,
-                None => {
-                    map.next_value::<IgnoredAny>()?;
+            let mut child = Level::Plain;
+            if checked {
+                let folded = fold_key(&key);
+                if matches!(self.0, Level::Body | Level::Message) && folded == "params" {
+                    child = Level::Params;
                 }
+                repeated |= !seen.insert(folded);
             }
+            let (value, below) = map.next_value_seed(Parse(child))?;
+            repeated |= below;
+            object.insert(key, value);
         }
-        Ok(repeated)
+        Ok((Value::Object(object), repeated))
     }
 
-    fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<bool, A::Error> {
+    fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<(Value, bool), A::Error> {
         let level = match self.0 {
             Level::Body => Level::Message,
-            // an array anywhere else is data
-            _ => {
-                while seq.next_element::<IgnoredAny>()?.is_some() {}
-                return Ok(false);
-            }
+            _ => Level::Plain,
         };
+        let mut items = Vec::new();
         let mut repeated = false;
-        while let Some(found) = seq.next_element_seed(RepeatedKey(level))? {
-            repeated |= found;
+        while let Some((item, below)) = seq.next_element_seed(Parse(level))? {
+            repeated |= below;
+            items.push(item);
         }
-        Ok(repeated)
+        Ok((Value::Array(items), repeated))
     }
 
-    fn visit_bool<E>(self, _: bool) -> Result<bool, E> {
-        Ok(false)
+    fn visit_bool<E>(self, v: bool) -> Result<(Value, bool), E> {
+        Ok((Value::Bool(v), false))
     }
-    fn visit_i64<E>(self, _: i64) -> Result<bool, E> {
-        Ok(false)
+    fn visit_i64<E>(self, v: i64) -> Result<(Value, bool), E> {
+        Ok((Value::from(v), false))
     }
-    fn visit_u64<E>(self, _: u64) -> Result<bool, E> {
-        Ok(false)
+    fn visit_u64<E>(self, v: u64) -> Result<(Value, bool), E> {
+        Ok((Value::from(v), false))
     }
-    fn visit_f64<E>(self, _: f64) -> Result<bool, E> {
-        Ok(false)
+    fn visit_f64<E>(self, v: f64) -> Result<(Value, bool), E> {
+        Ok((Value::from(v), false))
     }
-    fn visit_str<E>(self, _: &str) -> Result<bool, E> {
-        Ok(false)
+    fn visit_str<E>(self, v: &str) -> Result<(Value, bool), E> {
+        Ok((Value::String(v.to_string()), false))
     }
-    fn visit_unit<E>(self) -> Result<bool, E> {
-        Ok(false)
+    fn visit_string<E>(self, v: String) -> Result<(Value, bool), E> {
+        Ok((Value::String(v), false))
+    }
+    fn visit_unit<E>(self) -> Result<(Value, bool), E> {
+        Ok((Value::Null, false))
     }
 }
 
-/// Whether a message of `body`, or the `params` of one, repeats a key. A body
-/// that does not parse has none to report: the caller has already refused it.
-fn repeats_a_key(body: &[u8]) -> bool {
-    let mut parser = serde_json::Deserializer::from_slice(body);
-    RepeatedKey(Level::Body)
-        .deserialize(&mut parser)
-        .unwrap_or(false)
+/// A request body read once: its messages, and whether any of them repeats a
+/// key. `None` when it is not JSON at all.
+struct Body {
+    messages: Vec<Value>,
+    repeated: bool,
+}
+
+impl Body {
+    fn parse(bytes: &[u8]) -> Option<Self> {
+        let mut parser = serde_json::Deserializer::from_slice(bytes);
+        let (value, repeated) = Parse(Level::Body).deserialize(&mut parser).ok()?;
+        parser.end().ok()?;
+        let messages = match value {
+            Value::Array(items) => items,
+            other => vec![other],
+        };
+        Some(Self { messages, repeated })
+    }
+
+    /// The method a message names, read the way a decoder would.
+    fn method(message: &Value) -> Option<&str> {
+        get_folded(message.as_object()?, "method")?.as_str()
+    }
+
+    fn holds_method(&self, wanted: &str) -> bool {
+        self.messages
+            .iter()
+            .any(|message| Self::method(message) == Some(wanted))
+    }
+
+    /// The `tools/call` requests, as the canonical request the log expects
+    /// (`id`, `params.name`, `params.arguments`), whatever case the caller wrote
+    /// the keys in. A batch may hold anything; only an object can be a call, and
+    /// an entry that is not one is the upstream's to reject.
+    fn tool_calls(&self) -> Vec<(Option<String>, Map<String, Value>)> {
+        self.messages
+            .iter()
+            .filter(|message| Self::method(message) == Some("tools/call"))
+            .filter_map(Value::as_object)
+            .map(|request| {
+                let params = get_folded(request, "params").and_then(Value::as_object);
+                let tool = params
+                    .and_then(|params| get_folded(params, "name"))
+                    .and_then(Value::as_str)
+                    .map(str::to_string);
+                let mut canonical = Map::new();
+                if let Some(id) = get_folded(request, "id") {
+                    canonical.insert("id".into(), id.clone());
+                }
+                if let Some(params) = params {
+                    let mut kept = Map::new();
+                    if let Some(name) = get_folded(params, "name") {
+                        kept.insert("name".into(), name.clone());
+                    }
+                    if let Some(arguments) = get_folded(params, "arguments") {
+                        kept.insert("arguments".into(), arguments.clone());
+                    }
+                    canonical.insert("params".into(), Value::Object(kept));
+                }
+                (tool, canonical)
+            })
+            .collect()
+    }
+}
+
+/// What the policy made of one request body.
+pub(crate) struct Decision {
+    pub verdict: Verdict,
+    /// set when the body is allowed and asks for a tool list, so the reply can
+    /// be narrowed (#3297)
+    pub list_filter: Option<ListFilter>,
+}
+
+impl Decision {
+    fn of(verdict: Verdict) -> Self {
+        Self {
+            verdict,
+            list_filter: None,
+        }
+    }
+}
+
+/// The filter for a stream the caller opens with `GET`, which can carry
+/// `tools/list` replies to requests posted elsewhere, or `None` when no rule
+/// applies to the server (#3297).
+pub(crate) fn stream_filter(
+    snapshot: &Snapshot,
+    server: &McpServerConfig,
+    caller: &Caller<'_>,
+) -> Option<ListFilter> {
+    let rules = Rules::of(snapshot, server, caller);
+    rules.any().then(|| rules.list_filter())
 }
 
 /// Apply the policy to a request body bound for `server`.
-pub(crate) fn enforce(
+pub(crate) fn evaluate(
     snapshot: &Snapshot,
     server: &McpServerConfig,
     caller: &Caller<'_>,
     body: &[u8],
-) -> Verdict {
+) -> Decision {
     let rules = Rules::of(snapshot, server, caller);
     if !rules.any() || body.is_empty() {
-        return Verdict::Allow;
+        return Decision::of(Verdict::Allow);
     }
-    let Some(calls) = tool_calls(body) else {
+    let Some(parsed) = Body::parse(body) else {
         // what to do with a request that cannot be inspected is the
         // organization's failure policy; refusing is the default
         let fail_open = snapshot
             .mcp_org_settings
             .get(&server.org_id)
             .is_some_and(|settings| settings.fail_open);
-        return if fail_open {
+        return Decision::of(if fail_open {
             Verdict::Allow
         } else {
             Verdict::Unreadable
-        };
+        });
     };
-    if repeats_a_key(body) {
-        return Verdict::Ambiguous;
+    let calls = parsed.tool_calls();
+    if parsed.repeated {
+        return Decision::of(Verdict::Ambiguous(
+            calls
+                .into_iter()
+                .map(|(tool, request)| Refused {
+                    tool,
+                    denial: Denial::Ambiguous,
+                    request,
+                })
+                .collect(),
+        ));
     }
     let refused: Vec<Refused> = calls
         .into_iter()
-        .filter_map(|request| {
-            let tool = request
-                .get("params")
-                .and_then(|params| params.get("name"))
-                .and_then(Value::as_str)
-                .map(str::to_string);
+        .filter_map(|(tool, request)| {
             let denial = rules.judge(tool.as_deref())?;
             Some(Refused {
                 tool,
@@ -411,10 +510,18 @@ pub(crate) fn enforce(
             })
         })
         .collect();
-    if refused.is_empty() {
-        Verdict::Allow
-    } else {
-        Verdict::Denied(refused)
+    if !refused.is_empty() {
+        return Decision::of(Verdict::Denied(refused));
+    }
+    // a reply is narrowed whatever id it carries: ids are compared as JSON
+    // values (`1` is not `1.0`) and a decoder may read `ID` as `id`, so
+    // matching replies to requests is a way to be bypassed
+    let list_filter = parsed
+        .holds_method("tools/list")
+        .then(|| rules.list_filter());
+    Decision {
+        verdict: Verdict::Allow,
+        list_filter,
     }
 }
 
@@ -437,7 +544,7 @@ mod tests {
 
     /// the policy for the default caller, which no group is assigned to
     fn enforce(snapshot: &Snapshot, server: &McpServerConfig, body: &[u8]) -> Verdict {
-        super::enforce(snapshot, server, &caller(), body)
+        super::evaluate(snapshot, server, &caller(), body).verdict
     }
 
     fn snapshot(groups: Vec<McpToolGroupConfig>) -> (Snapshot, McpServerConfig) {
@@ -638,7 +745,7 @@ mod tests {
             assert!(
                 matches!(
                     enforce(&snapshot, &server, body.as_bytes()),
-                    Verdict::Ambiguous
+                    Verdict::Ambiguous(_)
                 ),
                 "{body}"
             );
@@ -652,7 +759,7 @@ mod tests {
             r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"a","name":"b"}}"#;
         assert!(matches!(
             enforce(&open, &server, body.as_bytes()),
-            Verdict::Ambiguous
+            Verdict::Ambiguous(_)
         ));
     }
 
@@ -680,7 +787,7 @@ mod tests {
             .iter()
             .map(|tool| {
                 matches!(
-                    super::enforce(snapshot, server, caller, call(tool).as_bytes()),
+                    super::evaluate(snapshot, server, caller, call(tool).as_bytes()).verdict,
                     Verdict::Allow
                 )
             })
@@ -783,12 +890,103 @@ mod tests {
             ),
         ]);
         let request = br#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#;
-        let filter = list_filter(&snapshot, &server, &caller(), request).unwrap();
+        let filter = evaluate(&snapshot, &server, &caller(), request)
+            .list_filter
+            .unwrap();
         let reply = br#"{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"a"},{"name":"b"}]}}"#;
         let filtered = String::from_utf8(filter.filter_json(reply).unwrap()).unwrap();
         assert!(
             filtered.contains("\"a\"") && !filtered.contains("\"b\""),
             "{filtered}"
+        );
+    }
+
+    /// #3298: a Go decoder matches keys case-insensitively and keeps the last
+    /// copy, so a repeat that only differs in case is a repeat
+    #[test]
+    fn a_repeat_that_differs_only_in_case_is_refused() {
+        let (snapshot, server) = snapshot(vec![group("org", "srv", &["get_issue"])]);
+        for body in [
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_issue","NAME":"drop"}}"#,
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"Name":"drop","name":"get_issue"}}"#,
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/list","Method":"tools/call","params":{"name":"drop"}}"#,
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"drop"},"Params":{"name":"get_issue"}}"#,
+            // U+017F and U+212A fold to `s` and `k` in a Go decoder
+            "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"param\u{17f}\":{\"name\":\"get_issue\"},\"params\":{\"name\":\"drop\"}}",
+        ] {
+            assert!(
+                matches!(enforce(&snapshot, &server, body.as_bytes()), Verdict::Ambiguous(_)),
+                "{body}"
+            );
+        }
+    }
+
+    /// a lone `Method` or `NAME` is read by such a decoder as `method` or
+    /// `name`, so the policy has to read it the same way
+    #[test]
+    fn keys_in_another_case_are_judged_like_the_lowercase_ones() {
+        let (snapshot, server) = snapshot(vec![group("org", "srv", &["get_issue"])]);
+        for body in [
+            r#"{"jsonrpc":"2.0","id":1,"Method":"tools/call","params":{"name":"drop"}}"#,
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","PARAMS":{"Name":"drop"}}"#,
+        ] {
+            assert_eq!(
+                denied_tools(enforce(&snapshot, &server, body.as_bytes())),
+                [Some("drop".to_string())],
+                "{body}"
+            );
+        }
+        let allowed =
+            r#"{"jsonrpc":"2.0","id":1,"Method":"tools/call","params":{"NAME":"get_issue"}}"#;
+        assert!(matches!(
+            enforce(&snapshot, &server, allowed.as_bytes()),
+            Verdict::Allow
+        ));
+    }
+
+    /// #3297: whatever the request's id, the reply to a tool list is narrowed
+    #[test]
+    fn a_tools_list_request_makes_a_filter_whatever_its_id() {
+        let (snapshot, server) = snapshot(vec![group("org", "srv", &["get_issue"])]);
+        for body in [
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#,
+            r#"{"jsonrpc":"2.0","id":1.0,"method":"tools/list"}"#,
+            r#"{"jsonrpc":"2.0","id":null,"method":"tools/list"}"#,
+            r#"{"jsonrpc":"2.0","method":"tools/list"}"#,
+            r#"{"jsonrpc":"2.0","id":1,"Method":"tools/list"}"#,
+            r#"[{"jsonrpc":"2.0","id":2,"method":"ping"},{"jsonrpc":"2.0","id":1,"method":"tools/list"}]"#,
+        ] {
+            let decision = evaluate(&snapshot, &server, &caller(), body.as_bytes());
+            assert!(matches!(decision.verdict, Verdict::Allow), "{body}");
+            assert!(decision.list_filter.is_some(), "{body}");
+        }
+        for body in [
+            r#"{"jsonrpc":"2.0","id":1,"method":"ping"}"#,
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_issue"}}"#,
+        ] {
+            let decision = evaluate(&snapshot, &server, &caller(), body.as_bytes());
+            assert!(decision.list_filter.is_none(), "{body}");
+        }
+    }
+
+    #[test]
+    fn a_stream_is_filtered_only_where_a_rule_applies() {
+        let (snapshot, server) = snapshot(vec![group("org", "srv", &["get_issue"])]);
+        assert!(stream_filter(&snapshot, &server, &caller()).is_some());
+        let (snapshot, server) = world(vec![]);
+        assert!(stream_filter(&snapshot, &server, &caller()).is_none());
+    }
+
+    /// a group disabled while callers are assigned to it narrows them to
+    /// nothing; it does not hand them the organization-wide set back
+    #[test]
+    fn a_caller_assigned_to_a_disabled_group_gets_none_of_its_tools() {
+        let mut off = assigned(named(group("org", "srv", &[]), "off"), "team", "team-1");
+        off.tools.clear();
+        let (snapshot, server) = world(vec![named(group("org", "srv", &["a", "b"]), "all"), off]);
+        assert_eq!(
+            allowed_for(&snapshot, &server, &caller()),
+            [false, false, false]
         );
     }
 

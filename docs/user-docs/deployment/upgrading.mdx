@@ -245,6 +245,10 @@ Two MCP rules that were stored but not enforced are enforced from this release:
 
 Organizations created from this release on start the other way round: until they save their MCP settings, a server's declared manifest is enforced and a call to a tool it leaves out is refused with `403` `mcp_tool_denied`. They opt out by saving **MCP → MCP Settings** with **Allow unlisted tools** on. Organizations that already exist are not touched, whether or not they ever saved settings, and creating an organization still stores no settings row, so its timeouts and retries keep following the deployment defaults.
 
+## Log erasure and the MCP tool-call log
+
+A [log erasure](/observability/log-erasure) now also deletes (or, for `include_logs: false`, blanks the bodies of) the subject's rows in `mcp_tool_call_logs`. A ClickHouse that was never given `clickhouse/007_mcp_tool_call_logs.sql` has no such table, so the erasure fails at its MCP statement with the usual `failed` record after the request-log statements were already submitted. Apply the migration before the first erasure after upgrading; submitting the erasure again is safe.
+
 ## A checklist
 
 1. Back up the control-plane database, and confirm you have `ROLTER_KEK` outside it.

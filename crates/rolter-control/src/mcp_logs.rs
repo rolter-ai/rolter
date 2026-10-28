@@ -6,6 +6,8 @@
 //! only SSE and streamable HTTP; a `websocket` event can come only from an
 //! external producer, and is accepted so such rows stay valid.
 
+use std::sync::Arc;
+
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
@@ -27,7 +29,9 @@ use crate::rbac_matrix::superadmin_cap;
 use crate::time_bounds::{InvalidParam, Query, TimeBounds};
 use crate::ControlState;
 
+use parking_lot::Mutex;
 use rolter_core::mcp_log::{capture, safe_error, MCP_STATUSES};
+use rolter_core::payload_redaction::PayloadRedactor;
 use rolter_core::MCP_TRANSPORTS;
 pub(crate) fn router() -> Router<ControlState> {
     Router::new()
@@ -110,6 +114,24 @@ fn event_ts(supplied: Option<&str>) -> Result<String, String> {
     Ok(ts.to_rfc3339_opts(SecondsFormat::Millis, true))
 }
 
+/// The redaction policy of the stored capture settings, compiled once and
+/// reused until they change: compiling the detectors per event would put a
+/// regex build on every ingested call. The same policy the request log applies;
+/// one that does not compile still leaves the key rule in force.
+fn redactor_for(policy: &rolter_core::PayloadCaptureConfig) -> Arc<PayloadRedactor> {
+    static CACHE: Mutex<Option<(String, Arc<PayloadRedactor>)>> = Mutex::new(None);
+    let key = serde_json::to_string(policy).unwrap_or_default();
+    let mut slot = CACHE.lock();
+    if let Some((cached, redactor)) = &*slot {
+        if *cached == key {
+            return Arc::clone(redactor);
+        }
+    }
+    let redactor = Arc::new(policy.redactor().0);
+    *slot = Some((key, Arc::clone(&redactor)));
+    redactor
+}
+
 async fn ingest_event(
     principal: Principal,
     State(state): State<ControlState>,
@@ -120,9 +142,7 @@ async fn ingest_event(
         .map_err(|message| ApiError::Core(rolter_core::Error::Config(message)))?;
     let logging = state.store.load().await?.logging;
     let capture_policy = logging.payload_capture;
-    // the same policy the request log applies; a value policy that does not
-    // compile still leaves the key rule in force
-    let (redactor, _) = capture_policy.redactor();
+    let redactor = redactor_for(&capture_policy);
     let ts = event_ts(event.ts.as_deref())
         .map_err(|message| ApiError::Core(rolter_core::Error::Config(message)))?;
     let row = json!({

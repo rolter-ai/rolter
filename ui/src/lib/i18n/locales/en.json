@@ -1592,7 +1592,7 @@
     "tool-groups": {
       "confirm": {
         "title": "Delete tool group {{name}}?",
-        "body": "The bundle is removed and its restriction is lifted on the next snapshot. Callers it narrowed go back to the organization's other groups."
+        "body": "The bundle is removed and its restriction is lifted on the next snapshot. Its assignments are removed with it, so a team, project or key that was assigned only to this group goes back to the organization's other groups."
       },
       "emptyTitle": "No tool groups",
       "lead": "Bundle exact server/tool pairs into policy manifests. The gateway enforces them: a server that a group names serves only the tools its groups list, and a group can be assigned to teams or projects to narrow them.",
@@ -1611,6 +1611,7 @@
         "teams": "Teams",
         "projects": "Projects",
         "keysKept": "Assignments to single virtual keys, set through the API, are kept as they are.",
+        "loading": "Reading the current assignments…",
         "unavailable": "The assignments could not be read, so they are not editable here. Close and reopen to retry.",
         "everyone": "Everyone in the organization",
         "narrowed": "Assigned callers only"

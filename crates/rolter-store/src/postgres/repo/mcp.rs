@@ -604,6 +604,19 @@ impl McpServerRepo<'_> {
     }
 }
 
+/// A tool group being created, with the subjects it is assigned to.
+#[derive(Debug, Clone, Copy)]
+pub struct NewMcpToolGroup<'a> {
+    pub org_id: Uuid,
+    pub name: &'a str,
+    pub slug: &'a str,
+    pub description: &'a str,
+    pub enabled: bool,
+    pub tools: &'a serde_json::Value,
+    /// `(kind, subject id)`, written in the group's own transaction
+    pub assignments: &'a [(String, Uuid)],
+}
+
 /// Organization-owned tool-group policy manifests.
 pub struct McpToolGroupRepo<'a>(pub &'a PgPool);
 
@@ -634,16 +647,21 @@ impl McpToolGroupRepo<'_> {
         .await
     }
 
-    pub async fn create(
-        &self,
-        org_id: Uuid,
-        name: &str,
-        slug: &str,
-        description: &str,
-        enabled: bool,
-        tools: &serde_json::Value,
-    ) -> Result<McpToolGroup> {
-        sqlx::query_as(sqlx::AssertSqlSafe(format!(
+    /// Create a group and, in the same transaction, the subjects it is assigned
+    /// to, so a group meant to be narrowed is never visible to a gateway as
+    /// applying to the whole organization (#3295).
+    pub async fn create(&self, new: NewMcpToolGroup<'_>) -> Result<McpToolGroup> {
+        let NewMcpToolGroup {
+            org_id,
+            name,
+            slug,
+            description,
+            enabled,
+            tools,
+            assignments,
+        } = new;
+        let mut tx = self.0.begin().await.map_err(store_err)?;
+        let group: McpToolGroup = sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "insert into mcp_tool_groups (org_id, name, slug, description, enabled, tools) \
              values ($1, $2, $3, $4, $5, $6) returning {MCP_TOOL_GROUP_COLUMNS}"
         )))
@@ -653,9 +671,23 @@ impl McpToolGroupRepo<'_> {
         .bind(description)
         .bind(enabled)
         .bind(tools)
-        .fetch_one(self.0)
+        .fetch_one(&mut *tx)
         .await
-        .map_err(store_err)
+        .map_err(store_err)?;
+        for (kind, subject_id) in assignments {
+            sqlx::query(
+                "insert into mcp_tool_group_assignments (group_id, subject_kind, subject_id) \
+                 values ($1, $2, $3) on conflict do nothing",
+            )
+            .bind(group.id)
+            .bind(kind)
+            .bind(subject_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(store_err)?;
+        }
+        tx.commit().await.map_err(store_err)?;
+        Ok(group)
     }
 
     pub async fn update(
@@ -708,6 +740,17 @@ impl McpToolGroupAssignmentRepo<'_> {
              where g.org_id = $1 order by a.group_id, a.subject_kind, a.subject_id",
         )
         .bind(org_id)
+        .fetch_all(self.0)
+        .await
+        .map_err(store_err)
+    }
+
+    /// The subjects a group is assigned to now.
+    pub async fn list_for_group(&self, group_id: Uuid) -> Result<Vec<(String, Uuid)>> {
+        sqlx::query_as(
+            "select subject_kind, subject_id from mcp_tool_group_assignments where group_id = $1",
+        )
+        .bind(group_id)
         .fetch_all(self.0)
         .await
         .map_err(store_err)

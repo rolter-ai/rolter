@@ -47,6 +47,10 @@ pub(crate) fn router() -> Router<ControlState> {
 /// request will chase through their log rows.
 const LEGACY_PAYLOAD_LIMIT: u32 = 10_000;
 
+/// How far from a request's instant its MCP tool-call row may be stamped, in
+/// seconds, for a `request` scope that names `ts`.
+const MCP_TS_WINDOW_SECONDS: u32 = 300;
+
 /// How long a `pending` erasure may go without ClickHouse listing any of its
 /// mutations before it is reported `unverified`: the server was replaced or
 /// pruned its mutation history, and completion can no longer be read.
@@ -134,6 +138,17 @@ fn predicates(scope: &ScopeBody, user_keys: &[Uuid]) -> Predicates {
                 legacy_column: Some("virtual_key_id"),
             }
         }
+        ScopeBody::User { id } if user_keys.is_empty() => {
+            // no key to find request rows by: only the MCP log, whose rows carry
+            // the owner's own id, has anything of this user's (#3278). `1 = 0`
+            // keeps the request statements valid while matching nothing
+            Predicates {
+                logs: "1 = 0".to_string(),
+                payloads: "1 = 0".to_string(),
+                mcp: format!("user_id = {}", quoted(&id.to_string())),
+                legacy_column: None,
+            }
+        }
         ScopeBody::User { id } => {
             let p = format!("virtual_key_id in ({})", key_list(user_keys));
             Predicates {
@@ -162,16 +177,22 @@ fn predicates(scope: &ScopeBody, user_keys: &[Uuid]) -> Predicates {
                 quoted(request_id),
                 quoted(&org_id.to_string())
             );
+            let mut mcp = p.clone();
             if let Some(ts) = ts {
-                p.push_str(&format!(
-                    " and ts = toDateTime64({}, 3, 'UTC')",
-                    quoted(&ts.format("%Y-%m-%d %H:%M:%S%.3f").to_string())
+                let instant = quoted(&ts.format("%Y-%m-%d %H:%M:%S%.3f").to_string());
+                p.push_str(&format!(" and ts = toDateTime64({instant}, 3, 'UTC')"));
+                // the MCP row is stamped when the call was made, not with the
+                // instant of the request-log row the caller read `ts` from, so
+                // it is matched inside a window around it
+                mcp.push_str(&format!(
+                    " and ts between toDateTime64({instant}, 3, 'UTC') - interval {MCP_TS_WINDOW_SECONDS} second \
+                     and toDateTime64({instant}, 3, 'UTC') + interval {MCP_TS_WINDOW_SECONDS} second"
                 ));
             }
             Predicates {
                 logs: p.clone(),
-                payloads: p.clone(),
-                mcp: p,
+                payloads: p,
+                mcp,
                 legacy_column: None,
             }
         }
@@ -310,17 +331,7 @@ async fn create_erasure(
     };
     let repo = LogErasureRepo(pool(&state));
     let user_keys = match &body.scope {
-        ScopeBody::User { id } => {
-            let keys = repo.key_ids_created_by(*id).await?;
-            if keys.is_empty() {
-                return Err(invalid_field(
-                    "scope_id",
-                    "this user created no virtual key that still exists, so their rows cannot \
-                     be found; erase by organization or by key id instead",
-                ));
-            }
-            keys
-        }
+        ScopeBody::User { id } => repo.key_ids_created_by(*id).await?,
         _ => Vec::new(),
     };
     let predicates = predicates(&body.scope, &user_keys);
@@ -680,9 +691,23 @@ mod tests {
             org_id: uuid(3),
             ts: Some(ts),
         };
-        assert!(predicates(&scope, &[])
+        let p = predicates(&scope, &[]);
+        assert!(p
             .logs
             .ends_with("ts = toDateTime64('2026-10-27 12:30:45.123', 3, 'UTC')"));
+        // the MCP row has its own timestamp, so it is matched in a window
+        assert!(!p.mcp.contains("and ts = "));
+        assert!(p.mcp.contains(
+            "ts between toDateTime64('2026-10-27 12:30:45.123', 3, 'UTC') - interval 300 second"
+        ));
+    }
+
+    #[test]
+    fn a_user_with_no_keys_still_reaches_their_mcp_rows() {
+        let p = predicates(&ScopeBody::User { id: uuid(5) }, &[]);
+        assert_eq!(p.mcp, format!("user_id = '{}'", uuid(5)));
+        // valid SQL that matches nothing, and no lookup of older payload rows
+        assert_eq!((p.logs.as_str(), p.legacy_column), ("1 = 0", None));
     }
 
     #[test]

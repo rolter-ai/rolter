@@ -3,22 +3,30 @@
 //! The tool policy ([`crate::mcp_policy`]) refuses a `tools/call` outside the
 //! organization's tool groups or a server's declared manifest. Without this a
 //! client would still be *shown* every tool the server has and be refused on
-//! the first call. The reply to a `tools/list` request is therefore rewritten to
-//! hold only the tools the same rules would let through.
+//! the first call. A reply that lists tools is therefore rewritten to hold only
+//! the tools the same rules would let through.
 //!
-//! Only replies to a `tools/list` request are touched, and only when a rule
-//! applies to the server at all; every other request streams through unread.
-//! A reply is matched to its request by JSON-RPC id, so a batch holding a
-//! `tools/list` beside other calls filters only that answer. Pagination needs
-//! nothing special: each page is its own reply and is filtered on its own, with
-//! its `nextCursor` left alone (a page can end up holding fewer tools than the
-//! server's page size, or none, which the protocol allows).
+//! A reply is recognised by its shape, a `result.tools` array, and never by its
+//! JSON-RPC id: ids compare as JSON values (`1` is not `1.0`), a request may
+//! carry none or a `null`, and a decoder may read `ID` as `id`, so correlating
+//! replies with requests is a way to be bypassed. Whenever a request asked for a
+//! tool list, or the caller opened a stream that could carry the reply to one,
+//! every message with that shape is narrowed.
+//!
+//! That covers the three places a reply can come from: the JSON or SSE body of
+//! the `POST` that asked, and the `GET` stream of a legacy `sse` server, which
+//! answers the `POST` with `202` and delivers the reply on the stream (or a
+//! replayed streamable-HTTP stream). Pagination needs nothing special: each page
+//! is its own reply and is filtered on its own, with its `nextCursor` left alone
+//! (a page can end up holding fewer tools than the server's page size, or none,
+//! which the protocol allows).
 //!
 //! A JSON reply is buffered up to [`MAX_LIST_REPLY`] and an SSE reply is
 //! rewritten one event at a time, so a long-lived stream is not held back.
 
 // spec-ref: json-rpc, mcp-transport
 use std::collections::{HashSet, VecDeque};
+use std::io;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
@@ -31,32 +39,22 @@ use serde_json::Value;
 /// larger than this is refused rather than forwarded unfiltered.
 pub(crate) const MAX_LIST_REPLY: usize = 16 * 1024 * 1024;
 
-/// What a `tools/list` reply is narrowed to.
+/// The most of one SSE event the filter holds while waiting for its end. A
+/// stream with a longer one is cut rather than passed on unfiltered.
+const MAX_EVENT: usize = 16 * 1024 * 1024;
+
+/// What a reply that lists tools is narrowed to.
 #[derive(Debug)]
 pub(crate) struct ListFilter {
     /// the tools the enabled groups allow, when any names the server
     governed: Option<HashSet<String>>,
     /// the server's declared manifest, when calls must stay inside it
     declared: Option<Vec<String>>,
-    /// the ids of the `tools/list` requests in the body; the replies carrying
-    /// one of these are filtered
-    ids: Vec<Value>,
 }
 
 impl ListFilter {
-    /// A filter for a request body, or `None` when it holds no `tools/list`
-    /// request that expects an answer.
-    pub(crate) fn new(
-        governed: Option<HashSet<String>>,
-        declared: Option<Vec<String>>,
-        body: &[u8],
-    ) -> Option<Self> {
-        let ids = list_ids(body);
-        (!ids.is_empty()).then_some(Self {
-            governed,
-            declared,
-            ids,
-        })
+    pub(crate) fn new(governed: Option<HashSet<String>>, declared: Option<Vec<String>>) -> Self {
+        Self { governed, declared }
     }
 
     /// Whether the policy would let a call for `tool` through.
@@ -65,16 +63,11 @@ impl ListFilter {
             .is_none()
     }
 
-    /// Narrow one reply message in place; whether it was a `tools/list` answer.
+    /// Narrow one message in place if it carries a tool list; whether it did.
     fn apply(&self, message: &mut Value) -> bool {
-        let Some(object) = message.as_object_mut() else {
-            return false;
-        };
-        if !object.get("id").is_some_and(|id| self.ids.contains(id)) {
-            return false;
-        }
-        let Some(tools) = object
-            .get_mut("result")
+        let Some(tools) = message
+            .as_object_mut()
+            .and_then(|object| object.get_mut("result"))
             .and_then(|result| result.get_mut("tools"))
             .and_then(Value::as_array_mut)
         else {
@@ -89,25 +82,23 @@ impl ListFilter {
         true
     }
 
+    fn apply_all(&self, value: &mut Value) -> bool {
+        match value {
+            Value::Array(items) => items.iter_mut().fold(false, |any, m| self.apply(m) | any),
+            other => self.apply(other),
+        }
+    }
+
     /// Narrow a whole JSON reply, a message or a batch. `None` when the body is
     /// not JSON, which the caller must treat as unfilterable.
     pub(crate) fn filter_json(&self, body: &[u8]) -> Option<Vec<u8>> {
         let mut value: Value = serde_json::from_slice(body).ok()?;
-        match &mut value {
-            Value::Array(items) => {
-                for item in items {
-                    self.apply(item);
-                }
-            }
-            other => {
-                self.apply(other);
-            }
-        }
+        self.apply_all(&mut value);
         serde_json::to_vec(&value).ok()
     }
 
-    /// Rewrite one SSE event if it carries a `tools/list` answer; every other
-    /// event comes back byte for byte.
+    /// Rewrite one SSE event if it carries a tool list; every other event comes
+    /// back byte for byte.
     fn filter_event(&self, event: &[u8]) -> Vec<u8> {
         let Ok(text) = std::str::from_utf8(event) else {
             return event.to_vec();
@@ -129,11 +120,7 @@ impl ListFilter {
         let Ok(mut message) = serde_json::from_str::<Value>(&data) else {
             return event.to_vec();
         };
-        let touched = match &mut message {
-            Value::Array(items) => items.iter_mut().fold(false, |any, m| self.apply(m) | any),
-            other => self.apply(other),
-        };
-        if !touched {
+        if !self.apply_all(&mut message) {
             return event.to_vec();
         }
         let Ok(json) = serde_json::to_string(&message) else {
@@ -151,42 +138,63 @@ impl ListFilter {
     }
 }
 
-/// The ids of the `tools/list` requests in a body that expect an answer.
-fn list_ids(body: &[u8]) -> Vec<Value> {
-    let Ok(parsed) = serde_json::from_slice::<Value>(body) else {
-        return Vec::new();
-    };
-    let messages = match parsed {
-        Value::Array(items) => items,
-        other => vec![other],
-    };
-    messages
-        .into_iter()
-        .filter(|message| message.get("method").and_then(Value::as_str) == Some("tools/list"))
-        .filter_map(|message| message.get("id").cloned())
-        .filter(|id| !id.is_null())
-        .collect()
+/// Finds the end of SSE events in a growing buffer without rescanning it. A
+/// line ends with `\r\n`, `\n` or `\r`, and an event ends at the first empty
+/// line after at least one line of content.
+#[derive(Default)]
+struct EventScanner {
+    /// how far the buffer has been scanned
+    pos: usize,
+    /// where the current line began
+    line_start: usize,
+    /// whether the event so far holds a line
+    has_content: bool,
 }
 
-/// The first complete SSE event in `buf`, terminator included.
-fn take_event(buf: &mut Vec<u8>) -> Option<Vec<u8>> {
-    let end = [&b"\n\n"[..], &b"\r\n\r\n"[..]]
-        .iter()
-        .filter_map(|terminator| {
-            buf.windows(terminator.len())
-                .position(|window| window == *terminator)
-                .map(|at| at + terminator.len())
-        })
-        .min()?;
-    Some(buf.drain(..end).collect())
+impl EventScanner {
+    /// The end of the first complete event in `buf`, terminator included, or
+    /// `None` when more bytes are needed. The scanner is reset by the caller
+    /// after it removes the event.
+    fn end(&mut self, buf: &[u8]) -> Option<usize> {
+        while self.pos < buf.len() {
+            let terminator = match buf[self.pos] {
+                b'\n' => 1,
+                b'\r' if self.pos + 1 < buf.len() => {
+                    if buf[self.pos + 1] == b'\n' {
+                        2
+                    } else {
+                        1
+                    }
+                }
+                // a trailing `\r` may be the first half of `\r\n`
+                b'\r' => return None,
+                _ => {
+                    self.pos += 1;
+                    continue;
+                }
+            };
+            let empty = self.pos == self.line_start;
+            self.pos += terminator;
+            self.line_start = self.pos;
+            if empty && self.has_content {
+                return Some(self.pos);
+            }
+            self.has_content |= !empty;
+        }
+        None
+    }
+
+    fn reset(&mut self) {
+        *self = Self::default();
+    }
 }
 
-/// An SSE response body with its `tools/list` answers narrowed, one event at a
-/// time.
+/// An SSE response body with its tool lists narrowed, one event at a time.
 pub(crate) struct FilteredSse<S> {
     inner: S,
     filter: Arc<ListFilter>,
     pending: Vec<u8>,
+    scanner: EventScanner,
     ready: VecDeque<Bytes>,
     finished: bool,
 }
@@ -197,6 +205,7 @@ impl<S> FilteredSse<S> {
             inner,
             filter,
             pending: Vec::new(),
+            scanner: EventScanner::default(),
             ready: VecDeque::new(),
             finished: false,
         }
@@ -206,8 +215,9 @@ impl<S> FilteredSse<S> {
 impl<S, E> Stream for FilteredSse<S>
 where
     S: Stream<Item = Result<Bytes, E>> + Unpin,
+    E: Into<Box<dyn std::error::Error + Send + Sync>>,
 {
-    type Item = Result<Bytes, E>;
+    type Item = Result<Bytes, io::Error>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         loop {
@@ -219,12 +229,30 @@ where
             }
             match Pin::new(&mut self.inner).poll_next(cx) {
                 Poll::Pending => return Poll::Pending,
-                Poll::Ready(Some(Err(error))) => return Poll::Ready(Some(Err(error))),
+                Poll::Ready(Some(Err(error))) => {
+                    self.finished = true;
+                    return Poll::Ready(Some(Err(io::Error::other(error))));
+                }
                 Poll::Ready(Some(Ok(chunk))) => {
                     self.pending.extend_from_slice(&chunk);
-                    while let Some(event) = take_event(&mut self.pending) {
-                        let rewritten = self.filter.filter_event(&event);
-                        self.ready.push_back(Bytes::from(rewritten));
+                    loop {
+                        let this = &mut *self;
+                        let Some(end) = this.scanner.end(&this.pending) else {
+                            break;
+                        };
+                        let event: Vec<u8> = this.pending.drain(..end).collect();
+                        this.scanner.reset();
+                        let rewritten = this.filter.filter_event(&event);
+                        this.ready.push_back(Bytes::from(rewritten));
+                    }
+                    if self.pending.len() > MAX_EVENT {
+                        // refuse the stream rather than pass an event on
+                        // unfiltered
+                        self.finished = true;
+                        self.pending.clear();
+                        return Poll::Ready(Some(Err(io::Error::other(
+                            "an event in the MCP stream is larger than the filter holds",
+                        ))));
                     }
                 }
                 Poll::Ready(None) => {
@@ -250,9 +278,7 @@ mod tests {
         ListFilter::new(
             Some(allowed.iter().map(|tool| (*tool).to_string()).collect()),
             None,
-            br#"{"jsonrpc":"2.0","id":7,"method":"tools/list"}"#,
         )
-        .expect("a tools/list request")
     }
 
     fn reply(id: u64, names: &[&str], cursor: Option<&str>) -> String {
@@ -275,23 +301,6 @@ mod tests {
             .iter()
             .map(|tool| tool["name"].as_str().unwrap().to_string())
             .collect()
-    }
-
-    #[test]
-    fn only_a_tools_list_request_with_an_id_makes_a_filter() {
-        for body in [
-            &br#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{}}"#[..],
-            br#"{"jsonrpc":"2.0","method":"tools/list"}"#,
-            br#"not json"#,
-        ] {
-            assert!(ListFilter::new(None, None, body).is_none());
-        }
-        assert!(ListFilter::new(
-            None,
-            None,
-            br#"[{"jsonrpc":"2.0","id":"a","method":"tools/list"}]"#
-        )
-        .is_some());
     }
 
     #[test]
@@ -319,14 +328,25 @@ mod tests {
         );
     }
 
+    /// a reply is narrowed whatever id it carries: `1` is not `1.0` as JSON, a
+    /// request may have sent `null` or none, and `ID` is `id` to a Go decoder
     #[test]
-    fn a_reply_that_answers_another_request_is_left_alone() {
+    fn a_reply_is_narrowed_whatever_its_id() {
         let filter = filter(&["a"]);
-        let other = reply(8, &["a", "b"], None);
-        assert_eq!(
-            names(&filter.filter_json(other.as_bytes()).unwrap()),
-            ["a", "b"]
-        );
+        for id in ["1", "1.0", "1e0", "null", "\"one\"", "999"] {
+            let body = format!(
+                r#"{{"jsonrpc":"2.0","id":{id},"result":{{"tools":[{{"name":"a"}},{{"name":"b"}}]}}}}"#
+            );
+            assert_eq!(
+                names(&filter.filter_json(body.as_bytes()).unwrap()),
+                ["a"],
+                "{id}"
+            );
+        }
+        let no_id = r#"{"jsonrpc":"2.0","result":{"tools":[{"name":"a"},{"name":"b"}]}}"#;
+        assert_eq!(names(&filter.filter_json(no_id.as_bytes()).unwrap()), ["a"]);
+        let upper = r#"{"jsonrpc":"2.0","ID":1,"result":{"tools":[{"name":"a"},{"name":"b"}]}}"#;
+        assert_eq!(names(&filter.filter_json(upper.as_bytes()).unwrap()), ["a"]);
     }
 
     #[test]
@@ -394,5 +414,51 @@ mod tests {
             names(out.trim().trim_start_matches("data: ").as_bytes()),
             ["a"]
         );
+    }
+
+    #[test]
+    fn events_end_at_any_empty_line_and_resume_where_they_stopped() {
+        for (terminator, ends) in [
+            ("\n\n", true),
+            ("\r\n\r\n", true),
+            ("\r\r", true),
+            ("\n\r\n", true),
+            ("\r\n\n", true),
+            ("\n", false),
+        ] {
+            let mut scanner = EventScanner::default();
+            // a trailing `\r` could still become `\r\n`, so a byte follows
+            let buf = format!("data: x{terminator}d").into_bytes();
+            assert_eq!(scanner.end(&buf).is_some(), ends, "{terminator:?}");
+        }
+        // a chunk boundary inside `\r\n` or between the two line ends
+        let mut scanner = EventScanner::default();
+        let mut buf = b"data: x\r".to_vec();
+        assert_eq!(scanner.end(&buf), None);
+        buf.extend_from_slice(b"\n\r");
+        assert_eq!(scanner.end(&buf), None);
+        buf.extend_from_slice(b"\n");
+        assert_eq!(scanner.end(&buf), Some(buf.len()));
+    }
+
+    #[tokio::test]
+    async fn an_sse_answer_ended_by_a_bare_cr_is_still_narrowed() {
+        let answer = reply(7, &["a", "b"], None);
+        let event: &'static str = Box::leak(format!("data: {answer}\r\r").into_boxed_str());
+        let out = collect(filter(&["a"]), vec![event]).await;
+        let json = out.trim().trim_start_matches("data: ");
+        assert_eq!(names(json.as_bytes()), ["a"]);
+    }
+
+    #[tokio::test]
+    async fn an_event_larger_than_the_cap_cuts_the_stream_instead_of_passing_it_on() {
+        let huge: &'static str =
+            Box::leak(format!("data: {}", "x".repeat(MAX_EVENT + 1)).into_boxed_str());
+        let stream = futures_util::stream::iter([Ok::<_, std::io::Error>(Bytes::from(huge))]);
+        let out: Vec<_> = FilteredSse::new(stream, Arc::new(filter(&["a"])))
+            .collect()
+            .await;
+        assert_eq!(out.len(), 1);
+        assert!(out[0].is_err(), "the oversized event is not forwarded");
     }
 }

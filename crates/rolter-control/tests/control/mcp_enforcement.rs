@@ -349,17 +349,97 @@ async fn tool_group_assignments_reach_the_snapshot_and_stay_inside_the_organizat
     assert_eq!(assignments.len(), 3, "{config}");
     assert!(assignments.contains(&json!({"kind": "team", "id": subjects[0].0.to_string()})));
 
-    // a disabled group governs nothing, so it carries no assignment either
+    // a disabled group governs nothing, but its callers stay narrowed: it
+    // travels with its assignments and no tools, so they are not handed the
+    // organization-wide set back
     client
         .put(format!("{base}/api/v1/mcp/tool-groups/{group_id}"))
         .json(&json!({"name": "Readers", "enabled": false, "tools": group["tools"]}))
         .send()
         .await
         .unwrap();
-    assert!(snapshot_config(&client, &base).await["mcp_tool_groups"]
+    let config = snapshot_config(&client, &base).await;
+    let carried = config["mcp_tool_groups"].as_array().unwrap();
+    assert_eq!(carried.len(), 1, "{config}");
+    assert_eq!(carried[0]["tools"], json!([]));
+    assert_eq!(carried[0]["assignments"].as_array().unwrap().len(), 3);
+
+    // a subject deleted since it was assigned is dropped instead of blocking
+    // the save, while one that was never in the organization is still refused
+    sqlx::query("delete from virtual_keys where id = $1")
+        .bind(subjects[0].2)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let resaved: Value = client
+        .put(&url)
+        .json(&json!({"assignments": [
+            {"kind": "team", "id": subjects[0].0},
+            {"kind": "project", "id": subjects[0].1},
+            {"kind": "virtual_key", "id": subjects[0].2},
+        ]}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(resaved.as_array().unwrap().len(), 2, "{resaved}");
+    let refused = client
+        .put(&url)
+        .json(&json!({"assignments": [{"kind": "virtual_key", "id": subjects[0].2}]}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(refused.status(), 400);
+
+    // a group created with assignments has them from its first snapshot, and a
+    // subject outside the organization refuses the whole create
+    let created: Value = client
+        .post(format!("{base}/api/v1/orgs/{org_id}/mcp/tool-groups"))
+        .json(&json!({
+            "name": "Narrow", "slug": "narrow",
+            "tools": [{"server_id": server["id"], "tool": "fetch"}],
+            "assignments": [{"kind": "team", "id": subjects[0].0}],
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let config = snapshot_config(&client, &base).await;
+    let narrow = config["mcp_tool_groups"]
         .as_array()
         .unwrap()
-        .is_empty());
+        .iter()
+        .find(|g| g["id"] == created["id"])
+        .unwrap_or_else(|| panic!("{config}"));
+    assert_eq!(narrow["assignments"].as_array().unwrap().len(), 1);
+    let refused = client
+        .post(format!("{base}/api/v1/orgs/{org_id}/mcp/tool-groups"))
+        .json(&json!({
+            "name": "Foreign", "slug": "foreign",
+            "tools": [{"server_id": server["id"], "tool": "fetch"}],
+            "assignments": [{"kind": "team", "id": subjects[1].0}],
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(refused.status(), 400);
+    let groups: Value = client
+        .get(format!("{base}/api/v1/orgs/{org_id}/mcp/tool-groups"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        groups.as_array().unwrap().len(),
+        2,
+        "nothing of the refused create is left"
+    );
 
     // an empty set hands the group back to the whole organization
     let cleared: Value = client

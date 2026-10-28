@@ -491,6 +491,7 @@ struct McpToolGroupSnapshotRow {
     id: Uuid,
     org_id: Uuid,
     slug: String,
+    enabled: bool,
     tools: serde_json::Value,
 }
 
@@ -1281,24 +1282,25 @@ impl PostgresConfigStore {
             .collect())
     }
 
-    /// Enabled tool groups for the snapshot (#1403). A disabled group governs
-    /// nothing, so it is not carried. A reference that does not parse is left
+    /// Enabled tool groups for the snapshot (#1403), and the disabled ones that
+    /// callers are assigned to, which carry no tools (#3295). A reference that does not parse is left
     /// out with a warning rather than failing the snapshot; the API only ever
     /// writes well-formed ones, so this is a row written around it.
     async fn load_mcp_tool_groups(&self) -> Result<Vec<McpToolGroupConfig>> {
         let rows: Vec<McpToolGroupSnapshotRow> = sqlx::query_as(
-            "select id, org_id, slug, tools from mcp_tool_groups where enabled \
+            "select id, org_id, slug, enabled, tools from mcp_tool_groups g where enabled \
+             or exists (select 1 from mcp_tool_group_assignments a where a.group_id = g.id) \
              order by org_id, slug",
         )
         .fetch_all(&self.pool)
         .await
         .map_err(store_err)?;
-        // only the assignments of enabled groups travel: a disabled group
-        // governs nothing, assigned or not
+        // a disabled group governs no server, but the callers assigned to it stay
+        // narrowed (to none of its tools), so it travels with its assignments and
+        // no tools rather than handing them the organization-wide set back
         let assignments: Vec<(Uuid, String, Uuid)> = sqlx::query_as(
             "select a.group_id, a.subject_kind, a.subject_id \
              from mcp_tool_group_assignments a \
-             join mcp_tool_groups g on g.id = a.group_id where g.enabled \
              order by a.group_id, a.subject_kind, a.subject_id",
         )
         .fetch_all(&self.pool)
@@ -1316,6 +1318,7 @@ impl PostgresConfigStore {
                     })
                     .collect();
                 let tools = match serde_json::from_value::<Vec<McpToolRefConfig>>(row.tools) {
+                    _ if !row.enabled => Vec::new(),
                     Ok(tools) => tools,
                     Err(error) => {
                         tracing::warn!(

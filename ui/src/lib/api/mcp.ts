@@ -463,7 +463,10 @@ export function fetchMcpToolGroups(orgId: string): Promise<McpToolGroupRow[]> {
 
 export function createMcpToolGroup(
   orgId: string,
-  input: Omit<McpToolGroupRow, "id" | "org_id" | "created_at" | "updated_at">,
+  input: Omit<McpToolGroupRow, "id" | "org_id" | "created_at" | "updated_at"> & {
+    /** written in the same transaction as the group; empty means the whole organization */
+    assignments?: McpAssignmentSubject[];
+  },
 ): Promise<McpToolGroupRow> {
   return sendJson<McpToolGroupRow>("POST", `/api/v1/orgs/${orgId}/mcp/tool-groups`, input);
 }

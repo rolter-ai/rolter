@@ -167,19 +167,25 @@ groups assigned to those three, so on a server the organization's groups govern
 it may call only what its own groups list there, and nothing when none of them
 names the server. A caller none of the assignments name keeps the
 organization-wide set, exactly as before, so a deployment that never assigns a
-group behaves as it did. Disabling or deleting a group removes its assignments
-from the snapshot with it, which sends the callers it narrowed back to the
-organization's other groups. The dashboard edits team and project assignments;
+group behaves as it did. A group you disable keeps its assignments: the keys,
+projects and teams assigned to it stay narrowed and get none of its tools, they do
+not fall back to the organization's groups. Deleting a group removes its
+assignments with it, and a team, project or key that was assigned only to that
+group returns to the organization-wide set. A new group can be created with its
+`assignments` in the same request. The dashboard edits team and project assignments;
 virtual-key assignments are set through the API and kept as they are when a group
 is saved there. Batches are refused as a whole when any call in
 them is refused, and while a group governs a server a request body that cannot
 be read as JSON-RPC is refused with `400` (`mcp_request_unreadable`) rather than
 forwarded unchecked. A body that repeats a key in a message or in its `params`
-(two `name` entries, say) is refused with `403` `mcp_tool_denied` whatever the
-failure policy says, because parsers disagree about which copy wins and the
+(two `name` entries, or `name` and `NAME`, since some servers match keys without
+regard to case) is refused with `403` `mcp_tool_denied` whatever the
+failure policy says, and is logged like any other refused call, because parsers disagree about which copy wins and the
 tool judged could then differ from the tool that runs. A `tools/list` reply through the proxy is narrowed by the same rules, so a client
-is shown only the tools it may call; a paginated listing is filtered page by page
-and a page can come back shorter than the server's page size. Disabling or
+is shown only the tools it may call, whatever id the request carried. That covers
+the reply to the `POST` that asked and the event stream a legacy `sse` server
+sends its replies on; a paginated listing is filtered page by page and a page can
+come back shorter than the server's page size. Disabling or
 deleting a group lifts its restriction on the
 next snapshot.
 

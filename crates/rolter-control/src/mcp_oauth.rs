@@ -33,7 +33,7 @@ use rolter_store::postgres::models::{
 };
 use rolter_store::postgres::repo::{
     McpAuthConfig, McpGatewaySettingsRepo, McpGatewaySettingsUpdate, McpOAuthRepo, McpServerRepo,
-    McpServerUpdate, McpToolGroupAssignmentRepo, McpToolGroupRepo, NewMcpServer,
+    McpServerUpdate, McpToolGroupAssignmentRepo, McpToolGroupRepo, NewMcpServer, NewMcpToolGroup,
     MCP_ASSIGNMENT_KINDS,
 };
 
@@ -885,6 +885,10 @@ struct ToolGroupInput {
     enabled: bool,
     #[serde(default)]
     tools: Vec<ToolRef>,
+    /// who the group is assigned to, written in the same transaction as the
+    /// group (#3295); empty applies it to the whole organization
+    #[serde(default)]
+    assignments: Vec<AssignmentSubject>,
 }
 
 fn validate_tool_refs(tools: &[ToolRef]) -> ApiResult<()> {
@@ -968,17 +972,19 @@ async fn create_tool_group(
     require_non_empty(&body.name, "name")?;
     require_non_empty(&body.slug, "slug")?;
     validate_tool_refs_for_org(&state, org_id, &body.tools).await?;
+    let subjects = validate_assignments(&state, org_id, &body.assignments, &[]).await?;
     let tools = serde_json::to_value(&body.tools)
         .map_err(|_| ApiError::Curated("tools could not be stored".into()))?;
     let group = McpToolGroupRepo(pool(&state))
-        .create(
+        .create(NewMcpToolGroup {
             org_id,
-            &body.name,
-            &body.slug,
-            &body.description,
-            body.enabled,
-            &tools,
-        )
+            name: &body.name,
+            slug: &body.slug,
+            description: &body.description,
+            enabled: body.enabled,
+            tools: &tools,
+            assignments: &subjects,
+        })
         .await?;
     log_audit(
         &state,
@@ -1082,6 +1088,59 @@ struct ReplaceAssignments {
 /// snapshot, so it is bounded rather than left to grow.
 const MAX_ASSIGNMENTS_PER_GROUP: usize = 500;
 
+/// Check the subjects of a group's assignments: a known kind, inside the
+/// organization. One that is not in the organization any more is dropped when it
+/// is among `stored` (the group is already assigned to it) and refused
+/// otherwise. Duplicates collapse.
+async fn validate_assignments(
+    state: &ControlState,
+    org_id: Uuid,
+    requested: &[AssignmentSubject],
+    stored: &[(String, Uuid)],
+) -> ApiResult<Vec<(String, Uuid)>> {
+    if requested.len() > MAX_ASSIGNMENTS_PER_GROUP {
+        return Err(invalid_field(
+            "assignments",
+            format!("a group can be assigned to at most {MAX_ASSIGNMENTS_PER_GROUP} subjects"),
+        ));
+    }
+    let repo = McpToolGroupAssignmentRepo(pool(state));
+    let mut subjects: Vec<(String, Uuid)> = Vec::new();
+    for subject in requested {
+        if !MCP_ASSIGNMENT_KINDS.contains(&subject.kind.as_str()) {
+            return Err(invalid_field(
+                "assignments",
+                format!(
+                    "assignment kind must be one of {}",
+                    MCP_ASSIGNMENT_KINDS.join(", ")
+                ),
+            ));
+        }
+        let pair = (subject.kind.clone(), subject.id);
+        if subjects.contains(&pair) {
+            continue;
+        }
+        if !repo
+            .subject_in_org(&subject.kind, subject.id, org_id)
+            .await?
+        {
+            if stored.contains(&pair) {
+                continue;
+            }
+            return Err(invalid_field(
+                "assignments",
+                format!(
+                    "{} {} does not exist in this organization",
+                    subject.kind.replace('_', " "),
+                    subject.id
+                ),
+            ));
+        }
+        subjects.push(pair);
+    }
+    Ok(subjects)
+}
+
 async fn list_tool_group_assignments(
     principal: Principal,
     State(state): State<ControlState>,
@@ -1118,45 +1177,11 @@ async fn replace_tool_group_assignments(
         cap!("mcp_tool_group_assignment", Update),
     )
     .await?;
-    if body.assignments.len() > MAX_ASSIGNMENTS_PER_GROUP {
-        return Err(invalid_field(
-            "assignments",
-            format!("a group can be assigned to at most {MAX_ASSIGNMENTS_PER_GROUP} subjects"),
-        ));
-    }
     let repo = McpToolGroupAssignmentRepo(pool(&state));
-    let mut subjects: Vec<(String, Uuid)> = Vec::new();
-    for subject in &body.assignments {
-        if !MCP_ASSIGNMENT_KINDS.contains(&subject.kind.as_str()) {
-            return Err(invalid_field(
-                "assignments",
-                format!(
-                    "assignment kind must be one of {}",
-                    MCP_ASSIGNMENT_KINDS.join(", ")
-                ),
-            ));
-        }
-        if subjects
-            .iter()
-            .any(|(kind, id)| *kind == subject.kind && *id == subject.id)
-        {
-            continue;
-        }
-        if !repo
-            .subject_in_org(&subject.kind, subject.id, group.org_id)
-            .await?
-        {
-            return Err(invalid_field(
-                "assignments",
-                format!(
-                    "{} {} does not exist in this organization",
-                    subject.kind.replace('_', " "),
-                    subject.id
-                ),
-            ));
-        }
-        subjects.push((subject.kind.clone(), subject.id));
-    }
+    // a subject that has since been deleted and is already assigned is dropped
+    // rather than refused, so a stale row can never block saving the group
+    let stored = repo.list_for_group(id).await?;
+    let subjects = validate_assignments(&state, group.org_id, &body.assignments, &stored).await?;
     repo.replace(id, &subjects).await?;
     log_audit(
         &state,

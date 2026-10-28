@@ -19,7 +19,7 @@ use std::sync::Arc;
 
 use crate::mcp_list_filter::{FilteredSse, ListFilter, MAX_LIST_REPLY};
 use crate::mcp_log::{CallContext, PendingCall};
-use crate::mcp_policy::Verdict;
+use crate::mcp_policy::{ambiguous_message, Verdict};
 use crate::state::AppState;
 use crate::trace::RequestId;
 
@@ -252,50 +252,32 @@ async fn proxy(
     // naming a tool outside them is refused before anything is forwarded, and
     // recorded in the MCP log like any other denial (#1403)
     let mut list_filter = None;
+    let caller = crate::mcp_policy::Caller {
+        org_id: &key.org_id,
+        key_id: &key.id,
+        project_id: &key.project_id,
+        team_id: &key.team_id,
+    };
+    if method == Method::GET {
+        // a stream the caller opens can carry the reply to a `tools/list`
+        // posted elsewhere: a legacy `sse` server answers every POST with 202
+        // and delivers the reply here, and a streamable-HTTP stream can be
+        // replayed (#3297)
+        list_filter = crate::mcp_policy::stream_filter(&snapshot, server, &caller).map(Arc::new);
+    }
     if method == Method::POST {
-        let caller = crate::mcp_policy::Caller {
-            org_id: &key.org_id,
-            key_id: &key.id,
-            project_id: &key.project_id,
-            team_id: &key.team_id,
-        };
-        list_filter =
-            crate::mcp_policy::list_filter(&snapshot, server, &caller, &body).map(Arc::new);
-        match crate::mcp_policy::enforce(&snapshot, server, &caller, &body) {
-            Verdict::Allow => {}
+        let decision = crate::mcp_policy::evaluate(&snapshot, server, &caller, &body);
+        list_filter = decision.list_filter.map(Arc::new);
+        let (refused, message) = match decision.verdict {
+            Verdict::Allow => (None, String::new()),
             Verdict::Denied(refused) => {
-                let context = CallContext {
-                    server: &server.slug,
-                    transport: &server.transport,
-                    org_id: &key.org_id,
-                    team_id: &key.team_id,
-                    project_id: &key.project_id,
-                    virtual_key_id: &key.id,
-                    user_id: &key.user_id,
-                    request_id: request_id.as_str(),
-                    capture: &snapshot.logging.payload_capture,
-                    redactor: &snapshot.payload_redactor,
-                };
                 let message = refused
                     .first()
                     .map(|call| call.message(&server.slug))
                     .unwrap_or_default();
-                for call in refused {
-                    if let Some(call) =
-                        PendingCall::from_request(&state.mcp_events, call.request, &context)
-                    {
-                        call.fail("auth_denied");
-                    }
-                }
-                return error(StatusCode::FORBIDDEN, message, "mcp_tool_denied");
+                (Some(refused), message)
             }
-            Verdict::Ambiguous => {
-                return error(
-                    StatusCode::FORBIDDEN,
-                    Verdict::ambiguous_message(&server.slug),
-                    "mcp_tool_denied",
-                );
-            }
+            Verdict::Ambiguous(refused) => (Some(refused), ambiguous_message(&server.slug)),
             Verdict::Unreadable => {
                 return error(
                     StatusCode::BAD_REQUEST,
@@ -307,6 +289,28 @@ async fn proxy(
                     "mcp_request_unreadable",
                 );
             }
+        };
+        if let Some(refused) = refused {
+            let context = CallContext {
+                server: &server.slug,
+                transport: &server.transport,
+                org_id: &key.org_id,
+                team_id: &key.team_id,
+                project_id: &key.project_id,
+                virtual_key_id: &key.id,
+                user_id: &key.user_id,
+                request_id: request_id.as_str(),
+                capture: &snapshot.logging.payload_capture,
+                redactor: &snapshot.payload_redactor,
+            };
+            for call in refused {
+                if let Some(call) =
+                    PendingCall::from_request(&state.mcp_events, call.request, &context)
+                {
+                    call.fail("auth_denied");
+                }
+            }
+            return error(StatusCode::FORBIDDEN, message, "mcp_tool_denied");
         }
     }
 
@@ -317,6 +321,7 @@ async fn proxy(
             "mcp_server_invalid",
         );
     };
+    let is_post = method == Method::POST;
     let mut headers = end_to_end_headers(headers);
     if list_filter.is_some() {
         // a compressed reply cannot be narrowed
@@ -348,7 +353,7 @@ async fn proxy(
                     return step_up;
                 }
             }
-            upstream_response(response, call, list_filter).await
+            upstream_response(response, call, list_filter, is_post).await
         }
         Err(upstream) => {
             let detail = upstream.to_string();
@@ -519,6 +524,7 @@ async fn upstream_response(
     response: reqwest::Response,
     call: Option<PendingCall>,
     list_filter: Option<Arc<ListFilter>>,
+    method_is_post: bool,
 ) -> Response {
     let status =
         StatusCode::from_u16(response.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
@@ -540,26 +546,36 @@ async fn upstream_response(
     if let Some(response_headers) = builder.headers_mut() {
         *response_headers = headers;
     }
-    // a `tools/list` answer is narrowed to what the caller may call (#3297)
-    let list_filter = list_filter.filter(|_| status.is_success());
-    if let Some(filter) = list_filter {
+    // a reply that lists tools is narrowed to what the caller may call
+    // (#3297). `202`, `204` and an empty body carry nothing to narrow: a legacy
+    // `sse` server answers the POST that way and sends the list on its stream
+    let carries_body = status.is_success() && !matches!(status.as_u16(), 202 | 204);
+    if let Some(filter) = list_filter.filter(|_| carries_body) {
         if encoded {
             return unfilterable_list();
         }
         if is_sse {
-            let body =
-                Body::from_stream(FilteredSse::new(Box::pin(response.bytes_stream()), filter));
-            return builder.body(body).unwrap_or_else(|_| unfilterable_list());
+            let stream = FilteredSse::new(Box::pin(response.bytes_stream()), filter);
+            return builder
+                .body(Body::from_stream(stream))
+                .unwrap_or_else(|_| unfilterable_list());
         }
-        let Some(bytes) = read_limited(response, MAX_LIST_REPLY).await else {
-            return unfilterable_list();
-        };
-        let Some(filtered) = filter.filter_json(&bytes) else {
-            return unfilterable_list();
-        };
-        return builder
-            .body(Body::from(filtered))
-            .unwrap_or_else(|_| unfilterable_list());
+        if method_is_post {
+            let Some(bytes) = read_limited(response, MAX_LIST_REPLY).await else {
+                return unfilterable_list();
+            };
+            if bytes.iter().all(u8::is_ascii_whitespace) {
+                return builder
+                    .body(Body::from(bytes))
+                    .unwrap_or_else(|_| unfilterable_list());
+            }
+            let Some(filtered) = filter.filter_json(&bytes) else {
+                return unfilterable_list();
+            };
+            return builder
+                .body(Body::from(filtered))
+                .unwrap_or_else(|_| unfilterable_list());
+        }
     }
     let body = match call {
         // recorded when the body has been read, without touching a byte of it
@@ -928,7 +944,10 @@ mod tests {
     /// forwarded.
     #[tokio::test]
     async fn a_body_repeating_the_tool_name_is_refused_like_a_forbidden_tool() {
-        let state = AppState::new(&with_group(&["get_issue"]));
+        let mut state = AppState::new(&with_group(&["get_issue"]));
+        let (sink, mut events) =
+            crate::mcp_log::McpEventSink::capturing(std::sync::Arc::new(Default::default()));
+        state.mcp_events = sink;
         let body = Bytes::from_static(
             br#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"drop","name":"get_issue"}}"#,
         );
@@ -936,6 +955,66 @@ mod tests {
         assert_eq!(
             (status, code.as_str()),
             (StatusCode::FORBIDDEN, "mcp_tool_denied")
+        );
+        // logged like any other refusal (#3381)
+        let event = events.try_recv().expect("the refusal is recorded");
+        assert_eq!(
+            (event.status, event.tool.as_str()),
+            ("auth_denied", "get_issue")
+        );
+    }
+
+    /// #3297 with a legacy `sse` server: the POST is answered `202`, which is
+    /// forwarded as it is, and the reply on the GET stream is the one narrowed
+    #[tokio::test]
+    async fn a_legacy_sse_servers_stream_is_narrowed_and_its_202_passes() {
+        use axum::routing::get;
+        use axum::Router;
+
+        let app = Router::new().route(
+            "/rpc",
+            get(|| async {
+                (
+                    [(header::CONTENT_TYPE, "text/event-stream")],
+                    format!("event: message\ndata: {LIST_REPLY}\n\n"),
+                )
+            })
+            .post(|| async { (StatusCode::ACCEPTED, "Accepted") }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let mut config = with_group(&["get_issue"]);
+        config.mcp_servers[0].url = format!("http://{addr}/rpc");
+        config.mcp_servers[0].transport = "sse".to_string();
+
+        let list = Bytes::from_static(br#"{"jsonrpc":"2.0","id":1.0,"method":"tools/list"}"#);
+        let posted = post(AppState::new(&config), list).await;
+        assert_eq!(posted.status(), StatusCode::ACCEPTED);
+        let bytes = axum::body::to_bytes(posted.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        assert_eq!(&bytes[..], b"Accepted");
+
+        let streamed = proxy(
+            AppState::new(&config),
+            "github".to_string(),
+            None,
+            None,
+            Method::GET,
+            bearer(),
+            RequestId::default(),
+            Bytes::new(),
+        )
+        .await;
+        assert_eq!(streamed.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(streamed.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        let text = String::from_utf8(bytes.to_vec()).unwrap();
+        assert!(
+            text.contains("get_issue") && !text.contains("drop"),
+            "{text}"
         );
     }
 
