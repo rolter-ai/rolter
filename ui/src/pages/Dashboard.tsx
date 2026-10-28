@@ -7,6 +7,7 @@ import { Link, useLocation } from "react-router";
 import { AnalyticsUnavailable } from "@/components/AnalyticsUnavailable";
 import { PageBody } from "@/components/screen";
 import { FleetHealthTile } from "@/components/FleetHealthTile";
+import { ProviderHealthTile } from "@/components/ProviderHealthTile";
 import { GettingStarted } from "@/components/GettingStarted";
 import { IncompleteSpendNotice } from "@/components/IncompleteSpendNotice";
 import { SampledLogNotice } from "@/components/SampledLogNotice";
@@ -94,9 +95,6 @@ const pollEvery =
 // the by-model card lists this many models, busiest first: the length of the
 // categorical colour sequence, so no two rows share a colour
 const MODELS_SHOWN = 8;
-
-// six tiles read as three across and two down; the shared strip is four across
-const FIGURES_GRID = cn(STAT_GRID, "xl:grid-cols-3");
 
 // the models in the order the card colours them by (#1994): the read arrives
 // by cost, and the card ranks it by requests
@@ -418,13 +416,14 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
       )}
       {!served && gettingStarted}
       <div data-testid="dashboard-figures">
-        <div className={FIGURES_GRID}>
+        <div className={STAT_GRID}>
           {/* the fleet first: mid-incident, whether the gateways are up is the
               first thing asked, and it is not a figure of the window. it sits
               outside the summary's read, so a summary that is slow or failing
               (the heaviest read on the screen) does not take it away; the other
               five tiles, or their skeleton or alert, fill the rest of the grid */}
           <FleetHealthTile />
+          <ProviderHealthTile pollMs={pollMs} />
           <CardRead
             read={summary}
             resource={t("errors.resources.dashboardFigures")}
@@ -434,7 +433,7 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
             // tiles it stands in for
             skeleton={
               <LoadingRegion className="contents">
-                {Array.from({ length: 5 }, (_, i) => (
+                {Array.from({ length: 6 }, (_, i) => (
                   <Skeleton key={i} height={96} radius={10} />
                 ))}
               </LoadingRegion>
@@ -475,7 +474,25 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
                 before && before.cache_hit_requests != null
                   ? (num(before.cache_hit_requests) / prevRequests) * 100
                   : undefined;
+              // the provider's prompt cache, apart from rolter's response cache: the
+              // signal cache-aware balancing exists to improve (#3356). A window in
+              // which no provider reported a cached token reads as unmeasured, since
+              // a provider that does not report it looks the same as one that never hits
+              const promptTokens = num(s?.prompt_tokens);
+              const cacheRead = s?.cache_read_tokens != null ? num(s.cache_read_tokens) : undefined;
+              const readShare =
+                cacheRead !== undefined && cacheRead > 0 && promptTokens > 0
+                  ? (cacheRead / promptTokens) * 100
+                  : undefined;
+              const prevReadShare =
+                before &&
+                before.cache_read_tokens != null &&
+                num(before.cache_read_tokens) > 0 &&
+                num(before.prompt_tokens) > 0
+                  ? (num(before.cache_read_tokens) / num(before.prompt_tokens)) * 100
+                  : undefined;
               const changes = {
+                readShare: compare(readShare, prevReadShare),
                 requests: compare(requests, was(before?.requests)),
                 spend: compare(num(s?.cost_usd), was(before?.cost_usd)),
                 latency: compare(
@@ -571,6 +588,37 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
                             : hits === 0
                               ? t("pages.dashboard.cacheHitsNone")
                               : t("pages.dashboard.cacheHits", { count: hits })
+                    }
+                  />
+                  <StatCard
+                    data-testid="dashboard-prompt-cache"
+                    label={t("pages.dashboard.statPromptCache")}
+                    value={readShare !== undefined ? percent(readShare) : unmeasured}
+                    unit={readShare !== undefined ? "%" : undefined}
+                    // more of the prompt served from the cache is what cache-aware routing is for
+                    trend={changes.readShare?.trend}
+                    tone={
+                      changes.readShare ? toneOfChange(changes.readShare.trend, "good") : undefined
+                    }
+                    delta={
+                      promptTokens === 0
+                        ? why
+                        : cacheRead === undefined
+                          ? undefined
+                          : readShare === undefined
+                            ? t("pages.dashboard.promptCacheNone")
+                            : changes.readShare
+                              ? t("pages.dashboard.withChange", {
+                                  detail: t("pages.dashboard.promptCacheTokens", {
+                                    read: fmt.compact(cacheRead),
+                                    prompt: fmt.compact(promptTokens),
+                                  }),
+                                  change: said(changes.readShare),
+                                })
+                              : t("pages.dashboard.promptCacheTokens", {
+                                  read: fmt.compact(cacheRead),
+                                  prompt: fmt.compact(promptTokens),
+                                })
                     }
                   />
                   <StatCard

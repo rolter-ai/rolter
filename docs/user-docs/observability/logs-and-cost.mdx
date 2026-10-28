@@ -385,7 +385,7 @@ currency).
 
 ### Cache hits and overall p95
 
-`GET /api/v1/analytics/summary` also reports `cache_hit_requests`, the requests answered from rolter's response cache (a provider's prompt cache is not counted here; it shows in each row's `cache_read_tokens`), and `p95_latency_ms`, the 95th percentile of latency over the whole window. The hit count is scaled by the log's sampling weight like every other count, so the response-cache hit rate is `cache_hit_requests / requests`; the percentile is read from the sampled rows as they are, since a uniform sample already estimates it. The dashboard home shows both.
+`GET /api/v1/analytics/summary` also reports `cache_hit_requests`, the requests answered from rolter's response cache (a provider's prompt cache is not counted here; it shows in each row's `cache_read_tokens`), `cache_read_tokens`, the prompt tokens the provider served from its own prompt cache, beside `prompt_tokens` (a read share is the first over the second, and both are scaled by the sampling weight), and `p95_latency_ms`, the 95th percentile of latency over the whole window. The hit count is scaled by the log's sampling weight like every other count, so the response-cache hit rate is `cache_hit_requests / requests`; the percentile is read from the sampled rows as they are, since a uniform sample already estimates it. The dashboard home shows both.
 
 ### Withheld and unknown-usage traffic
 
@@ -527,7 +527,7 @@ A link can outlive what it names. A status value the API does not know is ignore
 
 ### Saved views
 
-**Saved views** beside **Filters** keeps the filters you have applied under a name, so you can come back to them in one click. On **LLM Logs** a view holds the time window, status, model, key, business unit and customer; on the Dashboard it holds the window, model, key, business unit and customer. It never holds an id lookup, the page you were on or the **Cost** checks. Pick **Apply** to set the screen's filters from the view, **Rename** to change its name, or the bin to delete it. Each account keeps up to 50 views per screen, and a name can be used once.
+**Saved views** beside **Filters** keeps the filters you have applied under a name, so you can come back to them in one click. On **LLM Logs** a view holds the time window, status, model, key, business unit and customer; on the Dashboard it holds the window, model, key, business unit and customer. It never holds an id lookup, the page you were on or the **Cost** checks. Pick **Apply** to set the screen's filters from the view (a **Cost** check you had ticked is cleared, since the view does not hold it), **Rename** to change its name, or the bin to delete it. Each account keeps up to 50 views per screen, and a name can be used once.
 
 Views are private: they follow your account to any browser you sign in from, and nobody else sees them. They never widen what you can read. If a view names a key, business unit or customer that you can no longer read, it is applied without that filter and the screen says how many it left out, for example _Applied without: 1 key, 2 customers_. The ids are not shown. Saving again keeps only the filters applied at that moment.
 

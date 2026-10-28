@@ -44,6 +44,8 @@ export interface RouteVariantEditorProps {
   /** a field the control plane refused, said at its line whatever `showErrors` is */
   refusal: VariantRefusal | null;
   onChange: (next: DraftVariant[]) => void;
+  /** what the saved variants actually served, shown under the split preview (#3342) */
+  observed?: React.ReactNode;
   /**
    * what stands in for the list while there are no variants; the caller owns
    * it, since it owns the read the empty state is paired with
@@ -71,6 +73,7 @@ export function RouteVariantEditor({
   showErrors,
   refusal,
   onChange,
+  observed,
   empty,
 }: RouteVariantEditorProps) {
   const { t } = useTranslation();
@@ -140,6 +143,7 @@ export function RouteVariantEditor({
             {t("routeSheet.variants.overridesTargets")}
           </p>
           <SplitPreview variants={variants} />
+          {observed}
           {weightsIgnored && (
             <p className="text-xs leading-snug text-muted-foreground">
               <Trans

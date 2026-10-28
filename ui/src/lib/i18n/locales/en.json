@@ -304,6 +304,9 @@
       "mcpLogDetail": "this MCP tool call",
       "mcpLogs": "MCP tool-call logs",
       "mcpSummary": "MCP call summary",
+      "variantTraffic": "the variants' observed traffic",
+      "providerHealth": "provider health",
+      "savings": "the savings report",
       "mcpServers": "MCP servers",
       "mcpSettings": "MCP settings",
       "modelSettings": "model settings",
@@ -497,7 +500,9 @@
       "vision": "Vision / images",
       "json": "JSON mode",
       "reasoning": "Reasoning",
-      "reasoningInfo": "Extended-thinking model (o-series, R1). Enables the reasoning_effort parameter."
+      "reasoningInfo": "Extended-thinking model (o-series, R1). Enables the reasoning_effort parameter.",
+      "contextLength": "Context length (tokens)",
+      "contextLengthHint": "The size of the model’s context window. It is served on GET /v1/models so clients can size their prompts; the gateway does not enforce it. Blank = not advertised."
     },
     "pricing": {
       "hint": "Optional prices for cost tracking — fields shown match the model type. Leave them all blank and the model stays unpriced: its traffic is recorded without a cost, not as free.",
@@ -580,6 +585,7 @@
       "retries": "Retries are a whole number from 0 to {{max}}. Leave blank to use the gateway's setting.",
       "rpm": "Requests per minute is a whole number from 1 to {{max}}. Leave blank for no cap.",
       "tpm": "Tokens per minute is a whole number of 1 or more. Leave blank for no cap.",
+      "contextLength": "Context length is a whole number of tokens, 1 or more. Leave blank to advertise none.",
       "concurrency": "Concurrent requests is a whole number from 1 to {{max}}. Leave blank for no cap.",
       "param": "One or more custom parameters have a value but no name — name them or clear the value.",
       "header": "One or more custom headers have a value but no name — name them or clear the value.",
@@ -602,6 +608,24 @@
       "summary_other": "{{count}} fields need attention before this route can be saved."
     },
     "variants": {
+      "observed": {
+        "title": "Observed traffic",
+        "variant": "Variant",
+        "configured": "Configured",
+        "share": "Observed",
+        "requests": "Requests",
+        "errors": "Errors",
+        "latency": "p50 / p95",
+        "latencyValue": "{{p50}} / {{p95}} ms",
+        "empty": "No variant served a request in the {{window}}. Traffic appears here once the route has been called with the variants saved.",
+        "note": "Observed is each variant's share of the requests the variants served, counting failovers as well as first attempts, so a variant that others fail over to reads higher than its weight.",
+        "unattributed_one": "{{requests}} request in this window was served without a variant.",
+        "unattributed_other": "{{requests}} requests in this window were served without a variant.",
+        "noAnalytics": {
+          "title": "Observed traffic needs ClickHouse",
+          "body": "Per-variant traffic is read from the request log in ClickHouse. Set <0>CLICKHOUSE_URL</0> on the control plane to see each variant's share here."
+        }
+      },
       "title": "Variants",
       "info": "Named buckets that split this route's traffic by weight, for A/B tests and canaries. Each request samples one variant by weight; if it fails, the others are tried in the order listed. Request logs record which variant served a request.",
       "add": "Add variant",
@@ -699,6 +723,7 @@
     "dashboard": "Dashboard",
     "logs": "LLM Logs",
     "mcp-logs": "MCP Logs",
+    "savings": "Savings",
     "connectors": "Connectors",
     "logs-settings": "Logs Settings",
     "log-erasure": "Log Erasure",
@@ -809,7 +834,23 @@
       "statSpend": "Spend",
       "statP95": "p95 latency",
       "statCacheHit": "Response-cache hit rate",
+      "statPromptCache": "Prompt-cache read share",
+      "promptCacheTokens": "{{read}} of {{prompt}} prompt tokens",
+      "promptCacheNone": "No provider reported cached prompt tokens",
       "statFleet": "Gateways",
+      "statProviders": "Providers",
+      "providers": {
+        "ofTotal": "of {{total}} up",
+        "worst": "Lowest uptime: {{provider}} {{uptime}}",
+        "worstBreaching": "Below the SLA: {{provider}} {{uptime}}",
+        "more_one": "and {{count}} more",
+        "more_other": "and {{count}} more",
+        "none": "No provider has reported health yet",
+        "noAnalytics": {
+          "title": "Provider health needs ClickHouse",
+          "body": "Provider health is read from the events the gateways record in ClickHouse. Set <0>CLICKHOUSE_URL</0> on the control plane and the providers that meet their SLA are counted here."
+        }
+      },
       "statErrorRate": "Error rate",
       "notMeasured": "—",
       "noRequestsInWindow": "No requests in this window",
@@ -1112,6 +1153,11 @@
       "healthUnavailable": "Target health is unavailable here, so the cards show none. It needs the analytics store and analytics access.",
       "targetCount_one": "{{count}} target",
       "targetCount_other": "{{count}} targets",
+      "variantCount_one": "{{count}} variant",
+      "variantCount_other": "{{count}} variants",
+      "variantsLabel": "Variants of {{model}}, in fallback order",
+      "targetsUnused_one": "This route has variants, so its own {{count}} target is not used.",
+      "targetsUnused_other": "This route has variants, so its own {{count}} targets are not used.",
       "emptyTitle": "No routes yet",
       "emptyBody": "A route is the public model name clients call, resolved to one or more upstream targets by its strategy.",
       "noMatchTitle": "No routes match",
@@ -3731,6 +3777,7 @@
       },
       "selectBusinessUnit": "Select a business unit",
       "selectCustomer": "Select a customer",
+      "selectUser": "Select a person",
       "unpriced": {
         "inherit": "Inherit deployment setting",
         "ignore": "Serve and ignore",
@@ -3763,6 +3810,22 @@
         "tpm": "tpm"
       },
       "scopeNamed": "{{type}} {{name}}",
+      "userScopeNamed": "{{name}} ({{reach}})",
+      "reachLabel": "Counts",
+      "reachHint": "Which of the person's keys this cap counts. The place also decides who may manage it: only a superadmin may leave it un-narrowed.",
+      "reachOptions": {
+        "all": "Every key they minted",
+        "org": "Keys minted in one organization",
+        "project": "Keys minted in one project"
+      },
+      "reachPlace": {
+        "org": "Organization",
+        "project": "Project"
+      },
+      "reachPlacePlaceholder": {
+        "org": "Select an organization",
+        "project": "Select a project"
+      },
       "scopeBlocked": "Scope defaults are unavailable: {{detail}}. Pick a scope manually below.",
       "scopeTitle": "Scope",
       "scopeBody": "Budgets and rate limits below apply to this scope.",
@@ -3958,6 +4021,87 @@
         "body": "This control plane runs without <0>CLICKHOUSE_URL</0>, or is older than the endpoint this screen reads, so it has no request log to show. Set <0>CLICKHOUSE_URL</0> and restart the control plane: gateways with no address of their own inherit it, and every request they serve from then on is logged here."
       }
     },
+    "savings": {
+      "limitsTitle": "A shortlist to test, not a recommendation",
+      "limitsLead": "The advisor re-prices recorded traffic at another model's price. It does not evaluate whether that model answers as well, and it never changes a route.",
+      "org": "Organization",
+      "allOrgs": "All organizations",
+      "project": "Project",
+      "allProjects": "All projects",
+      "route": "Route",
+      "allRoutes": "All routes",
+      "key": "Virtual key",
+      "allKeys": "All keys",
+      "model": "Model",
+      "thresholdsTitle": "Substitutability thresholds",
+      "maxPrompt": "Longest prompt (tokens)",
+      "maxPromptHint": "Longer prompts are not counted. Blank = 4000.",
+      "maxCompletion": "Longest answer (tokens)",
+      "maxCompletionHint": "Longer answers are not counted. Blank = 1000.",
+      "margin": "Output margin",
+      "marginHint": "How much longer a cheaper model's answers may run at the pessimistic end. Blank = 0.25.",
+      "recalculate": "Recalculate",
+      "errors": {
+        "whole": "Enter a whole number of 1 or more, or leave it blank.",
+        "margin": "Enter a number from 0 to {{max}}, or leave it blank."
+      },
+      "spendTitle": "Where the money went",
+      "requests": "Requests",
+      "spend": "Spend",
+      "unpriced_one": "{{count}} request unpriced",
+      "unpriced_other": "{{count}} requests unpriced",
+      "unpricedNote": "Unpriced requests ran against a model with no price, so their recorded cost is not a cost. Figures are scaled by the request log's sampling weight and are estimates under sampling.",
+      "unpricedColumn": "Unpriced",
+      "multiAttempt": "Retried or failed over",
+      "failed": "Failed",
+      "spentAnyway": "{{amount}} spent anyway",
+      "cacheHits": "Response-cache hits",
+      "cacheMisses": "Cache misses",
+      "byRoute": "Spend by route",
+      "byModel": "Spend by upstream model",
+      "byCaller": "Spend by caller (50 costliest)",
+      "candidatesTitle": "What could have run cheaper",
+      "candidatesBody": "Each figure is a range. The low end keeps the same token counts and prompt-cache reuse at the candidate's price; the high end assumes longer answers and a cold prompt cache. A saving's low end is the pessimistic one and can be negative.",
+      "substitutable_one": "{{requests}} request could have gone to a cheaper model in its route's pool. It cost {{cost}}; saving {{range}}.",
+      "substitutable_other": "{{requests}} requests could have gone to a cheaper model in their route's pool. They cost {{cost}}; saving {{range}}.",
+      "range": "{{low}} to {{high}}",
+      "currentCost": "{{requests}} requests, {{cost}} recorded",
+      "projected": "Projected cost",
+      "saving": "Saving",
+      "noCandidatesTitle": "No cheaper model would have fit",
+      "noCandidatesBody": "No request in this window had a cheaper, priced model in its route's pool within the thresholds above.",
+      "excludedTitle": "What was left out",
+      "excludedBody": "Requests that were not re-priced, by reason. A request or a candidate whose price is unknown is counted here, never priced at zero.",
+      "reason": "Reason",
+      "reasons": {
+        "unpriced": "No price for the model it ran on",
+        "failed": "Ended in an error",
+        "cache_hit": "Answered from the response cache",
+        "usage_unknown": "The upstream reported no usage",
+        "uses_tools": "Used tools",
+        "image_input": "Carried images",
+        "audio_input": "Carried audio",
+        "structured_output": "Asked for structured output",
+        "multi_turn": "Was part of a conversation",
+        "not_a_model_call": "Not a model call",
+        "no_token_usage": "No token usage recorded",
+        "prompt_too_large": "Prompt over the threshold",
+        "output_too_large": "Answer over the threshold",
+        "route_not_configured": "Route no longer configured",
+        "no_cheaper_candidate": "No cheaper priced model in the pool"
+      },
+      "unknownPricesTitle": "Models left out for lack of a price",
+      "unknownPricesBody": "These models are in a route's pool but have no price, so they could not be considered. Set a price and they will be.",
+      "emptyTitle": "No requests in this window",
+      "emptyBody": "The request log holds nothing to re-price for this window. Widen it to read more traffic.",
+      "noMatchTitle": "No requests match",
+      "noMatchBody": "Nothing in this window matches the scope or thresholds you set.",
+      "widen": "Look at the last 30 days",
+      "noAnalytics": {
+        "title": "The savings advisor needs ClickHouse",
+        "body": "It reads the request log, which is stored in ClickHouse. Set <0>CLICKHOUSE_URL</0> on the control plane and the report appears here."
+      }
+    },
     "mcpLogs": {
       "noAnalytics": {
         "title": "MCP tool-call logs need ClickHouse",
@@ -3971,7 +4115,6 @@
       "statusFilterAria": "Filter by status",
       "transportFilterAria": "Filter by transport",
       "calls": "Calls",
-      "window": "Last 24 hours",
       "emptyAction": "Browse the MCP catalog",
       "copyRequest": "Copy request id",
       "copyTrace": "Copy trace id",
@@ -5463,6 +5606,10 @@
     "logs": {
       "title": "LLM Logs",
       "subtitle": "Every request through the gateway, streaming in real time."
+    },
+    "savings": {
+      "title": "Savings advisor",
+      "subtitle": "What the window's spend would have cost at the cheaper models already in each route's pool. A shortlist to test."
     },
     "mcp-logs": {
       "title": "MCP Logs",

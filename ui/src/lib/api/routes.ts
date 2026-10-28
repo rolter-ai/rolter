@@ -27,6 +27,15 @@ export const STRATEGIES = [
   "predicted_latency",
 ] as const;
 
+/**
+ * The fields of a route's `AdvancedModelConfig` the dashboard types; the rest
+ * of the blob travels untouched. `context_length` is the model's context
+ * window in tokens, served on `GET /v1/models` and not enforced (#3265).
+ */
+export interface RouteAdvanced extends Record<string, unknown> {
+  context_length?: number;
+}
+
 export interface RouteRow {
   id: string;
   project_id: string;
@@ -41,7 +50,7 @@ export interface RouteRow {
    * `#[serde(default)]` on the backend, so a route nobody has edited carries
    * `{}` rather than null
    */
-  advanced: Record<string, unknown>;
+  advanced: RouteAdvanced;
   created_at: string;
   /**
    * the route's targets; present only when the list was read with
@@ -255,10 +264,7 @@ export function setRouteComplexity(routeId: string, policy: ComplexityPolicy): P
 }
 
 // advanced per-route model configuration (base_url, pricing, limits, headers…)
-export function setRouteAdvanced(
-  routeId: string,
-  advanced: Record<string, unknown>,
-): Promise<RouteRow> {
+export function setRouteAdvanced(routeId: string, advanced: RouteAdvanced): Promise<RouteRow> {
   return sendJson<RouteRow>("PUT", `/api/v1/routes/${routeId}/advanced`, {
     advanced,
   });

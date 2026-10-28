@@ -153,6 +153,8 @@ interface ModelDraft {
   paramMode: LockMode;
   params: DraftParam[];
   caps: Caps;
+  /** the model's context window in tokens, served on `GET /v1/models` and not enforced (#3265) */
+  contextLength: string;
   price: {
     input: string;
     output: string;
@@ -276,6 +278,7 @@ function blankDraft(
     paramMode: "manual",
     params: paramDefs("chat", false),
     caps: defaultCaps("chat"),
+    contextLength: "",
     price: {
       input: "",
       output: "",
@@ -322,6 +325,8 @@ const MAX_ROUTE_RETRIES = 10;
 const MAX_ROUTE_THROUGHPUT = 10_000_000;
 /** `tpm` is a u32 on the backend */
 const MAX_ROUTE_TPM = 4_294_967_295;
+/** `context_length` is a u32 on the backend (#3265) */
+const MAX_CONTEXT_LENGTH = 4_294_967_295;
 
 /**
  * Seed the draft from a route's stored `advanced` blob (#1178).
@@ -352,6 +357,7 @@ function seedAdvanced(draft: ModelDraft, advanced: Record<string, unknown>) {
       draft.caps[key] = capabilities.includes(key);
     }
   }
+  draft.contextLength = num(advanced.context_length);
   draft.params = paramDefs(draft.modality, draft.caps.reasoning);
   draft.description = str(advanced.description);
 
@@ -444,6 +450,7 @@ function advancedToApi(
   out.capabilities = Object.entries(draft.caps)
     .filter(([, on]) => on)
     .map(([key]) => key);
+  put(out, "context_length", limit(draft.contextLength));
   put(out, "description", draft.description.trim() || undefined);
 
   // rebuilt from the limits the gateway applies, so one it never read
@@ -1097,6 +1104,7 @@ type FieldKey =
   | "rpm"
   | "tpm"
   | "concurrency"
+  | "contextLength"
   | "param"
   | "header"
   | "cacheWrite"
@@ -1463,6 +1471,11 @@ export function ModelSheet({
     MAX_ROUTE_THROUGHPUT,
     t("modelSheet.errors.concurrency", { max: MAX_ROUTE_THROUGHPUT }),
   );
+  const errContextLength = capError(
+    draft.contextLength,
+    MAX_CONTEXT_LENGTH,
+    t("modelSheet.errors.contextLength"),
+  );
   const paramRowInvalid = (p: (typeof draft.params)[number]) =>
     p.custom && p.value.trim() !== "" && p.key.trim() === "";
   const headerRowInvalid = (h: (typeof draft.headers)[number]) =>
@@ -1504,6 +1517,7 @@ export function ModelSheet({
     rpm: errRpm,
     tpm: errTpm,
     concurrency: errConcurrency,
+    contextLength: errContextLength,
     param: errParam,
     header: errHeader,
     cacheWrite: errCacheWrite,
@@ -1548,6 +1562,8 @@ export function ModelSheet({
     tpmErr: `${fid}-tpm-err`,
     concurrencyHint: `${fid}-concurrency-hint`,
     concurrencyErr: `${fid}-concurrency-err`,
+    contextLengthHint: `${fid}-context-length-hint`,
+    contextLengthErr: `${fid}-context-length-err`,
     paramErr: `${fid}-param-err`,
     headerErr: `${fid}-header-err`,
     cacheWriteHint: `${fid}-cache-write-hint`,
@@ -2319,6 +2335,32 @@ export function ModelSheet({
                     />
                   </>
                 )}
+                <div className="space-y-1 sm:col-span-2">
+                  <FieldLabel
+                    label={t("modelSheet.caps.contextLength")}
+                    htmlFor="ms-context-length"
+                  />
+                  <Input
+                    id="ms-context-length"
+                    type="number"
+                    min={1}
+                    className="font-mono"
+                    value={draft.contextLength}
+                    placeholder="128000"
+                    disabled={readonly}
+                    aria-invalid={shownError("contextLength") ? true : undefined}
+                    aria-describedby={describedBy(
+                      ids.contextLengthHint,
+                      shownError("contextLength") && ids.contextLengthErr,
+                    )}
+                    onChange={(e) => set({ contextLength: e.target.value })}
+                    onBlur={() => visibility.touch("contextLength")}
+                  />
+                  <p id={ids.contextLengthHint} className="text-xs text-muted-foreground">
+                    {t("modelSheet.caps.contextLengthHint")}
+                  </p>
+                  <FieldError id={ids.contextLengthErr} error={shownError("contextLength")} />
+                </div>
               </FormSection>
             )}
 

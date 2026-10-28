@@ -12,6 +12,16 @@ The savings advisor reads the request log for a window and answers three questio
 
 It needs the control plane's `CLICKHOUSE_URL`, like every other analytics read; without it the endpoint answers `503`.
 
+## Reading it in the dashboard
+
+**Observability → Savings** shows the same report. It is hidden from roles that lack the `savings` capability, and a deployment without ClickHouse sees a note naming `CLICKHOUSE_URL` instead of figures.
+
+- **The warning comes first.** The screen opens on what the advisor is not: it re-prices, it does not judge quality, and the report's own `limits` are listed under that heading with every answer.
+- **Window and scope.** The window defaults to the last 7 days, as the endpoint does, and, with the organization, project, route and virtual key pickers and the three thresholds, lives in the address, so a link opens on the same report. The thresholds apply together when you press **Recalculate**.
+- **Spend.** Requests, spend, the unpriced requests inside it, retried or failed-over requests, failed requests, response-cache hits and misses, then the route, upstream model and caller breakdowns.
+- **Candidates.** One table per route and current model. Projected costs and savings are always a range from the optimistic to the pessimistic end; a saving's pessimistic end can be negative. The summary line above them gives the range for everything substitutable.
+- **Left out.** Requests the advisor did not re-price, by reason, and the pool models it could not consider for lack of a price. Each such model links to **Pricing Overrides** so you can set one.
+
 ## Asking for a report
 
 ```bash
