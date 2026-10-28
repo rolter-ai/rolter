@@ -54,6 +54,7 @@ const GROUP_OF_FAMILY: Record<string, AuditGroup> = {
   model_defaults: "routing",
   adaptive_routing_policy: "routing",
   guardrail_provider: "guardrails",
+  guardrail_policy: "guardrails",
   guardrail_rule: "guardrails",
   mcp_server: "mcp",
   mcp_tool_group: "mcp",

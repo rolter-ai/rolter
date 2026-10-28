@@ -20,6 +20,7 @@
 - [MCP OAuth](architecture/mcp-oauth.md)
 - [SCIM provisioning](architecture/scim-provisioning.md)
 - [Security](architecture/security.md)
+- [Semantic guard policies](architecture/semantic-guards.md)
 - [LDAP authentication](architecture/ldap.md)
 - [Health & readiness](architecture/health-and-readiness.md)
 - [Observability](architecture/observability.md)
@@ -55,6 +56,7 @@
   - [ADR-0034 — CI is sized to the 20-slot runner pool](adr/2026-09-29-ci-runner-budget.md)
   - [ADR-0035 — System One decisions: one generic kind on a native pass-through route](adr/2026-10-14-system-one-decision-api.md)
   - [ADR-0036 — PII restoration on streamed responses: the sanitizer restores the stream](adr/2026-10-27-pii-streaming-restoration.md)
+  - [ADR-0037 — Semantic guard policies on streamed responses: refuse or buffer, never bypass](adr/2026-10-27-semantic-guard-streaming.md)
   - [ADR-0038 — A negotiated format version for /internal/snapshot](adr/2026-10-27-snapshot-format-version.md)
 
 # API
