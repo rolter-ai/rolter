@@ -844,6 +844,7 @@ fn openai_request(mut v: Value, adjustments: &mut ParamAdjustments) -> Value {
     if obj.remove("max_completion_tokens").is_some() {
         adjustments.record("max_completion_tokens", Disposition::Dropped);
     }
+    clamp_temperature(obj, adjustments);
     if let Some(stop) = obj.remove("stop") {
         obj.insert(
             "stop_sequences".into(),
@@ -888,6 +889,30 @@ fn openai_request(mut v: Value, adjustments: &mut ParamAdjustments) -> Value {
     // hands on, so `include_usage` is honoured rather than dropped
     obj.remove("stream_options");
     v
+}
+
+/// The highest `temperature` Anthropic Messages accepts. OpenAI's Chat
+/// Completions and Responses accept up to 2.
+const ANTHROPIC_MAX_TEMPERATURE: f64 = 1.0;
+
+/// Clamp a chat `temperature` above Anthropic's range down to its maximum and
+/// report it as `clamped`, so a request that is valid in the dialect the caller
+/// speaks is not refused by the upstream for it (#3324, maintainer's decision:
+/// clamp rather than forward or scale). Scaling (`t / 2`) was weighed and not
+/// taken: it would change every request's temperature, in range or not, where
+/// a clamp changes only the ones Anthropic would refuse. A value at or below 1,
+/// or one that is not a number, is left for the upstream to judge.
+fn clamp_temperature(obj: &mut serde_json::Map<String, Value>, adjustments: &mut ParamAdjustments) {
+    let Some(temperature) = obj.get_mut("temperature") else {
+        return;
+    };
+    if temperature
+        .as_f64()
+        .is_some_and(|t| t > ANTHROPIC_MAX_TEMPERATURE)
+    {
+        *temperature = json!(ANTHROPIC_MAX_TEMPERATURE);
+        adjustments.record("temperature", Disposition::Clamped);
+    }
 }
 
 fn anthropic_request(mut v: Value, adjustments: &mut ParamAdjustments) -> Value {
@@ -6065,6 +6090,43 @@ data: [DONE]
         );
         assert!(sent.get("n").is_none());
         assert_eq!(sent["max_tokens"], 10);
+    }
+
+    #[test]
+    fn chat_to_anthropic_clamps_a_temperature_above_one() {
+        for path in ["/v1/chat/completions", "/v1/responses"] {
+            let body = if path == "/v1/responses" {
+                json!({"model": "m", "input": "hi", "temperature": 1.3})
+            } else {
+                json!({"model": "m", "messages": [{"role": "user", "content": "hi"}],
+                       "temperature": 1.3})
+            };
+            let (sent, entries) = reported(path, ProviderKind::Anthropic, body);
+            assert_eq!(sent["temperature"], 1.0, "{path}");
+            assert_eq!(entries, ["clamped:temperature"], "{path}");
+        }
+    }
+
+    #[test]
+    fn a_temperature_anthropic_accepts_is_forwarded_as_sent() {
+        for temperature in [json!(0), json!(0.7), json!(1), json!(1.0), json!("hot")] {
+            let (sent, entries) = reported(
+                "/v1/chat/completions",
+                ProviderKind::Anthropic,
+                json!({"model": "m", "messages": [{"role": "user", "content": "hi"}],
+                       "temperature": temperature}),
+            );
+            assert_eq!(sent["temperature"], temperature);
+            assert!(entries.is_empty(), "{temperature}: {entries:?}");
+        }
+        // and a chat upstream, whose range is OpenAI's, keeps 1.3
+        let (sent, entries) = reported(
+            "/v1/chat/completions",
+            ProviderKind::Openai,
+            json!({"model": "m", "messages": [], "temperature": 1.3}),
+        );
+        assert_eq!(sent["temperature"], 1.3);
+        assert!(entries.is_empty());
     }
 
     #[test]

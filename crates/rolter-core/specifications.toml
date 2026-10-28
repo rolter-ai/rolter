@@ -508,8 +508,13 @@ supported = [
 omissions = [
   "fields with no counterpart in the target dialect are dropped, never forwarded",
 ]
+deviations = [
+  "an OpenAI `temperature` above Anthropic's maximum of 1 is sent as 1 and reported as `temperature=clamped` (#3324)",
+]
 tests = [
   "crates/rolter-proxy/src/translation.rs::openai_multimodal_and_tools_become_anthropic_blocks",
+  "crates/rolter-proxy/src/translation.rs::chat_to_anthropic_clamps_a_temperature_above_one",
+  "crates/rolter-gateway/tests/integration.rs::a_chat_temperature_above_one_is_clamped_for_an_anthropic_upstream",
   "crates/rolter-proxy/src/translation.rs::anthropic_response_becomes_openai_response",
   "crates/rolter-proxy/src/translation.rs::anthropic_sse_translates_across_chunk_boundaries",
   "crates/rolter-gateway/tests/integration.rs::cross_protocol_sse_is_translated_incrementally_both_ways",

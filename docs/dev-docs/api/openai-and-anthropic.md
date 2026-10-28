@@ -149,20 +149,30 @@ so instead of discarding it silently (#1586). Every adapter in
 `crates/rolter-proxy/src/translation.rs` records into one
 `rolter_proxy::ParamAdjustments` (`adjustments.rs`), an entry per parameter with
 a `Disposition`: `dropped` (no equivalent, not sent), `clamped` (sent within
-the upstream's range; no adapter clamps today, see #3324) or `translated` (sent as a lossy
+the upstream's range: Chat → Anthropic clamps `temperature`, see below) or `translated` (sent as a lossy
 approximation, such as a forced-function `tool_choice` sent to Gemini as mode
 `ANY`, an Anthropic `tool_choice` carrying `disable_parallel_tool_use`, or a
 tool list with non-function tools). A rename that keeps the meaning
 (`max_completion_tokens` → `max_tokens`, `stop` → `stop_sequences`) is not an
 adjustment. What each adapter reports:
 
-| Pair                         | Reported                                                                                                                        |
-| ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
-| Chat → Anthropic             | `n`, `presence_penalty`, `frequency_penalty`, `logprobs` dropped; `max_completion_tokens` dropped when `max_tokens` is also set |
-| Anthropic → Chat             | `tool_choice` translated when it carries `disable_parallel_tool_use`                                                            |
-| Responses → Chat / Anthropic | `background`, `store`, `previous_response_id`, `reasoning`, `text` dropped, plus the Chat → Anthropic row for Anthropic         |
-| any → Gemini generate        | every known parameter the translator does not map (`top_k`, `seed`, `response_format`, …); `tool_choice` and `tools` as above   |
-| any → Gemini Interactions    | as Gemini, except that `store` and `previous_response_id` are carried rather than dropped                                       |
+| Pair                         | Reported                                                                                                                                                            |
+| ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Chat → Anthropic             | `n`, `presence_penalty`, `frequency_penalty`, `logprobs` dropped; `max_completion_tokens` dropped when `max_tokens` is also set; `temperature` clamped when above 1 |
+| Anthropic → Chat             | `tool_choice` translated when it carries `disable_parallel_tool_use`                                                                                                |
+| Responses → Chat / Anthropic | `background`, `store`, `previous_response_id`, `reasoning`, `text` dropped, plus the Chat → Anthropic row for Anthropic                                             |
+| any → Gemini generate        | every known parameter the translator does not map (`top_k`, `seed`, `response_format`, …); `tool_choice` and `tools` as above                                       |
+| any → Gemini Interactions    | as Gemini, except that `store` and `previous_response_id` are carried rather than dropped                                                                           |
+
+`temperature` is the one clamp (#3324, the maintainer's decision). OpenAI's Chat
+Completions and Responses accept 0 to 2 and Anthropic Messages 0 to 1, so a
+caller routed to Anthropic with `temperature: 1.3` used to get Anthropic's 400
+for a request valid in the dialect it speaks. `clamp_temperature` sends 1
+instead and records `temperature=clamped`; a value at or below 1, or one that is
+not a number, is forwarded as sent for the upstream to judge. Scaling (`t / 2`)
+was weighed and rejected, since it would change every request's temperature,
+including the ones Anthropic accepts as they are. Responses → Anthropic goes
+through the same Chat → Anthropic translator and clamps the same way.
 
 Gemini and Interactions build their body afresh, so the parameters left over in
 the source object are the dropped ones. Only names from `KNOWN_PARAMS` are

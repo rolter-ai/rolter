@@ -2526,6 +2526,37 @@ async fn param_adjustments_name_what_an_anthropic_upstream_drops() {
     }
 }
 
+/// OpenAI accepts a `temperature` up to 2 and Anthropic up to 1: the gateway
+/// clamps rather than forward a value the upstream would refuse (#3324).
+#[tokio::test]
+async fn a_chat_temperature_above_one_is_clamped_for_an_anthropic_upstream() {
+    let upstream = serve(Router::new().route(
+        "/v1/messages",
+        post(|Json(body): Json<Value>| async move {
+            assert_eq!(body["temperature"], 1.0, "anthropic refuses above 1");
+            anthropic_strict(Json(body)).await
+        }),
+    ))
+    .await;
+    let mut config = config_for("to-anthropic", vec![("anthropic", upstream)]);
+    config.providers[0].kind = ProviderKind::Anthropic;
+    let gw = serve_gateway(&config).await;
+    let response = reqwest::Client::new()
+        .post(format!("http://{gw}/v1/chat/completions"))
+        .json(&json!({
+            "model":"to-anthropic","max_tokens":16,"temperature":1.3,
+            "messages":[{"role":"user","content":"ping"}]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    assert_eq!(
+        param_adjustments(&response).as_deref(),
+        Some("temperature=clamped")
+    );
+}
+
 #[tokio::test]
 async fn param_adjustments_name_what_a_gemini_upstream_drops_for_an_anthropic_client() {
     let upstream = serve(Router::new().fallback(post(gemini_strict))).await;

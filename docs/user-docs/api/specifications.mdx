@@ -256,7 +256,8 @@ response payload.
 - **Supported:** SSE translated incrementally in both directions
 - **Supported:** `max_tokens` injected from `[compatibility] default_max_tokens` when an OpenAI request sets none
 - **Omitted:** fields with no counterpart in the target dialect are dropped, never forwarded
-- **Evidence:** `crates/rolter-proxy/src/translation.rs::openai_multimodal_and_tools_become_anthropic_blocks`<br />`crates/rolter-proxy/src/translation.rs::anthropic_response_becomes_openai_response`<br />`crates/rolter-proxy/src/translation.rs::anthropic_sse_translates_across_chunk_boundaries`<br />`crates/rolter-gateway/tests/integration.rs::cross_protocol_sse_is_translated_incrementally_both_ways`
+- **Deviations:** an OpenAI `temperature` above Anthropic's maximum of 1 is sent as 1 and reported as `temperature=clamped` (#3324)
+- **Evidence:** `crates/rolter-proxy/src/translation.rs::openai_multimodal_and_tools_become_anthropic_blocks`<br />`crates/rolter-proxy/src/translation.rs::chat_to_anthropic_clamps_a_temperature_above_one`<br />`crates/rolter-gateway/tests/integration.rs::a_chat_temperature_above_one_is_clamped_for_an_anthropic_upstream`<br />`crates/rolter-proxy/src/translation.rs::anthropic_response_becomes_openai_response`<br />`crates/rolter-proxy/src/translation.rs::anthropic_sse_translates_across_chunk_boundaries`<br />`crates/rolter-gateway/tests/integration.rs::cross_protocol_sse_is_translated_incrementally_both_ways`
 
 #### OpenAI Responses → Chat Completions, Anthropic Messages, Gemini
 

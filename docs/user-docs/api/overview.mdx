@@ -122,7 +122,7 @@ x-rolter-param-adjustments: top_k=dropped, tool_choice=translated
 | Disposition  | Meaning                                                                                                                                                 |
 | ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `dropped`    | The upstream has no equivalent, so the parameter was not sent. `top_k` to Gemini, `presence_penalty` to Anthropic.                                      |
-| `clamped`    | The value was sent, limited to the range the upstream accepts.                                                                                          |
+| `clamped`    | The value was sent, limited to the range the upstream accepts: a `temperature` above 1 sent to Anthropic, which accepts 0 to 1, is sent as 1.           |
 | `translated` | The parameter was sent as an approximation that loses part of its meaning: a `tool_choice` forcing one function, sent to Gemini as "call any function". |
 
 - **Names, never values.** The header carries parameter names from Rolter's fixed list of dialect parameters and the disposition, nothing you sent. A field Rolter does not recognise is not echoed.
