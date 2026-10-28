@@ -152,6 +152,7 @@ async fn proxy(
                 user_id: &key.user_id,
                 request_id: request_id.as_str(),
                 capture: &snapshot.logging.payload_capture,
+                redactor: &snapshot.payload_redactor,
             },
         )
     } else {
@@ -266,6 +267,7 @@ async fn proxy(
                     user_id: &key.user_id,
                     request_id: request_id.as_str(),
                     capture: &snapshot.logging.payload_capture,
+                    redactor: &snapshot.payload_redactor,
                 };
                 let message = refused
                     .first()

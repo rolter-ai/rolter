@@ -120,6 +120,9 @@ async fn ingest_event(
         .map_err(|message| ApiError::Core(rolter_core::Error::Config(message)))?;
     let logging = state.store.load().await?.logging;
     let capture_policy = logging.payload_capture;
+    // the same policy the request log applies; a value policy that does not
+    // compile still leaves the key rule in force
+    let (redactor, _) = capture_policy.redactor();
     let ts = event_ts(event.ts.as_deref())
         .map_err(|message| ApiError::Core(rolter_core::Error::Config(message)))?;
     let row = json!({
@@ -137,8 +140,8 @@ async fn ingest_event(
         "user_id": event.user_id,
         "request_id": event.request_id,
         "trace_id": event.trace_id,
-        "arguments": capture(event.arguments, capture_policy.enabled, capture_policy.max_bytes, &capture_policy.redact_fields),
-        "result": capture(event.result, capture_policy.enabled, capture_policy.max_bytes, &capture_policy.redact_fields),
+        "arguments": capture(event.arguments, capture_policy.enabled, capture_policy.max_bytes, &redactor),
+        "result": capture(event.result, capture_policy.enabled, capture_policy.max_bytes, &redactor),
         "error": safe_error(&event.status, event.error.as_deref()),
     });
     let ch = client_or_503(&state).map_err(|_| {

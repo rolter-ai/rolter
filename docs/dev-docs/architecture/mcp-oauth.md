@@ -579,7 +579,12 @@ The gateway records every proxied JSON-RPC `tools/call` in ClickHouse's
   never upstream text.
 - **Capture.** `arguments` and `result` use `rolter_core::mcp_log::capture`, the
   same helper the ingest route calls: empty unless `[logging.payload_capture]`
-  is `enabled`, redacted with `redact_fields` and then truncated to `max_bytes`.
+  is `enabled`, redacted with the `PayloadRedactor` compiled from the same
+  policy (`redact_fields`, the built-in detectors and the operator patterns,
+  #3277) and then truncated to `max_bytes`. The gateway takes the redactor
+  from the snapshot (`Snapshot::payload_redactor`); the ingest route compiles
+  it from the stored policy. A policy that does not compile leaves the key rule
+  in force.
   The `models` and `virtual_key_ids` allow-lists apply to LLM payloads only, as
   they do on the ingest route. `result` holds the JSON-RPC `result`, or the
   `error` object for an error reply.
