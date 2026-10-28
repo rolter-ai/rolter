@@ -150,8 +150,9 @@ it can meet behave as they did before it: a newer gateway reading an older
 control plane's reply, where the field is absent, and an older gateway reading
 a newer one's, where the field is ignored. In addition, ignoring it may make an
 older gateway serve _less_ than the operator configured, never more. New
-optional tuning fields, new entries in a list, `problems` (#926) and a new
-`McpAuthKind` value (whose `Unknown` fallback fails closed, #952) are additive.
+optional tuning fields, new entries in a list, `problems` (#926) and a new value
+in an enum whose `Unknown` fallback fails closed (`McpAuthKind` since #952, and
+since #3347 every enum that is not deliberately closed) are additive.
 
 Everything else is a **format bump**, which increments `SNAPSHOT_FORMAT`:
 
@@ -160,8 +161,18 @@ Everything else is a **format bump**, which increments `SNAPSHOT_FORMAT`:
    optional field becoming required.
 2. Changing what a field means, its unit, or what its absence means.
 3. A new value in an enum the snapshot carries that has no fail-closed
-   fallback, which today is every enum but `McpAuthKind`. A new `ProviderKind`
-   or `BalancingStrategy` is therefore a bump.
+   fallback. When this record was written that was every enum but
+   `McpAuthKind`; #3347 gave the others an `Unknown` variant and its reading
+   (a provider of an unknown kind is omitted, a route of an unknown strategy
+   refuses, an unknown budget period refuses, an unknown failure mode fails
+   closed), and #3390 did the same for a route target's `takes_over` class
+   (`FailureClass`, whose unknown token matches no failure), so a new
+   `ProviderKind`, `BalancingStrategy` or failure class is additive. What
+   is left are the enums documented as deliberately closed: `ScopeWithin`,
+   `WebhookStage`, `WebhookAuth`, `GuardStage`, `BuiltinRule`, `PluginStage`,
+   `DecoratorRole`, `DecoratorPosition`, `PromptTemplateActivationScope` and
+   `PolicyScope`. The list and the readings are in
+   `docs/dev-docs/architecture/config-and-hot-reload.md`.
 4. A new field that restricts what the gateway serves (an access, auth, spend,
    rate, visibility or ingress rule), because an older gateway ignores it and
    serves more than the operator allowed. Route limits (#2936), a key's
@@ -507,9 +518,8 @@ for a snapshot (see Context).
   a code, a log line, a gauge and a readiness answer.
 - Every bump has a fixed cost: the constant, a down-step, a `DEPRECATIONS`
   entry, the shape fixture, and conversion code kept for at least a window.
-  New provider kinds and balancing strategies pay it until their enums gain a
-  fail-closed `Unknown` fallback, which would make them additive and is worth
-  doing on its own.
+  New provider kinds and balancing strategies paid it until their enums gained
+  a fail-closed `Unknown` fallback in #3347, which made them additive.
 - Using a new release's restriction in the middle of a rollout narrows the
   older gateways instead of being ignored by them. That replaces "roll the
   gateways before you set a cap" with an outcome an operator can see.
@@ -518,11 +528,12 @@ for a snapshot (see Context).
   possible) and the docs (finish the rollout first) keep that rare; it cannot
   be made impossible without serving those gateways nothing.
 - The gateway's `/readyz` gains a third answer. The dashboard's status pill
-  (`readinessFrom` in `ui/src/lib/gateway.ts`) reads it as unknown until it
-  learns the body.
-- The cluster inventory's `converged` compares `config_version` only, so a
-  gateway served an older format with an entity omitted reads as converged.
-  Recording each node's format needs a column and is a follow-up.
+  (`readinessFrom` in `ui/src/lib/gateway.ts`) read it as unknown until #3350
+  taught it the body, which it now shows as down.
+- The cluster inventory's `converged` compared `config_version` only, so a
+  gateway served an older format with an entity omitted read as converged.
+  #3351 records each node's stated range and served format, and a node served
+  an older format is no longer converged.
 - The channels in the other direction, `/internal/adaptive-telemetry` and
   `/internal/breaker-state`, stay unversioned. They carry telemetry with
   `#[serde(default)]` fields, and a sample an older control plane misreads
@@ -589,4 +600,6 @@ serializes empty, since it hides the shape of its items), and the guard ignores
 Left out of that PR, each its own follow-up: the dashboard pill (#3350), the
 inventory column (#3351), fail-closed fallbacks for the snapshot's enums
 (#3347), a per-component image tag in the chart (#3352), and the cross-build e2e
-job (#3353).
+job (#3353). #3347, #3350, #3351 and #3352 have since shipped, together with a
+`503 awaiting_snapshot` readiness answer for a gateway that has never applied a
+snapshot for any reason (#3348); #3353 is still open.

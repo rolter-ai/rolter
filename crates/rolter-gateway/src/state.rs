@@ -1543,6 +1543,30 @@ impl AppState {
             && self.metrics.snapshot_format.load(Relaxed) == 0
     }
 
+    /// Whether `/readyz` should hold this gateway out of service until it
+    /// applies its first snapshot (#3348).
+    ///
+    /// A gateway with `--snapshot-url` serves its bootstrap file until then,
+    /// and treats an empty key set as closed, so unless that file carries
+    /// virtual keys (or opens auth with `server.require_auth = false`) it
+    /// refuses every `/v1` request, and a Service should not send it any. A
+    /// bootstrap file that can authenticate a caller is served, so that
+    /// gateway is ready. Once a snapshot is applied the answer is ready for
+    /// good: a later failed poll keeps the last config, as it always has.
+    pub fn awaiting_first_snapshot(&self) -> bool {
+        if !self.managed_auth
+            || self
+                .metrics
+                .snapshot_format
+                .load(std::sync::atomic::Ordering::Relaxed)
+                != 0
+        {
+            return false;
+        }
+        let snapshot = self.snapshot.load();
+        snapshot.keys.is_empty() && snapshot.require_auth.unwrap_or(true)
+    }
+
     /// Close every live `/v1/realtime` session and wait, at most `grace`, for
     /// each one's meter to run its last flush. Returns whether every session
     /// finished inside `grace`.

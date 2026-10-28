@@ -732,7 +732,8 @@ disappears on its own as they expire. Bodies written by gateways from v0.1.0 or
 earlier, which let ClickHouse stamp the log row and the payload row separately,
 never joined on `ts` and still do not: after the control plane is upgraded those
 bodies stop showing until payload retention removes them. The user docs'
-upgrade page says to upgrade gateways first for that reason.
+upgrade page keeps ADR-0038's order (control plane first) and says to roll the
+gateways straight after it, which keeps the set of such bodies small (#3349).
 
 Two limits are known and tracked:
 

@@ -112,6 +112,49 @@ element in every list, and `the_representative_config_populates_every_list`
 fails when a list serializes empty, so a new `Vec` field needs an element there
 before the guard can see what it holds.
 
+### Enum values a gateway does not know
+
+Every enum reachable from `GatewayConfig` that can grow a value either has a
+fail-closed `Unknown` variant (`#[serde(other)]`), or says in its doc comment
+that it is deliberately closed (#3347). A value from a newer release then
+decodes as `Unknown` instead of failing the whole snapshot, which would keep an
+older gateway on its last config, every revoked key included, until it is
+upgraded. `GatewayConfig::fail_closed_unknown_values`, which the gateway runs on
+every snapshot before it validates one, decides what `Unknown` means, for that
+entity alone:
+
+| Enum                                                                                  | `Unknown` reads as                                                                                                                                                  |
+| ------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ProviderKind`                                                                        | the provider is omitted and never dialled; the sanitizer's cascade drops the route targets, group members and key allow-list entries that named it                  |
+| `BalancingStrategy`                                                                   | a route is omitted (a request for it is answered as for an unknown model); a provider group keeps no members                                                        |
+| `BudgetPeriod`                                                                        | the budget refuses every request it covers, before Redis is read                                                                                                    |
+| `BudgetScope` (budgets and rate limits)                                               | the cap counts every request, on a counter of its own, so it binds sooner than configured                                                                           |
+| `UnpricedPolicy`                                                                      | `block`                                                                                                                                                             |
+| `FailureMode` (guardrail webhook, semantic guard providers, PII sanitizer, plugins)   | `fail_closed`                                                                                                                                                       |
+| `GuardAction`, `ViolationAction`                                                      | `block`                                                                                                                                                             |
+| `StreamingPostCall`, `StreamingStrategy` (semantic guards), `StreamingResponse` (PII) | `reject`                                                                                                                                                            |
+| `SanitizeDirection` / `RestorationPolicy`                                             | `both` / `never`                                                                                                                                                    |
+| `OverrideMode` / `BackpressurePolicy` / `RoleProfile`                                 | `deny` / `error` / `system_only`                                                                                                                                    |
+| `McpAuthKind` (#952)                                                                  | the server is refused, in the MCP proxy                                                                                                                             |
+| `FailureClass` (a route target's `takes_over`, #3390)                                 | kept in the set but matches no failure, so the target stays a fallback that is never dialled for it; dropping it would empty the set and put the target in the pool |
+
+Each value read this way is logged once per applied snapshot at `warn`. The
+control plane's sanitizer applies the same readings, so an older control plane
+reading a newer row serves them too. A config file is written by hand, so there
+an unknown value is a typo: `GatewayConfig::from_toml_str` refuses it, and the
+control plane's API refuses one on input.
+
+The closed enums are those whose unknown value has no reading that can only
+narrow what is served: the data-carrying `ScopeWithin`, `WebhookAuth` and
+`PromptTemplateActivationScope`, the stages (`WebhookStage`, `GuardStage`,
+`PluginStage`), `BuiltinRule`, `PolicyScope`, and the decorator's `DecoratorRole`
+and `DecoratorPosition`. `FailureKind` is closed too, but never read from the
+wire: it is the gateway's own classification of a failure, and only the
+`FailureClass` that names one travels in the snapshot. A new value in one of them is a format bump under
+ADR-0038 section 2. A new value in an enum with a fallback is additive, provided
+its `Unknown` reading still holds for it; a new enum in the payload gets one or
+the other.
+
 ## Why this design
 
 - Redis pub/sub gives near-instant fan-out to many gateway replicas.

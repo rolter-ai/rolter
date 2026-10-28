@@ -209,6 +209,11 @@ fn control_args(args: &EasyUpArgs, database_url: Option<String>) -> rolter_contr
         login_max_lock_secs: env_or_num("ROLTER_LOGIN_MAX_LOCK_SECS", 900),
         login_max_delay_ms: env_or_num("ROLTER_LOGIN_MAX_DELAY_MS", 2000),
         login_trust_forwarded_for: env_flag("ROLTER_LOGIN_TRUST_FORWARDED_FOR"),
+        // and the request log export bounds (#3360)
+        export_max_rows: env_or_num("ROLTER_EXPORT_MAX_ROWS", 1_000_000),
+        export_max_secs: env_or_num("ROLTER_EXPORT_MAX_SECS", 600),
+        export_max_concurrent: env_or_num("ROLTER_EXPORT_MAX_CONCURRENT", 4),
+        export_max_concurrent_per_caller: env_or_num("ROLTER_EXPORT_MAX_CONCURRENT_PER_CALLER", 1),
         ..Default::default()
     }
 }

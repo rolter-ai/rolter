@@ -324,7 +324,16 @@ export function withCapabilities(
  *
  * Pass a function to change the answer between checks.
  */
-export type GatewayAnswer = "ready" | "draining" | "unreachable" | "unrecognised" | "pending";
+export type GatewayAnswer =
+  | "ready"
+  | "draining"
+  | "unreachable"
+  | "unrecognised"
+  | "pending"
+  // a managed gateway with no config snapshot applied yet (#3348)
+  | "awaitingSnapshot"
+  // a gateway that cannot read the control plane's snapshot format (ADR-0038)
+  | "snapshotFormatUnsupported";
 
 function gatewayResponse(answer: GatewayAnswer): Promise<Response> {
   const text = (body: string, status: number, type = "text/plain; charset=utf-8") =>
@@ -334,6 +343,10 @@ function gatewayResponse(answer: GatewayAnswer): Promise<Response> {
       return text("ok", 200);
     case "draining":
       return text("draining", 503);
+    case "awaitingSnapshot":
+      return text("awaiting_snapshot", 503);
+    case "snapshotFormatUnsupported":
+      return text("snapshot_format_unsupported", 503);
     case "unreachable":
       return Promise.resolve(
         json({ error: { message: "gateway unreachable: error sending request" } }, 502),

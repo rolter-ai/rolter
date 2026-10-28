@@ -1124,6 +1124,12 @@ jobs:
         id: helm-update-check
         if: ${{ !cancelled() && steps.helm.outcome == 'success' && steps.uv.outcome == 'success' }}
         run: bash scripts/check-helm-chart.sh update-check
+      # the control plane and the gateways are tagged apart, so an upgrade can
+      # move the control plane first (#3352)
+      - name: helm chart (per-component image tags)
+        id: helm-image-tags
+        if: ${{ !cancelled() && steps.helm.outcome == 'success' && steps.uv.outcome == 'success' }}
+        run: bash scripts/check-helm-chart.sh image-tags
 
       # the verdict for the whole job, and the one place that knows which step
       # must run on which event. outcomes arrive through env, never inline in
@@ -1166,6 +1172,7 @@ jobs:
           OUTCOME_HELM_RENDER_NO_PREFLIGHT: ${{ steps.helm-render-no-preflight.outcome }}
           OUTCOME_HELM_RENDER_ALL_PREFLIGHT: ${{ steps.helm-render-all-preflight.outcome }}
           OUTCOME_HELM_UPDATE_CHECK: ${{ steps.helm-update-check.outcome }}
+          OUTCOME_HELM_IMAGE_TAGS: ${{ steps.helm-image-tags.outcome }}
         run: |
           set -euo pipefail
           summary="${GITHUB_STEP_SUMMARY}"
@@ -1264,6 +1271,8 @@ jobs:
             "bash scripts/check-helm-chart.sh all-preflight (or prek run helm-render --all-files for all of them)"
           row "helm chart" "helm chart (update check reaches every launcher container)" "${OUTCOME_HELM_UPDATE_CHECK}" yes \
             "bash scripts/check-helm-chart.sh update-check (or prek run helm-render --all-files for all of them)"
+          row "helm chart" "helm chart (per-component image tags)" "${OUTCOME_HELM_IMAGE_TAGS}" yes \
+            "bash scripts/check-helm-chart.sh image-tags (or prek run helm-render --all-files for all of them)"
 
           echo >> "${summary}"
           if [ "${failed}" -ne 0 ]; then

@@ -176,7 +176,7 @@
     "sampledLog": {
       "title_one": "The request log keeps about {{numerator}} in {{denominator}} request.",
       "title_other": "The request log keeps about {{numerator}} in {{denominator}} requests.",
-      "figures": "Request counts, spend and tokens here are estimates scaled up from that sample. Averages and percentiles are read from the sample as it is.",
+      "figures": "Request counts, spend and tokens here are estimates scaled up from that sample. Averages are read from the sample as it is; latency percentiles are weighted by the sample.",
       "rows": "This list shows only the sampled requests. A request missing from it was still served.",
       "noneTitle": "The request log keeps no requests.",
       "noneBody": "Nothing new is recorded, so these figures stop growing."
@@ -633,7 +633,7 @@
       "overridesTargets": "While this route has variants, its targets above are not used. Remove every variant to route through them again.",
       "previewLabel": "Traffic split",
       "previewPending": "Enter a whole-number weight for every variant to see the split.",
-      "zeroWeight": "A weight of 0, which an import from rolter.toml can store, is sampled as 1 by the gateway, so that variant takes the share shown here. Set 1 or more to save.",
+      "zeroWeight": "A weight of 0, which an import from rolter.toml can store, gets no first attempts while another variant has a weight above 0, and is only tried after the others fail. If every weight is 0, the variants share traffic equally. Set 1 or more to save.",
       "unnamed": "Variant {{n}}",
       "nameAria": "Variant {{n}} name",
       "namePlaceholder": "canary",
@@ -929,7 +929,9 @@
           "healthy": "Ready",
           "degraded": "Draining",
           "down": "Unreachable",
-          "unknown": "Unknown"
+          "unknown": "Unknown",
+          "awaitingSnapshot": "No config",
+          "snapshotFormatUnsupported": "Refused config"
         }
       },
       "noAnalytics": {
@@ -2621,11 +2623,14 @@
         "build": "Build",
         "config": "Config",
         "state": "State",
-        "lastSeen": "Last seen"
+        "lastSeen": "Last seen",
+        "format": "Format"
       },
       "drain": "Drain",
       "returnToService": "Return to service",
       "forget": "Forget",
+      "formatRefused": "Refused",
+      "formatReads": "Reads snapshot formats {{min}} to {{max}}",
       "summary_one": "{{count}} node · {{live}} live",
       "summary_other": "{{count}} nodes · {{live}} live",
       "newest": "newest config v{{version}}",
@@ -5886,6 +5891,8 @@
       "degraded": "gateway draining",
       "down": "gateway unreachable",
       "unknown": "gateway status unknown",
+      "awaitingSnapshot": "gateway has no config",
+      "snapshotFormatUnsupported": "gateway cannot read config",
       "fleet": {
         "live_one": "{{count}} gateway live",
         "live_other": "{{count}} gateways live",
@@ -5901,6 +5908,8 @@
         "degraded": "The gateway is draining: it finishes the requests in flight and takes no new ones.",
         "down": "The control plane cannot reach the gateway at ROLTER_GATEWAY_URL.",
         "unknown": "The gateway could not be checked.",
+        "awaitingSnapshot": "The gateway has not received its first config snapshot from the control plane, so it refuses every key. Check that it can reach the control plane and that its admin token is accepted.",
+        "snapshotFormatUnsupported": "The gateway cannot read the snapshot format the control plane serves, so it has no config and refuses every key. Upgrade the control plane before the gateways: see Upgrading, Upgrade order (/deployment/upgrading#upgrade-order) in the docs.",
         "fleet": {
           "healthy_one": "The control plane counts {{count}} live gateway, and it runs the latest config.",
           "healthy_other": "The control plane counts {{count}} live gateways, and all of them run the latest config.",

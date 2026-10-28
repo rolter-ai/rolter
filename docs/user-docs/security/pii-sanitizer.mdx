@@ -116,7 +116,7 @@ A failure is never fatal and never the unsafe way round. If the exchange cannot 
 
 Restoration on a stream never restores more than the buffered path would: a placeholder the model mangled (`PERSON_1`, `<Person_1>`) stays as it is in both. A cached SSE response is restored the same way when it is replayed, with the replaying request's own token. Usage and cost are read from the provider's stream, and payload capture stores it before restoration. A streamed request that the provider answers without a stream (plain JSON) is delivered with its placeholders and counted in `rolter_pii_restore_errors_total`.
 
-[Presidio](https://microsoft.github.io/presidio/) has no streaming endpoint, so it needs a small service in front that wraps `deanonymize` with the holdback.
+[Presidio](https://microsoft.github.io/presidio/) has no streaming endpoint, so it needs a small service in front that wraps `deanonymize` with the holdback. A reference one, with its tests, is in [`examples/presidio-restore-shim`](https://github.com/rolter-ai/rolter/tree/master/examples/presidio-restore-shim): read it, then back its mapping store with the one your sanitize service writes to.
 
 ### Failure mode
 

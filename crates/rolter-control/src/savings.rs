@@ -42,7 +42,7 @@ use serde_json::{json, Value};
 
 use crate::analytics::{
     client_or_503, query_failed, row_filter_params, window_params, with_access, WindowQuery, COST,
-    REQUESTS, ROW_FILTERS, UNPRICED, WHERE_WINDOW,
+    ERROR_STATUS, REQUESTS, ROW_FILTERS, UNPRICED, WHERE_WINDOW,
 };
 use crate::analytics_access::{AnalyticsAccess, SavingsAccess, ROW_VISIBLE};
 use crate::request_log_columns::Columns;
@@ -217,7 +217,7 @@ fn reason_expr(columns: &Columns) -> String {
     let turns = columns.expr("turns");
     format!(
         "multiIf(unpriced = 1, 'unpriced', \
-                 status >= 400, 'failed', \
+                 {ERROR_STATUS}, 'failed', \
                  cache_hit = 1, 'cache_hit', \
                  usage_unknown = 1, 'usage_unknown', \
                  {lifecycle} != '', 'not_a_model_call', \
@@ -828,6 +828,16 @@ mod tests {
         assert!(!old.contains("has_tools"), "{old}");
         assert!(old.contains("toUInt8(0) = 1, 'uses_tools'"), "{old}");
         assert!(old.contains("toUInt16(0) > 1, 'multi_turn'"), "{old}");
+    }
+
+    /// #3419: a request that never got a status (0) is failed, by the one
+    /// definition of an error the dashboard uses, and is judged ahead of the rest.
+    #[test]
+    fn a_failed_request_is_the_dashboards_error_including_status_zero() {
+        let sql = reason_expr(&Columns::default());
+        assert!(sql.contains(&format!("{ERROR_STATUS}, 'failed'")), "{sql}");
+        assert!(!sql.contains("status >= 400, 'failed'"), "{sql}");
+        assert!(sql.find("'failed'") < sql.find("'cache_hit'"), "{sql}");
     }
 
     #[test]

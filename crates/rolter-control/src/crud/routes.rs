@@ -1009,8 +1009,8 @@ fn variant_specs(variants: Vec<VariantInput>) -> ApiResult<Vec<RouteVariantSpec>
                 format!("variant name '{name}' is used twice; names must be unique in a route"),
             ));
         }
-        // a 0 would read as "fallback only", but the gateway samples it as a 1
-        // (#3341), so it is refused like a route target's until that changes
+        // the API writes 1 or more; a 0 (fallback only) can only arrive by
+        // importing a rolter.toml variant
         if variant.weight < 1 {
             return Err(invalid_field(
                 format!("variants[{i}].weight"),
@@ -1210,7 +1210,7 @@ mod variant_tests {
             refused_field(vec![variant("a", -1)]).as_deref(),
             Some("variants[0].weight")
         );
-        // a 0 is sampled as a 1 by the gateway (#3341), so it is refused
+        // a 0 is not written through the API, which asks for 1 or more
         assert_eq!(
             refused_field(vec![variant("a", 3), variant("b", 0)]).as_deref(),
             Some("variants[1].weight")

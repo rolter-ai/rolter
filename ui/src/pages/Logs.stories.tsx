@@ -127,7 +127,11 @@ const MODELS = [{ model: "gpt-4o" }, { model: "internal-llama" }];
 // the control plane's status classes, as `status_predicate` in
 // crates/rolter-control/src/analytics.rs writes them
 const inStatusClass = (status: number, wanted: string) =>
-  wanted === "error" ? status >= 400 : wanted === "success" ? status > 0 && status < 400 : true;
+  wanted === "error"
+    ? status === 0 || status >= 400
+    : wanted === "success"
+      ? status > 0 && status < 400
+      : true;
 
 /**
  * A stub that filters the way the control plane does (#1247): the attribution

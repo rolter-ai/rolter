@@ -472,6 +472,9 @@ fn provider_kind_column(kind: ProviderKind) -> &'static str {
         ProviderKind::Falcon => "falcon",
         ProviderKind::SystemOne => "system_one",
         ProviderKind::Infinity => "infinity",
+        // parsing a file refuses an unknown kind (#3347), so this is never
+        // reached; the column's check constraint would refuse it if it were
+        ProviderKind::Unknown => "unknown",
     }
 }
 
@@ -501,6 +504,9 @@ fn strategy_column(strategy: BalancingStrategy) -> &'static str {
         BalancingStrategy::Adaptive => "adaptive",
         BalancingStrategy::LoraAware => "lora_aware",
         BalancingStrategy::PredictedLatency => "predicted_latency",
+        // parsing a file refuses an unknown strategy (#3347), so this is never
+        // reached; the column's check constraint would refuse it if it were
+        BalancingStrategy::Unknown => "unknown",
     }
 }
 
@@ -1341,6 +1347,9 @@ async fn import_caps(pool: &PgPool, config: &GatewayConfig) -> anyhow::Result<()
             rolter_core::UnpricedPolicy::Ignore => "ignore",
             rolter_core::UnpricedPolicy::Warn => "warn",
             rolter_core::UnpricedPolicy::Block => "block",
+            // parsing a file refuses an unknown value (#3347), so this is
+            // never reached
+            rolter_core::UnpricedPolicy::Unknown => "unknown",
         });
         match same_window.get(*nth) {
             Some(row) => {
@@ -1359,6 +1368,9 @@ async fn import_caps(pool: &PgPool, config: &GatewayConfig) -> anyhow::Result<()
                     BudgetPeriod::Daily => "daily",
                     BudgetPeriod::Monthly => "monthly",
                     BudgetPeriod::Total => "total",
+                    // parsing a file refuses an unknown value (#3347), so this
+                    // is never reached
+                    BudgetPeriod::Unknown => "unknown",
                 };
                 budgets
                     .create(scope_type, scope_id, &limit, period, policy, within)
