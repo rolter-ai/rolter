@@ -128,6 +128,10 @@ impl QueryParam {
 const LAST_SUPERADMIN_409: &str =
     "error.code `last_superadmin`: the write would demote, deactivate or delete the last active superadmin";
 
+/// the `409` a token rotation answers for a token that no longer works
+const API_TOKEN_INACTIVE_409: &str =
+    "error.code `api_token_inactive`: the token is revoked or past its expiry, so there is nothing to rotate; mint a new one";
+
 /// the `409` a password change answers for an account with no local password
 const NO_LOCAL_PASSWORD_409: &str =
     "error.code `no_local_password`: the account signs in through single sign-on only, so there is no local password to change";
@@ -1097,6 +1101,13 @@ fn operations() -> Vec<Op> {
                 .body(Payload::Ref("UpdateUser"))
                 .ok(Payload::Ref("User"))
                 .conflict(LAST_SUPERADMIN_409),
+            Op::put(
+                "/api/v1/users/{id}/deployment-role",
+                "setUserDeploymentRole",
+                "Give an account a deployment role (operator or security auditor), or clear it (superadmin)",
+            )
+            .body(Payload::Ref("SetDeploymentRole"))
+            .ok(Payload::Ref("User")),
             Op::delete("/api/v1/users/{id}", "deleteUser", "Delete an account")
                 .conflict(LAST_SUPERADMIN_409),
             Op::get(
@@ -2583,6 +2594,38 @@ fn operations() -> Vec<Op> {
     ));
 
     ops.extend(tagged(
+        "api-tokens",
+        vec![
+            Op::get(
+                "/api/v1/orgs/{org_id}/api-tokens",
+                "listApiTokens",
+                "List an organization's scoped API tokens",
+            )
+            .ok(Payload::List("ApiToken")),
+            Op::post(
+                "/api/v1/orgs/{org_id}/api-tokens",
+                "createApiToken",
+                "Mint a scoped API token; the secret is returned once",
+            )
+            .body(Payload::Ref("CreateApiToken"))
+            .ok(Payload::Ref("SecretApiToken")),
+            Op::post(
+                "/api/v1/api-tokens/{id}/rotate",
+                "rotateApiToken",
+                "Replace a token's secret; the old one stops working at once",
+            )
+            .ok(Payload::Ref("SecretApiToken"))
+            .conflict(API_TOKEN_INACTIVE_409),
+            Op::delete(
+                "/api/v1/api-tokens/{id}",
+                "revokeApiToken",
+                "Revoke a scoped API token",
+            )
+            .ok(Payload::Ref("ApiToken")),
+        ],
+    ));
+
+    ops.extend(tagged(
         "scim",
         vec![
             Op::get(
@@ -2735,6 +2778,7 @@ fn tags() -> Value {
         {"name": "settings", "description": "deployment-wide singletons the gateway reads from the snapshot"},
         {"name": "invitations", "description": "email invitations into an organization"},
         {"name": "sso", "description": "SSO providers, group mappings and the login redirect"},
+        {"name": "api-tokens", "description": "scoped control-plane API tokens for automation"},
         {"name": "ldap", "description": "LDAP directories and the group mappings that turn directory groups into roles"},
         {"name": "scim", "description": "SCIM 2.0 provisioning and the tokens that authenticate it"},
         {"name": "proxy", "description": "the dashboard Playground's authenticated passthrough to the data plane"}
@@ -3197,8 +3241,63 @@ fn identity_schemas(p: &Prim) -> Value {
                 "id": uuid, "email": {"type": "string", "format": "email"},
                 "is_superadmin": {"type": "boolean"},
                 "deactivated_at": nullable_timestamp,
-                "created_at": timestamp
+                "created_at": timestamp,
+                "deployment_role": {"type": ["string", "null"], "enum": ["operator", "security_auditor", null]}
             }
+        },
+        "SetDeploymentRole": {
+            "type": "object",
+            "required": ["role"],
+            "properties": {
+                "role": {"type": ["string", "null"], "enum": ["operator", "security_auditor", null],
+                    "description": "null clears the account's deployment role"}
+            },
+            "additionalProperties": false
+        },
+        "ApiToken": {
+            "type": "object",
+            "required": ["id", "org_id", "name", "token_prefix", "created_at"],
+            "properties": {
+                "id": uuid, "org_id": uuid,
+                "team_id": {"type": ["string", "null"], "format": "uuid"},
+                "project_id": {"type": ["string", "null"], "format": "uuid"},
+                "name": {"type": "string"},
+                "role": {"type": ["string", "null"], "enum": ["admin", "member", "viewer", null]},
+                "custom_role_id": {"type": ["string", "null"], "format": "uuid"},
+                "token_prefix": {"type": "string", "description": "the first characters of the value, to recognise it in a list"},
+                "expires_at": nullable_timestamp,
+                "created_by": {"type": ["string", "null"], "format": "uuid"},
+                "created_at": timestamp,
+                "rotated_at": nullable_timestamp,
+                "last_used_at": nullable_timestamp,
+                "revoked_at": nullable_timestamp
+            }
+        },
+        "SecretApiToken": {
+            "type": "object",
+            "required": ["id", "org_id", "name", "token_prefix", "created_at", "secret"],
+            "description": "an ApiToken plus its secret, returned this once and never again",
+            "properties": {
+                "id": uuid, "org_id": uuid,
+                "name": {"type": "string"},
+                "token_prefix": {"type": "string"},
+                "created_at": timestamp,
+                "secret": {"type": "string", "description": "the bearer value, `rolter_api_…`"}
+            }
+        },
+        "CreateApiToken": {
+            "type": "object",
+            "required": ["name"],
+            "properties": {
+                "name": {"type": "string", "maxLength": 80},
+                "team_id": {"type": ["string", "null"], "format": "uuid", "description": "omit team_id and project_id for an org-wide token"},
+                "project_id": {"type": ["string", "null"], "format": "uuid"},
+                "role": {"type": ["string", "null"], "enum": ["admin", "member", "viewer", null]},
+                "custom_role_id": {"type": ["string", "null"], "format": "uuid", "description": "give exactly one of role and custom_role_id"},
+                "expires_in_days": {"type": ["integer", "null"], "minimum": 1, "maximum": 730, "default": 90},
+                "never_expires": {"type": "boolean", "default": false}
+            },
+            "additionalProperties": false
         },
         "CreateUser": {
             "type": "object",

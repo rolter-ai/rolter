@@ -491,4 +491,8 @@ function AdaptiveDashboardScreen() {
 // deployment-scoped settings: superadmin-only in the capability table, so a
 // lesser caller sees the refusal instead of a screen that loads and then 403s
 // (#1183)
-export default superadminOnly(AdaptiveDashboardScreen, "errors.resources.adaptiveTelemetry");
+export default superadminOnly(
+  AdaptiveDashboardScreen,
+  "errors.resources.adaptiveTelemetry",
+  "adaptive_routing_telemetry:read",
+);

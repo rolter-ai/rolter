@@ -59,7 +59,7 @@ async fn list_audit_log(
 /// are the ones no org read returns: a superadmin's own sign-ins, attempts
 /// against an unregistered address and the events of someone removed from
 /// every org (#1858).
-// a security-auditor role (#1834) would be admitted here alongside superadmin
+// a security auditor (#1834) reads it alongside a superadmin, by the capability table
 async fn list_deployment_audit_log(
     principal: Principal,
     State(state): State<ControlState>,
