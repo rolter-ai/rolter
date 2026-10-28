@@ -167,7 +167,7 @@ teams, projects or single virtual keys (**Configure** on the group, or
 `PUT /api/v1/mcp/tool-groups/{id}/assignments` with
 `{"assignments":[{"kind":"team","id":"…"}]}`, where `kind` is `team`,
 `project` or `virtual_key`; `GET /api/v1/orgs/{org_id}/mcp/tool-group-assignments`
-lists them). An assignment only ever narrows: a caller whose key, project or team
+lists them; the dialog offers every key of the organization, grouped by project, and deleting a team, project or key removes its assignments). An assignment only ever narrows: a caller whose key, project or team
 is named by the assignments of any enabled group is held to the union of the
 groups assigned to those three, so on a server the organization's groups govern
 it may call only what its own groups list there, and nothing when none of them

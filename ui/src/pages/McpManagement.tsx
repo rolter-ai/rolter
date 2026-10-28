@@ -1,4 +1,4 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { TFunction } from "i18next";
 import {
   Boxes,
@@ -60,6 +60,7 @@ import {
   fetchMcpToolGroupAssignments,
   fetchMcpToolGroups,
   fetchOrgProjects,
+  fetchVirtualKeys,
   fetchTeams,
   replaceMcpToolGroupAssignments,
   MCP_AUTH_KINDS,
@@ -2118,11 +2119,11 @@ function AssignmentEditor({
   const [stored] = React.useState(() => ({
     teams: ofKind("team"),
     projects: ofKind("project"),
+    keys: ofKind("virtual_key"),
   }));
   const [teamIds, setTeamIds] = React.useState(stored.teams);
   const [projectIds, setProjectIds] = React.useState(stored.projects);
-  // single virtual keys have no picker here (#3380); they ride along as stored
-  const keyIds = ofKind("virtual_key");
+  const [keyIds, setKeyIds] = React.useState(stored.keys);
   const canAssign = useCan()("mcp_tool_group_assignment", "update") !== false;
   const teams = useQuery({
     queryKey: ["teams", orgId],
@@ -2136,6 +2137,24 @@ function AssignmentEditor({
     enabled: !!orgId,
     retry: false,
   });
+  // keys are listed per project, so the picker reads each project's (#3380)
+  const projectList = projects.data ?? [];
+  const keyReads = useQueries({
+    queries: projectList.map((project) => ({
+      queryKey: ["virtual-keys", project.id],
+      queryFn: () => fetchVirtualKeys(project.id),
+      retry: false,
+    })),
+  });
+  const keysKnown = !!projects.data && keyReads.every((read) => read.isSuccess);
+  const keysReading = projects.isPending || keyReads.some((read) => read.isPending);
+  const keysUnread = projects.isError || keyReads.some((read) => read.isError);
+  const keyGroups = projectList
+    .map((project, i) => ({
+      project,
+      keys: keyReads[i]?.data ?? [],
+    }))
+    .filter((group) => group.keys.length > 0);
   const flip = (ids: string[], id: string) =>
     ids.includes(id) ? ids.filter((current) => current !== id) : [...ids, id];
   // an id that is no longer among the options (a deleted team) is dropped from
@@ -2144,17 +2163,29 @@ function AssignmentEditor({
     options ? ids.filter((id) => options.some((option) => option.id === id)) : ids;
   const savedTeams = live(teamIds, teams.data);
   const savedProjects = live(projectIds, projects.data);
+  // a key that is gone (a deleted one) is dropped only once every project's
+  // keys have been read; until then, or when a read failed, the stored ones
+  // stay, as they would if the picker did not exist
+  const savedKeys = keysKnown
+    ? live(
+        keyIds,
+        keyGroups.flatMap((group) => group.keys),
+      )
+    : keyIds;
   const same = (a: string[], b: string[]) =>
     a.length === b.length && a.every((id) => b.includes(id));
-  const changed = !same(savedTeams, stored.teams) || !same(savedProjects, stored.projects);
-  const report = JSON.stringify([changed, savedTeams, savedProjects, keyIds]);
+  const changed =
+    !same(savedTeams, stored.teams) ||
+    !same(savedProjects, stored.projects) ||
+    !same(savedKeys, stored.keys);
+  const report = JSON.stringify([changed, savedTeams, savedProjects, savedKeys]);
   React.useEffect(() => {
     onChange(
       changed
         ? [
             ...savedTeams.map((id) => ({ kind: "team" as const, id })),
             ...savedProjects.map((id) => ({ kind: "project" as const, id })),
-            ...keyIds.map((id) => ({ kind: "virtual_key" as const, id })),
+            ...savedKeys.map((id) => ({ kind: "virtual_key" as const, id })),
           ]
         : null,
     );
@@ -2179,8 +2210,28 @@ function AssignmentEditor({
         onToggle={(id) => setProjectIds((current) => flip(current, id))}
         disabled={!canAssign}
       />
-      {keyIds.length > 0 && (
-        <p className="text-xs text-muted-foreground">{t("pages.tool-groups.assign.keysKept")}</p>
+      {keyGroups.map(({ project, keys }) => (
+        <ChipGroup
+          key={project.id}
+          label={t("pages.tool-groups.assign.keysOf", {
+            project: `${project.team_name} / ${project.name}`,
+          })}
+          options={keys.map((key) => ({ id: key.id, name: key.name || key.key_prefix }))}
+          selected={keyIds}
+          onToggle={(id) => setKeyIds((current) => flip(current, id))}
+          disabled={!canAssign}
+        />
+      ))}
+      {keysReading && (
+        <p className="text-xs text-muted-foreground">{t("pages.tool-groups.assign.keysLoading")}</p>
+      )}
+      {keysUnread && (
+        <p role="alert" className="text-xs text-[color:var(--status-warning-text)]">
+          {t("pages.tool-groups.assign.keysUnavailable")}
+        </p>
+      )}
+      {keysKnown && keyGroups.length === 0 && (
+        <p className="text-xs text-muted-foreground">{t("pages.tool-groups.assign.keysNone")}</p>
       )}
     </div>
   );
