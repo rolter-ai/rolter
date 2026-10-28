@@ -3256,6 +3256,11 @@ async fn proxy(
                             };
                             let status_code =
                                 StatusCode::from_u16(status).unwrap_or(StatusCode::OK);
+                            // the units a unit-priced endpoint is billed by
+                            // (an image count) come from the upstream body
+                            // too, before a plugin rewrites or a guard
+                            // withholds it (#3404)
+                            log.billed_units = log.unit_basis.units(&bytes);
                             let mut post_events = PolicyEvents::default();
                             let applied = policy.apply(status_code, &mut post_events, bytes).await;
                             post_events.record(&mut log);

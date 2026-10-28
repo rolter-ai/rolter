@@ -56,15 +56,15 @@ included.
 
 ## How it is enforced
 
-| Where                                        | Mechanism                                                                                                                                                                |
-| -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `handlers::stream_response`, buffered branch | `parse_usage` right after `translate_response`; a guardrail or plugin block returns through `withheld_response`                                                          |
-| `handlers::proxy`, cacheable miss            | same, before the output guard; the entry is still stored as the upstream sent it                                                                                         |
-| `handlers::buffered_response`                | takes the pre-policy usage and hands it to the stream through `with_billed_usage`, so a delivered-but-rewritten body is billed from the provider's figures               |
-| `handlers::withheld_response`                | builds a `UsageLoggingStream` over an empty body with the billed usage, then calls `withhold(status, reason)`, which marks the row and drops the stream (one `finalize`) |
-| `handlers::cached_response`                  | a blocked hit logs a zero-cost `withheld` row                                                                                                                            |
-| `logging::UsageLoggingStream::finalize`      | prefers the billed usage over the buffer and sets `usage_unknown` from `Usage::reported`                                                                                 |
-| `clickhouse/011_withheld_usage.sql`          | adds `withheld` and `usage_unknown`, both `UInt8 default 0`                                                                                                              |
+| Where                                        | Mechanism                                                                                                                                                                                               |
+| -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `handlers::stream_response`, buffered branch | `parse_usage` right after `translate_response`, and the billed units of a unit-priced endpoint into `RequestLog::billed_units` (#3331); a guardrail or plugin block returns through `withheld_response` |
+| `handlers::proxy`, cacheable miss            | same, usage and billed units (#3404) before the output guard; the entry is still stored as the upstream sent it                                                                                         |
+| `handlers::buffered_response`                | takes the pre-policy usage and hands it to the stream through `with_billed_usage`, so a delivered-but-rewritten body is billed from the provider's figures                                              |
+| `handlers::withheld_response`                | builds a `UsageLoggingStream` over an empty body with the billed usage, then calls `withhold(status, reason)`, which marks the row and drops the stream (one `finalize`)                                |
+| `handlers::cached_response`                  | a blocked hit logs a zero-cost `withheld` row                                                                                                                                                           |
+| `logging::UsageLoggingStream::finalize`      | prefers the billed usage over the buffer and sets `usage_unknown` from `Usage::reported`                                                                                                                |
+| `clickhouse/011_withheld_usage.sql`          | adds `withheld` and `usage_unknown`, both `UInt8 default 0`                                                                                                                                             |
 
 A live SSE stream never reaches a post-call block. Output guardrails either
 refuse a streamed request before any upstream call (`streaming_post_call =
