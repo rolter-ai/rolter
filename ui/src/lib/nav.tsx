@@ -39,6 +39,7 @@ import {
   UserCheck,
   UserCog,
   Users,
+  Scale,
   Wallet,
   WalletCards,
   Waypoints,
@@ -69,6 +70,7 @@ export const NAV: NavDef[] = [
     children: [
       { key: "dashboard", icon: <ChartColumn /> },
       { key: "logs", icon: <FileText /> },
+      { key: "savings", icon: <Scale />, resource: "savings" },
       { key: "mcp-logs", icon: <Waypoints />, resource: "mcp_log" },
       { key: "connectors", icon: <Cable />, resource: "connector" },
       { key: "logs-settings", icon: <Settings />, resource: "logging_settings" },
