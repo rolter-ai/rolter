@@ -185,8 +185,9 @@ after the caller is authenticated and before anything is forwarded.
   transaction), under the `mcp_tool_group_assignment` capability; the dashboard's
   group dialog edits the team and project kinds.
   Both snapshot fields added for assignments and the manifest default restrict
-  what the gateway serves, so ADR-0038 calls for a format bump; it is tracked in
-  #3384 and the shape fixture already carries the fields.
+  what the gateway serves, which ADR-0038 would call a format bump; they stay in
+  format 1 because everything before the 1.0.0 tag does, and the shape fixture
+  carries them.
 - **Parsing.** When the rule applies the body is parsed in full, as one message
   or a batch, with no substring shortcut: `tools\/call` and `\u`-escaped spellings
   are the same JSON string, so a byte search would be a bypass. A batch is
