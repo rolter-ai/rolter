@@ -565,6 +565,12 @@
           "model": "gpt-4o",
           "provider": "openai",
           "weight": 1
+        },
+        {
+          "model": "burst-model",
+          "provider": "anthropic",
+          "weight": 1,
+          "takes_over": ["throttled", "refusal:violence"]
         }
       ],
       "variants": []

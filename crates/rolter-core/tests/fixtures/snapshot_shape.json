@@ -1405,6 +1405,12 @@
     "routes[].targets[].provider": [
       "string"
     ],
+    "routes[].targets[].takes_over": [
+      "array"
+    ],
+    "routes[].targets[].takes_over[]": [
+      "string"
+    ],
     "routes[].targets[].weight": [
       "number"
     ],
