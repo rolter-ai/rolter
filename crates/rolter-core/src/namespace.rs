@@ -94,6 +94,22 @@ impl<T> Scoped<T> {
         None
     }
 
+    /// The row a **row** of `org` names: its own org's, then the global one,
+    /// and nothing else.
+    ///
+    /// Unlike [`resolve`](Self::resolve), there is no fallback to the one org
+    /// that owns the name: a global route or group naming a provider only one
+    /// org has would otherwise bind to that org's provider and credential and
+    /// serve it to every org's key (ADR-0039 section 1).
+    pub fn resolve_ref(&self, org: &str) -> Option<(&str, &T)> {
+        if !org.is_empty() {
+            if let Some((owner, value)) = self.orgs.get_key_value(org) {
+                return Some((owner.as_str(), value));
+            }
+        }
+        self.global.as_ref().map(|value| (GLOBAL, value))
+    }
+
     /// The row owned by exactly `org`, with no fallback.
     pub fn owned_by(&self, org: &str) -> Option<&T> {
         if org.is_empty() {
@@ -170,6 +186,18 @@ impl<T> Namespaced<T> {
     /// [`get`](Self::get), with the org that owns the row.
     pub fn resolve(&self, org: &str, name: &str) -> Option<(&str, &T)> {
         self.names.get(name)?.resolve(org)
+    }
+
+    /// The row a row of `org` names `name` by: see [`Scoped::resolve_ref`].
+    /// Route targets, variant targets, group members and semantic-cache
+    /// providers resolve this way; keys resolve with [`resolve`](Self::resolve).
+    pub fn resolve_ref(&self, org: &str, name: &str) -> Option<(&str, &T)> {
+        self.names.get(name)?.resolve_ref(org)
+    }
+
+    /// [`resolve_ref`](Self::resolve_ref) without the owner.
+    pub fn get_ref(&self, org: &str, name: &str) -> Option<&T> {
+        self.resolve_ref(org, name).map(|(_, value)| value)
     }
 
     /// The row owned by exactly `org`, with no fallback.
@@ -343,6 +371,21 @@ mod tests {
         assert_eq!(table.get("", "openai"), Some(&1));
         table.insert("org-b", "openai", 2).unwrap();
         assert_eq!(table.get("", "openai"), None, "two owners is a guess");
+    }
+
+    #[test]
+    fn a_row_never_resolves_an_org_row_it_does_not_belong_to() {
+        let mut table = Namespaced::new();
+        table.insert("org-a", "openai", 1).unwrap();
+        // a caller with no org may reach the sole owner's row; a global row
+        // naming it may not, nor may another org's row
+        assert_eq!(table.get("", "openai"), Some(&1));
+        assert_eq!(table.get_ref("", "openai"), None);
+        assert_eq!(table.get_ref("org-b", "openai"), None);
+        assert_eq!(table.get_ref("org-a", "openai"), Some(&1));
+        table.insert("", "openai", 2).unwrap();
+        assert_eq!(table.get_ref("org-b", "openai"), Some(&2));
+        assert_eq!(table.get_ref("org-a", "openai"), Some(&1));
     }
 
     #[test]

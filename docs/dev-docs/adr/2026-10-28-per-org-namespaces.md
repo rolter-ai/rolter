@@ -1,6 +1,6 @@
 # Per-org namespaces for routes, providers and provider groups
 
-**Status:** Proposed · **Date:** 28 Oct 2026 · **Issues:** [#1857](https://github.com/rolter-ai/rolter/issues/1857), [#1844](https://github.com/rolter-ai/rolter/issues/1844), [#1845](https://github.com/rolter-ai/rolter/issues/1845)
+**Status:** Accepted (28 Oct 2026) · **Date:** 28 Oct 2026 · **Issues:** [#1857](https://github.com/rolter-ai/rolter/issues/1857), [#1844](https://github.com/rolter-ai/rolter/issues/1844), [#1845](https://github.com/rolter-ai/rolter/issues/1845)
 **Relates:** ADR-0008 (reload-free config), ADR-0017 (provider/model addressing), ADR-0038 (snapshot format version)
 
 ## Context
@@ -60,10 +60,15 @@ An org row therefore shadows a global row of the same name for that org's keys
 only. A key with no org (one from the gateway's own config file, which is the
 operator's) resolves the global row; with no global row it resolves the org row
 only when exactly one org owns the name, and treats a name two orgs own as
-unknown, rather than guessing. The same order applies inside the config: a
-route's targets, a variant's targets and a group's members name a provider that
-resolves in the row's own org first, then globally. A row never resolves
-another org's provider.
+unknown, rather than guessing. Inside the config the rule is stricter: a
+route's targets, a variant's targets, a group's members and a route's
+semantic-cache provider name a provider that resolves in the row's own org
+first, then globally, and nothing else (`Namespaced::resolve_ref`). A row never
+resolves another org's provider, so the sole-owner fallback a key gets does not
+apply to a row: a global route naming a provider only one org has would
+otherwise hand that org's credential to every org's key. The sanitizer prunes
+such a target with a line in `problems`, and the gateway rewrites any name
+that resolves to nothing to an id no provider has.
 
 Resolution stays what #1844 made it: a route, address or builtin is tried in
 the same order as before (a named route, then `provider-slug/model`, then
@@ -120,8 +125,13 @@ Prometheus series continue under the new label. That is one reset of soft
 state, on an event that is rare and visible in the audit log, against renaming
 every series of every control-plane deployment on upgrade. A provider name is
 free text and could itself contain `@<uuid>`; snapshot build checks that a
-qualified id is unique and leaves out (with a warning) a row whose id would
-still collide.
+provider's runtime id and a route's namespace are unique and leaves out (with
+a warning) a row whose id would still collide.
+
+The response cache follows the namespace too: a route whose name another org
+shares adds its namespace to the exact-match key, and the semantic index is
+keyed by the namespace, so two orgs' `gpt-4o` never answer from each other's
+entries, while an unshared name keeps the key it had.
 
 ### 4. What logs, metrics and health events record
 

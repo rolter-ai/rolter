@@ -1700,14 +1700,20 @@ impl LogSink {
             return;
         };
         // the request path carries the provider's runtime id; the row gets its
-        // display name and the org that owns it (ADR-0039)
-        if record.provider_org_id.is_empty() && !record.provider.is_empty() {
-            if let Some(org) = self.health_events.provider_org(&record.provider) {
-                let display = rolter_core::namespace::display_name(&record.provider, &org);
-                if display.len() != record.provider.len() {
-                    record.provider = display.to_string();
+        // display name. the org beside it comes from the snapshot that served
+        // the request wherever the row was built with one; a row built
+        // without it (a lifecycle call, a realtime session) takes the org from
+        // the provider list in force now (ADR-0039)
+        if !record.provider.is_empty() {
+            if record.provider_org_id.is_empty() {
+                if let Some(org) = self.health_events.provider_org(&record.provider) {
+                    record.provider_org_id = org;
                 }
-                record.provider_org_id = org;
+            }
+            let display =
+                rolter_core::namespace::display_name(&record.provider, &record.provider_org_id);
+            if display.len() != record.provider.len() {
+                record.provider = display.to_string();
             }
         }
         // recorded per row because the configured rate can change between

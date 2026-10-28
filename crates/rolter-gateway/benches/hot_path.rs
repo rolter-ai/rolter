@@ -366,6 +366,28 @@ fn report_allocations() {
     });
     eprintln!("  snapshot_read/load_and_route/1000           {n:>8.2}");
 
+    // an org key resolving a name two orgs share (#1857): the two-level lookup
+    // borrows both keys and allocates nothing
+    let mut shared = route_config(1000);
+    for org in ["org-a", "org-b"] {
+        let mut route = shared.routes[500].clone();
+        route.tenancy = Some(rolter_core::Tenancy {
+            org_id: org.to_string(),
+            project_id: None,
+        });
+        shared.routes.push(route);
+    }
+    let state = AppState::with_logging(&shared, None);
+    let n = allocs_per_op(RUNS, || {
+        let snap = state.snapshot.load();
+        black_box(
+            snap.routes
+                .get(black_box("org-b"), black_box(model))
+                .is_some(),
+        );
+    });
+    eprintln!("  snapshot_read/org_key_shared_name/1000      {n:>8.2}");
+
     let cooldowns = Cooldowns::new();
     cooldowns.park(KEY_NS, 1, 3600);
     let n = allocs_per_op(RUNS, || {

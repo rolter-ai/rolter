@@ -4756,7 +4756,7 @@ impl GatewayConfig {
             let mut decision: Vec<&str> = Vec::new();
             let mut generative: Vec<&str> = Vec::new();
             for target in route.every_target() {
-                let Some(kind) = kinds.get(org, &target.provider) else {
+                let Some(kind) = kinds.get_ref(org, &target.provider) else {
                     continue;
                 };
                 let side = if kind.decision_only() {
@@ -5035,7 +5035,7 @@ impl GatewayConfig {
                 continue;
             }
             let org = crate::namespace::org_of(route.tenancy.as_ref());
-            let known = |provider: &str| provider_names.get(org, provider).is_some();
+            let known = |provider: &str| provider_names.get_ref(org, provider).is_some();
             let servable_target = route
                 .targets
                 .iter()
@@ -5303,7 +5303,7 @@ impl GatewayConfig {
             return;
         }
         self.prune_targets_where(warnings, |provider, owner_org, owner, owner_kind| {
-            let scope = scoped.get(owner_org, provider)?.as_ref()?;
+            let scope = scoped.get_ref(owner_org, provider)?.as_ref()?;
             (owner != Some(scope.as_str())).then(|| {
                 format!("the provider is scoped to a project other than the {owner_kind}'s")
             })
@@ -5324,13 +5324,10 @@ impl GatewayConfig {
         omitted: &OmittedProviders,
         warnings: &mut Vec<String>,
     ) {
-        if omitted.is_empty() {
-            return;
-        }
+        // no early return on an empty omission: a reference to another org's
+        // provider is pruned here too
         self.prune_targets_where(warnings, |provider, owner_org, _owner, _owner_kind| {
-            omitted
-                .omits(owner_org, provider)
-                .then(|| "the provider is itself omitted from the snapshot".to_string())
+            omitted.refusal(owner_org, provider).map(str::to_string)
         });
     }
 
@@ -5441,9 +5438,8 @@ impl GatewayConfig {
         warnings: &mut Vec<String>,
         records: &mut Vec<OmittedEntry>,
     ) -> Vec<usize> {
-        if omitted.is_empty() {
-            return (0..self.virtual_keys.len()).collect();
-        }
+        // before the early return: a route naming another org's embeddings
+        // provider is repaired even when nothing was omitted
         for route in &mut self.routes {
             let Some(cache) = route.cache.as_mut() else {
                 continue;
@@ -5452,15 +5448,18 @@ impl GatewayConfig {
                 continue;
             };
             let org = crate::namespace::org_of(route.tenancy.as_ref());
-            if omitted.omits(org, &semantic.provider) {
+            if let Some(reason) = omitted.refusal(org, &semantic.provider) {
                 warnings.push(format!(
                     "route '{}' semantic cache omitted from the snapshot: its embeddings \
-                     provider '{}' is itself omitted from the snapshot, so the route serves \
-                     without semantic lookups",
+                     provider '{}' cannot be used ({reason}), so the route serves without \
+                     semantic lookups",
                     route.model, semantic.provider
                 ));
                 cache.semantic = None;
             }
+        }
+        if omitted.is_empty() {
+            return (0..self.virtual_keys.len()).collect();
         }
         let mut origin = Vec::with_capacity(self.virtual_keys.len());
         let mut index = 0;
@@ -5939,7 +5938,7 @@ impl GatewayConfig {
         for route in &self.routes {
             // a route's targets name providers of its own org first, then global
             let org = crate::namespace::org_of(route.tenancy.as_ref());
-            let known = |provider: &str| provider_names.get(org, provider).is_some();
+            let known = |provider: &str| provider_names.get_ref(org, provider).is_some();
             if route.model.trim().is_empty() {
                 problems.push("route has an empty model name".to_string());
             } else if route_models.insert(org, &route.model, ()).is_err() {
@@ -6181,20 +6180,38 @@ impl OmittedProviders {
         self.omitted.is_empty() && self.left_out.is_empty()
     }
 
-    /// Whether `name`, named by a row of `org`, reaches a provider left out.
-    fn omits(&self, org: &str, name: &str) -> bool {
-        match self.every.resolve(org, name) {
-            Some((owner, ())) => self.omitted.owned_by(owner, name).is_some(),
-            None => self.left_out.contains(name),
+    /// Why a row of `org` may not use the provider it calls `name`, if it
+    /// may not: the provider it resolves to (its org's, then a global one)
+    /// was left out, or the only providers by that name belong to other orgs,
+    /// which a row never reaches (ADR-0039 section 1). The second case is a
+    /// deployment-wide row from the bootstrap file naming a database provider,
+    /// pruned rather than refused so the snapshot keeps building.
+    fn refusal(&self, org: &str, name: &str) -> Option<&'static str> {
+        match self.every.resolve_ref(org, name) {
+            Some((owner, ())) => self
+                .omitted
+                .owned_by(owner, name)
+                .map(|()| "the provider is itself omitted from the snapshot"),
+            None if self.left_out.contains(name) => {
+                Some("the provider is itself omitted from the snapshot")
+            }
+            None if self.every.contains_name(name) => {
+                Some("the provider belongs to another organization, which this row cannot use")
+            }
+            None => None,
         }
     }
 
     /// The names in a key's allow-list that reach a provider left out, for a
-    /// key of `org`.
+    /// key of `org`. A key is a caller, so it resolves the way the gateway
+    /// resolves one: the sole org's provider is a match for a key with no org.
     fn names_for(&self, org: &str, names: &[String]) -> std::collections::HashSet<String> {
         names
             .iter()
-            .filter(|name| self.omits(org, name))
+            .filter(|name| match self.every.resolve(org, name) {
+                Some((owner, ())) => self.omitted.owned_by(owner, name).is_some(),
+                None => self.left_out.contains(name.as_str()),
+            })
             .cloned()
             .collect()
     }
@@ -10498,6 +10515,44 @@ mod tests {
         global.tenancy = None;
         cfg.providers.push(global);
         cfg.validate().unwrap();
+    }
+
+    #[test]
+    fn a_deployment_wide_route_never_reaches_one_orgs_provider() {
+        let mut cfg = two_orgs_one_name();
+        // org-b's provider goes, so org-a is the only org with an `openai`; a
+        // global route naming it with a global fallback beside it
+        cfg.providers.truncate(1);
+        cfg.routes.truncate(1);
+        let mut global: GatewayConfig = toml::from_str(
+            r#"
+            [[providers]]
+            name = "local"
+            kind = "openai"
+            api_base = "http://127.0.0.1:8000/v1"
+
+            [[routes]]
+            model = "shared"
+            [[routes.targets]]
+            provider = "openai"
+            [[routes.targets]]
+            provider = "local"
+            "#,
+        )
+        .unwrap();
+        cfg.providers.append(&mut global.providers);
+        cfg.routes.append(&mut global.routes);
+        let problems = cfg.sanitize_for_snapshot();
+        assert!(
+            problems
+                .iter()
+                .any(|p| p.contains("belongs to another organization")),
+            "{problems:?}"
+        );
+        let shared = cfg.routes.iter().find(|r| r.model == "shared").unwrap();
+        let targets: Vec<&str> = shared.targets.iter().map(|t| t.provider.as_str()).collect();
+        assert_eq!(targets, ["local"]);
+        cfg.validate_snapshot().unwrap();
     }
 
     #[test]

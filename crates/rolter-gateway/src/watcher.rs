@@ -931,6 +931,56 @@ mod tests {
         );
     }
 
+    /// The control plane serves two orgs' `openai` provider and `gpt-4o` route
+    /// (#1857): the poll decodes, validates and builds them as two rows each,
+    /// keyed apart, with each route on its own org's provider.
+    #[tokio::test]
+    async fn two_orgs_namesakes_are_applied_as_two_rows_each() {
+        let row = |org: &str, api_base: &str| {
+            serde_json::json!({
+                "provider": {"name": "openai", "slug": "openai", "kind": "openai_compatible",
+                             "api_base": api_base, "tenancy": {"org_id": org}},
+                "route": {"model": "gpt-4o", "targets": [{"provider": "openai"}],
+                          "tenancy": {"org_id": org, "project_id": format!("{org}-app")}},
+            })
+        };
+        let (a, b) = (
+            row("org-a", "https://a.example"),
+            row("org-b", "https://b.example"),
+        );
+        let stub = stub(StubAnswer::Ok(serde_json::json!({
+            "format": 1,
+            "version": 9,
+            "config": {
+                "providers": [a["provider"], b["provider"]],
+                "routes": [a["route"], b["route"]]
+            }
+        })))
+        .await;
+        let state = AppState::new(&GatewayConfig::default());
+        assert_eq!(
+            poll_once(&Client::new(), &state, &stub.url, None)
+                .await
+                .unwrap(),
+            Some(9)
+        );
+        let held = state.snapshot.load();
+        let mut providers: Vec<&str> = held.providers.keys().map(String::as_str).collect();
+        providers.sort_unstable();
+        assert_eq!(providers, ["openai@org-a", "openai@org-b"]);
+        for (org, base) in [
+            ("org-a", "https://a.example"),
+            ("org-b", "https://b.example"),
+        ] {
+            let entry = held.routes.get(org, "gpt-4o").unwrap();
+            assert_eq!(entry.namespace, format!("gpt-4o@{org}"));
+            let provider = &held.providers[&entry.route.targets[0].provider];
+            assert_eq!(provider.api_base, base);
+            assert_eq!(held.provider_label(&provider.name), ("openai", org));
+        }
+        assert!(held.routes.get("org-c", "gpt-4o").is_none());
+    }
+
     /// A newer control plane names a provider kind, a strategy and a budget
     /// period this gateway does not know (#3347). The poll still applies: the
     /// provider and the route that needed it are left out, the strategy's

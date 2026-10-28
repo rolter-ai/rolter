@@ -2471,8 +2471,13 @@ async fn proxy(
             .and_then(|k| k.cache_override)
             .unwrap_or_else(|| entry.route.cache_enabled());
     let cache_key = if snap.cache.enabled && state.response_cache.is_enabled() && cache_eligible {
+        // a route another org shares the name of is scoped by its namespace,
+        // so two orgs' `gpt-4o` never answer from each other's entries; an
+        // unshared name keeps the key it always had (ADR-0039)
         let scope_seg = if entry.route.cache_per_key() {
             vk_id.as_str()
+        } else if entry.namespace != entry.route.model {
+            entry.namespace.as_str()
         } else {
             ""
         };
@@ -2537,10 +2542,12 @@ async fn proxy(
                 } else {
                     ""
                 };
+                // the route's namespace: its name unless another org shares
+                // it, so two orgs' candidates never mix (ADR-0039)
                 let index_key = ResponseCache::semantic_index_key(
                     &snap.cache.namespace,
                     path,
-                    &entry.route.model,
+                    &entry.namespace,
                     scope_seg,
                     &request.partition,
                 );
@@ -3034,7 +3041,7 @@ async fn proxy(
                     if cd_enabled {
                         state
                             .cooldowns
-                            .park(&model, idx, cooldown.duration_secs(None));
+                            .park(&entry.namespace, idx, cooldown.duration_secs(None));
                         state.metrics.cooldowns_tripped_total.fetch_add(1, Relaxed);
                     }
                     // and counts against the circuit breaker
@@ -3158,6 +3165,9 @@ async fn proxy(
                 business_unit_id,
                 customer_id,
                 model,
+                // the org that owns the provider in the snapshot that served
+                // the request; the row keeps the runtime id until it is queued
+                provider_org_id: snap.provider_label(&last_provider).1.to_string(),
                 provider: last_provider,
                 target: last_target,
                 variant: chosen_variant,
@@ -3380,6 +3390,11 @@ async fn proxy(
                 business_unit_id,
                 customer_id,
                 model,
+                provider_org_id: if no_target {
+                    String::new()
+                } else {
+                    snap.provider_label(&last_provider).1.to_string()
+                },
                 provider: if no_target {
                     String::new()
                 } else {
@@ -3936,7 +3951,7 @@ async fn proxy_multipart(
                 if cd_enabled {
                     state
                         .cooldowns
-                        .park(&model, idx, cooldown.duration_secs(None));
+                        .park(&entry.namespace, idx, cooldown.duration_secs(None));
                     state.metrics.cooldowns_tripped_total.fetch_add(1, Relaxed);
                 }
                 if state.breaker.on_failure(&entry.namespace, idx) {
@@ -3985,6 +4000,9 @@ async fn proxy_multipart(
                 business_unit_id,
                 customer_id,
                 model,
+                // the org that owns the provider in the snapshot that served
+                // the request; the row keeps the runtime id until it is queued
+                provider_org_id: snap.provider_label(&last_provider).1.to_string(),
                 provider: last_provider,
                 target: last_target,
                 variant: String::new(),
@@ -4075,6 +4093,11 @@ async fn proxy_multipart(
                 business_unit_id,
                 customer_id,
                 model,
+                provider_org_id: if no_target {
+                    String::new()
+                } else {
+                    snap.provider_label(&last_provider).1.to_string()
+                },
                 provider: if no_target {
                     String::new()
                 } else {
@@ -6153,10 +6176,10 @@ struct DecisionHeaders {
 impl DecisionHeaders {
     fn from_log(log: &RequestLog) -> Self {
         Self {
-            // the row carries the runtime id until it is queued; a key reaches
-            // only its own org's providers and global ones, so its org is the
-            // provider's whenever the id is qualified (ADR-0039)
-            provider: rolter_core::namespace::display_name(&log.provider, &log.org_id).to_string(),
+            // the row carries the runtime id until it is queued, and the org
+            // that owns the provider beside it (ADR-0039)
+            provider: rolter_core::namespace::display_name(&log.provider, &log.provider_org_id)
+                .to_string(),
             target: log.target.clone(),
             model: log.model.clone(),
             variant: log.variant.clone(),

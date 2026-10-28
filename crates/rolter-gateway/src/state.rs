@@ -377,6 +377,11 @@ pub struct GroupEntry {
     pub balancer: Arc<dyn LoadBalancer>,
 }
 
+/// What a route target, variant target or group member that names no provider
+/// it may use is rewritten to: a prefix no runtime id starts with, since
+/// [`index_providers`] serves no provider whose name starts with a NUL.
+const UNRESOLVED: &str = "\u{0}unresolved:";
+
 /// The providers of `config` by runtime id, and `(org, name)` -> runtime id.
 ///
 /// A provider's runtime id is its name, unless a provider of another org (or
@@ -399,6 +404,10 @@ fn index_providers(
     let mut ids = Namespaced::new();
     for p in &config.providers {
         let org = org_of(p.tenancy.as_ref());
+        if p.name.starts_with('\u{0}') {
+            tracing::warn!("a provider name starts with a NUL character; it is not served");
+            continue;
+        }
         let id = if names.is_shared(&p.name) {
             qualify(&p.name, org)
         } else {
@@ -439,13 +448,15 @@ impl Snapshot {
         use rolter_core::namespace::{org_of, qualify, Namespaced};
         let (providers, provider_ids) = index_providers(config);
         // a provider a row names resolves in the row's own org first, then
-        // globally; a name that resolves to nothing stays as written and finds
-        // no provider at request time, as before
-        let resolve = |org: &str, name: &str| {
-            provider_ids
-                .get(org, name)
-                .cloned()
-                .unwrap_or_else(|| name.to_string())
+        // globally, and never to another org's (ADR-0039 section 1). a name
+        // that resolves to nothing, but is another provider's runtime id (an
+        // org's bare name, or one spelt like a qualified id), becomes an id no
+        // provider has, so it finds nothing at request time; any other stays
+        // as written, which finds nothing either
+        let resolve = |org: &str, name: &str| match provider_ids.get_ref(org, name) {
+            Some(id) => id.clone(),
+            None if providers.contains_key(name) => format!("{UNRESOLVED}{name}"),
+            None => name.to_string(),
         };
         // index providers by their URL-safe slug for `provider-slug/model`
         // addressing; an explicit slug wins, otherwise derive one from the
@@ -596,6 +607,9 @@ impl Snapshot {
             let _ = route_names.insert(org_of(route.tenancy.as_ref()), &route.model, ());
         }
         let mut routes: Namespaced<RouteEntry> = Namespaced::new();
+        // a route name is free text, so one could spell another org's
+        // qualified namespace; the first route to take a namespace keeps it
+        let mut namespaces = std::collections::HashSet::new();
         for configured in &config.routes {
             let org = org_of(configured.tenancy.as_ref());
             if routes.owned_by(org, &configured.model).is_some() {
@@ -611,6 +625,16 @@ impl Snapshot {
             } else {
                 configured.model.clone()
             };
+            if !namespaces.insert(namespace.clone()) {
+                tracing::warn!(
+                    model = %configured.model,
+                    org = %org,
+                    %namespace,
+                    "another route already keys its state under this route's namespace; \
+                     this one is not served"
+                );
+                continue;
+            }
             let mut route = configured.clone();
             for target in route
                 .targets

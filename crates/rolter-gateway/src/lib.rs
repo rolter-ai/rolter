@@ -53,6 +53,8 @@ pub mod model_catalog;
 mod multipart;
 mod openapi;
 mod openapi_schemas;
+#[cfg(test)]
+mod org_namespace_tests;
 mod pii_sanitizer;
 mod pii_stream;
 #[cfg(test)]
