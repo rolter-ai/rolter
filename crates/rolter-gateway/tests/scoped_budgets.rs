@@ -94,6 +94,7 @@ fn base_config(upstream: SocketAddr) -> GatewayConfig {
             provider: "up".to_string(),
             model: None,
             weight: 1,
+            takes_over: Vec::new(),
         }],
         params: Default::default(),
         param_policy: Default::default(),

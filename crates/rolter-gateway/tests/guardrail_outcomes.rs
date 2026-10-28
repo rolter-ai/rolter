@@ -109,6 +109,7 @@ fn config(
             provider: "up".into(),
             model: Some("test-model".into()),
             weight: 1,
+            takes_over: Vec::new(),
         }],
         params: Default::default(),
         param_policy: Default::default(),

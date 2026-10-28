@@ -197,6 +197,7 @@ fn target(provider: &str) -> Target {
         provider: provider.into(),
         model: Some("test-model".into()),
         weight: 1,
+        takes_over: Vec::new(),
     }
 }
 

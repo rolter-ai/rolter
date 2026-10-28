@@ -762,6 +762,17 @@ async fn import_config(
         provider_ids.insert(p.name.clone(), row.id);
     }
 
+    // a route that could never dial anything is refused before any row is
+    // written, as `rolter.toml` validation and the routes API refuse it (#1584)
+    let problems: Vec<String> = config
+        .routes
+        .iter()
+        .flat_map(|r| r.takes_over_problems())
+        .collect();
+    if !problems.is_empty() {
+        return Err(anyhow::anyhow!(problems.join("; ")));
+    }
+
     for r in &config.routes {
         let strategy = strategy_column(r.strategy);
         let existing = routes
@@ -837,17 +848,33 @@ async fn import_config(
                 row.provider_id == provider_id
                     && row.upstream_model.as_deref() == t.model.as_deref()
             });
+            // the failure classes are desired state too, so an edited
+            // `takes_over` is applied like an edited weight (#1584)
+            let takes_over: Vec<String> = t.takes_over.iter().map(|c| c.to_string()).collect();
             match existing_target {
-                Some(row) if row.weight == t.weight as i32 => continue,
+                Some(row) if row.weight == t.weight as i32 && row.takes_over == takes_over => {
+                    continue
+                }
                 Some(row) => {
-                    targets.set_weight(row.id, t.weight as i32).await?;
-                    tracing::info!(
-                        model = %r.model,
-                        target_provider = %t.provider,
-                        from = row.weight,
-                        to = t.weight,
-                        "updated target weight from file"
-                    );
+                    if row.weight != t.weight as i32 {
+                        targets.set_weight(row.id, t.weight as i32).await?;
+                        tracing::info!(
+                            model = %r.model,
+                            target_provider = %t.provider,
+                            from = row.weight,
+                            to = t.weight,
+                            "updated target weight from file"
+                        );
+                    }
+                    if row.takes_over != takes_over {
+                        targets.set_takes_over(row.id, &takes_over).await?;
+                        tracing::info!(
+                            model = %r.model,
+                            target_provider = %t.provider,
+                            takes_over = ?takes_over,
+                            "updated target takes_over from file"
+                        );
+                    }
                 }
                 None => {
                     targets
@@ -856,6 +883,7 @@ async fn import_config(
                             provider_id,
                             t.model.as_deref(),
                             t.weight as i32,
+                            &takes_over,
                         )
                         .await?;
                     tracing::info!(
@@ -2155,6 +2183,111 @@ weight = 7
         let providers = ProviderRepo(&pool).list(org_id).await.unwrap();
         assert_eq!(providers.len(), 1);
         assert_eq!(RouteRepo(&pool).list(project_id).await.unwrap().len(), 1);
+    }
+
+    /// #1584: a target's `takes_over` is desired state like its weight: the
+    /// import stores it, a re-import applies an edit to it in place, and a
+    /// route whose every target is restricted is refused before any row is
+    /// written.
+    #[tokio::test]
+    async fn the_import_applies_takes_over_and_refuses_an_all_restricted_route() {
+        let Some(db) = scratch_db().await else {
+            return;
+        };
+        let pool = db.pool().clone();
+        let (org_id, project_id) = bootstrap_org(&pool).await;
+
+        let dir = tempdir("takes-over");
+        let path = dir.join("rolter.toml");
+        let file = |classes: &str| {
+            format!(
+                r#"
+[[providers]]
+name = "cheap"
+kind = "openai_compatible"
+api_base = "http://cheap:80"
+
+[[providers]]
+name = "premium"
+kind = "openai_compatible"
+api_base = "http://premium:80"
+
+[[routes]]
+model = "guarded"
+[[routes.targets]]
+provider = "cheap"
+[[routes.targets]]
+provider = "premium"
+takes_over = {classes}
+"#
+            )
+        };
+        let stored = |pool: sqlx::PgPool| async move {
+            let route = RouteRepo(&pool)
+                .list(project_id)
+                .await
+                .unwrap()
+                .into_iter()
+                .find(|row| row.model == "guarded")
+                .expect("the route is imported");
+            let mut targets = RouteTargetRepo(&pool).list(route.id).await.unwrap();
+            targets.sort_by_key(|t| t.takes_over.len());
+            targets
+                .into_iter()
+                .map(|t| t.takes_over)
+                .collect::<Vec<_>>()
+        };
+
+        std::fs::write(&path, file(r#"["refusal"]"#)).unwrap();
+        import_bootstrap_toml(&pool, org_id, project_id, &path)
+            .await
+            .unwrap();
+        assert_eq!(
+            stored(pool.clone()).await,
+            vec![vec![], vec!["refusal".to_string()]]
+        );
+
+        std::fs::write(&path, file(r#"["refusal:hate", "throttled"]"#)).unwrap();
+        import_bootstrap_toml(&pool, org_id, project_id, &path)
+            .await
+            .unwrap();
+        assert_eq!(
+            stored(pool.clone()).await,
+            vec![
+                vec![],
+                vec!["refusal:hate".to_string(), "throttled".to_string()]
+            ],
+            "the edit was not applied in place"
+        );
+
+        let restricted = dir.join("restricted.toml");
+        std::fs::write(
+            &restricted,
+            r#"
+[[providers]]
+name = "premium"
+kind = "openai_compatible"
+api_base = "http://premium:80"
+
+[[routes]]
+model = "stranded"
+[[routes.targets]]
+provider = "premium"
+takes_over = ["refusal"]
+"#,
+        )
+        .unwrap();
+        let refused = import_bootstrap_toml(&pool, org_id, project_id, &restricted)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(refused.contains("all_targets_restricted"), "{refused}");
+        assert!(RouteRepo(&pool)
+            .list(project_id)
+            .await
+            .unwrap()
+            .iter()
+            .all(|row| row.model != "stranded"));
     }
 
     /// #954: presence, not value, is what makes the import touch capture. A

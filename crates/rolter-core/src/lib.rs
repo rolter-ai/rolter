@@ -18,6 +18,7 @@ pub mod config_lint;
 pub mod config_migrate;
 pub mod currency;
 pub mod error;
+pub mod failover;
 pub mod guardrail_webhook;
 pub mod guardrails;
 pub mod mcp_challenge;

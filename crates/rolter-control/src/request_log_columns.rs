@@ -82,6 +82,11 @@ pub(crate) const OPTIONAL_COLUMNS: &[OptionalColumn] = &[
         name: "seq",
         default: "toUInt64(0)",
     },
+    // 023_fallback_reason.sql
+    OptionalColumn {
+        name: "fallback_reason",
+        default: "''",
+    },
 ];
 
 /// The probe: every column `request_logs` has in the database the client reads
@@ -315,6 +320,7 @@ mod tests {
             "guardrail_events",
             "plugin_events",
             "seq",
+            "fallback_reason",
         ]))
         .expect("the table is visible");
         assert_eq!(columns.missing(), ["cache_write_1h_tokens"]);

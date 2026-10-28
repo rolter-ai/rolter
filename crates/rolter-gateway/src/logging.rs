@@ -273,6 +273,17 @@ pub struct RequestLog {
     /// How many upstream attempts the request made, the one that answered
     /// included; `0` when it never reached an upstream. Saturates at 255.
     pub attempts: u8,
+    /// The failure that sent the request on to the last target it tried, as
+    /// its class token (`throttled`, `timeout`, `transport`, `server_error`,
+    /// `refusal` or `refusal:<category>`, see `rolter_core::failover`). Empty
+    /// when the first dial answered, so a row that never failed over reads as
+    /// it did before the column (#1584). It is what tells a request that
+    /// reached a fallback target because of a content refusal from one that
+    /// reached it because of load. Not serialized when empty, so a ClickHouse
+    /// without `clickhouse/023_fallback_reason.sql` keeps accepting every row
+    /// that has none
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub fallback_reason: String,
     /// Which call on a stored response this row records: `retrieve`, `delete`,
     /// `cancel`, `input_items`, or one of the two the gateway does not serve
     /// (`compact`, `input_tokens`). Empty for a request that ran a model,
@@ -387,6 +398,7 @@ impl Default for RequestLog {
             error: String::new(),
             upstream_status: 0,
             attempts: 0,
+            fallback_reason: String::new(),
             lifecycle_operation: String::new(),
             guardrail_events: Vec::new(),
             plugin_events: Vec::new(),

@@ -1183,8 +1183,10 @@ impl TimeBounds for InvocationsQuery {
 /// reason the attribution dimensions do: a page cut first and filtered after
 /// would hold fewer rows than `limit` asked for.
 ///
-/// Four columns are optional: `upstream_status`, `attempts` (`015`),
-/// `lifecycle_operation` (`016`) and `cache_write_1h_tokens` (`017`). An
+/// Several columns are optional: `upstream_status`, `attempts` (`015`),
+/// `lifecycle_operation` (`016`), `cache_write_1h_tokens` (`017`),
+/// `guardrail_events` (`018`), `plugin_events` (`019`) and `fallback_reason`
+/// (`023`). An
 /// existing deployment applies those files by hand, possibly after it has
 /// upgraded the control plane, and a select that names a column the table lacks
 /// fails the whole list. `columns` says which of them the table has; one it
@@ -1213,6 +1215,7 @@ fn invocations_sql(status_expr: &str, columns: &Columns) -> String {
     let lifecycle_operation = columns.select("lifecycle_operation");
     let guardrail_events = columns.select("guardrail_events");
     let plugin_events = columns.select("plugin_events");
+    let fallback_reason = columns.select("fallback_reason");
     // the filter reads the column, which an older table lacks: it then matches
     // nothing, which is true, since no event was ever recorded there
     let guardrail_filter = columns.expr("guardrail_events");
@@ -1224,6 +1227,7 @@ fn invocations_sql(status_expr: &str, columns: &Columns) -> String {
                 {cache_write_1h_tokens}, \
                 prompt_tokens, completion_tokens, total_tokens, cost_usd, unpriced, withheld, usage_unknown, latency_ms, ttft_ms, error, \
                 {upstream_status}, {attempts}, {lifecycle_operation}, {guardrail_events}, {plugin_events}, {seq}, \
+                {fallback_reason}, \
                 if({PAYLOAD_VISIBLE}, payload.request_payload, '') as request_payload, \
                 if({PAYLOAD_VISIBLE}, payload.response_payload, '') as response_payload, \
                 toUInt8(not {PAYLOAD_VISIBLE} \

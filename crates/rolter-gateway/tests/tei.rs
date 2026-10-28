@@ -33,6 +33,7 @@ fn config(addr: SocketAddr, api_key: Option<&str>) -> GatewayConfig {
             provider: "tei-local".into(),
             model: Some("sentence-transformers/all-MiniLM-L6-v2".into()),
             weight: 1,
+            takes_over: Vec::new(),
         }],
         params: Default::default(),
         param_policy: Default::default(),

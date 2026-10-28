@@ -70,7 +70,7 @@ async fn crud_roundtrip_across_the_tenancy_and_routing_tables() {
 
     let targets = RouteTargetRepo(&pool);
     let target = targets
-        .create(route.id, provider.id, Some("gpt-4o-2024-08-06"), 2)
+        .create(route.id, provider.id, Some("gpt-4o-2024-08-06"), 2, &[])
         .await
         .unwrap();
     assert_eq!(targets.list(route.id).await.unwrap().len(), 1);
@@ -1266,6 +1266,7 @@ fn stored_target(provider_id: Uuid, upstream_model: Option<&str>, weight: i32) -
         provider_id,
         upstream_model: upstream_model.map(str::to_string),
         weight,
+        takes_over: Vec::new(),
         created_at: Utc::now(),
     }
 }
@@ -1275,7 +1276,25 @@ fn spec(provider_id: Uuid, upstream_model: Option<&str>, weight: i32) -> RouteTa
         provider_id,
         upstream_model: upstream_model.map(str::to_string),
         weight,
+        takes_over: Vec::new(),
     }
+}
+
+/// #1584: a changed `takes_over` set is a change to the matched target, like
+/// a changed weight, rather than a different target.
+#[test]
+fn target_plan_updates_a_changed_takes_over_set_in_place() {
+    let a = Uuid::new_v4();
+    let stored = vec![stored_target(a, None, 1)];
+    let mut restricted = spec(a, None, 1);
+    restricted.takes_over = vec!["refusal".to_string()];
+    let desired = vec![restricted];
+    let plan = plan_target_changes(&stored, &desired);
+    assert_eq!(plan.reweight.len(), 1);
+    assert_eq!(plan.reweight[0].0.id, stored[0].id);
+    assert_eq!(plan.reweight[0].1.takes_over, vec!["refusal".to_string()]);
+    assert!(plan.insert.is_empty());
+    assert!(plan.delete.is_empty());
 }
 
 /// #2235: a target is matched by provider and upstream model, so a weight
@@ -1302,7 +1321,7 @@ fn target_plan_matches_on_provider_and_upstream_model() {
     assert_eq!(
         plan.reweight
             .iter()
-            .map(|(t, w)| (t.id, *w))
+            .map(|(t, s)| (t.id, s.weight))
             .collect::<Vec<_>>(),
         vec![(stored[0].id, 5)]
     );
@@ -1468,9 +1487,12 @@ async fn route_update_is_one_transaction() {
         .await
         .unwrap();
     let targets = RouteTargetRepo(&pool);
-    let kept = targets.create(route.id, primary, None, 1).await.unwrap();
+    let kept = targets
+        .create(route.id, primary, None, 1, &[])
+        .await
+        .unwrap();
     let dropped = targets
-        .create(route.id, primary, Some("gpt-4o-mini"), 1)
+        .create(route.id, primary, Some("gpt-4o-mini"), 1, &[])
         .await
         .unwrap();
 

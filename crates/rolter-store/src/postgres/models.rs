@@ -283,6 +283,10 @@ pub struct RouteTarget {
     pub provider_id: Uuid,
     pub upstream_model: Option<String>,
     pub weight: i32,
+    /// failure class tokens this target takes over (#1584); empty for an
+    /// ordinary member of the pool
+    #[serde(default)]
+    pub takes_over: Vec<String>,
     pub created_at: DateTime<Utc>,
 }
 
