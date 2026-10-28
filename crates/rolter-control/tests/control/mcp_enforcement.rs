@@ -349,8 +349,8 @@ async fn tool_group_assignments_reach_the_snapshot_and_stay_inside_the_organizat
     assert_eq!(assignments.len(), 3, "{config}");
     assert!(assignments.contains(&json!({"kind": "team", "id": subjects[0].0.to_string()})));
 
-    // a disabled group governs nothing, but its callers stay narrowed: it
-    // travels with its assignments and no tools, so they are not handed the
+    // a disabled group governs no one else, but its callers stay narrowed: it
+    // travels marked disabled, with its assignments, so they are not handed the
     // organization-wide set back
     client
         .put(format!("{base}/api/v1/mcp/tool-groups/{group_id}"))
@@ -361,7 +361,7 @@ async fn tool_group_assignments_reach_the_snapshot_and_stay_inside_the_organizat
     let config = snapshot_config(&client, &base).await;
     let carried = config["mcp_tool_groups"].as_array().unwrap();
     assert_eq!(carried.len(), 1, "{config}");
-    assert_eq!(carried[0]["tools"], json!([]));
+    assert_eq!(carried[0]["disabled"], json!(true));
     assert_eq!(carried[0]["assignments"].as_array().unwrap().len(), 3);
 
     // a subject deleted since it was assigned is dropped instead of blocking

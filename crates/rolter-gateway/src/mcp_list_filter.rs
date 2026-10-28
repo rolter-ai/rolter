@@ -35,6 +35,8 @@ use bytes::Bytes;
 use futures_util::Stream;
 use serde_json::Value;
 
+use crate::mcp_policy::fold_key;
+
 /// The most of a JSON `tools/list` reply the gateway holds in memory. A reply
 /// larger than this is refused rather than forwarded unfiltered.
 pub(crate) const MAX_LIST_REPLY: usize = 16 * 1024 * 1024;
@@ -64,22 +66,43 @@ impl ListFilter {
     }
 
     /// Narrow one message in place if it carries a tool list; whether it did.
+    /// Keys are read the way a Go decoder reads them, whatever their case.
     fn apply(&self, message: &mut Value) -> bool {
-        let Some(tools) = message
-            .as_object_mut()
-            .and_then(|object| object.get_mut("result"))
-            .and_then(|result| result.get_mut("tools"))
-            .and_then(Value::as_array_mut)
-        else {
+        let Some(object) = message.as_object_mut() else {
             return false;
         };
-        // a tool with no readable name cannot be matched to a rule
-        tools.retain(|tool| {
-            tool.get("name")
-                .and_then(Value::as_str)
-                .is_some_and(|name| self.allows(name))
-        });
-        true
+        let mut found = false;
+        for (key, result) in object.iter_mut() {
+            if fold_key(key) != "result" {
+                continue;
+            }
+            let Some(result) = result.as_object_mut() else {
+                continue;
+            };
+            for (key, tools) in result.iter_mut() {
+                if fold_key(key) != "tools" {
+                    continue;
+                }
+                if let Some(tools) = tools.as_array_mut() {
+                    // a tool with no readable name, or with two keys that name it
+                    // once case is folded, cannot be matched to a rule
+                    tools.retain(|tool| self.allows_entry(tool));
+                    found = true;
+                }
+            }
+        }
+        found
+    }
+
+    fn allows_entry(&self, tool: &Value) -> bool {
+        let Some(tool) = tool.as_object() else {
+            return false;
+        };
+        let mut names = tool.iter().filter(|(key, _)| fold_key(key) == "name");
+        match (names.next(), names.next()) {
+            (Some((_, name)), None) => name.as_str().is_some_and(|name| self.allows(name)),
+            _ => false,
+        }
     }
 
     fn apply_all(&self, value: &mut Value) -> bool {
@@ -98,34 +121,42 @@ impl ListFilter {
     }
 
     /// Rewrite one SSE event if it carries a tool list; every other event comes
-    /// back byte for byte.
-    fn filter_event(&self, event: &[u8]) -> Vec<u8> {
-        let Ok(text) = std::str::from_utf8(event) else {
-            return event.to_vec();
-        };
+    /// back byte for byte. An event that is not an `endpoint` announcement and
+    /// whose data cannot be read as JSON cannot be shown to hold no tool list, so
+    /// it is `Err` and the stream is cut, as a JSON reply that does not parse is
+    /// refused. Lines end with `\r\n`, `\n` or `\r`, bytes are read lossily and a
+    /// leading BOM is dropped, because that is how a client reads them.
+    fn filter_event(&self, event: &[u8]) -> Result<Vec<u8>, Unfilterable> {
+        let text = String::from_utf8_lossy(event);
+        let text = text.strip_prefix('\u{feff}').unwrap_or(&text);
+        let mut name = "message";
         let mut data = String::new();
+        let mut has_data = false;
         let mut others = Vec::new();
-        for line in text.lines() {
-            match line.strip_prefix("data:") {
-                Some(rest) => {
-                    if !data.is_empty() {
-                        data.push('\n');
-                    }
-                    data.push_str(rest.strip_prefix(' ').unwrap_or(rest));
+        for line in sse_lines(text) {
+            if let Some(rest) = line.strip_prefix("data:") {
+                if has_data {
+                    data.push('\n');
                 }
-                None if line.is_empty() => {}
-                None => others.push(line),
+                has_data = true;
+                data.push_str(rest.strip_prefix(' ').unwrap_or(rest));
+            } else if let Some(rest) = line.strip_prefix("event:") {
+                name = rest.trim();
+                others.push(line);
+            } else if !line.is_empty() {
+                others.push(line);
             }
         }
+        if name == "endpoint" || data.trim().is_empty() {
+            return Ok(event.to_vec());
+        }
         let Ok(mut message) = serde_json::from_str::<Value>(&data) else {
-            return event.to_vec();
+            return Err(Unfilterable);
         };
         if !self.apply_all(&mut message) {
-            return event.to_vec();
+            return Ok(event.to_vec());
         }
-        let Ok(json) = serde_json::to_string(&message) else {
-            return event.to_vec();
-        };
+        let json = serde_json::to_string(&message).map_err(|_| Unfilterable)?;
         let mut out = String::new();
         for line in others {
             out.push_str(line);
@@ -134,8 +165,43 @@ impl ListFilter {
         out.push_str("data: ");
         out.push_str(&json);
         out.push_str("\n\n");
-        out.into_bytes()
+        Ok(out.into_bytes())
     }
+}
+
+/// An event the filter cannot show holds no tool list.
+#[derive(Debug)]
+struct Unfilterable;
+
+/// The lines of an SSE event, ending with `\r\n`, `\n` or `\r`.
+fn sse_lines(text: &str) -> Vec<&str> {
+    let bytes = text.as_bytes();
+    let mut lines = Vec::new();
+    let mut start = 0;
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\n' => {
+                lines.push(&text[start..i]);
+                i += 1;
+                start = i;
+            }
+            b'\r' => {
+                lines.push(&text[start..i]);
+                i += if bytes.get(i + 1) == Some(&b'\n') {
+                    2
+                } else {
+                    1
+                };
+                start = i;
+            }
+            _ => i += 1,
+        }
+    }
+    if start < bytes.len() {
+        lines.push(&text[start..]);
+    }
+    lines
 }
 
 /// Finds the end of SSE events in a growing buffer without rescanning it. A
@@ -242,8 +308,18 @@ where
                         };
                         let event: Vec<u8> = this.pending.drain(..end).collect();
                         this.scanner.reset();
-                        let rewritten = this.filter.filter_event(&event);
-                        this.ready.push_back(Bytes::from(rewritten));
+                        match this.filter.filter_event(&event) {
+                            Ok(rewritten) => this.ready.push_back(Bytes::from(rewritten)),
+                            Err(Unfilterable) => {
+                                this.finished = true;
+                                this.pending.clear();
+                                this.ready.clear();
+                                return Poll::Ready(Some(Err(io::Error::other(
+                                    "an event in the MCP stream could not be read, so it \
+                                     cannot be filtered",
+                                ))));
+                            }
+                        }
                     }
                     if self.pending.len() > MAX_EVENT {
                         // refuse the stream rather than pass an event on
@@ -260,8 +336,15 @@ where
                     // an event the stream ended in the middle of
                     if !self.pending.is_empty() {
                         let rest = std::mem::take(&mut self.pending);
-                        let rewritten = self.filter.filter_event(&rest);
-                        self.ready.push_back(Bytes::from(rewritten));
+                        match self.filter.filter_event(&rest) {
+                            Ok(rewritten) => self.ready.push_back(Bytes::from(rewritten)),
+                            Err(Unfilterable) => {
+                                return Poll::Ready(Some(Err(io::Error::other(
+                                    "an event in the MCP stream could not be read, so it \
+                                     cannot be filtered",
+                                ))));
+                            }
+                        }
                     }
                 }
             }
@@ -460,5 +543,75 @@ mod tests {
             .await;
         assert_eq!(out.len(), 1);
         assert!(out[0].is_err(), "the oversized event is not forwarded");
+    }
+
+    async fn outcome(chunks: Vec<Vec<u8>>) -> (String, bool) {
+        let stream = futures_util::stream::iter(
+            chunks
+                .into_iter()
+                .map(|chunk| Ok::<_, std::io::Error>(Bytes::from(chunk))),
+        );
+        let out: Vec<_> = FilteredSse::new(stream, Arc::new(filter(&["a"])))
+            .collect()
+            .await;
+        let cut = out.iter().any(Result::is_err);
+        let text = out
+            .into_iter()
+            .filter_map(Result::ok)
+            .map(|chunk| String::from_utf8_lossy(&chunk).into_owned())
+            .collect();
+        (text, cut)
+    }
+
+    /// the four ways an event used to reach the client unfiltered because the
+    /// filter could not read it though the client could
+    #[tokio::test]
+    async fn an_event_the_filter_reads_differently_from_a_client_is_narrowed_or_cut() {
+        let answer = reply(7, &["a", "b"], None);
+        // (a) a bare CR ends lines, and `lines()` does not split on it
+        let (text, cut) = outcome(vec![
+            format!("event: message\rdata: {answer}\r\r").into_bytes()
+        ])
+        .await;
+        assert!(!cut && !text.contains("\"b\""), "{text}");
+        // (b) a byte that is not UTF-8 in a comment line
+        let mut bytes = b": \xff\ndata: ".to_vec();
+        bytes.extend_from_slice(answer.as_bytes());
+        bytes.extend_from_slice(b"\n\n");
+        let (text, cut) = outcome(vec![bytes]).await;
+        assert!(!cut && !text.contains("\"b\""), "{text}");
+        // (d) a leading byte order mark
+        let (text, cut) = outcome(vec![format!("\u{feff}data: {answer}\n\n").into_bytes()]).await;
+        assert!(!cut && !text.contains("\"b\""), "{text}");
+        // (c) data that is not JSON the filter reads: a lone surrogate escape, or
+        // nesting past the parser's limit, is cut rather than forwarded
+        let lone = format!("data: {}\n\n", answer.replace("\"a\"", "\"\\ud800\""));
+        let deep = format!("data: {}1{}\n\n", "[".repeat(200), "]".repeat(200));
+        for bad in [lone, deep] {
+            let (text, cut) = outcome(vec![bad.into_bytes()]).await;
+            assert!(cut && text.is_empty(), "{text}");
+        }
+        // an `endpoint` announcement and an empty keep-alive still pass
+        let (text, cut) = outcome(vec![
+            b"event: endpoint\ndata: /messages?s=1\n\n: ping\n\n".to_vec()
+        ])
+        .await;
+        assert!(!cut && text.contains("/messages?s=1"));
+    }
+
+    /// the reply side reads keys the way the request side does
+    #[test]
+    fn a_reply_is_read_with_keys_folded_like_a_go_decoder_reads_them() {
+        let filter = filter(&["ok"]);
+        let body = r#"{"jsonrpc":"2.0","id":1,"Result":{"Tools":[
+            {"name":"ok"},{"name":"ok","NAME":"drop"},{"NAME":"ok"},{"name":"drop"}]}}"#;
+        let out: Value =
+            serde_json::from_slice(&filter.filter_json(body.as_bytes()).unwrap()).unwrap();
+        let kept = out["Result"]["Tools"].as_array().unwrap();
+        // the entry with two name keys is dropped, not guessed at
+        assert_eq!(kept.len(), 2, "{out}");
+        assert!(kept
+            .iter()
+            .all(|tool| tool.get("name") != Some(&Value::from("drop"))));
     }
 }

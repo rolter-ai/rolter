@@ -170,8 +170,10 @@ it may call only what its own groups list there, and nothing when none of them
 names the server. A caller none of the assignments name keeps the
 organization-wide set, exactly as before, so a deployment that never assigns a
 group behaves as it did. A group you disable keeps its assignments: the keys,
-projects and teams assigned to it stay narrowed and get none of its tools, they do
-not fall back to the organization's groups. Deleting a group removes its
+projects and teams assigned to it stay narrowed and get none of its tools on the
+servers it names, even when it is the only group that names one. They do not fall
+back to the organization's groups or to the whole server; everyone else is
+unaffected. Deleting a group removes its
 assignments with it, and a team, project or key that was assigned only to that
 group returns to the organization-wide set. A new group can be created with its
 `assignments` in the same request. The dashboard edits team and project assignments;

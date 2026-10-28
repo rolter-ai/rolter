@@ -363,9 +363,11 @@ export const ToolGroupSaveBeforeAssignmentsLoadLeavesThemAlone: Story = {
     await expect(body.queryByRole("button", { name: "Platform" })).toBeNull();
     await userEvent.click(body.getByRole("button", { name: "Save group" }));
     await slowAssignments.expectSent("PUT", "/mcp/tool-groups/group-1");
-    await waitFor(() => expect(slowAssignments.calls.length).toBeGreaterThan(0));
-    slowAssignments.expectNotSent("PUT", "/tool-groups/group-1/assignments");
     releaseAssignments();
+    // the save is over once the dialog has closed; only then can a follow-up
+    // assignments call have been made, so only then does its absence mean anything
+    await waitFor(() => expect(within(document.body).queryByRole("dialog")).toBeNull());
+    await waitFor(() => slowAssignments.expectNotSent("PUT", "/tool-groups/group-1/assignments"));
   },
 };
 

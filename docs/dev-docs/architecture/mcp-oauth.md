@@ -173,12 +173,15 @@ after the caller is authenticated and before anything is forwarded.
   when it is written, and a deleted subject leaves a row that can never match
   (the next save of the group drops it, and #3382 tracks sweeping it sooner).
   Assignments travel as `McpToolGroupConfig::assignments`. A disabled group
-  travels too, with its assignments and **no tools**, so the callers assigned to
-  it stay narrowed to nothing from that group instead of falling back to the
-  organization-wide set; deleting a group removes its assignments with it
+  travels too, with its tools and assignments and `disabled: true`. It governs no
+  one else (`mcp_governed_tools` counts enabled groups only), but the callers
+  assigned to it stay narrowed to none of its tools on every server it names,
+  even when it is the only group that names one (`Snapshot::mcp_group_servers`
+  records the servers of every group), instead of falling back to the
+  organization-wide set or the whole server; deleting a group removes its assignments with it
   (cascade), and its callers return to the organization-wide set. The gateway
   indexes them as `Snapshot::mcp_group_assignments` (subject id to
-  `(kind, organization, group)`) and each group's tools as `mcp_group_tools`.
+  `(kind, organization, group)`) and each enabled group's tools as `mcp_group_tools`.
   `Caller::assigned_groups` collects the groups assigned to the caller's key,
   project and team and returns at once when nothing is assigned anywhere; with
   none the organization-wide set applies, otherwise the allowed tools on a

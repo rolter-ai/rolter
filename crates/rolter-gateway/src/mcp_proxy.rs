@@ -525,7 +525,13 @@ async fn upstream_response(
     let is_sse = headers
         .get(header::CONTENT_TYPE)
         .and_then(|value| value.to_str().ok())
-        .is_some_and(|value| value.starts_with("text/event-stream"));
+        .is_some_and(|value| {
+            // a media type is case-insensitive
+            value
+                .trim_start()
+                .get(.."text/event-stream".len())
+                .is_some_and(|prefix| prefix.eq_ignore_ascii_case("text/event-stream"))
+        });
     if !headers.contains_key(header::CONTENT_TYPE) {
         headers.insert(
             header::CONTENT_TYPE,
@@ -553,7 +559,12 @@ async fn upstream_response(
                 .body(Body::from_stream(stream))
                 .unwrap_or_else(|_| unfilterable_list());
         }
-        if method_is_post {
+        // a stream the caller opened that is not an event stream cannot be shown
+        // to hold no tool list, and only a POST reply is buffered and narrowed
+        if !method_is_post {
+            return unfilterable_list();
+        }
+        {
             let Some(bytes) = read_limited(response, MAX_LIST_REPLY).await else {
                 return unfilterable_list();
             };
@@ -1025,6 +1036,57 @@ mod tests {
         );
     }
 
+    async fn get_with(content_type: &'static str) -> (StatusCode, String) {
+        use axum::routing::get;
+        use axum::Router;
+
+        let app = Router::new().route(
+            "/rpc",
+            get(move || async move {
+                (
+                    [(header::CONTENT_TYPE, content_type)],
+                    format!("event: message\ndata: {LIST_REPLY}\n\n"),
+                )
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let mut config = with_group(&["get_issue"]);
+        config.mcp_servers[0].url = format!("http://{addr}/rpc");
+        let response = proxy(
+            AppState::new(&config),
+            "github".to_string(),
+            None,
+            None,
+            Method::GET,
+            bearer(),
+            RequestId::default(),
+            Bytes::new(),
+        )
+        .await;
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        (status, String::from_utf8_lossy(&bytes).into_owned())
+    }
+
+    /// a media type is case-insensitive, and a stream that is not an event
+    /// stream cannot be shown to hold no tool list
+    #[tokio::test]
+    async fn a_stream_is_filtered_whatever_the_case_and_refused_when_it_is_not_sse() {
+        let (status, text) = get_with("Text/Event-Stream; charset=utf-8").await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(
+            text.contains("get_issue") && !text.contains("drop"),
+            "{text}"
+        );
+        let (status, text) = get_with("application/json").await;
+        assert_eq!(status, StatusCode::BAD_GATEWAY, "{text}");
+        assert!(!text.contains("drop"));
+    }
+
     const LIST_REPLY: &str = r#"{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"get_issue"},{"name":"drop"}],"nextCursor":"p2"}}"#;
 
     async fn list_through(config: &mut GatewayConfig, sse: bool) -> (StatusCode, String) {
@@ -1100,6 +1162,7 @@ mod tests {
                     kind: "project".to_string(),
                     id: "project-1".to_string(),
                 }],
+                ..Default::default()
             });
         let (status, code) =
             code_of(post(AppState::new(&config), call_body("list_issues")).await).await;

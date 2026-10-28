@@ -186,24 +186,43 @@ impl<'a> Rules<'a> {
                 settings.allow_unlisted_tools
             });
         Self {
-            governed: snapshot.mcp_governed_tools.get(&server.id).map(|org_wide| {
-                match caller.assigned_groups(snapshot) {
-                    None => Cow::Borrowed(org_wide),
-                    Some(groups) => Cow::Owned(
-                        groups
-                            .into_iter()
-                            .filter_map(|group| {
-                                snapshot.mcp_group_tools.get(group)?.get(&server.id)
-                            })
-                            .flatten()
-                            .cloned()
-                            .collect(),
-                    ),
-                }
-            }),
+            governed: Self::governed(snapshot, server, caller),
             declared: (!allow_unlisted && !server.tools.is_empty())
                 .then_some(server.tools.as_slice()),
         }
+    }
+
+    /// The tools the caller's groups allow on `server`, or `None` when no group
+    /// governs it for this caller. The organization's enabled groups govern it
+    /// for everyone; a caller with an assignment is held to the union of its
+    /// assigned groups, and also governed by a *disabled* assigned group that
+    /// names the server, with none of that group's tools.
+    fn governed<'s>(
+        snapshot: &'s Snapshot,
+        server: &McpServerConfig,
+        caller: &Caller<'_>,
+    ) -> Option<Cow<'s, HashSet<String>>> {
+        let org_wide = snapshot.mcp_governed_tools.get(&server.id);
+        let Some(groups) = caller.assigned_groups(snapshot) else {
+            return org_wide.map(Cow::Borrowed);
+        };
+        let names_server = org_wide.is_some()
+            || groups.iter().any(|group| {
+                snapshot
+                    .mcp_group_servers
+                    .get(*group)
+                    .is_some_and(|servers| servers.contains(&server.id))
+            });
+        names_server.then(|| {
+            Cow::Owned(
+                groups
+                    .into_iter()
+                    .filter_map(|group| snapshot.mcp_group_tools.get(group)?.get(&server.id))
+                    .flatten()
+                    .cloned()
+                    .collect(),
+            )
+        })
     }
 
     /// Whether any rule applies. When none does, the body is forwarded without
@@ -252,7 +271,7 @@ pub(crate) fn judge(
 /// two non-ASCII characters (U+017F, U+212A) that fold to `s` and `k`.
 /// `encoding/json` matches struct fields this way and keeps the last copy, so
 /// `"NAME"` is `"name"` to an upstream written in Go (#3298).
-fn fold_key(key: &str) -> String {
+pub(crate) fn fold_key(key: &str) -> String {
     key.chars()
         .map(|c| match c {
             '\u{17f}' => 's',
@@ -286,6 +305,28 @@ enum Level {
     Plain,
 }
 
+/// What [`Parse`] read: the value, whether a message or `params` below it
+/// repeats a key, and for a message whether *any* copy of its `method` is
+/// `tools/call` (a repeated `method` keeps only the last copy in the value).
+struct Out {
+    value: Value,
+    repeated: bool,
+    call: bool,
+    /// at the body level, `call` of each message in order
+    calls: Vec<bool>,
+}
+
+impl Out {
+    fn plain(value: Value) -> Self {
+        Self {
+            value,
+            repeated: false,
+            call: false,
+            calls: Vec::new(),
+        }
+    }
+}
+
 /// Parses a body into a [`Value`] and, in the same pass, notes whether a
 /// message or the `params` of one repeats a key (compared as a Go decoder folds
 /// them). Keys deeper than `params` (tool `arguments`) are the tool's own data
@@ -293,78 +334,105 @@ enum Level {
 struct Parse(Level);
 
 impl<'de> DeserializeSeed<'de> for Parse {
-    type Value = (Value, bool);
+    type Value = Out;
 
-    fn deserialize<D: serde::Deserializer<'de>>(
-        self,
-        deserializer: D,
-    ) -> Result<(Value, bool), D::Error> {
+    fn deserialize<D: serde::Deserializer<'de>>(self, deserializer: D) -> Result<Out, D::Error> {
         deserializer.deserialize_any(self)
     }
 }
 
 impl<'de> Visitor<'de> for Parse {
-    type Value = (Value, bool);
+    type Value = Out;
 
     fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("any JSON value")
     }
 
-    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<(Value, bool), A::Error> {
+    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Out, A::Error> {
         let checked = !matches!(self.0, Level::Plain);
         let mut seen = HashSet::new();
         let mut repeated = false;
+        let mut call = false;
         let mut object = Map::new();
         while let Some(key) = map.next_key::<String>()? {
             let mut child = Level::Plain;
+            let mut is_method = false;
             if checked {
                 let folded = fold_key(&key);
-                if matches!(self.0, Level::Body | Level::Message) && folded == "params" {
-                    child = Level::Params;
+                if matches!(self.0, Level::Body | Level::Message) {
+                    if folded == "params" {
+                        child = Level::Params;
+                    }
+                    is_method = folded == "method";
                 }
                 repeated |= !seen.insert(folded);
             }
-            let (value, below) = map.next_value_seed(Parse(child))?;
-            repeated |= below;
-            object.insert(key, value);
+            let below = map.next_value_seed(Parse(child))?;
+            repeated |= below.repeated;
+            if is_method {
+                call |= below.value.as_str() == Some("tools/call");
+            }
+            object.insert(key, below.value);
         }
-        Ok((Value::Object(object), repeated))
+        let calls = if matches!(self.0, Level::Body) {
+            vec![call]
+        } else {
+            Vec::new()
+        };
+        Ok(Out {
+            value: Value::Object(object),
+            repeated,
+            call,
+            calls,
+        })
     }
 
-    fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<(Value, bool), A::Error> {
+    fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Out, A::Error> {
         let level = match self.0 {
             Level::Body => Level::Message,
             _ => Level::Plain,
         };
         let mut items = Vec::new();
+        let mut calls = Vec::new();
         let mut repeated = false;
-        while let Some((item, below)) = seq.next_element_seed(Parse(level))? {
-            repeated |= below;
-            items.push(item);
+        while let Some(item) = seq.next_element_seed(Parse(level))? {
+            repeated |= item.repeated;
+            calls.push(item.call);
+            items.push(item.value);
         }
-        Ok((Value::Array(items), repeated))
+        let calls = if matches!(self.0, Level::Body) {
+            calls
+        } else {
+            Vec::new()
+        };
+        Ok(Out {
+            value: Value::Array(items),
+            repeated,
+            call: false,
+            calls,
+        })
     }
 
-    fn visit_bool<E>(self, v: bool) -> Result<(Value, bool), E> {
-        Ok((Value::Bool(v), false))
+    fn visit_bool<E>(self, v: bool) -> Result<Out, E> {
+        Ok(Out::plain(Value::Bool(v)))
     }
-    fn visit_i64<E>(self, v: i64) -> Result<(Value, bool), E> {
-        Ok((Value::from(v), false))
+    fn visit_i64<E>(self, v: i64) -> Result<Out, E> {
+        Ok(Out::plain(Value::from(v)))
     }
-    fn visit_u64<E>(self, v: u64) -> Result<(Value, bool), E> {
-        Ok((Value::from(v), false))
+    fn visit_u64<E>(self, v: u64) -> Result<Out, E> {
+        Ok(Out::plain(Value::from(v)))
     }
-    fn visit_f64<E>(self, v: f64) -> Result<(Value, bool), E> {
-        Ok((Value::from(v), false))
+    fn visit_f64<E>(self, v: f64) -> Result<Out, E> {
+        Ok(Out::plain(Value::from(v)))
     }
-    fn visit_str<E>(self, v: &str) -> Result<(Value, bool), E> {
-        Ok((Value::String(v.to_string()), false))
+    fn visit_str<E>(self, v: &str) -> Result<Out, E> {
+        Ok(Out::plain(Value::String(v.to_string())))
     }
-    fn visit_string<E>(self, v: String) -> Result<(Value, bool), E> {
-        Ok((Value::String(v), false))
+    fn visit_string<E>(self, v: String) -> Result<Out, E> {
+        Ok(Out::plain(Value::String(v)))
     }
-    fn visit_unit<E>(self) -> Result<(Value, bool), E> {
-        Ok((Value::Null, false))
+    fn visit_unit<E>(self) -> Result<Out, E> {
+        Ok(Out::plain(Value::Null))
     }
 }
 
@@ -372,19 +440,25 @@ impl<'de> Visitor<'de> for Parse {
 /// key. `None` when it is not JSON at all.
 struct Body {
     messages: Vec<Value>,
+    /// whether any copy of each message's `method` is `tools/call`
+    called: Vec<bool>,
     repeated: bool,
 }
 
 impl Body {
     fn parse(bytes: &[u8]) -> Option<Self> {
         let mut parser = serde_json::Deserializer::from_slice(bytes);
-        let (value, repeated) = Parse(Level::Body).deserialize(&mut parser).ok()?;
+        let out = Parse(Level::Body).deserialize(&mut parser).ok()?;
         parser.end().ok()?;
-        let messages = match value {
-            Value::Array(items) => items,
-            other => vec![other],
+        let (messages, called) = match out.value {
+            Value::Array(items) => (items, out.calls),
+            other => (vec![other], out.calls),
         };
-        Some(Self { messages, repeated })
+        Some(Self {
+            messages,
+            called,
+            repeated: out.repeated,
+        })
     }
 
     /// The method a message names, read the way a decoder would.
@@ -401,12 +475,19 @@ impl Body {
     /// The `tools/call` requests, as the canonical request the log expects
     /// (`id`, `params.name`, `params.arguments`), whatever case the caller wrote
     /// the keys in. A batch may hold anything; only an object can be a call, and
-    /// an entry that is not one is the upstream's to reject.
-    fn tool_calls(&self) -> Vec<(Option<String>, Map<String, Value>)> {
+    /// an entry that is not one is the upstream's to reject. When `any_copy` is
+    /// set a message counts if *any* copy of its `method` is `tools/call`, which
+    /// is how a body that repeats a key is logged; a call that names no tool is
+    /// logged with an empty one.
+    fn tool_calls(&self, any_copy: bool) -> Vec<(Option<String>, Map<String, Value>)> {
         self.messages
             .iter()
-            .filter(|message| Self::method(message) == Some("tools/call"))
-            .filter_map(Value::as_object)
+            .enumerate()
+            .filter(|(i, message)| {
+                Self::method(message) == Some("tools/call")
+                    || (any_copy && self.called.get(*i).copied().unwrap_or(false))
+            })
+            .filter_map(|(_, message)| message.as_object())
             .map(|request| {
                 let params = get_folded(request, "params").and_then(Value::as_object);
                 let tool = params
@@ -417,14 +498,17 @@ impl Body {
                 if let Some(id) = get_folded(request, "id") {
                     canonical.insert("id".into(), id.clone());
                 }
-                if let Some(params) = params {
-                    let mut kept = Map::new();
-                    if let Some(name) = get_folded(params, "name") {
-                        kept.insert("name".into(), name.clone());
-                    }
-                    if let Some(arguments) = get_folded(params, "arguments") {
-                        kept.insert("arguments".into(), arguments.clone());
-                    }
+                let mut kept = Map::new();
+                if let Some(name) = params.and_then(|params| get_folded(params, "name")) {
+                    kept.insert("name".into(), name.clone());
+                }
+                if any_copy && tool.is_none() {
+                    kept.insert("name".into(), Value::String(String::new()));
+                }
+                if let Some(arguments) = params.and_then(|params| get_folded(params, "arguments")) {
+                    kept.insert("arguments".into(), arguments.clone());
+                }
+                if params.is_some() || any_copy {
                     canonical.insert("params".into(), Value::Object(kept));
                 }
                 (tool, canonical)
@@ -486,10 +570,10 @@ pub(crate) fn evaluate(
             Verdict::Unreadable
         });
     };
-    let calls = parsed.tool_calls();
     if parsed.repeated {
         return Decision::of(Verdict::Ambiguous(
-            calls
+            parsed
+                .tool_calls(true)
                 .into_iter()
                 .map(|(tool, request)| Refused {
                     tool,
@@ -499,7 +583,8 @@ pub(crate) fn evaluate(
                 .collect(),
         ));
     }
-    let refused: Vec<Refused> = calls
+    let refused: Vec<Refused> = parsed
+        .tool_calls(false)
         .into_iter()
         .filter_map(|(tool, request)| {
             let denial = rules.judge(tool.as_deref())?;
@@ -981,13 +1066,57 @@ mod tests {
     /// nothing; it does not hand them the organization-wide set back
     #[test]
     fn a_caller_assigned_to_a_disabled_group_gets_none_of_its_tools() {
-        let mut off = assigned(named(group("org", "srv", &[]), "off"), "team", "team-1");
-        off.tools.clear();
+        let mut off = assigned(named(group("org", "srv", &["a"]), "off"), "team", "team-1");
+        off.disabled = true;
         let (snapshot, server) = world(vec![named(group("org", "srv", &["a", "b"]), "all"), off]);
         assert_eq!(
             allowed_for(&snapshot, &server, &caller()),
             [false, false, false]
         );
+    }
+
+    /// the disabled group was the only one naming the server: its callers are
+    /// still held to none of its tools, while everyone else is not governed
+    #[test]
+    fn a_disabled_group_that_is_the_only_one_still_governs_its_callers() {
+        let mut off = assigned(named(group("org", "srv", &["a"]), "off"), "team", "team-1");
+        off.disabled = true;
+        let (snapshot, server) = world(vec![off]);
+        assert_eq!(
+            allowed_for(&snapshot, &server, &caller()),
+            [false, false, false]
+        );
+        let other = Caller {
+            key_id: "key-2",
+            project_id: "project-2",
+            team_id: "team-2",
+            ..caller()
+        };
+        assert_eq!(allowed_for(&snapshot, &server, &other), [true, true, true]);
+    }
+
+    /// #3381: a refused repeat is logged whichever copy of `method` is the call
+    #[test]
+    fn a_repeat_is_logged_whichever_copy_of_method_is_tools_call() {
+        let (snapshot, server) = snapshot(vec![group("org", "srv", &["get_issue"])]);
+        for body in [
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","method":"tools/list","params":{"name":"drop"}}"#,
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/list","method":"tools/call","params":{"name":"drop"}}"#,
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","method":"ping"}"#,
+        ] {
+            let Verdict::Ambiguous(refused) = enforce(&snapshot, &server, body.as_bytes()) else {
+                panic!("{body}");
+            };
+            assert_eq!(refused.len(), 1, "{body}");
+            let name = refused[0].request["params"]["name"].as_str();
+            assert!(name.is_some(), "a row needs a name, empty at worst: {body}");
+        }
+        // a repeat in a message that is no call logs nothing
+        let body = r#"{"jsonrpc":"2.0","id":1,"id":2,"method":"ping"}"#;
+        let Verdict::Ambiguous(refused) = enforce(&snapshot, &server, body.as_bytes()) else {
+            panic!();
+        };
+        assert!(refused.is_empty());
     }
 
     #[test]

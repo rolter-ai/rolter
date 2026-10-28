@@ -174,7 +174,8 @@
       "connect_timeout_ms": 1000,
       "request_timeout_ms": 5000,
       "max_retries": 1,
-      "tools": ["search"]
+      "tools": ["search"],
+      "enforce_manifest_by_default": true
     }
   ],
   "mcp_settings": [

@@ -223,6 +223,10 @@ pub struct Snapshot {
     /// the tools each enabled tool group allows, by group id then server id
     /// (#3295); the building block of a caller's assigned groups
     pub mcp_group_tools: HashMap<String, HashMap<String, std::collections::HashSet<String>>>,
+    /// the servers each group names, enabled or not (#3295): a caller assigned to
+    /// a disabled group is narrowed on them even when no enabled group names
+    /// them, so they are governed for that caller
+    pub mcp_group_servers: HashMap<String, std::collections::HashSet<String>>,
     /// the groups assigned to a virtual key, project or team, keyed by subject
     /// id (#3295), each as `(subject kind, organization id, group id)`. A
     /// disabled group is here too, with no tools in `mcp_group_tools`, so its
@@ -653,11 +657,22 @@ impl Snapshot {
             String,
             HashMap<String, std::collections::HashSet<String>>,
         > = HashMap::new();
+        let mut mcp_group_servers: HashMap<String, std::collections::HashSet<String>> =
+            HashMap::new();
         let mut mcp_group_assignments: HashMap<String, Vec<(String, String, String)>> =
             HashMap::new();
         for group in &config.mcp_tool_groups {
             for reference in &group.tools {
                 if org_of_server.get(reference.server_id.as_str()) == Some(&group.org_id.as_str()) {
+                    mcp_group_servers
+                        .entry(group.id.clone())
+                        .or_default()
+                        .insert(reference.server_id.clone());
+                    // a disabled group names its servers for the callers
+                    // assigned to it and allows them nothing
+                    if group.disabled {
+                        continue;
+                    }
                     mcp_governed_tools
                         .entry(reference.server_id.clone())
                         .or_default()
@@ -704,6 +719,7 @@ impl Snapshot {
             mcp_servers,
             mcp_governed_tools,
             mcp_group_tools,
+            mcp_group_servers,
             mcp_group_assignments,
             mcp_org_settings,
             mcp_oauth_sessions,

@@ -502,6 +502,9 @@
     "mcp_tool_groups[].assignments[].kind": [
       "string"
     ],
+    "mcp_tool_groups[].disabled": [
+      "boolean"
+    ],
     "mcp_tool_groups[].id": [
       "string"
     ],

@@ -1283,7 +1283,7 @@ impl PostgresConfigStore {
     }
 
     /// Enabled tool groups for the snapshot (#1403), and the disabled ones that
-    /// callers are assigned to, which carry no tools (#3295). A reference that does not parse is left
+    /// callers are assigned to, marked `disabled` (#3295). A reference that does not parse is left
     /// out with a warning rather than failing the snapshot; the API only ever
     /// writes well-formed ones, so this is a row written around it.
     async fn load_mcp_tool_groups(&self) -> Result<Vec<McpToolGroupConfig>> {
@@ -1295,9 +1295,10 @@ impl PostgresConfigStore {
         .fetch_all(&self.pool)
         .await
         .map_err(store_err)?;
-        // a disabled group governs no server, but the callers assigned to it stay
-        // narrowed (to none of its tools), so it travels with its assignments and
-        // no tools rather than handing them the organization-wide set back
+        // a disabled group governs no one else, but the callers assigned to it
+        // stay narrowed (to none of its tools) on the servers it names, so it
+        // travels with its assignments, marked disabled, rather than handing
+        // them the organization-wide set or the whole server back
         let assignments: Vec<(Uuid, String, Uuid)> = sqlx::query_as(
             "select a.group_id, a.subject_kind, a.subject_id \
              from mcp_tool_group_assignments a \
@@ -1318,7 +1319,6 @@ impl PostgresConfigStore {
                     })
                     .collect();
                 let tools = match serde_json::from_value::<Vec<McpToolRefConfig>>(row.tools) {
-                    _ if !row.enabled => Vec::new(),
                     Ok(tools) => tools,
                     Err(error) => {
                         tracing::warn!(
@@ -1335,6 +1335,7 @@ impl PostgresConfigStore {
                     slug: row.slug,
                     tools,
                     assignments,
+                    disabled: !row.enabled,
                 }
             })
             .collect())

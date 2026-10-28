@@ -2293,6 +2293,11 @@ pub struct McpToolGroupConfig {
     /// assigned to it; a caller named by none keeps the organization-wide set
     #[serde(default)]
     pub assignments: Vec<McpToolGroupSubjectConfig>,
+    /// a disabled group is carried only for the callers assigned to it (#3295):
+    /// it governs no one else, but those callers stay narrowed on the servers it
+    /// names and get none of its tools
+    #[serde(default)]
+    pub disabled: bool,
 }
 
 /// A virtual key, project or team an MCP tool group is assigned to (#3295).
