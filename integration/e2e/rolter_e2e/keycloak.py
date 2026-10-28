@@ -150,6 +150,10 @@ class Keycloak:
         for group in groups:
             self._admin("POST", f"/{realm}/groups", json={"name": group})
 
+        self.add_user(realm, user, member_of)
+
+    def add_user(self, realm: str, user: KeycloakUser, member_of: list[str]) -> None:
+        """Create a user in an existing realm and put them in `member_of`."""
         self._admin(
             "POST",
             f"/{realm}/users",
