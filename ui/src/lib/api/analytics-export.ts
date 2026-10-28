@@ -13,8 +13,8 @@ export interface AnalyticsExportFile {
 
 async function download(path: string, params: URLSearchParams): Promise<AnalyticsExportFile> {
   const qs = params.toString();
-  // an analytics read never signs the session out, like its JSON twin
-  const res = await requestResponse(`${path}${qs ? `?${qs}` : ""}`, { expireSession: false });
+  // a session-token 401 signs the session out like its JSON twin (#3226)
+  const res = await requestResponse(`${path}${qs ? `?${qs}` : ""}`);
   const name = /filename="([^"]+)"/.exec(res.headers.get("content-disposition") ?? "")?.[1];
   return { blob: await res.blob(), name };
 }
