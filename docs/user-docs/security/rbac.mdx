@@ -31,7 +31,7 @@ Some settings belong to the whole deployment rather than to an organisation: clu
 | Role               | For                      | Reaches                                                                                                                                                                                              |
 | ------------------ | ------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `operator`         | maintaining the platform | cluster nodes (read, drain, remove), the runtime policy, feature flags, alert channels, rules and history (those of every organization as well as the deployment's), and connectors: read and change |
-| `security_auditor` | reviewing it             | read only: the security, logging and compatibility settings, guardrail rules and providers, the deployment-wide audit log and the accounts it names, and the configuration export                    |
+| `security_auditor` | reviewing it             | read only: the security, logging and compatibility settings, guardrail rules, providers and policies, the deployment-wide audit log and the accounts it names, and the configuration export          |
 
 Neither role reads tenant request logs or captured payloads, mints or reads a credential, or grants any role: a deployment role gives nothing inside an organisation, team or project, and granting one is a superadmin's alone. The anchors for what each role can and cannot do are `GET /api/v1/rbac/matrix`, which lists the roles that reach each row as `deployment_roles`, and `GET /api/v1/rbac/effective`, which returns yours as `deployment_role`.
 

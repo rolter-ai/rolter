@@ -1896,7 +1896,7 @@ async fn proxy(
     let guardrails_pre_stage = crate::trace::stage_span!(
         "guardrails.pre",
         redacted = tracing::field::Empty,
-        webhook = snap.guardrail_webhook.enabled
+        webhook = !snap.semantic_guards.is_empty()
     );
 
     // built-in guardrails: scan request content before proxying. a block rule
@@ -1940,49 +1940,54 @@ async fn proxy(
         }
     }
 
-    // custom guardrail webhook: consult a self-hosted service before proxying.
+    // semantic guardrail policy (#459): the most specific enabled policy for
+    // this key, route, project or org — else the providers no policy lists —
+    // picks the providers that judge this request. pre_call ones run here:
     // block -> OpenAI-compatible error; transform -> replace the request body;
-    // transport failures resolve per the operator's fail-open/closed choice. only
-    // the assembled envelope is sent; prompt content is never logged here (ROL-257).
-    let mut webhook_transformed = false;
-    if snap.guardrail_webhook.enabled {
-        let tenant = plugin_tenant(&scope);
-        match crate::guardrail_webhook::consult_pre_call(
-            &snap.guardrail_webhook,
-            &state.metrics,
-            &state.side_client,
-            &model,
+    // a call with no verdict resolves per that provider's fail-open/closed
+    // mode. only the assembled envelope is sent; content is never logged
+    let semantic_guard = snap
+        .semantic_guards
+        .resolve(&crate::semantic_guards::policy_request(
+            &scope,
             &entry.route.model,
-            trace_id,
-            tenant,
-            &parsed,
-        )
-        .await
+        ))
+        .map(|policy| crate::semantic_guards::SemanticGuard {
+            guards: &snap.semantic_guards,
+            policy,
+            metrics: &state.metrics,
+            egress: &state.side_client,
+            model: model.clone(),
+            route: entry.route.model.clone(),
+            trace_id: trace_id.to_string(),
+            tenant: plugin_tenant(&scope),
+        });
+    let mut webhook_transformed = false;
+    if let Some(guard) = semantic_guard
+        .as_ref()
+        .filter(|guard| guard.runs_at(rolter_core::WebhookStage::PreCall))
+    {
+        match guard
+            .check(
+                rolter_core::WebhookStage::PreCall,
+                &parsed,
+                false,
+                &mut guardrail_events,
+            )
+            .await
         {
-            crate::guardrail_webhook::WebhookOutcome::Allow => {}
-            crate::guardrail_webhook::WebhookOutcome::Block(reason) => {
-                guardrail_events.push(provider_event(
-                    PROVIDER_BLOCKED_EVENT,
-                    &snap.guardrail_webhook.name,
-                ));
-                return refuse.log_with_events(
-                    crate::error::ApiError::new(
-                        StatusCode::BAD_REQUEST,
-                        reason
-                            .unwrap_or_else(|| "request blocked by guardrail service".to_string()),
-                    )
-                    .with_code("guardrail_blocked")
-                    .into_response(),
-                    guardrail_events,
-                );
-            }
-            crate::guardrail_webhook::WebhookOutcome::Transform(content) => {
-                guardrail_events.push(provider_event(
-                    PROVIDER_TRANSFORMED_EVENT,
-                    &snap.guardrail_webhook.name,
-                ));
+            crate::semantic_guards::Verdict::Allow(None) => {}
+            crate::semantic_guards::Verdict::Allow(Some(content)) => {
                 parsed = content;
                 webhook_transformed = true;
+            }
+            crate::semantic_guards::Verdict::Block { reason, .. } => {
+                return refuse.log_with_events(
+                    crate::error::ApiError::new(StatusCode::BAD_REQUEST, reason)
+                        .with_code("guardrail_blocked")
+                        .into_response(),
+                    guardrail_events,
+                );
             }
         }
     }
@@ -2183,6 +2188,36 @@ async fn proxy(
     }
     // a stream that got here is one the operator opted out of masking for
     let output_guard = if stream { None } else { output_guard };
+
+    // the policy's post_call providers judge a whole response too, and the
+    // policy — never the caller's `"stream": true` — says what a stream gets:
+    // refused here before the upstream call, or buffered in full and judged
+    // once (ADR-0037). there is no setting that streams with them skipped
+    let semantic_leg = semantic_guard
+        .as_ref()
+        .filter(|guard| guard.runs_at(rolter_core::WebhookStage::PostCall))
+        .map(|guard| SemanticLeg { guard, stream });
+    if let Some(leg) = semantic_leg.filter(|leg| {
+        leg.stream && leg.guard.policy.streaming == rolter_core::StreamingStrategy::Reject
+    }) {
+        state
+            .metrics
+            .guardrail_stream_rejections_total
+            .fetch_add(1, Relaxed);
+        return refuse.log(
+            crate::error::ApiError::new(
+                StatusCode::BAD_REQUEST,
+                format!(
+                    "the guardrail policy '{}' checks responses, which cannot be applied to a \
+                     streamed response; retry without \"stream\": true",
+                    leg.guard.policy.label()
+                ),
+            )
+            .with_code("guardrail_streaming_unsupported")
+            .with_param("stream")
+            .into_response(),
+        );
+    }
 
     // the sanitizer's buffered response leg needs the whole body for the same
     // reason the output guardrails do: an entity — or a placeholder — can
@@ -2444,6 +2479,7 @@ async fn proxy(
                 },
                 DeliveryPolicy {
                     output: output_guard.as_ref(),
+                    semantic: semantic_leg,
                     plugins: post_response_plugins.as_ref(),
                     pii: pii_leg.as_ref(),
                 },
@@ -2513,6 +2549,7 @@ async fn proxy(
                         },
                         DeliveryPolicy {
                             output: output_guard.as_ref(),
+                            semantic: semantic_leg,
                             plugins: post_response_plugins.as_ref(),
                             pii: pii_leg.as_ref(),
                         },
@@ -3103,6 +3140,7 @@ async fn proxy(
                             // #848, #1477)
                             let policy = DeliveryPolicy {
                                 output: output_guard.as_ref(),
+                                semantic: semantic_leg,
                                 plugins: post_response_plugins.as_ref(),
                                 pii: pii_leg.as_ref(),
                             };
@@ -3171,6 +3209,7 @@ async fn proxy(
                 genai_span.clone(),
                 post_response_plugins.clone(),
                 pii_leg.as_ref(),
+                semantic_leg,
                 pii_stream.take(),
             )
             .await
@@ -3728,6 +3767,7 @@ async fn proxy_multipart(
                 recorder,
                 token_recorder,
                 inflight_guard,
+                None,
                 None,
                 None,
                 None,
@@ -4466,6 +4506,7 @@ async fn stream_response(
     genai_span: Option<tracing::Span>,
     post_response_plugins: Option<crate::plugin_dispatch::PostResponsePlugins<'_>>,
     pii: Option<&PiiResponseLeg<'_>>,
+    semantic: Option<SemanticLeg<'_, '_>>,
     pii_stream: Option<crate::pii_stream::StreamRestore>,
 ) -> Response {
     let status =
@@ -4492,25 +4533,64 @@ async fn stream_response(
     // response translation, or output guardrails (#591). the guard only exists
     // when a post-call rule applies to this route, so an unguarded route keeps
     // streaming straight through
-    if !is_sse
-        && (translation.rewrites_response()
-            || output.is_some()
-            || post_response_plugins.is_some()
-            || pii.is_some())
+    //
+    // a stream is buffered only for a semantic guardrail policy that chose
+    // `streaming = "buffer"` (ADR-0037): held in full, judged once, then
+    // replayed unchanged or withheld. a stream that outgrows the cap is
+    // withheld, never delivered unchecked
+    // the leg judges what actually came back: a request that asked for a
+    // stream and got a JSON body is judged as one
+    let semantic = semantic.map(|leg| SemanticLeg {
+        stream: is_sse,
+        ..leg
+    });
+    let buffer_stream = is_sse && semantic.is_some();
+    if buffer_stream
+        || (!is_sse
+            && (translation.rewrites_response()
+                || output.is_some()
+                || semantic.is_some()
+                || post_response_plugins.is_some()
+                || pii.is_some()))
     {
-        return match response.bytes().await {
-            Ok(bytes) => {
-                let bytes = translation.translate_response(bytes, false);
+        if buffer_stream {
+            sink.metrics()
+                .guardrail_streams_buffered_total
+                .fetch_add(1, Relaxed);
+        }
+        let cap = if buffer_stream {
+            crate::semantic_guards::MAX_BUFFERED_STREAM_BYTES
+        } else {
+            usize::MAX
+        };
+        return match read_bounded(response, cap).await {
+            Ok(None) => withheld_response(
+                guardrail_output_blocked("stream_too_large"),
+                guardrail_withheld_reason("stream_too_large"),
+                crate::logging::Usage::default(),
+                is_sse,
+                started,
+                sink,
+                price,
+                log,
+                recorder,
+                token_recorder,
+                inflight_guard,
+                genai_span,
+            ),
+            Ok(Some(bytes)) => {
+                let bytes = translation.translate_response(bytes, is_sse);
                 // what the provider charged, read before the guardrails,
                 // plugins and sanitizer below can rewrite or withhold the body
                 // (#1478)
                 let mut billed =
-                    crate::logging::parse_usage_with(false, &bytes, translation.thinking_count());
+                    crate::logging::parse_usage_with(is_sse, &bytes, translation.thinking_count());
                 billed.fill_cache_read(
                     header_cache_read.map(|n| u32::try_from(n).unwrap_or(u32::MAX)),
                 );
                 let policy = DeliveryPolicy {
                     output,
+                    semantic,
                     plugins: post_response_plugins.as_ref(),
                     pii,
                 };
@@ -4525,7 +4605,7 @@ async fn stream_response(
                             response,
                             reason,
                             billed,
-                            false,
+                            is_sse,
                             started,
                             sink,
                             price,
@@ -4543,7 +4623,7 @@ async fn stream_response(
                     billed,
                     status.as_u16(),
                     content_type,
-                    false,
+                    is_sse,
                     started,
                     sink,
                     price,
@@ -4553,7 +4633,10 @@ async fn stream_response(
                     inflight_guard,
                     completion_observer,
                     genai_span,
-                    None,
+                    // a buffered stream is replayed through the restore like a
+                    // live one, so the guard judged the placeholders and only
+                    // the caller sees plaintext (ADR-0036, ADR-0037)
+                    pii_stream,
                 )
             }
             Err(err) => body_read_failed(&sink, log, started, &err),
@@ -4841,22 +4924,6 @@ fn withheld_response(
     .with_billed_usage(billed)
     .withhold(refusal.status().as_u16(), reason);
     refusal
-}
-
-/// The log-row events the guardrail provider leaves (#2158); a rule's are
-/// `<action>:<rule>`, see [`rolter_core::GuardrailReport::events`].
-const PROVIDER_BLOCKED_EVENT: &str = "provider_blocked";
-const PROVIDER_TRANSFORMED_EVENT: &str = "provider_transformed";
-
-/// The log entry for a guardrail provider's outcome: `<action>:<provider>`, or
-/// the bare action for a provider that carries no name (a config-file webhook
-/// that sets none), which is also how rows written before #3038 read.
-fn provider_event(action: &str, provider: &str) -> String {
-    if provider.is_empty() {
-        action.to_string()
-    } else {
-        format!("{action}:{provider}")
-    }
 }
 
 /// Who asked for what, captured once a request is authenticated: enough to
@@ -5295,6 +5362,7 @@ async fn cached_response(
 #[derive(Clone, Copy)]
 struct DeliveryPolicy<'p, 'a> {
     output: Option<&'p crate::guardrails::OutputGuard<'a>>,
+    semantic: Option<SemanticLeg<'p, 'a>>,
     plugins: Option<&'p crate::plugin_dispatch::PostResponsePlugins<'a>>,
     pii: Option<&'p PiiResponseLeg<'a>>,
 }
@@ -5319,6 +5387,16 @@ impl DeliveryPolicy<'_, '_> {
                         reason: guardrail_withheld_reason(&rule),
                     }
                 }
+            },
+            None => bytes,
+        };
+        // the semantic policy decides on what the provider produced, after
+        // the built-in rules masked it and before a plugin or the sanitizer
+        // rewrites it (#459)
+        let bytes = match self.semantic {
+            Some(leg) => match leg.apply(bytes).await {
+                Ok(bytes) => bytes,
+                Err(refusal) => return *refusal,
             },
             None => bytes,
         };
@@ -5356,6 +5434,80 @@ impl DeliveryPolicy<'_, '_> {
             },
         }
     }
+}
+
+/// A semantic guardrail policy's `post_call` providers, and whether the body
+/// they judge is a buffered stream (ADR-0037).
+#[derive(Clone, Copy)]
+struct SemanticLeg<'p, 'a> {
+    guard: &'p crate::semantic_guards::SemanticGuard<'a>,
+    stream: bool,
+}
+
+impl SemanticLeg<'_, '_> {
+    /// Judge a successful body. A stream is shown to the providers as its
+    /// assembled text; any other body as its JSON, or as `{"text": …}` when it
+    /// is UTF-8 but not JSON. A binary body (audio, an image) is no text a
+    /// classifier can judge and passes. Response-stage events are counted in
+    /// the metrics; the log row records a refusal through its reason. The
+    /// refusal is boxed: it is the rare arm, and `Delivery` is large.
+    async fn apply(&self, bytes: Bytes) -> Result<Bytes, Box<Delivery>> {
+        let content = if self.stream {
+            crate::semantic_guards::stream_content(&bytes)
+        } else if let Ok(value) = serde_json::from_slice::<Value>(&bytes) {
+            value
+        } else if let Ok(text) = std::str::from_utf8(&bytes) {
+            serde_json::json!({ "text": text })
+        } else {
+            return Ok(bytes);
+        };
+        let mut events = Vec::new();
+        match self
+            .guard
+            .check(
+                rolter_core::WebhookStage::PostCall,
+                &content,
+                self.stream,
+                &mut events,
+            )
+            .await
+        {
+            crate::semantic_guards::Verdict::Allow(None) => Ok(bytes),
+            // a buffered stream never gets here with a rewrite: `check`
+            // withholds it instead
+            crate::semantic_guards::Verdict::Allow(Some(rewritten)) => {
+                Ok(serde_json::to_vec(&rewritten)
+                    .map(Bytes::from)
+                    .unwrap_or(bytes))
+            }
+            crate::semantic_guards::Verdict::Block { who, reason } => {
+                Err(Box::new(Delivery::Refuse {
+                    response: crate::error::ApiError::new(StatusCode::FORBIDDEN, reason)
+                        .with_code("guardrail_blocked")
+                        .into_response(),
+                    reason: guardrail_withheld_reason(&who),
+                }))
+            }
+        }
+    }
+}
+
+/// Read a whole upstream body, or `None` once it outgrows `cap` bytes.
+async fn read_bounded(
+    mut response: reqwest::Response,
+    cap: usize,
+) -> reqwest::Result<Option<Bytes>> {
+    if cap == usize::MAX {
+        return response.bytes().await.map(Some);
+    }
+    let mut buffer = Vec::new();
+    while let Some(chunk) = response.chunk().await? {
+        if buffer.len() + chunk.len() > cap {
+            return Ok(None);
+        }
+        buffer.extend_from_slice(&chunk);
+    }
+    Ok(Some(Bytes::from(buffer)))
 }
 
 /// The outcome of [`DeliveryPolicy::apply`]: the finalised body, or the reply
