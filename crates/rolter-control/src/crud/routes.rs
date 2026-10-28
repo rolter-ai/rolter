@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use uuid::Uuid;
 
+use rolter_core::failover::{all_targets_restricted, FailureClass};
 use rolter_core::{AdvancedModelConfig, Error, MAX_ROUTE_RETRIES};
 use rolter_store::postgres::models::{Route, RouteTarget, RouteVariant};
 use rolter_store::postgres::repo::{
@@ -332,6 +333,14 @@ async fn update_route(
                 TargetPaths::InList,
             )
             .await?;
+            // a list of nothing but restricted fallbacks could never dial
+            // anything (#1584)
+            if targets.iter().all(RouteTargetInput::is_restricted) {
+                return Err(invalid_field(
+                    "targets",
+                    all_targets_restricted(&existing.model),
+                ));
+            }
             Some(
                 targets
                     .iter()
@@ -703,9 +712,21 @@ struct RouteTargetInput {
     upstream_model: Option<String>,
     #[serde(default = "default_weight")]
     weight: i32,
+    /// the failure classes this target is a fallback for (#1584): `throttled`,
+    /// `timeout`, `transport`, `server_error`, `refusal` or
+    /// `refusal:<category>`. Omitted or empty, the target is an ordinary
+    /// member of the pool
+    #[serde(default)]
+    takes_over: Vec<String>,
 }
 
 impl RouteTargetInput {
+    /// Whether the target is a restricted fallback rather than a member of the
+    /// pool.
+    fn is_restricted(&self) -> bool {
+        !self.takes_over.is_empty()
+    }
+
     /// The target as the store takes it. A blank upstream model is stored as
     /// none, the way a provider group member's is: forwarding an empty model
     /// name upstream is never what was meant, and it would match no target
@@ -718,6 +739,9 @@ impl RouteTargetInput {
                 .clone()
                 .filter(|model| !model.trim().is_empty()),
             weight: self.weight,
+            // stored as the canonical token, which is what the input already
+            // is once `validate_route_targets` has parsed it
+            takes_over: self.takes_over.clone(),
         }
     }
 }
@@ -761,6 +785,19 @@ async fn validate_route_targets(
                 "weight must be > 0",
             ));
         }
+        let mut classes: Vec<FailureClass> = Vec::with_capacity(target.takes_over.len());
+        for token in &target.takes_over {
+            let class: FailureClass = token.parse().map_err(|problem: String| {
+                invalid_field(paths.field(index, "takes_over"), problem)
+            })?;
+            if classes.contains(&class) {
+                return Err(invalid_field(
+                    paths.field(index, "takes_over"),
+                    format!("takes_over lists '{class}' twice"),
+                ));
+            }
+            classes.push(class);
+        }
     }
     let provider_ids: Vec<Uuid> = targets.iter().map(|t| t.provider_id).collect();
     if let Some(org_id) = org_id {
@@ -788,6 +825,17 @@ async fn create_route_target(
         TargetPaths::Alone,
     )
     .await?;
+    // a restricted target added to a route with no ordinary one would leave
+    // the route nothing it may dial first (#1584)
+    if body.is_restricted() {
+        let existing = RouteTargetRepo(pool(&state)).list(route_id).await?;
+        if existing.iter().all(|t| !t.takes_over.is_empty()) {
+            return Err(invalid_field(
+                "takes_over",
+                all_targets_restricted(&route.model),
+            ));
+        }
+    }
     let spec = body.spec();
     let row = RouteTargetRepo(pool(&state))
         .create(
@@ -795,6 +843,7 @@ async fn create_route_target(
             spec.provider_id,
             spec.upstream_model.as_deref(),
             spec.weight,
+            &spec.takes_over,
         )
         .await?;
     publish_config_change(&state).await?;
@@ -819,6 +868,16 @@ async fn delete_route_target(
     let target = RouteTargetRepo(pool(&state)).get(id).await?;
     let org_id =
         authorize_route(&state, &principal, target.route_id, cap!("route", Update)).await?;
+    // removing the last ordinary target would leave only restricted fallbacks,
+    // which could never dial anything (#1584)
+    if target.takes_over.is_empty() {
+        let siblings = RouteTargetRepo(pool(&state)).list(target.route_id).await?;
+        let remaining: Vec<&RouteTarget> = siblings.iter().filter(|t| t.id != id).collect();
+        if !remaining.is_empty() && remaining.iter().all(|t| !t.takes_over.is_empty()) {
+            let route = RouteRepo(pool(&state)).get(target.route_id).await?;
+            return Err(ApiError::Conflict(all_targets_restricted(&route.model)));
+        }
+    }
     RouteTargetRepo(pool(&state)).delete(id).await?;
     publish_config_change(&state).await?;
     log_audit(

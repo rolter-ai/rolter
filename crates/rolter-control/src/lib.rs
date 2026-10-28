@@ -24,6 +24,7 @@ mod adaptive_telemetry;
 mod alerting;
 mod analytics;
 mod analytics_access;
+mod analytics_export;
 #[cfg(feature = "postgres")]
 mod api_tokens;
 #[cfg(feature = "postgres")]
@@ -1875,6 +1876,11 @@ async fn seed_default_models(pool: &sqlx::PgPool, config: &GatewayConfig) -> any
                         provider.id,
                         target.model.as_deref(),
                         target.weight as i32,
+                        &target
+                            .takes_over
+                            .iter()
+                            .map(|c| c.to_string())
+                            .collect::<Vec<_>>(),
                     )
                     .await?;
             } else {

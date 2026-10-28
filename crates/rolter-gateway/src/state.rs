@@ -433,6 +433,7 @@ impl Snapshot {
                     provider: m.provider.clone(),
                     model: m.model.clone(),
                     weight: m.weight,
+                    takes_over: Vec::new(),
                 })
                 .collect();
             let weights: Vec<u32> = targets.iter().map(|t| t.weight).collect();
@@ -572,25 +573,39 @@ impl Snapshot {
         }
         // database-defined keys: digest already stored, carry scope identity
         for k in &config.db_virtual_keys {
-            keys.insert(
-                k.key_hash.clone(),
-                KeyMeta {
-                    tenant_key: k.key_hash.clone(),
-                    id: k.id.clone(),
-                    org_id: k.org_id.clone(),
-                    team_id: k.team_id.clone(),
-                    project_id: k.project_id.clone(),
-                    user_id: k.user_id.clone(),
-                    models: k.models.clone(),
-                    providers: k.providers.clone(),
-                    disabled: k.disabled,
-                    expires_at: k.expires_at,
-                    cache_override: k.cache,
-                    business_unit_id: k.business_unit_id.clone(),
-                    customer_id: k.customer_id.clone(),
-                    access_policy: k.access_policy.clone(),
-                },
-            );
+            let meta = KeyMeta {
+                tenant_key: k.key_hash.clone(),
+                id: k.id.clone(),
+                org_id: k.org_id.clone(),
+                team_id: k.team_id.clone(),
+                project_id: k.project_id.clone(),
+                user_id: k.user_id.clone(),
+                models: k.models.clone(),
+                providers: k.providers.clone(),
+                disabled: k.disabled,
+                expires_at: k.expires_at,
+                cache_override: k.cache,
+                business_unit_id: k.business_unit_id.clone(),
+                customer_id: k.customer_id.clone(),
+                access_policy: k.access_policy.clone(),
+            };
+            // a rotated key's previous secret authenticates as the same key
+            // until its overlap ends: same id, limits and tenant isolation (so
+            // a rate limit is not doubled by the second secret), but never
+            // longer than the key itself lives
+            if let Some(previous) = &k.previous {
+                keys.insert(
+                    previous.key_hash.clone(),
+                    KeyMeta {
+                        expires_at: Some(
+                            k.expires_at
+                                .map_or(previous.valid_until, |exp| exp.min(previous.valid_until)),
+                        ),
+                        ..meta.clone()
+                    },
+                );
+            }
+            keys.insert(k.key_hash.clone(), meta);
         }
         let mcp_servers = config
             .mcp_servers
@@ -737,6 +752,7 @@ impl Snapshot {
                 provider: provider_name.clone(),
                 model: Some(upstream.to_string()),
                 weight: 1,
+                takes_over: Vec::new(),
             };
             let strategy = rolter_core::BalancingStrategy::default();
             // the address inherits the provider's org, so the route gate refuses
@@ -762,6 +778,7 @@ impl Snapshot {
                     provider: m.provider.clone(),
                     model: Some(m.model.clone().unwrap_or_else(|| upstream.to_string())),
                     weight: m.weight,
+                    takes_over: Vec::new(),
                 })
                 .collect();
             if targets.is_empty() {
@@ -1089,6 +1106,8 @@ impl AppState {
         rate_limiter: RateLimiter,
         response_cache: ResponseCache,
     ) -> Self {
+        // before any request can start, so no start sequence precedes its epoch
+        crate::logging::init_start_sequence();
         // created before the snapshot so the fastest strategy's latency
         // sources can hold a handle to the same tracker the guards record into
         let loads = crate::load::LoadTracker::new();
@@ -1363,6 +1382,7 @@ mod tests {
             provider: provider.to_string(),
             model: model.map(str::to_string),
             weight: 1,
+            takes_over: Vec::new(),
         }
     }
 

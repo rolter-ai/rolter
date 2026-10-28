@@ -61,6 +61,7 @@ fn unique(label: &str) -> String {
 
 fn key_record(config: &GatewayConfig, plaintext: &str, id: &str, user: &str) -> VirtualKeyRecord {
     VirtualKeyRecord {
+        previous: None,
         key_hash: rolter_auth::hash_key(&config.server.resolve_key_pepper(), plaintext),
         id: id.to_string(),
         org_id: "org-1".to_string(),
@@ -93,6 +94,7 @@ fn base_config(upstream: SocketAddr) -> GatewayConfig {
             provider: "up".to_string(),
             model: None,
             weight: 1,
+            takes_over: Vec::new(),
         }],
         params: Default::default(),
         param_policy: Default::default(),

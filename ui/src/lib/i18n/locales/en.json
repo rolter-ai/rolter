@@ -325,6 +325,8 @@
       "yourProfile": "your profile",
       "auditLogExport": "the audit log export",
       "unpricedModels": "unpriced models",
+      "attributionExport": "cost attribution export",
+      "requestLogExport": "request log export",
       "mcpServerTools": "tools of the MCP server",
       "priceCatalogue": "price catalogue",
       "guardrailPolicies": "guardrail policies",
@@ -1654,9 +1656,30 @@
       "confirm": {
         "deleteTitle": "Delete virtual key {{name}}?",
         "deleteBody": "<0>{{prefix}}</0> stops authenticating immediately, so every client still sending it is refused. This cannot be undone.",
-        "deleteConfirm": "Delete key"
+        "deleteConfirm": "Delete key",
+        "rotateTitle": "Rotate virtual key {{name}}?",
+        "rotateBody": "A new secret is issued for this key. Its models, providers, limits and attribution stay as they are. Clients must switch to the new secret.",
+        "rotateConfirm": "Rotate key",
+        "overlapLabel": "Keep the old secret working for",
+        "overlap": {
+          "none": "Not at all, revoke it now",
+          "hour": "1 hour",
+          "day": "24 hours",
+          "week": "7 days"
+        },
+        "revokePreviousTitle": "Revoke the old secret of {{name}}?",
+        "revokePreviousBody": "<0>{{prefix}}</0> stops authenticating immediately, so every client still sending it is refused. The new secret is unaffected.",
+        "revokePreviousConfirm": "Revoke old secret"
       },
-      "exportCsvFiltered": "Export matching keys as CSV"
+      "exportCsvFiltered": "Export matching keys as CSV",
+      "rotate": "Rotate key",
+      "rotateKey": "Rotate key {{name}}",
+      "previousSecret": "old secret {{prefix}}… valid until {{date}}",
+      "revokePrevious": "Revoke now",
+      "revokePreviousAria": "Revoke the old secret of {{name}} now",
+      "rotatedTitle": "Key rotated",
+      "rotatedBody": "This is the only time the new key is shown. Copy it now. The old secret stopped authenticating immediately.",
+      "rotatedBodyOverlap": "This is the only time the new key is shown. Copy it now. The old secret keeps working until {{date}}, or until you revoke it."
     },
     "acceptInvite": {
       "invalidLink": "This invitation link is not valid. It may have been used, revoked or expired. If you already accepted it, sign in; otherwise ask whoever invited you for a new link.",
@@ -1725,7 +1748,13 @@
         "secretSet": "secret set",
         "kinds": {
           "webhook": "Webhook"
-        }
+        },
+        "addressHidden": "address withheld (deployment channel)",
+        "ownerDeployment": "Deployment",
+        "ownerOrg": "Org: {{name}}",
+        "fieldOwner": "Owner",
+        "ownerDeploymentHint": "A deployment channel is managed by superadmins and any rule can notify it.",
+        "ownerOrgHint": "Only rules of this organization can notify it. Organization admins manage it."
       },
       "rules": {
         "emptyTitle": "No alert rules",
@@ -1785,7 +1814,16 @@
           "above": "above {{value}}",
           "below": "below {{value}}"
         },
-        "noDataReading": "No data"
+        "noDataReading": "No data",
+        "statScope": "Scope",
+        "scopeDeployment": "Whole deployment",
+        "fieldScopeType": "Watches",
+        "fieldScope": "Scope",
+        "scopePlaceholder": "Pick one",
+        "scopeNone": "Nothing to pick here",
+        "scopeHint": "The rule evaluates only this scope's requests. It cannot be changed later. Creating it takes admin at the scope.",
+        "scopeDeploymentHint": "Reads every tenant's traffic, so only a superadmin can create it.",
+        "scopeFixed": "Watches {{scope}}. The scope is fixed when the rule is created."
       },
       "signals": {
         "error_rate": {
@@ -1897,6 +1935,17 @@
           "query_failed": "the analytics query failed; the control plane log has the cause",
           "unknown_signal": "this build does not know the signal {{signal}}"
         }
+      },
+      "scope": {
+        "types": {
+          "org": "Organization",
+          "team": "Team",
+          "project": "Project",
+          "virtual_key": "Virtual key",
+          "business_unit": "Business unit",
+          "customer": "Customer"
+        },
+        "named": "{{type}}: {{name}}"
       }
     },
     "connectors": {
@@ -5662,6 +5711,11 @@
     "ms": "{{value}} ms",
     "unpriced": "unpriced",
     "unpricedHint": "No price is configured for this model, so this request was recorded as unpriced rather than as free.",
+    "export": {
+      "csv": "Export CSV",
+      "pending": "Exporting…",
+      "downloaded": "Export downloaded. Its name gives the window and currency; a row marked partial holds unpriced requests."
+    },
     "withheld": "withheld",
     "withheldHint": "The provider answered and billed for this response, but an output guardrail or plugin refused to deliver it: the caller received a 403. The cost is real; the policy that refused is named in the error.",
     "usageUnknownHint": "The upstream answered but reported no usage, so the tokens and cost are unknown, not zero."

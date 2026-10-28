@@ -219,6 +219,7 @@ fn config(upstream: SocketAddr, kind: ProviderKind) -> GatewayConfig {
             provider: "up".into(),
             model: Some("test-model".into()),
             weight: 1,
+            takes_over: Vec::new(),
         }],
         params: Default::default(),
         param_policy: Default::default(),
@@ -507,6 +508,7 @@ async fn the_most_specific_policy_replaces_the_broader_one() {
         cache: None,
         business_unit_id: String::new(),
         customer_id: String::new(),
+        previous: None,
     });
     config.semantic_guards.providers = vec![guard(
         "inj",

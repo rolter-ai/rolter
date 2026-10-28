@@ -724,6 +724,8 @@ async fn with_stored_variants(
                         provider: provider.clone(),
                         model: model.clone(),
                         weight: (*weight).max(0) as u32,
+                        // variant targets store no failure classes yet (#3373)
+                        takes_over: Vec::new(),
                     })
                     .collect(),
             });
@@ -1147,6 +1149,7 @@ tpm = 150000
                         provider: "zzz".to_string(),
                         model: Some("upstream".to_string()),
                         weight: 3,
+                        takes_over: Vec::new(),
                     }],
                     ..route("zeta")
                 },

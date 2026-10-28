@@ -46,14 +46,14 @@ screen and one filter.
 
 ## F4 — be told
 
-| #    | step                               | where                                       | expect                                         | status      |
-| ---- | ---------------------------------- | ------------------------------------------- | ---------------------------------------------- | ----------- |
-| F4.1 | a warning at 80% of a budget       | —                                           | a notification before the 402                  | gap — #337  |
-| F4.2 | an alert when spend velocity jumps | **Alerting → Alert Rules** `spend_velocity` | refused below superadmin; deployment-wide only | gap — #1829 |
+| #    | step                               | where                                       | expect                                                                      | status           |
+| ---- | ---------------------------------- | ------------------------------------------- | --------------------------------------------------------------------------- | ---------------- |
+| F4.1 | a warning at 80% of a budget       | —                                           | a notification before the 402                                               | gap — #337       |
+| F4.2 | an alert when spend velocity jumps | **Alerting → Alert Rules** `spend_velocity` | a rule scoped to the org, a business unit or a customer, owned by its admin | verified (#1829) |
 
 ## F5 — month-end
 
-| #    | step                                            | where                                                                  | expect                                                        | status      |
-| ---- | ----------------------------------------------- | ---------------------------------------------------------------------- | ------------------------------------------------------------- | ----------- |
-| F5.1 | export spend by unit and customer for the month | —                                                                      | a CSV with the window, the currency and unpriced rows flagged | gap — #1838 |
-| F5.2 | the workaround                                  | page `GET /api/v1/analytics/by-attribution` with a session and convert | the same numbers, by script                                   | partial     |
+| #    | step                                            | where                                                                  | expect                                                        | status           |
+| ---- | ----------------------------------------------- | ---------------------------------------------------------------------- | ------------------------------------------------------------- | ---------------- |
+| F5.1 | export spend by unit and customer for the month | **Cost Attribution → Export CSV**                                      | a CSV with the window, the currency and unpriced rows flagged | verified (#1838) |
+| F5.2 | the workaround                                  | page `GET /api/v1/analytics/by-attribution` with a session and convert | the same numbers, by script                                   | partial          |

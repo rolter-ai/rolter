@@ -197,6 +197,7 @@ fn target(provider: &str) -> Target {
         provider: provider.into(),
         model: Some("test-model".into()),
         weight: 1,
+        takes_over: Vec::new(),
     }
 }
 
@@ -216,6 +217,7 @@ fn route(model: &str, targets: Vec<Target>) -> ModelRoute {
 
 fn key(config: &GatewayConfig, secret: &str, id: &str, models: Vec<String>) -> VirtualKeyRecord {
     VirtualKeyRecord {
+        previous: None,
         access_policy: None,
         key_hash: rolter_auth::hash_key(&config.server.resolve_key_pepper(), secret),
         id: id.into(),

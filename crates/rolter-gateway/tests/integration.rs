@@ -77,6 +77,7 @@ fn config_for(model: &str, providers: Vec<(&str, SocketAddr)>) -> GatewayConfig 
             provider: name.to_string(),
             model: None,
             weight: 1,
+            takes_over: Vec::new(),
         })
         .collect();
     for (name, addr) in providers {
@@ -128,6 +129,7 @@ async fn mcp_proxy_binds_virtual_key_owner_to_server_scopes_and_bearer() {
     let upstream = serve(Router::new().route("/{*path}", any(mcp_upstream))).await;
     let mut config = GatewayConfig::default();
     config.db_virtual_keys.push(VirtualKeyRecord {
+        previous: None,
         access_policy: None,
         key_hash: rolter_auth::hash_key(&config.server.resolve_key_pepper(), "sk-user-owned"),
         id: "key-1".to_string(),
@@ -270,6 +272,7 @@ async fn mcp_logging_config(
     config.logging.flush_ms = flush_ms;
     config.logging.payload_capture.enabled = true;
     config.db_virtual_keys.push(VirtualKeyRecord {
+        previous: None,
         access_policy: None,
         key_hash: rolter_auth::hash_key(&config.server.resolve_key_pepper(), "sk-mcp-log"),
         id: "key-1".to_string(),
@@ -444,6 +447,7 @@ async fn mcp_proxy_presents_a_stored_static_credential_without_an_oauth_session(
     let upstream = serve(Router::new().route("/{*path}", any(echo))).await;
     let mut config = GatewayConfig::default();
     config.db_virtual_keys.push(VirtualKeyRecord {
+        previous: None,
         access_policy: None,
         key_hash: rolter_auth::hash_key(&config.server.resolve_key_pepper(), "sk-user-owned"),
         id: "key-1".to_string(),
@@ -523,6 +527,7 @@ async fn mcp_proxy_presents_a_stored_static_credential_without_an_oauth_session(
 async fn mcp_proxy_refuses_a_credentialled_server_whose_secret_did_not_arrive() {
     let mut config = GatewayConfig::default();
     config.db_virtual_keys.push(VirtualKeyRecord {
+        previous: None,
         access_policy: None,
         key_hash: rolter_auth::hash_key(&config.server.resolve_key_pepper(), "sk-user-owned"),
         id: "key-1".to_string(),
@@ -574,6 +579,7 @@ async fn mcp_proxy_applies_the_per_server_request_timeout() {
     let upstream = serve(Router::new().route("/{*path}", any(slow))).await;
     let mut config = GatewayConfig::default();
     config.db_virtual_keys.push(VirtualKeyRecord {
+        previous: None,
         access_policy: None,
         key_hash: rolter_auth::hash_key(&config.server.resolve_key_pepper(), "sk-user-owned"),
         id: "key-1".to_string(),
@@ -746,6 +752,7 @@ async fn models_endpoint_lists_route_ids_and_provider_slug_model_ids() {
             provider: "vLLM SPB".to_string(),
             model: Some("qwen3".to_string()),
             weight: 1,
+            takes_over: Vec::new(),
         }],
         params: Default::default(),
         param_policy: Default::default(),
@@ -805,6 +812,7 @@ async fn a_key_neither_lists_nor_calls_another_orgs_routes_or_providers() {
             provider: provider.to_string(),
             model: Some("m".to_string()),
             weight: 1,
+            takes_over: Vec::new(),
         }],
         params: Default::default(),
         param_policy: Default::default(),
@@ -940,6 +948,7 @@ async fn a_project_scoped_provider_is_reached_only_from_its_own_project() {
                 provider: provider.to_string(),
                 model: Some("m".to_string()),
                 weight: 1,
+                takes_over: Vec::new(),
             })
             .collect(),
         params: Default::default(),
@@ -1110,6 +1119,7 @@ async fn another_orgs_route_shadows_no_address_or_builtin_on_any_path() {
                 provider: "their-upstream".to_string(),
                 model: Some("m".to_string()),
                 weight: 1,
+                takes_over: Vec::new(),
             }],
             params: Default::default(),
             param_policy: Default::default(),
@@ -1267,6 +1277,7 @@ async fn models_endpoint_lists_the_whole_probed_provider_catalogue() {
             provider: "openai-edge".to_string(),
             model: Some("gpt-4o".to_string()),
             weight: 1,
+            takes_over: Vec::new(),
         }],
         params: Default::default(),
         param_policy: Default::default(),
@@ -1351,6 +1362,7 @@ async fn models_endpoint_serves_route_catalog_metadata_but_not_the_description()
             provider: "openai-edge".to_string(),
             model: Some("gpt-4o".to_string()),
             weight: 1,
+            takes_over: Vec::new(),
         }],
         params: Default::default(),
         param_policy: Default::default(),
@@ -2768,6 +2780,7 @@ async fn complexity_policy_selects_routes_for_openai_and_anthropic_requests() {
                 provider: provider.to_string(),
                 model: None,
                 weight: 1,
+                takes_over: Vec::new(),
             }],
             params: Default::default(),
             param_policy: Default::default(),
@@ -3557,6 +3570,7 @@ async fn variant_routing_fails_over_to_next_variant() {
             provider: provider.to_string(),
             model: None,
             weight: 1,
+            takes_over: Vec::new(),
         }],
         params: Default::default(),
     };
@@ -5917,6 +5931,7 @@ fn scoped_key(
     providers: Vec<String>,
 ) -> VirtualKeyRecord {
     VirtualKeyRecord {
+        previous: None,
         key_hash: rolter_auth::hash_key(&config.server.resolve_key_pepper(), plaintext),
         id: id.to_string(),
         org_id: "org-1".to_string(),
@@ -6292,6 +6307,7 @@ async fn response_lifecycle_rechecks_route_authorization_after_revocation() {
         provider: "other".to_string(),
         model: None,
         weight: 1,
+        takes_over: Vec::new(),
     });
     provider_narrowed.db_virtual_keys[0].providers = vec!["other".to_string()];
 

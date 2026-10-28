@@ -677,6 +677,7 @@ mod tests {
                     provider: provider.to_string(),
                     model: None,
                     weight: 1,
+                    takes_over: Vec::new(),
                 })
                 .to_vec(),
             params: Default::default(),

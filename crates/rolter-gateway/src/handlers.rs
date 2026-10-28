@@ -28,6 +28,7 @@ use crate::rate_limits::TokenRecorder;
 use crate::state::{AppState, KeyMeta, Snapshot};
 use crate::trace::RequestId;
 use crate::upstream_failure::{self, StatusFailure};
+use rolter_core::failover::Failure;
 
 /// Liveness probe. Stays `200` while draining: the process is healthy, it is
 /// just no longer taking new traffic.
@@ -2589,6 +2590,7 @@ async fn proxy(
         started,
         RequestLog {
             ts: crate::logging::started_at(started),
+            seq: crate::logging::start_seq(started),
             request_id: request_id.clone(),
             trace_id: trace_id.clone(),
             virtual_key_id: vk_id.clone(),
@@ -2624,6 +2626,7 @@ async fn proxy(
         variant: chosen_variant,
         provider_key_fingerprint: last_key_fingerprint,
         attempts,
+        fallback_reason,
     } = if entry.route.has_variants() {
         forward_variants(
             &state,
@@ -2657,6 +2660,10 @@ async fn proxy(
             }
         }
         let mut tried: Vec<usize> = Vec::with_capacity(entry.route.targets.len());
+        // the failure the last attempt ended with, which decides which targets
+        // may follow it and is what the row records as the fallback reason (#1584)
+        let mut last_failure: Option<Failure> = None;
+        let mut fallback_reason = String::new();
         let mut last_provider = String::new();
         let mut last_target = model.clone();
         let mut last_error: Option<String> = None;
@@ -2684,12 +2691,17 @@ async fn proxy(
                 &model,
                 cd_enabled,
                 vk.as_ref(),
+                last_failure.as_ref(),
             ) {
                 Some(i) => i,
                 None => break, // no untried target left to fail over to
             };
             entry.balancer.observe(idx, &ctx);
             tried.push(idx);
+            fallback_reason = last_failure
+                .as_ref()
+                .map(Failure::token)
+                .unwrap_or_default();
             // count this attempt as in-flight; the guard falls out of scope (and
             // decrements) on retry, or is moved into the stream wrapper on success
             let mut guard = state.loads.begin(&model, idx);
@@ -2822,6 +2834,49 @@ async fn proxy(
                     // a 429/401 on a multi-key provider is a key-level
                     // failure: park the key, keep the target in rotation
                     // and retry — a sibling key usually succeeds
+                    // a content-policy refusal is final unless the route has a target
+                    // that takes refusals over and one is left to try: then the body is
+                    // read to classify it, and an answer that is not taken over goes on
+                    // to the caller whole (#1584)
+                    let response = if attempt < max_retries
+                        && crate::failover::may_be_refusal(status)
+                        && entry.route.takes_over_refusals()
+                    {
+                        let peeked = crate::failover::peek_refusal(response).await;
+                        match peeked.refusal {
+                            Some(failure)
+                                if has_untried_target(
+                                    entry,
+                                    &tried,
+                                    vk.as_ref(),
+                                    Some(&failure),
+                                ) =>
+                            {
+                                // a refusal says nothing about the target's health, so it
+                                // neither parks it nor feeds its breaker
+                                cancel.record_failed_attempt(&crate::logging::FailedAttempt {
+                                    provider: &last_provider,
+                                    target: &last_target,
+                                    status,
+                                    latency_ms: attempt_started.elapsed().as_millis() as u32,
+                                    error: "",
+                                });
+                                last_attempt_recorded = true;
+                                count_retry(&state.metrics, true);
+                                last_status = Some(StatusFailure {
+                                    status,
+                                    reason: peeked.reason,
+                                    retry_after: None,
+                                });
+                                last_error = None;
+                                last_failure = Some(failure);
+                                continue;
+                            }
+                            _ => peeked.response,
+                        }
+                    } else {
+                        response
+                    };
                     let key_failure = multi_key && (status == 429 || status == 401);
                     if key_failure {
                         if let Some((ki, _)) = &picked_key {
@@ -2834,6 +2889,7 @@ async fn proxy(
                         }
                         // let the same target be re-picked with a fresh key
                         tried.pop();
+                        last_failure = Failure::from_status(status);
                         if attempt < max_retries {
                             // the caller will never see this failure, so record it against the
                             // target that produced it before superseding the attempt (#1646).
@@ -2849,7 +2905,12 @@ async fn proxy(
                             last_attempt_recorded = true;
                             let retrying = count_retry(
                                 &state.metrics,
-                                has_untried_target(entry, &tried, vk.as_ref()),
+                                has_untried_target(
+                                    entry,
+                                    &tried,
+                                    vk.as_ref(),
+                                    last_failure.as_ref(),
+                                ),
                             );
                             // the response is read for its reason and dropped here, so the delay
                             // is taken from it first; the reason is what the request ends with if
@@ -2862,6 +2923,7 @@ async fn proxy(
                             continue;
                         }
                     } else if is_retryable_status(status) {
+                        last_failure = Failure::from_status(status);
                         // park the failing target so siblings absorb the load
                         if cd_enabled {
                             let secs = cooldown.duration_secs(retry_after_secs(&response));
@@ -2887,7 +2949,12 @@ async fn proxy(
                             last_attempt_recorded = true;
                             let retrying = count_retry(
                                 &state.metrics,
-                                has_untried_target(entry, &tried, vk.as_ref()),
+                                has_untried_target(
+                                    entry,
+                                    &tried,
+                                    vk.as_ref(),
+                                    last_failure.as_ref(),
+                                ),
                             );
                             // the response is read for its reason and dropped here, so the delay
                             // is taken from it first; the reason is what the request ends with if
@@ -2920,6 +2987,7 @@ async fn proxy(
                 }
                 Err(err) => {
                     let message = err.to_string();
+                    last_failure = Some(Failure::from_transport_error(&message));
                     if is_queue_admission_error(&message) {
                         last_error = Some(message);
                         break;
@@ -2951,7 +3019,7 @@ async fn proxy(
                         last_attempt_recorded = true;
                         let retrying = count_retry(
                             &state.metrics,
-                            has_untried_target(entry, &tried, vk.as_ref()),
+                            has_untried_target(entry, &tried, vk.as_ref(), last_failure.as_ref()),
                         );
                         back_off(retry.backoff_ms(attempt + 1, jitter(started)), retrying).await;
                         continue;
@@ -2971,6 +3039,7 @@ async fn proxy(
             variant: String::new(),
             provider_key_fingerprint: last_key_fingerprint,
             attempts,
+            fallback_reason,
         }
     };
 
@@ -3042,6 +3111,7 @@ async fn proxy(
                 };
             let mut log = RequestLog {
                 ts: crate::logging::started_at(started),
+                seq: crate::logging::start_seq(started),
                 request_id,
                 trace_id,
                 virtual_key_id: vk_id,
@@ -3057,6 +3127,7 @@ async fn proxy(
                 status,
                 upstream_status: status,
                 attempts,
+                fallback_reason,
                 stream: stream as u8,
                 unit_basis: crate::unit_billing::UnitBasis::for_json(path, &parsed),
                 capture_payloads,
@@ -3258,6 +3329,7 @@ async fn proxy(
             };
             let row = RequestLog {
                 ts: crate::logging::started_at(started),
+                seq: crate::logging::start_seq(started),
                 request_id,
                 trace_id,
                 virtual_key_id: vk_id,
@@ -3281,6 +3353,7 @@ async fn proxy(
                 status,
                 upstream_status,
                 attempts,
+                fallback_reason,
                 stream: stream as u8,
                 latency_ms: started.elapsed().as_millis() as u32,
                 error,
@@ -3486,6 +3559,7 @@ async fn proxy_multipart(
         started,
         RequestLog {
             ts: crate::logging::started_at(started),
+            seq: crate::logging::start_seq(started),
             request_id: request_id.clone(),
             trace_id: trace_id.clone(),
             virtual_key_id: vk_id.clone(),
@@ -3512,6 +3586,10 @@ async fn proxy_multipart(
         }
     }
     let mut tried: Vec<usize> = Vec::with_capacity(entry.route.targets.len());
+    // the failure the last attempt ended with, which decides which targets
+    // may follow it and is what the row records as the fallback reason (#1584)
+    let mut last_failure: Option<Failure> = None;
+    let mut fallback_reason = String::new();
     let mut last_provider = String::new();
     let mut last_target = model.clone();
     // see the chat path: guards the error row against double-counting an
@@ -3536,12 +3614,17 @@ async fn proxy_multipart(
             &model,
             cd_enabled,
             vk.as_ref(),
+            last_failure.as_ref(),
         ) {
             Some(i) => i,
             None => break,
         };
         entry.balancer.observe(idx, &ctx);
         tried.push(idx);
+        fallback_reason = last_failure
+            .as_ref()
+            .map(Failure::token)
+            .unwrap_or_default();
         let mut guard = state.loads.begin(&model, idx);
         // the latency model learns cost as a function of prompt size, so it
         // needs this request's size before the guard's drop folds in the
@@ -3589,6 +3672,44 @@ async fn proxy_multipart(
         {
             Ok(response) => {
                 let status = response.status().as_u16();
+                // a content-policy refusal is final unless the route has a target
+                // that takes refusals over and one is left to try: then the body is
+                // read to classify it, and an answer that is not taken over goes on
+                // to the caller whole (#1584)
+                let response = if attempt < max_retries
+                    && crate::failover::may_be_refusal(status)
+                    && entry.route.takes_over_refusals()
+                {
+                    let peeked = crate::failover::peek_refusal(response).await;
+                    match peeked.refusal {
+                        Some(failure)
+                            if has_untried_target(entry, &tried, vk.as_ref(), Some(&failure)) =>
+                        {
+                            // a refusal says nothing about the target's health, so it
+                            // neither parks it nor feeds its breaker
+                            cancel.record_failed_attempt(&crate::logging::FailedAttempt {
+                                provider: &last_provider,
+                                target: &last_target,
+                                status,
+                                latency_ms: attempt_started.elapsed().as_millis() as u32,
+                                error: "",
+                            });
+                            last_attempt_recorded = true;
+                            count_retry(&state.metrics, true);
+                            last_status = Some(StatusFailure {
+                                status,
+                                reason: peeked.reason,
+                                retry_after: None,
+                            });
+                            last_error = None;
+                            last_failure = Some(failure);
+                            continue;
+                        }
+                        _ => peeked.response,
+                    }
+                } else {
+                    response
+                };
                 let key_failure = multi_key && (status == 429 || status == 401);
                 if key_failure {
                     if let Some((ki, _)) = &picked_key {
@@ -3600,6 +3721,7 @@ async fn proxy_multipart(
                             .fetch_add(1, Relaxed);
                     }
                     tried.pop();
+                    last_failure = Failure::from_status(status);
                     if attempt < max_retries {
                         // the caller will never see this failure, so record it against the
                         // target that produced it before superseding the attempt (#1646).
@@ -3615,7 +3737,7 @@ async fn proxy_multipart(
                         last_attempt_recorded = true;
                         let retrying = count_retry(
                             &state.metrics,
-                            has_untried_target(entry, &tried, vk.as_ref()),
+                            has_untried_target(entry, &tried, vk.as_ref(), last_failure.as_ref()),
                         );
                         // the response is read for its reason and dropped here, so the delay
                         // is taken from it first; the reason is what the request ends with if
@@ -3628,6 +3750,7 @@ async fn proxy_multipart(
                         continue;
                     }
                 } else if is_retryable_status(status) {
+                    last_failure = Failure::from_status(status);
                     if cd_enabled {
                         let secs = cooldown.duration_secs(retry_after_secs(&response));
                         state.cooldowns.park(&model, idx, secs);
@@ -3651,7 +3774,7 @@ async fn proxy_multipart(
                         last_attempt_recorded = true;
                         let retrying = count_retry(
                             &state.metrics,
-                            has_untried_target(entry, &tried, vk.as_ref()),
+                            has_untried_target(entry, &tried, vk.as_ref(), last_failure.as_ref()),
                         );
                         // the response is read for its reason and dropped here, so the delay
                         // is taken from it first; the reason is what the request ends with if
@@ -3677,6 +3800,7 @@ async fn proxy_multipart(
             }
             Err(err) => {
                 let message = err.to_string();
+                last_failure = Some(Failure::from_transport_error(&message));
                 if is_queue_admission_error(&message) {
                     last_error = Some(message);
                     break;
@@ -3706,7 +3830,7 @@ async fn proxy_multipart(
                     last_attempt_recorded = true;
                     let retrying = count_retry(
                         &state.metrics,
-                        has_untried_target(entry, &tried, vk.as_ref()),
+                        has_untried_target(entry, &tried, vk.as_ref(), last_failure.as_ref()),
                     );
                     back_off(retry.backoff_ms(attempt + 1, jitter(started)), retrying).await;
                     continue;
@@ -3724,6 +3848,7 @@ async fn proxy_multipart(
         Some((response, status, is_sse)) => {
             let log = RequestLog {
                 ts: crate::logging::started_at(started),
+                seq: crate::logging::start_seq(started),
                 request_id,
                 trace_id,
                 virtual_key_id: vk_id,
@@ -3739,6 +3864,7 @@ async fn proxy_multipart(
                 status,
                 upstream_status: status,
                 attempts,
+                fallback_reason,
                 stream: 0,
                 unit_basis: crate::unit_billing::UnitBasis::for_multipart(path),
                 capture_payloads,
@@ -3811,6 +3937,7 @@ async fn proxy_multipart(
             };
             let row = RequestLog {
                 ts: crate::logging::started_at(started),
+                seq: crate::logging::start_seq(started),
                 request_id,
                 trace_id,
                 virtual_key_id: vk_id,
@@ -3834,6 +3961,7 @@ async fn proxy_multipart(
                 status,
                 upstream_status,
                 attempts,
+                fallback_reason,
                 stream: 0,
                 latency_ms: started.elapsed().as_millis() as u32,
                 error,
@@ -3874,6 +4002,9 @@ struct ForwardOutcome {
     /// upstream attempts made, the one that answered included. Saturates, so
     /// a retry budget past 255 cannot wrap the count to zero
     attempts: u8,
+    /// the failure that sent the request on to the last target it tried, as
+    /// its class token; empty when the first dial answered (#1584)
+    fallback_reason: String,
 }
 
 /// Namespaces the per-target reliability registries (cooldown/breaker/load) by
@@ -3997,6 +4128,9 @@ fn variant_candidates(
                 v.targets.get(ti).is_some_and(|target| {
                     key_meta.is_none_or(|meta| meta.provider_allowed(&target.provider))
                         && !blocked.contains(ti)
+                        // a restricted fallback is never the balancer's lead
+                        // (#1584)
+                        && !target.is_restricted()
                 })
             };
             for ti in variant_target_order(entry, ctx, vi, v.targets.len(), &loads, &eligible) {
@@ -4053,8 +4187,12 @@ async fn forward_variants(
         variant: String::new(),
         provider_key_fingerprint: None,
         attempts: 0,
+        fallback_reason: String::new(),
     };
     let mut tried: Vec<usize> = Vec::with_capacity(candidates.len());
+    // the failure the last attempt ended with, which decides which targets
+    // may follow it and is what the row records as the fallback reason (#1584)
+    let mut last_failure: Option<Failure> = None;
 
     for attempt in 0..=max_retries {
         // a candidate is skippable when its target is parked, its provider is
@@ -4068,12 +4206,21 @@ async fn forward_variants(
         };
         // prefer an untried, non-skipped candidate; fail open to any untried one
         // when every remaining candidate is parked/unhealthy/open
-        let fresh = (0..candidates.len()).find(|ci| !tried.contains(ci) && !skip(&candidates[*ci]));
-        let ci = match fresh.or_else(|| (0..candidates.len()).find(|ci| !tried.contains(ci))) {
+        // and only a candidate that may follow the last failure: a restricted
+        // fallback never leads and follows only a failure it takes over (#1584)
+        let open = |ci: &usize| {
+            !tried.contains(ci) && candidate_admits(route, candidates[*ci], last_failure.as_ref())
+        };
+        let fresh = (0..candidates.len()).find(|ci| open(ci) && !skip(&candidates[*ci]));
+        let ci = match fresh.or_else(|| (0..candidates.len()).find(open)) {
             Some(ci) => ci,
             None => break, // no untried candidate left to fail over to
         };
         tried.push(ci);
+        out.fallback_reason = last_failure
+            .as_ref()
+            .map(Failure::token)
+            .unwrap_or_default();
         let (vi, ti) = candidates[ci];
         let v = &route.variants[vi];
         let target = &v.targets[ti];
@@ -4144,6 +4291,49 @@ async fn forward_variants(
                 let status = response.status().as_u16();
                 // key-level failure on a multi-key provider: park the key,
                 // keep the candidate in rotation and retry on a sibling key
+                // a content-policy refusal is final unless the route has a target
+                // that takes refusals over and one is left to try: then the body is
+                // read to classify it, and an answer that is not taken over goes on
+                // to the caller whole (#1584)
+                let response = if attempt < max_retries
+                    && crate::failover::may_be_refusal(status)
+                    && entry.route.takes_over_refusals()
+                {
+                    let peeked = crate::failover::peek_refusal(response).await;
+                    match peeked.refusal {
+                        Some(failure)
+                            if has_untried_candidate(
+                                route,
+                                &candidates,
+                                &tried,
+                                Some(&failure),
+                            ) =>
+                        {
+                            // a refusal says nothing about the target's health, so it
+                            // neither parks it nor feeds its breaker
+                            cancel.record_failed_attempt(&crate::logging::FailedAttempt {
+                                provider: &out.last_provider,
+                                target: &out.last_target,
+                                status,
+                                latency_ms: attempt_started.elapsed().as_millis() as u32,
+                                error: "",
+                            });
+                            out.last_attempt_recorded = true;
+                            count_retry(&state.metrics, true);
+                            out.last_status = Some(StatusFailure {
+                                status,
+                                reason: peeked.reason,
+                                retry_after: None,
+                            });
+                            out.last_error = None;
+                            last_failure = Some(failure);
+                            continue;
+                        }
+                        _ => peeked.response,
+                    }
+                } else {
+                    response
+                };
                 let key_failure = multi_key && (status == 429 || status == 401);
                 if key_failure {
                     if let Some((ki, _)) = &picked_key {
@@ -4155,6 +4345,7 @@ async fn forward_variants(
                             .fetch_add(1, Relaxed);
                     }
                     tried.pop();
+                    last_failure = Failure::from_status(status);
                     if attempt < max_retries {
                         // the caller will never see this failure, so record it against the
                         // target that produced it before superseding the attempt (#1646).
@@ -4170,7 +4361,12 @@ async fn forward_variants(
                         out.last_attempt_recorded = true;
                         let retrying = count_retry(
                             &state.metrics,
-                            has_untried_candidate(candidates.len(), &tried),
+                            has_untried_candidate(
+                                route,
+                                &candidates,
+                                &tried,
+                                last_failure.as_ref(),
+                            ),
                         );
                         // the response is read for its reason and dropped here, so the delay
                         // is taken from it first; the reason is what the request ends with if
@@ -4183,6 +4379,7 @@ async fn forward_variants(
                         continue;
                     }
                 } else if is_retryable_status(status) {
+                    last_failure = Failure::from_status(status);
                     if cd_enabled {
                         let secs = cooldown.duration_secs(retry_after_secs(&response));
                         state.cooldowns.park(&key, ti, secs);
@@ -4206,7 +4403,12 @@ async fn forward_variants(
                         out.last_attempt_recorded = true;
                         let retrying = count_retry(
                             &state.metrics,
-                            has_untried_candidate(candidates.len(), &tried),
+                            has_untried_candidate(
+                                route,
+                                &candidates,
+                                &tried,
+                                last_failure.as_ref(),
+                            ),
                         );
                         // the response is read for its reason and dropped here, so the delay
                         // is taken from it first; the reason is what the request ends with if
@@ -4236,6 +4438,7 @@ async fn forward_variants(
             }
             Err(err) => {
                 let message = err.to_string();
+                last_failure = Some(Failure::from_transport_error(&message));
                 if is_queue_admission_error(&message) {
                     out.last_error = Some(message);
                     break;
@@ -4263,7 +4466,7 @@ async fn forward_variants(
                     out.last_attempt_recorded = true;
                     let retrying = count_retry(
                         &state.metrics,
-                        has_untried_candidate(candidates.len(), &tried),
+                        has_untried_candidate(route, &candidates, &tried, last_failure.as_ref()),
                     );
                     back_off(retry.backoff_ms(attempt + 1, jitter(started)), retrying).await;
                     continue;
@@ -4292,11 +4495,12 @@ pub(crate) fn pick_untried(
     model: &str,
     cd_enabled: bool,
     key_meta: Option<&KeyMeta>,
+    failure: Option<&Failure>,
 ) -> Option<usize> {
     let n = entry.route.targets.len();
-    let key_allows = |i: usize| {
-        key_meta.is_none_or(|key| key.provider_allowed(&entry.route.targets[i].provider))
-    };
+    // a target the key may use and, if it is a restricted fallback, one the
+    // failure being walked away from lets it take over (#1584)
+    let key_allows = |i: usize| admits(entry, i, key_meta, failure);
     // a target is skippable when parked on a cooldown, when its provider is
     // currently marked unhealthy by the active prober, or when its circuit
     // breaker is open. this is the check for one target: the pick the balancer
@@ -4349,7 +4553,22 @@ pub(crate) fn pick_untried(
     // target chosen here asks `allows`, which does
     (0..n)
         .find(|&i| usable(i) && breaker.allows(model, i))
-        .or_else(|| first_untried_allowed(entry, tried, key_meta))
+        .or_else(|| first_untried_allowed(entry, tried, key_meta, failure))
+}
+
+/// Whether target `i` of the classic pool may be dialled by a request with
+/// `key_meta` after an attempt that ended with `failure` (`None` for the first
+/// dial): the key may use its provider, and its `takes_over` set, if it has
+/// one, covers the failure (see [`rolter_core::failover::may_dial`]).
+fn admits(
+    entry: &crate::state::RouteEntry,
+    i: usize,
+    key_meta: Option<&KeyMeta>,
+    failure: Option<&Failure>,
+) -> bool {
+    let target = &entry.route.targets[i];
+    key_meta.is_none_or(|key| key.provider_allowed(&target.provider))
+        && rolter_core::failover::may_dial(&target.takes_over, failure)
 }
 
 /// The first target this request has not tried that its key may use,
@@ -4363,11 +4582,10 @@ fn first_untried_allowed(
     entry: &crate::state::RouteEntry,
     tried: &[usize],
     key_meta: Option<&KeyMeta>,
+    failure: Option<&Failure>,
 ) -> Option<usize> {
-    (0..entry.route.targets.len()).find(|i| {
-        !tried.contains(i)
-            && key_meta.is_none_or(|key| key.provider_allowed(&entry.route.targets[*i].provider))
-    })
+    (0..entry.route.targets.len())
+        .find(|&i| !tried.contains(&i) && admits(entry, i, key_meta, failure))
 }
 
 /// Whether the next attempt of a forward loop has a target to try.
@@ -4380,14 +4598,32 @@ pub(crate) fn has_untried_target(
     entry: &crate::state::RouteEntry,
     tried: &[usize],
     key_meta: Option<&KeyMeta>,
+    failure: Option<&Failure>,
 ) -> bool {
-    first_untried_allowed(entry, tried, key_meta).is_some()
+    first_untried_allowed(entry, tried, key_meta, failure).is_some()
 }
 
-/// Whether the variant loop has a candidate it has not tried, the variant
-/// counterpart of [`has_untried_target`].
-fn has_untried_candidate(candidates: usize, tried: &[usize]) -> bool {
-    (0..candidates).any(|ci| !tried.contains(&ci))
+/// Whether the variant loop has a candidate it has not tried that may follow
+/// `failure`, the variant counterpart of [`has_untried_target`].
+fn has_untried_candidate(
+    route: &rolter_core::ModelRoute,
+    candidates: &[(usize, usize)],
+    tried: &[usize],
+    failure: Option<&Failure>,
+) -> bool {
+    (0..candidates.len())
+        .any(|ci| !tried.contains(&ci) && candidate_admits(route, candidates[ci], failure))
+}
+
+/// Whether the `(variant, target)` candidate may be dialled after `failure`,
+/// the variant counterpart of [`admits`] (the key was checked when the
+/// candidate list was built).
+fn candidate_admits(
+    route: &rolter_core::ModelRoute,
+    (vi, ti): (usize, usize),
+    failure: Option<&Failure>,
+) -> bool {
+    rolter_core::failover::may_dial(&route.variants[vi].targets[ti].takes_over, failure)
 }
 
 /// Count a superseded attempt as a retry, if the loop goes on to make another
@@ -4990,6 +5226,7 @@ impl RequestLogCtx {
         let latency_ms = self.started.elapsed().as_millis() as u32;
         RequestLog {
             ts: crate::logging::started_at(self.started),
+            seq: crate::logging::start_seq(self.started),
             request_id: self.request_id,
             trace_id: self.trace_id,
             virtual_key_id: self.vk_id,
@@ -5737,6 +5974,7 @@ mod tests {
                 provider: "openai".to_string(),
                 model: None,
                 weight: 1,
+                takes_over: Vec::new(),
             }],
             tenancy: None,
         });
@@ -5752,6 +5990,7 @@ mod tests {
                 provider: "anthropic".to_string(),
                 model: None,
                 weight: 1,
+                takes_over: Vec::new(),
             }],
             tenancy: None,
         });
@@ -5965,6 +6204,7 @@ mod tests {
                 provider: "openai-edge".to_string(),
                 model: Some("gpt-4o".to_string()),
                 weight: 1,
+                takes_over: Vec::new(),
             }],
             tenancy: None,
         });
@@ -6210,6 +6450,7 @@ mod tests {
         let mut config = GatewayConfig::default();
         let pepper = config.server.resolve_key_pepper();
         config.db_virtual_keys.push(VirtualKeyRecord {
+            previous: None,
             access_policy: None,
             key_hash: rolter_auth::hash_key(&pepper, "sk-db-key"),
             id: "vk-1".to_string(),
@@ -6246,6 +6487,94 @@ mod tests {
         assert_eq!(meta.project_id, "proj-1");
     }
 
+    fn rotated_key(
+        current: &str,
+        previous: &str,
+        valid_until: chrono::DateTime<Utc>,
+        expires_at: Option<chrono::DateTime<Utc>>,
+    ) -> GatewayConfig {
+        let mut config = GatewayConfig::default();
+        let pepper = config.server.resolve_key_pepper();
+        config.db_virtual_keys.push(VirtualKeyRecord {
+            previous: Some(rolter_core::PreviousKeySecret {
+                key_hash: rolter_auth::hash_key(&pepper, previous),
+                valid_until,
+            }),
+            access_policy: None,
+            key_hash: rolter_auth::hash_key(&pepper, current),
+            id: "vk-rotated".to_string(),
+            org_id: "org-1".to_string(),
+            team_id: "team-1".to_string(),
+            project_id: "proj-1".to_string(),
+            user_id: String::new(),
+            models: vec![],
+            providers: vec![],
+            disabled: false,
+            expires_at,
+            cache: None,
+            business_unit_id: String::new(),
+            customer_id: String::new(),
+        });
+        config
+    }
+
+    /// A rotation's overlap (#1837): both secrets authenticate as the one key,
+    /// then the old one stops at the end of its window while the new one lives on.
+    #[tokio::test]
+    async fn a_rotated_keys_previous_secret_authenticates_until_its_overlap_ends() {
+        let open = rotated_key(
+            "sk-new",
+            "sk-old",
+            Utc::now() + chrono::Duration::hours(1),
+            None,
+        );
+        let state = AppState::new(&open);
+        for (which, secret) in [("new", "sk-new"), ("previous", "sk-old")] {
+            let resp = list_models(State(state.clone()), bearer(secret)).await;
+            assert_eq!(resp.status(), StatusCode::OK, "the {which} secret");
+        }
+        // one key, not two: same identity and same tenant isolation, so a rate
+        // limit or budget is not doubled by the second secret
+        let snap = state.snapshot.load();
+        let new = &snap.keys[&rolter_auth::hash_key(&snap.pepper, "sk-new")];
+        let old = &snap.keys[&rolter_auth::hash_key(&snap.pepper, "sk-old")];
+        assert_eq!(old.id, new.id);
+        assert_eq!(old.tenant_key, new.tenant_key);
+
+        let ended = rotated_key(
+            "sk-new",
+            "sk-old",
+            Utc::now() - chrono::Duration::seconds(1),
+            None,
+        );
+        let state = AppState::new(&ended);
+        let resp = list_models(State(state.clone()), bearer("sk-old")).await;
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        let resp = list_models(State(state), bearer("sk-new")).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    /// The overlap never outlives the key: an old secret cannot authenticate
+    /// after the key it belonged to has expired.
+    #[tokio::test]
+    async fn a_previous_secret_never_outlives_the_key_that_expires_first() {
+        let config = rotated_key(
+            "sk-new",
+            "sk-old",
+            Utc::now() + chrono::Duration::hours(1),
+            Some(Utc::now() - chrono::Duration::minutes(1)),
+        );
+        let state = AppState::new(&config);
+        for (which, secret) in [("new", "sk-new"), ("previous", "sk-old")] {
+            let resp = list_models(State(state.clone()), bearer(secret)).await;
+            assert_eq!(
+                resp.status(),
+                StatusCode::UNAUTHORIZED,
+                "the {which} secret"
+            );
+        }
+    }
+
     /// The shape of a fresh managed deployment (#2300): no provider, no route,
     /// and the one key the control plane mints for the Playground of a
     /// routeless project, scoped to the builtin alone. That key gets an answer
@@ -6256,6 +6585,7 @@ mod tests {
         let mut config = GatewayConfig::default();
         let pepper = config.server.resolve_key_pepper();
         config.db_virtual_keys.push(VirtualKeyRecord {
+            previous: None,
             access_policy: None,
             key_hash: rolter_auth::hash_key(&pepper, "sk-playground"),
             id: "vk-playground".to_string(),
@@ -6319,6 +6649,7 @@ mod tests {
         let mut config = GatewayConfig::default();
         let pepper = config.server.resolve_key_pepper();
         config.db_virtual_keys.push(VirtualKeyRecord {
+            previous: None,
             access_policy: None,
             key_hash: rolter_auth::hash_key(&pepper, "sk-attributed"),
             id: "vk-1".to_string(),
@@ -6448,11 +6779,13 @@ mod tests {
                         provider: "a".to_string(),
                         model: None,
                         weight: 1,
+                        takes_over: Vec::new(),
                     },
                     Target {
                         provider: "b".to_string(),
                         model: None,
                         weight: 1,
+                        takes_over: Vec::new(),
                     },
                 ],
             }],
@@ -6518,6 +6851,7 @@ mod tests {
                     provider: provider.to_string(),
                     model: None,
                     weight: 1,
+                    takes_over: Vec::new(),
                 })
                 .collect(),
         };
@@ -6588,6 +6922,7 @@ mod tests {
                         provider: "a".to_string(),
                         model: None,
                         weight: 1,
+                        takes_over: Vec::new(),
                     }],
                 },
                 rolter_core::Variant {
@@ -6598,6 +6933,7 @@ mod tests {
                         provider: "b".to_string(),
                         model: None,
                         weight: 1,
+                        takes_over: Vec::new(),
                     }],
                 },
             ],
@@ -6622,11 +6958,13 @@ mod tests {
                     provider: "a".to_string(),
                     model: None,
                     weight: 1,
+                    takes_over: Vec::new(),
                 },
                 Target {
                     provider: "b".to_string(),
                     model: None,
                     weight: 1,
+                    takes_over: Vec::new(),
                 },
             ],
             tenancy: None,
@@ -6644,10 +6982,35 @@ mod tests {
         let cd = crate::cooldowns::Cooldowns::default();
         let hh = crate::health::Health::default();
         let bb = crate::breaker::Breaker::default();
-        let first = pick_untried(&entry, &ctx, &[], &[], &cd, &hh, &bb, "m", false, None).unwrap();
+        let first = pick_untried(
+            &entry,
+            &ctx,
+            &[],
+            &[],
+            &cd,
+            &hh,
+            &bb,
+            "m",
+            false,
+            None,
+            None,
+        )
+        .unwrap();
         // with the first target excluded, the fallback must choose the other one
-        let second =
-            pick_untried(&entry, &ctx, &[first], &[], &cd, &hh, &bb, "m", false, None).unwrap();
+        let second = pick_untried(
+            &entry,
+            &ctx,
+            &[first],
+            &[],
+            &cd,
+            &hh,
+            &bb,
+            "m",
+            false,
+            None,
+            None,
+        )
+        .unwrap();
         assert_ne!(first, second);
         // both tried: nothing left to fail over to
         assert_eq!(
@@ -6661,6 +7024,7 @@ mod tests {
                 &bb,
                 "m",
                 false,
+                None,
                 None
             ),
             None
@@ -6672,6 +7036,7 @@ mod tests {
             provider: provider.to_string(),
             model: None,
             weight: 1,
+            takes_over: Vec::new(),
         };
         let route = ModelRoute {
             model: "m".to_string(),
@@ -6692,6 +7057,152 @@ mod tests {
             balancer: rolter_balancer::build(route.strategy, &[1, 1, 1]).into(),
             variant_balancers: Vec::new(),
             route,
+        }
+    }
+
+    /// [`three_target_entry`] with target `c` restricted to `takes_over`.
+    fn entry_with_restricted_c(takes_over: &[&str]) -> crate::state::RouteEntry {
+        let mut entry = three_target_entry();
+        entry.route.targets[2].takes_over = takes_over.iter().map(|t| t.parse().unwrap()).collect();
+        entry
+    }
+
+    /// #1584: a restricted target is never the first dial, whatever the
+    /// balancer and the registries say, and not even when the fail-open path
+    /// runs because every ordinary target is parked.
+    #[test]
+    fn a_restricted_target_is_never_the_first_dial() {
+        let entry = entry_with_restricted_c(&["throttled"]);
+        let ctx = RouteContext::default();
+        let hh = crate::health::Health::default();
+        let bb = crate::breaker::Breaker::default();
+        let cd = crate::cooldowns::Cooldowns::default();
+        for _ in 0..12 {
+            let pick = pick_untried(
+                &entry,
+                &ctx,
+                &[],
+                &[],
+                &cd,
+                &hh,
+                &bb,
+                "m",
+                false,
+                None,
+                None,
+            );
+            assert!(matches!(pick, Some(0 | 1)), "{pick:?}");
+        }
+        // every ordinary target parked: the fail-open pick is still ordinary
+        cd.park("m", 0, 60);
+        cd.park("m", 1, 60);
+        let pick = pick_untried(&entry, &ctx, &[], &[], &cd, &hh, &bb, "m", true, None, None);
+        assert!(matches!(pick, Some(0 | 1)), "{pick:?}");
+        // and with every ordinary target tried, nothing is left for a first dial
+        assert_eq!(
+            pick_untried(
+                &entry,
+                &ctx,
+                &[0, 1],
+                &[],
+                &cd,
+                &hh,
+                &bb,
+                "m",
+                false,
+                None,
+                None
+            ),
+            None
+        );
+    }
+
+    /// #1584: a restricted target follows a failure it takes over and is
+    /// passed over for one it does not.
+    #[test]
+    fn a_restricted_target_follows_only_a_matching_failure() {
+        use rolter_core::failover::FailureKind;
+        let entry = entry_with_restricted_c(&["throttled"]);
+        let ctx = RouteContext::default();
+        let hh = crate::health::Health::default();
+        let bb = crate::breaker::Breaker::default();
+        let cd = crate::cooldowns::Cooldowns::default();
+        let throttled = Failure::of(FailureKind::Throttled);
+        let server = Failure::of(FailureKind::ServerError);
+        let tried = [0, 1];
+        assert_eq!(
+            pick_untried(
+                &entry,
+                &ctx,
+                &tried,
+                &[],
+                &cd,
+                &hh,
+                &bb,
+                "m",
+                false,
+                None,
+                Some(&throttled)
+            ),
+            Some(2)
+        );
+        assert!(has_untried_target(&entry, &tried, None, Some(&throttled)));
+        assert_eq!(
+            pick_untried(
+                &entry,
+                &ctx,
+                &tried,
+                &[],
+                &cd,
+                &hh,
+                &bb,
+                "m",
+                false,
+                None,
+                Some(&server)
+            ),
+            None
+        );
+        assert!(!has_untried_target(&entry, &tried, None, Some(&server)));
+    }
+
+    /// #1584: a refusal is never retried onto an ordinary target, only onto
+    /// one that takes refusals (or the refusal's category) over.
+    #[test]
+    fn a_refusal_moves_only_to_a_target_that_takes_it_over() {
+        let refused = Failure::refusal(
+            400,
+            br#"{"error":{"code":"content_filter","innererror":{"content_filter_result":{"hate":{"filtered":true}}}}}"#,
+        )
+        .unwrap();
+        let ctx = RouteContext::default();
+        let hh = crate::health::Health::default();
+        let bb = crate::breaker::Breaker::default();
+        let cd = crate::cooldowns::Cooldowns::default();
+        for (takes_over, expected) in [
+            (&["refusal"][..], Some(2)),
+            (&["refusal:hate"][..], Some(2)),
+            (&["refusal:sexual"][..], None),
+            (&["throttled"][..], None),
+        ] {
+            let entry = entry_with_restricted_c(takes_over);
+            assert_eq!(
+                pick_untried(
+                    &entry,
+                    &ctx,
+                    &[0],
+                    &[],
+                    &cd,
+                    &hh,
+                    &bb,
+                    "m",
+                    false,
+                    None,
+                    Some(&refused)
+                ),
+                expected,
+                "{takes_over:?}"
+            );
         }
     }
 
@@ -6742,9 +7253,10 @@ mod tests {
                         "m",
                         true,
                         key.as_ref(),
+                        None,
                     );
                     assert_eq!(
-                        has_untried_target(&entry, &tried, key.as_ref()),
+                        has_untried_target(&entry, &tried, key.as_ref(), None),
                         picked.is_some(),
                         "tried {tried:?}, parked {parked_mask:03b}, key {key:?}, picked {picked:?}"
                     );
@@ -6759,19 +7271,62 @@ mod tests {
     fn a_target_popped_from_tried_is_untried_again() {
         let entry = three_target_entry();
         let mut tried = vec![0, 1, 2];
-        assert!(!has_untried_target(&entry, &tried, None));
+        assert!(!has_untried_target(&entry, &tried, None, None));
         tried.pop();
-        assert!(has_untried_target(&entry, &tried, None));
+        assert!(has_untried_target(&entry, &tried, None, None));
+    }
+
+    /// One variant `v` with targets on providers `a` and `b`, `b` restricted to
+    /// `takes_over` when that is not empty.
+    fn variant_route(takes_over: &[&str]) -> rolter_core::ModelRoute {
+        serde_json::from_value(json!({
+            "model": "m",
+            "variants": [{
+                "name": "v",
+                "targets": [
+                    {"provider": "a"},
+                    {"provider": "b", "takes_over": takes_over},
+                ],
+            }],
+        }))
+        .unwrap()
     }
 
     #[test]
     fn has_untried_candidate_counts_the_variant_candidates_left() {
-        assert!(!has_untried_candidate(0, &[]));
-        assert!(has_untried_candidate(2, &[]));
-        assert!(has_untried_candidate(2, &[1]));
-        assert!(!has_untried_candidate(2, &[1, 0]));
+        let route = variant_route(&[]);
+        let candidates = [(0, 0), (0, 1)];
+        assert!(!has_untried_candidate(&route, &[], &[], None));
+        assert!(has_untried_candidate(&route, &candidates, &[], None));
+        assert!(has_untried_candidate(&route, &candidates, &[1], None));
+        assert!(!has_untried_candidate(&route, &candidates, &[1, 0], None));
         // a candidate popped for a sibling key is untried again
-        assert!(has_untried_candidate(1, &[]));
+        assert!(has_untried_candidate(&route, &candidates[..1], &[], None));
+    }
+
+    /// #1584: a restricted variant target is a candidate only after a failure
+    /// it takes over.
+    #[test]
+    fn a_restricted_variant_candidate_follows_only_a_matching_failure() {
+        use rolter_core::failover::FailureKind;
+        let route = variant_route(&["throttled"]);
+        let candidates = [(0, 0), (0, 1)];
+        let throttled = Failure::of(FailureKind::Throttled);
+        let server = Failure::of(FailureKind::ServerError);
+        assert!(!candidate_admits(&route, (0, 1), None));
+        assert!(candidate_admits(&route, (0, 0), None));
+        assert!(!has_untried_candidate(
+            &route,
+            &candidates,
+            &[0],
+            Some(&server)
+        ));
+        assert!(has_untried_candidate(
+            &route,
+            &candidates,
+            &[0],
+            Some(&throttled)
+        ));
     }
 
     /// #2835: a retry that cannot happen is not waited for, and one that can
@@ -6803,6 +7358,7 @@ mod tests {
                 provider: "a".to_string(),
                 model: None,
                 weight: 1,
+                takes_over: Vec::new(),
             }],
             tenancy: None,
         };
@@ -6821,7 +7377,19 @@ mod tests {
         let bb = crate::breaker::Breaker::default();
         for _ in 0..8 {
             assert_eq!(
-                pick_untried(&entry, &ctx, &[], &[], &cd, &hh, &bb, "m", false, None),
+                pick_untried(
+                    &entry,
+                    &ctx,
+                    &[],
+                    &[],
+                    &cd,
+                    &hh,
+                    &bb,
+                    "m",
+                    false,
+                    None,
+                    None
+                ),
                 Some(0)
             );
         }
@@ -6842,11 +7410,13 @@ mod tests {
                     provider: "a".to_string(),
                     model: None,
                     weight: 1,
+                    takes_over: Vec::new(),
                 },
                 Target {
                     provider: "b".to_string(),
                     model: None,
                     weight: 1,
+                    takes_over: Vec::new(),
                 },
             ],
             tenancy: None,
@@ -6867,12 +7437,14 @@ mod tests {
         // park target 0: selection must avoid it and pick 1
         cd.park("m", 0, 60);
         assert_eq!(
-            pick_untried(&entry, &ctx, &[], &[], &cd, &hh, &bb, "m", true, None),
+            pick_untried(&entry, &ctx, &[], &[], &cd, &hh, &bb, "m", true, None, None),
             Some(1)
         );
         // park both: fail open to an untried target rather than returning None
         cd.park("m", 1, 60);
-        assert!(pick_untried(&entry, &ctx, &[], &[], &cd, &hh, &bb, "m", true, None).is_some());
+        assert!(
+            pick_untried(&entry, &ctx, &[], &[], &cd, &hh, &bb, "m", true, None, None).is_some()
+        );
     }
 
     #[test]
@@ -6890,11 +7462,13 @@ mod tests {
                     provider: "a".to_string(),
                     model: None,
                     weight: 1,
+                    takes_over: Vec::new(),
                 },
                 Target {
                     provider: "b".to_string(),
                     model: None,
                     weight: 1,
+                    takes_over: Vec::new(),
                 },
             ],
             tenancy: None,
@@ -6915,12 +7489,37 @@ mod tests {
         // mark provider "a" (target 0) unhealthy: selection must pick target 1
         hh.set("a", false);
         assert_eq!(
-            pick_untried(&entry, &ctx, &[], &[], &cd, &hh, &bb, "m", false, None),
+            pick_untried(
+                &entry,
+                &ctx,
+                &[],
+                &[],
+                &cd,
+                &hh,
+                &bb,
+                "m",
+                false,
+                None,
+                None
+            ),
             Some(1)
         );
         // both providers unhealthy: fail open rather than returning None
         hh.set("b", false);
-        assert!(pick_untried(&entry, &ctx, &[], &[], &cd, &hh, &bb, "m", false, None).is_some());
+        assert!(pick_untried(
+            &entry,
+            &ctx,
+            &[],
+            &[],
+            &cd,
+            &hh,
+            &bb,
+            "m",
+            false,
+            None,
+            None
+        )
+        .is_some());
     }
 
     /// #1851's load guard against a pool with a dead replica: its load stays
@@ -6933,6 +7532,7 @@ mod tests {
             provider: provider.to_string(),
             model: None,
             weight: 1,
+            takes_over: Vec::new(),
         };
         let route = ModelRoute {
             model: "m".to_string(),
@@ -6965,18 +7565,55 @@ mod tests {
         // the warm replica is the least loaded of the live ones: it keeps the
         // request rather than losing it to busy target 0
         assert_eq!(
-            pick_untried(&entry, &ctx, &[], &loads, &cd, &hh, &bb, "m", false, None),
+            pick_untried(
+                &entry,
+                &ctx,
+                &[],
+                &loads,
+                &cd,
+                &hh,
+                &bb,
+                "m",
+                false,
+                None,
+                None
+            ),
             Some(1)
         );
         // once it was tried, the spill goes to the other live replica
         assert_eq!(
-            pick_untried(&entry, &ctx, &[1], &loads, &cd, &hh, &bb, "m", false, None),
+            pick_untried(
+                &entry,
+                &ctx,
+                &[1],
+                &loads,
+                &cd,
+                &hh,
+                &bb,
+                "m",
+                false,
+                None,
+                None
+            ),
             Some(0)
         );
         // with every replica down the pick fails open, as before
         hh.set("a", false);
         hh.set("b", false);
-        assert!(pick_untried(&entry, &ctx, &[], &loads, &cd, &hh, &bb, "m", false, None).is_some());
+        assert!(pick_untried(
+            &entry,
+            &ctx,
+            &[],
+            &loads,
+            &cd,
+            &hh,
+            &bb,
+            "m",
+            false,
+            None,
+            None
+        )
+        .is_some());
     }
 
     #[test]
@@ -6994,11 +7631,13 @@ mod tests {
                     provider: "a".to_string(),
                     model: None,
                     weight: 1,
+                    takes_over: Vec::new(),
                 },
                 Target {
                     provider: "b".to_string(),
                     model: None,
                     weight: 1,
+                    takes_over: Vec::new(),
                 },
             ],
             tenancy: None,
@@ -7019,12 +7658,37 @@ mod tests {
         // trip target 0 open: selection must avoid it and pick 1
         assert!(bb.on_failure("m", 0));
         assert_eq!(
-            pick_untried(&entry, &ctx, &[], &[], &cd, &hh, &bb, "m", false, None),
+            pick_untried(
+                &entry,
+                &ctx,
+                &[],
+                &[],
+                &cd,
+                &hh,
+                &bb,
+                "m",
+                false,
+                None,
+                None
+            ),
             Some(1)
         );
         // both open: fail open to an untried target rather than returning None
         assert!(bb.on_failure("m", 1));
-        assert!(pick_untried(&entry, &ctx, &[], &[], &cd, &hh, &bb, "m", false, None).is_some());
+        assert!(pick_untried(
+            &entry,
+            &ctx,
+            &[],
+            &[],
+            &cd,
+            &hh,
+            &bb,
+            "m",
+            false,
+            None,
+            None
+        )
+        .is_some());
     }
 
     /// A key whose owner holds the given access-profile policy.
@@ -7098,6 +7762,7 @@ mod tests {
                 provider: "a".to_string(),
                 model: None,
                 weight: 1,
+                takes_over: Vec::new(),
             }],
             params: Default::default(),
             param_policy: Default::default(),
@@ -7148,11 +7813,13 @@ mod tests {
                     provider: "a".to_string(),
                     model: None,
                     weight: 1,
+                    takes_over: Vec::new(),
                 },
                 Target {
                     provider: "b".to_string(),
                     model: None,
                     weight: 1,
+                    takes_over: Vec::new(),
                 },
             ],
             params: Default::default(),
@@ -7189,6 +7856,7 @@ mod tests {
                 "m",
                 false,
                 Some(&key),
+                None,
             ),
             Some(1)
         );
@@ -7209,6 +7877,7 @@ mod tests {
                 "m",
                 false,
                 Some(&denied),
+                None,
             ),
             None
         );
@@ -7342,6 +8011,7 @@ mod tests {
                 provider: provider.to_string(),
                 model: None,
                 weight: 1,
+                takes_over: Vec::new(),
             }]
         };
         for (name, org) in [("edge", "org-b"), ("squatter", "org-a")] {
@@ -7544,6 +8214,7 @@ mod tests {
                             provider: provider.to_string(),
                             model: None,
                             weight: 1,
+                            takes_over: Vec::new(),
                         })
                         .to_vec(),
                     tenancy: None,
@@ -7571,7 +8242,19 @@ mod tests {
                 let loads = [0, 9, 1];
                 for _ in 0..100 {
                     assert_eq!(
-                        pick_untried(&entry, &ctx, &[], &loads, &cd, &hh, &bb, "m", true, None),
+                        pick_untried(
+                            &entry,
+                            &ctx,
+                            &[],
+                            &loads,
+                            &cd,
+                            &hh,
+                            &bb,
+                            "m",
+                            true,
+                            None,
+                            None
+                        ),
                         Some(2),
                         "{strategy:?}"
                     );
@@ -7596,6 +8279,7 @@ mod tests {
                 provider: "a".to_string(),
                 model: None,
                 weight: 1,
+                takes_over: Vec::new(),
             }],
             tenancy: None,
         };
@@ -7621,6 +8305,7 @@ mod tests {
             &bb,
             "m",
             true,
+            None,
             None,
         );
         assert_eq!(picked, Some(0));
