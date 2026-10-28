@@ -5630,10 +5630,11 @@ mod tests {
         assert!(current_version(&pool).await.unwrap() > before);
     }
 
-    /// #3321: a route the assembly cannot read at all (a strategy no build
-    /// knows) fails the routes' own part of the problem list, not the list:
-    /// every other explanation is still there, with a line saying the routes
-    /// could not be read.
+    /// #3321: when the assembly cannot read the routes at all, only the
+    /// routes' own part of the problem list fails, not the list: every other
+    /// explanation is still there, with a line saying the routes could not be
+    /// read. A strategy no build knows no longer fails the read since #3347 (it
+    /// loads as `Unknown`), so a table the assembly reads is taken away instead.
     #[tokio::test]
     async fn an_unreadable_route_keeps_the_other_problems() {
         if !test_database::is_configured() {
@@ -5661,28 +5662,20 @@ mod tests {
         .fetch_one(&pool)
         .await
         .unwrap();
-        // the constraint that stops a write of an unknown strategy is dropped
-        // so the row can be made, as a downgrade could leave one
-        sqlx::query("alter table routes drop constraint routes_strategy_check")
+        sqlx::query(
+            "insert into routes (project_id, model, strategy, params)
+             values ($1, 'bad-params', 'round_robin', '[\"max_tokens\"]'::jsonb)",
+        )
+        .bind(project_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        // the assembly reads the variant targets, so without the table it
+        // cannot read the routes at all. the schema is this test's own
+        sqlx::query("drop table route_variant_targets")
             .execute(&pool)
             .await
             .unwrap();
-        for (model, strategy, params) in [
-            ("bad-params", "round_robin", r#"["max_tokens"]"#),
-            ("teleported", "teleport", "{}"),
-        ] {
-            sqlx::query(
-                "insert into routes (project_id, model, strategy, params)
-                 values ($1, $2, $3, $4::jsonb)",
-            )
-            .bind(project_id)
-            .bind(model)
-            .bind(strategy)
-            .bind(params)
-            .execute(&pool)
-            .await
-            .unwrap();
-        }
 
         let store = PostgresConfigStore::new(pool.clone());
         let problems = store.load_problem_records().await.unwrap();
@@ -5694,7 +5687,7 @@ mod tests {
             problems
                 .iter()
                 .any(|p| p.message.contains("the routes could not be read")
-                    && p.message.contains("teleport")),
+                    && p.message.contains("route_variant_targets")),
             "{problems:?}"
         );
     }
