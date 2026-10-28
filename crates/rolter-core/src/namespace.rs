@@ -313,7 +313,10 @@ pub fn fold_for_legacy_gateway(config: &mut GatewayConfig) -> Vec<String> {
                 provider.name,
                 org_of(provider.tenancy.as_ref())
             ));
-            left_out.push(provider.name.clone());
+            left_out.push((
+                org_of(provider.tenancy.as_ref()).to_string(),
+                provider.name.clone(),
+            ));
         }
         keep
     });

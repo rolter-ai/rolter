@@ -212,6 +212,16 @@ pub mod test_schema;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_database;
 
+/// Providers the loader left out, as `(owning org, name)`.
+type LeftOut = HashSet<(Uuid, String)>;
+
+/// Whether the provider `name` of `org` was left out. A stored target or
+/// member names its provider by id, so the org it reaches is exactly the
+/// provider's own, with no resolution to do.
+fn is_left_out(left_out: &LeftOut, org: Uuid, name: &str) -> bool {
+    !left_out.is_empty() && left_out.contains(&(org, name.to_string()))
+}
+
 #[derive(FromRow)]
 struct ProviderRow {
     org_id: Uuid,
@@ -580,12 +590,14 @@ impl PostgresConfigStore {
         Self { pool, kek }
     }
 
-    /// The providers to serve, and the names of the ones left out because their
-    /// `egress_proxies` could not be read (#2943). A caller that goes on to
-    /// build route targets or group members from the provider rows must skip
-    /// those names, or the snapshot ends up naming a provider it does not
-    /// carry.
-    async fn load_providers(&self) -> Result<(Vec<ProviderConfig>, HashSet<String>)> {
+    /// The providers to serve, and the `(org, name)` of the ones left out
+    /// because their `egress_proxies` could not be read (#2943). A caller that
+    /// goes on to build route targets or group members from the provider rows
+    /// must skip those providers, or the snapshot ends up naming a provider it
+    /// does not carry. Two orgs may each have a provider of one name (#1857),
+    /// so the set is keyed by the owning org too: one org's unreadable row
+    /// must not take another org's namesake out of its routes (#3464).
+    async fn load_providers(&self) -> Result<(Vec<ProviderConfig>, LeftOut)> {
         let rows: Vec<ProviderRow> = sqlx::query_as(
             "select p.org_id, p.name, p.slug, p.kind, p.api_base, p.api_key_env, p.egress_proxy,
                     p.egress_proxies, p.kv_events, p.lmcache, p.project_id,
@@ -598,13 +610,13 @@ impl PostgresConfigStore {
         .await
         .map_err(store_err)?;
         let mut providers = Vec::with_capacity(rows.len());
-        let mut left_out = HashSet::new();
+        let mut left_out = LeftOut::new();
         for row in rows {
             match egress_proxies_from_value(&row.name, &row.egress_proxies) {
                 Ok(proxies) => providers.push(row.into_config(self.kek.as_ref(), proxies)?),
                 Err(problem) => {
                     tracing::warn!("{problem}");
-                    left_out.insert(row.name);
+                    left_out.insert((row.org_id, row.name));
                 }
             }
         }
@@ -869,7 +881,7 @@ impl PostgresConfigStore {
     }
 
     /// `left_out` names the providers [`Self::load_providers`] did not return.
-    async fn load_routes(&self, left_out: &HashSet<String>) -> Result<Vec<ModelRoute>> {
+    async fn load_routes(&self, left_out: &LeftOut) -> Result<Vec<ModelRoute>> {
         Ok(self.assemble_routes(left_out).await?.0)
     }
 
@@ -880,7 +892,7 @@ impl PostgresConfigStore {
     /// out. Each problem is owned by its route's tenant.
     async fn assemble_routes(
         &self,
-        left_out: &HashSet<String>,
+        left_out: &LeftOut,
     ) -> Result<(Vec<ModelRoute>, Vec<crate::ConfigProblem>)> {
         let route_rows = self.enabled_route_rows().await?;
 
@@ -941,7 +953,7 @@ impl PostgresConfigStore {
                 // a provider that was left out of the snapshot cannot be named
                 // by a target: the dangling name would fail validation of the
                 // whole snapshot, not just this route (#2943)
-                .filter(|t| !left_out.contains(&t.provider_name))
+                .filter(|t| !is_left_out(left_out, t.provider_org_id, &t.provider_name))
                 // a target on another org's provider would spend that
                 // org's credential; the write path refuses one now, and a
                 // row written before it did is dropped here (#1844)
@@ -1038,10 +1050,7 @@ impl PostgresConfigStore {
     /// Load provider groups and their members into `ProviderGroupConfig`
     /// (ADR-0017 addendum, ADR-0022). A member with a null `upstream_model`
     /// forwards the requested model as-is.
-    async fn load_provider_groups(
-        &self,
-        left_out: &HashSet<String>,
-    ) -> Result<Vec<ProviderGroupConfig>> {
+    async fn load_provider_groups(&self, left_out: &LeftOut) -> Result<Vec<ProviderGroupConfig>> {
         let group_rows: Vec<ProviderGroupRow> = sqlx::query_as(
             "select id, org_id, name, slug, strategy, project_id from provider_groups order by name",
         )
@@ -1070,7 +1079,7 @@ impl PostgresConfigStore {
                     .filter(|m| m.group_id == g.id)
                     // same rule as a route target: never name a provider that
                     // was left out of the snapshot (#2943)
-                    .filter(|m| !left_out.contains(&m.provider_name))
+                    .filter(|m| !is_left_out(left_out, m.provider_org_id, &m.provider_name))
                     // and never another org's provider
                     .filter(|m| {
                         let same_org = m.provider_org_id == g.org_id;
@@ -1799,7 +1808,7 @@ fn route_variants(
     r: &RouteRow,
     variant_rows: &[VariantRow],
     target_rows: &[VariantTargetRow],
-    left_out: &HashSet<String>,
+    left_out: &LeftOut,
     problems: &mut Vec<String>,
 ) -> Vec<rolter_core::Variant> {
     use serde::Deserialize;
@@ -1811,7 +1820,7 @@ fn route_variants(
         let targets: Vec<Target> = target_rows
             .iter()
             .filter(|t| t.variant_id == v.id)
-            .filter(|t| !left_out.contains(&t.provider_name))
+            .filter(|t| !is_left_out(left_out, t.provider_org_id, &t.provider_name))
             .filter(|t| {
                 let same_org = t.provider_org_id == r.org_id;
                 if !same_org {
@@ -2240,7 +2249,10 @@ impl ConfigStore for PostgresConfigStore {
         let plugins = self.load_plugins().await?;
         let mut config = GatewayConfig {
             providers,
-            left_out_providers: left_out,
+            left_out_providers: left_out
+                .into_iter()
+                .map(|(org, name)| (org.to_string(), name))
+                .collect(),
             routes,
             provider_groups,
             model_prices,
@@ -2418,11 +2430,11 @@ impl ConfigStore for PostgresConfigStore {
         .fetch_all(&self.pool)
         .await
         .map_err(store_err)?;
-        let mut left_out = HashSet::new();
+        let mut left_out = LeftOut::new();
         problems.extend(proxies.iter().filter_map(|(name, org, project, value)| {
             egress_proxies_from_value(name, value).err().map(|message| {
                 // the provider `load_providers` leaves out for it
-                left_out.insert(name.clone());
+                left_out.insert((*org, name.clone()));
                 ConfigProblem {
                     message,
                     owner: ProblemOwner::Tenant(rolter_core::Tenancy {
@@ -3323,7 +3335,7 @@ mod tests {
             .await
             .unwrap();
 
-        let left_out: HashSet<String> = ["dropped".to_string()].into();
+        let left_out: LeftOut = [(org.id, "dropped".to_string())].into();
         let routes = store.load_routes(&left_out).await.unwrap();
         let split = routes.iter().find(|r| r.model == "split").unwrap();
         let shape: Vec<(String, Vec<String>)> = split
@@ -6267,6 +6279,112 @@ mod tests {
             assert!(line.contains("left out of the snapshot"), "{line}");
             assert!(!line.contains("proxy.example.com"), "{line}");
         }
+    }
+
+    /// #3464: two orgs each have an `openai`, and the store cannot read
+    /// org-a's. Only org-a's route and group lose their target: org-b's keep
+    /// their own `openai`, and the snapshot that is left is servable.
+    #[tokio::test]
+    async fn one_orgs_unreadable_provider_leaves_the_other_orgs_namesake_alone() {
+        if !test_database::is_configured() {
+            eprintln!("skipping: {} not set", test_database::URL_ENV);
+            return;
+        }
+        let db = fresh_db().await;
+        let pool = db.pool().clone();
+        drop_shape_checks(&pool).await;
+        let mut orgs = Vec::new();
+        for (slug, egress_proxies) in [("org-a", "[7]"), ("org-b", "[]")] {
+            let org = repo::OrgRepo(&pool).create(slug, slug).await.unwrap();
+            let team = repo::TeamRepo(&pool).create(org.id, "core").await.unwrap();
+            let project = repo::ProjectRepo(&pool)
+                .create(team.id, "app")
+                .await
+                .unwrap();
+            let provider: Uuid = sqlx::query_scalar(
+                "insert into providers (org_id, name, slug, kind, api_base, api_key_env,
+                                        egress_proxies)
+                 values ($1, 'openai', 'openai', 'openai_compatible',
+                         'https://llm.example.com/v1', 'UPSTREAM_KEY', $2::jsonb)
+                 returning id",
+            )
+            .bind(org.id)
+            .bind(egress_proxies)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            let route = repo::RouteRepo(&pool)
+                .create(project.id, "gpt-4o", "round_robin")
+                .await
+                .unwrap();
+            repo::RouteTargetRepo(&pool)
+                .create(route.id, provider, None, 1, &[])
+                .await
+                .unwrap();
+            let group: Uuid = sqlx::query_scalar(
+                "insert into provider_groups (org_id, name, slug, strategy)
+                 values ($1, 'pool', 'pool', 'round_robin') returning id",
+            )
+            .bind(org.id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            sqlx::query(
+                "insert into provider_group_members (group_id, provider_id, weight, position)
+                 values ($1, $2, 1, 0)",
+            )
+            .bind(group)
+            .bind(provider)
+            .execute(&pool)
+            .await
+            .unwrap();
+            orgs.push(org.id.to_string());
+        }
+        let (org_a, org_b) = (&orgs[0], &orgs[1]);
+
+        let mut config = PostgresConfigStore::new(pool).load().await.unwrap();
+        assert_eq!(
+            config.left_out_providers,
+            [(org_a.clone(), "openai".to_string())].into()
+        );
+        let org_of = |t: Option<&rolter_core::Tenancy>| t.map(|t| t.org_id.clone());
+        let served: Vec<_> = config
+            .providers
+            .iter()
+            .map(|p| org_of(p.tenancy.as_ref()))
+            .collect();
+        assert_eq!(served, [Some(org_b.clone())]);
+        let mut routes: Vec<_> = config
+            .routes
+            .iter()
+            .map(|r| (org_of(r.tenancy.as_ref()), r.targets.len()))
+            .collect();
+        routes.sort();
+        let mut expected = vec![(Some(org_a.clone()), 0), (Some(org_b.clone()), 1)];
+        expected.sort();
+        assert_eq!(routes, expected, "only org-a's target is left out");
+        let mut groups: Vec<_> = config
+            .provider_groups
+            .iter()
+            .map(|g| (org_of(g.tenancy.as_ref()), g.members.len()))
+            .collect();
+        groups.sort();
+        assert_eq!(groups, expected, "only org-a's member is left out");
+
+        let problems = config.sanitize_for_snapshot();
+        let kept: Vec<_> = config
+            .routes
+            .iter()
+            .map(|r| (org_of(r.tenancy.as_ref()), r.targets[0].provider.clone()))
+            .collect();
+        assert_eq!(
+            kept,
+            [(Some(org_b.clone()), "openai".to_string())],
+            "{problems:?}"
+        );
+        config
+            .validate_snapshot()
+            .expect("the remaining snapshot is servable");
     }
 
     /// #2943: injected headers gate nothing, so an unreadable entry costs the
