@@ -588,45 +588,93 @@ async fn check_rule_channel(
     }
 }
 
-/// The orgs in which the caller may run alerting: those of every place they
-/// hold an alert-rule admin role. Empty for a caller with none, who is refused
-/// the listing (a superadmin never asks).
-async fn alerting_orgs(
-    state: &ControlState,
-    filter: &ScopeFilter,
-) -> ApiResult<std::collections::HashSet<Uuid>> {
-    let orgs: std::collections::HashSet<Uuid> = filter
+/// Where the caller may run alerting: the chain of every place they hold an
+/// alert-rule admin role, so the orgs, teams and projects their rules live in.
+/// Empty for a caller with none, who is refused the listing (a superadmin never
+/// asks).
+async fn alerting_reach(state: &ControlState, filter: &ScopeFilter) -> ApiResult<Vec<ScopeChain>> {
+    let held: Vec<ScopeChain> = filter
         .reach(pool(state))
         .await?
         .into_iter()
         .filter(|held| filter.allows(*held))
-        .filter_map(|held| held.org)
         .collect();
-    if orgs.is_empty() {
+    if held.iter().all(|held| held.org.is_none()) {
         return Err(ApiError::Forbidden);
     }
-    Ok(orgs)
+    Ok(held)
 }
 
-/// The rules the caller may see: all of them for a superadmin, otherwise those
-/// whose scope the caller is admin of. Deployment-wide rules are never theirs.
+/// The orgs in which the caller may run alerting: those of every place they
+/// hold an alert-rule admin role.
+async fn alerting_orgs(
+    state: &ControlState,
+    filter: &ScopeFilter,
+) -> ApiResult<std::collections::HashSet<Uuid>> {
+    Ok(alerting_reach(state, filter)
+        .await?
+        .into_iter()
+        .filter_map(|held| held.org)
+        .collect())
+}
+
+/// The rules the caller may see: all of them for a superadmin or a deployment
+/// operator, otherwise those whose scope the caller is admin of.
+/// Deployment-wide rules are never theirs.
+///
+/// A scoped caller's rules are chosen in SQL from their reach (#3361): the
+/// rules of the orgs they hold the role at, of the teams, and of the projects,
+/// reading a team or a project (or a key's project) scope through its row. So
+/// what is read, and how many chains are then resolved, follows the caller's
+/// own rules and not the number of rules in other orgs. The reach is a
+/// superset on purpose: the verdict on each rule is still [`ScopeFilter`]'s, so
+/// a more specific lower role, which beats an org admin at that scope, still
+/// hides the rule.
 async fn visible_rules(
     state: &ControlState,
     principal: &Principal,
     requirement: Requirement,
 ) -> ApiResult<Vec<Rule>> {
     let filter = ScopeFilter::load(state, principal, requirement).await?;
+    if is_deployment_operator(principal) {
+        return sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "select {} from alert_rules order by name",
+            rule_columns()
+        )))
+        .fetch_all(pool(state))
+        .await
+        .map_err(rolter_store::postgres::store_err)
+        .map_err(Into::into);
+    }
+    let reach = alerting_reach(state, &filter).await?;
+    let (mut orgs, mut teams, mut projects) = (Vec::new(), Vec::new(), Vec::new());
+    for held in reach {
+        match (held.org, held.team, held.project) {
+            (_, _, Some(project)) => projects.push(project),
+            (_, Some(team), None) => teams.push(team),
+            (Some(org), None, None) => orgs.push(org),
+            (None, None, None) => {}
+        }
+    }
     let rules: Vec<Rule> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
-        "select {} from alert_rules order by name",
+        "select {} from alert_rules where id in ( \
+             select r.id from alert_rules r \
+             left join projects p on r.scope_type = 'project' and p.id = r.scope_id \
+             left join virtual_keys k on r.scope_type = 'virtual_key' and k.id = r.scope_id \
+             left join projects kp on kp.id = k.project_id \
+             where r.org_id = any($1) \
+                or (r.scope_type = 'team' and r.scope_id = any($2)) \
+                or coalesce(p.team_id, kp.team_id) = any($2) \
+                or coalesce(p.id, kp.id) = any($3)) \
+         order by name",
         rule_columns()
     )))
+    .bind(orgs)
+    .bind(teams)
+    .bind(projects)
     .fetch_all(pool(state))
     .await
     .map_err(rolter_store::postgres::store_err)?;
-    if is_deployment_operator(principal) {
-        return Ok(rules);
-    }
-    alerting_orgs(state, &filter).await?;
     let mut visible = Vec::new();
     for rule in rules {
         if let Some(chain) = rule_chain(state, &rule).await {

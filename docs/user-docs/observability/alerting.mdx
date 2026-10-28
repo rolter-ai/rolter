@@ -635,7 +635,10 @@ The lists are narrowed to what the caller may use. Rules and notification
 history show only the scopes the caller administers. Channels show the
 caller's organizations' channels and the deployment's, but a deployment
 channel's address is withheld (`endpoint` is empty and `manageable` is false),
-as it may carry a token. A caller who administers nothing gets `403`.
+as it may carry a token. A caller who administers nothing gets `403`. The
+control plane picks a scoped admin's rules from the organizations, teams and
+projects they administer, so a listing costs what their own rules cost and not
+what every organization's together do.
 
 ## Permissions and audit
 
