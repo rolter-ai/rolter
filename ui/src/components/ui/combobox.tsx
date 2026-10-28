@@ -60,6 +60,14 @@ export interface ComboboxProps {
    */
   commitOnBlur?: boolean;
   /**
+   * with `allowCustom`, report what is typed as the value on every keystroke,
+   * not when focus leaves. For a field beside a Save that stays disabled until
+   * the draft differs: the press that would blur the field lands on the
+   * disabled button (it has `pointer-events: none`), so blur-time commit
+   * enables Save a click too late (#3244). Clearing the text clears the value.
+   */
+  commitOnInput?: boolean;
+  /**
    * said in place of "No matches" when the popup has no option to list at all,
    * for a list that is still loading or that the source had nothing for
    */
@@ -260,6 +268,7 @@ export const Combobox = React.forwardRef<HTMLInputElement, ComboboxProps>(functi
     listClassName,
     allowCustom,
     commitOnBlur = false,
+    commitOnInput = false,
     emptyText,
     onFocus,
     onBlur,
@@ -594,6 +603,11 @@ export const Combobox = React.forwardRef<HTMLInputElement, ComboboxProps>(functi
         aria-activedescendant={open && filtered[active] ? optionId(active) : undefined}
         onChange={(event) => {
           setQuery(event.target.value);
+          if (commitOnInput && allowCustom) {
+            const typed = event.target.value.trim();
+            const next = options.find((o) => fold(o.value) === fold(typed))?.value ?? typed;
+            if (next !== value) onChange(next);
+          }
           if (!open) show();
         }}
         onKeyDown={onKeyDown}

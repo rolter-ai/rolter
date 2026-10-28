@@ -417,10 +417,12 @@ export const ClearsFromTheKeyboard: Story = {
 function Suggesting({
   options = STRATEGIES,
   commitOnBlur = true,
+  commitOnInput = false,
   emptyText,
 }: {
   options?: ComboboxOption[];
   commitOnBlur?: boolean;
+  commitOnInput?: boolean;
   emptyText?: string;
 }) {
   const [value, setValue] = React.useState("");
@@ -433,6 +435,7 @@ function Suggesting({
           allowCustom
           clearable
           commitOnBlur={commitOnBlur}
+          commitOnInput={commitOnInput}
           emptyText={emptyText}
           options={options}
           value={value}
@@ -501,6 +504,40 @@ export const WithoutTheFlagTypedTextIsDropped: Story = {
     await userEvent.tab();
     await waitFor(() => expect(input).toHaveValue(""));
     await expect(canvas.getByText("current: (none)")).toBeInTheDocument();
+  },
+};
+
+// beside a Save that waits for the draft to differ (#3244): the value follows
+// the keystrokes, so there is nothing left to commit when the press arrives
+export const CommitOnInputFollowsTheKeystrokes: Story = {
+  render: () => <Suggesting commitOnBlur={false} commitOnInput />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const input = canvas.getByRole("combobox", { name: "Upstream model" });
+    await userEvent.click(input);
+    await userEvent.keyboard("acme/support");
+    await expect(canvas.getByText("current: acme/support")).toBeInTheDocument();
+    // a typed id that names an option exactly takes the option's own spelling
+    await userEvent.clear(input);
+    await userEvent.keyboard("ROUND_ROBIN");
+    await expect(canvas.getByText("current: round_robin")).toBeInTheDocument();
+    await userEvent.clear(input);
+    await expect(canvas.getByText("current: (none)")).toBeInTheDocument();
+  },
+};
+
+// a required combobox says so to assistive technology, and an empty one is
+// what a refused submit finds (#3242)
+export const RequiredIsOnTheTextInput: Story = {
+  render: () => (
+    <Field label="Upstream model" required>
+      <Combobox options={STRATEGIES} value="" onChange={() => {}} />
+    </Field>
+  ),
+  play: async ({ canvasElement }) => {
+    const input = within(canvasElement).getByRole("combobox", { name: /Upstream model/ });
+    await expect(input).toBeRequired();
+    await expect(input).toHaveAttribute("aria-required", "true");
   },
 };
 

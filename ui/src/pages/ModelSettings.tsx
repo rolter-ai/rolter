@@ -318,6 +318,11 @@ function ModelSettingsScreen() {
             className="sm:min-w-[320px]"
             options={modelOptions}
             allowCustom
+            // typed text is the value as it is typed: Save waits for the draft
+            // to differ, and its disabled button swallows the press that would
+            // blur the field, so a name not confirmed with Enter saved nothing
+            // (#3244)
+            commitOnInput
             clearable
             placeholder={t("pages.modelSettings.model.placeholder")}
             value={form.defaultModel}
