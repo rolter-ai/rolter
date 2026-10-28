@@ -1808,7 +1808,10 @@ mod tests {
                 "from {table} where {{WHERE_WINDOW}} and {{ROW_VISIBLE}}"
             ))
             .count();
-        assert_eq!(rollups, 4, "summary, timeseries, by-model, by-attribution");
+        assert_eq!(
+            rollups, 5,
+            "summary, timeseries, by-model, by-variant, by-attribution"
+        );
         assert_eq!(filtered, rollups);
     }
 
@@ -1833,7 +1836,7 @@ mod tests {
                 "from {table} where {{WHERE_WINDOW}} and {{ROW_VISIBLE}} and {{ROW_FILTERS}}"
             ))
             .count();
-        assert_eq!(filtered, 3, "summary, timeseries, by-model");
+        assert_eq!(filtered, 4, "summary, timeseries, by-model, by-variant");
     }
 
     #[test]
