@@ -536,7 +536,8 @@ export const SameNameDeletesOnlyThatOrganizationsModel: Story = {
       [
         "/models",
         () => [
-          MODELS[0],
+          // org-1 named outright, so the not-sent assertion below can fail
+          { ...MODELS[0], org_id: "org-1" },
           {
             ...MODELS[0],
             org_id: "org-2",

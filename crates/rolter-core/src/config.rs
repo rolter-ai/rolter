@@ -6229,6 +6229,10 @@ impl OmittedProviders {
             None if self.left_out.contains(name) => {
                 Some("the provider is itself omitted from the snapshot")
             }
+            None if self.every.contains_name(name) && org.is_empty() => Some(
+                "a deployment-wide row uses deployment-wide providers only, and this provider \
+                 belongs to an organization",
+            ),
             None if self.every.contains_name(name) => {
                 Some("the provider belongs to another organization, which this row cannot use")
             }
@@ -10580,7 +10584,7 @@ mod tests {
         assert!(
             problems
                 .iter()
-                .any(|p| p.contains("belongs to another organization")),
+                .any(|p| p.contains("deployment-wide providers only")),
             "{problems:?}"
         );
         let shared = cfg.routes.iter().find(|r| r.model == "shared").unwrap();

@@ -2472,16 +2472,7 @@ async fn proxy(
             .and_then(|k| k.cache_override)
             .unwrap_or_else(|| entry.route.cache_enabled());
     let cache_key = if snap.cache.enabled && state.response_cache.is_enabled() && cache_eligible {
-        // a route another org shares the name of is scoped by its namespace,
-        // so two orgs' `gpt-4o` never answer from each other's entries; an
-        // unshared name keeps the key it always had (ADR-0040)
-        let scope_seg = if entry.route.cache_per_key() {
-            vk_id.as_str()
-        } else if entry.namespace != entry.route.model {
-            entry.namespace.as_str()
-        } else {
-            ""
-        };
+        let scope_seg = cache_scope(entry, &vk_id);
         Some(ResponseCache::make_key(
             &snap.cache.namespace,
             path,
@@ -2538,17 +2529,11 @@ async fn proxy(
             if let Some(embedding) =
                 semantic_embedding(&state, &snap, semantic, &request.text).await
             {
-                let scope_seg = if entry.route.cache_per_key() {
-                    vk_id.as_str()
-                } else {
-                    ""
-                };
-                // the route's namespace: its name unless another org shares
-                // it, so two orgs' candidates never mix (ADR-0040)
+                let scope_seg = cache_scope(entry, &vk_id);
                 let index_key = ResponseCache::semantic_index_key(
                     &snap.cache.namespace,
                     path,
-                    &entry.namespace,
+                    &entry.route.model,
                     scope_seg,
                     &request.partition,
                 );
@@ -4158,6 +4143,21 @@ struct ForwardOutcome {
     /// the failure that sent the request on to the last target it tried, as
     /// its class token; empty when the first dial answered (#1584)
     fallback_reason: String,
+}
+
+/// The scope a route's cached answers, exact and semantic, are kept under: the
+/// caller's key for a per-key route, otherwise the org that owns the route,
+/// and nothing for a global route from the gateway's own file.
+///
+/// The org is mixed in whether or not another org shares the name (ADR-0040):
+/// keying an unshared route by its bare name would let its entries outlive
+/// the route and answer a later route of the same name in another org.
+pub(crate) fn cache_scope<'a>(entry: &'a crate::state::RouteEntry, key_id: &'a str) -> &'a str {
+    if entry.route.cache_per_key() {
+        key_id
+    } else {
+        rolter_core::namespace::org_of(entry.route.tenancy.as_ref())
+    }
 }
 
 /// Namespaces the per-target reliability registries (cooldown/breaker/load) by

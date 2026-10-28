@@ -128,10 +128,14 @@ free text and could itself contain `@<uuid>`; snapshot build checks that a
 provider's runtime id and a route's namespace are unique and leaves out (with
 a warning) a row whose id would still collide.
 
-The response cache follows the namespace too: a route whose name another org
-shares adds its namespace to the exact-match key, and the semantic index is
-keyed by the namespace, so two orgs' `gpt-4o` never answer from each other's
-entries, while an unshared name keeps the key it had.
+The response cache is the exception to qualifying only on a collision: a
+route that belongs to an org keeps its exact-match entries and its semantic
+index under that org whether or not another org shares the name, and a global
+route keeps the key it had. Cached answers outlive the routes that wrote them
+(a route can set a long TTL), so a key that changed with the sharing would let
+an org's entries, written while its name was unshared, answer a later route of
+the same name in another org once the first route is gone. The price is one
+cold cache for org routes on upgrade.
 
 ### 4. What logs, metrics and health events record
 

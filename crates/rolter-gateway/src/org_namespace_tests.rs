@@ -221,3 +221,103 @@ async fn a_refused_connection_parks_only_its_own_orgs_target() {
     assert!(!state.cooldowns.is_parked("chat", 0));
     assert_eq!(ask(gw, "org-a", "hello").await, (200, "from-a".to_string()));
 }
+
+/// A snapshot of `routes` and `providers`, given as JSON rows.
+fn snapshot_of(providers: Value, routes: Value) -> crate::state::Snapshot {
+    let config: GatewayConfig =
+        serde_json::from_value(json!({"providers": providers, "routes": routes})).unwrap();
+    crate::state::Snapshot::build(&config, &crate::load::LoadTracker::new())
+}
+
+fn faq(org: Option<&str>) -> Value {
+    let mut route = json!({"model": "faq", "targets": [{"provider": "p"}]});
+    if let Some(org) = org {
+        route["tenancy"] = json!({"org_id": org});
+    }
+    route
+}
+
+fn provider(org: Option<&str>) -> Value {
+    let mut provider =
+        json!({"name": "p", "kind": "openai_compatible", "api_base": "https://p.example"});
+    if let Some(org) = org {
+        provider["tenancy"] = json!({"org_id": org});
+    }
+    provider
+}
+
+/// The exact-cache key of the route `org` resolves `faq` to.
+fn faq_key(snapshot: &crate::state::Snapshot, org: &str) -> String {
+    let entry = snapshot.routes.get(org, "faq").unwrap();
+    ResponseCache::make_key(
+        "rolter",
+        "/v1/chat/completions",
+        crate::handlers::cache_scope(entry, ""),
+        b"{}",
+    )
+}
+
+#[test]
+fn an_org_routes_cache_key_does_not_depend_on_whether_its_name_is_shared() {
+    let both = json!([provider(Some("org-a")), provider(Some("org-b"))]);
+    let a_alone = snapshot_of(both.clone(), json!([faq(Some("org-a"))]));
+    let shared = snapshot_of(
+        both.clone(),
+        json!([faq(Some("org-a")), faq(Some("org-b"))]),
+    );
+    let b_alone = snapshot_of(both, json!([faq(Some("org-b"))]));
+    let global = snapshot_of(json!([provider(None)]), json!([faq(None)]));
+
+    // org-a keeps one key whether or not org-b shares the name, so its entries
+    // never sit under a key a later org-b route would read once org-a's route
+    // is gone and the name is unshared again
+    assert_eq!(faq_key(&a_alone, "org-a"), faq_key(&shared, "org-a"));
+    assert_eq!(faq_key(&b_alone, "org-b"), faq_key(&shared, "org-b"));
+    assert_ne!(faq_key(&a_alone, "org-a"), faq_key(&b_alone, "org-b"));
+    // a global route keeps the key it always had, which no org route takes
+    let global_key = faq_key(&global, "");
+    assert_eq!(
+        global_key,
+        ResponseCache::make_key("rolter", "/v1/chat/completions", "", b"{}")
+    );
+    assert_ne!(global_key, faq_key(&a_alone, "org-a"));
+}
+
+#[test]
+fn a_reference_that_resolves_to_nothing_never_names_another_orgs_provider() {
+    // org-a's `p` is the only provider of that name, so its runtime id is the
+    // bare name; a global route naming `p` must not land on it
+    let snapshot = snapshot_of(json!([provider(Some("org-a"))]), json!([faq(None)]));
+    let entry = snapshot.routes.get("", "faq").unwrap();
+    let target = &entry.route.targets[0].provider;
+    assert!(target.starts_with('\u{0}'), "{target:?}");
+    assert!(!snapshot.providers.contains_key(target));
+    assert!(snapshot.providers.contains_key("p"));
+}
+
+#[test]
+fn a_route_name_spelling_another_orgs_namespace_does_not_share_its_state() {
+    // org-a names a route `faq@org-b`, which is exactly the namespace org-b's
+    // `faq` takes once a global `faq` shares the name: the first keeps it
+    let snapshot = snapshot_of(
+        json!([
+            provider(None),
+            provider(Some("org-a")),
+            provider(Some("org-b"))
+        ]),
+        json!([
+            {"model": "faq@org-b", "targets": [{"provider": "p"}], "tenancy": {"org_id": "org-a"}},
+            faq(None),
+            faq(Some("org-b")),
+        ]),
+    );
+    let squatter = snapshot.routes.get("org-a", "faq@org-b").unwrap();
+    assert_eq!(squatter.namespace, "faq@org-b");
+    assert!(snapshot.routes.owned_by("org-b", "faq").is_none());
+    let namespaces: std::collections::HashSet<&str> = snapshot
+        .routes
+        .values()
+        .map(|entry| entry.namespace.as_str())
+        .collect();
+    assert_eq!(namespaces.len(), snapshot.routes.len());
+}
