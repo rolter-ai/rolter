@@ -372,6 +372,24 @@ struct TargetRow {
 }
 
 #[derive(FromRow)]
+struct VariantRow {
+    id: Uuid,
+    route_id: Uuid,
+    name: String,
+    weight: i32,
+    params: serde_json::Value,
+}
+
+#[derive(FromRow)]
+struct VariantTargetRow {
+    variant_id: Uuid,
+    provider_org_id: Uuid,
+    provider_name: String,
+    upstream_model: Option<String>,
+    weight: i32,
+}
+
+#[derive(FromRow)]
 struct ProviderGroupRow {
     id: Uuid,
     org_id: Uuid,
@@ -826,6 +844,27 @@ impl PostgresConfigStore {
         .await
         .map_err(store_err)?;
 
+        // the weighted variants (#391), in declared order with their targets
+        // in routing order: the gateway samples by weight and falls back
+        // through the rest in that order, so the order is the routing
+        let variant_rows: Vec<VariantRow> = sqlx::query_as(
+            "select id, route_id, name, weight, params
+             from route_variants order by route_id, position",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(store_err)?;
+        let variant_target_rows: Vec<VariantTargetRow> = sqlx::query_as(
+            "select vt.variant_id, p.org_id as provider_org_id, p.name as provider_name,
+                    vt.upstream_model, vt.weight
+             from route_variant_targets vt
+             join providers p on p.id = vt.provider_id
+             order by vt.variant_id, vt.position",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(store_err)?;
+
         let mut routes = Vec::with_capacity(route_rows.len());
         for r in route_rows {
             let strategy = parse_strategy(&r.strategy)?;
@@ -882,10 +921,16 @@ impl PostgresConfigStore {
                     })
                 })
                 .collect::<Vec<_>>();
+            let variants = route_variants(&r, &variant_rows, &variant_target_rows, left_out);
             // a route left with only restricted targets could never dial
             // anything, and one such route would fail validation of the whole
-            // snapshot, so it is left out instead (#1584)
-            if !targets.is_empty() && targets.iter().all(Target::is_restricted) {
+            // snapshot, so it is left out instead (#1584). the classic pool and
+            // every variant count together, as validation counts them
+            let mut every_target = targets
+                .iter()
+                .chain(variants.iter().flat_map(|v| v.targets.iter()))
+                .peekable();
+            if every_target.peek().is_some() && every_target.all(Target::is_restricted) {
                 tracing::warn!(
                     route = %r.model,
                     "{}",
@@ -900,8 +945,7 @@ impl PostgresConfigStore {
                 params: settings.params,
                 param_policy: settings.param_policy,
                 advanced: settings.advanced,
-                // db-backed variants land with their own store follow-up
-                variants: Default::default(),
+                variants,
                 // response-cache opt-in is config-only for now; a db-backed
                 // cache policy lands with its own store follow-up
                 cache: None,
@@ -1613,6 +1657,64 @@ fn route_settings_from_row(row: &RouteRow) -> std::result::Result<RouteSettings,
         param_policy: column(row, "param_policy", &row.param_policy)?,
         advanced: column(row, "advanced", &row.advanced)?,
     })
+}
+
+/// The variants of route `r` as the gateway reads them (#391), built from the
+/// rows `load_routes` read for every route.
+///
+/// A variant target drops out on the same rules as a route target: a provider
+/// left out of the snapshot, or one of another org. A variant those rules
+/// leave with no target is dropped whole, as `GatewayConfig`'s own prune does,
+/// since validation reads a targetless variant as a defect of the snapshot.
+/// The params column is held to a json object by a check constraint
+/// (`0138`), and any object reads as a param map, so it cannot fail to parse.
+fn route_variants(
+    r: &RouteRow,
+    variant_rows: &[VariantRow],
+    target_rows: &[VariantTargetRow],
+    left_out: &HashSet<String>,
+) -> Vec<rolter_core::Variant> {
+    use serde::Deserialize;
+
+    let mut variants = Vec::new();
+    for v in variant_rows.iter().filter(|v| v.route_id == r.id) {
+        let params =
+            HashMap::<String, serde_json::Value>::deserialize(&v.params).unwrap_or_default();
+        let targets: Vec<Target> = target_rows
+            .iter()
+            .filter(|t| t.variant_id == v.id)
+            .filter(|t| !left_out.contains(&t.provider_name))
+            .filter(|t| {
+                let same_org = t.provider_org_id == r.org_id;
+                if !same_org {
+                    tracing::warn!(route = %r.model, variant = %v.name,
+                        provider = %t.provider_name,
+                        "dropping a variant target on another org's provider");
+                }
+                same_org
+            })
+            .map(|t| Target {
+                provider: t.provider_name.clone(),
+                model: t.upstream_model.clone(),
+                weight: t.weight.max(0) as u32,
+                // `route_variant_targets` stores no failure classes yet, so a
+                // variant target is an ordinary pool member
+                takes_over: Vec::new(),
+            })
+            .collect();
+        if targets.is_empty() {
+            tracing::warn!(route = %r.model, variant = %v.name,
+                "dropping a variant with no target the snapshot can serve");
+            continue;
+        }
+        variants.push(rolter_core::Variant {
+            name: v.name.clone(),
+            weight: v.weight.max(0) as u32,
+            targets,
+            params,
+        });
+    }
+    variants
 }
 
 /// What kind of JSON value this is, for a problem line that must not echo it:
@@ -2934,6 +3036,111 @@ mod tests {
         .unwrap();
         let after = order(store.load_routes(&HashSet::new()).await.unwrap());
         assert_eq!(after, before, "a weight edit keeps the target order");
+    }
+
+    /// #391: a variant target drops out of the snapshot on the rules a route
+    /// target does, a provider of another org and a provider left out of the
+    /// snapshot, and a variant those rules leave with no target is dropped
+    /// whole rather than served empty. The variants keep their declared order.
+    #[tokio::test]
+    async fn variant_targets_load_on_the_route_target_rules() {
+        if !test_database::is_configured() {
+            eprintln!("skipping: {} not set", test_database::URL_ENV);
+            return;
+        }
+        let db = fresh_db().await;
+        let pool = db.pool().clone();
+        let store = PostgresConfigStore {
+            pool: pool.clone(),
+            kek: None,
+        };
+        let provider = |org_id: Uuid, name: &'static str| {
+            let pool = pool.clone();
+            async move {
+                repo::ProviderRepo(&pool)
+                    .create(
+                        org_id,
+                        repo::NewProvider {
+                            name,
+                            slug: name,
+                            kind: "openai",
+                            api_base: "https://api.openai.com",
+                            api_key_env: Some("OPENAI_API_KEY"),
+                            egress_proxy: None,
+                            egress_proxies: &[],
+                            kv_events: None,
+                            lmcache: None,
+                            project_id: None,
+                            allow_custom_api_base: false,
+                        },
+                    )
+                    .await
+                    .unwrap()
+                    .id
+            }
+        };
+        let org = repo::OrgRepo(&pool).create("acme", "acme").await.unwrap();
+        let other = repo::OrgRepo(&pool)
+            .create("globex", "globex")
+            .await
+            .unwrap();
+        let team = repo::TeamRepo(&pool).create(org.id, "core").await.unwrap();
+        let project = repo::ProjectRepo(&pool)
+            .create(team.id, "default")
+            .await
+            .unwrap();
+        let route = repo::RouteRepo(&pool)
+            .create(project.id, "split", "round_robin")
+            .await
+            .unwrap();
+        let own = provider(org.id, "own").await;
+        let dropped = provider(org.id, "dropped").await;
+        let foreign = provider(other.id, "foreign").await;
+        let target = |provider_id: Uuid| repo::RouteVariantTargetSpec {
+            provider_id,
+            upstream_model: None,
+            weight: 1,
+        };
+        let variant =
+            |name: &str, targets: Vec<repo::RouteVariantTargetSpec>| repo::RouteVariantSpec {
+                name: name.to_string(),
+                weight: 1,
+                params: serde_json::json!({}),
+                targets,
+            };
+        // the write path refuses a foreign provider, so it is written here
+        // directly, as a row from before that check would be
+        repo::RouteVariantRepo(&pool)
+            .replace(
+                route.id,
+                &[
+                    variant("mixed", vec![target(foreign), target(own), target(dropped)]),
+                    variant("stranded", vec![target(foreign), target(dropped)]),
+                    variant("plain", vec![target(own)]),
+                ],
+            )
+            .await
+            .unwrap();
+
+        let left_out: HashSet<String> = ["dropped".to_string()].into();
+        let routes = store.load_routes(&left_out).await.unwrap();
+        let split = routes.iter().find(|r| r.model == "split").unwrap();
+        let shape: Vec<(String, Vec<String>)> = split
+            .variants
+            .iter()
+            .map(|v| {
+                let providers = v.targets.iter().map(|t| t.provider.clone()).collect();
+                (v.name.clone(), providers)
+            })
+            .collect();
+        assert_eq!(
+            shape,
+            [
+                ("mixed".to_string(), vec!["own".to_string()]),
+                ("plain".to_string(), vec!["own".to_string()]),
+            ],
+            "a foreign or left-out target is dropped, and so is a variant left with none"
+        );
     }
 
     #[tokio::test]

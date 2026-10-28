@@ -42,3 +42,4 @@ mod snapshot;
 mod sso;
 mod support;
 mod users;
+mod variants;

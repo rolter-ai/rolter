@@ -2054,6 +2054,8 @@ function pricedAt(
       | "audio_input_per_mtok"
       | "audio_output_per_mtok"
       | "cached_audio_input_per_mtok"
+      | "source"
+      | "source_imported_at"
     >
   > = {},
 ): FetchStub {
@@ -2713,5 +2715,91 @@ export const TargetRefusedByTheProvidersScope: Story = {
     await expectToast(canvasElement, /cannot use provider 'search-private'/, "error");
     // the sheet stays open on the draft
     await expect(sheet()).toBeVisible();
+  },
+};
+
+// --- where the model's price came from (#966) ---
+
+const CATALOGUE_PROVENANCE = {
+  source: "LiteLLM model_prices_and_context_window",
+  source_imported_at: "2026-10-01T00:00:00Z",
+};
+
+/** an imported price is named as a catalogue value that can change, with its snapshot */
+export const NamesACataloguePriceAsSubjectToChange: Story = {
+  render: () => (
+    <Stage mode="edit" route={ROUTE} stub={pricedAt(null, null, CATALOGUE_PROVENANCE)} />
+  ),
+  play: async () => {
+    const dialog = within(sheet());
+    await seeded(dialog);
+    await userEvent.click(dialog.getByRole("button", { name: "Pricing override" }));
+    await expect(
+      dialog.getByText(
+        "Catalogue price from LiteLLM model_prices_and_context_window, snapshot Oct 1, 2026 — subject to change.",
+      ),
+    ).toBeInTheDocument();
+  },
+};
+
+/** saving the route does not write a catalogue price back, which would make it an override */
+export const SavingTheRouteKeepsACataloguePriceACataloguePrice: Story = {
+  render: () => (
+    <Stage mode="edit" route={ROUTE} stub={pricedAt(null, null, CATALOGUE_PROVENANCE)} />
+  ),
+  play: async () => {
+    const dialog = within(sheet());
+    await seeded(dialog);
+    await userEvent.click(dialog.getByRole("button", { name: "Pricing override" }));
+    await pickOption(dialog.getByLabelText("Strategy"), /^weighted\b/);
+    await userEvent.click(dialog.getByRole("button", { name: "Save route" }));
+    await waitFor(() => expect(calls.calls.some((c) => c.method === "PUT")).toBe(true));
+    calls.expectNotSent("PUT", "/api/v1/model-prices");
+  },
+};
+
+/** editing the rates is the operator taking the price over, so it is written */
+export const EditingACataloguePriceWritesIt: Story = {
+  render: () => (
+    <Stage mode="edit" route={ROUTE} stub={pricedAt(null, null, CATALOGUE_PROVENANCE)} />
+  ),
+  play: async () => {
+    const dialog = within(sheet());
+    await seeded(dialog);
+    await userEvent.click(dialog.getByRole("button", { name: "Pricing override" }));
+    const input = dialog.getByLabelText("Input USD/Mtok");
+    await userEvent.clear(input);
+    await userEvent.type(input, "3");
+    await userEvent.click(dialog.getByRole("button", { name: "Save route" }));
+    await calls.expectSentBody("PUT", "/api/v1/model-prices");
+  },
+};
+
+export const NamesAnOperatorPriceAsYours: Story = {
+  render: () => (
+    <Stage
+      mode="edit"
+      route={ROUTE}
+      stub={pricedAt(null, null, { source: null, source_imported_at: null })}
+    />
+  ),
+  play: async () => {
+    const dialog = within(sheet());
+    await seeded(dialog);
+    await userEvent.click(dialog.getByRole("button", { name: "Pricing override" }));
+    await expect(dialog.getByText("Your price (override).")).toBeInTheDocument();
+    await expect(dialog.queryByText(/Catalogue price from/)).toBeNull();
+  },
+};
+
+/** a model with no price says nothing about where it came from */
+export const SaysNothingAboutAnUnpricedModel: Story = {
+  render: () => <Stage mode="edit" route={ROUTE} />,
+  play: async () => {
+    const dialog = within(sheet());
+    await seeded(dialog);
+    await userEvent.click(dialog.getByRole("button", { name: "Pricing override" }));
+    await expect(dialog.queryByText(/Catalogue price from/)).toBeNull();
+    await expect(dialog.queryByText(/Your price \(override\)/)).toBeNull();
   },
 };

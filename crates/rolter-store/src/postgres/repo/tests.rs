@@ -1579,6 +1579,72 @@ async fn route_update_is_one_transaction() {
     assert!(matches!(missing, Error::NotFound(_)), "{missing:?}");
 }
 
+/// #984: a provider's cache-reporting verdict is stored with its time, replaced
+/// by the next probe, and listed only for its own org.
+#[tokio::test]
+async fn a_cache_probe_verdict_is_replaced_by_the_next_probe() {
+    if !super::super::test_database::is_configured() {
+        eprintln!("skipping: {} not set", super::super::test_database::URL_ENV);
+        return;
+    }
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let org = OrgRepo(&pool).create("acme", "acme").await.unwrap();
+    let other = OrgRepo(&pool).create("other", "other").await.unwrap();
+    let insert = |org_id: Uuid, name: &'static str| {
+        let pool = pool.clone();
+        async move {
+            sqlx::query_scalar::<_, Uuid>(
+                "insert into providers (org_id, name, slug, kind, api_base)
+                 values ($1, $2, $2, 'openai', 'https://api.openai.com') returning id",
+            )
+            .bind(org_id)
+            .bind(name)
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+        }
+    };
+    let mine = insert(org.id, "mine").await;
+    let theirs = insert(other.id, "theirs").await;
+    let repo = ProviderCacheProbeRepo(&pool);
+    assert!(repo.list(org.id).await.unwrap().is_empty(), "never probed");
+
+    let first = repo.record(mine, false, None, "gpt-x").await.unwrap();
+    assert!(!first.reports);
+    repo.record(theirs, true, Some("/cached_tokens"), "gpt-y")
+        .await
+        .unwrap();
+    let second = repo
+        .record(
+            mine,
+            true,
+            Some("/prompt_tokens_details/cached_tokens"),
+            "gpt-x",
+        )
+        .await
+        .unwrap();
+    assert!(second.reports && second.probed_at >= first.probed_at);
+
+    let listed = repo.list(org.id).await.unwrap();
+    assert_eq!(listed.len(), 1, "the other org's verdict is not listed");
+    assert_eq!(listed[0].provider_id, mine);
+    assert_eq!(
+        listed[0].spelling.as_deref(),
+        Some("/prompt_tokens_details/cached_tokens")
+    );
+
+    sqlx::query("delete from providers where id = $1")
+        .bind(mine)
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert!(
+        repo.list(org.id).await.unwrap().is_empty(),
+        "deleted with the provider"
+    );
+}
+
 #[tokio::test]
 async fn mcp_tool_discovery_keeps_the_manifest_when_a_later_attempt_fails() {
     if !super::super::test_database::is_configured() {

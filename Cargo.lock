@@ -2925,6 +2925,7 @@ dependencies = [
  "rolter-auth",
  "rolter-balancer",
  "rolter-core",
+ "rolter-proxy",
  "rolter-store",
  "rust_decimal",
  "scalar_api_reference",

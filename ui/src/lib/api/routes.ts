@@ -50,6 +50,11 @@ export interface RouteRow {
    */
   targets?: RouteTargetRow[];
   /**
+   * the route's weighted variants (#391); present only when the list was read
+   * with `include: ["variants"]`
+   */
+  variants?: RouteVariantRow[];
+  /**
    * the route's complexity policy; present only when the list was read with
    * `include: ["complexity"]`. `{ tiers: [] }` is a route with no policy
    */
@@ -66,7 +71,7 @@ export interface RouteTargetRow {
 }
 
 /** what `GET /api/v1/projects/{id}/routes` can embed beside each route */
-export type RouteInclude = "targets" | "complexity";
+export type RouteInclude = "targets" | "variants" | "complexity";
 
 /**
  * A project's routes. `include` embeds each route's targets and/or complexity
@@ -131,6 +136,51 @@ export function updateRouteParams(
 
 export function fetchRouteTargets(routeId: string): Promise<RouteTargetRow[]> {
   return getJson<RouteTargetRow[]>(`/api/v1/routes/${routeId}/targets`);
+}
+
+/**
+ * One weighted variant of a route (#391), in fallback order (`position`), with
+ * its targets in routing order. A route with variants samples one by weight per
+ * request and falls back through the rest; its own targets are not used.
+ */
+export interface RouteVariantRow {
+  id: string;
+  route_id: string;
+  name: string;
+  weight: number;
+  position: number;
+  params: Record<string, unknown>;
+  created_at: string;
+  targets: RouteVariantTargetRow[];
+}
+
+export interface RouteVariantTargetRow {
+  id: string;
+  variant_id: string;
+  provider_id: string;
+  upstream_model?: string | null;
+  weight: number;
+  position: number;
+}
+
+/** One variant as `PUT /api/v1/routes/{id}/variants` takes it. */
+export interface RouteVariantInput {
+  name: string;
+  weight: number;
+  params?: Record<string, unknown>;
+  targets: RouteTargetInput[];
+}
+
+export function fetchRouteVariants(routeId: string): Promise<RouteVariantRow[]> {
+  return getJson<RouteVariantRow[]>(`/api/v1/routes/${routeId}/variants`);
+}
+
+/** Replace the route's whole variant set; an empty list puts it back on its targets. */
+export function setRouteVariants(
+  routeId: string,
+  variants: RouteVariantInput[],
+): Promise<RouteVariantRow[]> {
+  return sendJson<RouteVariantRow[]>("PUT", `/api/v1/routes/${routeId}/variants`, { variants });
 }
 
 export function createRouteTarget(

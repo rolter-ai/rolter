@@ -4,6 +4,7 @@ import { Boxes, ChevronRight, Lock, Tag } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 
+import { CacheReportingBadge } from "@/components/CacheReportingBadge";
 import { GatedButton } from "@/components/GatedButton";
 import { LoadError } from "@/components/LoadError";
 import { ListSkeleton } from "@/components/LoadingState";
@@ -52,10 +53,12 @@ import {
 import { errorText } from "@/lib/error-copy";
 import { useFormat } from "@/lib/i18n/format";
 import { HEALTH_SLA, targetViews, type RouteTargetView } from "@/lib/route-targets";
+import { summarizeCacheReporting, type CacheReporting } from "@/lib/cache-reporting";
 import { useScope } from "@/lib/scope";
 import { strategyHintKey } from "@/lib/strategies";
 import { useToast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
+import { useProviderCacheProbes } from "@/lib/use-provider-cache-probes";
 import { useScreenReady } from "@/lib/ux-react";
 
 // model · provider · strategy · targets · origin · price · actions. strategy
@@ -88,6 +91,12 @@ interface CatalogRow {
    * second provider used to be invisible to both (#1202)
    */
   providerNames: string[];
+  /**
+   * whether those providers report prompt-cache metrics, by the rule of
+   * `summarizeCacheReporting`. `null` when the verdicts could not be read or
+   * the route's providers are unknown, so the column shows nothing
+   */
+  cache: CacheReporting | null;
   /**
    * where the route's traffic goes, carried by the catalog entry itself
    * (#2210). `null` only when the control plane predates that field, and then
@@ -141,6 +150,11 @@ export default function Models() {
     queryFn: () => fetchProviders(scope.orgId as string),
     enabled: !!scope.orgId,
   });
+  const cacheProbes = useProviderCacheProbes(scope.orgId);
+  // a target names its provider; the verdicts are keyed by id. a name this
+  // org's provider list does not hold (or a list not read yet) maps to no id,
+  // which is "never probed" once the verdicts themselves have been read
+  const providerIdByName = new Map((providers.data ?? []).map((p) => [p.name, p.id]));
   const prices = useQuery({
     queryKey: ["model-prices"],
     queryFn: fetchModelPrices,
@@ -239,6 +253,15 @@ export default function Models() {
             })
           : (providerNames[0] ?? "—"),
       providerNames,
+      // the verdicts are read per org, so a row is judged only on the scope's
+      // own providers, and not before the provider list that maps names to ids
+      // has been read
+      cache: providers.isSuccess
+        ? summarizeCacheReporting(
+            providerNames.map((n) => providerIdByName.get(n)),
+            cacheProbes.byProvider,
+          )
+        : null,
       targets,
       targetCount: targets?.length ?? entry.targets,
       strategy: entry.strategy,
@@ -461,14 +484,17 @@ export default function Models() {
                     </span>
                   )}
                 </ListCell>
-                <ListCell
-                  className={cn(
-                    "truncate font-mono text-xs text-[color:var(--text-secondary)]",
-                    r.providerNames.length > 1 && "cursor-help",
-                  )}
-                  title={r.providerNames.length > 1 ? r.providerNames.join(", ") : undefined}
-                >
-                  {r.providerName}
+                <ListCell className="flex min-w-0 flex-col items-start gap-1">
+                  <span
+                    className={cn(
+                      "max-w-full truncate font-mono text-xs text-[color:var(--text-secondary)]",
+                      r.providerNames.length > 1 && "cursor-help",
+                    )}
+                    title={r.providerNames.length > 1 ? r.providerNames.join(", ") : undefined}
+                  >
+                    {r.providerName}
+                  </span>
+                  <CacheReportingBadge state={r.cache} />
                 </ListCell>
                 <ListCell className="flex min-w-0 flex-col items-start gap-0.5">
                   <StrategyBadge strategy={r.strategy} />

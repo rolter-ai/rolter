@@ -350,6 +350,19 @@ const CAPABILITIES: &[Capability] = &[
         delete: NA,
         action_scopes: NONE,
     },
+    // the savings advisor (#1581): spend re-priced at the cheaper models of
+    // each route's pool. It reads the same rows as `analytics`, scoped the
+    // same way, and names nothing those rows do not already show, so the same
+    // floor; its own row so a custom role can grant or withhold it alone
+    Capability {
+        resource: "savings",
+        scope: "project",
+        read: VIEWER,
+        create: NA,
+        update: NA,
+        delete: NA,
+        action_scopes: NONE,
+    },
     // the request and response bodies payload capture stored with those rows
     // (#1820): the most sensitive thing the logs hold, so a member's by
     // default. A project admin may lower the bar to viewer for their own
@@ -2315,6 +2328,7 @@ mod tests {
         ("openapi.rs", include_str!("openapi.rs")),
         ("proxy.rs", include_str!("proxy.rs")),
         ("plugins.rs", include_str!("plugins.rs")),
+        ("price_catalogue.rs", include_str!("price_catalogue.rs")),
         ("public_routes.rs", include_str!("public_routes.rs")),
         ("public_url.rs", include_str!("public_url.rs")),
         ("rbac.rs", include_str!("rbac.rs")),
@@ -2325,6 +2339,7 @@ mod tests {
         ),
         ("request_timeout.rs", include_str!("request_timeout.rs")),
         ("runtime_policy.rs", include_str!("runtime_policy.rs")),
+        ("savings.rs", include_str!("savings.rs")),
         ("scim.rs", include_str!("scim.rs")),
         ("scim_groups.rs", include_str!("scim_groups.rs")),
         ("secret_env.rs", include_str!("secret_env.rs")),

@@ -26,6 +26,7 @@
 //! open objects: imprecise, but present, so a generated SDK has the call even
 //! where it cannot yet have the struct.
 
+// spec-ref: openapi
 use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
@@ -389,8 +390,8 @@ const ASSIGNMENT_SUBJECT_QUERY: &[QueryParam] = &[
 const ROUTE_INCLUDE_QUERY: &[QueryParam] = &[QueryParam::new(
     "include",
     "string",
-    "comma-separated extras to embed in each route: `targets` and `complexity`; omitted, the \
-     list carries neither, and a value outside those two is a 400",
+    "comma-separated extras to embed in each route: `targets`, `variants` and `complexity`; \
+     omitted, the list carries none of them, and a value outside those three is a 400",
 )];
 
 /// The access-profile list's query string: what to embed beside each profile.
@@ -409,6 +410,25 @@ const PROVIDER_TEST_QUERY: &[QueryParam] = &[QueryParam::new(
     "an upstream model name to look up in the provider's catalogue; the response then carries \
      `model_listed`: true or false, or null when the provider has no catalogue to check",
 )];
+
+const PROVIDER_CACHE_PROBE_QUERY: &[QueryParam] = &[QueryParam::new(
+    "model",
+    "string",
+    "the upstream model to ask for one token (required); the probe is a completion, so it costs a token",
+)];
+
+const PRICE_CATALOGUE_QUERY: &[QueryParam] = &[
+    QueryParam::new(
+        "q",
+        "string",
+        "a substring of the model id; every model when omitted",
+    ),
+    QueryParam::new(
+        "limit",
+        "integer",
+        "at most this many entries (default and ceiling 200)",
+    ),
+];
 
 /// The MCP call log's query string. The same keyset-paging problem as the
 /// invocation log below, and the one #1412 names first: `next_cursor` comes
@@ -590,6 +610,40 @@ const DASHBOARD_QUERY: &[QueryParam] = &[
     PROJECT_FILTER,
 ];
 
+/// The savings advisor's window, scope and thresholds (#1581).
+const SAVINGS_QUERY: &[QueryParam] = &[
+    SINCE,
+    UNTIL,
+    QueryParam::new(
+        "org",
+        "string",
+        "exact org id; omit for every org the caller may read",
+    ),
+    PROJECT_FILTER,
+    QueryParam::new(
+        "route",
+        "string",
+        "exact route (its public model name); omit for every route",
+    ),
+    KEY_FILTER,
+    QueryParam::new(
+        "max_prompt_tokens",
+        "integer",
+        "a request with a longer prompt is not substitutable; defaults to 4000",
+    ),
+    QueryParam::new(
+        "max_completion_tokens",
+        "integer",
+        "a request with a longer output is not substitutable; defaults to 1000",
+    ),
+    QueryParam::new(
+        "output_margin",
+        "number",
+        "how much longer a candidate's answers are assumed to run at the high end of the \
+         range, as a fraction; defaults to 0.25 and is clamped to 0..4",
+    ),
+];
+
 /// The window plus the bucket only the timeseries endpoint reads, and the
 /// dashboard's row filters.
 const TIMESERIES_QUERY: &[QueryParam] = &[
@@ -723,6 +777,18 @@ const INVOCATIONS_QUERY: &[QueryParam] = &[
         "unpriced",
         "boolean",
         "`true` returns only requests recorded as unpriced; omit for every request",
+    ),
+    QueryParam::new(
+        "withheld",
+        "boolean",
+        "`true` returns only requests whose response a policy withheld after the provider billed \
+         them; omit for every request",
+    ),
+    QueryParam::new(
+        "usage_unknown",
+        "boolean",
+        "`true` returns only requests the upstream answered without reporting usage, so their \
+         tokens and cost are unknown; omit for every request",
     ),
     QueryParam::new(
         "guardrail",
@@ -1286,6 +1352,20 @@ fn operations() -> Vec<Op> {
             )
             .query(PROVIDER_TEST_QUERY)
             .body(Payload::Empty),
+            Op::post(
+                "/api/v1/providers/{id}/probe-cache",
+                "probeProviderCache",
+                "Ask a provider for one token and record whether the answer's usage carries prompt-cache metrics (needs provider:update)",
+            )
+            .query(PROVIDER_CACHE_PROBE_QUERY)
+            .body(Payload::Empty)
+            .ok(Payload::Open),
+            Op::get(
+                "/api/v1/orgs/{org_id}/provider-cache-probes",
+                "listProviderCacheProbes",
+                "List the stored prompt-cache reporting verdicts of an org's providers; a provider with no entry was never probed",
+            )
+            .ok(Payload::Open),
             Op::get(
                 "/api/v1/providers/{id}/models",
                 "listProviderModels",
@@ -1337,7 +1417,7 @@ fn operations() -> Vec<Op> {
             Op::get(
                 "/api/v1/projects/{project_id}/routes",
                 "listRoutes",
-                "List a project's routes; `include` embeds each route's targets and complexity policy so a screen needs one request, not one per route",
+                "List a project's routes; `include` embeds each route's targets, variants and complexity policy so a screen needs one request, not one per route",
             )
             .query(ROUTE_INCLUDE_QUERY)
             .ok(Payload::List("Route")),
@@ -1368,6 +1448,19 @@ fn operations() -> Vec<Op> {
                 "Replace a route's catalog metadata and execution policy (headers, timeout, retries, output-token cap, visibility, guardrails)",
             )
             .ok(Payload::Ref("Route")),
+            Op::get(
+                "/api/v1/routes/{id}/variants",
+                "listRouteVariants",
+                "List a route's weighted variants in fallback order, each with its targets in routing order",
+            )
+            .ok(Payload::List("RouteVariant")),
+            Op::put(
+                "/api/v1/routes/{id}/variants",
+                "setRouteVariants",
+                "Replace a route's weighted variants; an empty list puts the route back on its own targets",
+            )
+            .body(Payload::Ref("SetRouteVariants"))
+            .ok(Payload::List("RouteVariant")),
             Op::get(
                 "/api/v1/routes/{id}/complexity",
                 "getRouteComplexity",
@@ -1661,6 +1754,20 @@ fn operations() -> Vec<Op> {
                 "deleteModelPrice",
                 "Delete a model's price",
             ),
+            Op::get(
+                "/api/v1/model-prices/catalogue",
+                "listPriceCatalogue",
+                "Search the vendored price catalogue the importer reads (offline), with its source, licence and snapshot date",
+            )
+            .query(PRICE_CATALOGUE_QUERY)
+            .ok(Payload::Open),
+            Op::post(
+                "/api/v1/model-prices/import",
+                "importModelPrices",
+                "Import the named models' prices from the vendored catalogue; an operator-set price is never replaced",
+            )
+            .body(Payload::Open)
+            .ok(Payload::Open),
         ],
     ));
 
@@ -2201,6 +2308,20 @@ fn operations() -> Vec<Op> {
             )
             .clickhouse_read()
             .query(WINDOW_QUERY),
+            Op::get(
+                "/api/v1/analytics/savings",
+                "getAnalyticsSavings",
+                "The savings advisor: where the window's spend went (by route, upstream model and \
+                 caller, with retries and failovers, failed requests and response-cache misses \
+                 called out), which requests were substitutable, and what they would have cost at \
+                 each cheaper model already in the same route's pool, as a `low`/`high` range. It \
+                 re-prices and never evaluates quality, so it is a shortlist to test, not a \
+                 recommendation; `limits` says so on every answer. A request or a candidate whose \
+                 price is unknown is excluded and counted under `excluded`, never priced at zero",
+            )
+            .clickhouse_read()
+            .query(SAVINGS_QUERY)
+            .ok(Payload::Ref("SavingsReport")),
             Op::get(
                 "/api/v1/analytics/sampling",
                 "getAnalyticsSampling",
@@ -2826,7 +2947,7 @@ fn build_document() -> Value {
         paths.insert(path.to_string(), Value::Object(item));
     }
 
-    json!({
+    let mut doc = json!({
         "openapi": "3.1.0",
         "info": {
             "title": "rolter control plane",
@@ -2859,7 +2980,14 @@ fn build_document() -> Value {
             },
             "schemas": schemas()
         }
-    })
+    });
+    // `externalDocs` and `x-rolter-*` provenance from the specification
+    // registry (#907)
+    rolter_core::spec_registry::annotate_openapi(
+        &mut doc,
+        rolter_core::spec_registry::Plane::Control,
+    );
+    doc
 }
 
 /// The primitive schemas the entity definitions reuse, so a `uuid` is spelled
@@ -3587,6 +3715,11 @@ fn routing_schemas(p: &Prim) -> Value {
                     "description": "the route's targets, as GET /api/v1/routes/{route_id}/targets lists them; present only when the list was asked for `include=targets`",
                     "items": {"$ref": "#/components/schemas/RouteTarget"}
                 },
+                "variants": {
+                    "type": "array",
+                    "description": "the route's weighted variants, as GET /api/v1/routes/{id}/variants lists them; present only when the list was asked for `include=variants`",
+                    "items": {"$ref": "#/components/schemas/RouteVariant"}
+                },
                 "complexity": {
                     "type": "object",
                     "description": "the route's complexity policy, as GET /api/v1/routes/{id}/complexity returns it (`{\"tiers\": []}` when none is set); present only when the list was asked for `include=complexity`"
@@ -3657,6 +3790,71 @@ fn routing_schemas(p: &Prim) -> Value {
                 },
                 "created_at": timestamp
             }
+        },
+        "RouteVariant": {
+            "type": "object",
+            "required": ["id", "route_id", "name", "weight", "position", "params", "targets", "created_at"],
+            "properties": {
+                "id": uuid, "route_id": uuid,
+                "name": {"type": "string", "description": "the variant's name, unique in its route; request logs and metrics carry it"},
+                "weight": {"type": "integer", "minimum": 0, "description": "relative share of the requests that sample this variant as their primary. The API writes 1 or more; a 0 imported from rolter.toml is sampled as 1"},
+                "position": {"type": "integer", "description": "the declared order, which is the fallback chain after the sampled primary"},
+                "params": {"type": "object", "description": "variant-scoped default inference params, layered over the route's"},
+                "targets": {
+                    "type": "array",
+                    "description": "the variant's targets in routing order",
+                    "items": {"$ref": "#/components/schemas/RouteVariantTarget"}
+                },
+                "created_at": timestamp
+            }
+        },
+        "RouteVariantTarget": {
+            "type": "object",
+            "required": ["id", "variant_id", "provider_id", "weight", "position"],
+            "properties": {
+                "id": uuid, "variant_id": uuid, "provider_id": uuid,
+                "upstream_model": nullable_string,
+                "weight": {"type": "integer", "minimum": 0},
+                "position": {"type": "integer"}
+            }
+        },
+        "SetRouteVariants": {
+            "type": "object",
+            "required": ["variants"],
+            "properties": {
+                "variants": {
+                    "type": "array",
+                    "maxItems": 32,
+                    "description": "the route's whole variant set in fallback order. A variant's weight is at least 1; names are unique and not blank; each variant names 1 to 32 targets, each a provider of the route's org its project may use",
+                    "items": {
+                        "type": "object",
+                        "required": ["name", "targets"],
+                        "properties": {
+                            "name": string,
+                            "weight": {"type": "integer", "default": 1, "minimum": 1},
+                            "params": {"type": ["object", "null"], "description": "variant-scoped default inference params; omitted or null is none"},
+                            "targets": {
+                                "type": "array",
+                                "minItems": 1,
+                                "maxItems": 32,
+                                "description": "in routing order; at least one needs a weight above 0",
+                                "items": {
+                                    "type": "object",
+                                    "required": ["provider_id"],
+                                    "properties": {
+                                        "provider_id": uuid,
+                                        "upstream_model": {"type": ["string", "null"], "description": "the model name sent upstream; omitted, null or blank forwards the route's public name"},
+                                        "weight": {"type": "integer", "default": 1, "minimum": 0}
+                                    },
+                                    "additionalProperties": false
+                                }
+                            }
+                        },
+                        "additionalProperties": false
+                    }
+                }
+            },
+            "additionalProperties": false
         },
         "CreateRouteTarget": {
             "type": "object",
@@ -3957,7 +4155,16 @@ fn governance_schemas(p: &Prim) -> Value {
                     "description": "price per million cached audio input tokens; null charges them at cached_input_per_mtok when that is set, otherwise at the audio input rate"
                 },
                 "currency": string,
-                "created_at": timestamp
+                "created_at": timestamp,
+                "source": {
+                    "type": ["string", "null"],
+                    "description": "the catalogue this price was imported from (e.g. litellm), a value subject to change; null is a price an operator set, which is an override that an import never replaces"
+                },
+                "source_imported_at": {
+                    "type": ["string", "null"],
+                    "format": "date-time",
+                    "description": "the day the catalogue snapshot behind an imported price was taken; null for an operator-set price"
+                }
             }
         },
         "UpsertModelPrice": {
@@ -4012,6 +4219,65 @@ fn governance_schemas(p: &Prim) -> Value {
                 "currency": {"type": "string", "default": "USD"}
             },
             "additionalProperties": false
+        },
+        "SavingsReport": {
+            "type": "object",
+            "description": "money is in the deployment's base `currency`; counts and costs are scaled by the sampling weight",
+            "required": ["currency", "limits", "assumptions", "spend", "substitutable", "candidates", "excluded"],
+            "properties": {
+                "currency": {"type": "string"},
+                "limits": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "what the report does not claim, in prose"
+                },
+                "assumptions": {
+                    "type": "object",
+                    "description": "the thresholds and margin the report was built with, after defaults and clamping",
+                    "properties": {
+                        "max_prompt_tokens": {"type": "integer"},
+                        "max_completion_tokens": {"type": "integer"},
+                        "output_margin": {"type": "number"}
+                    }
+                },
+                "spend": {
+                    "type": "object",
+                    "description": "where the money went: totals, `multi_attempt` (requests that took more than one upstream attempt), `failed`, `cache` (hits, and misses on routes that cache), and `by_route`, `by_model` (upstream model) and `by_caller` (project and virtual key, the 50 most expensive)",
+                    "properties": {
+                        "requests": {"type": "number"},
+                        "cost_usd": {"type": "number"},
+                        "unpriced_requests": {"type": "number"},
+                        "multi_attempt": {"type": "object"},
+                        "failed": {"type": "object"},
+                        "cache": {"type": "object"},
+                        "by_route": {"type": "array", "items": {"type": "object"}},
+                        "by_model": {"type": "array", "items": {"type": "object"}},
+                        "by_caller": {"type": "array", "items": {"type": "object"}}
+                    }
+                },
+                "substitutable": {
+                    "type": "object",
+                    "description": "the requests with at least one cheaper candidate, their recorded cost, and the saving at the best candidate of each as `{low, high}`",
+                    "properties": {
+                        "requests": {"type": "number"},
+                        "current_cost_usd": {"type": "number"},
+                        "projected_savings_usd": {"type": "object"}
+                    }
+                },
+                "candidates": {
+                    "type": "array",
+                    "description": "one entry per route and current upstream model, biggest conservative saving first; each lists its `candidates` with `projected_cost_usd` and `savings_usd` as `{low, high}`",
+                    "items": {"type": "object"}
+                },
+                "excluded": {
+                    "type": "object",
+                    "description": "`requests` counts what was not re-priced by reason (`unpriced`, `failed`, `cache_hit`, `usage_unknown`, `not_a_model_call`, `no_token_usage`, `prompt_too_large`, `output_too_large`, `route_not_configured`, `no_cheaper_candidate`); `unknown_candidate_prices` names pool models with no price",
+                    "properties": {
+                        "requests": {"type": "object", "additionalProperties": {"type": "number"}},
+                        "unknown_candidate_prices": {"type": "array", "items": {"type": "string"}}
+                    }
+                }
+            }
         },
         "LogSampling": {
             "type": "object",
@@ -4256,6 +4522,40 @@ mod tests {
         );
     }
 
+    // #907: a control-plane endpoint the specification registry names must
+    // exist, and must carry the registry's provenance in the served document
+    #[test]
+    fn registry_endpoints_are_documented_with_their_provenance() {
+        let registry = rolter_core::spec_registry::registry().expect("the registry parses");
+        let doc = document();
+        assert_eq!(
+            doc["externalDocs"]["url"],
+            rolter_core::spec_registry::REGISTRY_URL
+        );
+        let mut checked = 0;
+        for spec in &registry.specs {
+            for endpoint in &spec.control_endpoints {
+                let (method, path) =
+                    rolter_core::spec_registry::parse_endpoint(endpoint).expect("validated");
+                let method = method.to_ascii_lowercase();
+                assert!(
+                    documents_operation(&method, path),
+                    "the registry names {endpoint}, which the document does not have"
+                );
+                let refs = doc["paths"][path][&method]["x-rolter-spec-refs"]
+                    .as_array()
+                    .unwrap_or_else(|| panic!("{endpoint} carries no x-rolter-spec-refs"));
+                assert!(refs.iter().any(|id| id == spec.id.as_str()), "{endpoint}");
+                checked += 1;
+            }
+        }
+        assert!(checked > 0);
+        assert_eq!(
+            doc["paths"]["/scim/v2/Users"]["get"]["externalDocs"]["url"],
+            "https://www.rfc-editor.org/rfc/rfc7644"
+        );
+    }
+
     #[test]
     fn operation_ids_are_unique() {
         let mut seen = BTreeSet::new();
@@ -4473,6 +4773,9 @@ mod tests {
         assert!(names.contains("trace_id"), "{names:?}");
         // and the unpriced ones can be asked for by themselves
         assert!(names.contains("unpriced"), "{names:?}");
+        // and so can the withheld and the unknown-usage ones (#3302)
+        assert!(names.contains("withheld"), "{names:?}");
+        assert!(names.contains("usage_unknown"), "{names:?}");
         // the list no longer pages on an offset, so documenting one would send
         // a caller down a path that silently returns the same page (#1394)
         assert!(!names.contains("offset"), "{names:?}");

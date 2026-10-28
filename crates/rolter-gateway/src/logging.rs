@@ -139,6 +139,13 @@ fn is_zero(n: &u32) -> bool {
     *n == 0
 }
 
+fn serialize_param_adjustments<S: serde::Serializer>(
+    adjustments: &rolter_proxy::ParamAdjustments,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    serializer.collect_seq(adjustments.log_entries())
+}
+
 /// One row of the ClickHouse `request_logs` table. Field names match the column
 /// names so the struct serializes directly as a `JSONEachRow` line.
 #[derive(Debug, Clone, Serialize)]
@@ -274,6 +281,17 @@ pub struct RequestLog {
     /// every request no plugin saw
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub plugin_events: Vec<String>,
+    /// Every request parameter dialect translation did not forward as sent,
+    /// one `<disposition>:<param>` entry each (`dropped`, `clamped`,
+    /// `translated`; #1586). Names only, never values. Skipped when empty, for
+    /// the reason `guardrail_events` is, so a ClickHouse without
+    /// `clickhouse/022_param_adjustments.sql` keeps accepting the rows of every
+    /// request whose parameters all went through
+    #[serde(
+        skip_serializing_if = "rolter_proxy::ParamAdjustments::is_empty",
+        serialize_with = "serialize_param_adjustments"
+    )]
+    pub param_adjustments: rolter_proxy::ParamAdjustments,
     /// what the request is billed by besides tokens (#2937), known once the
     /// request is parsed and finished off against the response when the stream
     /// ends. Not a column: the cost it produces is
@@ -346,6 +364,7 @@ impl Default for RequestLog {
             lifecycle_operation: String::new(),
             guardrail_events: Vec::new(),
             plugin_events: Vec::new(),
+            param_adjustments: rolter_proxy::ParamAdjustments::default(),
             unit_basis: crate::unit_billing::UnitBasis::Tokens,
             request_payload: String::new(),
             response_payload: String::new(),
@@ -768,6 +787,14 @@ fn merge_usage(usage: &mut Usage, value: &Value, thinking: rolter_proxy::Thinkin
 }
 
 impl Usage {
+    /// Take the cache read a response header stated, when the body stated none
+    /// (#2882). A body that does report one wins.
+    pub fn fill_cache_read(&mut self, header: Option<u32>) {
+        if let (0, Some(read)) = (self.cache_read, header) {
+            self.cache_read = read;
+        }
+    }
+
     /// The audio share of these tokens, as [`rolter_core::ModelPriceConfig::cost_with_audio`]
     /// takes it.
     pub fn audio(&self) -> rolter_core::AudioTokens {
@@ -897,6 +924,12 @@ pub struct UsageLoggingStream {
     billed: Option<Usage>,
     /// how the provider counts its thinking tokens (#2880)
     thinking: rolter_proxy::ThinkingCount,
+    /// the `response_payload` to store instead of capturing the forwarded
+    /// bytes: the placeholder-bearing body a PII restore replaced (#3240)
+    captured_payload: Option<String>,
+    /// the prompt-cache hit the response headers state (Fireworks, #2882),
+    /// used when the body states none
+    header_cache_read: Option<u32>,
 }
 
 impl UsageLoggingStream {
@@ -931,7 +964,17 @@ impl UsageLoggingStream {
             completed: false,
             billed: None,
             thinking: rolter_proxy::ThinkingCount::Stated,
+            captured_payload: None,
+            header_cache_read: None,
         }
+    }
+
+    /// Fill the row's cache read from a response header when the body states
+    /// none (#2882): `merge_usage` only sees the body, and Fireworks reports a
+    /// dedicated deployment's hit in `fireworks-cached-prompt-tokens`.
+    pub fn with_header_cache_read(mut self, header: Option<u64>) -> Self {
+        self.header_cache_read = header.map(|n| u32::try_from(n).unwrap_or(u32::MAX));
+        self
     }
 
     /// Read the usage of the buffered body the way the provider counts its
@@ -952,6 +995,22 @@ impl UsageLoggingStream {
     /// the provider charged.
     pub fn with_billed_usage(mut self, usage: Usage) -> Self {
         self.billed = Some(usage);
+        self
+    }
+
+    /// Store `payload` as the row's `response_payload` instead of capturing
+    /// the bytes this stream forwards (#3240).
+    ///
+    /// The buffered path hands a PII-restored body to this stream, and the
+    /// restored plaintext is what the sanitizer exists to keep out of rolter's
+    /// stores. The captured response is the placeholder-bearing body the
+    /// restore replaced, the same text the captured request holds, already
+    /// redacted and cut by [`capture_payload`]. `None` keeps the default, the
+    /// forwarded bytes. Billing reads the usage parsed from the upstream body
+    /// (see [`UsageLoggingStream::with_billed_usage`]); the completion
+    /// observer reads the forwarded bytes.
+    pub fn with_captured_payload(mut self, payload: Option<String>) -> Self {
+        self.captured_payload = payload;
         self
     }
 
@@ -1027,10 +1086,11 @@ impl UsageLoggingStream {
                 .client_disconnects_total
                 .fetch_add(1, Relaxed);
         }
-        let usage = self
+        let mut usage = self
             .billed
             .take()
             .unwrap_or_else(|| parse_usage_with(self.is_sse, &self.buf, self.thinking));
+        usage.fill_cache_read(self.header_cache_read);
         // a request billed by the image, the minute or the character is
         // measured in those, so a provider that reports no tokens for it has
         // not left its usage unknown when the count is read and has a rate
@@ -1092,8 +1152,10 @@ impl UsageLoggingStream {
             observer(&self.buf);
         }
         if log.capture_payloads {
-            log.response_payload =
-                capture_payload(&self.buf, log.payload_max_bytes, &log.payload_redactor);
+            log.response_payload = match self.captured_payload.take() {
+                Some(payload) => payload,
+                None => capture_payload(&self.buf, log.payload_max_bytes, &log.payload_redactor),
+            };
         }
         self.buffer_pool.recycle(std::mem::take(&mut self.buf));
         log.prompt_tokens = usage.prompt;
@@ -2226,6 +2288,40 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"
                 ..Usage::default()
             }
         );
+    }
+
+    /// Fireworks' dedicated deployments state the hit in a response header,
+    /// which the body parser cannot see (#2882); the body's own figure wins
+    #[test]
+    fn a_header_cache_read_fills_a_body_that_states_none() {
+        let mut usage = parse_usage(
+            false,
+            r#"{"usage":{"prompt_tokens":2048,"completion_tokens":5}}"#.as_bytes(),
+        );
+        usage.fill_cache_read(Some(1920));
+        assert_eq!(usage.cache_read, 1920);
+        let mut reported = parse_usage(
+            false,
+            r#"{"usage":{"prompt_tokens":2048,"prompt_tokens_details":{"cached_tokens":64}}}"#
+                .as_bytes(),
+        );
+        reported.fill_cache_read(Some(1920));
+        assert_eq!(reported.cache_read, 64);
+        let mut absent = Usage::default();
+        absent.fill_cache_read(None);
+        assert_eq!(absent.cache_read, 0);
+    }
+
+    /// Databricks' Claude endpoints: a flat `cache_read_input_tokens` beside
+    /// `prompt_tokens` (#2882)
+    #[test]
+    fn databricks_flat_cache_read_is_the_cache_read() {
+        let usage = parse_usage(
+            false,
+            r#"{"usage":{"prompt_tokens":120,"completion_tokens":5,"cache_read_input_tokens":80}}"#
+                .as_bytes(),
+        );
+        assert_eq!((usage.prompt, usage.cache_read), (120, 80));
     }
 
     /// GigaChat: `precached_prompt_tokens`

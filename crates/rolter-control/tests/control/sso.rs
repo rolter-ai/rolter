@@ -2141,6 +2141,95 @@ async fn sso_never_adopts_a_superadmin_or_an_account_with_roles_in_another_org()
     assert!(!url_param(&redirect_of(&response), "sso_code").is_empty());
 }
 
+/// An account holding a deployment role (`users.deployment_role`) carries
+/// deployment-wide authority on the account itself, so no org's provider may
+/// sign in as it, even with no memberships: refused like a superadmin, and no
+/// session is issued.
+#[tokio::test]
+async fn sso_never_adopts_an_account_holding_a_deployment_role() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let addr = serve_with_public_url(pool.clone(), Some(admin_token().to_string())).await;
+    std::env::set_var("ROLTER_KEK", TEST_KEK);
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+    let base = format!("http://{addr}");
+    let (issuer, stub) = stub_idp::serve_stub().await;
+
+    let org: Value = client
+        .post(format!("{base}/api/v1/orgs"))
+        .bearer_auth(admin_token())
+        .json(&json!({"name": "Acme", "slug": "acme-role"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let acme = org["id"].as_str().unwrap().parse::<uuid::Uuid>().unwrap();
+    let created = client
+        .post(format!("{base}/api/v1/orgs/{acme}/sso-providers"))
+        .bearer_auth(admin_token())
+        .json(&json!({
+            "name": "Acme IdP", "slug": "acme-idp", "issuer": issuer,
+            "client_id": "rolter", "client_secret": "s3cret",
+            "default_role": "member"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert!(created.status().is_success());
+
+    let ops = seed_user(&pool, "ops@example.com", false).await;
+    sqlx::query("update users set deployment_role = 'operator' where id = $1")
+        .bind(ops)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let start = client
+        .get(format!("{base}/auth/sso/acme-idp/start"))
+        .send()
+        .await
+        .unwrap();
+    let location = redirect_of(&start);
+    let state = url_param(&location, "state");
+    let nonce = url_param(&location, "nonce");
+    let mut claims = stub_idp::claims(&issuer, "rolter", &nonce, json!([]));
+    claims["email"] = json!("ops@example.com");
+    *stub.next_claims.lock().unwrap() = claims;
+    let response = client
+        .get(format!(
+            "{base}/auth/sso/acme-idp/callback?code=abc&state={state}"
+        ))
+        .header("accept", "text/html")
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), 303);
+    assert_eq!(
+        redirect_of(&response),
+        format!("{base}/login?sso_error=account_outside_org&sso=acme-idp")
+    );
+    let memberships: i64 =
+        sqlx::query_scalar("select count(*) from memberships where user_id = $1")
+            .bind(ops)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(memberships, 0, "the refused sign-in granted nothing");
+    let sessions: i64 = sqlx::query_scalar("select count(*) from sessions where user_id = $1")
+        .bind(ops)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(sessions, 0, "no session is issued");
+}
+
 fn redirect_of(response: &reqwest::Response) -> String {
     response
         .headers()

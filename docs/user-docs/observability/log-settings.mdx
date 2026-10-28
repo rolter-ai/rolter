@@ -88,6 +88,8 @@ Both kinds of redaction run on the gateway before the body is truncated and hand
 
 Redaction happening before the write is the important part: turning a field on later does not retroactively clean what is already stored, and turning it off does not expose history that was never captured.
 
+With the [PII sanitizer](/security/pii-sanitizer) on, both captured bodies are the sanitized ones: the request as it was forwarded to the provider, with placeholders in place of the personal data, and the response **before** any restoration: as the provider returned it, or, when the sanitizer's `direction` covers the response, as the sanitizer returned it with placeholders in place of what it found. A caller under a restoration policy receives the plaintext back, but the capture store never holds it.
+
 The dashboard states all of this at the point of decision: the switch that turns capture on carries a summary of exactly what will be stored — the truncation limit, the retention window, the fields redacted before the write, and which models are captured — computed from the values currently in the form, so an unsaved edit is reflected in it.
 
 ### Who can read captured payloads

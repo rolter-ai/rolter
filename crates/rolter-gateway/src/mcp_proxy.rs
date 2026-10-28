@@ -4,6 +4,7 @@
 //! the user's OAuth session. Server, owner and scope checks all happen before
 //! any downstream connection is attempted.
 
+// spec-ref: mcp-transport
 use axum::body::Body;
 use axum::extract::{OriginalUri, Path, State};
 use axum::http::{header, HeaderMap, HeaderValue, Method, StatusCode};
@@ -462,6 +463,7 @@ fn downstream_url(base: &str, tail: Option<&str>, query: Option<&str>) -> Option
     Some(url.into())
 }
 
+// spec-ref: http-semantics
 fn end_to_end_headers(mut headers: HeaderMap) -> HeaderMap {
     for name in [
         "authorization",

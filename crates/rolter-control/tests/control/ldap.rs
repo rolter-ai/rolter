@@ -388,6 +388,28 @@ async fn a_superadmins_address_is_never_adopted_by_a_directory_entry() {
 }
 
 #[tokio::test]
+async fn an_account_holding_a_deployment_role_is_never_adopted() {
+    skip_without_db!();
+    let f = fixture().await;
+    f.map(USERS, "member").await;
+    let ops = seed_user(&f.pool, "ada@example.com", false).await;
+    sqlx::query("update users set deployment_role = 'operator' where id = $1")
+        .bind(ops)
+        .execute(&f.pool)
+        .await
+        .unwrap();
+
+    assert_eq!(f.login("ada", "ada-password").await.status(), 401);
+    assert!(f.roles("ada@example.com").await.is_empty());
+    let sessions: i64 = sqlx::query_scalar("select count(*) from sessions where user_id = $1")
+        .bind(ops)
+        .fetch_one(&f.pool)
+        .await
+        .unwrap();
+    assert_eq!(sessions, 0, "no session is issued");
+}
+
+#[tokio::test]
 async fn an_account_with_a_role_in_another_org_is_never_adopted() {
     skip_without_db!();
     let f = fixture().await;

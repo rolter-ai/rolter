@@ -6,6 +6,7 @@ import { Link } from "react-router";
 
 import { FormSkeleton } from "@/components/LoadingState";
 import { GatedButton } from "@/components/GatedButton";
+import { PriceProvenanceLine } from "@/components/PriceProvenance";
 import { ModelCheckOutcome } from "@/components/ProviderTestOutcome";
 import { RouteTargetList } from "@/components/RouteTargetList";
 import { StrategyPicker } from "@/components/StrategyPicker";
@@ -1133,6 +1134,8 @@ export function ModelSheet({
   });
   const [dupFrom, setDupFrom] = React.useState("");
   const initialRef = React.useRef("");
+  // the price form as it was seeded, to tell a price left alone from one edited (#966)
+  const initialPriceRef = React.useRef("");
   // the advanced payload as it was seeded, so a save can skip the extra PUT
   // when the operator changed nothing on that half of the form
   const initialAdvancedRef = React.useRef("");
@@ -1272,6 +1275,7 @@ export function ModelSheet({
       preview: false,
     });
     initialRef.current = JSON.stringify(d);
+    initialPriceRef.current = JSON.stringify(d.price);
     initialAdvancedRef.current = JSON.stringify(
       advancedToApi(d, mode === "edit" ? (route?.advanced ?? {}) : {}),
     );
@@ -1561,7 +1565,13 @@ export function ModelSheet({
       if (draft.enabled !== r.enabled) input.enabled = draft.enabled;
       if (draft.strategy !== r.strategy) input.strategy = draft.strategy;
       await updateRoute(r.id, input);
-      if (hasPricing) {
+      // a save writes the price with the same PUT an operator uses, which makes
+      // it an override. so a catalogue price the form never touched is not
+      // written back: saving the route must not turn it into one (#966)
+      const catalogueUntouched =
+        !!prices.data?.find((p) => p.model === r.model)?.source &&
+        initialPriceRef.current === JSON.stringify(draft.price);
+      if (hasPricing && !catalogueUntouched) {
         await upsertModelPrice({
           model: r.model,
           input_per_mtok: draft.price.input.trim() || "0",
@@ -2238,6 +2248,13 @@ export function ModelSheet({
               className="space-y-3"
             >
               <p className="text-xs text-muted-foreground">{t("modelSheet.pricing.hint")}</p>
+              {/* an imported price is a catalogue value that can change; one an
+                  operator set is theirs (#966). nothing for a model with no price */}
+              <PriceProvenanceLine
+                price={
+                  mode === "edit" ? prices.data?.find((p) => p.model === route?.model) : undefined
+                }
+              />
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                 {tokenPriced &&
                   priceInput("input", t("modelSheet.pricing.input", { currency: cur }))}

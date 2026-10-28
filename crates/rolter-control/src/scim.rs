@@ -18,6 +18,7 @@
 //! [`crate::scim_groups`]; this module is the Users half plus the token
 //! lifecycle the provisioning screen needs.
 
+// spec-ref: scim
 use axum::extract::{FromRequestParts, Path, Query, State};
 use axum::http::request::Parts;
 use axum::http::StatusCode;

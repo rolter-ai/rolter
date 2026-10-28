@@ -49,8 +49,9 @@ const WS_SESSION_PARAM: &str = "rolter_session";
 // while still bounding memory per request
 const MAX_BODY: usize = 32 * 1024 * 1024;
 
-// hop-by-hop headers must not be forwarded end-to-end (RFC 7230 §6.1); host and
-// content-length are recomputed by the client/server on each leg.
+// hop-by-hop headers must not be forwarded end-to-end (RFC 9110 §7.6.1, which
+// obsoletes RFC 7230 §6.1); host and content-length are recomputed by the
+// client/server on each leg. spec-ref: http-semantics
 const HOP_BY_HOP: [&str; 8] = [
     "connection",
     "keep-alive",

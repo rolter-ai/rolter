@@ -364,6 +364,18 @@
       ]
     },
     {
+      "resource": "savings",
+      "scope": "project",
+      "actions": [
+        {
+          "action": "read",
+          "minimum_role": "viewer",
+          "superadmin_only": false,
+          "authenticated_only": false
+        }
+      ]
+    },
+    {
       "resource": "request_payload",
       "scope": "project",
       "actions": [

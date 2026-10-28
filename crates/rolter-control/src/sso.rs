@@ -24,10 +24,11 @@
 //! * **No adoption across orgs.** A provider is registered by an org's admins,
 //!   who decide every email it asserts, so it signs in as an existing account
 //!   only when every role that account holds is inside the provider's own org,
-//!   and never as a superadmin. Otherwise an org admin could point a provider
+//!   and never as a superadmin or an account holding a deployment role. Otherwise an org admin could point a provider
 //!   they control at another org's member, or at the break-glass account, and
 //!   be handed a session carrying grants their org never gave.
 
+// spec-ref: oidc-core, oidc-discovery, pkce
 use std::collections::HashSet;
 use std::sync::Arc;
 
@@ -1032,7 +1033,7 @@ async fn complete_login(
 }
 
 /// Whether `provider` may sign in as the existing account `user`: never a
-/// superadmin, and only an account whose every role sits inside the provider's
+/// superadmin or an account holding a deployment role, and only an account whose every role sits inside the provider's
 /// org. Whoever registers a provider chooses the emails it asserts, so anything
 /// wider would let one org's admins sign in as another org's members.
 async fn adoptable(
@@ -1045,6 +1046,15 @@ async fn adoptable(
             provider_id = %provider.id,
             user_id = %user.id,
             "sso sign-in refused: the email belongs to a superadmin, who signs in locally"
+        );
+        return Ok(false);
+    }
+    if user.deployment_role.is_some() {
+        tracing::warn!(
+            provider_id = %provider.id,
+            user_id = %user.id,
+            "sso sign-in refused: the email belongs to an account holding a deployment role, \
+             who signs in locally"
         );
         return Ok(false);
     }

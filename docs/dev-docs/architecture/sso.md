@@ -114,18 +114,18 @@ from a closed set (`SsoFailure` in `sso.rs`); never rename one, and add a
 dashboard translation for each new one. Nothing the identity provider said is
 in the URL.
 
-| `sso_error`               | When                                                                 |
-| ------------------------- | -------------------------------------------------------------------- |
-| `idp_error`               | the provider answered with an `error` (declined, policy)             |
-| `state_expired`           | no `state`/`code`, or a state unknown, expired, spent or mismatched  |
-| `sso_disabled`            | the org turned SSO off                                               |
-| `unknown_provider`        | `/start` named a slug no enabled provider answers to                 |
-| `no_mapped_group`         | in no mapped group and the provider has no `default_role`            |
-| `account_deactivated`     | the account is deactivated                                           |
-| `account_outside_org`     | the account is a superadmin, or holds a role in another org          |
-| `idp_verification_failed` | the provider was unreachable, or the token or id token did not check |
-| `not_configured`          | the deployment cannot finish a sign-in, e.g. no `ROLTER_KEK`         |
-| `internal_error`          | anything else                                                        |
+| `sso_error`               | When                                                                               |
+| ------------------------- | ---------------------------------------------------------------------------------- |
+| `idp_error`               | the provider answered with an `error` (declined, policy)                           |
+| `state_expired`           | no `state`/`code`, or a state unknown, expired, spent or mismatched                |
+| `sso_disabled`            | the org turned SSO off                                                             |
+| `unknown_provider`        | `/start` named a slug no enabled provider answers to                               |
+| `no_mapped_group`         | in no mapped group and the provider has no `default_role`                          |
+| `account_deactivated`     | the account is deactivated                                                         |
+| `account_outside_org`     | the account is a superadmin, holds a deployment role, or has a role in another org |
+| `idp_verification_failed` | the provider was unreachable, or the token or id token did not check               |
+| `not_configured`          | the deployment cannot finish a sign-in, e.g. no `ROLTER_KEK`                       |
+| `internal_error`          | anything else                                                                      |
 
 **What the dashboard's `/login` screen handles:** `sso_code` (call the exchange,
 store the token as a local sign-in does, clear the query string, route on) and
@@ -172,11 +172,13 @@ same manual roles. SSO-created accounts get no password — an SSO identity must
 not silently gain a second, weaker credential.
 
 A provider adopts an existing account **only when every role it holds is
-inside the provider's org**, and never a superadmin; anything else is refused
+inside the provider's org**, and never a superadmin or an account holding a deployment role
+(`users.deployment_role`: operator, security auditor); anything else is refused
 with `account_outside_org` and its roles are left alone. A provider is
 registered by an org's admins, who decide every email it asserts, so without
 this an admin of one org could point a provider they control at another org's
-member, or at the break-glass account, and be handed a session carrying grants
+member, at the break-glass account, or at an account whose deployment role
+carries deployment-wide authority, and be handed a session carrying grants
 their own org never gave. The cost is that a person with roles in two orgs
 cannot use either org's provider and signs in with their password instead.
 

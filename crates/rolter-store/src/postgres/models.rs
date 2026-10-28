@@ -290,6 +290,35 @@ pub struct RouteTarget {
     pub created_at: DateTime<Utc>,
 }
 
+/// One weighted variant of a route (#391), the stored form of a
+/// `[[routes.variants]]` entry. `position` is the declared order, which is the
+/// fallback chain after the sampled primary.
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+pub struct RouteVariant {
+    pub id: Uuid,
+    pub route_id: Uuid,
+    pub name: String,
+    pub weight: i32,
+    pub position: i32,
+    pub params: serde_json::Value,
+    pub created_at: DateTime<Utc>,
+    /// the variant's targets in routing order; filled in by the repository
+    #[sqlx(skip)]
+    #[serde(default)]
+    pub targets: Vec<RouteVariantTarget>,
+}
+
+/// One target of a [`RouteVariant`], tried in `position` order.
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+pub struct RouteVariantTarget {
+    pub id: Uuid,
+    pub variant_id: Uuid,
+    pub provider_id: Uuid,
+    pub upstream_model: Option<String>,
+    pub weight: i32,
+    pub position: i32,
+}
+
 /// A provider group: a fleet of providers addressable as `group-slug/model`
 /// (ADR-0017 addendum, ADR-0022). Org-scoped; the slug shares the provider slug
 /// namespace.
@@ -318,6 +347,20 @@ pub struct ProviderGroupMember {
     pub upstream_model: Option<String>,
     pub weight: i32,
     pub position: i32,
+}
+
+/// What the last probe of a provider observed about prompt-cache reporting
+/// (#984). A provider with no row has never been probed.
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+pub struct ProviderCacheProbe {
+    pub provider_id: Uuid,
+    /// the probed response carried a prompt-cache usage field
+    pub reports: bool,
+    /// the field it was found under, as a JSON pointer
+    pub spelling: Option<String>,
+    /// the upstream model the probe asked
+    pub model: String,
+    pub probed_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
@@ -436,6 +479,11 @@ pub struct ModelPrice {
     pub cached_audio_input_per_mtok: Option<String>,
     pub currency: String,
     pub created_at: DateTime<Utc>,
+    /// the catalogue this price was imported from (#966); `None` is a price an
+    /// operator set, which is an override that an import never replaces
+    pub source: Option<String>,
+    /// the day the catalogue snapshot the price came from was taken
+    pub source_imported_at: Option<DateTime<Utc>>,
 }
 /// singleton persisted feature flags that gate supported subsystems
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]

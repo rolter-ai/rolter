@@ -11,6 +11,7 @@ use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde_json::{json, Value};
 
+// spec-ref: openapi
 /// Build the OpenAPI document. The version tracks the crate version so a served
 /// spec always matches the running binary.
 pub fn document() -> Value {
@@ -19,7 +20,7 @@ pub fn document() -> Value {
         "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
     });
 
-    json!({
+    let mut doc = json!({
         "openapi": "3.1.0",
         "info": {
             "title": "rolter gateway",
@@ -264,7 +265,39 @@ pub fn document() -> Value {
                 }
             }
         }
-    })
+    });
+    // routed and answered 501 (`unsupported_response_lifecycle`); built apart
+    // because the literal above sits at `json!`'s recursion limit
+    for (path, method, id, summary) in [
+        (
+            "/v1/responses/{response_id}/compact",
+            "post",
+            "compactResponse",
+            "Compact a response (routed, not implemented: 501 after authentication)",
+        ),
+        (
+            "/v1/responses/{response_id}/input_tokens",
+            "get",
+            "getResponseInputTokens",
+            "Count a response's input tokens (routed, not implemented: 501 after authentication)",
+        ),
+    ] {
+        doc["paths"][path] = json!({
+            method: {
+                "summary": summary,
+                "operationId": id,
+                "parameters": [{"name": "response_id", "in": "path", "required": true, "schema": {"type": "string"}}],
+                "responses": {"401": error_response, "501": error_response}
+            }
+        });
+    }
+    // provenance comes from the specification registry rather than being
+    // written here, so a revision or url has one source (#907)
+    rolter_core::spec_registry::annotate_openapi(
+        &mut doc,
+        rolter_core::spec_registry::Plane::Gateway,
+    );
+    doc
 }
 
 /// `GET /openapi.json` — serve the OpenAPI document.
@@ -327,6 +360,8 @@ mod tests {
             "/v1/chat/completions",
             "/v1/completions",
             "/v1/responses",
+            "/v1/responses/{response_id}/compact",
+            "/v1/responses/{response_id}/input_tokens",
             "/v1/messages",
             "/v1/embeddings",
             "/v1/rerank",
@@ -346,6 +381,162 @@ mod tests {
         // security schemes are declared and referenced
         assert!(doc["components"]["securitySchemes"]["bearerAuth"].is_object());
         assert!(doc["components"]["schemas"]["Error"].is_object());
+    }
+
+    /// `METHOD /path` for every route `build_router` registers, read from its
+    /// source: axum keeps no list a test could ask for. Paths are written in
+    /// OpenAPI form (`{*path}` becomes `{path}`), and the three routes whose
+    /// path is a constant are resolved by name.
+    fn routed_endpoints() -> std::collections::BTreeSet<String> {
+        let source = include_str!("lib.rs");
+        let after = source
+            .split_once("pub fn build_router(")
+            .expect("build_router is in lib.rs")
+            .1;
+        // only the function's own body: a router built later in the file (a
+        // test's, say) must not read as gateway routes. the path templates are
+        // balanced braces, so counting them finds the body's closing one
+        let open = after.find('{').expect("build_router has a body");
+        let mut depth = 0;
+        let close = after[open..]
+            .char_indices()
+            .find_map(|(i, c)| {
+                match c {
+                    '{' => depth += 1,
+                    '}' => depth -= 1,
+                    _ => {}
+                }
+                (depth == 0).then_some(open + i)
+            })
+            .expect("build_router's body closes");
+        let body = &after[open..close];
+        let mut endpoints = std::collections::BTreeSet::new();
+        let mut rest = body;
+        while let Some(at) = rest.find(".route(") {
+            rest = &rest[at + ".route(".len()..];
+            // the call's arguments, up to its matching parenthesis
+            let mut depth = 1;
+            let end = rest
+                .char_indices()
+                .find_map(|(i, c)| {
+                    match c {
+                        '(' => depth += 1,
+                        ')' => depth -= 1,
+                        _ => {}
+                    }
+                    (depth == 0).then_some(i)
+                })
+                .expect("a balanced .route( call");
+            let call = &rest[..end];
+            let (path, handlers) = call.split_once(',').expect("route(path, handler)");
+            let path = match path.trim() {
+                "metrics_path" => "/metrics".to_string(),
+                "openapi::DOCS_BUNDLE_PATH" => DOCS_BUNDLE_PATH.to_string(),
+                "rolter_core::upstream::SYSTEM_ONE_PATH" => {
+                    rolter_core::upstream::SYSTEM_ONE_PATH.to_string()
+                }
+                literal if literal.starts_with('"') => literal.trim_matches('"').replace("{*", "{"),
+                other => panic!("route path `{other}` is not resolved by this test"),
+            };
+            let handlers: String = handlers.split_whitespace().collect();
+            for method in ["get", "post", "put", "patch", "delete"] {
+                let called = handlers.starts_with(&format!("{method}("))
+                    || handlers.contains(&format!(".{method}("));
+                if called {
+                    endpoints.insert(format!("{} {path}", method.to_ascii_uppercase()));
+                }
+            }
+            rest = &rest[end..];
+        }
+        endpoints
+    }
+
+    // #907: every gateway route is either covered by a specification record
+    // or listed as rolter's own, and no record claims a route that is gone
+    #[test]
+    fn every_route_is_in_the_specification_registry() {
+        use rolter_core::spec_registry::{parse_endpoint, registry};
+        let registry = registry().expect("the registry parses");
+        let routed = routed_endpoints();
+        assert!(routed.contains("POST /v1/chat/completions"), "{routed:?}");
+        assert!(routed.contains("DELETE /mcp/{server}/{path}"), "{routed:?}");
+
+        let mut claimed = std::collections::BTreeSet::new();
+        for endpoint in registry
+            .specs
+            .iter()
+            .flat_map(|spec| spec.gateway_endpoints.iter())
+            .chain(&registry.native.gateway_endpoints)
+        {
+            let (method, path) = parse_endpoint(endpoint).expect("validated");
+            claimed.insert(format!("{method} {path}"));
+        }
+        let uncovered: Vec<&String> = routed.difference(&claimed).collect();
+        assert!(
+            uncovered.is_empty(),
+            "routes with no record in crates/rolter-core/specifications.toml: {uncovered:?}"
+        );
+        let stale: Vec<&String> = claimed.difference(&routed).collect();
+        assert!(
+            stale.is_empty(),
+            "records claim routes that do not exist: {stale:?}"
+        );
+    }
+
+    #[test]
+    fn every_documented_operation_carries_its_provenance() {
+        let registry = rolter_core::spec_registry::registry().expect("the registry parses");
+        let doc = document();
+        assert_eq!(
+            doc["externalDocs"]["url"],
+            rolter_core::spec_registry::REGISTRY_URL
+        );
+        assert_eq!(doc["x-rolter-spec-refs"], json!(["openapi"]));
+        let paths = doc["paths"].as_object().expect("paths");
+        for (path, item) in paths {
+            for (method, operation) in item.as_object().expect("path item") {
+                if method == "parameters" {
+                    continue;
+                }
+                let endpoint = format!("{} {path}", method.to_ascii_uppercase());
+                if registry.native.gateway_endpoints.contains(&endpoint) {
+                    assert!(operation.get("x-rolter-spec-refs").is_none(), "{endpoint}");
+                    continue;
+                }
+                let refs = operation["x-rolter-spec-refs"]
+                    .as_array()
+                    .unwrap_or_else(|| panic!("{endpoint} has no x-rolter-spec-refs"));
+                for id in refs {
+                    let id = id.as_str().expect("an id");
+                    let spec = registry.spec(id).expect("a recorded id");
+                    assert_eq!(
+                        operation["x-rolter-conformance"][id],
+                        spec.conformance.as_str()
+                    );
+                    assert_eq!(operation["x-rolter-reviewed-at"][id], spec.reviewed_at);
+                }
+                let url = operation["externalDocs"]["url"]
+                    .as_str()
+                    .expect("externalDocs");
+                assert!(url.starts_with("https://"), "{endpoint}: {url}");
+            }
+        }
+        let chat = &doc["paths"]["/v1/chat/completions"]["post"];
+        assert_eq!(
+            chat["x-rolter-spec-refs"],
+            json!(["openai-chat-completions", "sse"])
+        );
+        assert_eq!(
+            chat["externalDocs"]["url"],
+            registry
+                .spec("openai-chat-completions")
+                .expect("recorded")
+                .url
+        );
+        assert_eq!(
+            doc["components"]["schemas"]["Error"]["x-rolter-spec-refs"],
+            json!(["openai-errors"])
+        );
     }
 
     #[test]

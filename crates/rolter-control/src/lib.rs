@@ -114,6 +114,8 @@ mod openapi;
 mod password_reset;
 #[cfg(feature = "postgres")]
 mod plugins;
+#[cfg(feature = "postgres")]
+mod price_catalogue;
 mod proxy;
 // a record for the guard tests; no request path reads it
 #[cfg(test)]
@@ -128,6 +130,7 @@ mod request_log_columns;
 mod request_timeout;
 #[cfg(feature = "postgres")]
 mod runtime_policy;
+mod savings;
 #[cfg(feature = "postgres")]
 mod scim;
 #[cfg(feature = "postgres")]
@@ -1252,6 +1255,7 @@ fn build_app_with(state: ControlState, mount_internal: bool) -> Router {
         // `AnalyticsAccess`, which authenticates the caller and narrows every
         // query to the tenancy they hold a role in (#1820)
         .merge(analytics::router())
+        .merge(savings::router())
         .merge(health::router())
         // the served schema and its Scalar reference. mounted unconditionally:
         // the document describes the surface this binary can serve, so it must

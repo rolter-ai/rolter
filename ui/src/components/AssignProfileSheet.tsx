@@ -80,7 +80,8 @@ export function AssignProfileSheet({
         kind === "user" ? { user_id: subject } : { team_id: subject },
       ),
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["access-profile", profile.id] });
+      // the Access Profiles cards are drawn from the list read (#3301)
+      void queryClient.invalidateQueries({ queryKey: ["access-profiles"] });
       void queryClient.invalidateQueries({ queryKey: ASSIGNMENTS_KEY() });
       toast.push({
         tone: "success",

@@ -50,6 +50,7 @@
 //! health, and a local account's own failed login must not turn into a 500
 //! because an unrelated directory is unreachable.
 
+// spec-ref: ldap
 use std::collections::HashSet;
 
 use axum::extract::{Path, State};
@@ -266,6 +267,15 @@ async fn grant_for(
                 directory_id = %directory.id,
                 user_id = %user.id,
                 "ldap sign-in refused: the address belongs to a superadmin, who signs in locally"
+            );
+            return Ok(None);
+        }
+        if user.deployment_role.is_some() {
+            tracing::warn!(
+                directory_id = %directory.id,
+                user_id = %user.id,
+                "ldap sign-in refused: the address belongs to an account holding a deployment \
+                 role, who signs in locally"
             );
             return Ok(None);
         }
