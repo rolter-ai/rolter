@@ -87,6 +87,14 @@ struct Stub {
     saw_end: AtomicBool,
     saw_reset: AtomicBool,
     opens: parking_lot::Mutex<Vec<Value>>,
+    /// lines that arrived, the first included, counted as they are read
+    /// rather than as they are answered
+    received: AtomicUsize,
+    /// send the response head only together with the first reply, as a
+    /// sanitizer that buffers its head would
+    head_with_first_reply: bool,
+    /// hold back every character it is sent, as a broken shim would
+    hold_all: bool,
 }
 
 /// The holdback: restore every whole placeholder in `pending`, and hold back
@@ -126,16 +134,49 @@ fn holdback(pending: &mut String, json: bool) -> (String, usize) {
 
 async fn restore_stream(State(stub): State<Arc<Stub>>, body: Body) -> axum::response::Response {
     stub.streams.fetch_add(1, Ordering::SeqCst);
+    let head_with_first_reply = stub.head_with_first_reply;
     let (tx, rx) = tokio::sync::mpsc::channel::<std::io::Result<Bytes>>(64);
+    let (head_tx, head_rx) = tokio::sync::oneshot::channel::<()>();
+    let mut head_tx = Some(head_tx);
+    // read apart from answering, so a stalled stub still counts what arrives
+    let (chunks_tx, mut chunks) = tokio::sync::mpsc::unbounded_channel::<Option<Bytes>>();
+    let reader = stub.clone();
     tokio::spawn(async move {
         let mut input = body.into_data_stream();
+        loop {
+            let next = match input.next().await {
+                Some(Ok(chunk)) => {
+                    let lines = chunk.iter().filter(|b| **b == b'\n').count();
+                    reader.received.fetch_add(lines, Ordering::SeqCst);
+                    Some(chunk)
+                }
+                Some(Err(_)) => None,
+                None => {
+                    let _ = chunks_tx.send(Some(Bytes::new()));
+                    return;
+                }
+            };
+            let failed = next.is_none();
+            if chunks_tx.send(next).is_err() || failed {
+                return;
+            }
+        }
+    });
+    tokio::spawn(async move {
         let mut buf = Vec::new();
         let mut opened = false;
         let mut channels: HashMap<String, (String, bool)> = HashMap::new();
         loop {
-            match input.next().await {
-                Some(Ok(chunk)) => buf.extend_from_slice(&chunk),
-                Some(Err(_)) => {
+            match chunks.recv().await {
+                // an empty chunk is the reader's clean end of the body
+                Some(Some(chunk)) if chunk.is_empty() => {
+                    if !stub.saw_end.load(Ordering::SeqCst) {
+                        stub.saw_reset.store(true, Ordering::SeqCst);
+                    }
+                    return;
+                }
+                Some(Some(chunk)) => buf.extend_from_slice(&chunk),
+                Some(None) => {
                     stub.saw_reset.store(true, Ordering::SeqCst);
                     return;
                 }
@@ -168,7 +209,11 @@ async fn restore_stream(State(stub): State<Arc<Stub>>, body: Body) -> axum::resp
                         .entry(name)
                         .or_insert_with(|| (String::new(), json));
                     entry.0.push_str(line["text"].as_str().unwrap());
-                    let (text, held) = holdback(&mut entry.0, entry.1);
+                    let (text, held) = if stub.hold_all {
+                        (String::new(), entry.0.chars().count())
+                    } else {
+                        holdback(&mut entry.0, entry.1)
+                    };
                     json!({"seq": seq, "text": text, "held": held})
                 };
                 let sent = stub.replies.load(Ordering::SeqCst);
@@ -178,6 +223,9 @@ async fn restore_stream(State(stub): State<Arc<Stub>>, body: Body) -> axum::resp
                 }
                 if stub.stall_after == Some(sent) {
                     stub.release.notified().await;
+                }
+                if let Some(head) = head_tx.take() {
+                    let _ = head.send(());
                 }
                 let mut bytes = serde_json::to_vec(&reply).unwrap();
                 bytes.push(b'\n');
@@ -189,6 +237,9 @@ async fn restore_stream(State(stub): State<Arc<Stub>>, body: Body) -> axum::resp
             }
         }
     });
+    if head_with_first_reply {
+        let _ = head_rx.await;
+    }
     let mut rx = rx;
     Body::from_stream(futures_util::stream::poll_fn(move |cx| rx.poll_recv(cx))).into_response()
 }
@@ -885,6 +936,111 @@ async fn a_stalled_sanitizer_stops_the_gateway_reading_the_upstream() {
     assert_eq!(metrics.pii_restore_errors_total.load(Ordering::SeqCst), 0);
 }
 
+/// A first token slower than `timeout_ms` (a long prefill) does not count
+/// against the pipe: the deadline starts with the first delta sent, and a
+/// sanitizer that sends its head with its first reply is answered in time.
+#[tokio::test]
+async fn a_slow_first_token_still_restores() {
+    let (stub_addr, _) = serve_stub(Stub {
+        head_with_first_reply: true,
+        ..Stub::default()
+    })
+    .await;
+    let metrics = Arc::new(Metrics::default());
+    let events = stream_events(Dialect::Chat, &segmentations(TEXT)[1], &[], &[], false);
+    let first = Bytes::from(events[0].clone());
+    let rest: Vec<_> = events[1..]
+        .iter()
+        .map(|e| Ok::<_, reqwest::Error>(Bytes::from(e.clone())))
+        .collect();
+    let upstream = futures_util::stream::once(async move {
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        Ok::<_, reqwest::Error>(first)
+    })
+    .chain(futures_util::stream::iter(rest));
+    let mut stream = restorer(stub_addr, 200, &metrics).wrap(Box::pin(upstream));
+    let mut body = Vec::new();
+    while let Some(chunk) = stream.next().await {
+        body.extend_from_slice(&chunk.unwrap());
+    }
+    assert_eq!(reassemble(Dialect::Chat, &body).a, restored(TEXT, false));
+    assert_eq!(metrics.pii_restore_errors_total.load(Ordering::SeqCst), 0);
+}
+
+/// One chunk holding a whole body — a buffered cache miss or a cached replay —
+/// is held to the window like a live stream.
+#[tokio::test]
+async fn one_large_chunk_never_leaves_more_than_the_window_unanswered() {
+    let (stub_addr, stub) = serve_stub(Stub {
+        stall_after: Some(0),
+        ..Stub::default()
+    })
+    .await;
+    let metrics = Arc::new(Metrics::default());
+    let pieces: Vec<String> = (0..2_000).map(|k| format!("w{k} ")).collect();
+    let events = stream_events(Dialect::Chat, &pieces, &[], &[], false);
+    let whole = Bytes::from(events.concat());
+    let restore = restorer(stub_addr, 30_000, &metrics);
+    let consumer = tokio::spawn(run(restore, vec![whole]));
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    // the first line is the unanswered-by-design open line
+    let unanswered = stub.received.load(Ordering::SeqCst) - 1;
+    assert!(unanswered > 0, "nothing reached the stub");
+    assert!(
+        unanswered <= crate::pii_stream::MAX_UNANSWERED_LINES,
+        "{unanswered} lines unanswered"
+    );
+    stub.release.notify_waiters();
+    let body = tokio::time::timeout(Duration::from_secs(30), consumer)
+        .await
+        .expect("the stream resumes")
+        .unwrap();
+    assert_eq!(reassemble(Dialect::Chat, &body).a, pieces.concat());
+}
+
+/// A provider that sends `"finish_reason": ""` on every chunk has not finished
+/// anything: a placeholder cut across those chunks is still restored.
+#[tokio::test]
+async fn an_empty_finish_reason_does_not_close_the_channel() {
+    let (stub_addr, _) = serve_stub(Stub::default()).await;
+    let metrics = Arc::new(Metrics::default());
+    let chunks: Vec<Bytes> = TEXT
+        .chars()
+        .map(|c| {
+            Bytes::from(event(
+                None,
+                &json!({"choices": [{"index": 0, "delta": {"content": c.to_string()}, "finish_reason": ""}]}),
+                false,
+            ))
+        })
+        .collect();
+    let body = run(restorer(stub_addr, 5_000, &metrics), chunks).await;
+    assert_eq!(reassemble(Dialect::Chat, &body).a, restored(TEXT, false));
+}
+
+/// A sanitizer that holds back more than any placeholder is not running a
+/// placeholder holdback: past the cap the reply is out of contract, and the
+/// stream goes on unrestored with nothing lost.
+#[tokio::test]
+async fn holding_more_than_the_cap_fails_into_an_unrestored_stream() {
+    let (stub_addr, _) = serve_stub(Stub {
+        hold_all: true,
+        ..Stub::default()
+    })
+    .await;
+    let metrics = Arc::new(Metrics::default());
+    let text: String = "x".repeat(rolter_core::pii_sanitizer::MAX_STREAM_HELD_CHARS + 50);
+    let pieces: Vec<String> = text.chars().map(|c| c.to_string()).collect();
+    let events = stream_events(Dialect::Chat, &pieces, &[], &[], false);
+    let body = run(
+        restorer(stub_addr, 5_000, &metrics),
+        events.into_iter().map(Bytes::from).collect(),
+    )
+    .await;
+    assert_eq!(reassemble(Dialect::Chat, &body).a, text);
+    assert_eq!(metrics.pii_restore_errors_total.load(Ordering::SeqCst), 1);
+}
+
 // ── through the gateway ──────────────────────────────────────────────────────
 
 /// Which stream the upstream serves, chosen by the request's own text.
@@ -926,6 +1082,16 @@ fn upstream_stream(dialect: Dialect, case: &str, upstream: &Upstream) -> axum::r
             Some((Ok::<_, std::io::Error>(Bytes::from(frame)), (k + 1, flag)))
         });
         return (sse, Body::from_stream(frames)).into_response();
+    }
+    if case == "json" {
+        // an upstream that ignores `"stream": true`
+        return Json(json!({
+            "id": "chatcmpl-1",
+            "object": "chat.completion",
+            "choices": [{"index": 0, "message": {"role": "assistant", "content": "hi <PERSON_1>"}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+        }))
+        .into_response();
     }
     let k: usize = case
         .strip_prefix("case:")
@@ -1161,6 +1327,25 @@ async fn wait_for_inserts(seen: &parking_lot::Mutex<Vec<String>>, count: usize) 
     panic!("expected {count} inserts, saw {:?}", seen.lock());
 }
 
+/// A streamed request the upstream answers with plain JSON has no stream to
+/// restore: it goes out as it came, and the restore error counter says so.
+#[tokio::test]
+async fn a_stream_answered_without_a_stream_is_counted() {
+    let gateway = Gateway::start(false).await;
+    let response = gateway.request(Dialect::Chat, "json").send().await.unwrap();
+    assert_eq!(response.status(), 200);
+    let body: Value = response.json().await.unwrap();
+    assert_eq!(body["choices"][0]["message"]["content"], "hi <PERSON_1>");
+    assert_eq!(
+        gateway
+            .state
+            .metrics
+            .pii_restore_errors_total
+            .load(Ordering::SeqCst),
+        1
+    );
+}
+
 /// A caller that hangs up mid-stream: the sanitizer sees its stream reset and
 /// the upstream request is dropped.
 #[tokio::test]
@@ -1226,7 +1411,7 @@ async fn no_restored_value_reaches_a_log_line_the_capture_or_the_metrics() {
         let (_, body) = gateway.ask(dialect, "case:5").await;
         assert_restored(dialect, &body, &format!("{dialect:?}"));
     }
-    // a replay too, and one stream that fails mid-way
+    // and a replay, restored again from the cache
     let (cache, _) = gateway.ask(Dialect::Chat, "case:5").await;
     assert_eq!(cache, "HIT");
     let rows = wait_for_inserts(&gateway.clickhouse, 2).await;

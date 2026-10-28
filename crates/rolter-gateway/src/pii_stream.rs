@@ -42,7 +42,7 @@ use bytes::Bytes;
 use futures_util::Stream;
 use rolter_core::pii_sanitizer::{
     PiiSanitizerConfig, RestoreStreamClose, RestoreStreamDelta, RestoreStreamEnd,
-    RestoreStreamOpen, RestoreStreamReply, WebhookAuth, WebhookTenant,
+    RestoreStreamOpen, RestoreStreamReply, WebhookAuth, WebhookTenant, MAX_STREAM_HELD_CHARS,
 };
 use serde_json::Value;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
@@ -102,6 +102,17 @@ impl StreamRestore {
             trace_id: trace_id.to_string(),
             tenant,
         }
+    }
+
+    /// The answer to a streamed request is not a stream (an upstream that
+    /// ignored `"stream": true`), so there is nothing this can restore. It
+    /// goes out with its placeholders, and the counter and the log say so.
+    pub(crate) fn not_a_stream(self) {
+        self.metrics.pii_restore_errors_total.fetch_add(1, Relaxed);
+        tracing::warn!(
+            "a streamed request was answered without a stream; its pii placeholders were not \
+             restored"
+        );
     }
 
     /// Restore `inner`, an SSE body in the caller's dialect.
@@ -228,6 +239,9 @@ impl Failure {
 /// An SSE body whose text is restored through the sanitizer on its way out.
 pub(crate) struct RestoringStream {
     inner: ByteStream,
+    /// the upstream returned its last item
+    upstream_ended: bool,
+    /// everything the upstream sent is queued as frames
     inner_done: bool,
     inner_error: Option<reqwest::Error>,
     /// bytes of an event that has not ended yet
@@ -283,6 +297,7 @@ impl RestoringStream {
         });
         let mut stream = Self {
             inner,
+            upstream_ended: false,
             inner_done: false,
             inner_error: None,
             partial: Vec::new(),
@@ -303,11 +318,13 @@ impl RestoringStream {
         };
         match request {
             Some(req) => {
-                // no per-request timeout: it would cut a long stream. the head
-                // gets `timeout_ms`, and every reply after it gets the same
+                // no timeout of its own: a sanitizer may send its head with
+                // its first reply, and the first delta can be a long prefill
+                // away. the per-line deadline, armed by the first delta sent,
+                // covers the head too
                 stream.pipe = Pipe::Opening(Box::pin(async move {
-                    match tokio::time::timeout(timeout, req.send()).await {
-                        Ok(Ok(response)) if response.status().is_success() => Some(response),
+                    match req.send().await {
+                        Ok(response) if response.status().is_success() => Some(response),
                         _ => None,
                     }
                 }));
@@ -526,7 +543,7 @@ impl RestoringStream {
                 // the held text is a suffix of everything the channel was
                 // sent, so the sanitizer cannot hold more than that. checked
                 // before anything moves, so a failure still has the tail
-                if reply.held > input_chars + tail_chars {
+                if reply.held > input_chars + tail_chars || reply.held > MAX_STREAM_HELD_CHARS {
                     return Err(Failure::Protocol);
                 }
                 let input = self
@@ -663,12 +680,21 @@ impl RestoringStream {
         }
     }
 
-    /// Split what has arrived into SSE events and queue each one.
-    fn take_events(&mut self) {
-        while let Some(end) = event_end(&self.partial) {
+    /// Split what has arrived into SSE events and queue them while the window
+    /// has room. The rest stays in `partial` until replies free some, so one
+    /// large chunk — a buffered cache miss, a cached replay — is held to the
+    /// window like a live stream. Returns true when anything was queued.
+    fn take_events(&mut self) -> bool {
+        let mut queued = false;
+        while self.window_has_room() {
+            let Some(end) = event_end(&self.partial) else {
+                break;
+            };
             let raw: Vec<u8> = self.partial.drain(..end).collect();
             self.queue_event(Bytes::from(raw));
+            queued = true;
         }
+        queued
     }
 
     fn queue_event(&mut self, raw: Bytes) {
@@ -837,24 +863,29 @@ impl Stream for RestoringStream {
                     progressed = true;
                 }
             }
-            if !this.inner_done && this.window_has_room() {
+            // events already read but held back by the window go first
+            progressed |= this.take_events();
+            let backlog = event_end(&this.partial).is_some();
+            if this.upstream_ended && !this.inner_done && !backlog && this.window_has_room() {
+                this.inner_done = true;
+                this.end_of_upstream();
+                progressed = true;
+            }
+            if !this.upstream_ended && !backlog && this.window_has_room() {
                 match this.inner.as_mut().poll_next(cx) {
                     Poll::Ready(Some(Ok(chunk))) => {
                         this.partial.extend_from_slice(&chunk);
-                        this.take_events();
                         progressed = true;
                     }
                     Poll::Ready(Some(Err(err))) => {
                         // the upstream broke: deliver what is queued, then the
                         // error, as an unrestored stream would
                         this.inner_error = Some(err);
-                        this.inner_done = true;
-                        this.end_of_upstream();
+                        this.upstream_ended = true;
                         progressed = true;
                     }
                     Poll::Ready(None) => {
-                        this.inner_done = true;
-                        this.end_of_upstream();
+                        this.upstream_ended = true;
                         progressed = true;
                     }
                     Poll::Pending => {}
@@ -1030,9 +1061,10 @@ fn openai_chat(choices: &[Value], slots: &mut Vec<Slot>, closes: &mut Vec<Option
                 slots.push(slot(format!("{index}/text"), path, text, false, false));
             }
         }
+        // some providers send `""` rather than `null` on every chunk
         if choice
             .get("finish_reason")
-            .is_some_and(|reason| !reason.is_null())
+            .is_some_and(|reason| !reason.is_null() && reason.as_str() != Some(""))
         {
             closes.push(Some(index.to_string()));
         }

@@ -535,7 +535,7 @@ pub struct RestoreStreamOpen<'a> {
 /// placeholder holdback per channel. `format` is `"json"` when `text` is JSON
 /// source (tool-call arguments, Anthropic's `partial_json`): a value restored
 /// into it is written JSON-string-escaped, as it would sit between quotes.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Clone, Serialize)]
 pub struct RestoreStreamDelta<'a> {
     pub seq: u64,
     pub channel: &'a str,
@@ -543,6 +543,23 @@ pub struct RestoreStreamDelta<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub format: Option<&'static str>,
 }
+
+/// Opaque on purpose: `text` is the provider's text, which a log line has no
+/// business holding.
+impl std::fmt::Debug for RestoreStreamDelta<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RestoreStreamDelta")
+            .field("seq", &self.seq)
+            .field("channel", &self.channel)
+            .field("format", &self.format)
+            .finish_non_exhaustive()
+    }
+}
+
+/// The most characters a streamed-restore reply may hold back for one channel.
+/// A placeholder is far shorter; a sanitizer that holds more is not running a
+/// placeholder holdback, and the gateway treats the reply as out of contract.
+pub const MAX_STREAM_HELD_CHARS: usize = 1024;
 
 /// The end of one channel: the sanitizer answers with whatever it still
 /// holds for it and forgets it.
@@ -565,7 +582,7 @@ pub struct RestoreStreamEnd {
 /// characters (Unicode scalar values) of that line's channel the sanitizer is
 /// holding back because they could be the start of a placeholder. Held text
 /// comes out later, in the reply to a later line of the same channel or to its
-/// close.
+/// close. `held` never exceeds [`MAX_STREAM_HELD_CHARS`].
 #[derive(Clone, PartialEq, Eq, Deserialize)]
 pub struct RestoreStreamReply {
     pub seq: u64,
@@ -884,6 +901,7 @@ mod tests {
             serde_json::to_value(&delta).unwrap(),
             json!({"seq": 17, "channel": "0/content", "text": "_ADDRESS"})
         );
+        assert!(!format!("{delta:?}").contains("_ADDRESS"));
         let json_delta = RestoreStreamDelta {
             format: Some("json"),
             ..delta

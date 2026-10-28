@@ -2215,25 +2215,37 @@ async fn proxy(
         scope: &pii_scope,
         ticket: pii_ticket.as_ref(),
         will_restore,
+        // the same decision the log row makes below; with capture off the
+        // pre-restore body has no reader, so it is never kept (#3240)
+        capture: payload_capture_enabled(&snap.logging.payload_capture, &model, &scope.key),
     });
     // a streamed restore needs a token for this request's own scope; with none
     // (nothing was replaced, or the service cannot reverse) there is nothing to
     // restore and the stream is served as it is. taken by whichever path
     // answers
     let mut pii_stream = if pii_stream_mode == Some(rolter_core::StreamingResponse::Restore) {
-        pii_ticket
-            .as_ref()
-            .and_then(|ticket| ticket.token_for(&pii_scope))
-            .map(|token| {
-                crate::pii_stream::StreamRestore::new(
-                    &snap.pii_sanitizer,
-                    &state.side_client,
-                    &state.metrics,
-                    token,
-                    &pii_trace_id,
-                    pii_tenant.clone(),
-                )
-            })
+        let token = pii_ticket.as_ref().and_then(|ticket| {
+            let token = ticket.token_for(&pii_scope);
+            if token.is_none() {
+                // as `pii_sanitizer::restore` does: never reached today, and
+                // counted if a change ever makes it reachable
+                state.metrics.pii_restore_errors_total.fetch_add(1, Relaxed);
+                tracing::warn!(
+                    "refusing to restore a pii token outside the tenant and route that produced it"
+                );
+            }
+            token
+        });
+        token.map(|token| {
+            crate::pii_stream::StreamRestore::new(
+                &snap.pii_sanitizer,
+                &state.side_client,
+                &state.metrics,
+                token,
+                &pii_trace_id,
+                pii_tenant.clone(),
+            )
+        })
     } else {
         None
     };
@@ -4565,6 +4577,9 @@ struct PiiResponseLeg<'a> {
     scope: &'a rolter_core::TokenScope,
     ticket: Option<&'a rolter_core::RestorationTicket>,
     will_restore: bool,
+    /// payload capture is on for this request, so the pre-restore body is
+    /// worth keeping (#3240)
+    capture: bool,
 }
 
 /// Run the PII sanitizer's response leg over a buffered response body (#848).
@@ -4575,11 +4590,11 @@ struct PiiResponseLeg<'a> {
 /// worst case is a caller receiving placeholders instead of plaintext, never
 /// the reverse.
 ///
-/// Returns the body to deliver and, when a restore replaced placeholders, the
-/// placeholder-bearing body it replaced. That one is what payload capture
-/// stores, so a captured response holds what the request side holds — the
-/// sanitized text — rather than the plaintext the sanitizer exists to keep out
-/// of rolter's stores (#3240).
+/// Returns the body to deliver and, when a restore replaced placeholders and
+/// payload capture is on, the placeholder-bearing body it replaced. That one is
+/// what payload capture stores, so a captured response holds what the request
+/// side holds — the sanitized text — rather than the plaintext the sanitizer
+/// exists to keep out of rolter's stores (#3240).
 async fn pii_response_leg_apply(leg: &PiiResponseLeg<'_>, bytes: Bytes) -> (Bytes, Option<Bytes>) {
     let PiiResponseLeg {
         state,
@@ -4591,8 +4606,9 @@ async fn pii_response_leg_apply(leg: &PiiResponseLeg<'_>, bytes: Bytes) -> (Byte
         scope,
         ticket,
         will_restore,
+        capture,
     } = leg;
-    let (will_restore, ticket) = (*will_restore, *ticket);
+    let (will_restore, ticket, capture) = (*will_restore, *ticket, *capture);
     let (state, config, scope) = (*state, *config, *scope);
     // a body that does not parse is not JSON we can walk; forwarding it
     // untouched is strictly better than failing a successful response
@@ -4644,7 +4660,8 @@ async fn pii_response_leg_apply(leg: &PiiResponseLeg<'_>, bytes: Bytes) -> (Byte
             )
             .await
             {
-                pre_restore = Some(std::mem::replace(&mut parsed, restored));
+                let before = std::mem::replace(&mut parsed, restored);
+                pre_restore = capture.then_some(before);
             }
         }
     }
@@ -4685,6 +4702,11 @@ fn buffered_response(
 ) -> Response {
     let status = StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY);
     let decision = DecisionHeaders::from_log(&log);
+    // redacted and cut to `payload_max_bytes` now, so the stream holds no more
+    // than the row will store (#3240)
+    let captured = pre_restore.filter(|_| log.capture_payloads).map(|body| {
+        crate::logging::capture_payload(&body, log.payload_max_bytes, &log.payload_redactor)
+    });
     let stream = futures_util::stream::iter(vec![Ok::<Bytes, reqwest::Error>(bytes)]);
     let body = crate::logging::UsageLoggingStream::new(
         Box::pin(stream),
@@ -4700,7 +4722,7 @@ fn buffered_response(
     .with_completion_observer(completion_observer)
     .with_genai_span(genai_span)
     .with_billed_usage(billed)
-    .with_captured_body(pre_restore);
+    .with_captured_payload(captured);
     let body = restore_stream_body(body, is_sse, status, pii_stream);
     let mut builder = Response::builder()
         .status(status)
@@ -4721,7 +4743,8 @@ fn buffered_response(
 /// usage, billing, the disconnect row and payload capture all read the
 /// upstream's own (placeholder-bearing) bytes, and only the caller sees the
 /// restored ones. Only a successful SSE body is restored; an error body is
-/// passed on as the upstream sent it.
+/// passed on as the upstream sent it, and a successful body that is not a
+/// stream is counted as a restore that could not happen.
 fn restore_stream_body<S>(
     body: S,
     is_sse: bool,
@@ -4733,8 +4756,13 @@ where
 {
     match pii_stream {
         // boxed only here, so a stream nothing restores costs no allocation
-        Some(restore) if is_sse && status.is_success() => {
-            Body::from_stream(restore.wrap(Box::pin(body)))
+        Some(restore) if status.is_success() => {
+            if is_sse {
+                Body::from_stream(restore.wrap(Box::pin(body)))
+            } else {
+                restore.not_a_stream();
+                Body::from_stream(body)
+            }
         }
         _ => Body::from_stream(body),
     }
@@ -5195,15 +5223,15 @@ async fn cached_response(
     sink.log(log);
     // a replayed stream is restored with the token of the request being
     // answered, exactly like a live one (#911)
-    let is_sse = hit.content_type.contains("text/event-stream");
     let body = match pii_stream {
-        Some(restore) if is_sse && status.is_success() => {
-            Body::from_stream(restore.wrap(Box::pin(futures_util::stream::iter([Ok::<
-                _,
-                reqwest::Error,
-            >(
-                body
-            )]))))
+        Some(restore) if status.is_success() => {
+            if hit.content_type.contains("text/event-stream") {
+                let replay = futures_util::stream::iter([Ok::<_, reqwest::Error>(body)]);
+                Body::from_stream(restore.wrap(Box::pin(replay)))
+            } else {
+                restore.not_a_stream();
+                Body::from(body)
+            }
         }
         _ => Body::from(body),
     };
