@@ -114,7 +114,7 @@ impl CacheTelemetry {
 
     /// Start one background consumer/poller per configured provider endpoint,
     /// keyed by the provider's `name`, which in a snapshot is its runtime id
-    /// (ADR-0039). Request routing only reads local atomics/maps and never
+    /// (ADR-0040). Request routing only reads local atomics/maps and never
     /// performs I/O.
     pub fn configure<'a>(&self, providers: impl IntoIterator<Item = &'a ProviderConfig>) {
         for provider in providers {

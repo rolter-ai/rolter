@@ -1,5 +1,5 @@
 //! Two orgs' `chat` routes never share per-route state on the request path
-//! (#1857, ADR-0039): not the response cache, exact or semantic, and not a
+//! (#1857, ADR-0040): not the response cache, exact or semantic, and not a
 //! cooldown parked after a connection failure.
 //!
 //! The gateway is served in-process with the in-memory cache backend, so none

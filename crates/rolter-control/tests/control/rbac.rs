@@ -214,7 +214,7 @@ async fn tenancy_guards_refuse_cross_org_references_but_not_shared_names() {
     assert_eq!(route["tenancy"]["project_id"], project_a.as_str());
     // a gateway that states no formats predates per-org namespaces and would
     // refuse a repeated name: it is served neither org's colliding rows, and
-    // told so, rather than a snapshot it would refuse (ADR-0039)
+    // told so, rather than a snapshot it would refuse (ADR-0040)
     let legacy: Value = client
         .get(format!("{base}/internal/snapshot"))
         .send()

@@ -1835,7 +1835,7 @@ async fn build_store(
 /// project of the default org or a readonly route already has, or that is the
 /// `slug/…` address of another org's or a readonly provider or group, is
 /// skipped with a warning. Another org's route of the same name is no reason
-/// to skip it (ADR-0039).
+/// to skip it (ADR-0040).
 /// The builtin `fake-llm` is the operator's to replace, so a default of that
 /// name is seeded as before.
 #[cfg(feature = "postgres")]
@@ -2907,7 +2907,7 @@ async fn build_snapshot(
                 // a gateway that states no formats predates per-org namespaces
                 // and refuses a repeated name, so every org row whose name
                 // another row shares is left out for it, failing closed
-                // (ADR-0039 section 5). before the sanitizer, so its cascade
+                // (ADR-0040 section 5). before the sanitizer, so its cascade
                 // prunes what referenced a provider left out
                 if query.formats.is_none() {
                     omitted.extend(rolter_core::namespace::fold_for_legacy_gateway(&mut config));

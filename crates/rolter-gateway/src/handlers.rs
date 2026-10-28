@@ -132,7 +132,7 @@ pub async fn metrics(State(state): State<AppState>) -> impl IntoResponse {
             continue;
         };
         // the namespace, which is the route's name unless another org's route
-        // shares it, so two orgs' series stay apart (ADR-0039)
+        // shares it, so two orgs' series stay apart (ADR-0040)
         let model = entry.namespace.as_str();
         let label = model.replace('\\', "\\\\").replace('"', "\\\"");
         // the same per-target scores the control plane serves (#751), so a
@@ -209,7 +209,7 @@ pub async fn list_models(State(state): State<AppState>, headers: HeaderMap) -> R
         .iter()
         .filter(|(_, model, entry)| {
             // only the route this caller's name resolves to: another org's
-            // route of the same name is not this caller's (ADR-0039)
+            // route of the same name is not this caller's (ADR-0040)
             snap.routes
                 .get(key_org(vk.as_ref()), model)
                 .is_some_and(|resolved| std::ptr::eq(resolved, *entry))
@@ -248,7 +248,7 @@ pub async fn list_models(State(state): State<AppState>, headers: HeaderMap) -> R
         rolter_core::Tenancy::admits_scoped(tenancy, key_org, key_project)
     };
     // another org's providers are neither addressable nor listed (#1844)
-    // nor is a slug this caller resolves to another provider (ADR-0039)
+    // nor is a slug this caller resolves to another provider (ADR-0040)
     let name_to_slug: std::collections::HashMap<&str, &str> = snap
         .providers_by_slug
         .iter()
@@ -924,7 +924,7 @@ fn authorize_lifecycle(
 }
 
 /// `provider` is the display name of the provider holding the response; the
-/// route carries its runtime id (ADR-0039).
+/// route carries its runtime id (ADR-0040).
 fn lifecycle_response(
     response: reqwest::Response,
     route: &crate::response_registry::ResponseRoute,
@@ -1988,6 +1988,7 @@ async fn proxy(
             policy,
             metrics: &state.metrics,
             egress: &state.side_client,
+            local: &state.local_classifiers,
             model: model.clone(),
             route: entry.route.model.clone(),
             trace_id: trace_id.to_string(),
@@ -2473,7 +2474,7 @@ async fn proxy(
     let cache_key = if snap.cache.enabled && state.response_cache.is_enabled() && cache_eligible {
         // a route another org shares the name of is scoped by its namespace,
         // so two orgs' `gpt-4o` never answer from each other's entries; an
-        // unshared name keeps the key it always had (ADR-0039)
+        // unshared name keeps the key it always had (ADR-0040)
         let scope_seg = if entry.route.cache_per_key() {
             vk_id.as_str()
         } else if entry.namespace != entry.route.model {
@@ -2543,7 +2544,7 @@ async fn proxy(
                     ""
                 };
                 // the route's namespace: its name unless another org shares
-                // it, so two orgs' candidates never mix (ADR-0039)
+                // it, so two orgs' candidates never mix (ADR-0040)
                 let index_key = ResponseCache::semantic_index_key(
                     &snap.cache.namespace,
                     path,
@@ -3617,6 +3618,7 @@ async fn proxy_multipart(
             policy,
             metrics: &state.metrics,
             egress: &state.side_client,
+            local: &state.local_classifiers,
             model: model.clone(),
             route: entry.route.model.clone(),
             trace_id: trace_id.to_string(),
@@ -6177,7 +6179,7 @@ impl DecisionHeaders {
     fn from_log(log: &RequestLog) -> Self {
         Self {
             // the row carries the runtime id until it is queued, and the org
-            // that owns the provider beside it (ADR-0039)
+            // that owns the provider beside it (ADR-0040)
             provider: rolter_core::namespace::display_name(&log.provider, &log.provider_org_id)
                 .to_string(),
             target: log.target.clone(),

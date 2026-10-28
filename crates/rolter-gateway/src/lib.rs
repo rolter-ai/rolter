@@ -43,6 +43,7 @@ mod handlers;
 pub mod health;
 mod health_events;
 mod load;
+mod local_classifier;
 mod logging;
 mod mcp_list_filter;
 mod mcp_log;

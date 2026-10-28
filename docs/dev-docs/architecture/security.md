@@ -822,7 +822,7 @@ org may use, on all three address forms and in `GET /v1/models`. Another org's
 row is a miss: it shadows nothing of the caller's own, and the caller gets the
 `404` an unknown model gets. On the write path a route target or group member
 must name a provider in the same org. Names are per org (#1857,
-[ADR-0039](../adr/2026-10-28-per-org-namespaces.md)): two orgs may each have a
+[ADR-0040](../adr/2026-10-28-per-org-namespaces.md)): two orgs may each have a
 `gpt-4o` route and an `openai` provider, a key resolves its own org's row
 first, and the gateway keeps their breakers, cooldowns, key pools and queues
 apart. Within one org, route and provider names and the one slug namespace
@@ -838,7 +838,7 @@ behind it to that project's keys (#1919).
 The contract, the table of which keys admit which rows, and the write-time
 guards are in
 [RBAC & authentication](rbac-and-auth.md#one-org-never-reaches-another-1844-1845);
-[ADR-0039](../adr/2026-10-28-per-org-namespaces.md) is the naming model.
+[ADR-0040](../adr/2026-10-28-per-org-namespaces.md) is the naming model.
 
 ## Control↔data-plane trust boundary
 

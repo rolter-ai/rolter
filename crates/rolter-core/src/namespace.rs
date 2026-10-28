@@ -1,5 +1,5 @@
 //! Per-org namespaces for routes, providers and provider groups (#1857,
-//! ADR-0039).
+//! ADR-0040).
 //!
 //! A route, provider or provider group is named by `(org, name)`: `org` is the
 //! row's [`Tenancy::org_id`](crate::Tenancy), and a row with no tenancy, from
@@ -35,7 +35,7 @@ pub fn org_of(tenancy: Option<&Tenancy>) -> &str {
 /// namespace, `name@org` otherwise.
 ///
 /// The gateway qualifies only a name another row of the same kind also uses
-/// (ADR-0039 section 3), so a deployment with no repeated name keeps every
+/// (ADR-0040 section 3), so a deployment with no repeated name keeps every
 /// key, metric label and log value it had.
 pub fn qualify(name: &str, org: &str) -> String {
     if org.is_empty() {
@@ -100,7 +100,7 @@ impl<T> Scoped<T> {
     /// Unlike [`resolve`](Self::resolve), there is no fallback to the one org
     /// that owns the name: a global route or group naming a provider only one
     /// org has would otherwise bind to that org's provider and credential and
-    /// serve it to every org's key (ADR-0039 section 1).
+    /// serve it to every org's key (ADR-0040 section 1).
     pub fn resolve_ref(&self, org: &str) -> Option<(&str, &T)> {
         if !org.is_empty() {
             if let Some((owner, value)) = self.orgs.get_key_value(org) {
@@ -247,7 +247,7 @@ impl<T> Namespaced<T> {
 
 /// Leave out every org-owned route, provider and provider group whose name
 /// another row of its kind also uses, for a gateway that predates negotiation
-/// (ADR-0039 section 5).
+/// (ADR-0040 section 5).
 ///
 /// Such a gateway refuses a snapshot with a repeated name and would freeze. Every
 /// colliding org row goes, rather than all but one, so no org is preferred and

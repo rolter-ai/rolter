@@ -883,6 +883,8 @@ disabled = false # revoke without deleting
 # providers under its name. the dashboard's Guardrails -> Policies adds to
 # these
 # [semantic_guards]
+# local_concurrency = 4           # local classifier calls one gateway runs at
+#                                 # once; unset = half its CPUs (#3329)
 # [[semantic_guards.providers]]   # the same keys as [guardrail_webhook]
 # name = "toxicity"               # required, unique; policies list it by name
 # enabled = true
@@ -903,6 +905,18 @@ disabled = false # revoke without deleting
 # on_violation = "block"          # block | annotate (record only)
 # streaming = "reject"            # reject | buffer: never streams unchecked
 #                                 # when the policy has a post_call provider
+# a provider can instead be a small classifier the gateway runs in process
+# (#3329): no url and no auth, a rolter-linear/1 weights file on the gateway's
+# file system and its pinned sha256. nothing is ever downloaded
+# [[semantic_guards.providers]]
+# name = "injection"
+# enabled = true
+# kind = "local"                  # webhook (default) | local
+# model_path = "/etc/rolter/models/injection.json"
+# model_sha256 = "<sha256sum of the file>"   # required; a mismatch is not loaded
+# stage = "pre_call"
+# timeout_ms = 50                 # bounds the wait for a slot plus inference
+# failure_mode = "fail_closed"    # also covers a model that did not load
 
 # External PII sanitizer: hand request (and optionally response) content to a
 # self-hosted de-identification service — Presidio, or anything speaking the same

@@ -1,5 +1,5 @@
 //! Two orgs that each name a route `gpt-4o` and a provider `openai` (#1857,
-//! ADR-0039).
+//! ADR-0040).
 //!
 //! Each org's keys must reach only their own provider, by the route's name and
 //! by `openai/<model>`; the per-target state behind the two routes (breakers,

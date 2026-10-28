@@ -36,7 +36,10 @@ const PROVIDERS: GuardrailProviderRow[] = [
     id: "provider-primary",
     name: "Production LLM Guard",
     enabled: true,
+    kind: "webhook",
     url: "https://guardrails.internal/v1/evaluate",
+    model_path: null,
+    model_sha256: null,
     stage: "pre_call",
     timeout_ms: 1800,
     max_retries: 1,
@@ -51,7 +54,10 @@ const PROVIDERS: GuardrailProviderRow[] = [
     id: "provider-fallback",
     name: "Staging evaluator",
     enabled: false,
+    kind: "webhook",
     url: "https://guardrails.staging.internal/evaluate",
+    model_path: null,
+    model_sha256: null,
     stage: "pre_call",
     timeout_ms: 2500,
     max_retries: 0,
@@ -69,7 +75,10 @@ const OUTPUT_EVALUATOR: GuardrailProviderRow = {
   id: "provider-output",
   name: "Output evaluator",
   enabled: true,
+  kind: "webhook",
   url: "https://guardrails.internal/v1/output",
+  model_path: null,
+  model_sha256: null,
   stage: "post_call",
   timeout_ms: 2000,
   max_retries: 0,
@@ -1526,5 +1535,107 @@ export const ShowsATimeoutWithItsLiveEffect: Story = {
     // the draft's failure policy starts as fail closed
     await expect(within(result).getByText(/rejects the request \(fail closed\)/)).toBeVisible();
     await expect(within(result).getByText("1800 ms round trip")).toBeVisible();
+  },
+};
+
+const LOCAL_SHA = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+/** an in-process classifier: no URL, no credential, no retries */
+const LOCAL_CLASSIFIER: GuardrailProviderRow = {
+  ...PROVIDERS[1],
+  id: "provider-local",
+  name: "Local toxicity model",
+  kind: "local",
+  url: "",
+  model_path: "/etc/rolter/models/toxicity.json",
+  model_sha256: LOCAL_SHA,
+  failure_mode: "fail_closed",
+  max_retries: 0,
+};
+
+/** a local row shows its kind and model path where a webhook shows its URL */
+export const ListsALocalClassifier: Story = {
+  render: () => <Harness fetchStub={registry([...PROVIDERS, LOCAL_CLASSIFIER])} />,
+  play: async ({ canvasElement }) => {
+    await within(canvasElement).findByRole("heading", { name: "Local toxicity model" });
+    const local = card(canvasElement, "Local toxicity model");
+    await expect(local.getByText("/etc/rolter/models/toxicity.json")).toBeVisible();
+    await expect(local.getByText("Local classifier")).toBeVisible();
+    await expect(local.getByText("2,500 ms timeout · 32 KiB cap")).toBeVisible();
+    await expect(card(canvasElement, "Production LLM Guard").getByText("Webhook")).toBeVisible();
+  },
+};
+
+/**
+ * Picking the local kind swaps the URL and credential rows for the model's
+ * path and digest, hides the webhook trial, and saves the shape the server
+ * expects: an empty URL, no credential and no retries.
+ */
+let savesLocal: Recorder;
+export const RegistersALocalClassifier: Story = {
+  render: () => {
+    savesLocal = recording(registry([], undefined, async () => json(LOCAL_CLASSIFIER, 201)));
+    return <Harness fetchStub={savesLocal.stub} />;
+  },
+  play: async ({ canvasElement }) => {
+    await userEvent.click(
+      await within(canvasElement).findByRole("button", { name: /register first provider/i }),
+    );
+    const dialog = within(await within(document.body).findByRole("dialog"));
+    await userEvent.type(dialog.getByLabelText("Provider name"), "Local toxicity model");
+    await userEvent.click(dialog.getByRole("radio", { name: "Local classifier" }));
+    await expect(dialog.queryByLabelText("Evaluation URL")).toBeNull();
+    await expect(dialog.queryByLabelText("Authentication")).toBeNull();
+    await expect(dialog.queryByText("Send a test envelope")).toBeNull();
+    await waitFor(() =>
+      expect(dialog.getByText(/cannot be tested from the control plane/)).toBeVisible(),
+    );
+
+    const save = dialog.getByRole("button", { name: "Save provider" });
+    await expect(save).toHaveAttribute("aria-disabled", "true");
+    const path = dialog.getByLabelText("Model path");
+    const sha = dialog.getByLabelText("Model SHA-256");
+    await userEvent.click(path);
+    await userEvent.tab();
+    await expect(path).toHaveAttribute("aria-invalid", "true");
+    await userEvent.type(path, "/etc/rolter/models/toxicity.json");
+    await userEvent.type(sha, "abc123");
+    await userEvent.tab();
+    await expect(sha).toHaveAttribute("aria-invalid", "true");
+    await expect(save).toHaveAttribute("aria-disabled", "true");
+    await userEvent.clear(sha);
+    await userEvent.type(sha, LOCAL_SHA);
+    await expect(sha).not.toHaveAttribute("aria-invalid", "true");
+    await userEvent.click(save);
+    await expect(
+      await savesLocal.expectSentBody<GuardrailProviderInput>("POST", "/guardrails/providers"),
+    ).toMatchObject({
+      kind: "local",
+      url: "",
+      auth_kind: "none",
+      auth_env: null,
+      max_retries: 0,
+      model_path: "/etc/rolter/models/toxicity.json",
+      model_sha256: LOCAL_SHA,
+    });
+    await expectSheetClosed();
+  },
+};
+
+/** editing a local row keeps its kind and shows its model */
+export const EditsALocalClassifier: Story = {
+  render: () => <Harness fetchStub={registry([LOCAL_CLASSIFIER])} />,
+  play: async ({ canvasElement }) => {
+    await userEvent.click(
+      await within(canvasElement).findByRole("button", {
+        name: "Edit provider Local toxicity model",
+      }),
+    );
+    const dialog = within(await within(document.body).findByRole("dialog"));
+    await expect(await dialog.findByRole("radio", { name: "Local classifier" })).toBeChecked();
+    await expect(dialog.getByLabelText("Model path")).toHaveValue(
+      "/etc/rolter/models/toxicity.json",
+    );
+    await expect(dialog.getByLabelText("Model SHA-256")).toHaveValue(LOCAL_SHA);
   },
 };

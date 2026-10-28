@@ -78,7 +78,7 @@ pub struct ProviderUpdate<'a> {
 
 impl ProviderRepo<'_> {
     /// Whether a provider of `org_id` already has `name`. Names are per org
-    /// (#1857, ADR-0039): another org may hold the same one. `None` asks
+    /// (#1857, ADR-0040): another org may hold the same one. `None` asks
     /// across every org.
     pub async fn name_in_use(&self, name: &str, org_id: Option<Uuid>) -> Result<bool> {
         sqlx::query_scalar(
@@ -110,7 +110,7 @@ impl ProviderRepo<'_> {
     /// already answers `slug`.
     ///
     /// The gateway resolves `provider-slug/model` and `group-slug/model` in one
-    /// namespace per org (#1857, ADR-0039), and a group whose slug a provider
+    /// namespace per org (#1857, ADR-0040), and a group whose slug a provider
     /// of its org holds is not addressable at all. So a new or renamed slug has
     /// to be free in both tables of the org, or the second holder silently
     /// takes the address from the first; another org may hold the same slug.

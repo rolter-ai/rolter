@@ -44,7 +44,7 @@ impl RouteRepo<'_> {
 
     /// Whether a route of `org_id` already answers to `model`, in any of the
     /// org's projects. The gateway names routes by `(org, model)` (#1857,
-    /// ADR-0039), so another org may hold the same name, but a key resolves a
+    /// ADR-0040), so another org may hold the same name, but a key resolves a
     /// name per org, not per project, so two projects of one org may not.
     /// `None` asks across every org.
     pub async fn model_in_use(&self, model: &str, org_id: Option<Uuid>) -> Result<bool> {

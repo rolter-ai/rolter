@@ -479,7 +479,7 @@ fn provider_kind_column(kind: ProviderKind) -> &'static str {
 }
 
 /// The import stops rather than write a name the org it imports into already
-/// holds elsewhere: names are per org (#1857, ADR-0039), so another org may
+/// holds elsewhere: names are per org (#1857, ADR-0040), so another org may
 /// have the same one, but a route name is one per org across its projects and
 /// a provider and a group of one org share a slug namespace.
 fn taken_in_org(kind: &str, name: &str) -> anyhow::Error {

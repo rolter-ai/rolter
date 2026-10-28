@@ -31,7 +31,7 @@ pub struct RouteEntry {
     /// latency window and predictor, cooldowns and breakers, under
     /// `(namespace, target index)`. The route's name, unless a route of another
     /// org shares it, then `name@org`, so two orgs' `gpt-4o` never share a
-    /// breaker (ADR-0039). For a synthetic `slug/model` entry it is the address,
+    /// breaker (ADR-0040). For a synthetic `slug/model` entry it is the address,
     /// qualified the same way when the provider or group it pins is
     pub namespace: String,
     /// the pool's balancer. `Arc` rather than `Box` because a group's balancer
@@ -168,7 +168,7 @@ impl KeyMeta {
 
     /// Whether the key's provider allow-list admits the provider with runtime
     /// id `provider`. The list holds display names, and a runtime id is the
-    /// name with `@org` added when another org shares it (ADR-0039): the
+    /// name with `@org` added when another org shares it (ADR-0040): the
     /// suffix is ignored when it names the key's own org, or any org for a key
     /// with none (an org key never reaches another org's provider).
     pub fn provider_allowed(&self, provider: &str) -> bool {
@@ -214,7 +214,7 @@ impl KeyMeta {
 pub struct Snapshot {
     /// providers by runtime id, which is also each one's `name` here: the
     /// configured name, unless a provider of another org shares it, then
-    /// `name@org` (ADR-0039). Every per-provider store — key pools, queues,
+    /// `name@org` (ADR-0040). Every per-provider store — key pools, queues,
     /// health probes, scraped queue depth, KV telemetry — is keyed by it, so
     /// two orgs' `openai` never share state. [`Snapshot::provider_label`]
     /// gives back the display name and the owning org
@@ -386,7 +386,7 @@ const UNRESOLVED: &str = "\u{0}unresolved:";
 ///
 /// A provider's runtime id is its name, unless a provider of another org (or
 /// a global one) has the same name: then each org-owned one is `name@org`,
-/// and the global one keeps the bare name (ADR-0039 section 3). A provider
+/// and the global one keeps the bare name (ADR-0040 section 3). A provider
 /// whose id another already took is left out, so the first row wins on every
 /// build; `validate` refuses a name twice in one org before it gets here.
 fn index_providers(
@@ -448,7 +448,7 @@ impl Snapshot {
         use rolter_core::namespace::{org_of, qualify, Namespaced};
         let (providers, provider_ids) = index_providers(config);
         // a provider a row names resolves in the row's own org first, then
-        // globally, and never to another org's (ADR-0039 section 1). a name
+        // globally, and never to another org's (ADR-0040 section 1). a name
         // that resolves to nothing, but is another provider's runtime id (an
         // org's bare name, or one spelt like a qualified id), becomes an id no
         // provider has, so it finds nothing at request time; any other stays
@@ -601,7 +601,7 @@ impl Snapshot {
             &config.guardrails,
         ));
         // a route's namespace is qualified only when another org's route has
-        // the same name (ADR-0039 section 3)
+        // the same name (ADR-0040 section 3)
         let mut route_names = Namespaced::new();
         for route in &config.routes {
             let _ = route_names.insert(org_of(route.tenancy.as_ref()), &route.model, ());
@@ -927,7 +927,7 @@ impl Snapshot {
 
     /// The configured route named `model`, if it is in the caller's tenancy.
     ///
-    /// The name resolves in the key's org first, then globally (ADR-0039).
+    /// The name resolves in the key's org first, then globally (ADR-0040).
     /// Another org's route, or a project-only route of another project, is a
     /// miss here rather than a refusal (see [`RouteEntry::in_tenancy_of`]), so
     /// the builtin and the pinned addresses behind it still answer the caller.
@@ -990,7 +990,7 @@ impl Snapshot {
             (Some((p_owner, _)), Some((g_owner, _))) if p_owner != org && g_owner == org && !org.is_empty()
         );
         // the address keys per-target state like a route name does, qualified
-        // when another org answers the same slug (ADR-0039)
+        // when another org answers the same slug (ADR-0040)
         let namespace = |owner: &str, shared: bool| {
             if shared {
                 rolter_core::namespace::qualify(model, owner)
@@ -1241,6 +1241,10 @@ pub struct AppState {
     /// `api_base` (guardrail webhook, pii sanitizer, plugins, status pages),
     /// bound to the same live policy so a reload re-tunes it too
     pub side_client: crate::egress_client::EgressClient,
+    /// the models `local` semantic guard providers run in process and the
+    /// per-gateway cap on their concurrent calls; loaded when a configuration
+    /// is applied, never on the request path (#3329, ADR-0039)
+    pub local_classifiers: crate::local_classifier::LocalClassifiers,
     pub forwarder: Arc<Forwarder>,
     /// bounded worker queues keyed by provider; queue settings come from the
     /// live snapshot so a hot reload takes effect for subsequent requests
@@ -1415,10 +1419,12 @@ impl AppState {
         forwarder.set_model_defaults(&config.model_defaults);
         let provider_queues = ProviderQueues::new(forwarder.clone(), metrics.clone());
         let side_client = crate::egress_client::EgressClient::new(egress.clone());
+        let local_classifiers = crate::local_classifier::LocalClassifiers::default();
+        local_classifiers.configure(&config.semantic_guards, &config.guardrail_webhook);
         let cache_telemetry =
             crate::cache_telemetry::CacheTelemetry::new(metrics.clone(), side_client.clone());
         let snapshot = Snapshot::build_with_telemetry(config, &loads, Some(&cache_telemetry));
-        // both keyed by runtime id, which the snapshot assigns (ADR-0039)
+        // both keyed by runtime id, which the snapshot assigns (ADR-0040)
         cache_telemetry.configure(snapshot.providers.values());
         health_events.set_provider_orgs(snapshot.providers.values());
         Self {
@@ -1429,6 +1435,7 @@ impl AppState {
             draining: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             egress,
             side_client,
+            local_classifiers,
             forwarder,
             provider_queues,
             metrics,
@@ -1494,10 +1501,15 @@ impl AppState {
         crate::example_key::warn_if_exposed(config, self.exposed_bind);
         let snapshot =
             Snapshot::build_with_telemetry(config, &self.loads, Some(&self.cache_telemetry));
-        // both keyed by runtime id, which the snapshot assigns (ADR-0039)
+        // both keyed by runtime id, which the snapshot assigns (ADR-0040)
         self.cache_telemetry.configure(snapshot.providers.values());
         self.health_events
             .set_provider_orgs(snapshot.providers.values());
+        // installed before the snapshot that names them is published, so a
+        // new local provider never meets a registry that lacks its model. no
+        // file is read here: the watcher preloads on the blocking pool first
+        self.local_classifiers
+            .apply(&config.semantic_guards, &config.guardrail_webhook);
         self.snapshot.store(Arc::new(snapshot));
         // re-tune the circuit breaker in place (enable/disable + thresholds)
         // without discarding accumulated per-target state; the health prober picks

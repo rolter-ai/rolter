@@ -272,7 +272,7 @@ org's provider or group answers the same way. Route names may still contain `/`
 (`Qwen/Qwen2.5-7B`), and a route of the caller's own org still wins over the caller's own
 address.
 
-Per-org namespaces (#1857, ADR-0039) give each org its own slug namespace: providers
+Per-org namespaces (#1857, ADR-0040) give each org its own slug namespace: providers
 and groups of one org, beside the bootstrap file's readonly rows, which every org's keys
 reach. The control plane refuses a provider or group slug that its own org or a readonly
 row holds, and a route name that is the `slug/…` address of another org's or a readonly

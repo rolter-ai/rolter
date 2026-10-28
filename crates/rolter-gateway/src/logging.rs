@@ -209,7 +209,7 @@ pub struct RequestLog {
     pub model: String,
     /// the provider's display name. The request path carries its runtime id,
     /// which [`LogSink`] turns back into the name as the row is queued, and
-    /// fills in `provider_org_id` from the same lookup (ADR-0039)
+    /// fills in `provider_org_id` from the same lookup (ADR-0040)
     pub provider: String,
     /// the org that owns `provider`, empty for a global provider from the
     /// gateway's own config file. Left out of the row while empty, so a
@@ -1703,7 +1703,7 @@ impl LogSink {
         // display name. the org beside it comes from the snapshot that served
         // the request wherever the row was built with one; a row built
         // without it (a lifecycle call, a realtime session) takes the org from
-        // the provider list in force now (ADR-0039)
+        // the provider list in force now (ADR-0040)
         if !record.provider.is_empty() {
             if record.provider_org_id.is_empty() {
                 if let Some(org) = self.health_events.provider_org(&record.provider) {

@@ -100,7 +100,7 @@ impl HealthEventSink {
 
     /// Record which org owns each provider, so later events carry it. A
     /// provider's `name` is its runtime id, as the snapshot assigns it
-    /// (ADR-0039). Providers without a tenancy (config file) are left out and
+    /// (ADR-0040). Providers without a tenancy (config file) are left out and
     /// keep an empty org.
     pub fn set_provider_orgs<'a>(
         &self,

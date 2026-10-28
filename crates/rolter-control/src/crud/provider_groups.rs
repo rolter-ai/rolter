@@ -77,7 +77,7 @@ pub(super) fn taken_in_deployment(what: &str, name: &str) -> ApiError {
 }
 
 /// The 409 for a name the caller's own org already holds. Names are per org
-/// (#1857, ADR-0039), so another org's row of the same name is no conflict,
+/// (#1857, ADR-0040), so another org's row of the same name is no conflict,
 /// and the refusal never concerns one.
 pub(super) fn taken_in_org(what: &str, name: &str) -> ApiError {
     name_taken(format!(

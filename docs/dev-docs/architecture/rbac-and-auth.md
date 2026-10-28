@@ -125,7 +125,7 @@ file carry none. `Tenancy::admits` decides whether a key may use a row:
 | `tenancy` of the key's own org | admitted                             | admitted                                    |
 | `tenancy` of another org       | refused                              | admitted                                    |
 
-Names are per org (#1857, [ADR-0039](../adr/2026-10-28-per-org-namespaces.md)):
+Names are per org (#1857, [ADR-0040](../adr/2026-10-28-per-org-namespaces.md)):
 the snapshot keys routes by `(org, model)` and provider and group slugs by
 `(org, slug)` (`rolter_core::namespace::Namespaced`), with config-file rows in
 the global namespace. A key resolves a name in its own org first, then
@@ -233,7 +233,7 @@ The write path keeps the snapshot inside that rule:
   loader also drops, with a warning, any cross-org target or member written
   before the guard existed, rather than serve it.
 - Route names and provider names are unique per org, not across the
-  deployment (#1857, [ADR-0039](../adr/2026-10-28-per-org-namespaces.md)):
+  deployment (#1857, [ADR-0040](../adr/2026-10-28-per-org-namespaces.md)):
   the gateway names rows `(org, name)` and `Config::validate` refuses a name
   only twice in one org. A route name is held once across all of an org's
   projects, since a key resolves a name per org (`RouteRepo::model_in_use`,

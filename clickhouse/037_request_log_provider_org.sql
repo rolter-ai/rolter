@@ -1,4 +1,4 @@
--- Which org's provider served a request (#1857, ADR-0039).
+-- Which org's provider served a request (#1857, ADR-0040).
 --
 -- Two orgs may each have a provider called `openai`, so the bare name in
 -- `provider` no longer says whose credential answered. `provider` keeps the

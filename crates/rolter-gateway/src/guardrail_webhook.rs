@@ -1,4 +1,5 @@
-//! Request-path transport for guardrail providers (ROL-257, #459).
+//! Request-path transport for webhook guardrail providers (ROL-257, #459); a
+//! local provider runs in [`crate::local_classifier`] instead (#3329).
 //!
 //! One bounded call to a self-hosted guardrail service over the vendor-neutral
 //! webhook contract: the envelope is size-capped, the call has its own timeout
@@ -31,6 +32,11 @@ pub enum CallFailure {
     Body,
     /// the body is not a decision (see [`ScoredDecision::parse`])
     Unparsable,
+    /// a local provider's model is not loaded, or its inference failed
+    Model,
+    /// the provider is of a kind this gateway does not know; unlike every
+    /// other failure it blocks whatever the provider's failure mode says
+    Unsupported,
 }
 
 impl CallFailure {
@@ -44,6 +50,8 @@ impl CallFailure {
             Self::Status => "status",
             Self::Body => "body",
             Self::Unparsable => "unparsable",
+            Self::Model => "model",
+            Self::Unsupported => "unsupported",
         }
     }
 

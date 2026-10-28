@@ -62,7 +62,7 @@ pub struct BreakerReport {
 pub fn collect(state: &AppState) -> Vec<TargetBreaker> {
     let snapshot = state.snapshot.load();
     // the registry is keyed by route namespace, which is the route's name
-    // unless another org's route shares it (ADR-0039)
+    // unless another org's route shares it (ADR-0040)
     label(state.breaker.snapshot(), |namespace, idx| {
         let entry = snapshot
             .routes

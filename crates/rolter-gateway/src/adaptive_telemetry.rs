@@ -73,7 +73,7 @@ pub fn collect(state: &AppState) -> Vec<RouteTelemetry> {
         .routes
         .iter()
         .filter_map(|(_, model, entry)| {
-            // per-target state is keyed by the route's namespace (ADR-0039)
+            // per-target state is keyed by the route's namespace (ADR-0040)
             let loads = state
                 .loads
                 .snapshot(&entry.namespace, entry.route.targets.len());

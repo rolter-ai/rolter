@@ -22,7 +22,14 @@ export interface GuardrailProviderRow {
   id: string;
   name: string;
   enabled: boolean;
+  /** `webhook` posts to `url`; `local` runs a classifier from `model_path` on each gateway */
+  kind: "webhook" | "local";
+  /** empty for a local provider */
   url: string;
+  /** the weights file on the gateway's file system; null for a webhook */
+  model_path: string | null;
+  /** the weights file's SHA-256, 64 hex digits; null for a webhook */
+  model_sha256: string | null;
   stage: "pre_call" | "post_call";
   timeout_ms: number;
   max_retries: number;
