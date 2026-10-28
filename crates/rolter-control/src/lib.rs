@@ -143,6 +143,7 @@ mod security;
 #[cfg(feature = "postgres")]
 pub mod seed;
 mod session_guard;
+mod snapshot_negotiation;
 #[cfg(feature = "postgres")]
 mod sso;
 #[cfg(feature = "postgres")]
@@ -2584,6 +2585,11 @@ struct SnapshotQuery {
     /// the gateway's last-seen config version; if it's already current, the
     /// control plane replies `304 Not Modified` with no body
     version: Option<i64>,
+    /// the snapshot formats the gateway reads, as `2` or `1-2` (ADR-0038).
+    /// Absent from every gateway that predates negotiation, which reads format
+    /// 1 only. Kept as the raw string so a malformed value answers
+    /// `400 invalid_query` with the grammar rather than axum's rejection
+    formats: Option<String>,
 }
 
 /// Attach the polling node's operator-requested state, so a drain reaches it on
@@ -2608,12 +2614,30 @@ fn with_node_state(response: Response, _desired_state: &Option<String>) -> Respo
 }
 
 /// Runtime snapshot endpoint gateways poll to pick up config changes without
-/// a restart. Returns `{"version": N, "config": GatewayConfig}`, or `304` if
-/// the caller's `version` is already current.
+/// a restart. Returns `{"format": F, "version": N, "config": GatewayConfig}`,
+/// `304` if the caller's `version` is already current, or `406` when it reads
+/// no snapshot format this control plane serves (ADR-0038).
 async fn get_snapshot(
     State(state): State<ControlState>,
     headers: axum::http::HeaderMap,
     Query(query): Query<SnapshotQuery>,
+) -> Response {
+    get_snapshot_with(
+        state,
+        headers,
+        query,
+        snapshot_negotiation::SnapshotFormats::PRODUCTION,
+    )
+    .await
+}
+
+/// [`get_snapshot`] serving `formats` rather than this build's own, so tests
+/// can stand in for a control plane that serves a second format.
+async fn get_snapshot_with(
+    state: ControlState,
+    headers: axum::http::HeaderMap,
+    query: SnapshotQuery,
+    formats: snapshot_negotiation::SnapshotFormats,
 ) -> Response {
     use tracing::Instrument as _;
 
@@ -2636,7 +2660,7 @@ async fn get_snapshot(
     // `.instrument`, not a held guard: a span that is created but never entered
     // does not parent the spans created inside it, so `snapshot.sanitize` came
     // out as a sibling of `snapshot.build` rather than a child of it
-    let built = build_snapshot(state, headers, query)
+    let built = build_snapshot(state, headers, query, formats)
         .instrument(span.clone())
         .await;
 
@@ -2654,8 +2678,8 @@ async fn get_snapshot(
 /// One snapshot build, with the numbers the span and histograms need.
 struct BuiltSnapshot {
     response: Response,
-    /// Bounded (`ok` / `not_modified` / `error`), so it is safe as a metric
-    /// attribute — unlike `version`, which is unbounded and stays on the span.
+    /// Bounded (`ok` / `not_modified` / `error` / `refused`), so it is safe as
+    /// a metric attribute — unlike `version`, which is unbounded and stays on the span.
     outcome: &'static str,
     version: i64,
     /// Serialized payload size. `0` for a 304, which transfers no body.
@@ -2671,20 +2695,71 @@ impl BuiltSnapshot {
             bytes: 0,
         }
     }
+
+    /// A poll the format negotiation turned away: a `formats` that does not
+    /// parse, or one this control plane cannot serve (ADR-0038).
+    fn refused(response: Response, version: i64) -> Self {
+        Self {
+            response,
+            outcome: "refused",
+            version,
+            bytes: 0,
+        }
+    }
 }
 
 async fn build_snapshot(
     state: ControlState,
     headers: axum::http::HeaderMap,
     query: SnapshotQuery,
+    formats: snapshot_negotiation::SnapshotFormats,
 ) -> BuiltSnapshot {
+    use rolter_core::snapshot_format::{self as format, NegotiationError};
+
     // a node that identifies itself is recorded in the cluster inventory; the
     // poll it already makes is the heartbeat, so there is no second channel
     #[cfg(feature = "postgres")]
     let desired_state = cluster::record_heartbeat(&state, &headers, query.version).await;
     #[cfg(not(feature = "postgres"))]
     let desired_state: Option<String> = None;
-    let _ = &headers;
+    // the format comes before the `304` and before the store is read, so a
+    // gateway that cannot be served learns it on its next poll even when
+    // nothing changed, at no database cost (ADR-0038 section 3)
+    let (served_format, requested) =
+        match format::negotiate(query.formats.as_deref(), formats.served) {
+            Ok(negotiated) => negotiated,
+            Err(NegotiationError::Invalid(invalid)) => {
+                return BuiltSnapshot::refused(
+                    with_node_state(
+                        snapshot_negotiation::invalid(invalid.to_string()),
+                        &desired_state,
+                    ),
+                    0,
+                );
+            }
+            Err(NegotiationError::Unsupported(refusal)) => {
+                snapshot_negotiation::log_refusal(
+                    &headers,
+                    snapshot_negotiation::UNSUPPORTED,
+                    refusal.served,
+                    refusal.requested,
+                    &refusal.to_string(),
+                );
+                return BuiltSnapshot::refused(
+                    with_node_state(snapshot_negotiation::unsupported(&refusal), &desired_state),
+                    0,
+                );
+            }
+        };
+    // a deprecated format says so on every answer it is served with, the 304
+    // that confirms one included, so a long-idle gateway learns it too
+    let finish = |response: Response| {
+        snapshot_negotiation::with_deprecation(
+            with_node_state(response, &desired_state),
+            formats.deprecations,
+            served_format,
+        )
+    };
     let version = match state.store.current_version().await {
         Ok(v) => v,
         Err(err) => {
@@ -2701,7 +2776,9 @@ async fn build_snapshot(
     };
     if query.version.is_some_and(|requested| requested >= version) {
         return BuiltSnapshot {
-            response: with_node_state(StatusCode::NOT_MODIFIED.into_response(), &desired_state),
+            // every format is built from the same config_version, so one
+            // counter serves them all
+            response: finish(StatusCode::NOT_MODIFIED.into_response()),
             outcome: "not_modified",
             version,
             bytes: 0,
@@ -2709,13 +2786,46 @@ async fn build_snapshot(
     }
     match state.store.load().await {
         Ok(mut config) => {
+            // an older gateway gets what its format can express: the omitting
+            // half of each down-step runs before the sanitizer, so the cascade
+            // below removes what referenced an omitted entity and says so
+            let down_omitted = match format::down_convert(
+                formats.chain,
+                &mut config,
+                formats.served.max,
+                served_format,
+            ) {
+                Ok(lines) => lines,
+                Err(refusal) => {
+                    snapshot_negotiation::log_refusal(
+                        &headers,
+                        snapshot_negotiation::INEXPRESSIBLE,
+                        formats.served,
+                        requested,
+                        &refusal.to_string(),
+                    );
+                    return BuiltSnapshot::refused(
+                        with_node_state(
+                            snapshot_negotiation::inexpressible(
+                                &refusal,
+                                formats.served,
+                                requested,
+                            ),
+                            &desired_state,
+                        ),
+                        version,
+                    );
+                }
+            };
             // prune rows that are only unservable by themselves (a route whose
             // targets aren't set up yet) so one half-built entry can't 500 the
             // snapshot and freeze config propagation for every other tenant
             let sanitize = rolter_core::stage_span!("snapshot.sanitize");
             let omitted = {
                 let _entered = sanitize.enter();
-                sanitize_snapshot(&state, &mut config).problems
+                let mut omitted = down_omitted;
+                omitted.extend(sanitize_snapshot(&state, &mut config).problems);
+                omitted
             };
             if !omitted.is_empty() {
                 tracing::warn!(
@@ -2770,13 +2880,32 @@ async fn build_snapshot(
                 // being served and the dashboard can say "this provider is not
                 // being served, because ...". Omitted when empty: it is on
                 // every poll of every gateway in the fleet
-                if omitted.is_empty() {
-                    serde_json::to_vec(&json!({"version": version, "config": config}))
-                } else {
-                    serde_json::to_vec(
-                        &json!({"version": version, "config": config, "problems": omitted}),
-                    )
-                }
+                //
+                // `format` is what this answer is, so a captured snapshot is
+                // self-describing; a gateway that predates it ignores the field
+                //
+                // the rewriting half of each down-step works on the serialized
+                // config, and crosses no step for a gateway of this format
+                serde_json::to_value(&config).and_then(|mut config| {
+                    format::down_rewrite(
+                        formats.chain,
+                        &mut config,
+                        formats.served.max,
+                        served_format,
+                    );
+                    if omitted.is_empty() {
+                        serde_json::to_vec(
+                            &json!({"format": served_format, "version": version, "config": config}),
+                        )
+                    } else {
+                        serde_json::to_vec(&json!({
+                            "format": served_format,
+                            "version": version,
+                            "config": config,
+                            "problems": omitted,
+                        }))
+                    }
+                })
             };
             let body = match body {
                 Ok(body) => body,
@@ -2799,7 +2928,7 @@ async fn build_snapshot(
                 axum::http::HeaderValue::from_static("application/json"),
             );
             BuiltSnapshot {
-                response: with_node_state(response, &desired_state),
+                response: finish(response),
                 outcome: "ok",
                 version,
                 bytes,
