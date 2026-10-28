@@ -11,10 +11,11 @@
 //! The registry is the only place a reviewed version or URL is written down.
 //! Code points at a record with a `spec-ref` comment naming its id rather
 //! than copying the link, and a workspace test fails when a comment names an
-//! id the registry does not have. A runtime constant exists only where rolter sends or
-//! checks the value on the wire — [`crate::probe::ANTHROPIC_VERSION`] is one,
-//! and a test holds it to the `anthropic-messages` record — because a constant
-//! that only describes a version goes stale without anything noticing.
+//! id the registry does not have. A runtime constant exists only where rolter
+//! sends or checks the value on the wire — [`crate::probe::ANTHROPIC_VERSION`]
+//! is one, and a test holds it to the `anthropic-messages` record — because a
+//! constant that only describes a version goes stale without anything
+//! noticing.
 //!
 //! The field reference and the rules are in
 //! `docs/dev-docs/development/spec-registry.md`.
@@ -709,6 +710,23 @@ mod tests {
         );
         assert_eq!(
             crate::CompatibilityConfig::default().anthropic_version,
+            crate::probe::ANTHROPIC_VERSION
+        );
+        // the reference page states the default too. a database-backed
+        // deployment reads the stored policy instead, whose column default a
+        // migration seeds; moving the constant needs a migration of its own
+        let page = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../docs/user-docs/configuration/config-file.mdx"
+        ))
+        .expect("config-file.mdx is readable");
+        let documented = format!(
+            "<ParamField path=\"anthropic_version\" default=\"{}\"",
+            crate::probe::ANTHROPIC_VERSION
+        );
+        assert!(
+            page.contains(&documented),
+            "config-file.mdx does not state the default anthropic_version as {}",
             crate::probe::ANTHROPIC_VERSION
         );
     }

@@ -60,10 +60,13 @@ omissions = [
 ]
 deviations = [
   "a `provider-slug/model` name pins a provider and is rewritten to the upstream model before forwarding",
+  "guardrails, plugins and the PII sanitizer a route configures may refuse or rewrite a request or response; with none configured the bodies pass unchanged",
 ]
 tests = [
   "crates/rolter-gateway/tests/integration.rs::non_streaming_request_proxies_upstream_body",
   "crates/rolter-gateway/tests/integration.rs::streaming_request_passes_through_sse",
+  "crates/rolter-gateway/tests/integration.rs::output_guardrail_masks_a_non_streaming_completion",
+  "crates/rolter-gateway/tests/integration.rs::pre_upstream_plugin_transforms_the_request_body",
 ]
 
 [[spec]]
@@ -239,24 +242,27 @@ related = ["https://developers.openai.com/api/docs/guides/realtime"]
 contract = "major-only"
 version = "v1"
 reviewed_at = "2026-10-27"
-conformance = "transport-only"
+conformance = "partial"
 gateway_endpoints = ["GET /v1/realtime"]
 modules = [
   "crates/rolter-gateway/src/realtime.rs",
   "crates/rolter-gateway/src/realtime_metering.rs",
+  "crates/rolter-gateway/src/realtime_guard.rs",
 ]
 supported = [
-  "the WebSocket upgrade is admitted, the `model` query parameter rewritten, and frames relayed both ways unchanged",
+  "the WebSocket upgrade is admitted, the `model` query parameter rewritten, and frames otherwise relayed both ways unchanged",
   "a client's `openai-beta` header is forwarded to the upstream",
   "`response.created` and `response.done` server events are read for metering",
+  "when the route configures guardrails, webhooks or plugins, text-bearing client and server events are checked: a client event may be refused or redacted, a server delta withheld and its response cancelled",
 ]
 omissions = [
-  "no event validation: client and server events are relayed whatever their type",
+  "no validation against the Realtime event schema: an event the content policy does not read is relayed whatever its type",
   "WebRTC and SIP session setup are not served",
 ]
 tests = [
   "crates/rolter-gateway/tests/integration.rs::realtime_websocket_rewrites_model_and_relays_frames_with_upstream_auth",
   "crates/rolter-gateway/tests/realtime_metering.rs",
+  "crates/rolter-gateway/tests/realtime_guardrails.rs",
 ]
 
 [[spec]]
@@ -311,7 +317,8 @@ supported = [
   "translation to OpenAI Chat Completions and Gemini (see the translation records)",
 ]
 deviations = [
-  "a request with no `anthropic-version` is sent with `[compatibility] anthropic_version`, which defaults to this record's version",
+  "a request with no `anthropic-version` is sent with `[compatibility] anthropic_version`; when no value is configured or stored, that is this record's version (a database-backed deployment reads the stored compatibility policy, whose column default is seeded by a migration)",
+  "guardrails, plugins and the PII sanitizer a route configures may refuse or rewrite a request or response; with none configured the bodies pass unchanged",
   "health probes and the connection test always send this record's version, not the operator's `[compatibility]` pin: a probe asks whether the API answers and accepts the key, which no dated version changes",
 ]
 tests = [
@@ -730,11 +737,23 @@ version = "2.0.0"
 reviewed_at = "2026-10-27"
 conformance = "partial"
 gateway_endpoints = ["POST /mcp/{server}", "POST /mcp/{server}/{path}"]
-modules = ["crates/rolter-gateway/src/mcp_log.rs"]
+modules = [
+  "crates/rolter-gateway/src/mcp_log.rs",
+  "crates/rolter-gateway/src/mcp_policy.rs",
+]
 supported = [
-  "`method`, `result` and `error` are read from an MCP exchange to log tool calls; the messages are forwarded unchanged",
+  "every POST body is parsed as a JSON-RPC request, notification or batch to apply the organization's tool groups; a `tools/call` outside them is refused",
+  "`method`, `result` and `error` are read from an MCP exchange to log tool calls",
+]
+deviations = [
+  "a body that cannot be read as JSON-RPC is refused with 400 `mcp_request_unreadable` unless the organization's failure policy lets it through",
+]
+omissions = [
+  "an allowed message is forwarded unchanged: rolter validates no other part of it",
 ]
 tests = [
+  "crates/rolter-gateway/src/mcp_policy.rs::an_escaped_method_name_does_not_get_around_the_policy",
+  "crates/rolter-gateway/src/mcp_policy.rs::a_batch_is_refused_as_a_whole_naming_every_refused_call",
   "crates/rolter-gateway/tests/integration.rs::mcp_proxy_records_a_tool_call_with_key_and_session_owner_attribution",
   "crates/rolter-gateway/tests/integration.rs::mcp_proxy_records_a_json_rpc_error_as_a_tool_error",
 ]
@@ -748,14 +767,14 @@ authority = "Model Context Protocol"
 title = "MCP Streamable HTTP transport and version negotiation"
 url = "https://modelcontextprotocol.io/specification/versioning"
 related = [
-  "https://modelcontextprotocol.io/specification/2025-06-18/basic/transports",
+  "https://modelcontextprotocol.io/specification/2026-07-28/basic/transports",
 ]
 contract = "dated"
 # rolter neither reads nor negotiates `MCP-Protocol-Version`: the client and
 # the MCP server agree on it between themselves
 version = "forwarded"
 reviewed_at = "2026-10-27"
-conformance = "transport-only"
+conformance = "partial"
 gateway_endpoints = [
   "GET /mcp/{server}",
   "POST /mcp/{server}",
@@ -766,17 +785,23 @@ gateway_endpoints = [
 ]
 modules = [
   "crates/rolter-gateway/src/mcp_proxy.rs",
+  "crates/rolter-gateway/src/mcp_policy.rs",
   "crates/rolter-proxy/src/lib.rs",
 ]
 supported = [
   "requests, SSE replies and `Mcp-Session-Id` relayed between client and server; the gateway authenticates the client and presents its own credential upstream",
+  "a POST naming a tool outside the organization's enabled tool groups is refused with 403 `mcp_tool_denied` before anything is forwarded (see `json-rpc`)",
+  "an upstream 403 whose challenge says `insufficient_scope` is answered with 403 `mcp_insufficient_scope` and a rebuilt `WWW-Authenticate` challenge",
 ]
 omissions = [
-  "no payload validation and no protocol-version negotiation: rolter is not an MCP server or client on this path",
+  "no protocol-version negotiation: `MCP-Protocol-Version` is relayed, never read",
+  "no validation of what an allowed message contains, and none of the server's replies",
   "the deprecated HTTP+SSE transport is relayed like any other request, not implemented",
 ]
 tests = [
   "crates/rolter-gateway/src/mcp_proxy.rs::proxy_replaces_client_auth_and_preserves_path_query_and_body",
+  "crates/rolter-gateway/src/mcp_policy.rs::a_governed_server_serves_only_the_tools_its_groups_list",
+  "crates/rolter-gateway/src/mcp_proxy.rs::insufficient_scope_from_an_oauth_server_is_the_step_up_answer",
   "crates/rolter-gateway/tests/integration.rs::mcp_proxy_binds_virtual_key_owner_to_server_scopes_and_bearer",
 ]
 
@@ -785,10 +810,15 @@ id = "mcp-authorization"
 category = "identity"
 authority = "Model Context Protocol"
 title = "MCP authorization"
-url = "https://modelcontextprotocol.io/specification/draft/basic/authorization"
-contract = "living"
-# the `draft` revision as published on this date (#1347)
-reviewed_at = "2026-09-08"
+url = "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization"
+related = [
+  "https://modelcontextprotocol.io/specification/draft/basic/authorization",
+]
+contract = "dated"
+# the flow was written against `draft` as read on 2026-09-08 (#1347) and the
+# step-up of #1417; every client requirement below is in this dated revision
+version = "2026-07-28"
+reviewed_at = "2026-10-28"
 conformance = "partial"
 control_endpoints = ["POST /api/v1/mcp-servers/{id}/oauth/authorize"]
 modules = [
@@ -797,12 +827,15 @@ modules = [
 ]
 supported = [
   "the client-side MUSTs: RFC 9728 discovery, RFC 8707 resource indicators, RFC 9207 `iss` validation, PKCE",
+  "scope selection from the challenge's `scope` and the metadata's `scopes_supported`, and step-up: a re-authorization asks for the live grant's scopes plus the ones an `insufficient_scope` refusal named (#1417)",
 ]
 omissions = [
-  "dynamic client registration: the operator registers the client by hand",
+  "dynamic client registration and client ID metadata documents: the operator registers the client by hand",
 ]
 tests = [
   "crates/rolter-control/src/mcp_oauth_discovery.rs::the_rfc_9207_table_is_implemented_row_by_row",
+  "crates/rolter-control/src/mcp_oauth_flow.rs::scopes_are_chosen_by_the_documented_precedence",
+  "crates/rolter-control/src/mcp_oauth_discovery.rs::the_challenge_parameter_is_read_off_a_www_authenticate_header",
   "crates/rolter-control/src/mcp_oauth_discovery.rs::a_resource_uri_is_canonicalised_the_way_rfc_8707_asks",
 ]
 
@@ -1061,13 +1094,24 @@ contract = "rfc"
 version = "RFC 4511 / RFC 4515"
 reviewed_at = "2026-10-27"
 conformance = "partial"
-modules = ["crates/rolter-control/src/ldap.rs"]
-supported = [
-  "simple bind and search; every RFC 4515 special character escaped in a filter value",
+control_endpoints = ["POST /api/v1/auth/login"]
+modules = [
+  "crates/rolter-control/src/ldap.rs",
+  "crates/rolter-control/src/ldap_signin.rs",
 ]
-omissions = ["not shipped: nothing signs a user in through LDAP yet (#1826)"]
+supported = [
+  "sign-in: when a local password does not verify, each enabled directory of the org is tried with a two-phase simple bind (service account search, then a bind as the user)",
+  "every RFC 4515 special character escaped in a filter value; `ldaps://` when a directory requires TLS",
+  "directory groups mapped to roles through the scoped-grant model SSO and SCIM use, reconciled on every sign-in",
+]
+omissions = [
+  "SASL binds and StartTLS upgrade of a plain `ldap://` connection",
+  "the directory settings API (`/api/v1/ldap-directories`) is rolter's own and implements no LDAP operation",
+]
 tests = [
   "crates/rolter-control/src/ldap.rs::escaping_covers_every_rfc4515_special_character",
+  "crates/rolter-control/tests/control/ldap.rs::a_directory_user_signs_in_and_gets_the_grants_their_groups_map_to",
+  "crates/rolter-control/tests/control/ldap.rs::a_wrong_password_and_an_unknown_login_are_the_same_refusal",
 ]
 
 [[spec]]
@@ -1312,7 +1356,7 @@ tests = [
 kind = "openai_compatible"
 authority = "any OpenAI-compatible server (vLLM, TGI, SGLang, LM Studio)"
 url = "https://developers.openai.com/api/reference/overview"
-dialects = ["openai-chat-completions", "openai-embeddings"]
+dialects = ["openai-chat-completions", "openai-embeddings", "system-one"]
 auth = "bearer"
 primary_path = "/v1/chat/completions"
 conformance = "provider-profile"

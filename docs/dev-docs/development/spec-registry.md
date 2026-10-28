@@ -61,8 +61,10 @@ or named by a record, never both.
 ## Versions, honestly
 
 - **Record what is true today.** Where rolter relays bytes it does not read, the
-  claim is `transport-only`. MCP's Streamable HTTP record says `version =
-"forwarded"`: the gateway neither reads nor negotiates `MCP-Protocol-Version`.
+  claim is `transport-only`, and it changes when the code starts reading them:
+  the MCP transport record became `partial` once the gateway applied tool
+  groups to every JSON-RPC call, yet still says `version = "forwarded"`,
+  because the gateway neither reads nor negotiates `MCP-Protocol-Version`.
 - **No invented SemVer.** OpenAI's REST API is `major-only` `v1`: it evolves by
   backward-compatible additions, and its type system has no finer version to
   record. `reviewed_at` carries the date instead. rolter does not consume
@@ -79,8 +81,14 @@ or named by a record, never both.
   also the default of `[compatibility] anthropic_version`, and
   `the_anthropic_version_has_one_source` holds both to the `anthropic-messages`
   record. Health probes send the constant rather than the operator's pin, and the
-  record says so as a deviation. A metadata-only `SPEC_VERSION` constant would
-  go stale with nothing to notice.
+  record says so as a deviation. The test also reads the default
+  `config-file.mdx` states. A database-backed deployment does not use the
+  `config.rs` default at all: it reads the stored compatibility policy, whose
+  column default `0039_compatibility_policy.sql` seeds with the same literal.
+  Bumping `ANTHROPIC_VERSION` therefore also needs a new migration that moves
+  the stored default (and, if wanted, rows still on the old value); migrations
+  are append-only, so 0039 itself never changes. A metadata-only
+  `SPEC_VERSION` constant would go stale with nothing to notice.
 
 ## `spec-ref` comments
 
@@ -92,7 +100,7 @@ rather than copying its URL:
 fn openai_to_gemini(...)
 ```
 
-or `//! spec-ref: a, b` at the top of a module. The marker is followed by one or
+or `// spec-ref: a, b` on its own line just below a module's `//!` doc block (a plain comment, so rustdoc does not render it as prose). The marker is followed by one or
 more ids separated by commas. Keep a direct link beside the code only where the
 subtlety is in one section of the source (`RFC 9110 §7.6.1`).
 
@@ -110,6 +118,14 @@ covers them:
 | `rolter-gateway` `openapi::tests::every_route_is_in_the_specification_registry`            | a gateway route has no record, or a record claims a route that is gone                                            |
 | `rolter-gateway` `openapi::tests::every_documented_operation_carries_its_provenance`       | a documented operation lacks its `externalDocs` and `x-rolter-*` provenance                                       |
 | `rolter-control` `openapi::tests::registry_endpoints_are_documented_with_their_provenance` | a control-plane endpoint a record names is undocumented or unannotated                                            |
+
+The route check reads the `.route(` calls in the body of `build_router` in
+`crates/rolter-gateway/src/lib.rs`, the only place gateway routes are added
+today. Routes attached through `.merge()` or `.nest()`, or built in another
+function, are not seen: adding one means extending
+`routed_endpoints()` in `crates/rolter-gateway/src/openapi.rs` first. A route
+whose path is a constant rather than a literal fails the test until that
+function resolves it.
 
 Reproduce with `cargo nextest run -p rolter-core -p rolter-gateway -p rolter-control spec_registry openapi genai`.
 

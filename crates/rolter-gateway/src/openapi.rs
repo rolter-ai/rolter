@@ -273,13 +273,13 @@ pub fn document() -> Value {
             "/v1/responses/{response_id}/compact",
             "post",
             "compactResponse",
-            "Compact a response (routed, not implemented: always 501)",
+            "Compact a response (routed, not implemented: 501 after authentication)",
         ),
         (
             "/v1/responses/{response_id}/input_tokens",
             "get",
             "getResponseInputTokens",
-            "Count a response's input tokens (routed, not implemented: always 501)",
+            "Count a response's input tokens (routed, not implemented: 501 after authentication)",
         ),
     ] {
         doc["paths"][path] = json!({
@@ -389,10 +389,27 @@ mod tests {
     /// path is a constant are resolved by name.
     fn routed_endpoints() -> std::collections::BTreeSet<String> {
         let source = include_str!("lib.rs");
-        let body = source
+        let after = source
             .split_once("pub fn build_router(")
             .expect("build_router is in lib.rs")
             .1;
+        // only the function's own body: a router built later in the file (a
+        // test's, say) must not read as gateway routes. the path templates are
+        // balanced braces, so counting them finds the body's closing one
+        let open = after.find('{').expect("build_router has a body");
+        let mut depth = 0;
+        let close = after[open..]
+            .char_indices()
+            .find_map(|(i, c)| {
+                match c {
+                    '{' => depth += 1,
+                    '}' => depth -= 1,
+                    _ => {}
+                }
+                (depth == 0).then_some(open + i)
+            })
+            .expect("build_router's body closes");
+        let body = &after[open..close];
         let mut endpoints = std::collections::BTreeSet::new();
         let mut rest = body;
         while let Some(at) = rest.find(".route(") {
