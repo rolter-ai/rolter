@@ -133,13 +133,30 @@ async fn proxy(
             "mcp_transport_unsupported",
         );
     }
+    // the body is read once, for the tool policy and the MCP tool-call log
+    // alike (#3399): a `tools/call` the policy lets through is recorded under
+    // the same case-folded keys it was judged by. Nothing is parsed when no rule
+    // applies and no ClickHouse is configured, so the common path pays two flag
+    // checks
+    let caller = crate::mcp_policy::Caller {
+        org_id: &key.org_id,
+        key_id: &key.id,
+        project_id: &key.project_id,
+        team_id: &key.team_id,
+    };
+    let rules = crate::mcp_policy::Rules::of(&snapshot, server, &caller);
+    let is_post = method == Method::POST;
+    let read = if is_post {
+        crate::mcp_policy::Read::of(&body, rules.any(), state.mcp_events.enabled())
+    } else {
+        crate::mcp_policy::Read::Skipped
+    };
     // a `tools/call` is recorded in the MCP tool-call log (#2395). `None` for
-    // every other request, and without parsing anything when no ClickHouse is
-    // configured, so the common path pays one flag check
-    let call = if method == Method::POST {
-        PendingCall::parse(
+    // every other request
+    let call = read.single_call().and_then(|request| {
+        PendingCall::from_request(
             &state.mcp_events,
-            &body,
+            request,
             &CallContext {
                 server: &server.slug,
                 transport: &server.transport,
@@ -155,9 +172,7 @@ async fn proxy(
                 redactor: &snapshot.payload_redactor,
             },
         )
-    } else {
-        None
-    };
+    });
     // the credential is chosen by what the server row says it is. only `oauth`
     // consults the per-user session; the static kinds are a deployment-wide
     // credential and deliberately do not require one, which is the whole point
@@ -252,21 +267,15 @@ async fn proxy(
     // naming a tool outside them is refused before anything is forwarded, and
     // recorded in the MCP log like any other denial (#1403)
     let mut list_filter = None;
-    let caller = crate::mcp_policy::Caller {
-        org_id: &key.org_id,
-        key_id: &key.id,
-        project_id: &key.project_id,
-        team_id: &key.team_id,
-    };
     if method == Method::GET {
         // a stream the caller opens can carry the reply to a `tools/list`
         // posted elsewhere: a legacy `sse` server answers every POST with 202
         // and delivers the reply here, and a streamable-HTTP stream can be
         // replayed (#3297)
-        list_filter = crate::mcp_policy::stream_filter(&snapshot, server, &caller).map(Arc::new);
+        list_filter = crate::mcp_policy::stream_filter(&rules).map(Arc::new);
     }
     if method == Method::POST {
-        let decision = crate::mcp_policy::evaluate(&snapshot, server, &caller, &body);
+        let decision = crate::mcp_policy::evaluate_read(&snapshot, server, &rules, &read);
         list_filter = decision.list_filter.map(Arc::new);
         let (refused, message) = match decision.verdict {
             Verdict::Allow => (None, String::new()),
@@ -321,7 +330,6 @@ async fn proxy(
             "mcp_server_invalid",
         );
     };
-    let is_post = method == Method::POST;
     let mut headers = end_to_end_headers(headers);
     if list_filter.is_some() {
         // a compressed reply cannot be narrowed

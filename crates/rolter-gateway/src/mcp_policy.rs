@@ -161,7 +161,7 @@ impl Caller<'_> {
 }
 
 /// What a call to one server is judged against.
-struct Rules<'a> {
+pub(crate) struct Rules<'a> {
     /// the tools the caller's tool groups allow, when any group names the
     /// server: the organization's set, or the union of the caller's assigned
     /// groups when it has an assignment
@@ -176,7 +176,11 @@ struct Rules<'a> {
 }
 
 impl<'a> Rules<'a> {
-    fn of(snapshot: &'a Snapshot, server: &'a McpServerConfig, caller: &Caller<'_>) -> Self {
+    pub(crate) fn of(
+        snapshot: &'a Snapshot,
+        server: &'a McpServerConfig,
+        caller: &Caller<'_>,
+    ) -> Self {
         // saved settings decide for themselves; an organization with none
         // follows the marker it was created with (#3334)
         let allow_unlisted = snapshot
@@ -227,7 +231,7 @@ impl<'a> Rules<'a> {
 
     /// Whether any rule applies. When none does, the body is forwarded without
     /// being parsed.
-    fn any(&self) -> bool {
+    pub(crate) fn any(&self) -> bool {
         self.governed.is_some() || self.declared.is_some()
     }
 
@@ -238,9 +242,9 @@ impl<'a> Rules<'a> {
 
     /// The filter for a reply that lists this server's tools. Owns its copy of
     /// the rules, so it is only built once something needs it.
-    fn list_filter(self) -> ListFilter {
+    fn list_filter(&self) -> ListFilter {
         ListFilter::new(
-            self.governed.map(Cow::into_owned),
+            self.governed.as_deref().cloned(),
             self.declared.map(<[String]>::to_vec),
         )
     }
@@ -438,8 +442,10 @@ impl<'de> Visitor<'de> for Parse {
 
 /// A request body read once: its messages, and whether any of them repeats a
 /// key. `None` when it is not JSON at all.
-struct Body {
+pub(crate) struct Body {
     messages: Vec<Value>,
+    /// whether the body was a JSON array of messages rather than one message
+    batch: bool,
     /// whether any copy of each message's `method` is `tools/call`
     called: Vec<bool>,
     repeated: bool,
@@ -450,15 +456,41 @@ impl Body {
         let mut parser = serde_json::Deserializer::from_slice(bytes);
         let out = Parse(Level::Body).deserialize(&mut parser).ok()?;
         parser.end().ok()?;
-        let (messages, called) = match out.value {
-            Value::Array(items) => (items, out.calls),
-            other => (vec![other], out.calls),
+        let (messages, called, batch) = match out.value {
+            Value::Array(items) => (items, out.calls, true),
+            other => (vec![other], out.calls, false),
         };
         Some(Self {
             messages,
+            batch,
             called,
             repeated: out.repeated,
         })
+    }
+
+    /// Whether `bytes` can hold a `tools/call`: it spells the method out, or it
+    /// holds an escape that could spell it. Most MCP traffic is neither, and is
+    /// not worth a parse when only the log wants it.
+    fn may_call(bytes: &[u8]) -> bool {
+        const NEEDLE: &[u8] = b"tools/call";
+        bytes.windows(NEEDLE.len()).any(|w| w == NEEDLE) || bytes.contains(&b'\\')
+    }
+
+    /// The one request a body is made of, when it is a single `tools/call` with
+    /// an id: the only shape whose reply can be matched to a log row. A
+    /// notification and a batch are not recorded when they are allowed; a
+    /// refused one is (#1403). Returned as the canonical request
+    /// [`Self::tool_calls`] builds, so a key written in another case is read as
+    /// a decoder would read it.
+    pub(crate) fn single_call(&self) -> Option<Map<String, Value>> {
+        if self.batch {
+            return None;
+        }
+        let (_, request) = self.tool_calls(false).into_iter().next()?;
+        request
+            .get("id")
+            .is_some_and(|id| !id.is_null())
+            .then_some(request)
     }
 
     /// The method a message names, read the way a decoder would.
@@ -517,6 +549,37 @@ impl Body {
     }
 }
 
+/// A request body as far as it was read, once, for the policy and the MCP log
+/// alike (#3399): both take their keys from the same case-folded lookup, so a
+/// call the policy allows is a call the log records.
+pub(crate) enum Read {
+    /// nothing needed the body, so it was not parsed
+    Skipped,
+    /// something needed it and it is not JSON
+    Unreadable,
+    Parsed(Body),
+}
+
+impl Read {
+    /// Read `bytes` when a rule applies (`governed`) or when `logging` wants to
+    /// know whether it is a `tools/call`; otherwise leave it alone.
+    pub(crate) fn of(bytes: &[u8], governed: bool, logging: bool) -> Self {
+        let wanted = !bytes.is_empty() && (governed || (logging && Body::may_call(bytes)));
+        if !wanted {
+            return Self::Skipped;
+        }
+        Body::parse(bytes).map_or(Self::Unreadable, Self::Parsed)
+    }
+
+    /// The single `tools/call` the log can follow, when the body was read.
+    pub(crate) fn single_call(&self) -> Option<Map<String, Value>> {
+        match self {
+            Self::Parsed(body) => body.single_call(),
+            _ => None,
+        }
+    }
+}
+
 /// What the policy made of one request body.
 pub(crate) struct Decision {
     pub verdict: Verdict,
@@ -537,38 +600,37 @@ impl Decision {
 /// The filter for a stream the caller opens with `GET`, which can carry
 /// `tools/list` replies to requests posted elsewhere, or `None` when no rule
 /// applies to the server (#3297).
-pub(crate) fn stream_filter(
-    snapshot: &Snapshot,
-    server: &McpServerConfig,
-    caller: &Caller<'_>,
-) -> Option<ListFilter> {
-    let rules = Rules::of(snapshot, server, caller);
+pub(crate) fn stream_filter(rules: &Rules<'_>) -> Option<ListFilter> {
     rules.any().then(|| rules.list_filter())
 }
 
-/// Apply the policy to a request body bound for `server`.
-pub(crate) fn evaluate(
+/// Apply the policy to a request body bound for `server`, read once by the
+/// caller as `read`.
+pub(crate) fn evaluate_read(
     snapshot: &Snapshot,
     server: &McpServerConfig,
-    caller: &Caller<'_>,
-    body: &[u8],
+    rules: &Rules<'_>,
+    read: &Read,
 ) -> Decision {
-    let rules = Rules::of(snapshot, server, caller);
-    if !rules.any() || body.is_empty() {
+    if !rules.any() {
         return Decision::of(Verdict::Allow);
     }
-    let Some(parsed) = Body::parse(body) else {
-        // what to do with a request that cannot be inspected is the
-        // organization's failure policy; refusing is the default
-        let fail_open = snapshot
-            .mcp_org_settings
-            .get(&server.org_id)
-            .is_some_and(|settings| settings.fail_open);
-        return Decision::of(if fail_open {
-            Verdict::Allow
-        } else {
-            Verdict::Unreadable
-        });
+    let parsed = match read {
+        Read::Skipped => return Decision::of(Verdict::Allow),
+        Read::Parsed(parsed) => parsed,
+        Read::Unreadable => {
+            // what to do with a request that cannot be inspected is the
+            // organization's failure policy; refusing is the default
+            let fail_open = snapshot
+                .mcp_org_settings
+                .get(&server.org_id)
+                .is_some_and(|settings| settings.fail_open);
+            return Decision::of(if fail_open {
+                Verdict::Allow
+            } else {
+                Verdict::Unreadable
+            });
+        }
     };
     if parsed.repeated {
         return Decision::of(Verdict::Ambiguous(
@@ -608,6 +670,19 @@ pub(crate) fn evaluate(
         verdict: Verdict::Allow,
         list_filter,
     }
+}
+
+/// Read and judge a body in one step, as the proxy does across its own.
+#[cfg(test)]
+pub(crate) fn evaluate(
+    snapshot: &Snapshot,
+    server: &McpServerConfig,
+    caller: &Caller<'_>,
+    body: &[u8],
+) -> Decision {
+    let rules = Rules::of(snapshot, server, caller);
+    let read = Read::of(body, rules.any(), false);
+    evaluate_read(snapshot, server, &rules, &read)
 }
 
 #[cfg(test)]
@@ -1057,9 +1132,9 @@ mod tests {
     #[test]
     fn a_stream_is_filtered_only_where_a_rule_applies() {
         let (snapshot, server) = snapshot(vec![group("org", "srv", &["get_issue"])]);
-        assert!(stream_filter(&snapshot, &server, &caller()).is_some());
+        assert!(stream_filter(&Rules::of(&snapshot, &server, &caller())).is_some());
         let (snapshot, server) = world(vec![]);
-        assert!(stream_filter(&snapshot, &server, &caller()).is_none());
+        assert!(stream_filter(&Rules::of(&snapshot, &server, &caller())).is_none());
     }
 
     /// a group disabled while callers are assigned to it narrows them to

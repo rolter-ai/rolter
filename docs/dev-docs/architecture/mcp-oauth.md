@@ -621,13 +621,18 @@ The gateway records every proxied JSON-RPC `tools/call` in ClickHouse's
 `mcp_tool_call_logs` (#2395). Before this nothing did: the control plane's
 `POST /api/v1/mcp/events` had no caller, so Observability → MCP Logs was empty.
 
-- **Hook.** `mcp_proxy::proxy` parses a `POST` body into a `PendingCall` once the
-  server and key are resolved and before any credential is chosen, so the
-  refusals below are recorded too. Only a request whose `method` is `tools/call`
-  and that carries an `id` is recorded; `initialize`, `tools/list`,
-  notifications and JSON-RPC batches are not. A cheap byte search for
-  `tools/call` runs before the JSON parse, and with no `clickhouse_url` the sink
-  is disabled and nothing is parsed at all.
+- **Hook.** `mcp_proxy::proxy` reads a `POST` body **once** (`mcp_policy::Read`,
+  #3399) once the server and key are resolved and before any credential is
+  chosen, so the refusals below are recorded too. The tool policy judges that
+  parse and the log takes its `PendingCall` from it, so both look keys up the
+  way a Go decoder does (case-folded): a `tools/call` written `Method` or
+  `Params` that the policy allows is recorded under the tool it was judged as.
+  Only a single request whose `method` is `tools/call` and that carries an `id`
+  is recorded when allowed; `initialize`, `tools/list`, notifications and
+  JSON-RPC batches are not (a refused call is recorded whatever its shape). The
+  body is not parsed at all unless a rule applies to the caller or the sink is
+  enabled and the bytes hold `tools/call` or an escape that could spell it; with
+  no `clickhouse_url` the sink is disabled and nothing is parsed for the log.
 - **Write path.** `McpEventSink` (`crates/rolter-gateway/src/mcp_log.rs`) is a
   bounded channel and a batch writer, built like the request-log and
   health-event writers and sharing their `[logging]` `batch_max`, `flush_ms`
