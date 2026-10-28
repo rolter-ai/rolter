@@ -2,7 +2,7 @@ import { useMutation } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 
 import { errorText } from "@/lib/error-copy";
-import { startMcpOAuth, type McpServerRow } from "@/lib/api";
+import { startMcpOAuth, startMcpStepUp, type McpServerRow } from "@/lib/api";
 import { useToast } from "@/lib/toast";
 
 // starts consent and hands the browser the url the control plane minted. the
@@ -10,11 +10,14 @@ import { useToast } from "@/lib/toast";
 // party, and the operator should come back to a page that kept its place. the
 // MCP Catalog's Connect and an expired session's Reconnect on Auth Sessions
 // are the same request, so they share this
-export function useMcpConnect(server: Pick<McpServerRow, "id" | "name">) {
+//
+// a step-up (#3296) is the same request carrying the scopes to add
+export function useMcpConnect(server: Pick<McpServerRow, "id" | "name">, stepUpScopes?: string[]) {
   const { t } = useTranslation();
   const toast = useToast();
   return useMutation({
-    mutationFn: () => startMcpOAuth(server.id),
+    mutationFn: () =>
+      stepUpScopes?.length ? startMcpStepUp(server.id, stepUpScopes) : startMcpOAuth(server.id),
     onSuccess: (started) => {
       const opened = window.open(started.authorization_url, "_blank", "noopener,noreferrer");
       // a blocked pop-up is silent otherwise: the request succeeded, a login
