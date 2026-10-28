@@ -9,6 +9,7 @@
 //! writes `postgres::repo::McpServerRepo` regardless of which file it is in (#1042).
 
 mod access;
+mod api_tokens;
 mod audit;
 mod auth;
 mod billing;
@@ -36,6 +37,7 @@ mod tests;
 mod users;
 
 pub use access::*;
+pub use api_tokens::*;
 pub use audit::*;
 pub use auth::*;
 pub use billing::*;

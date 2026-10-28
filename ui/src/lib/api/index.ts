@@ -448,6 +448,7 @@ export type {
   CustomRoleGrantRow,
   CustomRoleDetail,
   CustomRoleGrantInput,
+  DeploymentRole,
   RbacAction,
   RbacActionView,
   RbacResourceView,
