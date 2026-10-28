@@ -109,11 +109,10 @@ Protected content never reaches a log, a metric or a span. The gateway exports:
 
 `outcome` is `allow`, `block`, `transform`, `violation`, `flagged`, `error_open` or `error_closed`. A `category` label is one the policy sets a threshold for by name, or `other`, so a provider cannot add label values. The latency histogram is in the Prometheus endpoint only; the counters also go to OTLP.
 
-On the request log, `guardrail_events` gains `provider_blocked:<provider>`, `provider_transformed:<provider>`, `provider_error:<provider>`, `policy_blocked:<policy>` and `policy_flagged:<policy>` for the request stage. A response the policy withheld is recorded as `blocked:<provider or policy>` with the withheld reason.
+On the request log, `guardrail_events` gains `provider_blocked:<provider>`, `provider_transformed:<provider>`, `provider_error:<provider>`, `policy_blocked:<policy>` and `policy_flagged:<policy>`, on both stages: a response a provider rewrote, a response flagged under `on_violation = "annotate"` and a response a fail-open provider gave no verdict on are recorded on the row of the delivered response, cached answers included. A response the policy withheld is also recorded as `blocked:<provider or policy>` with the withheld reason.
 
 ## Not covered yet
 
-- On the response stage, only a refusal reaches the request log; a flag, a rewrite or a fail-open error is counted in the metrics only ([#3330](https://github.com/rolter-ai/rolter/issues/3330)).
 - Every provider is an HTTP service; an in-process classifier is tracked in [#3329](https://github.com/rolter-ai/rolter/issues/3329).
 
 ## Configure in the file

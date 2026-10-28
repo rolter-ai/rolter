@@ -688,3 +688,116 @@ async fn the_built_in_output_rules_mask_and_withhold_a_transcript() {
     assert_eq!(withheld.code(), "guardrail_blocked");
     assert!(!withheld.body.contains("4111"), "{}", withheld.body);
 }
+
+/// The request-log rows a gateway sends to a stand-in ClickHouse.
+#[derive(Clone, Default)]
+struct Rows(Arc<Mutex<Vec<Value>>>);
+
+impl Rows {
+    async fn serve(&self) -> SocketAddr {
+        let rows = self.clone();
+        serve(Router::new().route(
+            "/",
+            post(
+                move |axum::extract::RawQuery(query): axum::extract::RawQuery, body: String| {
+                    let rows = rows.clone();
+                    async move {
+                        if query.unwrap_or_default().contains("request_logs") {
+                            for line in body.lines().filter(|line| !line.trim().is_empty()) {
+                                if let Ok(row) = serde_json::from_str::<Value>(line) {
+                                    rows.0.lock().push(row);
+                                }
+                            }
+                        }
+                        "ok"
+                    }
+                },
+            ),
+        ))
+        .await
+    }
+
+    async fn only_row(&self) -> Value {
+        for _ in 0..200 {
+            if !self.0.lock().is_empty() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        let rows = self.0.lock().clone();
+        assert_eq!(rows.len(), 1, "expected one row, saw {rows:?}");
+        rows[0].clone()
+    }
+}
+
+/// The response stage's non-blocking outcomes reach the row as the request
+/// stage's do (#3330).
+#[tokio::test]
+async fn a_response_stage_flag_is_recorded_on_the_delivered_row() {
+    for dialect in [Dialect::OpenAi, Dialect::Anthropic] {
+        let upstream = Upstream::default();
+        let up = upstream.serve().await;
+        let url = provider(Arc::default()).await;
+        let rows = Rows::default();
+        let clickhouse = rows.serve().await;
+        let mut config = config(up, dialect.kind());
+        config.logging.clickhouse_url = Some(format!("http://{clickhouse}"));
+        config.logging.flush_ms = 20;
+        config.logging.batch_max = 1;
+        config.semantic_guards.providers = vec![guard(
+            "tox",
+            &url,
+            WebhookStage::PostCall,
+            FailureMode::FailOpen,
+        )];
+        let mut annotating = policy("watch", PolicyScope::Deployment, None, &["tox"]);
+        annotating.on_violation = ViolationAction::Annotate;
+        config.semantic_guards.policies = vec![annotating];
+
+        let delivered = send(&config, dialect, "something violent", false, None).await;
+        assert_eq!(delivered.status, 200, "{dialect:?} {}", delivered.body);
+        let row = rows.only_row().await;
+        assert_eq!(row["withheld"], 0, "{row}");
+        let events = row["guardrail_events"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        assert!(
+            events.contains(&json!("policy_flagged:watch")),
+            "{dialect:?}: {row}"
+        );
+        assert!(!row.to_string().contains("violent"), "{row}");
+    }
+}
+
+/// A fail-open provider that gives no verdict on a response is on the row too.
+#[tokio::test]
+async fn a_response_stage_provider_error_is_recorded() {
+    let upstream = Upstream::default();
+    let up = upstream.serve().await;
+    let rows = Rows::default();
+    let clickhouse = rows.serve().await;
+    let mut config = config(up, ProviderKind::OpenaiCompatible);
+    config.logging.clickhouse_url = Some(format!("http://{clickhouse}"));
+    config.logging.flush_ms = 20;
+    config.logging.batch_max = 1;
+    // TEST-NET-1: nothing answers there
+    config.semantic_guards.providers = vec![GuardrailWebhookConfig {
+        timeout_ms: 150,
+        ..guard(
+            "down",
+            "http://192.0.2.1:1/check",
+            WebhookStage::PostCall,
+            FailureMode::FailOpen,
+        )
+    }];
+    let delivered = send(&config, Dialect::OpenAi, "hello", false, None).await;
+    assert_eq!(delivered.status, 200, "{}", delivered.body);
+    let row = rows.only_row().await;
+    assert_eq!(
+        row["guardrail_events"],
+        json!(["provider_error:down"]),
+        "{row}"
+    );
+}

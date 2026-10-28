@@ -3218,9 +3218,9 @@ async fn proxy(
                             };
                             let status_code =
                                 StatusCode::from_u16(status).unwrap_or(StatusCode::OK);
-                            let mut post_events = Vec::new();
+                            let mut post_events = PolicyEvents::default();
                             let applied = policy.apply(status_code, &mut post_events, bytes).await;
-                            log.plugin_events.extend(post_events);
+                            post_events.record(&mut log);
                             let (bytes, pre_restore) = match applied {
                                 Delivery::Send { body, pre_restore } => (body, pre_restore),
                                 // the upstream call happened and is billed on
@@ -4911,9 +4911,9 @@ async fn stream_response(
                 // read before the policy too: a transcript's audio duration is
                 // billed whether it is rewritten, withheld or delivered (#3331)
                 log.billed_units = log.unit_basis.units(&bytes);
-                let mut post_events = Vec::new();
+                let mut post_events = PolicyEvents::default();
                 let applied = policy.apply(status, &mut post_events, bytes).await;
-                log.plugin_events.extend(post_events);
+                post_events.record(&mut log);
                 let (bytes, pre_restore) = match applied {
                     Delivery::Send { body, pre_restore } => (body, pre_restore),
                     Delivery::Refuse { response, reason } => {
@@ -5603,7 +5603,7 @@ async fn cached_response(
     pii_stream: Option<crate::pii_stream::StreamRestore>,
 ) -> Response {
     let status = StatusCode::from_u16(hit.status).unwrap_or(StatusCode::OK);
-    let mut post_events = Vec::new();
+    let mut post_events = PolicyEvents::default();
     let applied = policy
         .apply(status, &mut post_events, Bytes::from(hit.body))
         .await;
@@ -5612,23 +5612,22 @@ async fn cached_response(
         Delivery::Send { body, .. } => (body, None),
         Delivery::Refuse { response, reason } => (Bytes::new(), Some((response, reason))),
     };
-    let log = RequestLog {
+    let mut log = RequestLog {
         status: hit.status,
         cache_hit: 1,
-        plugin_events: ctx
-            .plugin_events
-            .iter()
-            .cloned()
-            .chain(post_events)
-            .collect(),
         ..ctx.into_log()
     };
+    post_events.record(&mut log);
     // a withheld hit still gets its row, so a refusal is visible, but with zero
     // tokens and cost: nothing was generated upstream for this request (#1478)
     if let Some((refusal, reason)) = withheld {
         sink.metrics()
             .withheld_responses_total
             .fetch_add(1, Relaxed);
+        // as `UsageLoggingStream::withhold` records a live refusal
+        if let Some(rule) = reason.strip_prefix(crate::logging::GUARDRAIL_WITHHELD_PREFIX) {
+            log.guardrail_events.push(format!("blocked:{rule}"));
+        }
         sink.log(RequestLog {
             status: refusal.status().as_u16(),
             withheld: 1,
@@ -5689,7 +5688,7 @@ struct DeliveryPolicy<'p, 'a> {
 impl DeliveryPolicy<'_, '_> {
     /// Finalise a buffered body with `status`. Only a successful body is
     /// examined; an error body passes through untouched.
-    async fn apply(&self, status: StatusCode, events: &mut Vec<String>, bytes: Bytes) -> Delivery {
+    async fn apply(&self, status: StatusCode, events: &mut PolicyEvents, bytes: Bytes) -> Delivery {
         if !status.is_success() {
             return Delivery::Send {
                 body: bytes,
@@ -5728,9 +5727,9 @@ impl DeliveryPolicy<'_, '_> {
     }
 
     /// Run every leg over a successful body, in order.
-    async fn finalise(&self, events: &mut Vec<String>, bytes: Bytes) -> Delivery {
+    async fn finalise(&self, events: &mut PolicyEvents, bytes: Bytes) -> Delivery {
         let bytes = match self.output {
-            Some(guard) => match guard.apply(&bytes) {
+            Some(guard) => match guard.apply(&bytes, &mut events.guardrail) {
                 crate::guardrails::OutputDecision::Unchanged => bytes,
                 crate::guardrails::OutputDecision::Masked(masked) => masked,
                 crate::guardrails::OutputDecision::Blocked(rule) => {
@@ -5746,7 +5745,7 @@ impl DeliveryPolicy<'_, '_> {
         // the built-in rules masked it and before a plugin or the sanitizer
         // rewrites it (#459)
         let bytes = match self.semantic {
-            Some(leg) => match leg.apply(bytes).await {
+            Some(leg) => match leg.apply(bytes, &mut events.guardrail).await {
                 Ok(bytes) => bytes,
                 Err(refusal) => return *refusal,
             },
@@ -5754,7 +5753,9 @@ impl DeliveryPolicy<'_, '_> {
         };
         let bytes = match self.plugins {
             Some(ctx) => {
-                match crate::plugin_dispatch::apply_post_response(ctx, events, &bytes).await {
+                match crate::plugin_dispatch::apply_post_response(ctx, &mut events.plugin, &bytes)
+                    .await
+                {
                     crate::plugin_dispatch::PostResponseOutcome::Bytes(bytes) => Bytes::from(bytes),
                     crate::plugin_dispatch::PostResponseOutcome::Block(reason) => {
                         let reason =
@@ -5813,10 +5814,11 @@ impl SemanticLeg<'_, '_> {
     /// Judge a successful body. A stream is shown to the providers as its
     /// assembled text; any other body as its JSON, or as `{"text": …}` when it
     /// is UTF-8 but not JSON. A binary body (audio, an image) is no text a
-    /// classifier can judge and passes. Response-stage events are counted in
-    /// the metrics; the log row records a refusal through its reason. The
-    /// refusal is boxed: it is the rare arm, and `Delivery` is large.
-    async fn apply(&self, bytes: Bytes) -> Result<Bytes, Box<Delivery>> {
+    /// classifier can judge and passes. Every provider's outcome is appended to
+    /// `events` for the log row, as on the request stage (#3330); a refusal is
+    /// also recorded through its withheld reason. The refusal is boxed: it is
+    /// the rare arm, and `Delivery` is large.
+    async fn apply(&self, bytes: Bytes, events: &mut Vec<String>) -> Result<Bytes, Box<Delivery>> {
         let content = if self.stream {
             crate::semantic_guards::stream_content(&bytes)
         } else if let Ok(value) = serde_json::from_slice::<Value>(&bytes) {
@@ -5826,14 +5828,13 @@ impl SemanticLeg<'_, '_> {
         } else {
             return Ok(bytes);
         };
-        let mut events = Vec::new();
         match self
             .guard
             .check(
                 rolter_core::WebhookStage::PostCall,
                 &content,
                 self.stream,
-                &mut events,
+                events,
             )
             .await
         {
@@ -5888,6 +5889,24 @@ enum Delivery {
         response: Response,
         reason: String,
     },
+}
+
+/// What the post-response policy did to one body, kept apart by the column
+/// each lands in: the output rules' and semantic providers' outcomes in
+/// `guardrail_events`, the `post_response` plugins' in `plugin_events`
+/// (#3330).
+#[derive(Default)]
+struct PolicyEvents {
+    guardrail: Vec<String>,
+    plugin: Vec<String>,
+}
+
+impl PolicyEvents {
+    /// Append the outcomes to the row the request leaves.
+    fn record(self, log: &mut RequestLog) {
+        log.guardrail_events.extend(self.guardrail);
+        log.plugin_events.extend(self.plugin);
+    }
 }
 
 /// The reply when a post-call rule refuses to deliver a completion.

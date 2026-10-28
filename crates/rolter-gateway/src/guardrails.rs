@@ -385,14 +385,22 @@ impl<'a> OutputGuard<'a> {
     /// a known response shape, and there is nothing to walk in an opaque payload.
     /// Callers apply this to successful responses only, so this is not the path
     /// an upstream error body takes.
-    pub fn apply(&self, bytes: &bytes::Bytes) -> OutputDecision {
+    ///
+    /// The `redacted:<rule>` and `annotated:<rule>` outcomes of a body that is
+    /// delivered are appended to `events` for its log row (#3330); a withheld
+    /// body is recorded through its withheld reason instead.
+    pub fn apply(&self, bytes: &bytes::Bytes, events: &mut Vec<String>) -> OutputDecision {
         // response-side scanning is its own attributable stage: masking a large
         // body costs real time, and it lands after the upstream leg (#805)
         let _stage = crate::trace::stage_span!("guardrails.post");
         let Ok(mut parsed) = serde_json::from_slice::<Value>(bytes) else {
             return OutputDecision::Unchanged;
         };
-        match apply_output(self.guardrails, self.selection, self.path, &mut parsed) {
+        let report = apply_output(self.guardrails, self.selection, self.path, &mut parsed);
+        if let Ok(report) = &report {
+            events.extend(report.events());
+        }
+        match report {
             Ok(report) if report.redactions > 0 => {
                 self.metrics.guardrail_output_redactions_total.fetch_add(
                     report.redactions as u64,

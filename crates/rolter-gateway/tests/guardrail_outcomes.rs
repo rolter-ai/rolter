@@ -232,6 +232,21 @@ async fn a_post_call_block_names_the_rule_on_the_withheld_row() {
     assert_eq!(row["guardrail_events"], json!(["blocked:email"]), "{row}");
 }
 
+#[tokio::test]
+async fn a_post_call_redaction_and_annotation_are_on_the_delivered_row() {
+    // the upstream answers with an address, so the output rule matches (#3330)
+    for (action, event) in [
+        (GuardAction::Redact, "redacted:email"),
+        (GuardAction::Annotate, "annotated:email"),
+    ] {
+        let (status, row) = run(GuardStage::PostCall, action, "ping").await;
+        assert_eq!(status, 200, "{action:?}");
+        assert_eq!(row["withheld"], 0, "{row}");
+        assert_eq!(row["guardrail_events"], json!([event]), "{row}");
+        assert!(!row.to_string().contains("ops@corp.com"), "{row}");
+    }
+}
+
 /// Runs one request against `config` and returns the status and the one row.
 async fn run_with(config: GatewayConfig, clickhouse: &Rows, prompt: &str) -> (u16, Value) {
     let response = ask(&config, prompt).await;
