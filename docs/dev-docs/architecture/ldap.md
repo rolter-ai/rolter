@@ -119,6 +119,11 @@ copies a group from their directory's UI should not silently get no access.
   account does not sign in as it: the break-glass account has to stay reachable
   when the directory is down, and must not be reachable by whoever can edit a
   directory attribute. Superadmins sign in locally.
+- **An account holding a deployment role is never adopted.** An entry whose
+  mail matches an account with `users.deployment_role` set (operator, security
+  auditor) does not sign in as it, even when the account has no memberships:
+  that authority is deployment-wide and lives on the account, so whoever can
+  edit a directory attribute must not reach it. These accounts sign in locally.
 - **An account with a role in another org is never adopted.** The directory is
   run by an org's admins, who choose every entry's mail and password, so it may
   sign in as an existing account only when every role that account holds is

@@ -269,6 +269,15 @@ async fn grant_for(
             );
             return Ok(None);
         }
+        if user.deployment_role.is_some() {
+            tracing::warn!(
+                directory_id = %directory.id,
+                user_id = %user.id,
+                "ldap sign-in refused: the address belongs to an account holding a deployment \
+                 role, who signs in locally"
+            );
+            return Ok(None);
+        }
         if user.deactivated_at.is_some() {
             return Ok(None);
         }
