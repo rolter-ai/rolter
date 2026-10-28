@@ -6,6 +6,8 @@ description: "How Rolter carries your configuration across a version boundary, h
 
 Upgrading Rolter should be a change of image tag. Your `rolter.toml` is carried forward for you, and skipping releases costs nothing — you do not have to step through intermediate versions to get from an old build to a current one.
 
+There is one upgrade order, and every note on this page follows it: **the control plane first, then the gateways, and a release's new settings only once every gateway runs it.** [Upgrade order](#upgrade-order) explains why.
+
 This page covers the config half of an upgrade. The database half is separate and already automatic: schema migrations are embedded in the binary and applied on start, and they are append-only, so the same rules apply there.
 
 ## Preview an upgrade before you run it
@@ -52,7 +54,7 @@ There is no version you have to stop at on the way.
 
 ## Rolling back
 
-Rolling back to an older Rolter is supported, and the config will not be what stops you.
+Rolling back to an older Rolter is supported, and the config will not be what stops you. Roll back in the reverse of the [upgrade order](#upgrade-order): the gateways first, then the control plane.
 
 Rolter's config types never reject a key they do not recognise. An older build reading a newer file ignores what it has not heard of and starts. The same holds for the stamp itself: a build that meets a `schema_version` from the future loads the file unchanged rather than refusing.
 
@@ -105,7 +107,7 @@ A config that the older format cannot express at all is refused with `snapshot_f
 
 ### Captured payloads from older gateways
 
-Roll the gateways out before the control plane when you upgrade from v0.1.0 or earlier with [payload capture](/observability/log-settings#payload-capture) on.
+This section follows the [upgrade order](#upgrade-order) like the rest: the control plane first, then the gateways, then the ClickHouse files below whenever suits you. It explains what you see in the window between those steps, and how to keep that window short.
 
 ClickHouse migrations under `clickhouse/` add columns that newer gateways write, for example `log_id` on `request_logs` and `request_payloads` (`012_request_log_key.sql`). Gateways insert with `input_format_skip_unknown_fields=1`, so a gateway upgraded before the migration is applied keeps logging and simply drops the new field until it is. Apply the migration to keep the new column filled; until you do, captured bodies join their log rows the old way, by request id and timestamp.
 
@@ -117,7 +119,9 @@ None of the six has to come before the control plane. **LLM Logs** and `GET /api
 
 Apply the files to keep the data, not to be allowed to upgrade. A gateway that gets there first is safe: it inserts with `input_format_skip_unknown_fields=1` and drops a field the table has no column for, so every request is still logged and priced. Until you apply a file the dropped fields are the ones it adds: the upstream status and attempts of a request, which call on a stored response a row records, and the 1 hour share of a cache write (only for a request that wrote to the 1 hour cache; the row's cost is computed by the gateway and is the same either way). Until `017` is applied, **LLM Logs** shows no **Cache write by lifetime** line in a row's detail, since the share it splits the write by is `0`; once the file is applied it appears for every new request that wrote to the 1 hour cache. See [Cache writes](/observability/logs-and-cost#cache-writes).
 
-The Logs screen attaches a captured body to its log row by the request id and the row's timestamp. Gateways from v0.1.0 and earlier left both timestamps to ClickHouse, which stamped the log row and the payload row separately, so they never match. Once the control plane is upgraded, bodies those gateways captured stop showing in the log drawer, and they stay hidden until `payload_retention_hours` removes them (7 days by default). Nothing is exposed and nothing is lost from the log rows themselves; only the payload panel goes empty for those requests. Upgrading the gateways first keeps the window of new bodies written that way as short as the rollout.
+The Logs screen attaches a captured body to its log row by the request id and the row's timestamp. Gateways from v0.1.0 and earlier left both timestamps to ClickHouse, which stamped the log row and the payload row separately, so they never match. Once the control plane is upgraded, bodies those gateways captured stop showing in the log drawer, and they stay hidden until `payload_retention_hours` removes them (7 days by default). Nothing is exposed and nothing is lost from the log rows themselves; only the payload panel goes empty for those requests.
+
+Earlier versions of this page told you to roll the gateways first for this reason. Do not: a gateway that leads its control plane is unsupported, and it is refused as soon as the snapshot format moves. Upgrade the control plane, then roll the gateways straight after it. Every body captured in between is one the old gateways write the old way, so a prompt gateway rollout is what keeps that set small.
 
 ## Model price rates
 
@@ -247,5 +251,6 @@ Two MCP rules that were stored but not enforced are enforced from this release:
 
 1. Back up the control-plane database, and confirm you have `ROLTER_KEK` outside it.
 2. Run `rolter check --config rolter.toml --migrations` with the **new** binary and read the plan.
-3. Roll out. Config migrates in memory on start; database migrations apply on the control plane's start.
-4. Confirm the gateway serves traffic and the dashboard lists your providers.
+3. Roll out the control plane, then the gateways ([Upgrade order](#upgrade-order)). Config migrates in memory on start; database migrations apply on the control plane's start.
+4. Confirm the gateways serve traffic and the dashboard lists your providers.
+5. Only now turn on what the release introduces.
