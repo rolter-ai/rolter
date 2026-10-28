@@ -172,6 +172,14 @@ cache_write_per_mtok = 3.125   # optional; defaults to input_per_mtok when absen
 
 ### Cached prompts and thinking tokens
 
+YandexGPT's OpenAI-compatible endpoint reports a hit in
+`usage.prompt_tokens_details.cached_tokens`, **inside** `prompt_tokens`.
+A direct `yandexgpt/latest` capture on October 28, 2026 returned 3,008 cached
+tokens within 3,595 prompt tokens, with 2 completion tokens and 3,597 total.
+The first two identical calls reported zero; a third call after another minute
+reported the hit. This is a real response, not a promise that every repeated
+prompt is cached immediately. Rolter already reads this spelling.
+
 Rolter reads the prompt-cache hit from the field the provider reports it in, and records it as `cache_read_tokens`. Every spelling below counts the hit **inside** the prompt total except Anthropic's, which Rolter adds back in, so `prompt_tokens` is always the whole prompt and the cached share is priced at `cached_input_per_mtok`:
 
 | Provider                                                                                                                                                                                             | Where the cache hit is reported                                                      |
@@ -184,6 +192,7 @@ Rolter reads the prompt-cache hit from the field the provider reports it in, and
 | Databricks-hosted Claude                                                                                                                                                                             | `usage.cache_read_input_tokens`, at the top of `usage` beside `prompt_tokens`        |
 | DeepSeek                                                                                                                                                                                             | `usage.prompt_cache_hit_tokens` (`prompt_tokens` is the hits plus the misses)        |
 | Kimi (Moonshot), some Together models                                                                                                                                                                | `usage.cached_tokens`, at the top of `usage`                                         |
+| YandexGPT (direct OpenAI-compatible endpoint; captured 2026-10-28)                                                                                                                                   | `usage.prompt_tokens_details.cached_tokens`, inside `prompt_tokens`                  |
 | GigaChat                                                                                                                                                                                             | `usage.precached_prompt_tokens`                                                      |
 | Gemini (native `generateContent`), Gemini Interactions                                                                                                                                               | `cachedContentTokenCount`, `total_cached_tokens`; carried across by the translator   |
 

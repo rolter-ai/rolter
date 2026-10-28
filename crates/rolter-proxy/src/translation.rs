@@ -5342,6 +5342,35 @@ mod tests {
         }
     }
 
+    #[test]
+    fn captured_yandexgpt_cache_hit_is_inside_the_prompt_total() {
+        // captured from ai.api.cloud.yandex.net/v1/chat/completions on
+        // 2026-10-28, yandexgpt/latest, after repeating a 3595-token prompt
+        // twice (5s, then 60s apart); only the usage object is retained
+        let body: Value =
+            serde_json::from_str(include_str!("../tests/fixtures/yandexgpt-cache-hit.json"))
+                .unwrap();
+        let usage = &body["usage"];
+        assert_eq!(cached_prompt_tokens(usage), Some(3008));
+        assert_eq!(
+            cached_prompt_tokens_spelling(usage),
+            Some("/prompt_tokens_details/cached_tokens")
+        );
+        let read = TokenUsage::from_openai(usage);
+        assert_eq!(read.cache_read, Some(3008));
+        assert_eq!(read.prompt, 3595);
+        assert_eq!(read.completion, 2);
+        assert_eq!(usage["total_tokens"], read.prompt + read.completion);
+        // rereading a capture must neither add the cached share to the prompt
+        // nor lose it, and a reported miss remains distinct from no report
+        assert_eq!(TokenUsage::from_openai(usage).prompt, read.prompt);
+        let mut miss = usage.clone();
+        miss["prompt_tokens_details"]["cached_tokens"] = json!(0);
+        assert_eq!(cached_prompt_tokens(&miss), Some(0));
+        assert_eq!(TokenUsage::from_openai(&miss).prompt, 3595);
+        assert_eq!(cached_prompt_tokens(&json!({})), None);
+    }
+
     /// Cohere's native v2 chat spells the hit `usage.cached_tokens`, at the top
     /// of `usage` beside `billed_units` and `tokens`. Its OpenAI-compatible
     /// endpoint does not say what it returns, so only the native shape is read
