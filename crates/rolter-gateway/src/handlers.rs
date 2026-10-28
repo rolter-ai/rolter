@@ -8707,4 +8707,65 @@ mod tests {
         );
         assert_eq!(picked, Some(0));
     }
+
+    /// Fail-open wins over the half-open probe limit (#3389): on a route whose
+    /// only target is probing, a second request is still forwarded to it
+    /// rather than refused, so a single-target route gets no stampede
+    /// protection from the one-probe rule.
+    #[test]
+    fn pick_untried_fails_open_past_a_probe_in_flight() {
+        let route = ModelRoute {
+            model: "m".to_string(),
+            strategy: BalancingStrategy::RoundRobin,
+            params: Default::default(),
+            param_policy: Default::default(),
+            advanced: Default::default(),
+            cache: None,
+            variants: Default::default(),
+            targets: vec![Target {
+                provider: "a".to_string(),
+                model: None,
+                weight: 1,
+                takes_over: Vec::new(),
+            }],
+            tenancy: None,
+        };
+        let entry = crate::state::RouteEntry {
+            namespace: route.model.clone(),
+            project_scope: None,
+            overrides: Default::default(),
+            throughput: None,
+            guardrails: Default::default(),
+            balancer: rolter_balancer::build(route.strategy, &[1]).into(),
+            variant_balancers: Vec::new(),
+            route,
+        };
+        let cooldowns = crate::cooldowns::Cooldowns::new();
+        let health = crate::health::Health::default();
+        let bb = crate::breaker::Breaker::new(true, 1, 0);
+        bb.on_failure("m", 0);
+        let pick = || {
+            pick_untried(
+                &entry,
+                &RouteContext::default(),
+                &[],
+                &[],
+                &cooldowns,
+                &health,
+                &bb,
+                "m",
+                true,
+                None,
+                None,
+            )
+        };
+        // the first request takes the probe slot
+        assert_eq!(pick(), Some(0));
+        // the breaker refuses everyone else while the probe is in flight
+        assert!(bb.refuses("m", 0));
+        assert!(!bb.allows("m", 0));
+        // and the route still forwards: fail-open, not a 503
+        assert_eq!(pick(), Some(0));
+        assert_eq!(pick(), Some(0));
+    }
 }
