@@ -43,7 +43,7 @@ version = "v1"
 reviewed_at = "2026-10-27"
 conformance = "native-passthrough"
 gateway_endpoints = ["POST /v1/chat/completions"]
-gateway_schemas = ["ChatCompletionRequest"]
+gateway_schemas = ["ChatCompletionRequest", "ChatCompletionResponse", "ChatCompletionChunk", "Usage"]
 modules = [
   "crates/rolter-gateway/src/handlers.rs",
   "crates/rolter-proxy/src/lib.rs",
@@ -80,6 +80,7 @@ version = "v1"
 reviewed_at = "2026-10-27"
 conformance = "native-passthrough"
 gateway_endpoints = ["POST /v1/completions"]
+gateway_schemas = ["CompletionRequest", "CompletionResponse"]
 modules = ["crates/rolter-gateway/src/handlers.rs"]
 supported = [
   "request and response bodies forwarded unchanged to an OpenAI-shaped upstream",
@@ -114,6 +115,7 @@ gateway_endpoints = [
   "POST /v1/responses/{response_id}/compact",
   "GET /v1/responses/{response_id}/input_tokens",
 ]
+gateway_schemas = ["ResponsesRequest", "ResponseObject", "ResponseDeletion", "ResponseInputItems", "ResponseStreamEvent"]
 modules = [
   "crates/rolter-gateway/src/handlers.rs",
   "crates/rolter-gateway/src/response_registry.rs",
@@ -148,6 +150,7 @@ version = "v1"
 reviewed_at = "2026-10-27"
 conformance = "native-passthrough"
 gateway_endpoints = ["POST /v1/embeddings"]
+gateway_schemas = ["EmbeddingRequest", "EmbeddingResponse"]
 modules = ["crates/rolter-gateway/src/handlers.rs"]
 supported = [
   "request and response bodies forwarded unchanged to an OpenAI-shaped upstream; the gateway reads `model`, `encoding_format` and `usage`",
@@ -168,6 +171,7 @@ version = "v1"
 reviewed_at = "2026-10-27"
 conformance = "extension"
 gateway_endpoints = ["GET /v1/models"]
+gateway_schemas = ["ModelList"]
 modules = [
   "crates/rolter-gateway/src/handlers.rs",
   "crates/rolter-gateway/src/model_catalog.rs",
@@ -193,6 +197,7 @@ version = "v1"
 reviewed_at = "2026-10-27"
 conformance = "native-passthrough"
 gateway_endpoints = ["POST /v1/images/generations"]
+gateway_schemas = ["ImageGenerationRequest", "ImageResponse"]
 modules = ["crates/rolter-gateway/src/handlers.rs"]
 supported = [
   "request and response bodies forwarded unchanged to an OpenAI-shaped upstream",
@@ -217,7 +222,7 @@ gateway_endpoints = [
   "POST /v1/audio/transcriptions",
   "POST /v1/audio/translations",
 ]
-gateway_schemas = ["AudioUpload"]
+gateway_schemas = ["AudioUpload", "SpeechRequest", "TranscriptionResponse"]
 modules = [
   "crates/rolter-gateway/src/handlers.rs",
   "crates/rolter-gateway/src/multipart.rs",
@@ -306,6 +311,7 @@ version = "2023-06-01"
 reviewed_at = "2026-10-27"
 conformance = "native-passthrough"
 gateway_endpoints = ["POST /v1/messages"]
+gateway_schemas = ["MessagesRequest", "MessageResponse", "MessageStreamEvent"]
 modules = [
   "crates/rolter-gateway/src/handlers.rs",
   "crates/rolter-proxy/src/lib.rs",
@@ -411,6 +417,7 @@ version = "v1"
 reviewed_at = "2026-10-27"
 conformance = "transport-only"
 gateway_endpoints = ["POST /v1/rerank"]
+gateway_schemas = ["RerankRequest", "RerankResponse"]
 modules = [
   "crates/rolter-gateway/src/handlers.rs",
   "crates/rolter-proxy/src/infinity.rs",
@@ -477,6 +484,7 @@ contract = "living"
 reviewed_at = "2026-10-27"
 conformance = "native-passthrough"
 gateway_endpoints = ["POST /v1/systemone"]
+gateway_schemas = ["SystemOneRequest", "SystemOneResponse"]
 modules = ["crates/rolter-gateway/src/system_one.rs"]
 supported = [
   "request and response forwarded unchanged; the gateway reads `model` and `usage` (ADR-0035)",

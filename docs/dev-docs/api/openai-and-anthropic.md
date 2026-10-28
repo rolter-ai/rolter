@@ -53,6 +53,8 @@ failures.
 | GET               | `/readyz`                        | readiness — `503` while draining (see [Health & readiness](../architecture/health-and-readiness.md)) |
 | GET               | `/metrics`                       | Prometheus exposition                                                                                |
 
+The document's request and 200-response bodies name `components/schemas` entries (#3335), built in `crates/rolter-gateway/src/openapi_schemas.rs`. Each lists the fields rolter reads or guarantees and leaves `additionalProperties` open, because bodies are forwarded; a field it does not name still reaches the upstream. The streaming schemas (`ChatCompletionChunk`, `MessageStreamEvent`, `ResponseStreamEvent`) describe only the event families rolter forwards or produces by translation. A schema's provenance comes from the record that lists it under `gateway_schemas` in `crates/rolter-core/specifications.toml`; a new schema needs a record, or the `model_endpoint_bodies_reference_open_schemas_with_provenance` test fails.
+
 ## Request header forwarding
 
 By default the gateway forwards trace context and nothing else. An operator can

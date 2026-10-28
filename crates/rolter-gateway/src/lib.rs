@@ -51,6 +51,7 @@ mod metrics;
 pub mod model_catalog;
 mod multipart;
 mod openapi;
+mod openapi_schemas;
 mod pii_sanitizer;
 mod pii_stream;
 #[cfg(test)]
