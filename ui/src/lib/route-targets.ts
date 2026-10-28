@@ -104,6 +104,11 @@ export interface RouteTargetView {
   /** the model id sent upstream: the target's own, or the route's public name */
   upstream: string;
   weight: number;
+  /**
+   * the failure classes the target is a fallback for (#1584); empty for an
+   * ordinary target. A fallback takes no ordinary traffic, so it has no share
+   */
+  takesOver?: string[];
   health?: TargetHealth | null;
   /**
    * The target's live breaker where the gateways report one that is not
@@ -169,6 +174,7 @@ export function targetViews(
       provider: tg.provider,
       upstream,
       weight: tg.weight,
+      takesOver: tg.takes_over ?? [],
       ...(breaker && breaker.state !== "closed" ? { breaker } : {}),
       ...(uptime ? { health: targetHealth(uptime, tg.provider, upstream, timeline) } : {}),
     };

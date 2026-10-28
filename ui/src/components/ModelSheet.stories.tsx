@@ -784,7 +784,7 @@ export const AddsAModel: Story = {
       upstream_model?: string;
       weight: number;
     };
-    await expect(target).toEqual({ provider_id: "prov-2", weight: 1 });
+    await expect(target).toEqual({ provider_id: "prov-2", weight: 1, takes_over: [] });
   },
 };
 
@@ -821,9 +821,60 @@ export const AddsACacheAwareFleet: Story = {
     await expect(route.strategy).toBe("cache_aware");
     await waitFor(() => expect(sentBodies("POST", "/routes/route-new/targets")).toHaveLength(2));
     await expect(sentBodies("POST", "/routes/route-new/targets")).toEqual([
-      { provider_id: "prov-2", upstream_model: "meta-llama/Llama-3.1-70B", weight: 1 },
-      { provider_id: "prov-1", weight: 3 },
+      {
+        provider_id: "prov-2",
+        upstream_model: "meta-llama/Llama-3.1-70B",
+        weight: 1,
+        takes_over: [],
+      },
+      { provider_id: "prov-1", weight: 3, takes_over: [] },
     ]);
+  },
+};
+
+/**
+ * A fallback target is created after the ordinary ones (#3319): the control
+ * plane refuses a fallback on a route with no ordinary target yet, and a
+ * fallback is never dialled first, so the order moves no traffic. Its classes
+ * go out with it.
+ */
+export const AddsAModelWithAFallbackTarget: Story = {
+  render: () => <Stage mode="add" />,
+  play: async () => {
+    const dialog = within(sheet());
+    await seededBlank(dialog);
+    await userEvent.type(dialog.getByLabelText("Route name"), "gpt-burst");
+    await pickOption(dialog.getByLabelText("Target 1 provider"), "vllm-cluster");
+    const first = within(dialog.getByRole("group", { name: "Fallback classes of target 1" }));
+    await userEvent.click(first.getByRole("button", { name: "Ordinary target" }));
+    await userEvent.click(first.getByRole("button", { name: "throttled" }));
+    await expect(first.getByTestId("fallback-badge")).toBeVisible();
+    await userEvent.click(dialog.getByRole("button", { name: "Add target" }));
+    await pickOption(await dialog.findByLabelText("Target 2 provider"), "openai-prod");
+
+    await userEvent.click(dialog.getByRole("button", { name: "Add route" }));
+    await waitFor(() => expect(sentBodies("POST", "/routes/route-new/targets")).toHaveLength(2));
+    await expect(sentBodies("POST", "/routes/route-new/targets")).toEqual([
+      { provider_id: "prov-1", weight: 1, takes_over: [] },
+      { provider_id: "prov-2", weight: 1, takes_over: ["throttled"] },
+    ]);
+  },
+};
+
+/** A sheet whose every target is a fallback cannot be saved, and says why at the list. */
+export const RefusesAModelOfOnlyFallbacks: Story = {
+  render: () => <Stage mode="add" />,
+  play: async () => {
+    const dialog = within(sheet());
+    await seededBlank(dialog);
+    await userEvent.type(dialog.getByLabelText("Route name"), "gpt-stranded");
+    await pickOption(dialog.getByLabelText("Target 1 provider"), "vllm-cluster");
+    const first = within(dialog.getByRole("group", { name: "Fallback classes of target 1" }));
+    await userEvent.click(first.getByRole("button", { name: "Ordinary target" }));
+    await userEvent.click(first.getByRole("button", { name: "refusal" }));
+    await userEvent.click(dialog.getByRole("button", { name: "Add route" }));
+    await waitFor(() => expect(dialog.getByText(/Every target is a fallback/)).toBeVisible());
+    calls.expectNotSent("POST", `/projects/${PROJECT.id}/routes`);
   },
 };
 
@@ -901,6 +952,7 @@ export const PickingASuggestionSendsItUpstream: Story = {
       provider_id: "prov-2",
       upstream_model: "meta-llama/Llama-3.1-8B",
       weight: 1,
+      takes_over: [],
     });
   },
 };
@@ -1046,6 +1098,7 @@ function refusedListing(status: number, message: string): Story {
         provider_id: "prov-2",
         upstream_model: "meta-llama/Llama-3.1-8B",
         weight: 1,
+        takes_over: [],
       });
     },
   };
@@ -1138,8 +1191,13 @@ export const EditsEveryTargetOfAFleet: Story = {
     const body = await routeUpdate("route-2");
     await expect(body).toEqual({
       targets: [
-        { provider_id: "prov-2", upstream_model: "meta-llama/Llama-3.1-70B", weight: 1 },
-        { provider_id: "prov-1", upstream_model: null, weight: 2 },
+        {
+          provider_id: "prov-2",
+          upstream_model: "meta-llama/Llama-3.1-70B",
+          weight: 1,
+          takes_over: [],
+        },
+        { provider_id: "prov-1", upstream_model: null, weight: 2, takes_over: [] },
       ],
     });
     calls.expectNotSent("POST", "/routes/route-2/targets");
@@ -1177,7 +1235,7 @@ export const KeepsAStoredUpstreamEqualToTheRouteName: Story = {
     await userEvent.type(weight, "4");
     await userEvent.click(dialog.getByRole("button", { name: "Save route" }));
     await expect(await routeUpdate("route-1")).toEqual({
-      targets: [{ provider_id: "prov-1", upstream_model: "gpt-4o", weight: 4 }],
+      targets: [{ provider_id: "prov-1", upstream_model: "gpt-4o", weight: 4, takes_over: [] }],
     });
     calls.expectNotSent("POST", "/routes/route-1/targets");
     calls.expectNotSent("DELETE", "/route-targets/");
@@ -1194,8 +1252,76 @@ export const ChangesTheStrategy: Story = {
     await userEvent.click(dialog.getByRole("button", { name: "Save route" }));
     await expect(await routeUpdate("route-1")).toEqual({
       strategy: "weighted",
-      targets: [{ provider_id: "prov-1", upstream_model: null, weight: 1 }],
+      targets: [{ provider_id: "prov-1", upstream_model: null, weight: 1, takes_over: [] }],
     });
+  },
+};
+
+/** route-1 read with one variant whose only target takes over `takesOver` */
+const withVariant =
+  (takesOver: string[]): FetchStub =>
+  (input, init) =>
+    String(input).includes("/routes/route-1/variants")
+      ? Promise.resolve(
+          json([
+            {
+              id: "var-1",
+              route_id: "route-1",
+              name: "canary",
+              weight: 1,
+              position: 0,
+              params: {},
+              created_at: "2026-05-01T00:00:00Z",
+              targets: [
+                {
+                  id: "vt-1",
+                  variant_id: "var-1",
+                  provider_id: "prov-2",
+                  upstream_model: null,
+                  weight: 1,
+                  position: 0,
+                  takes_over: takesOver,
+                },
+              ],
+            },
+          ]),
+        )
+      : backing(input, init);
+
+/**
+ * The control plane counts the route's variants with its own targets (#3373):
+ * a variant with an ordinary target lets every target of the list be a
+ * fallback, and the sheet saves it.
+ */
+export const AVariantsOrdinaryTargetAllowsAListOfFallbacks: Story = {
+  render: () => <Stage mode="edit" route={ROUTE} stub={withVariant([])} />,
+  play: async () => {
+    const dialog = within(sheet());
+    await seeded(dialog);
+    const first = within(dialog.getByRole("group", { name: "Fallback classes of target 1" }));
+    await userEvent.click(first.getByRole("button", { name: "Ordinary target" }));
+    await userEvent.click(first.getByRole("button", { name: "timeout" }));
+    await userEvent.click(dialog.getByRole("button", { name: "Save route" }));
+    await expect(await routeUpdate("route-1")).toEqual({
+      targets: [
+        { provider_id: "prov-1", upstream_model: null, weight: 1, takes_over: ["timeout"] },
+      ],
+    });
+  },
+};
+
+/** With every variant target a fallback too, the route could dial nothing: refused in the sheet. */
+export const VariantFallbacksCountTowardsAllFallbacks: Story = {
+  render: () => <Stage mode="edit" route={ROUTE} stub={withVariant(["throttled"])} />,
+  play: async () => {
+    const dialog = within(sheet());
+    await seeded(dialog);
+    const first = within(dialog.getByRole("group", { name: "Fallback classes of target 1" }));
+    await userEvent.click(first.getByRole("button", { name: "Ordinary target" }));
+    await userEvent.click(first.getByRole("button", { name: "timeout" }));
+    await userEvent.click(dialog.getByRole("button", { name: "Save route" }));
+    await waitFor(() => expect(dialog.getByText(/Every target is a fallback/)).toBeVisible());
+    calls.expectNotSent("PUT", "/routes/route-1");
   },
 };
 
@@ -1608,6 +1734,69 @@ export const SavesTheThroughputCaps: Story = {
 };
 
 /**
+ * A route's context window is typed in the sheet and travels in the advanced
+ * blob as `context_length` (#3265): the stored value seeds the row, an edit is
+ * sent as a number, and a cleared field drops it rather than sending a zero.
+ */
+export const EditsTheContextLength: Story = {
+  render: () => (
+    <Stage
+      mode="edit"
+      route={{ ...LEGACY_ROUTE, advanced: { ...LEGACY_ROUTE.advanced, context_length: 200000 } }}
+    />
+  ),
+  play: async () => {
+    const dialog = within(sheet());
+    await seeded(dialog);
+    await userEvent.click(dialog.getByRole("button", { name: "Capabilities" }));
+    const field = await dialog.findByLabelText("Context length (tokens)");
+    await expect(field).toHaveValue(200000);
+    await expect(field).toHaveAccessibleDescription(/served on GET \/v1\/models/);
+    await userEvent.clear(field);
+    await userEvent.type(field, "128000");
+    await userEvent.click(dialog.getByRole("button", { name: "Save route" }));
+    const body = (await calls.expectSentBody("PUT", "/routes/route-1/advanced")) as {
+      advanced: Record<string, unknown>;
+    };
+    await expect(body.advanced.context_length).toBe(128000);
+  },
+};
+
+export const ClearingTheContextLengthDropsIt: Story = {
+  render: () => (
+    <Stage
+      mode="edit"
+      route={{ ...LEGACY_ROUTE, advanced: { ...LEGACY_ROUTE.advanced, context_length: 200000 } }}
+    />
+  ),
+  play: async () => {
+    const dialog = within(sheet());
+    await seeded(dialog);
+    await userEvent.click(dialog.getByRole("button", { name: "Capabilities" }));
+    await userEvent.clear(await dialog.findByLabelText("Context length (tokens)"));
+    await userEvent.click(dialog.getByRole("button", { name: "Save route" }));
+    const body = (await calls.expectSentBody("PUT", "/routes/route-1/advanced")) as {
+      advanced: Record<string, unknown>;
+    };
+    await expect(body.advanced).not.toHaveProperty("context_length");
+  },
+};
+
+export const ContextLengthOfZeroIsRefused: Story = {
+  render: () => <Stage mode="add" />,
+  play: async () => {
+    const dialog = within(sheet());
+    await seededBlank(dialog);
+    await userEvent.click(dialog.getByRole("button", { name: "Capabilities" }));
+    const field = await dialog.findByLabelText("Context length (tokens)");
+    await userEvent.type(field, "0");
+    await userEvent.tab();
+    await waitFor(() => expect(field).toHaveAttribute("aria-invalid", "true"));
+    await expect(field).toHaveAccessibleDescription(/whole number of tokens, 1 or more/);
+  },
+};
+
+/**
  * A cap the control plane would refuse is said at its field before the save
  * (#2936): zero would turn every request away, and blank is the way to say
  * "no cap". Each message is stated once and the save puts focus on the field.
@@ -1888,7 +2077,7 @@ export const LeavesTheAdvancedBlobAloneWhenUntouched: Story = {
     calls.expectNotSent("PUT", "/routes/route-1/advanced");
     // the targets go back unchanged in the one update call, never line by line
     await expect(await routeUpdate("route-1")).toEqual({
-      targets: [{ provider_id: "prov-1", upstream_model: null, weight: 1 }],
+      targets: [{ provider_id: "prov-1", upstream_model: null, weight: 1, takes_over: [] }],
     });
     calls.expectNotSent("POST", "/routes/route-1/targets");
     calls.expectNotSent("DELETE", "/route-targets/");

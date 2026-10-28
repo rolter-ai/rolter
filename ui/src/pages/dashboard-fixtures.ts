@@ -13,6 +13,8 @@ export const SUMMARY = {
   tokens: 1_284_000,
   prompt_tokens: 900_000,
   completion_tokens: 384_000,
+  // 40% of the prompt tokens were read from a provider's prompt cache
+  cache_read_tokens: 360_000,
   cost_usd: 41.27,
   unpriced_requests: 0,
   unpriced_models: 0,

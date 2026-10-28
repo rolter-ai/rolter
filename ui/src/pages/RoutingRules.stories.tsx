@@ -27,7 +27,7 @@ import {
   openOptions,
   stubClipboard,
 } from "./story-harness";
-import { atMobile } from "@/lib/story-viewport";
+import { atMobile, expectNoHorizontalOverflow } from "@/lib/story-viewport";
 import en from "@/lib/i18n/locales/en.json";
 import ru from "@/lib/i18n/locales/ru.json";
 import type {
@@ -181,11 +181,19 @@ const node = (id: string, over: Partial<ClusterNodeRow> = {}): ClusterNodeRow =>
   ...over,
 });
 
-const answer = (routes: RouteRow[], status = 200, labels: LabelRow[] = []): FetchStub =>
+const answer = (
+  routes: RouteRow[],
+  status = 200,
+  labels: LabelRow[] = [],
+  // the variants each route embeds when the list asks for them (#3343)
+  variants: Record<string, RouteVariantRow[]> = {},
+): FetchStub =>
   scoped(async (input) => {
     const url = String(input);
     if (url.includes("/providers")) return json(PROVIDERS);
     if (url.includes("/analytics/by-model")) return json({ data: TRAFFIC });
+    // the route sheet reads what each saved variant served (#3342); none, unless a story says
+    if (url.includes("/analytics/by-variant")) return json({ data: [] });
     if (url.includes("/cluster/nodes")) return json([node("gw-1"), node("gw-2")]);
     // the label list is its own endpoint; without this branch it would be
     // answered with the route list and the chips would be nonsense (#1329)
@@ -200,7 +208,13 @@ const answer = (routes: RouteRow[], status = 200, labels: LabelRow[] = []): Fetc
     // the route list embeds each route's targets when it is asked to, which
     // is how the screen reads them (#3031)
     if (status === 200 && url.includes("include=targets")) {
-      return json(routes.map((r) => ({ ...r, targets: TARGETS[r.id] ?? [] })));
+      return json(
+        routes.map((r) => ({
+          ...r,
+          targets: TARGETS[r.id] ?? [],
+          ...(url.includes("variants") ? { variants: variants[r.id] ?? [] } : {}),
+        })),
+      );
     }
     return json(status === 200 ? routes : { error: { message: "forbidden" } }, status);
   });
@@ -1027,8 +1041,8 @@ export const EditsATwoTargetRoute: Story = {
       enabled: false,
       strategy: "round_robin",
       targets: [
-        { provider_id: "prov-1", upstream_model: "gpt-4o-2024-08-06", weight: 80 },
-        { provider_id: "prov-2", upstream_model: null, weight: 30 },
+        { provider_id: "prov-1", upstream_model: "gpt-4o-2024-08-06", weight: 80, takes_over: [] },
+        { provider_id: "prov-2", upstream_model: null, weight: 30, takes_over: [] },
       ],
     });
     await expectToast(canvasElement, /gpt-4o updated/);
@@ -1067,6 +1081,7 @@ export const KeepsAnUpstreamModelEqualToTheRouteName: Story = {
       provider_id: "prov-1",
       upstream_model: "gpt-4o",
       weight: 70,
+      takes_over: [],
     });
     await expect(body.strategy).toBeUndefined();
     await expect(body.enabled).toBeUndefined();
@@ -1097,8 +1112,8 @@ export const AddsAndRemovesATarget: Story = {
       await reshapes.expectSentBody<RouteUpdate>("PUT", "/api/v1/routes/route-1"),
     ).toEqual({
       targets: [
-        { provider_id: "prov-2", upstream_model: null, weight: 20 },
-        { provider_id: "prov-1", upstream_model: null, weight: 1 },
+        { provider_id: "prov-2", upstream_model: null, weight: 20, takes_over: [] },
+        { provider_id: "prov-1", upstream_model: null, weight: 1, takes_over: [] },
       ],
     });
   },
@@ -1271,15 +1286,15 @@ export const EditsAVariantSplit: Story = {
           weight: 3,
           params: {},
           targets: [
-            { provider_id: "prov-1", upstream_model: null, weight: 1 },
-            { provider_id: "prov-2", upstream_model: null, weight: 1 },
+            { provider_id: "prov-1", upstream_model: null, weight: 1, takes_over: [] },
+            { provider_id: "prov-2", upstream_model: null, weight: 1, takes_over: [] },
           ],
         },
         {
           name: "stable",
           weight: 9,
           params: {},
-          targets: [{ provider_id: "prov-1", upstream_model: "gpt-4o", weight: 1 }],
+          targets: [{ provider_id: "prov-1", upstream_model: "gpt-4o", weight: 1, takes_over: [] }],
         },
       ],
     });
@@ -1289,6 +1304,177 @@ export const EditsAVariantSplit: Story = {
     await expect(
       splits.calls.filter((c) => c.method === "PUT" && /\/routes\/route-1$/.test(c.url)),
     ).toHaveLength(0);
+  },
+};
+
+/**
+ * A route that routes through variants shows them on its card, in fallback
+ * order with the split their weights give, and sets its own targets aside
+ * (#3343); a route with targets only is drawn as it always was, beside it.
+ */
+const variantRoutes = recording(
+  answer(ROUTES, 200, [], {
+    "route-1": [
+      variantRow(
+        "canary",
+        1,
+        [{ provider_id: "prov-2", upstream_model: "gpt-4o-next", weight: 1 }],
+        1,
+      ),
+      variantRow("stable", 9, [{ provider_id: "prov-1", upstream_model: "gpt-4o", weight: 1 }], 0),
+    ],
+    // route-2 has no targets of its own, and routes only through variants
+    "route-2": [variantRow("only", 1, [{ provider_id: "prov-1", weight: 1 }], 0)],
+  }),
+);
+export const CardsShowTheVariantsTheyRouteThrough: Story = {
+  render: () => (
+    <Harness fetchStub={variantRoutes.stub}>
+      <RoutingRules />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByText("gpt-4o", ROUTE_NAME)).toBeInTheDocument();
+    const list = within(
+      await canvas.findByRole("list", { name: "Variants of gpt-4o, in fallback order" }),
+    );
+    // declared order is the fallback order, whatever the order the API listed them in
+    const names = list.getAllByRole("listitem").map((li) => li.textContent);
+    await expect(names[0]).toContain("stable");
+    await expect(names[0]).toContain("90%");
+    await expect(names[0]).toContain("openai-prod → gpt-4o");
+    await expect(names[1]).toContain("canary");
+    await expect(names[1]).toContain("10%");
+    await expect(canvas.getByText(/its own 2 targets are not used/)).toBeVisible();
+    // the unused target split is not drawn as if the gateway applied it
+    await expect(canvas.queryByRole("list", { name: "Targets of gpt-4o" })).toBeNull();
+    await expect(canvas.getByText("2 variants")).toBeVisible();
+    await expect(canvas.queryByText("2 targets")).toBeNull();
+    // a variants-only route never reads as having no targets
+    await expect(canvas.queryByText("No targets yet.")).toBeNull();
+    await expect(canvas.queryByText("0 targets")).toBeNull();
+    await expect(canvas.getByText("1 variant")).toBeVisible();
+    await variantRoutes.expectSent("GET", "include=targets,variants");
+  },
+};
+
+/**
+ * The sheet shows what each saved variant served beside the split its weights
+ * configure (#3342): the observed share is of the requests the variants served,
+ * a variant no longer configured still counts, and traffic served without a
+ * variant is said apart rather than diluting the shares.
+ */
+const observing = (data: unknown[], status = 200) =>
+  recording(
+    scoped(async (input, init) => {
+      const url = String(input);
+      if (url.includes("/analytics/by-variant")) {
+        return status === 200
+          ? json({ data })
+          : json({ error: { message: "no clickhouse_url" } }, status);
+      }
+      if (/\/routes\/route-1\/variants$/.test(url)) return json(SPLIT);
+      return answer(ROUTES)(input, init);
+    }),
+  );
+const variantTraffic = (variant: string, requests: number, errors: number, p95 = 300) => ({
+  model: "gpt-4o",
+  variant,
+  requests,
+  tokens: requests * 10,
+  cost_usd: requests / 100,
+  unpriced_requests: 0,
+  errors,
+  p50_latency_ms: p95 / 3,
+  p95_latency_ms: p95,
+});
+const observed = observing([
+  variantTraffic("stable", 880, 8, 420),
+  variantTraffic("canary", 120, 24, 900),
+  variantTraffic("old-experiment", 40, 0),
+  variantTraffic("", 15, 0),
+]);
+export const ShowsTheObservedShareBesideTheConfiguredSplit: Story = {
+  render: () => (
+    <Harness fetchStub={observed.stub} role="admin">
+      <Toasted>
+        <RoutingRules />
+      </Toasted>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const dialog = await openRouteSheet(canvasElement);
+    const table = within(await dialog.findByRole("table", { name: "Observed traffic" }));
+    await observed.expectSent("GET", "/analytics/by-variant?");
+    const row = (name: string) => table.getByText(name).closest('[role="row"]') as HTMLElement;
+    // 9:1 configured; 880 of the 1040 requests variants served observed
+    await waitFor(() => expect(within(row("stable")).getByText("90%")).toBeVisible());
+    await expect(within(row("stable")).getByText("85%")).toBeVisible();
+    await expect(within(row("stable")).getByText("0.9%")).toBeVisible();
+    await expect(within(row("canary")).getByText("10%")).toBeVisible();
+    await expect(within(row("canary")).getByText("20.0%")).toBeVisible();
+    await expect(within(row("canary")).getByText("300 / 900 ms")).toBeVisible();
+    // a variant nobody configures any more has no configured share
+    await expect(within(row("old-experiment")).getByText("—")).toBeVisible();
+    await expect(
+      dialog.getByText(/15 requests in this window were served without a variant/),
+    ).toBeVisible();
+    const url = new URL(
+      observed.calls.find((c) => c.url.includes("/analytics/by-variant"))!.url,
+      "http://x",
+    );
+    await expect(url.searchParams.get("model")).toBe("gpt-4o");
+    // route names are unique per project only, so the read is narrowed to the route's
+    await expect(url.searchParams.get("project")).toBe("project-1");
+  },
+};
+
+export const ObservedTrafficIsEmptyBeforeTheRouteIsCalled: Story = {
+  render: () => (
+    <Harness fetchStub={observing([]).stub} role="admin">
+      <Toasted>
+        <RoutingRules />
+      </Toasted>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const dialog = await openRouteSheet(canvasElement);
+    await expect(
+      await dialog.findByText(/No variant served a request in the Last 7 days/),
+    ).toBeVisible();
+    await expect(dialog.queryByRole("table", { name: "Observed traffic" })).toBeNull();
+  },
+};
+
+export const ObservedTrafficNeedsClickHouse: Story = {
+  render: () => (
+    <Harness fetchStub={observing([], 503).stub} role="admin">
+      <Toasted>
+        <RoutingRules />
+      </Toasted>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const dialog = await openRouteSheet(canvasElement);
+    await expect(await dialog.findByText("Observed traffic needs ClickHouse")).toBeVisible();
+    // not an alert: a deployment without ClickHouse is a supported one
+    await expect(dialog.queryByRole("alert")).toBeNull();
+  },
+};
+
+export const ObservedTrafficReadFails: Story = {
+  render: () => (
+    <Harness fetchStub={observing([], 500).stub} role="admin">
+      <Toasted>
+        <RoutingRules />
+      </Toasted>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const dialog = await openRouteSheet(canvasElement);
+    await expectLoadError(sheetElement(), /observed traffic/);
+    await expect(dialog.queryByRole("table", { name: "Observed traffic" })).toBeNull();
   },
 };
 
@@ -1321,7 +1507,9 @@ export const AddsAVariant: Story = {
           name: "canary",
           weight: 1,
           params: {},
-          targets: [{ provider_id: "prov-1", upstream_model: "gpt-4o-mini", weight: 1 }],
+          targets: [
+            { provider_id: "prov-1", upstream_model: "gpt-4o-mini", weight: 1, takes_over: [] },
+          ],
         },
       ],
     });
@@ -1775,5 +1963,282 @@ export const BreakerStateUnavailable: Story = {
     await canvas.findByRole("list", { name: "Targets of gpt-4o" });
     await expect(canvas.queryByTestId("breaker-badge")).toBeNull();
     await expect(canvas.queryByRole("alert")).toBeNull();
+  },
+};
+
+// ------------------------------------------- fallback targets (#1584, #3319)
+
+/** route-1 with its second target a fallback for throttling */
+const WITH_FALLBACK: RouteTargetRow[] = [
+  TARGETS["route-1"][0],
+  { ...TARGETS["route-1"][1], takes_over: ["throttled"] },
+];
+
+/**
+ * route-1 read with `stored` as its targets; `put` answers the route PUT, which
+ * by default echoes the route
+ */
+const withFallback = (stored: RouteTargetRow[] = WITH_FALLBACK, put?: () => Response) =>
+  recording(
+    scoped(async (input, init) => {
+      const url = String(input);
+      if (init?.method === "PUT" && /\/routes\/route-1$/.test(url)) {
+        return put ? put() : json(ROUTES[0]);
+      }
+      if (/\/routes\/route-1\/targets/.test(url)) return json(stored);
+      if (url.includes("include=targets")) {
+        return json(
+          ROUTES.map((r) => ({
+            ...r,
+            targets: r.id === "route-1" ? stored : (TARGETS[r.id] ?? []),
+          })),
+        );
+      }
+      return answer(ROUTES)(input, init);
+    }),
+  );
+
+/** the fallback set of one target line in the open sheet */
+const fallbackOf = (dialog: ReturnType<typeof within>, name: string) =>
+  within(dialog.getByRole("group", { name }));
+
+/**
+ * A fallback takes no ordinary traffic, so the card marks it and states no
+ * share for it: the ordinary target carries the whole route, and only it has
+ * a share bar.
+ */
+export const FallbackTargetHasNoShare: Story = {
+  render: () => (
+    <Harness fetchStub={withFallback().stub}>
+      <RoutingRules />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const targets = within(await canvas.findByRole("list", { name: "Targets of gpt-4o" }));
+    await expect(targets.getByText("100%")).toBeInTheDocument();
+    await expect(targets.queryByText("20%")).toBeNull();
+    await expect(targets.getAllByTestId("target-share")).toHaveLength(1);
+    const badge = targets.getByTestId("fallback-badge");
+    await expect(badge).toHaveTextContent("fallback");
+    await expect(badge.getAttribute("title")).toContain("throttled");
+  },
+};
+
+/**
+ * A stored set opens unfolded with the target marked; a class toggled on and a
+ * refusal category typed in go out with the whole list, the ordinary target's
+ * empty set included, since an entry without one clears what is stored.
+ */
+let fallbackEdits: Recorder;
+export const EditsAFallbackSet: Story = {
+  render: () => {
+    fallbackEdits = withFallback();
+    return (
+      <Harness fetchStub={fallbackEdits.stub} role="admin">
+        <Toasted>
+          <RoutingRules />
+        </Toasted>
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const dialog = await openRouteSheet(canvasElement);
+    await dialog.findByLabelText("Target 2 weight");
+    const first = fallbackOf(dialog, "Fallback classes of target 1");
+    await expect(first.getByRole("button", { name: "Ordinary target" })).toHaveAttribute(
+      "aria-expanded",
+      "false",
+    );
+    const second = fallbackOf(dialog, "Fallback classes of target 2");
+    await expect(second.getByRole("button", { name: "Fallback for throttled" })).toHaveAttribute(
+      "aria-expanded",
+      "true",
+    );
+    await expect(second.getByRole("button", { name: "throttled" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    await userEvent.click(second.getByRole("button", { name: "timeout" }));
+    await userEvent.type(second.getByLabelText("Refusal category"), "violence{Enter}");
+    await expect(second.getByRole("button", { name: "refusal:violence" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    await userEvent.click(dialog.getByRole("button", { name: "Save route" }));
+    const body = await fallbackEdits.expectSentBody<RouteUpdate>("PUT", "/api/v1/routes/route-1");
+    await expect(body.targets).toEqual([
+      { provider_id: "prov-1", upstream_model: "gpt-4o-2024-08-06", weight: 80, takes_over: [] },
+      {
+        provider_id: "prov-2",
+        upstream_model: null,
+        weight: 20,
+        takes_over: ["throttled", "timeout", "refusal:violence"],
+      },
+    ]);
+    await expectToast(canvasElement, /gpt-4o updated/);
+  },
+};
+
+/**
+ * Making the last ordinary target a fallback would leave the route nothing it
+ * may dial first. The sheet says so at the target list and sends nothing.
+ */
+let onlyFallbacks: Recorder;
+export const RefusesARouteOfOnlyFallbacks: Story = {
+  render: () => {
+    onlyFallbacks = withFallback();
+    return (
+      <Harness fetchStub={onlyFallbacks.stub} role="admin">
+        <RoutingRules />
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const dialog = await openRouteSheet(canvasElement);
+    await dialog.findByLabelText("Target 1 weight");
+    const first = fallbackOf(dialog, "Fallback classes of target 1");
+    await userEvent.click(first.getByRole("button", { name: "Ordinary target" }));
+    await userEvent.click(first.getByRole("button", { name: "refusal" }));
+    await userEvent.click(dialog.getByRole("button", { name: "Save route" }));
+    await waitFor(() => expect(dialog.getByText(/Every target is a fallback/)).toBeVisible());
+    onlyFallbacks.expectNotSent("PUT", "/api/v1/routes/route-1");
+  },
+};
+
+/**
+ * A set the control plane refuses is said under that target's own set, which
+ * opens to show it, and not as a generic failure.
+ */
+export const FallbackSetRefusedByTheControlPlane: Story = {
+  render: () => (
+    <Harness
+      role="admin"
+      fetchStub={
+        withFallback(WITH_FALLBACK, () =>
+          json(
+            {
+              error: {
+                code: "invalid_field",
+                message: "takes_over lists 'throttled' twice",
+                field: "targets[1].takes_over",
+              },
+            },
+            400,
+          ),
+        ).stub
+      }
+    >
+      <RoutingRules />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const dialog = await openRouteSheet(canvasElement);
+    await dialog.findByLabelText("Target 2 weight");
+    await userEvent.clear(dialog.getByLabelText("Target 2 weight"));
+    await userEvent.type(dialog.getByLabelText("Target 2 weight"), "25");
+    await userEvent.click(dialog.getByRole("button", { name: "Save route" }));
+    const second = fallbackOf(dialog, "Fallback classes of target 2");
+    await waitFor(() => expect(second.getByText(/control plane refused this set/)).toBeVisible());
+    await expect(second.getByRole("button", { name: "Fallback for throttled" })).toBeInvalid();
+    await expect(dialog.queryByText(/control plane refused this set/i)).toBeVisible();
+  },
+};
+
+/**
+ * A refusal category the control plane would refuse is caught as it is typed;
+ * a valid one at the 64-character limit is added as a chip of its own.
+ */
+export const RejectsABadRefusalCategory: Story = {
+  render: () => (
+    <Harness fetchStub={withFallback().stub} role="admin">
+      <RoutingRules />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const dialog = await openRouteSheet(canvasElement);
+    await dialog.findByLabelText("Target 2 weight");
+    const second = fallbackOf(dialog, "Fallback classes of target 2");
+    const category = second.getByLabelText("Refusal category");
+    await userEvent.type(category, "Self Harm");
+    await userEvent.click(second.getByRole("button", { name: "Add" }));
+    await expect(second.getByText(/1 to 64 lowercase letters/)).toBeVisible();
+    await expect(category).toBeInvalid();
+    const long = `x${"_content_policy".repeat(4)}`.padEnd(64, "y");
+    await userEvent.clear(category);
+    await userEvent.type(category, long);
+    await userEvent.click(second.getByRole("button", { name: "Add" }));
+    await expect(second.getByRole("button", { name: `refusal:${long}` })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    await expect(category).toHaveValue("");
+  },
+};
+
+/** On a phone a long category wraps inside the sheet instead of widening the page. */
+export const FallbackEditorOnMobile: Story = {
+  ...atMobile,
+  render: () => (
+    <Harness
+      fetchStub={
+        withFallback([
+          TARGETS["route-1"][0],
+          {
+            ...TARGETS["route-1"][1],
+            takes_over: ["throttled", `refusal:${"content_policy_violation_".repeat(2)}sexual`],
+          },
+        ]).stub
+      }
+      role="admin"
+    >
+      <RoutingRules />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const dialog = await openRouteSheet(canvasElement);
+    await dialog.findByLabelText("Target 2 weight");
+    const second = fallbackOf(dialog, "Fallback classes of target 2");
+    await expect(
+      second.getByRole("button", {
+        name: `refusal:${"content_policy_violation_".repeat(2)}sexual`,
+      }),
+    ).toBeVisible();
+    await expectNoHorizontalOverflow();
+  },
+};
+
+/**
+ * A variant target takes over failures like a route target (#3373), and its
+ * set goes out with the variants.
+ */
+let variantFallback: Recorder;
+export const EditsAVariantTargetsFallbackSet: Story = {
+  render: () => {
+    variantFallback = withVariants(SPLIT);
+    return (
+      <Harness fetchStub={variantFallback.stub} role="admin">
+        <Toasted>
+          <RoutingRules />
+        </Toasted>
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const dialog = await openRouteSheet(canvasElement);
+    await dialog.findByLabelText("Variant 2 target 2 provider");
+    const set = fallbackOf(dialog, "Fallback classes of target 2 of variant 2");
+    await userEvent.click(set.getByRole("button", { name: "Ordinary target" }));
+    await userEvent.click(set.getByRole("button", { name: "server_error" }));
+    await expect(set.getByTestId("fallback-badge")).toBeVisible();
+    await userEvent.click(dialog.getByRole("button", { name: "Save route" }));
+    const body = await variantFallback.expectSentBody<{ variants: RouteVariantInput[] }>(
+      "PUT",
+      "/api/v1/routes/route-1/variants",
+    );
+    await expect(body.variants[1].targets.map((tg) => tg.takes_over)).toEqual([
+      [],
+      ["server_error"],
+    ]);
   },
 };

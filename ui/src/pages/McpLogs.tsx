@@ -45,6 +45,12 @@ import { useScope } from "@/lib/scope";
 import { useFormat } from "@/lib/i18n/format";
 import { useDrawerA11y } from "@/lib/use-drawer-a11y";
 import { BELOW_LG, useMediaQuery } from "@/lib/use-media-query";
+import {
+  readTimeWindow,
+  useAddressWindow,
+  useTimeWindowOptions,
+  windowBounds,
+} from "@/lib/time-window";
 import { useScreenReady } from "@/lib/ux-react";
 
 // a tool payload is JSON when it parses as JSON, and opaque text when it does
@@ -121,11 +127,16 @@ function McpLogsScreen() {
   ].sort();
   const [cursors, setCursors] = React.useState<string[]>([]);
   const cursor = cursors[cursors.length - 1];
+  // the window is a name the address carries (`?window=7d`), so a failing call
+  // from two days ago can be traced and the view shared (#3300). its bounds are
+  // worked out as each read leaves, not when the screen opened
+  const [timeWindow, pickWindow] = useAddressWindow();
+  const windowOptions = useTimeWindowOptions();
   const [selected, setSelected] = React.useState<string | null>(null);
 
   const summary = useQuery({
-    queryKey: ["mcp-summary"],
-    queryFn: () => fetchMcpSummary({ since: new Date(Date.now() - 86_400_000).toISOString() }),
+    queryKey: ["mcp-summary", timeWindow],
+    queryFn: () => fetchMcpSummary(windowBounds(timeWindow)),
     retry: false,
   });
 
@@ -136,10 +147,10 @@ function McpLogsScreen() {
   useScreenReady(!summary.isLoading);
 
   const logs = useQuery({
-    queryKey: ["mcp-logs", status, transport, server, tool, mine ? myId : "", cursor],
+    queryKey: ["mcp-logs", timeWindow, status, transport, server, tool, mine ? myId : "", cursor],
     queryFn: () =>
       fetchMcpLogs({
-        since: new Date(Date.now() - 86_400_000).toISOString(),
+        ...windowBounds(timeWindow),
         status: status || undefined,
         transport: transport || undefined,
         server: server || undefined,
@@ -230,6 +241,16 @@ function McpLogsScreen() {
 
       <div className="flex flex-wrap items-center gap-2.5">
         <Combobox
+          className="w-[180px]"
+          aria-label={t("common.timeWindow.label")}
+          value={timeWindow}
+          onChange={(next) => {
+            pickWindow(readTimeWindow(next));
+            resetPaging();
+          }}
+          options={windowOptions}
+        />
+        <Combobox
           className="w-[160px]"
           aria-label={t("pages.mcpLogs.statusFilterAria")}
           value={status}
@@ -293,9 +314,6 @@ function McpLogsScreen() {
           </Button>
         )}
         <div className="ml-auto flex items-center gap-2">
-          {/* the window is fixed, so the table and the pager say it too, not
-              only the tiles above them */}
-          <span className="text-xs text-muted-foreground">{t("pages.mcpLogs.window")}</span>
           <Button
             size="sm"
             variant="outline"
