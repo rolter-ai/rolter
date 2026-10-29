@@ -2,6 +2,7 @@ import type { Meta, StoryObj } from "@storybook/react";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import Teams from "./Teams";
+import { resolveColorToken } from "@/lib/story-tokens";
 import {
   clickWhenEnabled,
   confirmDestructive,
@@ -542,6 +543,10 @@ export const BudgetFailedToLoad: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await waitFor(() => expect(canvas.getAllByText("unavailable")).toHaveLength(2));
+    const [unavailable] = canvas.getAllByText("unavailable");
+    await expect(getComputedStyle(unavailable).color).toBe(
+      resolveColorToken("--status-danger-text"),
+    );
     await expect(canvas.queryByText("—")).toBeNull();
   },
 };
@@ -595,6 +600,8 @@ export const OpensATeamToSeeItsProjectsAndPeople: Story = {
       "href",
       "/budgets?scope_type=team&scope_id=team-1",
     );
+    const deleteBtn = panel.getByRole("button", { name: "Delete Platform…" });
+    await expect(getComputedStyle(deleteBtn).color).toBe(resolveColorToken("--status-danger-text"));
   },
 };
 

@@ -276,7 +276,7 @@ export default function Teams() {
                   <div className="font-mono text-sm text-[color:var(--text-secondary)]">
                     {budgets?.isError ? (
                       // a failed read is not "no budget": say it could not be read
-                      <span className="text-[color:var(--status-error-text)]">
+                      <span className="text-[color:var(--status-danger-text)]">
                         {t("pages.teams.budgetUnavailable")}
                       </span>
                     ) : budgets?.data ? (
