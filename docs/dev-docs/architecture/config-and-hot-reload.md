@@ -149,14 +149,15 @@ for the enum or entity (`provider_kind`, `route_strategy`, `provider_group_strat
 `unpriced_policy`, `queue_backpressure`, `role_profile`, `param_policy_mode`,
 `guard_action`, `streaming_post_call`, `failure_mode`, `violation_action`,
 `streaming_strategy`, `guard_provider_kind`, `pii_direction`, `pii_restoration`,
-`pii_streaming`), never the value or the entity's name, so the label set is bounded
+`pii_streaming`, `mcp_auth_kind`), never the value or the entity's name, so the label set is bounded
 by the build and leaks no tenant data. A budget or rate limit whose scope or period
 stays `Unknown` is counted and logged there too. On the control plane,
 `ConfigStore::load_problem_records` lists each stored row whose value reads this
 way in `GET /api/v1/config/problems` (#3446, `unknown_value_problems` in the
-postgres store), owned by the row's tenant: a route's strategy, a provider's kind,
-a budget's or rate limit's scope, beside the budget period (#1902) and the
-`takes_over` class (#3321) it already named. The postgres store reads a stored provider kind it
+postgres store): a route's strategy, a provider's kind and an MCP server's auth
+kind, owned by the row's tenant, and a budget's or rate limit's scope, owned by the
+deployment (no known scope names a tenant), beside the budget period (#1902) and
+the `takes_over` class (#3321) it already named. The postgres store reads a stored provider kind it
 does not know as `ProviderKind::Unknown` (#3469) and a route strategy the same
 way, so one such row never fails the load for every tenant; the sanitizer then
 leaves it out. A budget or rate limit on a stored `scope_type` it does not know is loaded

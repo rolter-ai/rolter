@@ -315,7 +315,7 @@ Both histograms are labelled `{model="..."}` so you can track latency per model 
   <Accordion title="rolter_snapshot_unknown_values">
     **Type:** Gauge · **Labels:** `kind`
 
-    How many values of the configuration snapshot the gateway applied last it does not know, by the kind of enum or entity they belong to: `provider_kind`, `route_strategy`, `budget_period`, `failure_mode` and so on. A value from a newer release is read fail-closed for its own entity: the provider or route is left out, the setting takes its most restrictive reading, or the budget refuses (see [Upgrading](/deployment/upgrading#upgrade-order)). The label is the kind, never the value or the name of the entity, and a kind drops back to `0` once a snapshot applies without it. Alert on any non-zero value: the gateway is ignoring part of its configuration until it is upgraded, and its log names each value at `warn`.
+    How many values in the gateway's last applied configuration snapshot it does not know, grouped by the kind of enum or entity they belong to: `provider_kind`, `route_strategy`, `budget_period`, `failure_mode` and so on. A value from a newer release is read fail-closed for its own entity: the provider or route is left out, the setting takes its most restrictive reading, or the budget refuses (see [Upgrading](/deployment/upgrading#upgrade-order)). The label is the kind, never the value or the name of the entity, and a kind drops back to `0` once a snapshot applies without it. Alert on any non-zero value: the gateway is ignoring part of its configuration until it is upgraded, and its log names each value at `warn`.
 
   </Accordion>
 
