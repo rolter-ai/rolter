@@ -1601,8 +1601,9 @@ fn operations() -> Vec<Op> {
                 "Remove an upstream target from a route",
             )
             .conflict(
-                "removing the target would leave the route only targets that set `takes_over`, \
-                 which could never be dialled first (`all_targets_restricted`)",
+                "removing the target would leave the route only targets that set `takes_over` \
+                 to dial (the variants' targets when it has variants, its own otherwise), which \
+                 could never be dialled first (`all_targets_restricted`)",
             ),
         ],
     ));
@@ -2415,7 +2416,12 @@ fn operations() -> Vec<Op> {
                 "/api/v1/analytics/by-variant",
                 "getAnalyticsByVariant",
                 "Spend and usage grouped by route and the weighted variant that served it (`model` \
-                 narrows to one route); requests served without a variant come back under the empty string",
+                 narrows to one route); requests served without a variant come back under the empty string. \
+                 `requests` counts every request the variant answered, failovers included; \
+                 `first_attempt_requests` counts those it served on the first attempt (no \
+                 `fallback_reason`, `clickhouse/023`), the closer comparison with the configured \
+                 weights; a request that failed over from another variant counts for neither. It is `null` on a ClickHouse that has not applied \
+                 `023`, which cannot tell the two apart",
             )
             .clickhouse_read()
             .query(DASHBOARD_QUERY),
@@ -3994,7 +4000,7 @@ fn routing_schemas(p: &Prim) -> Value {
             "type": "string",
             "pattern": "^(throttled|timeout|transport|server_error|refusal(:[a-z0-9_-]{1,64})?)$"
         },
-        "description": "the failure classes this target takes over, as on a route target. The route's own targets and every variant's count together: a set that leaves the route only such targets is refused naming `all_targets_restricted`"
+        "description": "the failure classes this target takes over, as on a route target. A route with variants dials only the variants' targets, and one without dials its own: a set that leaves the route only such targets to dial is refused naming `all_targets_restricted`"
     });
     json!({
         "Route": {
@@ -4172,7 +4178,7 @@ fn routing_schemas(p: &Prim) -> Value {
                         "type": "string",
                         "pattern": "^(throttled|timeout|transport|server_error|refusal(:[a-z0-9_-]{1,64})?)$"
                     },
-                    "description": "the failure classes this target takes over (`throttled`, `timeout`, `transport`, `server_error`, `refusal` or `refusal:<category>`), each at most once. A target with classes is never dialled first and is tried only after another target failed with one of them. A route may not be left with only such targets: that is refused naming `all_targets_restricted`"
+                    "description": "the failure classes this target takes over (`throttled`, `timeout`, `transport`, `server_error`, `refusal` or `refusal:<category>`), each at most once. A target with classes is never dialled first and is tried only after another target failed with one of them. A route may not be left with only such targets to dial (the variants' targets when it has variants, its own otherwise): that is refused naming `all_targets_restricted`"
                 }
             },
             "additionalProperties": false

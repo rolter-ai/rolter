@@ -15,7 +15,13 @@ import {
 } from "@/lib/api";
 import { useCan } from "@/lib/can";
 import { useScope } from "@/lib/scope";
-import { DEFAULT_TIME_WINDOW, readTimeWindow, TIME_WINDOW_PARAM } from "@/lib/time-window";
+import {
+  windowAddress,
+  windowFromFilters,
+  type TIME_WINDOW_PARAM,
+  type WINDOW_SINCE_PARAM,
+  type WINDOW_UNTIL_PARAM,
+} from "@/lib/time-window";
 
 // the four row filters LLM Logs and the Dashboard share (#2453, #2725): model,
 // virtual key, business unit and customer. the control plane applies them with
@@ -202,7 +208,17 @@ export function useAddressRowFilters() {
   const units = React.useMemo(() => unitParam.split(",").filter(Boolean), [unitParam]);
   const customers = React.useMemo(() => customerParam.split(",").filter(Boolean), [customerParam]);
   const update = React.useCallback(
-    (patch: Partial<Record<RowFilterParam | typeof TIME_WINDOW_PARAM, string>>) =>
+    (
+      patch: Partial<
+        Record<
+          | RowFilterParam
+          | typeof TIME_WINDOW_PARAM
+          | typeof WINDOW_SINCE_PARAM
+          | typeof WINDOW_UNTIL_PARAM,
+          string
+        >
+      >,
+    ) =>
       setParams(
         (prev) => {
           const next = new URLSearchParams(prev);
@@ -251,9 +267,8 @@ export function useAddressRowFilters() {
      * the second would undo the first.
      */
     apply: (view: SavedViewFilters) => {
-      const window = readTimeWindow(view.window);
       update({
-        [TIME_WINDOW_PARAM]: window === DEFAULT_TIME_WINDOW ? "" : window,
+        ...windowAddress(windowFromFilters(view)),
         model: view.model ?? "",
         key: view.key ?? "",
         business_unit: (view.business_unit ?? []).join(","),

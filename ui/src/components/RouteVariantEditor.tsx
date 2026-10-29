@@ -39,6 +39,11 @@ export interface RouteVariantEditorProps {
   /** the route's strategy, which also picks the leading target inside a variant */
   strategy: string;
   validation: VariantValidation;
+  /**
+   * every variant target is a fallback, so the route could never dial
+   * anything: a route with variants dials only them (#3487)
+   */
+  onlyFallbacks?: boolean;
   /** show the validation, once a save was attempted */
   showErrors: boolean;
   /** a field the control plane refused, said at its line whatever `showErrors` is */
@@ -70,6 +75,7 @@ export function RouteVariantEditor({
   publicName,
   strategy,
   validation,
+  onlyFallbacks = false,
   showErrors,
   refusal,
   onChange,
@@ -93,7 +99,9 @@ export function RouteVariantEditor({
       ? (refusal.message ?? t("routeSheet.variants.errors.refused"))
       : showErrors && validation.tooMany
         ? t("routeSheet.variants.errors.tooMany", { max: MAX_VARIANTS })
-        : "";
+        : showErrors && onlyFallbacks
+          ? t("fallbackTargets.errors.allRestricted")
+          : "";
   const full = variants.length >= MAX_VARIANTS;
   const weightsIgnored = !usesWeights(strategy) && variants.some((v) => v.targets.length > 1);
 

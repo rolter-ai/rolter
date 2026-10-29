@@ -22,6 +22,7 @@ import type { BadgeTone } from "@/components/ui/badge";
 import { LogStepUp } from "@/components/McpStepUp";
 import { Button } from "@/components/ui/button";
 import { CodeBlock } from "@/components/ui/code-block";
+import { TimeWindowPicker } from "@/components/TimeWindowPicker";
 import { Combobox } from "@/components/ui/combobox";
 import { CopyableText } from "@/components/ui/copyable-value";
 import { EmptyState, EmptyStateLink } from "@/components/ui/empty-state";
@@ -45,12 +46,7 @@ import { useScope } from "@/lib/scope";
 import { useFormat } from "@/lib/i18n/format";
 import { useDrawerA11y } from "@/lib/use-drawer-a11y";
 import { BELOW_LG, useMediaQuery } from "@/lib/use-media-query";
-import {
-  readTimeWindow,
-  useAddressWindow,
-  useTimeWindowOptions,
-  windowBounds,
-} from "@/lib/time-window";
+import { useAddressSelection, windowBounds } from "@/lib/time-window";
 import { useScreenReady } from "@/lib/ux-react";
 
 // a tool payload is JSON when it parses as JSON, and opaque text when it does
@@ -127,11 +123,11 @@ function McpLogsScreen() {
   ].sort();
   const [cursors, setCursors] = React.useState<string[]>([]);
   const cursor = cursors[cursors.length - 1];
-  // the window is a name the address carries (`?window=7d`), so a failing call
+  // the window is a name the address carries (`?window=7d`, or a custom range of
+  // days, `?window=custom&since=…&until=…`, #3407), so a failing call
   // from two days ago can be traced and the view shared (#3300). its bounds are
   // worked out as each read leaves, not when the screen opened
-  const [timeWindow, pickWindow] = useAddressWindow();
-  const windowOptions = useTimeWindowOptions();
+  const [timeWindow, pickWindow] = useAddressSelection();
   const [selected, setSelected] = React.useState<string | null>(null);
 
   const summary = useQuery({
@@ -240,15 +236,14 @@ function McpLogsScreen() {
       </div>
 
       <div className="flex flex-wrap items-center gap-2.5">
-        <Combobox
+        <TimeWindowPicker
           className="w-[180px]"
           aria-label={t("common.timeWindow.label")}
           value={timeWindow}
           onChange={(next) => {
-            pickWindow(readTimeWindow(next));
+            pickWindow(next);
             resetPaging();
           }}
-          options={windowOptions}
         />
         <Combobox
           className="w-[160px]"

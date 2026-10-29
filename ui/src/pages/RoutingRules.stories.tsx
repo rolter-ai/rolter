@@ -1468,6 +1468,69 @@ export const ShowsTheObservedShareBesideTheConfiguredSplit: Story = {
   },
 };
 
+/**
+ * The log records the variant that answered, so a variant others fail over to
+ * reads high in Observed (#3409). The first-attempt column counts the requests
+ * it answered with no failover, the closer comparison with the weights: here
+ * the canary is configured at 10%, answered 22% of the requests because of
+ * failovers, and took 10% of the first attempts.
+ */
+const failingOver = observing([
+  { ...variantTraffic("stable", 780, 8, 420), first_attempt_requests: 900 },
+  { ...variantTraffic("canary", 220, 24, 900), first_attempt_requests: 100 },
+]);
+export const FirstAttemptsAreComparedWithTheConfiguredSplit: Story = {
+  render: () => (
+    <Harness fetchStub={failingOver.stub} role="admin">
+      <Toasted>
+        <RoutingRules />
+      </Toasted>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const dialog = await openRouteSheet(canvasElement);
+    const table = within(await dialog.findByRole("table", { name: "Observed traffic" }));
+    await expect(await table.findByRole("columnheader", { name: "First attempt" })).toBeVisible();
+    const row = (name: string) => table.getByText(name).closest('[role="row"]') as HTMLElement;
+    // configured 90 / 10; answered 78% / 22%; first attempts 90% / 10%
+    const cells = (name: string) =>
+      Array.from(row(name).querySelectorAll('[role="cell"]')).map((c) => c.textContent);
+    await waitFor(() =>
+      expect(cells("stable").slice(0, 4)).toEqual(["stable", "90%", "78%", "90%"]),
+    );
+    await expect(cells("canary").slice(0, 4)).toEqual(["canary", "10%", "22%", "10%"]);
+    await expect(
+      dialog.getByText(/share of requests answered on the first attempt, with no failover/),
+    ).toBeVisible();
+  },
+};
+
+/**
+ * A ClickHouse that has not applied the fallback-reason file cannot split
+ * failovers from first attempts, and the control plane says so with `null`:
+ * the column is left out rather than drawn as a guess.
+ */
+const unsplit = observing([
+  { ...variantTraffic("stable", 880, 8, 420), first_attempt_requests: null },
+  { ...variantTraffic("canary", 120, 24, 900), first_attempt_requests: null },
+]);
+export const NoFirstAttemptColumnWhenTheSplitIsUnknown: Story = {
+  render: () => (
+    <Harness fetchStub={unsplit.stub} role="admin">
+      <Toasted>
+        <RoutingRules />
+      </Toasted>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const dialog = await openRouteSheet(canvasElement);
+    const table = within(await dialog.findByRole("table", { name: "Observed traffic" }));
+    await waitFor(() => expect(table.getAllByRole("columnheader")).toHaveLength(6));
+    await expect(table.queryByRole("columnheader", { name: "First attempt" })).toBeNull();
+    await expect(dialog.getByText(/counting failovers as well as first attempts/)).toBeVisible();
+  },
+};
+
 export const ObservedTrafficIsEmptyBeforeTheRouteIsCalled: Story = {
   render: () => (
     <Harness fetchStub={observing([]).stub} role="admin">
@@ -2334,5 +2397,74 @@ export const EditsAVariantTargetsFallbackSet: Story = {
       [],
       ["server_error"],
     ]);
+  },
+};
+
+/**
+ * A route with variants dials only the variants' targets (#3487), so variants
+ * that hold only fallbacks strand the route even over an ordinary target list.
+ * The sheet says so under the variants, once, and sends nothing.
+ */
+let fallbackVariants: Recorder;
+export const RefusesFallbackOnlyVariantsOverAnOrdinaryList: Story = {
+  render: () => {
+    fallbackVariants = withVariants(SPLIT);
+    return (
+      <Harness fetchStub={fallbackVariants.stub} role="admin">
+        <RoutingRules />
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const dialog = await openRouteSheet(canvasElement);
+    await dialog.findByLabelText("Variant 2 target 2 provider");
+    for (const name of [
+      "Fallback classes of target 1 of variant 1",
+      "Fallback classes of target 1 of variant 2",
+      "Fallback classes of target 2 of variant 2",
+    ]) {
+      const set = fallbackOf(dialog, name);
+      await userEvent.click(set.getByRole("button", { name: "Ordinary target" }));
+      await userEvent.click(set.getByRole("button", { name: "throttled" }));
+    }
+    await userEvent.click(dialog.getByRole("button", { name: "Save route" }));
+    await waitFor(() => expect(dialog.getByText(/Every target is a fallback/)).toBeVisible());
+    await expect(dialog.getAllByText(/Every target is a fallback/)).toHaveLength(1);
+    fallbackVariants.expectNotSent("PUT", "/api/v1/routes/route-1/variants");
+    fallbackVariants.expectNotSent("PUT", "/api/v1/routes/route-1");
+  },
+};
+
+/**
+ * The converse: while a variant has an ordinary target, the route's own list
+ * is not dialled, so it may hold only fallbacks and the save goes out.
+ */
+let fallbackList: Recorder;
+export const AcceptsAFallbackOnlyListUnderOrdinaryVariants: Story = {
+  render: () => {
+    fallbackList = withVariants(SPLIT);
+    return (
+      <Harness fetchStub={fallbackList.stub} role="admin">
+        <Toasted>
+          <RoutingRules />
+        </Toasted>
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const dialog = await openRouteSheet(canvasElement);
+    await dialog.findByLabelText("Variant 2 target 2 provider");
+    for (const name of ["Fallback classes of target 1", "Fallback classes of target 2"]) {
+      const set = fallbackOf(dialog, name);
+      await userEvent.click(set.getByRole("button", { name: "Ordinary target" }));
+      await userEvent.click(set.getByRole("button", { name: "timeout" }));
+    }
+    await userEvent.click(dialog.getByRole("button", { name: "Save route" }));
+    const body = await fallbackList.expectSentBody<{ targets: { takes_over: string[] }[] }>(
+      "PUT",
+      "/api/v1/routes/route-1",
+    );
+    await expect(body.targets.map((tg) => tg.takes_over)).toEqual([["timeout"], ["timeout"]]);
+    await expect(dialog.queryByText(/Every target is a fallback/)).toBeNull();
   },
 };

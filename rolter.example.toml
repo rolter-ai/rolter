@@ -205,6 +205,14 @@ api_keys = [{ env = "OPENROUTER_API_KEY" }]
 # kind = "xai"
 # api_base = "https://api.x.ai/v1"
 # api_keys = [{ env = "XAI_API_KEY" }]
+#
+# GigaChat's documented base since 17 July 2026; the key is the 30-minute
+# access token its OAuth endpoint issues, which rolter does not mint
+# [[providers]]
+# name = "gigachat"
+# kind = "gigachat"
+# api_base = "https://api.giga.chat/v1"
+# api_keys = [{ env = "GIGACHAT_ACCESS_TOKEN" }]
 
 # direct Cloud access requires an environment-sourced bearer key
 [[providers]]

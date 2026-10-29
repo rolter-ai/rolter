@@ -58,5 +58,19 @@ export function allRestricted(sets: readonly (readonly string[] | undefined)[]):
   return sets.length > 0 && sets.every((set) => isRestricted(set));
 }
 
+/**
+ * Whether a route would dial only restricted fallbacks, the rule the gateway
+ * and the control plane apply (`dialled_targets`, #3487): a route with
+ * variants dials only the variants' targets, so its own list does not count
+ * then; a route without variants dials its own list. `variants` holds one list
+ * of sets per variant.
+ */
+export function onlyRestrictedDialled(
+  pool: readonly (readonly string[] | undefined)[],
+  variants: readonly (readonly (readonly string[] | undefined)[])[],
+): boolean {
+  return variants.length > 0 ? allRestricted(variants.flat()) : allRestricted(pool);
+}
+
 /** the stable code the control plane names that refusal by */
 export const ALL_TARGETS_RESTRICTED = "all_targets_restricted";
