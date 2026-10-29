@@ -28,6 +28,7 @@ import {
   stubClipboard,
 } from "./story-harness";
 import { atMobile, expectNoHorizontalOverflow } from "@/lib/story-viewport";
+import { onlyRestrictedDialled } from "@/lib/failure-classes";
 import en from "@/lib/i18n/locales/en.json";
 import ru from "@/lib/i18n/locales/ru.json";
 import type {
@@ -1171,7 +1172,12 @@ export const RejectedSave: Story = {
 const variantRow = (
   name: string,
   weight: number,
-  targets: { provider_id: string; upstream_model?: string | null; weight: number }[],
+  targets: {
+    provider_id: string;
+    upstream_model?: string | null;
+    weight: number;
+    takes_over?: string[];
+  }[],
   position: number,
 ): RouteVariantRow => ({
   id: `var-${name}`,
@@ -2659,5 +2665,173 @@ export const AcceptsAFallbackOnlyListUnderOrdinaryVariants: Story = {
     );
     await expect(body.targets.map((tg) => tg.takes_over)).toEqual([["timeout"], ["timeout"]]);
     await expect(dialog.queryByText(/Every target is a fallback/)).toBeNull();
+  },
+};
+
+/**
+ * route-1 as the API could store it before #3487: variants whose every target
+ * is a fallback, over an ordinary pool, so the snapshot drops the route
+ */
+const STRANDED: RouteVariantRow[] = [
+  variantRow("stable", 9, [{ provider_id: "prov-1", weight: 1, takes_over: ["throttled"] }], 0),
+  variantRow("canary", 1, [{ provider_id: "prov-2", weight: 1, takes_over: ["timeout"] }], 1),
+];
+
+/** the refusal the control plane answers a write that would strand the route */
+const strands = (field: string) =>
+  json(
+    {
+      error: {
+        code: "invalid_field",
+        message: "route gpt-4o: all_targets_restricted",
+        field,
+      },
+    },
+    400,
+  );
+
+/**
+ * The stranded route with the control plane's rule applied to each write, as
+ * `crud/routes.rs` applies it (#3487): a route with variants dials only them,
+ * one without dials its pool, and each PUT is judged against what is stored at
+ * that moment, the other half included. A write that would leave only
+ * fallbacks to dial is refused and stores nothing.
+ */
+const strandedRoute = () => {
+  let pool: (string[] | undefined)[] = TARGETS["route-1"].map((tg) => tg.takes_over);
+  let variants: (string[] | undefined)[][] = STRANDED.map((v) =>
+    v.targets.map((tg) => tg.takes_over),
+  );
+  return recording(
+    scoped(async (input, init) => {
+      const url = String(input);
+      if (/\/routes\/route-1\/variants$/.test(url)) {
+        if (init?.method === "PUT") {
+          const sent = JSON.parse(String(init.body)) as { variants: RouteVariantInput[] };
+          const next = sent.variants.map((v) => v.targets.map((tg) => tg.takes_over));
+          if (onlyRestrictedDialled(pool, next)) return strands("variants");
+          variants = next;
+          return json([]);
+        }
+        return json(STRANDED);
+      }
+      if (init?.method === "PUT" && /\/routes\/route-1$/.test(url)) {
+        const sent = JSON.parse(String(init.body)) as { targets?: { takes_over?: string[] }[] };
+        if (sent.targets) {
+          const next = sent.targets.map((tg) => tg.takes_over);
+          if (onlyRestrictedDialled(next, variants)) return strands("targets");
+          pool = next;
+        }
+        return json(ROUTES[0]);
+      }
+      return answer(ROUTES)(input, init);
+    }),
+  );
+};
+
+/**
+ * One save repairs a stored route whose variants hold only fallbacks (#3510):
+ * the edit gives a variant an ordinary target and touches the pool, and the
+ * sheet stores the variants first, so the pool PUT is judged against variants
+ * that can be dialled and both writes land.
+ */
+let repair: Recorder;
+export const RepairsFallbackOnlyVariantsInOneSave: Story = {
+  render: () => {
+    repair = strandedRoute();
+    return (
+      <Harness fetchStub={repair.stub} role="admin">
+        <Toasted>
+          <RoutingRules />
+        </Toasted>
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const dialog = await openRouteSheet(canvasElement);
+    await dialog.findByLabelText("Variant 2 target 1 provider");
+    const set = fallbackOf(dialog, "Fallback classes of target 1 of variant 1");
+    await userEvent.click(set.getByRole("button", { name: "throttled" }));
+    const weight = dialog.getByLabelText("Target 1 weight");
+    await userEvent.clear(weight);
+    await userEvent.type(weight, "2");
+    await userEvent.click(dialog.getByRole("button", { name: "Save route" }));
+    await expectToast(canvasElement, /gpt-4o updated/);
+    const puts = repair.calls
+      .filter((c) => c.method === "PUT")
+      .map((c) => new URL(c.url, "http://x").pathname);
+    await expect(puts).toEqual(["/api/v1/routes/route-1/variants", "/api/v1/routes/route-1"]);
+    const sent = await repair.expectSentBody<{ variants: RouteVariantInput[] }>(
+      "PUT",
+      "/api/v1/routes/route-1/variants",
+    );
+    await expect(sent.variants[0].targets[0].takes_over).toEqual([]);
+  },
+};
+
+/**
+ * The other repair (#3510): the person removes every fallback-only variant and
+ * edits the pool in the same save. The pool is judged against the variants
+ * still stored, so they go first here, and the pool after, judged against
+ * none.
+ */
+let removal: Recorder;
+export const RepairsByRemovingFallbackOnlyVariantsInOneSave: Story = {
+  render: () => {
+    removal = strandedRoute();
+    return (
+      <Harness fetchStub={removal.stub} role="admin">
+        <Toasted>
+          <RoutingRules />
+        </Toasted>
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const dialog = await openRouteSheet(canvasElement);
+    await dialog.findByLabelText("Variant 2 target 1 provider");
+    await userEvent.click(dialog.getByRole("button", { name: "Remove variant 2" }));
+    await userEvent.click(dialog.getByRole("button", { name: "Remove variant 1" }));
+    const weight = dialog.getByLabelText("Target 1 weight");
+    await userEvent.clear(weight);
+    await userEvent.type(weight, "2");
+    await userEvent.click(dialog.getByRole("button", { name: "Save route" }));
+    await expectToast(canvasElement, /gpt-4o updated/);
+    const puts = removal.calls
+      .filter((c) => c.method === "PUT")
+      .map((c) => new URL(c.url, "http://x").pathname);
+    await expect(puts).toEqual(["/api/v1/routes/route-1/variants", "/api/v1/routes/route-1"]);
+    const sent = await removal.expectSentBody<{ variants: RouteVariantInput[] }>(
+      "PUT",
+      "/api/v1/routes/route-1/variants",
+    );
+    await expect(sent.variants).toEqual([]);
+  },
+};
+
+/**
+ * A save refused for the variants as a whole moves focus to the variants'
+ * own control, and the stranded message is said there rather than under the
+ * route's targets, which are not what strands it (#3510).
+ */
+let strandedFocus: Recorder;
+export const FocusMovesToTheStrandedVariants: Story = {
+  render: () => {
+    strandedFocus = strandedRoute();
+    return (
+      <Harness fetchStub={strandedFocus.stub} role="admin">
+        <RoutingRules />
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const dialog = await openRouteSheet(canvasElement);
+    await dialog.findByLabelText("Variant 2 target 1 provider");
+    await userEvent.click(dialog.getByRole("button", { name: "Save route" }));
+    const add = dialog.getByRole("button", { name: "Add variant" });
+    await waitFor(() => expect(add).toHaveFocus());
+    await expect(add).toHaveAccessibleDescription(/a route with variants dials only/);
+    await expect(dialog.getAllByText(/Every target is a fallback/)).toHaveLength(1);
+    strandedFocus.expectNotSent("PUT", "/api/v1/routes/route-1");
   },
 };
