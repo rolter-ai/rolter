@@ -186,11 +186,10 @@ them is refused, and while a group governs a server a request body that cannot
 be read as JSON-RPC is refused with `400` (`mcp_request_unreadable`) rather than
 forwarded unchecked. A request body with a `Content-Encoding` other than
 `identity` (`gzip`, `br`, `deflate`) is refused with `415` (`mcp_request_unreadable`)
-the same way, whatever the failure mode says: the proxy does not decompress
+the same way: the proxy does not decompress
 requests, so it could not apply the rules to it. Send the body uncompressed. A body that repeats a key in a message or in its `params`
 (two `name` entries, or `name` and `NAME`, since some servers match keys without
-regard to case) is refused with `403` `mcp_tool_denied` whatever the
-failure policy says, and is logged like any other refused call, because parsers disagree about which copy wins and the
+regard to case) is refused with `403` `mcp_tool_denied`, and is logged like any other refused call, because parsers disagree about which copy wins and the
 tool judged could then differ from the tool that runs. A `tools/list` reply through the proxy is narrowed by the same rules, so a client
 is shown only the tools it may call, whatever id the request carried. That covers
 the reply to the `POST` that asked and the event stream a legacy `sse` server
@@ -217,12 +216,22 @@ request once they are saved:
   since then enforces manifests until it saves settings with `allow_unlisted_tools`
   on, which `GET /api/v1/orgs/{org_id}/mcp/settings` reports before anything is
   saved. A server that declares no tools has nothing to check against.
-- **Failure policy.** `default_failure_mode` decides what happens to a request
-  the proxy cannot read as JSON-RPC, and so cannot check against the rules
-  above: `fail_closed` (the default) refuses it with `400`, `fail_open` forwards
-  it. A request that declares a `Content-Encoding` is refused with `415` under
-  either mode. An upstream that does not answer is always a `502`; a gateway cannot fail
-  open on a server that is down.
+- **Failure policy.** The proxy forwards only a request body it has checked. A
+  body that tool groups or a manifest govern and that is not valid JSON is
+  refused with `400` `mcp_request_unreadable`: UTF-16 or UTF-32, `NaN` or
+  `Infinity`, trailing commas, comments, nesting deeper than the parser allows,
+  or anything else a strict JSON parser rejects. A leading UTF-8 byte-order mark
+  is the one exception: it is removed, the body is checked, and the server
+  receives the body without it. A request that declares a `Content-Encoding` is
+  refused with `415`. An upstream that does not answer is always a `502`; a
+  gateway cannot fail open on a server that is down.
+- **`default_failure_mode` is deprecated.** It used to let a body the proxy
+  could not read through unchecked (`fail_open`). A server with a more lenient
+  JSON parser could then run a call to a refused tool, so the gateway ignores
+  the setting: every body is checked. The API and the config file
+  still accept and return the field, so existing clients and files keep
+  working, and a later major release removes it. The `failure_mode` of
+  guardrail providers and plugins is a different setting and is unchanged.
 - **Transport.** A server row always names its transport, so the organization's
   `default_transport` is what a server registered without one gets, at
   registration.

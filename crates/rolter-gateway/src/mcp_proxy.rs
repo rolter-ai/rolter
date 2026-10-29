@@ -147,9 +147,8 @@ async fn proxy(
     let rules = crate::mcp_policy::Rules::of(&snapshot, server, &caller);
     let is_post = method == Method::POST;
     // a body the relay cannot decode cannot be judged, and the upstream may
-    // decode it (#3475). refused before any policy, whatever `fail_open` says:
-    // that setting covers a body the relay cannot read through no fault of the
-    // client, not one the client chose to compress
+    // decode it (#3475). refused before any policy, as is any body that does
+    // not parse (#3527): the relay forwards only a body it has judged
     if is_post && rules.any() && is_encoded(&headers) {
         return error(
             StatusCode::UNSUPPORTED_MEDIA_TYPE,
@@ -161,6 +160,14 @@ async fn proxy(
             "mcp_request_unreadable",
         );
     }
+    // a governed body is judged without a leading UTF-8 byte-order mark, and
+    // forwarded without it, so the upstream receives exactly what was judged;
+    // anything else that does not parse is refused below (#3527)
+    let body = if is_post && rules.any() {
+        crate::mcp_policy::without_bom(body)
+    } else {
+        body
+    };
     let read = if is_post {
         crate::mcp_policy::Read::of(&body, rules.any(), state.mcp_events.enabled())
     } else {
@@ -291,7 +298,7 @@ async fn proxy(
         list_filter = crate::mcp_policy::stream_filter(&rules).map(Arc::new);
     }
     if method == Method::POST {
-        let decision = crate::mcp_policy::evaluate_read(&snapshot, server, &rules, &read);
+        let decision = crate::mcp_policy::evaluate_read(&rules, &read);
         list_filter = decision.list_filter.map(Arc::new);
         state.mcp_events.count_dropped(decision.unlogged);
         let (refused, message) = match decision.verdict {
@@ -1654,7 +1661,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_undeclared_tool_is_refused_and_fail_open_forwards_an_unreadable_body() {
+    async fn an_undeclared_tool_is_refused_and_so_is_an_unreadable_body_failing_open() {
         use axum::routing::any;
         use axum::Router;
 
@@ -1683,16 +1690,109 @@ mod tests {
         let allowed = post(AppState::new(&config), call_body("get_issue")).await;
         assert_eq!(allowed.status(), StatusCode::OK);
 
-        // fail closed (the default) refuses what it cannot read; fail open forwards
-        let (status, code) =
-            code_of(post(AppState::new(&config), Bytes::from_static(b"{ nope")).await).await;
+        // what the relay cannot read it does not forward, and the deprecated
+        // `fail_open` no longer changes that (#3527)
+        for fail_open in [false, true] {
+            config.mcp_settings = vec![strict(fail_open)];
+            let (status, code) =
+                code_of(post(AppState::new(&config), Bytes::from_static(b"{ nope")).await).await;
+            assert_eq!(
+                (status, code.as_str()),
+                (StatusCode::BAD_REQUEST, "mcp_request_unreadable"),
+                "{fail_open}"
+            );
+        }
+    }
+
+    /// An upstream that answers `ok` and keeps every body it receives.
+    async fn recording() -> (String, Arc<parking_lot::Mutex<Vec<Bytes>>>) {
+        use axum::routing::any;
+        use axum::Router;
+
+        let seen = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let kept = seen.clone();
+        let app = Router::new().route(
+            "/{*path}",
+            any(move |body: Bytes| {
+                let kept = kept.clone();
+                async move {
+                    kept.lock().push(body);
+                    "ok"
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        (format!("http://{addr}/rpc"), seen)
+    }
+
+    fn failing_open(config: &mut GatewayConfig) {
+        config.mcp_settings = vec![McpOrgSettingsConfig {
+            org_id: "org-1".into(),
+            connect_timeout_ms: 5000,
+            request_timeout_ms: 30000,
+            max_retries: 0,
+            fail_open: true,
+            allow_unlisted_tools: true,
+        }];
+    }
+
+    /// #3527: a UTF-8 byte-order mark in front of a `tools/call` is stripped
+    /// and the call judged, in an organization that saved `fail_open`: a
+    /// refused tool is refused, and an allowed one reaches the upstream without
+    /// the mark, so the upstream receives exactly the bytes that were judged.
+    #[tokio::test]
+    async fn a_bom_prefixed_call_is_judged_and_forwarded_without_the_mark() {
+        let mut config = with_group(&["get_issue"]);
+        let (url, seen) = recording().await;
+        config.mcp_servers[0].url = url;
+        failing_open(&mut config);
+        let with_bom = |tool: &str| {
+            let mut body = b"\xef\xbb\xbf".to_vec();
+            body.extend_from_slice(&call_body(tool));
+            Bytes::from(body)
+        };
+
+        let (status, code) = code_of(post(AppState::new(&config), with_bom("drop")).await).await;
         assert_eq!(
             (status, code.as_str()),
-            (StatusCode::BAD_REQUEST, "mcp_request_unreadable")
+            (StatusCode::FORBIDDEN, "mcp_tool_denied")
         );
-        config.mcp_settings = vec![strict(true)];
-        let forwarded = post(AppState::new(&config), Bytes::from_static(b"{ nope")).await;
-        assert_eq!(forwarded.status(), StatusCode::OK);
+        assert!(seen.lock().is_empty());
+
+        let allowed = post(AppState::new(&config), with_bom("get_issue")).await;
+        assert_eq!(allowed.status(), StatusCode::OK);
+        assert_eq!(*seen.lock(), vec![call_body("get_issue")]);
+    }
+
+    /// #3527: a body `serde_json` does not read but a lenient upstream might
+    /// (UTF-16, `NaN`) is refused in a `fail_open` organization, and nothing
+    /// reaches the upstream.
+    #[tokio::test]
+    async fn a_body_only_a_lenient_parser_reads_is_refused_failing_open() {
+        let mut config = with_group(&["get_issue"]);
+        let (url, seen) = recording().await;
+        config.mcp_servers[0].url = url;
+        failing_open(&mut config);
+        let text = String::from_utf8(call_body("drop").to_vec()).unwrap();
+        let utf16: Vec<u8> = "\u{feff}"
+            .chars()
+            .chain(text.chars())
+            .collect::<String>()
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .collect();
+        let nan = text.replace(r#""arguments":{}"#, r#""arguments":{"x":NaN}"#);
+        assert_ne!(nan, text);
+        for body in [Bytes::from(utf16), Bytes::from(nan)] {
+            let (status, code) = code_of(post(AppState::new(&config), body).await).await;
+            assert_eq!(
+                (status, code.as_str()),
+                (StatusCode::BAD_REQUEST, "mcp_request_unreadable")
+            );
+        }
+        assert!(seen.lock().is_empty());
     }
 
     /// #3475: a compressed body cannot be judged, and an upstream that honours

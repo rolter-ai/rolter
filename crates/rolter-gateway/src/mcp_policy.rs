@@ -644,6 +644,22 @@ impl Body {
     }
 }
 
+/// The UTF-8 byte-order mark.
+const BOM: &[u8] = b"\xef\xbb\xbf";
+
+/// `body` without a leading UTF-8 byte-order mark, which RFC 8259 lets a
+/// parser ignore (#3527). The relay strips it before it judges a body for a
+/// governed server and forwards the stripped bytes, so the upstream receives
+/// exactly what was judged. Any other encoding is left as it is, and refused
+/// when it does not parse.
+pub(crate) fn without_bom(body: bytes::Bytes) -> bytes::Bytes {
+    if body.starts_with(BOM) {
+        body.slice(BOM.len()..)
+    } else {
+        body
+    }
+}
+
 /// A request body as far as it was read, once, for the policy and the MCP log
 /// alike (#3399): both take their keys from the same case-folded lookup, so a
 /// call the policy allows is a call the log records.
@@ -707,31 +723,19 @@ pub(crate) fn stream_filter(rules: &Rules<'_>) -> Option<ListFilter> {
 
 /// Apply the policy to a request body bound for `server`, read once by the
 /// caller as `read`.
-pub(crate) fn evaluate_read(
-    snapshot: &Snapshot,
-    server: &McpServerConfig,
-    rules: &Rules<'_>,
-    read: &Read,
-) -> Decision {
+pub(crate) fn evaluate_read(rules: &Rules<'_>, read: &Read) -> Decision {
     if !rules.any() {
         return Decision::of(Verdict::Allow);
     }
     let parsed = match read {
         Read::Skipped => return Decision::of(Verdict::Allow),
         Read::Parsed(parsed) => parsed,
-        Read::Unreadable => {
-            // what to do with a request that cannot be inspected is the
-            // organization's failure policy; refusing is the default
-            let fail_open = snapshot
-                .mcp_org_settings
-                .get(&server.org_id)
-                .is_some_and(|settings| settings.fail_open);
-            return Decision::of(if fail_open {
-                Verdict::Allow
-            } else {
-                Verdict::Unreadable
-            });
-        }
+        // the relay forwards only a body it has judged (#3527): one it cannot
+        // read is refused whatever the organization's deprecated `fail_open`
+        // says, since an upstream with a more lenient parser (Python's
+        // `json.loads` takes `NaN`, and on bytes UTF-16) could run a call the
+        // policy never saw
+        Read::Unreadable => return Decision::of(Verdict::Unreadable),
     };
     if parsed.repeated {
         let (calls, unlogged) =
@@ -794,7 +798,7 @@ pub(crate) fn evaluate(
 ) -> Decision {
     let rules = Rules::of(snapshot, server, caller);
     let read = Read::of(body, rules.any(), false);
-    evaluate_read(snapshot, server, &rules, &read)
+    evaluate_read(&rules, &read)
 }
 
 #[cfg(test)]
@@ -1644,20 +1648,79 @@ mod tests {
         ));
     }
 
+    /// #3527: `fail_open` no longer decides anything. An unreadable body is
+    /// refused in an organization that saved it, and a readable refused call
+    /// stays refused.
     #[test]
-    fn the_failure_policy_decides_what_an_unreadable_body_gets() {
+    fn an_unreadable_body_is_refused_whatever_fail_open_says() {
         let garbage = b"{ not json";
-        let (closed, server) = with_manifest(&["a"], Some(settings(false, false)));
-        assert!(matches!(
-            enforce(&closed, &server, garbage),
-            Verdict::Unreadable
-        ));
-        let (open, server) = with_manifest(&["a"], Some(settings(false, true)));
-        assert!(matches!(enforce(&open, &server, garbage), Verdict::Allow));
-        // fail open never lets a readable refused call through
-        assert!(matches!(
-            enforce(&open, &server, call("b").as_bytes()),
-            Verdict::Denied(_)
-        ));
+        for fail_open in [false, true] {
+            let (snapshot, server) = with_manifest(&["a"], Some(settings(false, fail_open)));
+            assert!(
+                matches!(enforce(&snapshot, &server, garbage), Verdict::Unreadable),
+                "{fail_open}"
+            );
+            assert!(
+                matches!(
+                    enforce(&snapshot, &server, call("b").as_bytes()),
+                    Verdict::Denied(_)
+                ),
+                "{fail_open}"
+            );
+        }
+    }
+
+    /// #3527: each body a lenient upstream parser might read and `serde_json`
+    /// does not is a parser differential, and is refused rather than forwarded.
+    #[test]
+    fn a_body_only_a_lenient_parser_reads_is_unreadable() {
+        let (snapshot, server) = with_manifest(&["a"], Some(settings(false, true)));
+        let text = call("b");
+        let utf16le: Vec<u8> = "\u{feff}"
+            .chars()
+            .chain(text.chars())
+            .collect::<String>()
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .collect();
+        let utf16be: Vec<u8> = text.encode_utf16().flat_map(u16::to_be_bytes).collect();
+        let mut bom = BOM.to_vec();
+        bom.extend_from_slice(text.as_bytes());
+        let nan = text.replace(r#""arguments":{}"#, r#""arguments":{"x":NaN}"#);
+        assert_ne!(nan, text);
+        let infinity = text.replace(r#""arguments":{}"#, r#""arguments":{"x":Infinity}"#);
+        let trailing = text.replace(r#""arguments":{}"#, r#""arguments":{},"#);
+        let comment = format!("/* hi */{text}");
+        let deep = format!("{}{}", "[".repeat(1000), "]".repeat(1000));
+        for body in [
+            utf16le,
+            utf16be,
+            bom,
+            nan.into_bytes(),
+            infinity.into_bytes(),
+            trailing.into_bytes(),
+            comment.into_bytes(),
+            deep.into_bytes(),
+        ] {
+            assert!(
+                matches!(enforce(&snapshot, &server, &body), Verdict::Unreadable),
+                "{}",
+                String::from_utf8_lossy(&body)
+            );
+        }
+    }
+
+    #[test]
+    fn only_a_leading_utf8_bom_is_stripped() {
+        let text = bytes::Bytes::from_static(b"{\"a\":1}");
+        let mut bom = BOM.to_vec();
+        bom.extend_from_slice(&text);
+        assert_eq!(without_bom(bytes::Bytes::from(bom)), text);
+        assert_eq!(without_bom(text.clone()), text);
+        // a second mark is the body's own, and still fails to parse
+        let mut twice = BOM.repeat(2);
+        twice.extend_from_slice(&text);
+        assert_eq!(&without_bom(bytes::Bytes::from(twice))[..3], BOM);
+        assert_eq!(without_bom(bytes::Bytes::new()), bytes::Bytes::new());
     }
 }
