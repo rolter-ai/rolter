@@ -373,7 +373,8 @@ export const ToolGroupKeysUnreadableKeepsStoredKeys: Story = {
       await within(canvasElement).findByRole("button", { name: "Configure tool group Triage" }),
     );
     const body = within(document.body);
-    await expect(await body.findByText(/virtual keys could not be read/)).toBeVisible();
+    const unread = await body.findByText(/virtual keys could not be read/);
+    await waitFor(() => expect(unread).toBeVisible());
     await userEvent.click(await body.findByRole("button", { name: "Platform" }));
     await userEvent.click(body.getByRole("button", { name: "Save group" }));
     await expect(
@@ -396,7 +397,8 @@ export const ToolGroupKeysLoading: Story = {
     await userEvent.click(
       await within(canvasElement).findByRole("button", { name: "Configure tool group Triage" }),
     );
-    await expect(await within(document.body).findByText("Reading the virtual keys…")).toBeVisible();
+    const reading = await within(document.body).findByText("Reading the virtual keys…");
+    await waitFor(() => expect(reading).toBeVisible());
   },
 };
 export const ToolGroupWithoutKeys: Story = {
@@ -409,9 +411,8 @@ export const ToolGroupWithoutKeys: Story = {
     await userEvent.click(
       await within(canvasElement).findByRole("button", { name: "Configure tool group Triage" }),
     );
-    await expect(
-      await within(document.body).findByText("No virtual keys to assign yet."),
-    ).toBeVisible();
+    const none = await within(document.body).findByText("No virtual keys to assign yet.");
+    await waitFor(() => expect(none).toBeVisible());
   },
 };
 // an unreadable assignment list must not turn into an editor that saves an

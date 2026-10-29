@@ -12,9 +12,16 @@
 create or replace function delete_mcp_tool_group_assignments_for_subject()
 returns trigger as $$
 begin
-    delete from mcp_tool_group_assignments
-     where subject_kind = tg_argv[0]
-       and subject_id in (select id from deleted_subjects);
+    -- a statement trigger on the assignments fires even when no row matches,
+    -- and every bump wakes every gateway, so a delete that names no subject
+    -- with an assignment must not reach the table at all
+    if exists (select 1 from mcp_tool_group_assignments
+                where subject_kind = tg_argv[0]
+                  and subject_id in (select id from deleted_subjects)) then
+        delete from mcp_tool_group_assignments
+         where subject_kind = tg_argv[0]
+           and subject_id in (select id from deleted_subjects);
+    end if;
     return null;
 end;
 $$ language plpgsql;

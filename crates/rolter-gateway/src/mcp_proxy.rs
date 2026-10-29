@@ -153,26 +153,29 @@ async fn proxy(
     };
     // a `tools/call` is recorded in the MCP tool-call log (#2395). `None` for
     // every other request
-    let call = read.single_call().and_then(|request| {
-        PendingCall::from_request(
-            &state.mcp_events,
-            request,
-            &CallContext {
-                server: &server.slug,
-                transport: &server.transport,
-                org_id: &key.org_id,
-                team_id: &key.team_id,
-                project_id: &key.project_id,
-                virtual_key_id: &key.id,
-                // the session is looked up by this id below, so on a per-user
-                // OAuth server it is the session owner
-                user_id: &key.user_id,
-                request_id: request_id.as_str(),
-                capture: &snapshot.logging.payload_capture,
-                redactor: &snapshot.payload_redactor,
-            },
-        )
-    });
+    let capture = &snapshot.logging.payload_capture;
+    let call = read
+        .single_call(capture.enabled && capture.max_bytes > 0)
+        .and_then(|request| {
+            PendingCall::from_request(
+                &state.mcp_events,
+                request,
+                &CallContext {
+                    server: &server.slug,
+                    transport: &server.transport,
+                    org_id: &key.org_id,
+                    team_id: &key.team_id,
+                    project_id: &key.project_id,
+                    virtual_key_id: &key.id,
+                    // the session is looked up by this id below, so on a per-user
+                    // OAuth server it is the session owner
+                    user_id: &key.user_id,
+                    request_id: request_id.as_str(),
+                    capture: &snapshot.logging.payload_capture,
+                    redactor: &snapshot.payload_redactor,
+                },
+            )
+        });
     // the credential is chosen by what the server row says it is. only `oauth`
     // consults the per-user session; the static kinds are a deployment-wide
     // credential and deliberately do not require one, which is the whole point
@@ -322,6 +325,10 @@ async fn proxy(
             return error(StatusCode::FORBIDDEN, message, "mcp_tool_denied");
         }
     }
+
+    // the parsed body can be many times the size of the bytes. the log row has
+    // taken what it needs, so it is released before the wait on the upstream
+    drop(read);
 
     let Some(url) = downstream_url(&server.url, tail.as_deref(), query) else {
         return error(
@@ -906,6 +913,29 @@ mod tests {
                 .unwrap_or_default()
                 .to_string(),
         )
+    }
+
+    /// #3399: a call a group governs, the policy allows and a decoder reads
+    /// through differently cased keys is forwarded and recorded, from the one
+    /// parse the policy made.
+    #[tokio::test]
+    async fn a_governed_allowed_call_with_other_key_cases_is_recorded() {
+        let mut config = with_group(&["get_issue"]);
+        config.mcp_servers[0].url = serving(200, None).await;
+        let mut state = AppState::new(&config);
+        let (sink, mut events) =
+            crate::mcp_log::McpEventSink::capturing(std::sync::Arc::new(Default::default()));
+        state.mcp_events = sink;
+        let body = Bytes::from(
+            r#"{"jsonrpc":"2.0","ID":1,"Method":"tools/call","Params":{"Name":"get_issue","Arguments":{}}}"#,
+        );
+        let response = post(state, body).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        // the row is written when the reply has been read
+        let _ = axum::body::to_bytes(response.into_body(), 4096).await;
+        let event = events.try_recv().expect("the allowed call is recorded");
+        assert_eq!(event.tool, "get_issue");
+        assert_ne!(event.status, "auth_denied");
     }
 
     /// #1403: a tool outside the organization's groups is refused before

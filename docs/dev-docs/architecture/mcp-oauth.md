@@ -190,7 +190,8 @@ after the caller is authenticated and before anything is forwarded.
   `Arc`), so a request borrows it with two lookups. Resolving it per request
   cost a `Vec` of the caller's groups plus a `String` clone and a set insert
   for every tool of every group assigned to the caller, on a path meant to
-  allocate nothing; now it costs none of that. A caller the snapshot built
+  allocate nothing (for three groups of 50 tools each, one `Vec`, about 150
+  `String` clones and as many set inserts per request); now it costs none of that. A caller the snapshot built
   nothing for (no assignment, or not a key of the snapshot) still takes the
   merge, `Rules::governed_merged`, which is also what a test holds the
   precomputed union to.
@@ -202,13 +203,15 @@ after the caller is authenticated and before anything is forwarded.
   changes nothing. The same set drives the `tools/list` filter. API:
   `GET /api/v1/orgs/{org_id}/mcp/tool-group-assignments` and
   `PUT /api/v1/mcp/tool-groups/{id}/assignments` (replaces the group's whole set
-  in one transaction; a stored subject that no longer exists is dropped rather
-  than refused), under the `mcp_tool_group_assignment` capability. The create body
+  in one transaction; a stored row whose subject is gone, which the `0200` sweep
+  leaves only to a write racing the delete or to a row from before it, is dropped
+  rather than refused), under the `mcp_tool_group_assignment` capability. The create body
   takes `assignments` too and writes them in the group's own transaction, so a
   group meant to be narrowed is never visible as organization-wide. The
-  dashboard's group dialog edits the team and project kinds and mounts its editor
-  only once the stored assignments are read, so it can never save an empty set
-  over them. Both snapshot fields added for assignments and the manifest default
+  dashboard's group dialog edits all three kinds (the key picker reads each
+  project's keys, #3380) and mounts its editor only once the stored assignments
+  are read, so it can never save an empty set over them; a stored key is dropped
+  only once every project's keys were read and it is not among them. Both snapshot fields added for assignments and the manifest default
   restrict what the gateway serves, which ADR-0038 would call a format bump; they
   stay in format 1 because everything before the 1.0.0 tag does, and the shape
   fixture carries them.
@@ -483,7 +486,7 @@ not present sees: no scope is ever added without a person consenting to it. A
 server with a static credential has no consent to repeat, so its `403` is
 relayed as the upstream sent it.
 
-The dashboard half (#3296) is `ui/src/components/McpStepUp.tsx` and `ui/src/lib/mcp-step-up.ts`. `mcp_insufficient_scope` is an answer to the gateway's caller and the log row keeps only `auth_denied`, so the dashboard cannot read the upstream's scopes back: it offers the server's declared `required_scopes` that the caller's longest-lived live session does not hold (the check the gateway makes before forwarding), on the server card and in the detail of an `auth_denied` log row, and lets the key's owner name a scope when nothing declared is missing. The action is `startMcpStepUp`, the same pop-up flow as Connect (`useMcpConnect`) carrying `step_up_scopes`.
+The dashboard half (#3296) is `ui/src/components/McpStepUp.tsx` and `ui/src/lib/mcp-step-up.ts`. `mcp_insufficient_scope` is an answer to the gateway's caller, and the log row of that refusal records the scopes the upstream asked for in `error_scopes` (#3375), so the detail of an `auth_denied` row offers exactly those the caller's longest-lived live session does not hold. A row without them (written before ClickHouse migration `042`, or refused for another reason) falls back to the server's declared `required_scopes` that the session lacks (the check the gateway makes before forwarding), and lets the key's owner name a scope when nothing declared is missing. The server card offers the declared ones. The action is `startMcpStepUp`, the same pop-up flow as Connect (`useMcpConnect`) carrying `step_up_scopes`.
 
 ### Fetching from the control plane, and SSRF
 

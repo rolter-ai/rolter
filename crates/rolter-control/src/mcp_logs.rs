@@ -520,6 +520,53 @@ mod tests {
         assert!(event_detail_sql(false).contains("error, emptyArrayString() as error_scopes from"));
     }
 
+    /// a ClickHouse stand-in for the detail read: it answers the probe from
+    /// `columns`, and refuses a select that names `error_scopes` bare when the
+    /// table lacks it, as the real engine does
+    async fn detail_stand_in(has_scopes: bool) -> String {
+        use axum::routing::post;
+        let app = Router::new().fallback(post(move |sql: String| async move {
+            if sql.contains("system.columns") {
+                let mut rows = vec![json!({"name": "ts"}), json!({"name": "error"})];
+                if has_scopes {
+                    rows.push(json!({"name": "error_scopes"}));
+                }
+                return Json(json!({"data": rows})).into_response();
+            }
+            if !has_scopes && sql.contains(", error_scopes from") {
+                return (
+                    StatusCode::NOT_FOUND,
+                    "Code: 47. DB::Exception: Unknown expression identifier `error_scopes`",
+                )
+                    .into_response();
+            }
+            Json(json!({"data": [{"event_id": "e"}]})).into_response()
+        }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, app).await });
+        url
+    }
+
+    #[tokio::test]
+    async fn the_detail_reads_a_table_without_error_scopes_and_one_with_it() {
+        for has_scopes in [false, true] {
+            let ch = crate::analytics::ClickHouseClient::new(&detail_stand_in(has_scopes).await);
+            let present = has_error_scopes(&ch).await.unwrap();
+            assert_eq!(present, has_scopes);
+            let rows = ch
+                .query(&event_detail_sql(present), &[])
+                .await
+                .expect("the select names only columns the table has");
+            assert_eq!(rows.len(), 1);
+            // the unprobed select is what failed before the probe existed
+            assert_eq!(
+                ch.query(&event_detail_sql(true), &[]).await.is_ok(),
+                has_scopes
+            );
+        }
+    }
+
     #[test]
     fn the_scopes_probe_settles_only_once_the_column_is_found() {
         let cache = McpColumnCache::default();

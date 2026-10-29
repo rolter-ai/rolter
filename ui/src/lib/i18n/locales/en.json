@@ -3606,6 +3606,7 @@
       "missing_other": "Your connection lacks the scopes {{scopes}} that this server requires.",
       "asked_one": "{{scopes}} is the scope this server asked for.",
       "asked_other": "{{scopes}} are the scopes this server asked for.",
+      "askedHeld": "Your connection already holds these scopes, so another consent would not change the outcome. If the call still fails, the server may need something it did not name.",
       "logTitle": "Authorization refused",
       "logBody": "{{server}} refused this call for authorization. If it wanted a scope your connection does not hold, consent again with more access; your current scopes are kept.",
       "notOwner": "Only the key's owner can reconnect with more access.",

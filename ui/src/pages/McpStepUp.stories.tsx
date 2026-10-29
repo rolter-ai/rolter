@@ -17,8 +17,9 @@ import type { McpLogDetail, McpOAuthGrantRow, McpOAuthSessionRow, McpServerRow }
 import { AuthProvider } from "@/lib/auth";
 
 // a step-up (#3296): the gateway answers `mcp_insufficient_scope`, the log row
-// says only `auth_denied`, and the owner reconnects with more access. the
-// scopes offered are the ones the server declares that the live session lacks
+// says `auth_denied` and, when the upstream named them, the scopes it asked for
+// (`error_scopes`, #3375), and the owner reconnects with more access. a row
+// without them offers the scopes the server declares that the live session lacks
 
 const ME = { id: "user-ada", email: "ada@acme.dev", is_superadmin: false };
 
@@ -388,6 +389,29 @@ export const LogDetailOffersTheScopesTheUpstreamAskedFor: Story = {
         step_up_scopes: ["repo", "read:org"],
       });
     });
+  },
+};
+
+/** Everything the upstream asked for is already held: the button says why it is off. */
+export const LogDetailWithEveryAskedScopeHeldExplainsWhy: Story = {
+  render: () => (
+    <SignedIn>
+      <Harness
+        fetchStub={logs(denied({ error_scopes: ["read"] }), [
+          session({ scopes: ["read", "write"] }),
+        ])}
+      >
+        <McpLogs />
+      </Harness>
+    </SignedIn>
+  ),
+  play: async ({ canvasElement }) => {
+    const body = await openDetail(canvasElement);
+    const why = await body.findByText(/already holds these scopes/);
+    await waitFor(() => expect(why).toBeVisible());
+    const action = body.getByRole("button", { name: "Reconnect Linear with more access" });
+    await expect(action).toBeDisabled();
+    await expect(action).toHaveAccessibleDescription(/already holds these scopes/);
   },
 };
 

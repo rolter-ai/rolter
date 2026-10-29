@@ -656,7 +656,7 @@ mod tests {
     /// policy's reader, then taken as a single call
     fn parse(sink: &McpEventSink, body: &[u8], ctx: &CallContext<'_>) -> Option<PendingCall> {
         let read = crate::mcp_policy::Read::of(body, false, sink.enabled());
-        PendingCall::from_request(sink, read.single_call()?, ctx)
+        PendingCall::from_request(sink, read.single_call(true)?, ctx)
     }
 
     fn request(method: &str, id: Option<i64>) -> Vec<u8> {

@@ -465,8 +465,9 @@ fn build_mcp_caller_tools(
     group_tools: &HashMap<String, HashMap<String, std::collections::HashSet<String>>>,
     group_servers: &HashMap<String, std::collections::HashSet<String>>,
     assignments: &HashMap<String, Vec<(String, String, String)>>,
+    org_of_server: &HashMap<&str, &str>,
 ) -> HashMap<String, Arc<McpCallerTools>> {
-    let mut by_groups: HashMap<Vec<&str>, Arc<McpCallerTools>> = HashMap::new();
+    let mut by_groups: HashMap<(&str, Vec<&str>), Arc<McpCallerTools>> = HashMap::new();
     let mut callers = HashMap::new();
     if assignments.is_empty() {
         return callers;
@@ -492,29 +493,39 @@ fn build_mcp_caller_tools(
         }
         groups.sort_unstable();
         groups.dedup();
-        let merged = by_groups.entry(groups).or_insert_with_key(|groups| {
-            let mut governed: HashMap<String, std::collections::HashSet<String>> = HashMap::new();
-            // a server the caller's organization governs for everyone, or that
-            // an assigned group names (a disabled one too, with no tools)
-            let named = governed_org_wide.keys().chain(
-                groups
-                    .iter()
-                    .filter_map(|group| group_servers.get(*group))
-                    .flatten(),
-            );
-            for server in named {
-                governed.entry(server.clone()).or_default();
-            }
-            for group in groups {
-                for (server, tools) in group_tools.get(*group).into_iter().flatten() {
-                    governed
-                        .entry(server.clone())
-                        .or_default()
-                        .extend(tools.iter().cloned());
+        // keyed by organization too: a group is its organization's, so two
+        // keys share a value only inside one, and the value holds only that
+        // organization's servers rather than every governed server of every
+        // organization
+        let org = key.org_id.as_str();
+        let merged = by_groups
+            .entry((org, groups))
+            .or_insert_with_key(|(_, groups)| {
+                let mut governed: HashMap<String, std::collections::HashSet<String>> =
+                    HashMap::new();
+                // a server the caller's organization governs for everyone, or that
+                // an assigned group names (a disabled one too, with no tools)
+                let named = governed_org_wide.keys().chain(
+                    groups
+                        .iter()
+                        .filter_map(|group| group_servers.get(*group))
+                        .flatten(),
+                );
+                for server in
+                    named.filter(|server| org_of_server.get(server.as_str()) == Some(&org))
+                {
+                    governed.entry(server.clone()).or_default();
                 }
-            }
-            Arc::new(McpCallerTools { governed })
-        });
+                for group in groups {
+                    for (server, tools) in group_tools.get(*group).into_iter().flatten() {
+                        governed
+                            .entry(server.clone())
+                            .or_default()
+                            .extend(tools.iter().cloned());
+                    }
+                }
+                Arc::new(McpCallerTools { governed })
+            });
         callers.insert(key.id.clone(), Arc::clone(merged));
     }
     callers
@@ -946,6 +957,7 @@ impl Snapshot {
             &mcp_group_tools,
             &mcp_group_servers,
             &mcp_group_assignments,
+            &org_of_server,
         );
         let mcp_org_settings = config
             .mcp_settings

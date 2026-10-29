@@ -180,9 +180,8 @@ back to the organization's groups or to the whole server; everyone else is
 unaffected. Deleting a group removes its
 assignments with it, and a team, project or key that was assigned only to that
 group returns to the organization-wide set. A new group can be created with its
-`assignments` in the same request. The dashboard edits team and project assignments;
-virtual-key assignments are set through the API and kept as they are when a group
-is saved there. Batches are refused as a whole when any call in
+`assignments` in the same request. The dashboard's group dialog edits team, project and single
+virtual-key assignments; deleting a team, project or key removes its assignments. Batches are refused as a whole when any call in
 them is refused, and while a group governs a server a request body that cannot
 be read as JSON-RPC is refused with `400` (`mcp_request_unreadable`) rather than
 forwarded unchecked. A body that repeats a key in a message or in its `params`

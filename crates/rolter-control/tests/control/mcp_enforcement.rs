@@ -404,6 +404,31 @@ async fn tool_group_assignments_reach_the_snapshot_and_stay_inside_the_organizat
         .unwrap();
     assert_eq!(refused.status(), 400);
 
+    // a row that outlived its subject (one written around the delete, or from
+    // before the sweep) is still dropped instead of blocking the save
+    sqlx::query(
+        "insert into mcp_tool_group_assignments (group_id, subject_kind, subject_id) \
+         values ($1, 'virtual_key', $2)",
+    )
+    .bind(group_id.parse::<uuid::Uuid>().unwrap())
+    .bind(subjects[0].2)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let resaved: Value = client
+        .put(&url)
+        .json(&json!({"assignments": [
+            {"kind": "team", "id": subjects[0].0},
+            {"kind": "virtual_key", "id": subjects[0].2},
+        ]}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(resaved.as_array().unwrap().len(), 1, "{resaved}");
+
     // a group created with assignments has them from its first snapshot, and a
     // subject outside the organization refuses the whole create
     let created: Value = client

@@ -491,11 +491,15 @@ impl Body {
     }
 
     /// Whether `bytes` can hold a `tools/call`: it spells the method out, or it
-    /// holds an escape that could spell it. Most MCP traffic is neither, and is
+    /// holds a `\u` or `\/` escape that could spell it. Most MCP traffic is neither, and is
     /// not worth a parse when only the log wants it.
     fn may_call(bytes: &[u8]) -> bool {
         const NEEDLE: &[u8] = b"tools/call";
-        bytes.windows(NEEDLE.len()).any(|w| w == NEEDLE) || bytes.contains(&b'\\')
+        // only `\u` and `\/` can spell a character of it
+        bytes.windows(NEEDLE.len()).any(|w| w == NEEDLE)
+            || bytes
+                .windows(2)
+                .any(|w| w[0] == b'\\' && matches!(w[1], b'u' | b'/'))
     }
 
     /// The one request a body is made of, when it is a single `tools/call` with
@@ -504,15 +508,30 @@ impl Body {
     /// refused one is (#1403). Returned as the canonical request
     /// [`Self::tool_calls`] builds, so a key written in another case is read as
     /// a decoder would read it.
-    pub(crate) fn single_call(&self) -> Option<Map<String, Value>> {
+    pub(crate) fn single_call(&self, arguments: bool) -> Option<Map<String, Value>> {
         if self.batch {
             return None;
         }
-        let (_, request) = self.tool_calls(false).into_iter().next()?;
-        request
-            .get("id")
-            .is_some_and(|id| !id.is_null())
-            .then_some(request)
+        let request = self.messages.first()?.as_object()?;
+        if Self::method(self.messages.first()?) != Some("tools/call") {
+            return None;
+        }
+        let id = get_folded(request, "id").filter(|id| !id.is_null())?;
+        let params = get_folded(request, "params")?.as_object()?;
+        let name = get_folded(params, "name")?;
+        // the arguments are the one deep copy, so they are taken only when the
+        // log will keep them
+        let mut kept = Map::new();
+        kept.insert("name".into(), name.clone());
+        if arguments {
+            if let Some(arguments) = get_folded(params, "arguments") {
+                kept.insert("arguments".into(), arguments.clone());
+            }
+        }
+        let mut canonical = Map::new();
+        canonical.insert("id".into(), id.clone());
+        canonical.insert("params".into(), Value::Object(kept));
+        Some(canonical)
     }
 
     /// The method a message names, read the way a decoder would.
@@ -594,9 +613,10 @@ impl Read {
     }
 
     /// The single `tools/call` the log can follow, when the body was read.
-    pub(crate) fn single_call(&self) -> Option<Map<String, Value>> {
+    /// `arguments` says whether the log keeps them.
+    pub(crate) fn single_call(&self, arguments: bool) -> Option<Map<String, Value>> {
         match self {
-            Self::Parsed(body) => body.single_call(),
+            Self::Parsed(body) => body.single_call(arguments),
             _ => None,
         }
     }
@@ -1168,6 +1188,73 @@ mod tests {
                 .len(),
             0
         );
+    }
+
+    /// a governed caller's body is always read, whatever the log wants: the
+    /// policy cannot judge what it did not parse
+    #[test]
+    fn a_governed_body_is_always_read_and_an_ungoverned_one_only_for_the_log() {
+        let plain: &[u8] = br#"{"jsonrpc":"2.0","id":1,"method":"ping"}"#;
+        let call: &[u8] =
+            br#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"a"}}"#;
+        let escaped = br#"{"method":"tools\u002fcall","id":1,"params":{"name":"a"}}"#;
+        for (logging, body) in [(true, plain), (false, plain), (true, call), (false, call)] {
+            assert!(matches!(Read::of(body, true, logging), Read::Parsed(_)));
+        }
+        assert!(matches!(Read::of(plain, false, true), Read::Skipped));
+        assert!(matches!(Read::of(call, false, false), Read::Skipped));
+        assert!(matches!(Read::of(call, false, true), Read::Parsed(_)));
+        assert!(matches!(Read::of(escaped, false, true), Read::Parsed(_)));
+        // an escape that cannot spell the method is not worth a parse
+        let newline = br#"{"method":"ping","id":1,"params":{"q":"a\nb \"c\""}}"#;
+        assert!(matches!(Read::of(newline, false, true), Read::Skipped));
+        assert!(matches!(
+            Read::of(b"not json", true, false),
+            Read::Unreadable
+        ));
+    }
+
+    /// a key's entry holds the servers of its own organization only (#3435)
+    #[test]
+    fn a_precomputed_entry_holds_only_its_own_organizations_servers() {
+        let mut config = GatewayConfig::default();
+        for (id, org) in [("srv-a", "org-a"), ("srv-b", "org-b")] {
+            config.mcp_servers.push(McpServerConfig {
+                id: id.into(),
+                org_id: org.into(),
+                slug: id.into(),
+                ..Default::default()
+            });
+        }
+        config.mcp_tool_groups = vec![
+            assigned(group("org-a", "srv-a", &["a"]), "team", "team-a"),
+            // org-b governs its own server for everyone
+            group("org-b", "srv-b", &["b"]),
+        ];
+        config.mcp_tool_groups[0].id = "g-a".into();
+        config.mcp_tool_groups[1].id = "g-b".into();
+        config.db_virtual_keys.push(VirtualKeyRecord {
+            id: "key-a".into(),
+            org_id: "org-a".into(),
+            project_id: "project-a".into(),
+            team_id: "team-a".into(),
+            key_hash: "hash-a".into(),
+            previous: None,
+            access_policy: None,
+            user_id: "user-1".into(),
+            models: Vec::new(),
+            providers: Vec::new(),
+            disabled: false,
+            expires_at: None,
+            cache: None,
+            business_unit_id: String::new(),
+            customer_id: String::new(),
+        });
+        let snapshot = Snapshot::build(&config, &crate::load::LoadTracker::default());
+        let entry = &snapshot.mcp_caller_tools["key-a"];
+        let mut servers: Vec<&String> = entry.governed.keys().collect();
+        servers.sort();
+        assert_eq!(servers, ["srv-a"], "org-b's server is not this key's");
     }
 
     #[test]

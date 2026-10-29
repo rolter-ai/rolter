@@ -1992,16 +1992,40 @@ async fn deleting_a_team_project_or_key_drops_its_mcp_tool_group_assignments() {
     };
     assert_eq!(subjects().await.len(), 4);
 
-    let before = version().await;
     keys.delete(deleted_key.id).await.unwrap();
     assert!(!subjects().await.contains(&deleted_key.id));
-    assert!(version().await > before, "the sweep reaches the gateway");
 
+    // deleting a team or a project bumps `config_version` through the tables
+    // it cascades into whatever happens to the assignments, so the sweep is
+    // measured against the same delete of a subject with none: it adds exactly
+    // one bump, and a subject with no assignment adds none (a bump wakes every
+    // gateway)
+    let unassigned_team = teams.create(org.id, "unassigned").await.unwrap();
+    let unassigned_project = projects.create(team.id, "unassigned").await.unwrap();
+    let before = version().await;
+    teams.delete(unassigned_team.id).await.unwrap();
+    let team_baseline = version().await - before;
+    let before = version().await;
+    projects.delete(unassigned_project.id).await.unwrap();
+    let project_baseline = version().await - before;
+
+    let before = version().await;
     projects.delete(lone_project.id).await.unwrap();
     assert!(!subjects().await.contains(&lone_project.id));
+    assert_eq!(
+        version().await - before,
+        project_baseline + 1,
+        "the sweep reaches the gateway"
+    );
 
+    let before = version().await;
     teams.delete(lone_team.id).await.unwrap();
     assert!(!subjects().await.contains(&lone_team.id));
+    assert_eq!(
+        version().await - before,
+        team_baseline + 1,
+        "so does a team's"
+    );
 
     // a project takes its keys with it, and their assignments follow
     projects.delete(key_project.id).await.unwrap();

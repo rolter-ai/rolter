@@ -131,18 +131,16 @@ export function LogStepUp({ detail }: { detail: McpLogDetail }) {
   });
   const [typed, setTyped] = React.useState("");
   const scopesId = React.useId();
+  const heldId = React.useId();
 
   const server = servers.data?.find((s) => s.slug === detail.server && s.auth_kind === "oauth");
   if (!enabled || !server) return null;
   const owner = !!auth?.user?.id && auth.user.id === detail.user_id;
-  const missing = missingScopes(
-    server,
-    heldScopes(grants.data, sessions.data, auth?.user?.id, server.id, Date.now()),
-  );
+  const held = heldScopes(grants.data, sessions.data, auth?.user?.id, server.id, Date.now());
+  const missing = missingScopes(server, held);
   const named = parseScopes(typed);
   // what the upstream asked for, less what the session already holds
   const asked = detail.error_scopes ?? [];
-  const held = heldScopes(grants.data, sessions.data, auth?.user?.id, server.id, Date.now());
   const toAdd = asked.filter((scope) => !held?.includes(scope));
 
   return (
@@ -164,8 +162,13 @@ export function LogStepUp({ detail }: { detail: McpLogDetail }) {
             {t("pages.mcpStepUp.asked", { count: asked.length, scopes: asked.join(", ") })}
           </p>
           <div>
-            <StepUpButton server={server} scopes={toAdd} />
+            <StepUpButton server={server} scopes={toAdd} describedBy={heldId} />
           </div>
+          {toAdd.length === 0 && (
+            <p id={heldId} className="text-xs text-muted-foreground">
+              {t("pages.mcpStepUp.askedHeld")}
+            </p>
+          )}
         </>
       ) : missing.length > 0 ? (
         <>
