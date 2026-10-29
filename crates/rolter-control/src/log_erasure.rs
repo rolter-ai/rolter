@@ -199,6 +199,36 @@ fn predicates(scope: &ScopeBody, user_keys: &[Uuid]) -> Predicates {
     }
 }
 
+/// Which stores an erasure searched and which it skipped, as the list stored on
+/// the record: `{store, searched, reason?}` (#3436). Request logs are found by
+/// virtual key, so a user who holds none leaves them unsearched while their MCP
+/// tool calls, which carry `user_id`, are still erased; a payloads-only erasure
+/// keeps the log rows. Saying so is what stops the record reading as complete
+/// over every store.
+fn coverage(scope: &ScopeBody, user_keys: &[Uuid], include_logs: bool) -> Value {
+    let keyless = matches!(scope, ScopeBody::User { .. }) && user_keys.is_empty();
+    let found = |store: &str| json!({"store": store, "searched": true});
+    let skipped =
+        |store: &str, reason: &str| json!({"store": store, "searched": false, "reason": reason});
+    const NO_KEYS: &str = "the user holds no virtual keys, and request logs are found by key";
+    let logs = if keyless {
+        skipped("request_logs", NO_KEYS)
+    } else if include_logs {
+        found("request_logs")
+    } else {
+        skipped(
+            "request_logs",
+            "only captured payloads were asked for; the log rows are kept",
+        )
+    };
+    let payloads = if keyless {
+        skipped("request_payloads", NO_KEYS)
+    } else {
+        found("request_payloads")
+    };
+    json!([logs, payloads, found("mcp_tool_call_logs")])
+}
+
 /// The statements that carry out one erasure. `marker` is the erasure's id: it
 /// rides in each `where` as a constant-true clause so the mutation can be found
 /// again in `system.mutations`, whose `command` keeps the statement's text.
@@ -346,6 +376,7 @@ async fn create_erasure(
         include_logs: body.include_logs,
         reason: body.reason.trim(),
         requested_by: principal.account_id(),
+        stores: coverage(&body.scope, &user_keys, body.include_logs),
     })
     .await?;
 
@@ -372,6 +403,7 @@ async fn create_erasure(
                 "include_logs": body.include_logs,
                 "reason": record.reason,
                 "statements": record.statements,
+                "stores": record.stores,
                 "outcome": record.status,
             })),
         )
@@ -700,6 +732,35 @@ mod tests {
         assert!(p.mcp.contains(
             "ts between toDateTime64('2026-10-27 12:30:45.123', 3, 'UTC') - interval 300 second"
         ));
+    }
+
+    #[test]
+    fn the_record_says_which_stores_a_keyless_user_erasure_skipped() {
+        let user = ScopeBody::User { id: uuid(5) };
+        let stores = coverage(&user, &[], true);
+        assert_eq!(stores[0]["store"], "request_logs");
+        assert_eq!(stores[0]["searched"], false);
+        assert!(stores[0]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("no virtual keys"));
+        assert_eq!(stores[1]["searched"], false);
+        assert_eq!(
+            stores[2],
+            json!({"store": "mcp_tool_call_logs", "searched": true})
+        );
+        // with a key, every store is searched
+        let stores = coverage(&user, &[uuid(1)], true);
+        assert!(stores
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|s| s["searched"] == true));
+        // payloads only keeps the log rows, and says why
+        let stores = coverage(&user, &[uuid(1)], false);
+        assert_eq!(stores[0]["searched"], false);
+        assert!(stores[0]["reason"].as_str().unwrap().contains("payloads"));
+        assert_eq!(stores[1]["searched"], true);
     }
 
     #[test]

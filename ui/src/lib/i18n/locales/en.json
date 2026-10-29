@@ -4774,6 +4774,7 @@
         "unverified": "No deletion was visible in ClickHouse an hour after submission, so completion cannot be confirmed. Check by querying."
       },
       "progress": "{{done}} of {{total}} deletions done",
+      "skipped": "Not searched: {{stores}}. {{reasons}}",
       "action": {
         "erase": "Erase captured payload",
         "noOrg": "This request records no organization, so it cannot be addressed by request. Erase by virtual key instead.",

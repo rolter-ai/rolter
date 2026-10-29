@@ -79,6 +79,7 @@ export function ErasureStatus({
   });
   const current = record.data ?? row;
   const status = current.status;
+  const skipped = (current.stores ?? row.stores ?? []).filter((s) => !s.searched);
 
   const previous = React.useRef(status);
   React.useEffect(() => {
@@ -119,6 +120,14 @@ export function ErasureStatus({
       {detail && (
         <p className="text-xs leading-relaxed text-muted-foreground">
           {t(STATUS_HINT_KEY[status])}
+        </p>
+      )}
+      {skipped.length > 0 && (
+        <p className="text-xs text-[color:var(--status-warning-text)]">
+          {t("pages.logErasure.skipped", {
+            stores: skipped.map((s) => s.store).join(", "),
+            reasons: [...new Set(skipped.map((s) => s.reason).filter(Boolean))].join(" "),
+          })}
         </p>
       )}
       {status === "pending" && current.last_error && (

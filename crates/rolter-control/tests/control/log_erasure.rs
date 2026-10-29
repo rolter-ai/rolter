@@ -265,3 +265,69 @@ async fn erasure_is_a_superadmins_and_validates_its_input() {
         .unwrap();
     assert_eq!(response.status(), 202);
 }
+
+#[tokio::test]
+async fn a_user_who_holds_no_keys_is_recorded_as_leaving_the_request_logs_unsearched() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let stub = Stub::default();
+    let ch = clickhouse(stub.clone()).await;
+    let app = rolter_control::test_app_with_clickhouse_and_admin_token(
+        pool.clone(),
+        &ch,
+        Some(admin_token().to_string()),
+    )
+    .await
+    .unwrap();
+    let base = format!("http://{}", serve(app).await);
+    let client = reqwest::Client::new();
+
+    let created = client
+        .post(format!("{base}/api/v1/log-erasures"))
+        .bearer_auth(admin_token())
+        .json(&json!({
+            "scope": {"kind": "user", "id": uuid::Uuid::new_v4()},
+            "reason": "erasure request DSR-2"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(created.status(), 202);
+    let created: Value = created.json().await.unwrap();
+    let searched = |stores: &Value, name: &str| -> (bool, String) {
+        let row = stores
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["store"] == name)
+            .unwrap_or_else(|| panic!("{name} missing from {stores}"));
+        (
+            row["searched"].as_bool().unwrap(),
+            row["reason"].as_str().unwrap_or_default().to_string(),
+        )
+    };
+    // the response, the stored record and the audit entry all say it
+    let id = created["id"].as_str().unwrap().to_string();
+    let fetched: Value = client
+        .get(format!("{base}/api/v1/log-erasures/{id}"))
+        .bearer_auth(admin_token())
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let audit = audit_actions(&pool).await;
+    for stores in [
+        &created["stores"],
+        &fetched["stores"],
+        &audit[0].1["stores"],
+    ] {
+        let (logs, reason) = searched(stores, "request_logs");
+        assert!(!logs);
+        assert!(reason.contains("no virtual keys"), "{reason}");
+        assert!(!searched(stores, "request_payloads").0);
+        assert!(searched(stores, "mcp_tool_call_logs").0);
+    }
+}

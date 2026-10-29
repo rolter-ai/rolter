@@ -127,6 +127,46 @@ export const Loaded: Story = {
   },
 };
 
+/** a user who holds no keys: the request logs were not searched (#3436) */
+export const KeylessUserErasure: Story = {
+  render: () => (
+    <Harness
+      fetchStub={api({
+        list: () =>
+          json({
+            data: [
+              erasure({
+                id: "er-keyless",
+                scope_kind: "user",
+                scope_id: KEY_ID,
+                reason: "DSR-2001",
+                stores: [
+                  {
+                    store: "request_logs",
+                    searched: false,
+                    reason: "the user holds no virtual keys, and request logs are found by key",
+                  },
+                  { store: "request_payloads", searched: false, reason: "same" },
+                  { store: "mcp_tool_call_logs", searched: true },
+                ],
+              }),
+            ],
+          }),
+      })}
+    >
+      <LogErasure />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const note = await canvas.findByText(/Not searched: request_logs, request_payloads/);
+    await expect(note).toBeVisible();
+    await expect(note).toHaveTextContent(/no virtual keys/);
+    // the store that was searched is not listed as skipped
+    await expect(note).not.toHaveTextContent(/mcp_tool_call_logs/);
+  },
+};
+
 export const Loading: Story = {
   render: () => (
     <Harness fetchStub={pending}>

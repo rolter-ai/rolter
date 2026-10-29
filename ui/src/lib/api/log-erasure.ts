@@ -18,6 +18,13 @@ export type LogErasureStatus = "pending" | "completed" | "failed" | "unverified"
  * mutation, so `pending` is the honest answer to a submission and only a read
  * of the record moves it on (`mutations_done` of `statements` shows how far).
  */
+/** one store an erasure searched or skipped, and why (#3436) */
+export interface LogErasureStore {
+  store: string;
+  searched: boolean;
+  reason?: string;
+}
+
 export interface LogErasureRow {
   id: string;
   scope_kind: "virtual_key" | "user" | "org" | "request";
@@ -30,6 +37,8 @@ export interface LogErasureRow {
   status: LogErasureStatus;
   statements: number;
   error: string | null;
+  /** empty on a record from before the stores were kept */
+  stores?: LogErasureStore[];
   created_at: string;
   completed_at: string | null;
   /** present on a read of one pending record */

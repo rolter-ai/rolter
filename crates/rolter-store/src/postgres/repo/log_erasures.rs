@@ -10,7 +10,7 @@ use super::super::models::LogErasure;
 use super::support::store_err;
 
 const COLUMNS: &str = "id, scope_kind, scope_id, org_id, request_ts, include_logs, reason, \
-                       requested_by, status, statements, error, created_at, completed_at";
+                       requested_by, status, statements, error, stores, created_at, completed_at";
 
 /// What to record when an erasure is requested.
 #[derive(Debug, Clone)]
@@ -24,6 +24,8 @@ pub struct NewLogErasure<'a> {
     pub include_logs: bool,
     pub reason: &'a str,
     pub requested_by: Option<Uuid>,
+    /// the stores searched and skipped, as `[{store, searched, reason?}]`
+    pub stores: serde_json::Value,
 }
 
 /// Erasure requests. Rows are never deleted: the record of an erasure has to
@@ -34,8 +36,8 @@ impl LogErasureRepo<'_> {
     pub async fn create(&self, new: NewLogErasure<'_>) -> Result<LogErasure> {
         sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "insert into log_erasures (id, scope_kind, scope_id, org_id, request_ts, \
-                 include_logs, reason, requested_by) \
-             values ($1, $2, $3, $4, $5, $6, $7, $8) returning {COLUMNS}"
+                 include_logs, reason, requested_by, stores) \
+             values ($1, $2, $3, $4, $5, $6, $7, $8, $9) returning {COLUMNS}"
         )))
         .bind(new.id)
         .bind(new.scope_kind)
@@ -45,6 +47,7 @@ impl LogErasureRepo<'_> {
         .bind(new.include_logs)
         .bind(new.reason)
         .bind(new.requested_by)
+        .bind(new.stores)
         .fetch_one(self.0)
         .await
         .map_err(store_err)
