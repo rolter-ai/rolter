@@ -3384,9 +3384,6 @@ async fn proxy_multipart(
     )
     .with_route(entry.throughput.clone());
     let price = snap.prices.get(&model).cloned();
-    // see the chat path: refuse unaccountable traffic before spending upstream
-    // tokens on it (#974)
-    proceed!(req.admit_unpriced(&model, price.is_some()));
 
     // the response stage of the guardrails, on the transcript (#3331). the
     // request is audio, which no request-stage rule, provider, plugin or
@@ -3396,7 +3393,10 @@ async fn proxy_multipart(
     // post_response plugins, then the sanitizer's response leg. no
     // placeholder went upstream, so nothing is restored. a streamed
     // transcription gets what a streamed chat completion gets, refused before
-    // the upstream call or served as the chat path serves it (#3432)
+    // the upstream call or served as the chat path serves it (#3432). the
+    // refusals before the call run in the chat path's order, the sanitizer's
+    // stream check before the plugins' and the unpriced policy last, so a
+    // request two of them would refuse gets the same answer on both (#3538)
     let output_guard = proceed!(req.output_guard(entry, stream));
     let semantic_guard = req.semantic_guard(entry, &trace_id, true);
     let semantic_leg = semantic_guard
@@ -3405,12 +3405,6 @@ async fn proxy_multipart(
     // `reject` refuses before dialling; `buffer` holds the stream up to the
     // cap, judges its transcript text and replays it (`stream_response`)
     proceed!(req.admit_semantic_leg(semantic_leg));
-    // the legs a stream cannot be shown to are built whatever the form field
-    // says, and set aside only once the upstream has actually answered with
-    // an event stream: a model that ignores `stream` answers JSON, which is
-    // judged like any other transcript, so the caller cannot switch a leg
-    // off by asking for a stream (#3432)
-    let post_response_plugins = proceed!(req.post_response_plugins(entry, stream, true, &trace_id));
     // the log row takes these before the response leg runs
     let pii_model = model.clone();
     let pii_trace_id = trace_id.clone();
@@ -3424,6 +3418,15 @@ async fn proxy_multipart(
     if stream && pii_sanitizes {
         proceed!(req.admit_pii_stream(snap.pii_sanitizer.stream_handling(false)));
     }
+    // the legs a stream cannot be shown to are built whatever the form field
+    // says, and set aside only once the upstream has actually answered with
+    // an event stream: a model that ignores `stream` answers JSON, which is
+    // judged like any other transcript, so the caller cannot switch a leg
+    // off by asking for a stream (#3432)
+    let post_response_plugins = proceed!(req.post_response_plugins(entry, stream, true, &trace_id));
+    // see the chat path: refuse unaccountable traffic before spending upstream
+    // tokens on it (#974)
+    proceed!(req.admit_unpriced(&model, price.is_some()));
     let pii_leg = pii_sanitizes.then(|| PiiResponseLeg {
         state: &state,
         config: &snap.pii_sanitizer,

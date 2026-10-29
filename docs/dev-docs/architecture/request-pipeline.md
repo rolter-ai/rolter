@@ -28,38 +28,37 @@ cache hit is no error, and nothing here is converted or boxed.
 
 ## The stages, in order
 
-| #   | Stage                        | Function                                                                                                        | `proxy_multipart`                                                                                         |
-| --- | ---------------------------- | --------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
-| 1   | Parse                        | in `proxy`: the JSON body and its `model`                                                                       | its own: the boundary and one pass over the form fields (`multipart::text_fields`)                        |
-| 2   | Scope identity               | `authenticate`, `request_scope`, then `RequestCtx` is built                                                     | shared                                                                                                    |
-| 3   | Model gate, budget block     | `RequestCtx::admit_model`, `admit_budget`                                                                       | shared                                                                                                    |
-| 4   | `pre_route` plugins          | `RequestCtx::request_plugins(PreRoute, …)`                                                                      | not run: no plugin reads audio                                                                            |
-| 5   | Throughput cap               | `RequestCtx::admit_rate`                                                                                        | shared                                                                                                    |
-| 6   | Built-in `fake-llm`          | `RequestCtx::builtin`, with the reply to give                                                                   | shared, with a transcription reply                                                                        |
-| 7   | Route resolution and gates   | `Snapshot::resolve_for` (ADR-0017), `RequestCtx::route_miss`, `admit_route`                                     | shared                                                                                                    |
-| 8   | Complexity tier              | `complexity_tier`, between resolution and `admit_route`                                                         | not run                                                                                                   |
-| 9   | Output token cap, route caps | `RequestCtx::output_token_cap`, `route_permit` (#2936)                                                          | `route_permit` shared                                                                                     |
-| 10  | Prompt templates             | `RequestCtx::prompt_templates`                                                                                  | not run                                                                                                   |
-| 11  | Built-in guardrails          | `RequestCtx::builtin_guardrails`                                                                                | not run                                                                                                   |
-| 12  | Guardrail webhook            | `RequestCtx::semantic_guard`, then `guardrail_webhook` for the pre_call providers                               | `semantic_guard` shared, kept only for a policy that runs post_call                                       |
-| 13  | PII sanitizer                | `RequestCtx::sanitize_request`                                                                                  | not run: no placeholder goes upstream                                                                     |
-| 14  | `pre_upstream` plugins       | `RequestCtx::request_plugins(PreUpstream, …)`                                                                   | not run                                                                                                   |
-| 15  | Forward body                 | `forward_body`                                                                                                  | the upload goes as it came                                                                                |
-| 16  | Response-leg admission       | `RequestCtx::output_guard`, `admit_semantic_leg`, `admit_pii_stream`, `post_response_plugins`, `admit_unpriced` | shared, in the multipart order: `admit_unpriced` first, `post_response_plugins` before `admit_pii_stream` |
-| 17  | Cache lookup                 | `cache_lookup`: exact, then semantic, one `cache.lookup` span                                                   | not run                                                                                                   |
-| 18  | Forward and variants         | `forward` → `forward_classic` or `forward_variants`, both driving one `ForwardLoop`                             | shared, with a `ForwardPayload::Multipart`                                                                |
-| 19  | Response legs                | `unanswered`, `withhold_unrequested_stream`, `store_and_deliver`, `stream_response`                             | `unanswered` and `stream_response` shared                                                                 |
+| #   | Stage                        | Function                                                                                                        | `proxy_multipart`                                                                  |
+| --- | ---------------------------- | --------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| 1   | Parse                        | in `proxy`: the JSON body and its `model`                                                                       | its own: the boundary and one pass over the form fields (`multipart::text_fields`) |
+| 2   | Scope identity               | `authenticate`, `request_scope`, then `RequestCtx` is built                                                     | shared                                                                             |
+| 3   | Model gate, budget block     | `RequestCtx::admit_model`, `admit_budget`                                                                       | shared                                                                             |
+| 4   | `pre_route` plugins          | `RequestCtx::request_plugins(PreRoute, …)`                                                                      | not run: no plugin reads audio                                                     |
+| 5   | Throughput cap               | `RequestCtx::admit_rate`                                                                                        | shared                                                                             |
+| 6   | Built-in `fake-llm`          | `RequestCtx::builtin`, with the reply to give                                                                   | shared, with a transcription reply                                                 |
+| 7   | Route resolution and gates   | `Snapshot::resolve_for` (ADR-0017), `RequestCtx::route_miss`, `admit_route`                                     | shared                                                                             |
+| 8   | Complexity tier              | `complexity_tier`, between resolution and `admit_route`                                                         | not run                                                                            |
+| 9   | Output token cap, route caps | `RequestCtx::output_token_cap`, `route_permit` (#2936)                                                          | `route_permit` shared                                                              |
+| 10  | Prompt templates             | `RequestCtx::prompt_templates`                                                                                  | not run                                                                            |
+| 11  | Built-in guardrails          | `RequestCtx::builtin_guardrails`                                                                                | not run                                                                            |
+| 12  | Guardrail webhook            | `RequestCtx::semantic_guard`, then `guardrail_webhook` for the pre_call providers                               | `semantic_guard` shared, kept only for a policy that runs post_call                |
+| 13  | PII sanitizer                | `RequestCtx::sanitize_request`                                                                                  | not run: no placeholder goes upstream                                              |
+| 14  | `pre_upstream` plugins       | `RequestCtx::request_plugins(PreUpstream, …)`                                                                   | not run                                                                            |
+| 15  | Forward body                 | `forward_body`                                                                                                  | the upload goes as it came                                                         |
+| 16  | Response-leg admission       | `RequestCtx::output_guard`, `admit_semantic_leg`, `admit_pii_stream`, `post_response_plugins`, `admit_unpriced` | shared, in the same order (#3538)                                                  |
+| 17  | Cache lookup                 | `cache_lookup`: exact, then semantic, one `cache.lookup` span                                                   | not run                                                                            |
+| 18  | Forward and variants         | `forward` → `forward_classic` or `forward_variants`, both driving one `ForwardLoop`                             | shared, with a `ForwardPayload::Multipart`                                         |
+| 19  | Response legs                | `unanswered`, `withhold_unrequested_stream`, `store_and_deliver`, `stream_response`                             | `unanswered` and `stream_response` shared                                          |
 
 The order is the contract. A request that two checks would both refuse gets the
 answer of the earlier one, and that answer is what its row records, so moving a
-stage changes behaviour even when every stage still runs. The two pipelines
-differ in two places, both carried over unchanged from before #1041: the
-multipart pipeline applies the unpriced policy before the response-leg checks
-and the JSON pipeline after them, and among those checks the multipart pipeline
-runs `post_response_plugins` before `admit_pii_stream` while the JSON pipeline
-runs it after. So a streamed request that two of these checks would refuse can
-get a different answer on an upload route than on `/v1/chat/completions`;
-aligning them is #3538.
+stage changes behaviour even when every stage still runs. Both pipelines run
+the response-leg checks and the unpriced policy in the order above: the output
+guard, the semantic policy's stream check, the sanitizer's stream check, the
+post_response plugins, then `admit_unpriced`. Until #3538 the upload pipeline
+applied the unpriced policy first and asked the plugins before the sanitizer,
+so a streamed upload that two of them refused could get another answer than
+the same request on `/v1/chat/completions`.
 
 ## Forwarding
 
