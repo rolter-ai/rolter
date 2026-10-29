@@ -208,6 +208,9 @@ async fn timeline(
         )
             .into_response();
     };
+    if let Err(refused) = q.check_buckets(bucket) {
+        return refused.into_response();
+    }
     run(ch
         .query(
             &timeline_sql(bucket_expr),

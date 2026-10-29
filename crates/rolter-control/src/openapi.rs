@@ -172,6 +172,9 @@ struct Op {
     too_many_requests: Option<&'static str>,
     /// a ClickHouse-backed read, which can answer `502` or `504`
     clickhouse: bool,
+    /// cuts its window into buckets, so it can answer `400`
+    /// `too_many_buckets` (#3506)
+    bucketed: bool,
     /// seals a credential with `ROLTER_KEK`, so it can answer `503`
     /// `kek_unavailable` on a control plane that has none
     needs_kek: bool,
@@ -199,6 +202,7 @@ impl Op {
             not_acceptable: None,
             too_many_requests: None,
             clickhouse: false,
+            bucketed: false,
             needs_kek: false,
         }
     }
@@ -282,6 +286,13 @@ impl Op {
         self
     }
 
+    /// Mark a read that cuts its window into buckets: one that would answer
+    /// more than `MAX_BUCKETS` points is a `400` `too_many_buckets` (#3506).
+    fn bucketed(mut self) -> Self {
+        self.bucketed = true;
+        self
+    }
+
     fn to_json(self) -> Value {
         let mut op = Map::new();
         op.insert("summary".into(), json!(self.summary));
@@ -356,6 +367,25 @@ impl Op {
                     "$ref": "#/components/responses/Error",
                     "description": "`ROLTER_KEK` is not configured on the control plane, so the credential cannot be sealed (`kek_unavailable`)"
                 }),
+            );
+        }
+        // every read that takes a window refuses a bound it cannot read or that
+        // names a year outside the ones a window may (#1192, #3506)
+        let windowed = self.query.iter().any(|p| p.name == "since");
+        if windowed || self.bucketed {
+            let mut description = String::from(
+                "a `since` or `until` that does not parse (`invalid_time_bound`) or lies before \
+                 2000-01-01 or more than a day past now (`time_bound_out_of_range`)",
+            );
+            if self.bucketed {
+                description.push_str(
+                    ", or a `bucket` that would cut the window into more than 20000 points \
+                     (`too_many_buckets`)",
+                );
+            }
+            responses.insert(
+                "400".into(),
+                json!({"$ref": "#/components/responses/Error", "description": description}),
             );
         }
         if self.clickhouse {
@@ -2403,6 +2433,7 @@ fn operations() -> Vec<Op> {
                 "Bucketed spend and usage over a window",
             )
             .clickhouse_read()
+            .bucketed()
             .query(TIMESERIES_QUERY),
             Op::get(
                 "/api/v1/analytics/by-model",
@@ -2474,6 +2505,7 @@ fn operations() -> Vec<Op> {
                 "Requests, tokens and cost per bucket as CSV, flagging buckets that hold unpriced requests",
             )
             .clickhouse_read()
+            .bucketed()
             .query(DASHBOARD_QUERY),
             Op::get(
                 "/api/v1/analytics/invocations/export",
@@ -2568,6 +2600,7 @@ fn operations() -> Vec<Op> {
                 "Per-provider health transitions over a window",
             )
             .clickhouse_read()
+            .bucketed()
             .query(WINDOW_QUERY),
             Op::get(
                 "/api/v1/health/mttr",
@@ -5431,6 +5464,47 @@ mod tests {
         assert!(routes.contains(&("/gw/{path}".into(), "any".into())));
         // `#[cfg(test)]` fixtures stand up their own routers; none of them count
         assert!(!routes.contains(&("/v1/ping".into(), "get".into())));
+    }
+
+    #[test]
+    fn every_windowed_read_documents_its_400() {
+        // #3506: a bound outside the years a window may name is a coded 400,
+        // and so is a bucket that cuts the window too fine
+        let doc = document();
+        let mut windowed = 0;
+        for (path, item) in doc["paths"].as_object().expect("paths") {
+            for (method, op) in item.as_object().expect("an item") {
+                let takes_since = op["parameters"].as_array().is_some_and(|ps| {
+                    ps.iter()
+                        .any(|p| p["in"] == "query" && p["name"] == "since")
+                });
+                if !takes_since {
+                    continue;
+                }
+                windowed += 1;
+                let description = op["responses"]["400"]["description"]
+                    .as_str()
+                    .unwrap_or_else(|| panic!("{method} {path} declares no 400"));
+                assert!(
+                    description.contains("time_bound_out_of_range"),
+                    "{method} {path}: {description}"
+                );
+            }
+        }
+        assert!(windowed >= 15, "{windowed}");
+        for path in [
+            "/api/v1/analytics/timeseries",
+            "/api/v1/analytics/timeseries/export",
+            "/api/v1/health/timeline",
+        ] {
+            assert!(
+                doc["paths"][path]["get"]["responses"]["400"]["description"]
+                    .as_str()
+                    .is_some_and(|d| d.contains("too_many_buckets")
+                        && d.contains(&crate::time_bounds::MAX_BUCKETS.to_string())),
+                "{path}"
+            );
+        }
     }
 
     #[test]

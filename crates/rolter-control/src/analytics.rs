@@ -355,6 +355,25 @@ impl TimeBounds for WindowQuery {
     fn time_bounds(&self) -> (Option<&str>, Option<&str>) {
         (self.since.as_deref(), self.until.as_deref())
     }
+
+    fn bucket(&self) -> Option<&str> {
+        self.bucket.as_deref()
+    }
+}
+
+impl WindowQuery {
+    /// Refuse `bucket`, the one this read cuts the window by (the caller's or
+    /// the handler's default), when it would answer more than
+    /// [`crate::time_bounds::MAX_BUCKETS`] points (#3506). [`Query`] already
+    /// checked a bucket the caller sent; this covers the default.
+    pub(crate) fn check_buckets(&self, bucket: &str) -> Result<(), InvalidParam> {
+        crate::time_bounds::check_buckets(
+            self.since.as_deref(),
+            self.until.as_deref(),
+            bucket,
+            chrono::Utc::now(),
+        )
+    }
 }
 
 /// Build the `param_*` bindings for the time window, applying defaults.
@@ -403,6 +422,10 @@ pub struct DashboardQuery {
 impl TimeBounds for DashboardQuery {
     fn time_bounds(&self) -> (Option<&str>, Option<&str>) {
         self.window.time_bounds()
+    }
+
+    fn bucket(&self) -> Option<&str> {
+        self.window.bucket()
     }
 }
 
@@ -949,6 +972,9 @@ async fn timeseries(
         )
             .into_response();
     };
+    if let Err(refused) = q.window.check_buckets(bucket) {
+        return refused.into_response();
+    }
     let sql = format!(
         "select {bucket_expr} as bucket, \
                 {REQUESTS} as requests, \

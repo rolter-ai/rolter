@@ -36,7 +36,9 @@ Every parameter is optional. A filter you leave out, or send empty, applies no f
 | `customer`      | all three    | comma-separated customer ids; a row attributed to any of them is counted      |
 | `project`       | all three    | one exact project id                                                          |
 
-`since` and `until` take the [time window](/observability/logs-and-cost#time-windows) forms, and anything else is a `400` with `code: "invalid_time_bound"`. A `bucket` outside the list is a `400` too.
+`since` and `until` take the [time window](/observability/logs-and-cost#time-windows) forms, and anything else is a `400` with `code: "invalid_time_bound"`. A bound before `2000-01-01T00:00:00Z` or more than one day past now is a `400` with `code: "time_bound_out_of_range"`; a bound without a zone is read as UTC. A `bucket` outside the list is a `400` too.
+
+A bucketed read answers at most **20,000 points**. A `bucket` that would cut the window into more, counted with the shortest a bucket can be (an hour, a day, seven days, 28 days), is a `400` with `code: "too_many_buckets"` and `param: "bucket"`: an hourly series reaches it at about two years and four months, a daily one at about 55 years. The limit applies to `timeseries`, `timeseries/export` and `GET /api/v1/health/timeline`, whose default bucket is an hour. The dashboard stays inside it: its charts are hourly over at most a month, and daily over a custom range, which starts in 2000 at the earliest.
 
 The five filters are the ones `GET /api/v1/analytics/invocations` takes, with the same shapes and the same meaning, so a filter counts the same requests on the Dashboard as it lists on **LLM Logs**. Filters combine: `model=gpt-4o&customer=…` counts only that customer's `gpt-4o` traffic. An id nothing was attributed to matches nothing, so a filter only ever narrows.
 

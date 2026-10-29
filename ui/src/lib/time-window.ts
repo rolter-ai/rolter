@@ -219,19 +219,34 @@ function monthStart(now: Date, offset = 0): Date {
 }
 
 /**
+ * The first instant the control plane reads a window from (#3506): it refuses a
+ * `since` or `until` before the first of January 2000, UTC, and one more than a
+ * day past its own clock.
+ */
+const EARLIEST_BOUND = Date.UTC(MIN_DAY_YEAR, 0, 1);
+
+/** `instant`, or the earliest bound the control plane reads when it is earlier */
+const notBeforeEarliest = (instant: Date) =>
+  new Date(Math.max(instant.getTime(), EARLIEST_BOUND)).toISOString();
+
+/**
  * What a custom range covers: from the start of its first day to the start of
  * the day after its last, in the viewer's calendar, since `until` is exclusive.
+ * A range that has not ended by `now` runs up to now and sends no `until`, the
+ * way a named window does, so a last day typed in the future is never a bound
+ * the control plane refuses (#3506).
  */
-function customBounds(range: DayRange): Required<WindowBounds> {
+function customBounds(range: DayRange, now: Date): WindowBounds {
   const first = parseDay(range.since) as Date;
-  const last = parseDay(range.until) as Date;
-  return { since: first.toISOString(), until: addDays(last, 1).toISOString() };
+  const end = addDays(parseDay(range.until) as Date, 1);
+  if (end.getTime() > now.getTime()) return { since: first.toISOString() };
+  return { since: first.toISOString(), until: end.toISOString() };
 }
 
 /** What `window` covers at the instant `now`. */
 export function windowBounds(window: WindowSelection, now: Date = new Date()): WindowBounds {
   const range = customRange(window);
-  if (range) return customBounds(range);
+  if (range) return customBounds(range, now);
   const hoursBack = (hours: number) => ({
     since: new Date(now.getTime() - hours * HOUR).toISOString(),
   });
@@ -288,7 +303,9 @@ export function previousWindowBounds(
     // is compared with the three days that precede it
     const first = parseDay(range.since) as Date;
     const days = daysBetween(first, parseDay(range.until) as Date) + 1;
-    return { since: addDays(first, -days).toISOString(), until: first.toISOString() };
+    // a range that starts in the first days of 2000 has a shorter window
+    // before it, since the control plane reads nothing earlier (#3506)
+    return { since: notBeforeEarliest(addDays(first, -days)), until: notBeforeEarliest(first) };
   }
   const hoursBack = (hours: number) => ({
     since: new Date(now.getTime() - 2 * hours * HOUR).toISOString(),

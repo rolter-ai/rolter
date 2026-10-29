@@ -232,7 +232,10 @@ describe("custom range (#3407)", () => {
 
     it("keeps its midnights across the autumn clock change", () => {
       // 1 November 2026 is the 25-hour day: the end is still midnight on the 2nd
-      const bounds = windowBounds(customWindow("2026-10-31", "2026-11-01")!);
+      const bounds = windowBounds(
+        customWindow("2026-10-31", "2026-11-01")!,
+        new Date("2026-12-01T00:00:00Z"),
+      );
       expect(bounds).toEqual({
         since: local(2026, 10, 31).toISOString(),
         until: local(2026, 11, 2).toISOString(),
@@ -244,6 +247,26 @@ describe("custom range (#3407)", () => {
       expect(previous).toEqual({
         since: local(2026, 10, 1).toISOString(),
         until: local(2026, 10, 4).toISOString(),
+      });
+    });
+
+    it("runs a range that has not ended up to now, with no until (#3506)", () => {
+      // the control plane refuses an until more than a day past its clock
+      const now = local(2026, 10, 5, 12);
+      expect(windowBounds(customWindow("2026-10-01", "2026-10-07")!, now)).toEqual({
+        since: local(2026, 10, 1).toISOString(),
+      });
+      // one that ends today too: its end, tomorrow's midnight, is still ahead
+      expect(windowBounds(customWindow("2026-10-01", "2026-10-05")!, now)).toEqual({
+        since: local(2026, 10, 1).toISOString(),
+      });
+    });
+
+    it("compares a range from early 2000 with nothing before 2000 (#3506)", () => {
+      const previous = previousWindowBounds(customWindow("2000-01-02", "2000-01-10")!);
+      expect(previous).toEqual({
+        since: "2000-01-01T00:00:00.000Z",
+        until: local(2000, 1, 2).toISOString(),
       });
     });
 
