@@ -1911,6 +1911,7 @@ mod tests {
         m.observe_route_limit("gpt-4o", "concurrency");
         m.observe_guard_decision("support", "toxicity", "post_call", "allow");
         m.observe_guard_violation("support", "violence", "block");
+        m.observe_local_truncated("injection");
         m.observe_rejection("missing_key");
         let _load = m.provider_load("vllm");
         watch_all_redis_consumers(&m);
