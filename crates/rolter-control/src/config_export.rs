@@ -3834,16 +3834,31 @@ model = "gpt-4o"
                 org: Some("org-a".to_string()),
                 ..Default::default()
             };
+            // the file also loosens the org's saved MCP settings, which the
+            // refusal must not let through either
+            sqlx::query(
+                "insert into mcp_gateway_settings (org_id, allow_unlisted_tools) values ($1, false)",
+            )
+            .bind(world.org_a)
+            .execute(&pool)
+            .await
+            .unwrap();
             let first = super::export_document(&pool, &store.load().await.unwrap(), &options)
                 .await
                 .unwrap();
+            assert!(first.contains("allow_unlisted_tools = false"), "{first}");
             let file = dir.join("org-a.toml");
             std::fs::write(
                 &file,
-                first.replace(
-                    "{ server = \"github\", tool = \"fetch\" }",
-                    "{ server = \"gitlab\", tool = \"fetch\" }",
-                ),
+                first
+                    .replace(
+                        "{ server = \"github\", tool = \"fetch\" }",
+                        "{ server = \"gitlab\", tool = \"fetch\" }",
+                    )
+                    .replace(
+                        "allow_unlisted_tools = false",
+                        "allow_unlisted_tools = true",
+                    ),
             )
             .unwrap();
             sqlx::query("delete from mcp_tool_groups where org_id = $1")
@@ -3859,7 +3874,8 @@ model = "gpt-4o"
             for named in ["read-only", "gitlab", "fetch"] {
                 assert!(refused.contains(named), "{refused}");
             }
-            // not even the group without that tool was written
+            // not even the group without that tool was written, and nothing
+            // else of the file was either
             let groups: i64 =
                 sqlx::query_scalar("select count(*) from mcp_tool_groups where org_id = $1")
                     .bind(world.org_a)
@@ -3867,6 +3883,68 @@ model = "gpt-4o"
                     .await
                     .unwrap();
             assert_eq!(groups, 0);
+            let allow: bool = sqlx::query_scalar(
+                "select allow_unlisted_tools from mcp_gateway_settings where org_id = $1",
+            )
+            .bind(world.org_a)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            assert!(!allow, "a refused file loosened the org's MCP settings");
+        }
+
+        /// An assignment whose team has no portable name (`A/B`) is not in the
+        /// file, and a re-import of that file into the same deployment keeps
+        /// it rather than handing the team the organization-wide set (#3514).
+        #[tokio::test]
+        async fn a_re_import_keeps_an_assignment_the_file_cannot_name() {
+            use super::ExportOptions;
+            use rolter_store::postgres::repo::TeamRepo;
+
+            let db = scratch_db()
+                .await
+                .expect("this test needs ROLTER_TEST_DATABASE_URL");
+            let pool = db.pool().clone();
+            let dir = tempdir("mcp-tool-groups-unportable");
+            let world = tool_group_world(&pool).await;
+            let team = TeamRepo(&pool).create(world.org_a, "A/B").await.unwrap();
+            sqlx::query(
+                "insert into mcp_tool_group_assignments (group_id, subject_kind, subject_id)
+                 values ($1, 'team', $2)",
+            )
+            .bind(world.group)
+            .bind(team.id)
+            .execute(&pool)
+            .await
+            .unwrap();
+            let store = PostgresConfigStore::new(pool.clone());
+            let options = ExportOptions {
+                org: Some("org-a".to_string()),
+                ..Default::default()
+            };
+            let first = super::export_document(&pool, &store.load().await.unwrap(), &options)
+                .await
+                .unwrap();
+            assert!(!first.contains("A/B"), "{first}");
+            let file = dir.join("org-a.toml");
+            std::fs::write(&file, &first).unwrap();
+
+            crate::seed::import_bootstrap_toml(&pool, world.org_a, world.project_a, &file)
+                .await
+                .unwrap();
+            let kept: i64 = sqlx::query_scalar(
+                "select count(*) from mcp_tool_group_assignments
+                 where group_id = $1 and subject_kind = 'team' and subject_id = $2",
+            )
+            .bind(world.group)
+            .bind(team.id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            assert_eq!(
+                kept, 1,
+                "the re-import dropped an assignment it could not name"
+            );
         }
 
         /// A key reference two keys of the project answer is assigned to both:

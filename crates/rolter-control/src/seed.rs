@@ -723,6 +723,7 @@ async fn import_config(
     refuse_reserved_env_names(config)?;
     validate_mcp_gateway_settings(config)?;
     validate_mcp_gateway_tool_groups(config)?;
+    refuse_tool_groups_on_missing_servers(pool, org_id, config).await?;
     let providers = ProviderRepo(pool);
     let routes = RouteRepo(pool);
     let targets = RouteTargetRepo(pool);
@@ -1445,6 +1446,57 @@ fn validate_mcp_gateway_tool_groups(config: &GatewayConfig) -> anyhow::Result<()
     Ok(())
 }
 
+/// Refuse the file when a tool of an `[[mcp_gateway_tool_groups]]` entry for
+/// the organization the import targets names a server that organization does
+/// not have (#3514), naming the group, the server and the tool.
+///
+/// The tool cannot be dropped instead: a server created later under that slug
+/// would start ungoverned when no other group names it. Runs with the other
+/// checks, before anything is written, so a refused file leaves the
+/// organization as it was, its MCP settings included. MCP servers are not part
+/// of the file, so the ones the organization already has are the ones checked.
+async fn refuse_tool_groups_on_missing_servers(
+    pool: &PgPool,
+    org_id: Uuid,
+    config: &GatewayConfig,
+) -> anyhow::Result<()> {
+    if config.mcp_gateway_tool_groups.is_empty() {
+        return Ok(());
+    }
+    let slug: String = sqlx::query_scalar("select slug from orgs where id = $1")
+        .bind(org_id)
+        .fetch_one(pool)
+        .await?;
+    let servers: std::collections::HashSet<String> =
+        sqlx::query_scalar("select slug from mcp_servers where org_id = $1")
+            .bind(org_id)
+            .fetch_all(pool)
+            .await?
+            .into_iter()
+            .collect();
+    for entry in config
+        .mcp_gateway_tool_groups
+        .iter()
+        .filter(|entry| entry.org == slug)
+    {
+        if let Some(tool) = entry
+            .tools
+            .iter()
+            .find(|tool| !servers.contains(&tool.server))
+        {
+            anyhow::bail!(
+                "mcp_gateway_tool_groups '{slug}/{}': tool '{}' names server '{}', which \
+                 organization '{slug}' does not have; register the server before importing \
+                 its tool groups",
+                entry.slug,
+                tool.tool,
+                tool.server
+            );
+        }
+    }
+    Ok(())
+}
+
 /// Apply the `[[mcp_gateway_tool_groups]]` entries of the file (#3514).
 ///
 /// The file is the desired state for the groups it names, in the organization
@@ -1454,9 +1506,9 @@ fn validate_mcp_gateway_tool_groups(config: &GatewayConfig) -> anyhow::Result<()
 /// assignments become the ones the entry names. A group the file does not name
 /// is left alone, as every other row is.
 ///
-/// A tool on a server the organization does not have fails the import for
-/// the organization before any of its groups is written: dropping it would
-/// leave a server later created under that slug ungoverned. An assignment that
+/// A tool on a server the organization does not have has already failed the
+/// import, before anything was written (see
+/// `refuse_tool_groups_on_missing_servers`). An assignment that
 /// names nothing here is skipped with a warning that names it: a team, project
 /// or key that does not exist (keys are never exported, so a key assignment
 /// survives only where the key does). A key reference that matches more than
@@ -1498,25 +1550,7 @@ async fn import_mcp_gateway_tool_groups(
             .await?
             .into_iter()
             .collect();
-    // a tool on a server the organization lacks cannot be dropped: a server
-    // created later under that slug would start ungoverned when no other group
-    // names it. so the organization's groups are refused before any is written
-    for entry in entries.iter().filter(|entry| entry.org == slug) {
-        if let Some(tool) = entry
-            .tools
-            .iter()
-            .find(|tool| !servers.contains_key(&tool.server))
-        {
-            anyhow::bail!(
-                "mcp_gateway_tool_groups '{slug}/{}': tool '{}' names server '{}', which \
-                 organization '{slug}' does not have; register the server before importing \
-                 its tool groups",
-                entry.slug,
-                tool.tool,
-                tool.server
-            );
-        }
-    }
+    // every server was checked by `refuse_tool_groups_on_missing_servers`
     for entry in entries.iter().filter(|entry| entry.org == slug) {
         let group = entry.slug.as_str();
         let tools: Vec<rolter_core::McpToolRefConfig> = entry
@@ -1603,6 +1637,21 @@ async fn import_mcp_gateway_tool_groups(
             // nothing is taken away while one is missing
             wanted.extend(current.iter().cloned());
         }
+        // an assignment the export could not name is in no file, so its
+        // absence from this one says nothing: dropping it would hand its
+        // subject the organization-wide set back
+        for subject in unportable_subjects(pool, &current).await? {
+            if wanted.insert(subject.clone()) {
+                tracing::warn!(
+                    org = %slug,
+                    group,
+                    kind = %subject.0,
+                    id = %subject.1,
+                    "keeping an MCP tool group assignment the file cannot name: its team or \
+                     project name holds a '/' or is empty"
+                );
+            }
+        }
         if wanted != current {
             let wanted: Vec<(String, Uuid)> = wanted.into_iter().collect();
             assignments
@@ -1619,6 +1668,55 @@ async fn import_mcp_gateway_tool_groups(
         }
     }
     Ok(())
+}
+
+/// The subjects of `current` an export cannot name, and so never writes: a
+/// team, project or key whose team or project name holds a `/` or is empty,
+/// as `config_export::ScopeRefs::insert` refuses them. A re-import keeps them.
+async fn unportable_subjects(
+    pool: &PgPool,
+    current: &std::collections::BTreeSet<(String, Uuid)>,
+) -> anyhow::Result<Vec<(String, Uuid)>> {
+    let portable = |name: &str| !name.is_empty() && !name.contains('/');
+    let mut out = Vec::new();
+    for (kind, id) in current {
+        let names: Vec<String> = match kind.as_str() {
+            "team" => {
+                sqlx::query_scalar("select name from teams where id = $1")
+                    .bind(id)
+                    .fetch_all(pool)
+                    .await?
+            }
+            "project" => {
+                let row: Option<(String, String)> = sqlx::query_as(
+                    "select t.name, p.name from projects p join teams t on t.id = p.team_id
+                     where p.id = $1",
+                )
+                .bind(id)
+                .fetch_optional(pool)
+                .await?;
+                row.map(|(team, project)| vec![team, project])
+                    .unwrap_or_default()
+            }
+            "virtual_key" => {
+                let row: Option<(String, String)> = sqlx::query_as(
+                    "select t.name, p.name from virtual_keys k
+                     join projects p on p.id = k.project_id join teams t on t.id = p.team_id
+                     where k.id = $1",
+                )
+                .bind(id)
+                .fetch_optional(pool)
+                .await?;
+                row.map(|(team, project)| vec![team, project])
+                    .unwrap_or_default()
+            }
+            _ => Vec::new(),
+        };
+        if names.iter().any(|name| !portable(name)) {
+            out.push((kind.clone(), *id));
+        }
+    }
+    Ok(out)
 }
 
 /// The `(kind, id)` subjects an `[[mcp_gateway_tool_groups]]` entry assigns its
