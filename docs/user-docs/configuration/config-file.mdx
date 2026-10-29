@@ -1888,7 +1888,7 @@ Several guardrail providers side by side, and the scoped policies that pick whic
 </ParamField>
 
 <ParamField path="model_root" type="string">
-  An absolute directory every `local` provider's `model_path` must lie under. When it is set, the gateway resolves `model_path` in full (`..` and every symlink, in the file or in a directory on the way) and reads it only if the result is a regular file under the resolved root; anything else is not loaded, is logged with the reason, and its provider follows its `failure_mode`. Unset, a path may point anywhere on the gateway host. It is the gateway's own setting: read from the gateway's file at start (a change takes a restart), never sent by a control plane, so set it on each gateway. See [local classifier](/security/semantic-guard-policies#local-classifier).
+  An absolute directory every `local` provider's `model_path` must lie under. When it is set, the gateway resolves `model_path` in full (`..` and every symlink, in the file or in a directory on the way) and reads it only if the result is a regular file under the resolved root; anything else is not loaded, is logged with the reason, and its provider follows its `failure_mode`. Unset, a path may point anywhere on the gateway host. It is the gateway's own setting: read from the gateway's file at start (a change takes a restart), never sent by a control plane, so set it on each gateway. See [local classifier](/security/semantic-guard-policies#local-classifier). The gateway's `--semantic-model-root` flag and the `ROLTER_SEMANTIC_MODEL_ROOT` environment variable take precedence over this key, in that order.
 </ParamField>
 
 <ParamField path="policies" type="array of tables">

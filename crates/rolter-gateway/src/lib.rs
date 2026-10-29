@@ -87,7 +87,7 @@ mod usage_recording;
 mod watcher;
 
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use axum::routing::{get, post};
 use axum::Router;
@@ -100,9 +100,11 @@ pub use state::AppState;
 #[derive(Parser, Debug)]
 #[command(name = "rolter-gateway", version, about = "rolter data-plane gateway")]
 pub struct Args {
-    /// path to the bootstrap config file
-    #[arg(short, long, env = "ROLTER_CONFIG", default_value = "rolter.toml")]
-    pub config: PathBuf,
+    /// path to the bootstrap config file. Defaults to `rolter.toml`, which
+    /// may be missing; a path given here or in `ROLTER_CONFIG` must exist
+    /// (#3511)
+    #[arg(short, long, env = "ROLTER_CONFIG")]
+    pub config: Option<PathBuf>,
     /// override the bind host
     #[arg(long, env = "ROLTER_HOST")]
     pub host: Option<String>,
@@ -137,18 +139,95 @@ pub struct Args {
     /// there). Falls back to `--admin-token` when unset
     #[arg(long, env = "ROLTER_INTERNAL_TOKEN", hide_env_values = true)]
     pub internal_token: Option<String>,
+    /// directory every local guardrail model must resolve under; wins over
+    /// `ROLTER_SEMANTIC_MODEL_ROOT` and `[semantic_guards] model_root`
+    /// (#3511). Read once at startup, so a snapshot never widens it
+    #[arg(long)]
+    pub semantic_model_root: Option<PathBuf>,
+}
+
+/// The config file the gateway reads when no `--config` or `ROLTER_CONFIG`
+/// names one.
+pub const DEFAULT_CONFIG: &str = "rolter.toml";
+
+/// The environment variable that sets `[semantic_guards] model_root` below
+/// `--semantic-model-root` and above the file (#3511).
+pub const MODEL_ROOT_ENV: &str = "ROLTER_SEMANTIC_MODEL_ROOT";
+
+/// Read the bootstrap config. A path the operator named (`explicit`) must
+/// exist, so a typo cannot silently drop every setting it holds, a
+/// `model_root` among them (#3511); only the default path may be missing,
+/// and then the gateway starts empty.
+fn bootstrap_config(explicit: Option<&Path>, default: &Path) -> anyhow::Result<GatewayConfig> {
+    let path = explicit.unwrap_or(default);
+    if path.exists() {
+        // `load` also warns about every key in the file rolter does not read
+        // (#1434); unknown keys stay non-fatal, so this never blocks the boot
+        return Ok(GatewayConfig::load(path)?);
+    }
+    if explicit.is_some() {
+        anyhow::bail!(
+            "config file {} not found; it was given with --config or ROLTER_CONFIG, so the \
+             gateway does not start without it",
+            path.display()
+        );
+    }
+    tracing::warn!(path = %path.display(), "config file not found, starting with empty config");
+    Ok(GatewayConfig::default())
+}
+
+/// Where the effective `model_root` came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ModelRootSource {
+    Flag,
+    Env,
+    File,
+}
+
+impl ModelRootSource {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Flag => "--semantic-model-root",
+            Self::Env => MODEL_ROOT_ENV,
+            Self::File => "[semantic_guards] model_root",
+        }
+    }
+}
+
+/// The effective `model_root`: the flag, else the environment variable, else
+/// the file's. An empty or blank value counts as unset.
+fn effective_model_root(
+    flag: Option<&Path>,
+    env: Option<&str>,
+    file: Option<&str>,
+) -> Option<(String, ModelRootSource)> {
+    let set = |value: &str| {
+        let value = value.trim();
+        (!value.is_empty()).then(|| value.to_string())
+    };
+    flag.and_then(|flag| set(&flag.to_string_lossy()))
+        .map(|root| (root, ModelRootSource::Flag))
+        .or_else(|| env.and_then(set).map(|root| (root, ModelRootSource::Env)))
+        .or_else(|| file.and_then(set).map(|root| (root, ModelRootSource::File)))
 }
 
 /// Run the data-plane gateway to completion. The caller owns argument parsing
 /// and telemetry initialization.
 pub async fn run(args: Args) -> anyhow::Result<()> {
-    let mut config = if args.config.exists() {
-        // `load` also warns about every key in the file rolter does not read
-        // (#1434); unknown keys stay non-fatal, so this never blocks the boot
-        GatewayConfig::load(&args.config)?
-    } else {
-        tracing::warn!(path = %args.config.display(), "config file not found, starting with empty config");
-        GatewayConfig::default()
+    let mut config = bootstrap_config(args.config.as_deref(), Path::new(DEFAULT_CONFIG))?;
+    // fixed here, before the classifiers are configured: a snapshot never
+    // carries a root, so nothing after startup can widen it
+    let env_root = std::env::var(MODEL_ROOT_ENV).ok();
+    config.semantic_guards.model_root = match effective_model_root(
+        args.semantic_model_root.as_deref(),
+        env_root.as_deref(),
+        config.semantic_guards.model_root.as_deref(),
+    ) {
+        Some((root, source)) => {
+            tracing::info!(model_root = %root, source = source.as_str(), "local guardrail model_root");
+            Some(root)
+        }
+        None => None,
     };
     if let Some(host) = args.host {
         config.server.host = host;
@@ -611,5 +690,88 @@ mod help_tests {
     fn secret_env_values_stay_out_of_help() {
         let checked = rolter_core::cli_guard::assert_secret_envs_hidden(&super::Args::command());
         assert!(checked > 0, "the walk found no secret-looking env flags");
+    }
+}
+
+#[cfg(test)]
+mod bootstrap_tests {
+    use std::path::{Path, PathBuf};
+
+    use clap::Parser;
+
+    use super::{bootstrap_config, effective_model_root, ModelRootSource};
+
+    fn missing() -> PathBuf {
+        std::env::temp_dir().join(format!("rolter-missing-{}.toml", std::process::id()))
+    }
+
+    #[tokio::test]
+    async fn an_explicit_config_path_that_does_not_exist_refuses_startup() {
+        let path = missing();
+        let error = bootstrap_config(Some(&path), Path::new("unused.toml"))
+            .expect_err("a named file that is missing is an error");
+        assert!(
+            error.to_string().contains(&*path.to_string_lossy()),
+            "{error}"
+        );
+        // the whole startup stops there, before it binds anything
+        let args = super::Args::parse_from(["rolter-gateway", "--config", path.to_str().unwrap()]);
+        let error = super::run(args)
+            .await
+            .expect_err("the gateway does not start");
+        assert!(error.to_string().contains("not found"), "{error}");
+    }
+
+    #[test]
+    fn the_default_config_path_may_be_missing_and_starts_empty() {
+        let config = bootstrap_config(None, &missing()).expect("the default path may be missing");
+        assert!(config.semantic_guards.model_root.is_none());
+    }
+
+    #[test]
+    fn an_explicit_config_path_that_exists_is_read() {
+        let path = std::env::temp_dir().join(format!("rolter-root-{}.toml", std::process::id()));
+        std::fs::write(&path, "[semantic_guards]\nmodel_root = \"/srv/models\"\n").unwrap();
+        let config = bootstrap_config(Some(&path), Path::new("unused.toml"));
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(
+            config.unwrap().semantic_guards.model_root.as_deref(),
+            Some("/srv/models")
+        );
+    }
+
+    #[test]
+    fn the_model_root_flag_wins_over_the_env_which_wins_over_the_file() {
+        let flag = Path::new("/flag");
+        let pick = |flag: Option<&Path>, env: Option<&str>, file: Option<&str>| {
+            effective_model_root(flag, env, file)
+        };
+        assert_eq!(
+            pick(Some(flag), Some("/env"), Some("/file")),
+            Some(("/flag".to_string(), ModelRootSource::Flag))
+        );
+        assert_eq!(
+            pick(None, Some("/env"), Some("/file")),
+            Some(("/env".to_string(), ModelRootSource::Env))
+        );
+        assert_eq!(
+            pick(None, None, Some("/file")),
+            Some(("/file".to_string(), ModelRootSource::File))
+        );
+        // a blank source is unset and falls through to the next
+        assert_eq!(
+            pick(Some(Path::new(" ")), Some(""), Some(" /file ")),
+            Some(("/file".to_string(), ModelRootSource::File))
+        );
+        assert_eq!(pick(None, None, None), None);
+    }
+
+    #[test]
+    fn the_model_root_flag_parses() {
+        let args = super::Args::parse_from(["rolter-gateway", "--semantic-model-root", "/srv/m"]);
+        assert_eq!(
+            args.semantic_model_root.as_deref(),
+            Some(Path::new("/srv/m"))
+        );
     }
 }

@@ -921,7 +921,9 @@ disabled = false # revoke without deleting
 #                                 # once; unset = half its CPUs (#3329)
 # model_root = "/etc/rolter/models"  # local models must resolve under it,
 #                                 # symlinks included; this gateway's own
-#                                 # setting, never from a snapshot (#3454)
+#                                 # setting, never from a snapshot (#3454);
+#                                 # --semantic-model-root, then
+#                                 # ROLTER_SEMANTIC_MODEL_ROOT, override it
 # [[semantic_guards.providers]]   # the same keys as [guardrail_webhook]
 # name = "toxicity"               # required, unique; policies list it by name
 # enabled = true
