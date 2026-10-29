@@ -792,9 +792,9 @@ async fn summary(
         Ok(columns) => columns,
         Err(error) => return query_failed("analytics query failed", &error),
     };
-    let cache_measured = cache_measured_terms(&columns);
-    let sql = format!(
-        "select {REQUESTS} as requests, \
+    let sql = |cache_measured: &str| {
+        format!(
+            "select {REQUESTS} as requests, \
                 {TOKENS} as tokens, \
                 {PROMPT_TOKENS} as prompt_tokens, \
                 {COMPLETION_TOKENS} as completion_tokens, \
@@ -812,11 +812,21 @@ async fn summary(
                 {P95_LATENCY} as p95_latency_ms \
          from request_logs where {WHERE_WINDOW} and {ROW_VISIBLE} and {ROW_FILTERS} \
          format JSON"
-    );
-    let result = ch.query(&sql, &with_access(q.params(), &access)).await;
+        )
+    };
+    let params = with_access(q.params(), &access);
+    let cache_measured = cache_measured_terms(&columns);
+    let mut result = ch.query(&sql(&cache_measured), &params).await;
     if result.is_err() {
         // the table may have changed under the probe's answer
         ch.forget_request_log_columns();
+        // and a probe that could not read `system.columns` assumes every
+        // column is there: the home summary then answers without the
+        // prompt-cache measurement, as an older control plane does, rather
+        // than failing over a column the table lacks (#3410)
+        if !cache_measured.is_empty() {
+            result = ch.query(&sql(""), &params).await;
+        }
     }
     run(result)
 }
@@ -2924,8 +2934,10 @@ mod optional_column_tests {
         }
         // a select that names a column the table lacks is an error, as it is
         // in clickhouse; it only does so when the name stands bare in the list
+        // a bare select-list entry, or a predicate that reads the column
         let missing = every_optional().into_iter().find(|name| {
-            !stub.columns.lock().contains(name) && sql.contains(&format!(", {name},"))
+            !stub.columns.lock().contains(name)
+                && (sql.contains(&format!(", {name},")) || sql.contains(&format!("{name} = ")))
         });
         if let Some(name) = missing {
             return (
@@ -2944,6 +2956,40 @@ mod optional_column_tests {
         let mut state = crate::tests::state_with_token(None);
         state.clickhouse = Some(ch);
         router().with_state(state)
+    }
+
+    /// #3410: a probe that cannot read `system.columns` assumes every column,
+    /// so on a table without `cache_usage_reported` the summary's first select
+    /// fails; it answers without the prompt-cache measurement instead of 502.
+    #[tokio::test]
+    async fn the_summary_degrades_when_the_probe_misses_a_lacking_column() {
+        let stub = Stub::start(REQUIRED).await;
+        stub.refuse_probe.store(true, Ordering::SeqCst);
+        let app = app_over(ClickHouseClient::new(&stub.url));
+        let response = app
+            .clone()
+            .oneshot(
+                Request::get("/api/v1/analytics/summary")
+                    .body(Body::empty())
+                    .expect("a valid request"),
+            )
+            .await
+            .expect("the router answers");
+        assert_eq!(response.status(), StatusCode::OK);
+        let selects: Vec<String> = stub
+            .statements
+            .lock()
+            .iter()
+            .filter(|sql| sql.contains("from request_logs"))
+            .cloned()
+            .collect();
+        assert_eq!(selects.len(), 2, "{selects:?}");
+        assert!(selects[0].contains("cache_reported_prompt_tokens"));
+        assert!(
+            !selects[1].contains("cache_usage_reported"),
+            "{}",
+            selects[1]
+        );
     }
 
     async fn list(app: &Router, query: &str) -> (StatusCode, Value) {
