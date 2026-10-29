@@ -17,17 +17,22 @@ import {
 } from "@/lib/stream-download";
 import {
   DownloadTruncatedError,
+  DownloadStoppedError,
   downloadWithTicket,
   ExportNotStartedError,
   ExportRefusedError,
+  ExportStalledError,
 } from "@/lib/ticket-download";
 import { useToast } from "@/lib/toast";
 
 /**
  * How an export ended, when it ended without a failure. `dismissed` is the save
  * dialog being closed before anything was asked: a no that needs no toast.
+ * `unwatched` is the page no longer following a download the browser still
+ * has, and `stopped` the browser's download ending early, most likely because
+ * the person cancelled it there.
  */
-type Outcome = "saved" | "downloaded" | "cancelled" | "dismissed";
+type Outcome = "saved" | "downloaded" | "cancelled" | "dismissed" | "unwatched" | "stopped";
 
 /** how often the byte count under an export is redrawn */
 const PROGRESS_EVERY_MS = 1000;
@@ -53,7 +58,8 @@ const PROGRESS_EVERY_MS = 1000;
  * button mints the ticket, follows its link, and reads the ticket's status
  * about once a second for the rows written and how the download ended, which
  * is where a `429` or a body cut short is learned. The browser's own download
- * list is where that download is cancelled, so the button offers no Cancel.
+ * list is where that download is cancelled; the button's Cancel there only
+ * stops following it, and says so.
  */
 export function ExportCsvButton({
   request,
@@ -123,7 +129,13 @@ export function ExportCsvButton({
         if (!disk) {
           // the browser's download manager receives the file; the page only
           // follows the ticket's status
-          await downloadWithTicket(request(), { signal: abort.signal, onProgress: setRows });
+          try {
+            await downloadWithTicket(request(), { signal: abort.signal, onProgress: setRows });
+          } catch (error) {
+            if (error instanceof DownloadStoppedError) return "stopped";
+            if (abort.signal.aborted) return "unwatched";
+            throw error;
+          }
           return "downloaded";
         }
         const file = await streamExport(request(), { signal: abort.signal });
@@ -143,6 +155,8 @@ export function ExportCsvButton({
       if (outcome === "dismissed" || !mounted.current) return;
       if (outcome === "cancelled") {
         toast.push({ tone: "info", title: t("analytics.export.cancelled") });
+      } else if (outcome === "unwatched" || outcome === "stopped") {
+        toast.push({ tone: "info", title: t(`analytics.export.${outcome}`) });
       } else {
         // both paths offer the name the server gives (#3498), so both say what
         // it carries; the disk path's says it was the suggestion, since the
@@ -173,11 +187,24 @@ export function ExportCsvButton({
         {pending ? t("analytics.export.pending") : t("analytics.export.csv")}
       </Button>
       {pending && rows !== null && (
-        // the rows the control plane has written: the browser's download list
-        // shows the bytes, and the server does not say how many rows there are
-        <span role="status" className="text-xs tabular-nums text-muted-foreground">
-          {rows > 0 ? t("analytics.export.rows", { count: rows, rows: fmt.number(rows) }) : ""}
-        </span>
+        <>
+          {/* the rows the control plane has written: the browser's download
+              list shows the bytes, and the server does not say how many rows
+              there are */}
+          <span role="status" className="text-xs tabular-nums text-muted-foreground">
+            {rows > 0 ? t("analytics.export.rows", { count: rows, rows: fmt.number(rows) }) : ""}
+          </span>
+          {/* the browser owns the download: this only stops following it */}
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={() => controller.current?.abort()}
+            aria-label={t("analytics.export.stopWatchingLabel", { what })}
+          >
+            <X className="h-3.5 w-3.5" />
+            {t("analytics.export.stopWatching")}
+          </Button>
+        </>
       )}
       {pending && rows === null && (
         <>
@@ -223,5 +250,6 @@ function exportError(error: unknown, t: TFunction) {
     return t("analytics.export.refused", { status: error.status });
   }
   if (error instanceof ExportNotStartedError) return t("analytics.export.notStarted");
+  if (error instanceof ExportStalledError) return t("analytics.export.stalled");
   return errorText(error, t);
 }

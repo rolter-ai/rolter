@@ -3,10 +3,12 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { ApiError } from "./api";
 import { ExportTruncatedError } from "./stream-download";
 import {
+  DownloadStoppedError,
   DownloadTruncatedError,
   downloadWithTicket,
   ExportNotStartedError,
   ExportRefusedError,
+  ExportStalledError,
 } from "./ticket-download";
 
 const originalFetch = globalThis.fetch;
@@ -46,6 +48,8 @@ function controlPlane(reads: unknown[], mint: () => Response = () => json(TICKET
     if (url.startsWith("/api/v1/analytics/exports/tickets/")) {
       const answer = reads[Math.min(read, reads.length - 1)];
       read += 1;
+      // a read the control plane failed to answer
+      if (answer === "fail") return json({ error: { message: "unavailable" } }, 503);
       return json(answer);
     }
     return json({ error: { message: "unexpected" } }, 404);
@@ -139,5 +143,31 @@ describe("downloadWithTicket", () => {
     await expect(running).rejects.toBeDefined();
     const reads = calls.filter((c) => c.url.startsWith("/api/v1/analytics/exports/tickets/"));
     expect(reads).toHaveLength(1);
+  });
+
+  it("rides out a short run of failed status reads", async () => {
+    controlPlane(["fail", "fail", status({ state: "complete", rows: 4 }, true)]);
+    await expect(downloadWithTicket(REQUEST, options())).resolves.toBe(4);
+  });
+
+  it("gives up after three failed status reads in a row", async () => {
+    controlPlane(["fail", "fail", "fail", status({ state: "complete", rows: 4 }, true)]);
+    const error = await downloadWithTicket(REQUEST, options()).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(ApiError);
+    expect((error as ApiError).status).toBe(503);
+  });
+
+  it("stops following a download whose status no longer changes", async () => {
+    controlPlane([status({ state: "streaming", rows: 10 })]);
+    await expect(
+      downloadWithTicket(REQUEST, options({ pollEveryMs: 1, stallAfterMs: 20 })),
+    ).rejects.toBeInstanceOf(ExportStalledError);
+  });
+
+  it("reads a download the browser stopped as stopped, not failed", async () => {
+    controlPlane([status({ state: "truncated", rows: 3, reason: "client_closed" }, true)]);
+    const error = await downloadWithTicket(REQUEST, options()).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(DownloadStoppedError);
+    expect(error).not.toBeInstanceOf(ExportTruncatedError);
   });
 });

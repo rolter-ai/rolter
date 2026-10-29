@@ -1,5 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/react";
-import { expect, userEvent, waitFor, within } from "storybook/test";
+import { expect, userEvent, within } from "storybook/test";
 
 import en from "@/lib/i18n/locales/en.json";
 import {
@@ -79,8 +79,9 @@ type Story = StoryObj<typeof meta>;
  * #3504: without the File System Access API the export goes to the browser's
  * download manager, so the tab never holds it. The button mints a ticket for
  * the export on screen, follows its link once, and reads the ticket's status
- * for the rows written until the file is complete. There is no Cancel: the
- * browser's own download list is where that download is stopped.
+ * for the rows written until the file is complete. The browser's own download
+ * list is where that download is cancelled; the page offers only to stop
+ * following it.
  */
 export const ThroughTheBrowserItShowsTheRowsWritten: Story = {
   render: story([
@@ -96,7 +97,12 @@ export const ThroughTheBrowserItShowsTheRowsWritten: Story = {
       const count = await canvas.findByText(/^[\d,]+ rows written$/);
       await expect(count).toHaveAttribute("role", "status");
       await expect(canvas.getByRole("button", { name: "Exporting…" })).toBeDisabled();
+      // no Cancel of the request: the browser owns the download, so the one
+      // control there only stops following it, and its name says so
       await expect(canvas.queryByRole("button", { name: /Cancel the/ })).toBeNull();
+      await expect(
+        canvas.getByRole("button", { name: /the browser's download carries on/ }),
+      ).toBeVisible();
       await expectToast(canvasElement, /Export downloaded/, "success");
     });
     await expect(links).toEqual([STORY_DOWNLOAD_URL]);
@@ -176,5 +182,46 @@ export const ARefusedDownloadNamesItsStatus: Story = {
     await exportWithoutSaveDialog(canvasElement, async () => {
       await expectToast(canvasElement, /refused the download \(HTTP 401\)/, "error");
     });
+  },
+};
+
+/**
+ * Stop watching ends the page's polling and nothing else: the page cannot reach
+ * the browser's download, so it says the download carries on rather than
+ * claiming a cancel.
+ */
+export const StopWatchingLeavesTheDownloadToTheBrowser: Story = {
+  render: story([{ state: "streaming", rows: 1200 }]),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await exportWithoutSaveDialog(canvasElement, async () => {
+      await canvas.findByText(/rows written/);
+      await userEvent.click(
+        canvas.getByRole("button", { name: /the browser's download carries on/ }),
+      );
+      await expectToast(canvasElement, /Stopped following the export/, "success");
+    });
+    const reads = calls.calls.filter((c) => c.url.includes("/exports/tickets/")).length;
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    // no more status reads once the page stopped following
+    await expect(calls.calls.filter((c) => c.url.includes("/exports/tickets/"))).toHaveLength(
+      reads,
+    );
+    await expect(await canvas.findByRole("button", { name: "Export CSV" })).toBeEnabled();
+  },
+};
+
+/**
+ * A download the browser stopped (`client_closed`) is most likely the person
+ * cancelling it in the download list: a neutral line, not a failure.
+ */
+export const ADownloadStoppedInTheBrowserIsNotAFailure: Story = {
+  render: story([{ state: "truncated", rows: 40, reason: "client_closed" }]),
+  play: async ({ canvasElement }) => {
+    await exportWithoutSaveDialog(canvasElement, async () => {
+      await expectToast(canvasElement, /The download stopped in the browser/, "success");
+    });
+    const canvas = within(canvasElement);
+    await expect(canvas.queryByText(/Could not export/)).toBeNull();
   },
 };
