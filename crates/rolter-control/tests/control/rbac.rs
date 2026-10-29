@@ -301,6 +301,141 @@ async fn tenancy_guards_refuse_cross_org_references_but_not_shared_names() {
     );
 }
 
+/// #3467: the organization-wide key list holds exactly the keys the per-project
+/// list would show the caller, project by project: one request replaces a read
+/// per project, and it widens nothing.
+#[tokio::test]
+async fn the_org_wide_key_list_holds_only_the_keys_the_caller_may_read() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("keylist".to_string()))
+        .await
+        .unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    let id_of = |sql: &'static str, parent: Option<uuid::Uuid>, name: &'static str| {
+        let pool = pool.clone();
+        async move {
+            let query = sqlx::query_scalar::<_, uuid::Uuid>(sql);
+            let query = match parent {
+                Some(parent) => query.bind(parent),
+                None => query,
+            };
+            query.bind(name).fetch_one(&pool).await.unwrap()
+        }
+    };
+    let org_sql = "insert into orgs (name, slug) values ($1, $1) returning id";
+    let team_sql = "insert into teams (org_id, name) values ($1, $2) returning id";
+    let project_sql = "insert into projects (team_id, name) values ($1, $2) returning id";
+    let acme = id_of(org_sql, None, "acme").await;
+    let globex = id_of(org_sql, None, "globex").await;
+    let core = id_of(team_sql, Some(acme), "core").await;
+    let research = id_of(team_sql, Some(acme), "research").await;
+    let payments = id_of(team_sql, Some(globex), "payments").await;
+    let app_project = id_of(project_sql, Some(core), "app").await;
+    let batch = id_of(project_sql, Some(core), "batch").await;
+    let evals = id_of(project_sql, Some(research), "evals").await;
+    let checkout = id_of(project_sql, Some(payments), "checkout").await;
+    let mut keys = std::collections::HashMap::new();
+    for (project, name) in [
+        (app_project, "app-key"),
+        (batch, "batch-key"),
+        (evals, "evals-key"),
+        (checkout, "checkout-key"),
+    ] {
+        let id: uuid::Uuid = sqlx::query_scalar(
+            "insert into virtual_keys (project_id, key_hash, key_prefix, name) \
+             values ($1, $2, $3, $4) returning id",
+        )
+        .bind(project)
+        .bind(format!("hash-{name}"))
+        .bind(&name[..3])
+        .bind(name)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        keys.insert(name, id.to_string());
+    }
+
+    let lead = seed_user(&pool, "lead@acme.test", false).await;
+    seed_membership(&pool, lead, None, Some(core), None, "admin").await;
+    let member = seed_user(&pool, "pm@acme.test", false).await;
+    seed_membership(&pool, member, None, None, Some(app_project), "member").await;
+    let org_admin = seed_user(&pool, "admin@acme.test", false).await;
+    seed_membership(&pool, org_admin, Some(acme), None, None, "admin").await;
+    let outsider = seed_user(&pool, "ops@globex.test", false).await;
+    seed_membership(&pool, outsider, None, None, Some(checkout), "member").await;
+    let lead_session = seed_session(&pool, lead, "keylist_lead").await;
+    let pm = seed_session(&pool, member, "keylist_pm").await;
+    let org_session = seed_session(&pool, org_admin, "keylist_org").await;
+    let ops = seed_session(&pool, outsider, "keylist_ops").await;
+
+    let list = |org: uuid::Uuid, token: String| {
+        let client = client.clone();
+        let base = base.clone();
+        async move {
+            let resp = client
+                .get(format!("{base}/api/v1/orgs/{org}/virtual-keys"))
+                .bearer_auth(token)
+                .send()
+                .await
+                .unwrap();
+            let status = resp.status().as_u16();
+            let body = resp.json::<Value>().await.unwrap_or(Value::Null);
+            let mut names: Vec<String> = body
+                .as_array()
+                .map(|rows| {
+                    rows.iter()
+                        .map(|row| row["name"].as_str().unwrap().to_string())
+                        .collect()
+                })
+                .unwrap_or_default();
+            names.sort();
+            (status, names, body)
+        }
+    };
+
+    // an org admin: every key of the organization, none of another's
+    let (status, names, body) = list(acme, org_session).await;
+    assert_eq!(status, 200);
+    assert_eq!(names, ["app-key", "batch-key", "evals-key"]);
+    // each row names its project, and the secret's digest of a retired key
+    // is never part of it
+    let app_row = body
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["name"] == "app-key")
+        .unwrap();
+    assert_eq!(app_row["project_id"], app_project.to_string());
+    assert_eq!(app_row["id"], keys["app-key"]);
+    // and no digest of any secret is part of a listing
+    for field in ["key_hash", "previous_key_hash", "previous_key_prefix"] {
+        assert!(app_row.get(field).is_none(), "{field} leaked: {app_row}");
+    }
+    assert_eq!(app_row["key_prefix"], "app");
+
+    // a team admin: the keys of their own team's projects, not the sibling team's
+    let (status, names, _) = list(acme, lead_session).await;
+    assert_eq!(
+        (status, names),
+        (200, vec!["app-key".into(), "batch-key".into()])
+    );
+    // a project member: their own project's key only
+    let (status, names, _) = list(acme, pm.clone()).await;
+    assert_eq!((status, names), (200, vec!["app-key".to_string()]));
+
+    // no role in the organization: refused, and an organization that is not
+    // theirs reads the same as one that does not exist for them
+    assert_eq!(list(acme, ops.clone()).await.0, 403);
+    assert_eq!(list(globex, pm).await.0, 403);
+    let (status, names, _) = list(globex, ops).await;
+    assert_eq!((status, names), (200, vec!["checkout-key".to_string()]));
+}
+
 /// Listings answer a caller whose role sits below the org with what that
 /// caller reaches, instead of refusing the whole list (#1846, #1850). A project
 /// member can navigate to their own project, a team admin sees and manages

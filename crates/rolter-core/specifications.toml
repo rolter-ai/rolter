@@ -795,6 +795,7 @@ supported = [
 ]
 deviations = [
   "a body that cannot be read as JSON-RPC is refused with 400 `mcp_request_unreadable` unless the organization's failure policy lets it through",
+  "a request with `\"id\": null` is treated as a notification: nothing can be matched to a reply, so it is logged with the HTTP status and no result",
 ]
 omissions = [
   "an allowed message is forwarded unchanged: rolter validates no other part of it",
@@ -804,6 +805,7 @@ tests = [
   "crates/rolter-gateway/src/mcp_policy.rs::a_batch_is_refused_as_a_whole_naming_every_refused_call",
   "crates/rolter-gateway/tests/integration.rs::mcp_proxy_records_a_tool_call_with_key_and_session_owner_attribution",
   "crates/rolter-gateway/tests/integration.rs::mcp_proxy_records_a_json_rpc_error_as_a_tool_error",
+  "crates/rolter-gateway/tests/integration.rs::mcp_proxy_records_batch_calls_and_notifications_over_http",
 ]
 
 # ── MCP ──────────────────────────────────────────────────────────────────────
@@ -841,6 +843,9 @@ supported = [
   "a POST naming a tool outside the organization's enabled tool groups is refused with 403 `mcp_tool_denied` before anything is forwarded (see `json-rpc`)",
   "an upstream 403 whose challenge says `insufficient_scope` is answered with 403 `mcp_insufficient_scope` and a rebuilt `WWW-Authenticate` challenge",
 ]
+deviations = [
+  "a POST to a server the organization's tool groups or tool manifest govern, with a `Content-Encoding` other than `identity`, is refused with 415 `mcp_request_unreadable` whatever the failure policy says: the relay decodes no body, so it could not apply the rules to it",
+]
 omissions = [
   "no protocol-version negotiation: `MCP-Protocol-Version` is relayed, never read",
   "no validation of what an allowed message contains, and none of the server's replies",
@@ -851,6 +856,7 @@ tests = [
   "crates/rolter-gateway/src/mcp_policy.rs::a_governed_server_serves_only_the_tools_its_groups_list",
   "crates/rolter-gateway/src/mcp_proxy.rs::insufficient_scope_from_an_oauth_server_is_the_step_up_answer",
   "crates/rolter-gateway/tests/integration.rs::mcp_proxy_binds_virtual_key_owner_to_server_scopes_and_bearer",
+  "crates/rolter-gateway/tests/integration.rs::mcp_proxy_refuses_a_content_encoded_body_to_a_governed_server",
 ]
 
 [[spec]]

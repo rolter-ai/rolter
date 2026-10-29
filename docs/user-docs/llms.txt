@@ -156,6 +156,7 @@ prompts below, then the quickstart, then the page for whatever it is wiring.
 - [Tenancy](/api/tenancy): Navigate the organization, team and project hierarchy, create its resources, and grant scoped roles through the control plane API.
 - [Members and password reset](/api/member-management): Change a role grant in one request with PUT /api/v1/memberships/{id}, read who sent each invitation from invited_by_email, and reset a member's password with a one-time link.
 - [Org projects](/api/org-projects): GET /api/v1/orgs/{org_id}/projects returns every project in an organization across all of its teams, each row naming the team that owns it — one request instead of one per team.
+- [Org virtual keys](/api/org-virtual-keys): GET /api/v1/orgs/{org_id}/virtual-keys returns the virtual keys of every project in an organization that the caller may read, each row naming its project — one request instead of one per project.
 - [Teams](/api/teams): PUT /api/v1/teams/{id} renames a team. A name another team of the organization holds answers 409 name_taken, and the audit log records the old and new name.
 - [Deployment users](/api/deployment-users): GET /api/v1/users returns every account in the deployment, whichever organization it belongs to, ordered by e-mail. Superadmin only; it is what names an actor in the deployment-wide audit log.
 - [API tokens](/api/api-tokens): Mint a named control-plane token that holds one role at an organization, team or project, with an expiry, for CI jobs and provisioning scripts that should not run as the admin token or as a person.

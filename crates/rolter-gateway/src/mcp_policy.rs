@@ -318,6 +318,19 @@ fn get_folded<'a>(object: &'a Map<String, Value>, name: &str) -> Option<&'a Valu
     }
 }
 
+/// [`get_folded`], moving the value out.
+fn take_folded(object: &mut Map<String, Value>, name: &str) -> Option<Value> {
+    let key = if object.contains_key(name) {
+        name.to_string()
+    } else {
+        object
+            .keys()
+            .find(|key| key.len() >= name.len() && fold_key(key) == name)?
+            .clone()
+    };
+    object.remove(&key)
+}
+
 /// Where in a JSON-RPC body a repeated key is looked for.
 #[derive(Clone, Copy)]
 enum Level {
@@ -462,12 +475,21 @@ impl<'de> Visitor<'de> for Parse {
     }
 }
 
+/// A `tools/call` request: the tool it names, if any, and the canonical request.
+type ToolCall = (Option<String>, Map<String, Value>);
+
+/// The `tools/call` requests the log records from one body, and how many it
+/// left out for want of room.
+#[derive(Default)]
+pub(crate) struct Calls {
+    pub kept: Vec<Map<String, Value>>,
+    pub dropped: usize,
+}
+
 /// A request body read once: its messages, and whether any of them repeats a
 /// key. `None` when it is not JSON at all.
 pub(crate) struct Body {
     messages: Vec<Value>,
-    /// whether the body was a JSON array of messages rather than one message
-    batch: bool,
     /// whether any copy of each message's `method` is `tools/call`
     called: Vec<bool>,
     repeated: bool,
@@ -478,14 +500,13 @@ impl Body {
         let mut parser = serde_json::Deserializer::from_slice(bytes);
         let out = Parse(Level::Body).deserialize(&mut parser).ok()?;
         parser.end().ok()?;
-        let (messages, called, batch) = match out.value {
-            Value::Array(items) => (items, out.calls, true),
-            other => (vec![other], out.calls, false),
+        let messages = match out.value {
+            Value::Array(items) => items,
+            other => vec![other],
         };
         Some(Self {
             messages,
-            batch,
-            called,
+            called: out.calls,
             repeated: out.repeated,
         })
     }
@@ -502,36 +523,52 @@ impl Body {
                 .any(|w| w[0] == b'\\' && matches!(w[1], b'u' | b'/'))
     }
 
-    /// The one request a body is made of, when it is a single `tools/call` with
-    /// an id: the only shape whose reply can be matched to a log row. A
-    /// notification and a batch are not recorded when they are allowed; a
-    /// refused one is (#1403). Returned as the canonical request
-    /// [`Self::tool_calls`] builds, so a key written in another case is read as
-    /// a decoder would read it.
-    pub(crate) fn single_call(&self, arguments: bool) -> Option<Map<String, Value>> {
-        if self.batch {
-            return None;
-        }
-        let request = self.messages.first()?.as_object()?;
-        if Self::method(self.messages.first()?) != Some("tools/call") {
-            return None;
-        }
-        let id = get_folded(request, "id").filter(|id| !id.is_null())?;
-        let params = get_folded(request, "params")?.as_object()?;
-        let name = get_folded(params, "name")?;
-        // the arguments are the one deep copy, so they are taken only when the
-        // log will keep them
-        let mut kept = Map::new();
-        kept.insert("name".into(), name.clone());
-        if arguments {
-            if let Some(arguments) = get_folded(params, "arguments") {
-                kept.insert("arguments".into(), arguments.clone());
+    /// The `tools/call` requests of a body the policy allowed, consumed: a single
+    /// request, every call in a batch, and a notification (no `id`, so no reply
+    /// to follow). Each is the canonical request [`Self::tool_calls`] builds, so a
+    /// key written in another case is read as a decoder would read it, and it is
+    /// moved out of the parsed body rather than copied, so a batch costs no more
+    /// than the parse that already happened (#3466). A call that names no tool is
+    /// left out: the log has no tool to put in its row.
+    pub(crate) fn into_calls(self, arguments: bool, limit: usize) -> Calls {
+        let mut calls = Calls::default();
+        for mut message in self.messages {
+            if Self::method(&message) != Some("tools/call") {
+                continue;
             }
+            // a body is bounded only by the request size limit, so the rows
+            // made from it are bounded here and the rest are counted
+            if calls.kept.len() >= limit {
+                calls.dropped += 1;
+                continue;
+            }
+            let Some(request) = message.as_object_mut() else {
+                continue;
+            };
+            // `null` is no id a reply could be matched to
+            let id = take_folded(request, "id").filter(|id| !id.is_null());
+            let Some(Value::Object(mut params)) = take_folded(request, "params") else {
+                continue;
+            };
+            let Some(name) = take_folded(&mut params, "name") else {
+                continue;
+            };
+            let mut kept = Map::new();
+            kept.insert("name".into(), name);
+            // the arguments are only taken when the log will keep them
+            if arguments {
+                if let Some(arguments) = take_folded(&mut params, "arguments") {
+                    kept.insert("arguments".into(), arguments);
+                }
+            }
+            let mut canonical = Map::new();
+            if let Some(id) = id {
+                canonical.insert("id".into(), id);
+            }
+            canonical.insert("params".into(), Value::Object(kept));
+            calls.kept.push(canonical);
         }
-        let mut canonical = Map::new();
-        canonical.insert("id".into(), id.clone());
-        canonical.insert("params".into(), Value::Object(kept));
-        Some(canonical)
+        calls
     }
 
     /// The method a message names, read the way a decoder would.
@@ -552,41 +589,58 @@ impl Body {
     /// set a message counts if *any* copy of its `method` is `tools/call`, which
     /// is how a body that repeats a key is logged; a call that names no tool is
     /// logged with an empty one.
-    fn tool_calls(&self, any_copy: bool) -> Vec<(Option<String>, Map<String, Value>)> {
-        self.messages
-            .iter()
-            .enumerate()
-            .filter(|(i, message)| {
-                Self::method(message) == Some("tools/call")
-                    || (any_copy && self.called.get(*i).copied().unwrap_or(false))
-            })
-            .filter_map(|(_, message)| message.as_object())
-            .map(|request| {
-                let params = get_folded(request, "params").and_then(Value::as_object);
-                let tool = params
-                    .and_then(|params| get_folded(params, "name"))
-                    .and_then(Value::as_str)
-                    .map(str::to_string);
-                let mut canonical = Map::new();
-                if let Some(id) = get_folded(request, "id") {
-                    canonical.insert("id".into(), id.clone());
-                }
-                let mut kept = Map::new();
-                if let Some(name) = params.and_then(|params| get_folded(params, "name")) {
-                    kept.insert("name".into(), name.clone());
-                }
-                if any_copy && tool.is_none() {
-                    kept.insert("name".into(), Value::String(String::new()));
-                }
-                if let Some(arguments) = params.and_then(|params| get_folded(params, "arguments")) {
-                    kept.insert("arguments".into(), arguments.clone());
-                }
-                if params.is_some() || any_copy {
-                    canonical.insert("params".into(), Value::Object(kept));
-                }
-                (tool, canonical)
-            })
-            .collect()
+    ///
+    /// `refused` is asked the tool a call names before anything of it is copied,
+    /// so a call the policy allows costs no clone (the arguments of a request
+    /// can be large and most calls are allowed). At most `limit` are built; the
+    /// number of the rest is the second field.
+    fn tool_calls(
+        &self,
+        any_copy: bool,
+        limit: usize,
+        refused: impl Fn(Option<&str>) -> bool,
+    ) -> (Vec<ToolCall>, usize) {
+        let mut calls = Vec::new();
+        let mut dropped = 0;
+        for (i, message) in self.messages.iter().enumerate() {
+            if Self::method(message) != Some("tools/call")
+                && !(any_copy && self.called.get(i).copied().unwrap_or(false))
+            {
+                continue;
+            }
+            let Some(request) = message.as_object() else {
+                continue;
+            };
+            let params = get_folded(request, "params").and_then(Value::as_object);
+            let name = params.and_then(|params| get_folded(params, "name"));
+            let tool = name.and_then(Value::as_str);
+            if !refused(tool) {
+                continue;
+            }
+            if calls.len() >= limit {
+                dropped += 1;
+                continue;
+            }
+            let mut canonical = Map::new();
+            if let Some(id) = get_folded(request, "id") {
+                canonical.insert("id".into(), id.clone());
+            }
+            let mut kept = Map::new();
+            if let Some(name) = name {
+                kept.insert("name".into(), name.clone());
+            }
+            if any_copy && tool.is_none() {
+                kept.insert("name".into(), Value::String(String::new()));
+            }
+            if let Some(arguments) = params.and_then(|params| get_folded(params, "arguments")) {
+                kept.insert("arguments".into(), arguments.clone());
+            }
+            if params.is_some() || any_copy {
+                canonical.insert("params".into(), Value::Object(kept));
+            }
+            calls.push((tool.map(str::to_string), canonical));
+        }
+        (calls, dropped)
     }
 }
 
@@ -612,12 +666,14 @@ impl Read {
         Body::parse(bytes).map_or(Self::Unreadable, Self::Parsed)
     }
 
-    /// The single `tools/call` the log can follow, when the body was read.
-    /// `arguments` says whether the log keeps them.
-    pub(crate) fn single_call(&self, arguments: bool) -> Option<Map<String, Value>> {
+    /// The allowed `tools/call` requests the log records, consuming the read.
+    /// `arguments` says whether the log keeps them. Called only once the policy
+    /// has allowed the body (or an earlier check has refused the request, which
+    /// the log records for every call the body holds).
+    pub(crate) fn into_calls(self, arguments: bool, limit: usize) -> Calls {
         match self {
-            Self::Parsed(body) => body.single_call(arguments),
-            _ => None,
+            Self::Parsed(body) => body.into_calls(arguments, limit),
+            _ => Calls::default(),
         }
     }
 }
@@ -628,6 +684,8 @@ pub(crate) struct Decision {
     /// set when the body is allowed and asks for a tool list, so the reply can
     /// be narrowed (#3297)
     pub list_filter: Option<ListFilter>,
+    /// refused calls beyond what a request may log, so they are not rows
+    pub unlogged: usize,
 }
 
 impl Decision {
@@ -635,6 +693,7 @@ impl Decision {
         Self {
             verdict,
             list_filter: None,
+            unlogged: 0,
         }
     }
 }
@@ -675,20 +734,27 @@ pub(crate) fn evaluate_read(
         }
     };
     if parsed.repeated {
-        return Decision::of(Verdict::Ambiguous(
-            parsed
-                .tool_calls(true)
-                .into_iter()
-                .map(|(tool, request)| Refused {
-                    tool,
-                    denial: Denial::Ambiguous,
-                    request,
-                })
-                .collect(),
-        ));
+        let (calls, unlogged) =
+            parsed.tool_calls(true, crate::mcp_log::MAX_CALLS_PER_REQUEST, |_| true);
+        return Decision {
+            unlogged,
+            ..Decision::of(Verdict::Ambiguous(
+                calls
+                    .into_iter()
+                    .map(|(tool, request)| Refused {
+                        tool,
+                        denial: Denial::Ambiguous,
+                        request,
+                    })
+                    .collect(),
+            ))
+        };
     }
-    let refused: Vec<Refused> = parsed
-        .tool_calls(false)
+    let (calls, unlogged) =
+        parsed.tool_calls(false, crate::mcp_log::MAX_CALLS_PER_REQUEST, |tool| {
+            rules.judge(tool).is_some()
+        });
+    let refused: Vec<Refused> = calls
         .into_iter()
         .filter_map(|(tool, request)| {
             let denial = rules.judge(tool.as_deref())?;
@@ -700,7 +766,10 @@ pub(crate) fn evaluate_read(
         })
         .collect();
     if !refused.is_empty() {
-        return Decision::of(Verdict::Denied(refused));
+        return Decision {
+            unlogged,
+            ..Decision::of(Verdict::Denied(refused))
+        };
     }
     // a reply is narrowed whatever id it carries: ids are compared as JSON
     // values (`1` is not `1.0`) and a decoder may read `ID` as `id`, so
@@ -711,6 +780,7 @@ pub(crate) fn evaluate_read(
     Decision {
         verdict: Verdict::Allow,
         list_filter,
+        unlogged: 0,
     }
 }
 
