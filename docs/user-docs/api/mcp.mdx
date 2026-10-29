@@ -115,8 +115,19 @@ an `error`. Some calls have no reply for the proxy to read:
   a JSON-RPC error, is judged by that reply. A `streamable_http` server owes the
   reply in its answer, so there a bare `202` is a `transport_error`.
 
-`outcome` needs `clickhouse/051_mcp_log_outcome.sql`; until it is applied such a
-call is a plain `success` row.
+- **A notification.** A `tools/call` sent without an `id` awaits no reply. Its
+  row has the status the server's HTTP response gave and `notification: 1`, and
+  reads **notification, no reply awaited**.
+
+`GET /api/v1/mcp/logs` and the event detail return both `notification` and
+`outcome`. Neither kind of call says whether the tool succeeded, so
+`GET /api/v1/mcp/logs/summary` counts them apart in `not_awaited` and leaves
+them out of `successes`, `failures`, `success_rate` and `failure_rate`: the
+rates are over `calls - not_awaited`, and `null` for a window with no awaited
+call. The average and p95 latency are over every call. `outcome` needs
+`clickhouse/051_mcp_log_outcome.sql` and `notification` needs
+`047_mcp_log_notification.sql`; until they are applied such calls are plain
+`success` rows and count as awaited.
 
 ### Accepted values
 

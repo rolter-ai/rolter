@@ -736,6 +736,18 @@ The gateway records every proxied JSON-RPC `tools/call` in ClickHouse's
   of the `status` enum, because ClickHouse refuses a whole insert that names an
   enum value the table lacks; it is left out of every other row, so an
   un-migrated ClickHouse records the call as an ordinary `success`.
+- **Calls not awaited (#3526).** A notification and an `accepted` call say
+  nothing about whether the tool succeeded. `GET /api/v1/mcp/logs` returns
+  `notification` and `outcome` beside `status`, and the dashboard marks such a
+  row "notification, no reply awaited" or "accepted, reply on the stream". The
+  summary (`summary_sql` in `crates/rolter-control/src/mcp_logs.rs`) counts
+  them in `not_awaited` and leaves them out of `successes`, `failures`,
+  `success_rate` and `failure_rate`, whose denominator is
+  `calls - not_awaited`; a window with no awaited call has `null` rates. The
+  list and the summary read the optional columns through the same
+  `McpColumns` probe as the detail, so a table without `047` or `051` counts
+  every call as awaited. `POST /api/v1/mcp/events` accepts an `outcome` from
+  `MCP_OUTCOMES` beside a `success` status.
 - **Write path.** `McpEventSink` (`crates/rolter-gateway/src/mcp_log.rs`) is a
   bounded channel and a batch writer, built like the request-log and
   health-event writers and sharing their `[logging]` `batch_max`, `flush_ms`

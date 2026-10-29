@@ -4231,8 +4231,20 @@
         "error": "Error",
         "timeout": "Timed out",
         "auth_denied": "Auth denied",
-        "transport_error": "Transport error"
+        "transport_error": "Transport error",
+        "accepted": "Accepted"
       },
+      "notAwaited": {
+        "notification": "notification, no reply awaited",
+        "accepted": "accepted, reply on the stream"
+      },
+      "notAwaitedDetail": {
+        "notification": "This call was sent as a notification, so no reply was awaited. Its status is only what the server's HTTP response said, not what the tool did, and the summary leaves it out of the failure rate.",
+        "accepted": "The server accepted this call and sends its reply on the event stream the client holds open, which is not matched back to the call. Nothing here says what the tool did, and the summary leaves it out of the failure rate."
+      },
+      "notAwaitedCount_one": "{{formatted}} not awaited, left out of the rates",
+      "notAwaitedCount_other": "{{formatted}} not awaited, left out of the rates",
+      "failureRate": "{{rate}} of awaited calls",
       "serverFilterAria": "Filter by server",
       "toolFilterAria": "Filter by tool",
       "allServers": "all servers",

@@ -27,6 +27,14 @@ export interface McpLogRow {
   request_id: string;
   trace_id: string;
   error: string | null;
+  /// 1 for a `tools/call` sent as a JSON-RPC notification, which no reply
+  /// answers, so `status` is only what the HTTP layer said (#3466, #3526); 0
+  /// before ClickHouse migration 047
+  notification?: number | string;
+  /// what refines `status` for a call whose result nothing judged (#3529):
+  /// `accepted` when a legacy `sse` server took the call and sends its reply on
+  /// the stream. empty for every other row, and before migration 051
+  outcome?: string;
 }
 
 export interface McpLogDetail extends McpLogRow {
@@ -53,7 +61,14 @@ export interface McpLogsQuery extends AnalyticsWindow {
 
 export interface McpSummaryRow {
   calls: string | number;
+  /// calls no reply was awaited for (notifications, `accepted` calls), counted
+  /// apart and left out of `successes`, `failures` and both rates (#3526)
+  not_awaited?: string | number;
+  successes?: string | number;
   failures: string | number;
+  /// over the awaited calls only; null when the window has none
+  success_rate?: number | null;
+  failure_rate?: number | null;
   // clickhouse averages an empty window to null (and quantile to nan); the
   // control plane forwards the JSON as-is
   avg_latency_ms: number | null;

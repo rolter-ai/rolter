@@ -71,6 +71,27 @@ const STATUS_TONE: Record<string, BadgeTone> = {
 
 const statusTone = (s: string): BadgeTone => STATUS_TONE[s] ?? "neutral";
 
+// a call no reply was awaited for, whose status says nothing about the tool
+// (#3526, #3529): the summary leaves it out of the rates, and a row says why
+type NotAwaited = "notification" | "accepted";
+
+function notAwaited(row: Pick<McpLogRow, "notification" | "outcome">): NotAwaited | null {
+  if (row.outcome === "accepted") return "accepted";
+  if (Number(row.notification ?? 0) === 1) return "notification";
+  return null;
+}
+
+// the pill of such a row is neutral: it is neither a success nor a failure
+// of the tool. an `accepted` call reads as accepted rather than as the
+// `success` stored beside it for an older table
+function rowStatus(row: McpLogRow, t: ReturnType<typeof useTranslation>["t"]) {
+  const note = notAwaited(row);
+  const label =
+    note === "accepted" ? t("pages.mcpLogs.statuses.accepted") : mcpStatusLabel(row.status, t);
+  const tone = note && row.status === "success" ? "neutral" : statusTone(row.status);
+  return { note, label, tone };
+}
+
 const GRID = "150px 1.1fr 1.3fr 130px 110px 90px 24px";
 
 // clickhouse-backed MCP tool-call log explorer: summary KPIs, filterable
@@ -217,13 +238,31 @@ function McpLogsScreen() {
         {/* a window the deployment proxied nothing in answers with no row at
             all, and that is a count of zero, not an unknown one — the dash is
             for a summary that has not arrived or did not load (#1611) */}
+        {/* a notification or an accepted call says nothing about the tool, so
+            the failure count and rate are over the awaited calls only and the
+            rest are counted apart (#3526) */}
         <StatCard
           label={t("pages.mcpLogs.calls")}
           value={summary.isSuccess ? fmt.number(Number(summary.data?.calls ?? 0)) : "—"}
+          delta={
+            summary.isSuccess && Number(summary.data?.not_awaited ?? 0) > 0
+              ? t("pages.mcpLogs.notAwaitedCount", {
+                  count: Number(summary.data?.not_awaited),
+                  formatted: fmt.number(Number(summary.data?.not_awaited)),
+                })
+              : undefined
+          }
         />
         <StatCard
           label={t("pages.mcpLogs.failures")}
           value={summary.isSuccess ? fmt.number(Number(summary.data?.failures ?? 0)) : "—"}
+          delta={
+            summary.isSuccess && summary.data?.failure_rate != null
+              ? t("pages.mcpLogs.failureRate", {
+                  rate: fmt.percent(Number(summary.data.failure_rate)),
+                })
+              : undefined
+          }
         />
         <StatCard
           label={t("pages.mcpLogs.avgLatency")}
@@ -391,7 +430,7 @@ function McpLogsScreen() {
 function McpRow({ row, onSelect }: { row: McpLogRow; onSelect: () => void }) {
   const { t } = useTranslation();
   const fmt = useFormat();
-  const tone = statusTone(row.status);
+  const { note, label, tone } = rowStatus(row, t);
   return (
     <ListRow
       grid={GRID}
@@ -405,8 +444,13 @@ function McpRow({ row, onSelect }: { row: McpLogRow; onSelect: () => void }) {
       <ListCell className="truncate font-mono text-xs text-[color:var(--text-secondary)]">
         {row.tool}
       </ListCell>
-      <ListCell className="grid">
-        <Pill tone={tone}>{mcpStatusLabel(row.status, t)}</Pill>
+      <ListCell className="grid gap-0.5">
+        <Pill tone={tone}>{label}</Pill>
+        {note && (
+          <span className="truncate text-2xs text-[color:var(--text-subtle)]">
+            {t(`pages.mcpLogs.notAwaited.${note}`)}
+          </span>
+        )}
       </ListCell>
       <ListCell className="truncate font-mono text-2xs text-[color:var(--text-subtle)]">
         {row.transport}
@@ -499,7 +543,7 @@ function DetailDrawer({ eventId, onClose }: { eventId: string; onClose: () => vo
       {d && (
         <>
           <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
-            <DrawerStat label={t("pages.mcpLogs.status")} value={mcpStatusLabel(d.status, t)} />
+            <DrawerStat label={t("pages.mcpLogs.status")} value={rowStatus(d, t).label} />
             <DrawerStat
               label={t("pages.mcpLogs.latency")}
               value={t("analytics.ms", { value: fmt.number(Math.round(d.latency_ms)) })}
@@ -527,6 +571,11 @@ function DetailDrawer({ eventId, onClose }: { eventId: string; onClose: () => vo
               copyLabel={t("pages.mcpLogs.copyTrace")}
             />
           </div>
+          {notAwaited(d) && (
+            <p className="text-xs text-muted-foreground">
+              {t(`pages.mcpLogs.notAwaitedDetail.${notAwaited(d)}`)}
+            </p>
+          )}
           {d.error && <p className="text-xs text-[color:var(--status-danger-text)]">{d.error}</p>}
           <LogStepUp detail={d} />
           {Number(d.payload_withheld ?? 0) === 1 && !d.arguments && !d.result && (
