@@ -150,8 +150,9 @@ missing the import only adds assignments, never removes them, as the missing
 one may be one the group has. A key reference that matches more than one key of
 the project (a prefix matches unnamed keys only) is assigned to each, since an
 assignment only narrows and holding one key too many fails closed where leaving
-the meant one out would not. A tool on a server the org lacks is skipped with a
-warning. A group that cannot be written fails the import. The export
+the meant one out would not. A tool on a server the org lacks fails the import
+for the org before any of its groups is written, since dropping it would leave a
+server later created under that slug ungoverned. A group that cannot be written fails the import. The export
 deduplicates key references, so the file reads back the same after an
 ambiguous import. No migration was needed. Tests in
 `config_export::tests::round_trip`:

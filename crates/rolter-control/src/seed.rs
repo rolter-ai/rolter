@@ -1454,8 +1454,10 @@ fn validate_mcp_gateway_tool_groups(config: &GatewayConfig) -> anyhow::Result<()
 /// assignments become the ones the entry names. A group the file does not name
 /// is left alone, as every other row is.
 ///
-/// A reference that names nothing here is skipped with a warning that names
-/// it: a tool on a server the organization does not have, or a team, project
+/// A tool on a server the organization does not have fails the import for
+/// the organization before any of its groups is written: dropping it would
+/// leave a server later created under that slug ungoverned. An assignment that
+/// names nothing here is skipped with a warning that names it: a team, project
 /// or key that does not exist (keys are never exported, so a key assignment
 /// survives only where the key does). A key reference that matches more than
 /// one key of its project is assigned to each. The group is still written, so its
@@ -1496,24 +1498,37 @@ async fn import_mcp_gateway_tool_groups(
             .await?
             .into_iter()
             .collect();
+    // a tool on a server the organization lacks cannot be dropped: a server
+    // created later under that slug would start ungoverned when no other group
+    // names it. so the organization's groups are refused before any is written
+    for entry in entries.iter().filter(|entry| entry.org == slug) {
+        if let Some(tool) = entry
+            .tools
+            .iter()
+            .find(|tool| !servers.contains_key(&tool.server))
+        {
+            anyhow::bail!(
+                "mcp_gateway_tool_groups '{slug}/{}': tool '{}' names server '{}', which \
+                 organization '{slug}' does not have; register the server before importing \
+                 its tool groups",
+                entry.slug,
+                tool.tool,
+                tool.server
+            );
+        }
+    }
     for entry in entries.iter().filter(|entry| entry.org == slug) {
         let group = entry.slug.as_str();
-        let mut tools = Vec::new();
-        for tool in &entry.tools {
-            match servers.get(&tool.server) {
-                Some(server_id) => tools.push(rolter_core::McpToolRefConfig {
-                    server_id: server_id.to_string(),
+        let tools: Vec<rolter_core::McpToolRefConfig> = entry
+            .tools
+            .iter()
+            .filter_map(|tool| {
+                Some(rolter_core::McpToolRefConfig {
+                    server_id: servers.get(&tool.server)?.to_string(),
                     tool: tool.tool.clone(),
-                }),
-                None => tracing::warn!(
-                    org = %slug,
-                    group,
-                    server = %tool.server,
-                    tool = %tool.tool,
-                    "skipping a tool of an MCP tool group: the organization has no such server"
-                ),
-            }
-        }
+                })
+            })
+            .collect();
         let (subjects, complete) = resolve_tool_group_subjects(pool, &slug, entry).await?;
         let tools_value = serde_json::to_value(&tools)?;
         let existing: Option<(Uuid, String, String, bool, serde_json::Value)> = sqlx::query_as(

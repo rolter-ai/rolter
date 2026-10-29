@@ -3815,6 +3815,60 @@ model = "gpt-4o"
             assert!(again.contains("tool = \"search\""), "{again}");
         }
 
+        /// A tool on a server the organization does not have fails the import
+        /// for the organization before any group is written, naming the group,
+        /// the server and the tool: a server created later under that slug
+        /// would otherwise start ungoverned (#3514).
+        #[tokio::test]
+        async fn a_tool_on_a_missing_server_fails_the_orgs_tool_group_import() {
+            use super::ExportOptions;
+
+            let Some(db) = scratch_db().await else {
+                return;
+            };
+            let pool = db.pool().clone();
+            let dir = tempdir("mcp-tool-groups-server");
+            let world = tool_group_world(&pool).await;
+            let store = PostgresConfigStore::new(pool.clone());
+            let options = ExportOptions {
+                org: Some("org-a".to_string()),
+                ..Default::default()
+            };
+            let first = super::export_document(&pool, &store.load().await.unwrap(), &options)
+                .await
+                .unwrap();
+            let file = dir.join("org-a.toml");
+            std::fs::write(
+                &file,
+                first.replace(
+                    "{ server = \"github\", tool = \"fetch\" }",
+                    "{ server = \"gitlab\", tool = \"fetch\" }",
+                ),
+            )
+            .unwrap();
+            sqlx::query("delete from mcp_tool_groups where org_id = $1")
+                .bind(world.org_a)
+                .execute(&pool)
+                .await
+                .unwrap();
+            let refused =
+                crate::seed::import_bootstrap_toml(&pool, world.org_a, world.project_a, &file)
+                    .await
+                    .unwrap_err()
+                    .to_string();
+            for named in ["read-only", "gitlab", "fetch"] {
+                assert!(refused.contains(named), "{refused}");
+            }
+            // not even the group without that tool was written
+            let groups: i64 =
+                sqlx::query_scalar("select count(*) from mcp_tool_groups where org_id = $1")
+                    .bind(world.org_a)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            assert_eq!(groups, 0);
+        }
+
         /// A key reference two keys of the project answer is assigned to both:
         /// an assignment only narrows, so that fails closed where leaving the
         /// meant key out would not, and the file still reads back the same
