@@ -35,7 +35,9 @@ import { cn } from "@/lib/utils";
  *
  * `value` and `onChange` carry a {@link WindowSelection}; where it is kept (the
  * address, a saved view) is the screen's. `id` and the `aria-*` attributes land
- * on the list, so a `Field` around the picker labels it.
+ * on the list, so a `Field` around the picker labels it and describes it: the
+ * hint or error `Field` ties by `aria-describedby`, and its `aria-invalid` and
+ * `aria-required`, reach the control a screen reader announces (#3507).
  */
 export function TimeWindowPicker({
   value,
@@ -43,12 +45,18 @@ export function TimeWindowPicker({
   className,
   id,
   "aria-label": ariaLabel,
+  "aria-describedby": ariaDescribedBy,
+  "aria-invalid": ariaInvalid,
+  "aria-required": ariaRequired,
 }: {
   value: WindowSelection;
   onChange: (next: WindowSelection) => void;
   className?: string;
   id?: string;
   "aria-label"?: string;
+  "aria-describedby"?: string;
+  "aria-invalid"?: boolean | "true" | "false";
+  "aria-required"?: boolean | "true" | "false";
 }) {
   const { t } = useTranslation();
   // subscribes to the chart zone, so the note below follows a change to it
@@ -98,7 +106,9 @@ export function TimeWindowPicker({
       <Combobox
         id={id}
         aria-label={ariaLabel}
-        aria-describedby={describedBy(countedIn ? `${uid}-zone` : undefined)}
+        aria-describedby={describedBy(ariaDescribedBy, countedIn ? `${uid}-zone` : undefined)}
+        aria-invalid={ariaInvalid}
+        aria-required={ariaRequired}
         options={options}
         value={committed ? CUSTOM_WINDOW : value}
         onChange={choose}

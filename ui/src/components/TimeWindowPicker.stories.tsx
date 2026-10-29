@@ -3,6 +3,7 @@ import * as React from "react";
 import { expect, fn, userEvent, waitFor, within } from "storybook/test";
 
 import { TimeWindowPicker } from "./TimeWindowPicker";
+import { Field } from "@/components/ui/field";
 import { setChartTimeZone } from "@/lib/i18n/format";
 import en from "@/lib/i18n/locales/en.json";
 import { formatDay, windowBounds, type WindowSelection } from "@/lib/time-window";
@@ -218,5 +219,61 @@ export const TheBrowsersOwnZoneIsNotNamed: Story = {
     const combobox = canvas.getByRole("combobox", { name: "Time window" });
     await expect(combobox).toBeVisible();
     await expect(combobox).not.toHaveAttribute("aria-describedby");
+  },
+};
+
+/**
+ * #3507: inside a `Field`, the picker's list is described by the field's hint,
+ * and by its error once there is one, which also marks the list invalid. The
+ * clone used to forward the label alone, so a screen reader heard neither.
+ */
+export const InAFieldItsHintAndErrorDescribeTheList: Story = {
+  render: () => (
+    <div className="flex w-64 flex-col gap-6">
+      <Field label="Report window" hint="The figures cover these days.">
+        <TimeWindowPicker value="7d" onChange={() => {}} />
+      </Field>
+      <Field label="Comparison window" hint="The figures cover these days." error="Pick a window.">
+        <TimeWindowPicker value="30d" onChange={() => {}} />
+      </Field>
+      <Field label="Required window" required>
+        <TimeWindowPicker value="24h" onChange={() => {}} />
+      </Field>
+    </div>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const hinted = canvas.getByRole("combobox", { name: "Report window" });
+    await expect(hinted).toHaveAccessibleDescription("The figures cover these days.");
+    await expect(hinted).not.toHaveAttribute("aria-invalid");
+
+    const failed = canvas.getByRole("combobox", { name: "Comparison window" });
+    await expect(failed).toHaveAccessibleDescription("Pick a window.");
+    await expect(failed).toHaveAttribute("aria-invalid", "true");
+
+    await expect(canvas.getByRole("combobox", { name: /Required window/ })).toHaveAttribute(
+      "aria-required",
+      "true",
+    );
+  },
+};
+
+/** a field's description and the chart zone's note both describe the list */
+export const InAFieldInAnotherChartZoneBothDescribeTheList: Story = {
+  render: () => (
+    <InChartZone zone={FAR_ZONE}>
+      <div className="w-64">
+        <Field label="Report window" hint="The figures cover these days.">
+          <TimeWindowPicker value="7d" onChange={() => {}} />
+        </Field>
+      </div>
+    </InChartZone>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const note = en.common.timeWindow.countedIn.replace("{{zone}}", FAR_ZONE);
+    await expect(
+      canvas.getByRole("combobox", { name: "Report window" }),
+    ).toHaveAccessibleDescription(`The figures cover these days. ${note}`);
   },
 };
