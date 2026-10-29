@@ -2500,8 +2500,10 @@ fn operations() -> Vec<Op> {
             Op::get(
                 "/api/v1/analytics/by-variant",
                 "getAnalyticsByVariant",
-                "Spend and usage grouped by route and the weighted variant that served it (`model` \
-                 narrows to one route); requests served without a variant come back under the empty string. \
+                "Spend and usage grouped by organization, route and the weighted variant that served it \
+                 (`model` narrows to one route): a row carries `org_id` (an empty string for a request no \
+                 organization owns) beside `model` and `variant`, since two organizations may each have a \
+                 route of one name; requests served without a variant come back under the empty string. \
                  `requests` counts every request the variant answered, failovers included; \
                  `first_attempt_requests` counts those it served on the first attempt (no \
                  `fallback_reason`, `clickhouse/023`), the closer comparison with the configured \

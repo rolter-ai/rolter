@@ -1417,6 +1417,7 @@ const observing = (data: unknown[], status = 200) =>
     }),
   );
 const variantTraffic = (variant: string, requests: number, errors: number, p95 = 300) => ({
+  org_id: "org-1",
   model: "gpt-4o",
   variant,
   requests,
@@ -1609,6 +1610,42 @@ export const AVariantThatAnsweredNothingKeepsItsAssignedShare: Story = {
       // no latency either: the zeros the read carries for it are not a measurement
       expect(cells("canary")).toEqual(["canary", "10%", "10%", "0%", "0%", "0", "—", "—"]),
     );
+  },
+};
+
+/**
+ * Rows are keyed on the organization too (#3548): two organizations may each
+ * have a route and variants of one name. The read is narrowed to the route's
+ * project, so another organization's rows of the same names never join this
+ * route's, here neither in the shares nor as lines of their own.
+ */
+const twoOrgs = observing([
+  { ...variantTraffic("stable", 900, 8, 420), assigned_requests: 900 },
+  { ...variantTraffic("canary", 100, 24, 900), assigned_requests: 100 },
+  { ...variantTraffic("stable", 50, 0), org_id: "org-2", assigned_requests: 50 },
+  { ...variantTraffic("canary", 50, 0), org_id: "org-2", assigned_requests: 50 },
+  { ...variantTraffic("other-org-only", 20, 0), org_id: "org-2", assigned_requests: 20 },
+]);
+export const AnotherOrganizationsVariantsOfOneNameStayApart: Story = {
+  render: () => (
+    <Harness fetchStub={twoOrgs.stub} role="admin">
+      <Toasted>
+        <RoutingRules />
+      </Toasted>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const dialog = await openRouteSheet(canvasElement);
+    const table = within(await dialog.findByRole("table", { name: "Observed traffic" }));
+    const row = (name: string) => table.getByText(name).closest('[role="row"]') as HTMLElement;
+    const cells = (name: string) =>
+      Array.from(row(name).querySelectorAll('[role="cell"]')).map((c) => c.textContent);
+    // 900 / 100 of this organization's requests, not 950 / 150 of both
+    await waitFor(() =>
+      expect(cells("stable").slice(0, 5)).toEqual(["stable", "90%", "90%", "90%", "900"]),
+    );
+    await expect(cells("canary").slice(0, 5)).toEqual(["canary", "10%", "10%", "10%", "100"]);
+    await expect(table.queryByText("other-org-only")).toBeNull();
   },
 };
 

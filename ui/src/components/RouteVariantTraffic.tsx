@@ -48,6 +48,9 @@ interface TrafficLine {
 
 const num = (v: number | string | null | undefined) => Number(v ?? 0);
 
+/** a by-variant row's key: two organizations may each have a variant of one name (#3548) */
+const rowKey = (orgId: string, variant: string) => `${orgId}\u0000${variant}`;
+
 /** whether some line carries a figure for `field`: a null or absent one is unknown */
 const carries = (lines: TrafficLine[], field: "first_attempt_requests" | "assigned_requests") =>
   lines.some((line) => line.row?.[field] !== undefined && line.row[field] !== null);
@@ -101,14 +104,20 @@ export function RouteVariantTraffic({
   });
   if (saved.length === 0) return null;
 
-  const rows = read.data ?? [];
-  const byName = new Map(rows.map((row) => [row.variant, row]));
+  const all = read.data ?? [];
+  // rows are keyed on the organization too (#3548). the read is narrowed to the
+  // route's project, so they name one organization; the busiest one's (the
+  // first row's) are the route's, and a control plane older than the field
+  // sends none, which keys every row on the empty string
+  const orgId = all[0]?.org_id ?? "";
+  const rows = all.filter((row) => (row.org_id ?? "") === orgId);
+  const byKey = new Map(rows.map((row) => [rowKey(orgId, row.variant), row]));
   const split = trafficSplit(saved.map((v) => v.weight));
   const lines: TrafficLine[] = [
     ...saved.map((v, i) => ({
       name: v.name,
       configured: split[i] ?? null,
-      row: byName.get(v.name),
+      row: byKey.get(rowKey(orgId, v.name)),
     })),
     // a variant that served traffic and is no longer configured is still a share of what happened
     ...rows
@@ -122,7 +131,7 @@ export function RouteVariantTraffic({
   const assignedTotal = lines.reduce((sum, line) => sum + num(line.row?.assigned_requests), 0);
   const gridColumns = grid(assignedKnown, splitKnown);
   const firstServed = lines.reduce((sum, line) => sum + num(line.row?.first_attempt_requests), 0);
-  const unattributed = num(byName.get("")?.requests);
+  const unattributed = num(byKey.get(rowKey(orgId, ""))?.requests);
   const unavailable = read.error instanceof AnalyticsUnavailableError ? read.error : null;
 
   return (
@@ -193,7 +202,7 @@ export function RouteVariantTraffic({
             {lines.map((line) => {
               const requests = num(line.row?.requests);
               return (
-                <ListRow key={line.name} grid={gridColumns}>
+                <ListRow key={rowKey(orgId, line.name)} grid={gridColumns}>
                   <ListCell className="truncate font-mono text-xs">{line.name}</ListCell>
                   <ListCell className="text-right font-mono text-xs">
                     {line.configured === null ? "—" : fmt.percent(line.configured, 0)}

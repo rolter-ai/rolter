@@ -190,6 +190,13 @@ export function fetchAnalyticsByModel(
  * traffic from before the route had variants.
  */
 export interface AnalyticsByVariantRow {
+  /**
+   * The organization whose route this is (#3548), an empty string for a request
+   * no organization owns: two organizations may each have a route of one name,
+   * and their variants are two sets of rows. Absent from a control plane older
+   * than the field.
+   */
+  org_id?: string;
   /** the route's public name */
   model: string;
   variant: string;

@@ -1033,7 +1033,10 @@ pub(crate) fn by_model_sql() -> String {
 /// observed share, errors, latency and cost with the configured split.
 ///
 /// A variant name means something only inside its route, so rows are keyed by
-/// `(model, variant)` and a caller reading one route passes `model`. Rows the
+/// `(org_id, model, variant)` and a caller reading one route passes `model`.
+/// The organization is part of the key for [`by_model`]'s reason (#3548):
+/// since #1857 two organizations may each have a route of one name, and a
+/// caller who reads both gets each organization's variants as their own rows. Rows the
 /// gateway served without a variant (the classic single pool, or traffic from
 /// before the route had variants) come back under the empty string, so a
 /// route's shares add up to its whole traffic. Everything else is
@@ -1115,7 +1118,7 @@ fn assigned_rows(columns: &Columns) -> &'static str {
 /// first, grouped by that variant rather than the one that answered, so a variant that only ever failed over still has a row (with no
 /// answered requests) and its assigned share. Two halves over the same window
 /// and filters, one grouped by the answering variant and one by the assigned
-/// one, are summed per `(model, variant)`: each half holds a key at most once,
+/// one, are summed per `(org_id, model, variant)`: each half holds a key at most once,
 /// so a sum (and a `max` for the percentiles) adds a figure to zero and is
 /// exact. It is `null` on a table without `first_variant`.
 pub(crate) fn by_variant_sql(columns: &Columns) -> String {
@@ -1132,12 +1135,13 @@ pub(crate) fn by_variant_sql(columns: &Columns) -> String {
     } else {
         "CAST(NULL AS Nullable(Float64))"
     };
-    // `model` and `variant` are selected under their own names, so both are
-    // qualified with the table: ClickHouse resolves a bare name to the alias
+    // `org_id`, `model` and `variant` are selected under their own names, so
+    // all three are qualified with the table: ClickHouse resolves a bare name to the alias
     // before the column. the sums alias other names, which carry their own
     // qualifiers where they need them
     let answered = format!(
-        "select request_logs.model as model, request_logs.variant as variant, \
+        "select request_logs.org_id as org_id, request_logs.model as model, \
+                request_logs.variant as variant, \
                 {REQUESTS} as requests, \
                 {first_attempt} as first_attempt_requests, \
                 {assigned} as assigned_requests, \
@@ -1148,10 +1152,10 @@ pub(crate) fn by_variant_sql(columns: &Columns) -> String {
                 {P50_LATENCY} as p50_latency_ms, \
                 {P95_LATENCY} as p95_latency_ms \
          from request_logs where {WHERE_WINDOW} and {ROW_VISIBLE} and {ROW_FILTERS} \
-         group by request_logs.model, request_logs.variant"
+         group by request_logs.org_id, request_logs.model, request_logs.variant"
     );
     if !has_assigned {
-        return format!("{answered} order by requests desc, model, variant format JSON");
+        return format!("{answered} order by requests desc, org_id, model, variant format JSON");
     }
     let assigned_rows = assigned_rows(columns);
     // a union matches its halves by position and takes the first one's names,
@@ -1166,7 +1170,8 @@ pub(crate) fn by_variant_sql(columns: &Columns) -> String {
     // the outer sums read the union through its alias, since a bare
     // `requests` inside `sum(...) as requests` would name the sum itself
     format!(
-        "select by_role.model as model, by_role.variant as variant, \
+        "select by_role.org_id as org_id, by_role.model as model, \
+                by_role.variant as variant, \
                 sum(by_role.requests) as requests, \
                 sum(by_role.first_attempt_requests) as first_attempt_requests, \
                 sum(by_role.assigned_requests) as assigned_requests, \
@@ -1179,7 +1184,8 @@ pub(crate) fn by_variant_sql(columns: &Columns) -> String {
          from ( \
              {answered} \
              union all \
-             select request_logs.model as model, {ASSIGNED_VARIANT} as assigned_variant, \
+             select request_logs.org_id as org_id, request_logs.model as model, \
+                    {ASSIGNED_VARIANT} as assigned_variant, \
                     toFloat64(0) as zero_requests, {first_attempt_zero} as zero_first_attempts, \
                     {REQUESTS} as assigned, toFloat64(0) as zero_tokens, \
                     toFloat64(0) as zero_cost, toFloat64(0) as zero_unpriced, \
@@ -1187,10 +1193,10 @@ pub(crate) fn by_variant_sql(columns: &Columns) -> String {
                     toFloat64(0) as zero_p95 \
              from request_logs \
              where {WHERE_WINDOW} and {ROW_VISIBLE} and {ROW_FILTERS} and {assigned_rows} \
-             group by request_logs.model, {ASSIGNED_VARIANT} \
+             group by request_logs.org_id, request_logs.model, {ASSIGNED_VARIANT} \
          ) as by_role \
-         group by by_role.model, by_role.variant \
-         order by requests desc, model, variant format JSON"
+         group by by_role.org_id, by_role.model, by_role.variant \
+         order by requests desc, org_id, model, variant format JSON"
     )
 }
 
@@ -2117,7 +2123,7 @@ mod tests {
         assert!(!sql.contains("count()"), "{sql}");
         // the counts and the grouping are still the by-model ones
         assert!(
-            sql.contains("group by request_logs.model, request_logs.variant"),
+            sql.contains("group by request_logs.org_id, request_logs.model, request_logs.variant"),
             "{sql}"
         );
         assert!(sql.contains(&format!("{REQUESTS} as requests")), "{sql}");
@@ -2130,7 +2136,9 @@ mod tests {
         let sql = by_variant_sql(&Columns::default());
         assert!(sql.contains("as assigned_requests"), "{sql}");
         assert!(
-            sql.contains(&format!("group by request_logs.model, {ASSIGNED_VARIANT}")),
+            sql.contains(&format!(
+                "group by request_logs.org_id, request_logs.model, {ASSIGNED_VARIANT}"
+            )),
             "{sql}"
         );
         // a row from before `048` counts only when it never failed over, and
@@ -2153,7 +2161,26 @@ mod tests {
         // the figures are summed per key, so the answered half is unchanged
         assert!(sql.contains("sum(by_role.requests) as requests"), "{sql}");
         assert!(sql.contains("max(by_role.p95_latency_ms)"), "{sql}");
-        assert!(sql.ends_with("order by requests desc, model, variant format JSON"));
+        assert!(sql.ends_with("order by requests desc, org_id, model, variant format JSON"));
+    }
+
+    #[test]
+    fn by_variant_keeps_two_orgs_same_named_routes_apart() {
+        // #3548: as by-model since #3486, every half is keyed on the org too,
+        // with or without the assigned half
+        for columns in [Columns::default(), Columns::lacking(&["first_variant"])] {
+            let sql = by_variant_sql(&columns);
+            assert!(sql.starts_with("select "), "{sql}");
+            assert!(sql.contains("as org_id"), "{sql}");
+            assert!(!sql.contains("group by request_logs.model"), "{sql}");
+            for group in sql.split("group by ").skip(1) {
+                assert!(
+                    group.starts_with("request_logs.org_id, ")
+                        || group.starts_with("by_role.org_id, "),
+                    "{group}"
+                );
+            }
+        }
     }
 
     #[test]

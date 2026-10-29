@@ -327,7 +327,10 @@ sets beside the configured weights:
 The assigned count needs rows grouped by another key than the answered ones,
 and a variant that only failed over has no answered row at all, so the select
 is a `union all` of the answered rollup and an assigned rollup over the same
-window and filters, summed per `(model, variant)`. A row without
+window and filters, summed per `(org_id, model, variant)`. The organization is
+part of every key (#3548), as in by-model since #3486: two organizations may
+each have a route of one name, and a caller who reads both gets each one's
+variants as their own rows. A row without
 `first_variant` (written before `048`, or by an older gateway) counts for the
 variant that answered it when it has no `fallback_reason`, for no variant when
 it failed over, and a classic row counts under the empty variant. Without
