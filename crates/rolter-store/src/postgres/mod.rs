@@ -820,6 +820,8 @@ impl PostgresConfigStore {
             // a per-gateway resource knob, set in the file only; the merge
             // keeps the file's value
             local_concurrency: None,
+            // gateway-side only, never in a snapshot (#3454)
+            model_root: None,
         })
     }
 

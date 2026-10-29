@@ -903,6 +903,9 @@ disabled = false # revoke without deleting
 # [semantic_guards]
 # local_concurrency = 4           # local classifier calls one gateway runs at
 #                                 # once; unset = half its CPUs (#3329)
+# model_root = "/etc/rolter/models"  # local models must resolve under it,
+#                                 # symlinks included; this gateway's own
+#                                 # setting, never from a snapshot (#3454)
 # [[semantic_guards.providers]]   # the same keys as [guardrail_webhook]
 # name = "toxicity"               # required, unique; policies list it by name
 # enabled = true
