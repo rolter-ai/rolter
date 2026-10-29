@@ -1897,6 +1897,51 @@ pub(crate) mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn a_snapshot_carrying_a_model_root_does_not_change_the_gateways() {
+        let confined = Confined::new("root-snapshot");
+        let outside = confined.dir.path("outside/model.json");
+        let classifiers = LocalClassifiers::default();
+        classifiers.configure(
+            &SemanticGuardsConfig {
+                model_root: Some(confined.root.to_string_lossy().into_owned()),
+                ..SemanticGuardsConfig::default()
+            },
+            &GuardrailWebhookConfig::default(),
+        );
+        // a snapshot body as the watcher reads it, naming a root that would
+        // admit the file outside the gateway's own
+        let snapshot: rolter_core::GatewayConfig = serde_json::from_value(json!({
+            "semantic_guards": {
+                "model_root": "/",
+                "providers": [{
+                    "name": "local",
+                    "enabled": true,
+                    "kind": "local",
+                    "model_path": outside,
+                    "model_sha256": fixture_sha256(),
+                    "timeout_ms": 2000
+                }]
+            }
+        }))
+        .expect("a snapshot body");
+        assert_eq!(snapshot.semantic_guards.model_root.as_deref(), Some("/"));
+        classifiers
+            .preload(&snapshot.semantic_guards, &snapshot.guardrail_webhook)
+            .await;
+        classifiers.apply(&snapshot.semantic_guards, &snapshot.guardrail_webhook);
+        assert_eq!(
+            classifiers.root.load().as_deref(),
+            Some(&confined.root),
+            "the root is the gateway's own"
+        );
+        let provider = &snapshot.semantic_guards.providers[0];
+        assert_eq!(
+            classifiers.classify(provider, &json!("x")).await,
+            Err(CallFailure::Model)
+        );
+    }
+
     #[test]
     fn a_weight_that_overflows_f32_is_refused() {
         for edit in [

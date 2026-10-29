@@ -1822,7 +1822,7 @@ A vendor-neutral hook to a self-hosted semantic guardrail service, such as Guard
 </ParamField>
 
 <ParamField path="max_body_bytes" default="65536" type="integer">
-  The most content forwarded to the service, in bytes. Oversized content is sent as a truncated preview with `truncated: true`. It must be greater than zero.
+  The most content forwarded to the service, in bytes. Oversized content is sent as a truncated preview with `truncated: true`. It must be greater than zero. With `kind = "local"`, it is the most text the local classifier reads: the first quarter and the last three quarters of a longer one.
 </ParamField>
 
 <ParamField path="auth" type="table">
