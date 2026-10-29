@@ -2391,8 +2391,10 @@ pub struct McpOrgSettingsConfig {
     /// times a call is repeated after a connection that was never made; a
     /// call that reached the server is never repeated
     pub max_retries: u32,
-    /// what to do when a request cannot be inspected for tool policy: `true`
-    /// forwards it unchecked, `false` (the default) refuses it
+    /// Deprecated and ignored by the gateway (#3527): a request that cannot be
+    /// inspected for tool policy is refused whatever this says, since one a
+    /// more lenient upstream parser reads could call a refused tool. Still
+    /// carried so the snapshot stays at format 1; removed in 2.0.0.
     #[serde(default)]
     pub fail_open: bool,
     /// whether a call may name a tool the server's manifest does not declare
@@ -2428,7 +2430,8 @@ pub struct McpGatewaySettingsConfig {
     pub connect_timeout_ms: i32,
     pub request_timeout_ms: i32,
     pub max_retries: i32,
-    /// `fail_open` or `fail_closed`
+    /// `fail_open` or `fail_closed`. Deprecated: accepted and exported, and
+    /// ignored by the gateway, which refuses every body it cannot judge (#3527)
     pub default_failure_mode: String,
     pub allow_unlisted_tools: bool,
 }

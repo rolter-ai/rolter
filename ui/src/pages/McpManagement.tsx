@@ -40,6 +40,7 @@ import {
 } from "@/components/ui/dialog";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Field } from "@/components/ui/field";
+import { FieldLabel } from "@/components/ui/field-label";
 import { FormSection } from "@/components/ui/form-section";
 import { Input } from "@/components/ui/input";
 import { SettingsPanel } from "@/components/ui/settings-panel";
@@ -2340,25 +2341,17 @@ function McpSettingsForm({
                 options={TRANSPORTS.map((transport) => ({ value: transport, label: transport }))}
               />
             </Field>
-            <Field
-              label={t("pages.mcpSettings.failureMode")}
-              htmlFor="failure-mode"
-              hint={t("pages.mcpSettings.failureModeHint")}
-            >
-              <Combobox
-                id="failure-mode"
-                value={form.default_failure_mode}
-                onChange={(picked) =>
-                  set({
-                    default_failure_mode: picked as McpGatewaySettingsRow["default_failure_mode"],
-                  })
-                }
-                options={[
-                  { value: "fail_closed", label: t("pages.mcpSettings.failClosed") },
-                  { value: "fail_open", label: t("pages.mcpSettings.failOpen") },
-                ]}
-              />
-            </Field>
+            {/* deprecated (#3527): the gateway refuses every body it cannot
+                judge, so the saved value is kept as it is and offered as no choice */}
+            <div role="group" aria-labelledby="failure-mode" className="grid gap-1.5">
+              <FieldLabel id="failure-mode" label={t("pages.mcpSettings.failureMode")} />
+              <div>
+                <Badge>{t("pages.mcpSettings.failureModeNoEffect")}</Badge>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                {t("pages.mcpSettings.failureModeNoEffectReason")}
+              </p>
+            </div>
             <SwitchRow
               title={t("pages.mcpSettings.allowUnlisted")}
               hint={t("pages.mcpSettings.allowUnlistedHint")}

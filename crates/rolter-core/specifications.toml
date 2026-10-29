@@ -794,7 +794,7 @@ supported = [
   "`method`, `result` and `error` are read from an MCP exchange to log tool calls",
 ]
 deviations = [
-  "a body that cannot be read as JSON-RPC is refused with 400 `mcp_request_unreadable` unless the organization's failure policy lets it through",
+  "a body to a server the organization's tool groups or tool manifest govern that cannot be read as strict JSON-RPC (UTF-16 or UTF-32, `NaN`, trailing commas, comments) is refused with 400 `mcp_request_unreadable`, whatever the deprecated failure policy says; a leading UTF-8 byte-order mark is removed, and the body is judged and forwarded without it (#3527)",
   "a request with `\"id\": null` is treated as a notification: nothing can be matched to a reply, so it is logged with the HTTP status and no result",
 ]
 omissions = [
@@ -844,7 +844,7 @@ supported = [
   "an upstream 403 whose challenge says `insufficient_scope` is answered with 403 `mcp_insufficient_scope` and a rebuilt `WWW-Authenticate` challenge",
 ]
 deviations = [
-  "a POST to a server the organization's tool groups or tool manifest govern, with a `Content-Encoding` other than `identity`, is refused with 415 `mcp_request_unreadable` whatever the failure policy says: the relay decodes no body, so it could not apply the rules to it",
+  "a POST to a server the organization's tool groups or tool manifest govern, with a `Content-Encoding` other than `identity`, is refused with 415 `mcp_request_unreadable`: the relay decodes no body, so it could not apply the rules to it",
 ]
 omissions = [
   "no protocol-version negotiation: `MCP-Protocol-Version` is relayed, never read",
