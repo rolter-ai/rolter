@@ -124,6 +124,12 @@ pub(crate) const OPTIONAL_COLUMNS: &[OptionalColumn] = &[
         name: "turns",
         default: "toUInt16(0)",
     },
+    // 037_request_log_provider_org.sql: the org that owns the provider, which
+    // tells two orgs' same-named providers apart (#1857, #3441)
+    OptionalColumn {
+        name: "provider_org_id",
+        default: "''",
+    },
 ];
 
 /// The probe: every column `request_logs` has in the database the client reads
@@ -289,6 +295,36 @@ impl ColumnCache {
     }
 }
 
+/// Whether `mcp_tool_call_logs` has the columns a hand-applied migration adds
+/// (#3375), remembered per client so a detail read does not probe each time.
+/// Applying `042` is an operator's step on an existing deployment and may come
+/// after the control plane is upgraded, so a select that names the column
+/// unconditionally would fail every detail read until then, as the invocation
+/// list's optional columns once did (#2903, see this module).
+// read only by the postgres-gated MCP log routes
+#[cfg_attr(not(feature = "postgres"), allow(dead_code))]
+#[derive(Default)]
+pub(crate) struct McpColumnCache {
+    entry: Mutex<Option<(bool, Instant)>>,
+}
+
+#[cfg_attr(not(feature = "postgres"), allow(dead_code))]
+impl McpColumnCache {
+    pub(crate) fn fresh(&self, now: Instant) -> Option<bool> {
+        let (present, at) = (*self.entry.lock())?;
+        let lifetime = if present { SETTLED_FOR } else { UNSETTLED_FOR };
+        (now.saturating_duration_since(at) < lifetime).then_some(present)
+    }
+
+    pub(crate) fn store(&self, now: Instant, present: bool) {
+        *self.entry.lock() = Some((present, now));
+    }
+
+    pub(crate) fn forget(&self) {
+        *self.entry.lock() = None;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -365,6 +401,7 @@ mod tests {
             "has_audio_input",
             "has_response_schema",
             "turns",
+            "provider_org_id",
         ]))
         .expect("the table is visible");
         assert_eq!(columns.missing(), ["cache_write_1h_tokens"]);

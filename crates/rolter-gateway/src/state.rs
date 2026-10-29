@@ -33,7 +33,7 @@ pub struct RouteEntry {
     /// org shares it, then `name@org`, so two orgs' `gpt-4o` never share a
     /// breaker (ADR-0040). For a synthetic `slug/model` entry it is the address,
     /// qualified the same way when the provider or group it pins is
-    pub namespace: String,
+    pub namespace: Arc<str>,
     /// the pool's balancer. `Arc` rather than `Box` because a group's balancer
     /// is owned by the snapshot and handed to every synthetic entry built for
     /// that group, so its rotation state outlives one request (#1655)
@@ -254,6 +254,12 @@ pub struct Snapshot {
     /// callers stay narrowed. A caller found in none keeps the organization-wide
     /// groups
     pub mcp_group_assignments: HashMap<String, Vec<(String, String, String)>>,
+    /// for each virtual key whose own, project's or team's assignments name at
+    /// least one group, the tools those groups allow per server, merged once
+    /// here rather than on every request (#3435). Keys with the same groups
+    /// share one value. A key absent from the map has no assignment, or is not
+    /// a key of this snapshot, and is resolved from `mcp_group_assignments`
+    pub mcp_caller_tools: HashMap<String, Arc<McpCallerTools>>,
     /// saved MCP settings by organization id (#1404). An organization with
     /// none saved is absent and gets the defaults
     pub mcp_org_settings: HashMap<String, rolter_core::McpOrgSettingsConfig>,
@@ -432,6 +438,98 @@ fn index_providers(
 
 /// The generation of the next snapshot built ([`Snapshot::generation`]).
 static NEXT_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// What a caller assigned to MCP tool groups may call, per server (#3435).
+///
+/// The union of the groups assigned to the caller's key, project and team,
+/// merged when the snapshot is built. Resolving it per request meant a `Vec` of
+/// the caller's groups and a clone of every tool name in their union on each
+/// call: allocation proportional to the size of the groups on a path that
+/// otherwise allocates nothing. Now a request pays one lookup by key id and one
+/// by server id, and borrows the set.
+#[derive(Debug, Default)]
+pub struct McpCallerTools {
+    /// the tools allowed on each server the caller is governed on: one an
+    /// organization-wide group names, or one any assigned group names, enabled
+    /// or not. A server absent from the map is not governed for the caller
+    pub governed: HashMap<String, std::collections::HashSet<String>>,
+}
+
+/// Merge the assigned groups of every database key that has any, sharing the
+/// result between keys whose groups are the same. The merge is what
+/// `Rules::governed_merged` computes for one request, kept as the reference the
+/// tests hold this to.
+fn build_mcp_caller_tools(
+    config: &GatewayConfig,
+    governed_org_wide: &HashMap<String, std::collections::HashSet<String>>,
+    group_tools: &HashMap<String, HashMap<String, std::collections::HashSet<String>>>,
+    group_servers: &HashMap<String, std::collections::HashSet<String>>,
+    assignments: &HashMap<String, Vec<(String, String, String)>>,
+    org_of_server: &HashMap<&str, &str>,
+) -> HashMap<String, Arc<McpCallerTools>> {
+    let mut by_groups: HashMap<(&str, Vec<&str>), Arc<McpCallerTools>> = HashMap::new();
+    let mut callers = HashMap::new();
+    if assignments.is_empty() {
+        return callers;
+    }
+    for key in &config.db_virtual_keys {
+        let mut groups: Vec<&str> = Vec::new();
+        for (kind, id) in [
+            ("virtual_key", &key.id),
+            ("project", &key.project_id),
+            ("team", &key.team_id),
+        ] {
+            if id.is_empty() {
+                continue;
+            }
+            for (assigned_kind, org_id, group) in assignments.get(id).into_iter().flatten() {
+                if assigned_kind == kind && *org_id == key.org_id {
+                    groups.push(group);
+                }
+            }
+        }
+        if groups.is_empty() {
+            continue;
+        }
+        groups.sort_unstable();
+        groups.dedup();
+        // keyed by organization too: a group is its organization's, so two
+        // keys share a value only inside one, and the value holds only that
+        // organization's servers rather than every governed server of every
+        // organization
+        let org = key.org_id.as_str();
+        let merged = by_groups
+            .entry((org, groups))
+            .or_insert_with_key(|(_, groups)| {
+                let mut governed: HashMap<String, std::collections::HashSet<String>> =
+                    HashMap::new();
+                // a server the caller's organization governs for everyone, or that
+                // an assigned group names (a disabled one too, with no tools)
+                let named = governed_org_wide.keys().chain(
+                    groups
+                        .iter()
+                        .filter_map(|group| group_servers.get(*group))
+                        .flatten(),
+                );
+                for server in
+                    named.filter(|server| org_of_server.get(server.as_str()) == Some(&org))
+                {
+                    governed.entry(server.clone()).or_default();
+                }
+                for group in groups {
+                    for (server, tools) in group_tools.get(*group).into_iter().flatten() {
+                        governed
+                            .entry(server.clone())
+                            .or_default()
+                            .extend(tools.iter().cloned());
+                    }
+                }
+                Arc::new(McpCallerTools { governed })
+            });
+        callers.insert(key.id.clone(), Arc::clone(merged));
+    }
+    callers
+}
 
 impl Snapshot {
     /// Build a snapshot from a configuration. `loads` is the shared in-flight/
@@ -728,7 +826,7 @@ impl Snapshot {
                 org,
                 &route.model,
                 RouteEntry {
-                    namespace,
+                    namespace: namespace.into(),
                     project_scope,
                     overrides: rolter_proxy::RouteOverrides::from_advanced(&route.advanced),
                     throughput: crate::rate_limits::RouteWindow::new(
@@ -853,6 +951,14 @@ impl Snapshot {
                     .push((subject.kind.clone(), group.org_id.clone(), group.id.clone()));
             }
         }
+        let mcp_caller_tools = build_mcp_caller_tools(
+            config,
+            &mcp_governed_tools,
+            &mcp_group_tools,
+            &mcp_group_servers,
+            &mcp_group_assignments,
+            &org_of_server,
+        );
         let mcp_org_settings = config
             .mcp_settings
             .iter()
@@ -881,6 +987,7 @@ impl Snapshot {
             mcp_group_tools,
             mcp_group_servers,
             mcp_group_assignments,
+            mcp_caller_tools,
             mcp_org_settings,
             mcp_oauth_sessions,
             pepper,
@@ -1087,6 +1194,21 @@ impl Snapshot {
         (rolter_core::namespace::display_name(id, org), org)
     }
 
+    /// The runtime id of the provider `org` owns under display name `name`,
+    /// the reverse of [`provider_label`](Self::provider_label): `name` itself
+    /// while no other provider shares it, `name@org` once one does. `None`
+    /// when the snapshot holds no such provider. Allocates, so it is for the
+    /// paths that keep a provider's stable identity across snapshots, not for
+    /// a request's own routing.
+    pub fn provider_id(&self, org: &str, name: &str) -> Option<&str> {
+        let owned = |id: &str| {
+            self.providers.get_key_value(id).and_then(|(id, p)| {
+                (rolter_core::namespace::org_of(p.tenancy.as_ref()) == org).then_some(id.as_str())
+            })
+        };
+        owned(name).or_else(|| owned(&rolter_core::namespace::qualify(name, org)))
+    }
+
     /// The display name of the provider with runtime id `id`; see
     /// [`provider_label`](Self::provider_label).
     pub fn provider_name<'a>(&'a self, id: &'a str) -> &'a str {
@@ -1132,7 +1254,7 @@ impl Snapshot {
             tenancy,
         };
         RouteEntry {
-            namespace,
+            namespace: namespace.into(),
             project_scope,
             overrides: Default::default(),
             throughput: None,

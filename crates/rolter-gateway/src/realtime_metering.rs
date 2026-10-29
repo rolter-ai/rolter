@@ -642,6 +642,9 @@ pub(crate) struct SessionMeter {
     pub(crate) model: String,
     /// the route's model, which prices are keyed by
     pub(crate) price_model: String,
+    /// the route's runtime namespace, which labels the turns' metric series
+    /// so two orgs' same-named routes stay apart (#3462)
+    pub(crate) route_namespace: Option<std::sync::Arc<str>>,
     pub(crate) provider: String,
     pub(crate) target: String,
     pub(crate) variant: String,
@@ -968,6 +971,7 @@ impl Runner {
             business_unit_id: meter.scope.business_unit.clone(),
             customer_id: meter.scope.customer.clone(),
             model: meter.model.clone(),
+            route_namespace: meter.route_namespace.clone(),
             provider: meter.provider.clone(),
             target: meter.target.clone(),
             variant: meter.variant.clone(),

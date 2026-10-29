@@ -178,11 +178,17 @@ impl HealthEventSink {
 
     /// Fill in the owning org of the event's provider unless the builder set
     /// one, and write the provider's display name rather than its runtime id,
-    /// so two orgs' `openai` are two series that each read `openai`.
+    /// so two orgs' `openai` are two series that each read `openai`. A probe
+    /// or status-page event names the provider itself as its `target_id`, and
+    /// that is rewritten the same way: the runtime id changes once a second
+    /// org takes the name, and the series must not split with it (#3441).
     fn stamp_org(&self, event: &mut HealthEvent) {
         if let Some(org) = self.orgs.load().get(&event.provider) {
             let display = rolter_core::namespace::display_name(&event.provider, org);
             if display.len() != event.provider.len() {
+                if event.target_id == event.provider {
+                    event.target_id = display.to_string();
+                }
                 event.provider = display.to_string();
             }
             if event.org_id.is_empty() {
@@ -392,6 +398,35 @@ mod tests {
             sink.stamp_org(&mut e);
             assert_eq!((e.provider.as_str(), e.org_id.as_str()), ("openai", org));
         }
+    }
+
+    /// #3441: a probe names the provider as its own `target_id`. Its series
+    /// keys on the provider's display name, so it reads the same before and
+    /// after the name becomes shared; a passive target is left alone.
+    #[test]
+    fn a_probe_target_is_the_display_name_not_the_runtime_id() {
+        let sink = HealthEventSink::disabled(Arc::new(Metrics::default()));
+        let probe = |sink: &HealthEventSink, runtime_id: &str| {
+            let mut e = event();
+            e.provider = runtime_id.to_string();
+            e.target_id = runtime_id.to_string();
+            sink.stamp_org(&mut e);
+            (e.provider, e.target_id)
+        };
+        sink.set_provider_orgs(&[provider("openai", Some("org-a"))]);
+        let before = probe(&sink, "openai");
+        sink.set_provider_orgs(&[
+            provider("openai@org-a", Some("org-a")),
+            provider("openai@org-b", Some("org-b")),
+        ]);
+        let after = probe(&sink, "openai@org-a");
+        assert_eq!(before, ("openai".into(), "openai".into()));
+        assert_eq!(after, before);
+        let mut passive = event();
+        passive.provider = "openai@org-a".to_string();
+        passive.target_id = "gpt-4o".to_string();
+        sink.stamp_org(&mut passive);
+        assert_eq!(passive.target_id, "gpt-4o");
     }
 
     #[test]

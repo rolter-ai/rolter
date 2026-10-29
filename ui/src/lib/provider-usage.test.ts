@@ -3,7 +3,9 @@ import { describe, expect, test } from "bun:test";
 import type { GatewayConfigDto, ProviderGroupRow } from "@/lib/api";
 import { providerUsage } from "@/lib/provider-usage";
 
-const provider = { id: "p-1", name: "openai-prod" };
+const provider = { id: "p-1", name: "openai-prod", org_id: "org-1" };
+
+const OWN = { org_id: "org-1", project_id: "project-1" };
 
 const config = (routes: GatewayConfigDto["routes"]) => ({ routes });
 
@@ -30,13 +32,14 @@ describe("providerUsage", () => {
     const usage = providerUsage(
       provider,
       config([
-        { model: "gpt-4o", strategy: "weighted", targets: [target("openai-prod")] },
+        { model: "gpt-4o", strategy: "weighted", tenancy: OWN, targets: [target("openai-prod")] },
         {
           model: "chat",
           strategy: "weighted",
+          tenancy: OWN,
           targets: [target("openai-prod"), target("anthropic-eu")],
         },
-        { model: "claude", strategy: "weighted", targets: [target("anthropic-eu")] },
+        { model: "claude", strategy: "weighted", tenancy: OWN, targets: [target("anthropic-eu")] },
       ]),
       [],
     );
@@ -68,7 +71,7 @@ describe("providerUsage", () => {
           strategy: "weighted",
           targets: [target("openai-prod"), target("anthropic-eu")],
         },
-        { model: "gpt-4o", strategy: "weighted", targets: [target("openai-prod")] },
+        { model: "gpt-4o", strategy: "weighted", tenancy: OWN, targets: [target("openai-prod")] },
       ]),
       [],
     );
@@ -82,5 +85,27 @@ describe("providerUsage", () => {
       routes: [],
       groups: [],
     });
+  });
+});
+
+// two organizations may each have an `openai-prod` (#1857, #3460)
+describe("two organizations sharing a provider name", () => {
+  test("counts only the routes of the provider's own organization", () => {
+    const usage = providerUsage(
+      provider,
+      config([
+        { model: "mine", strategy: "weighted", tenancy: OWN, targets: [target("openai-prod")] },
+        {
+          model: "theirs",
+          strategy: "weighted",
+          tenancy: { org_id: "org-2" },
+          targets: [target("openai-prod")],
+        },
+        // a config-file route never reaches a stored provider
+        { model: "file", strategy: "weighted", targets: [target("openai-prod")] },
+      ]),
+      [],
+    );
+    expect(usage.routes).toEqual([{ name: "mine", only: true }]);
   });
 });

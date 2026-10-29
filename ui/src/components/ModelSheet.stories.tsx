@@ -94,9 +94,9 @@ const ADVANCED_ROUTE: RouteRow = {
 };
 
 const MODELS: EffectiveModelDto[] = [
-  { model: "gpt-4o", strategy: "round_robin", targets: 1, source: "db" },
+  { model: "gpt-4o", strategy: "round_robin", targets: 1, source: "db", org_id: ORG.id },
   { model: "fake-llm", strategy: "round_robin", targets: 1, source: "config" },
-  { model: "llama-70b", strategy: "cache_aware", targets: 3, source: "db" },
+  { model: "llama-70b", strategy: "cache_aware", targets: 3, source: "db", org_id: ORG.id },
 ];
 
 /**
@@ -185,6 +185,7 @@ function Stage({
   configTargets,
   stub = backing,
   providers = PROVIDERS,
+  models = MODELS,
   toasts = false,
   role,
 }: {
@@ -194,6 +195,8 @@ function Stage({
   configTargets?: React.ComponentProps<typeof ModelSheet>["configTargets"];
   stub?: FetchStub;
   providers?: ProviderRow[];
+  /** the catalog the name check reads */
+  models?: EffectiveModelDto[];
   /** mount the toast queue, for a story that asserts what the save announced */
   toasts?: boolean;
   /** mount the capability gate as this role, for a story that asserts it */
@@ -222,7 +225,7 @@ function Stage({
           route={route}
           configModel={configModel}
           configTargets={configTargets}
-          models={MODELS}
+          models={models}
           routes={[ROUTE, FLEET_ROUTE]}
           onDone={() => {}}
         />
@@ -724,6 +727,29 @@ export const NameConflict: Story = {
     );
     await waitFor(() => expect(name).toHaveFocus());
     calls.expectNotSent("POST", `/projects/${PROJECT.id}/routes`);
+  },
+};
+
+/**
+ * #3460: another organization's `gpt-4o` is no conflict. Names are unique per
+ * organization (#1857), and the control plane accepts the route, so the sheet
+ * does not refuse it on a name only another organization uses.
+ */
+export const AnotherOrganizationsNameIsNoConflict: Story = {
+  render: () => (
+    <Stage mode="add" models={[{ ...MODELS[0], org_id: "org-2" }, MODELS[1], MODELS[2]]} />
+  ),
+  play: async () => {
+    const dialog = within(sheet());
+    await seededBlank(dialog);
+    await pickOption(dialog.getByLabelText("Target 1 provider"), "vllm-cluster");
+    const name = dialog.getByLabelText("Route name");
+    await userEvent.type(name, "gpt-4o");
+    await userEvent.tab();
+    await userEvent.click(dialog.getByRole("button", { name: "Add route" }));
+    await calls.expectSent("POST", `/projects/${PROJECT.id}/routes`);
+    await expect(name).not.toHaveAttribute("aria-invalid");
+    await expect(dialog.queryByText(/already exists/)).toBeNull();
   },
 };
 
@@ -1532,6 +1558,48 @@ export const ShowsAConfigRoutesGuardrailOverridesReadOnly: Story = {
     const phone = await off.findByRole("button", { name: "phone" });
     await expect(phone).toHaveAttribute("aria-pressed", "true");
     await expect(phone).toBeDisabled();
+  },
+};
+
+/**
+ * #3460: an organization's route of the same name comes first in the effective
+ * config and switches `email` off. The config-file route's sheet shows the
+ * file route's own overrides, never the organization's namesake's.
+ */
+export const AConfigRoutesOverridesAreNotItsNamesakes: Story = {
+  render: () => (
+    <Stage
+      mode="view"
+      configModel={{ model: "fake-llm", strategy: "weighted", targets: 1, source: "config" }}
+      stub={async (input, init) =>
+        /\/api\/v1\/config(\?|$)/.test(String(input))
+          ? json({
+              ...POLICY_DOC,
+              routes: [
+                {
+                  model: "fake-llm",
+                  tenancy: { org_id: "org-2", project_id: "project-9" },
+                  advanced: { guardrails: { disable: ["email"] } },
+                },
+                ...POLICY_DOC.routes,
+              ],
+            })
+          : backing(input, init)
+      }
+    />
+  ),
+  play: async () => {
+    const dialog = within(sheet());
+    await userEvent.click(await dialog.findByRole("button", { name: "Guardrails" }));
+    const off = within(await dialog.findByRole("group", { name: "Switched off on this route" }));
+    await expect(await off.findByRole("button", { name: "phone" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    await expect(off.getByRole("button", { name: "email" })).toHaveAttribute(
+      "aria-pressed",
+      "false",
+    );
   },
 };
 

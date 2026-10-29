@@ -3,6 +3,7 @@ import { AlertTriangle, HeartPulse } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { BreakerBadge } from "@/components/BreakerBadge";
+import { OwnerOrgPill, sharedNames } from "@/components/OwnerOrgPill";
 import { Overline } from "@/components/ui/overline";
 import { LoadError } from "@/components/LoadError";
 import { CardGridSkeleton } from "@/components/LoadingState";
@@ -32,7 +33,13 @@ import {
   type SlaState,
 } from "@/lib/route-targets";
 import { cn } from "@/lib/utils";
-import { eventAt, groupByProvider, headline } from "@/lib/provider-health";
+import {
+  eventAt,
+  groupByProvider,
+  headline,
+  providerKey,
+  type ProviderGroup,
+} from "@/lib/provider-health";
 import { useNow } from "@/lib/use-now";
 import { useScreenReady } from "@/lib/ux-react";
 
@@ -262,6 +269,12 @@ function SlaPill({ state }: { state: SlaState }) {
 }
 
 interface ProviderBreakers {
+  /**
+   * the organization of the routes whose targets these are, `""` for a
+   * config-file route: two organizations' routes may name providers of one
+   * name, and each organization's are listed apart (#3460)
+   */
+  org_id: string;
   provider: string;
   /** the tripped targets, open ones first */
   targets: BreakerTargetDto[];
@@ -269,13 +282,18 @@ interface ProviderBreakers {
   worst: BreakerTargetDto;
 }
 
-/** the tripped breakers grouped by the provider they sit in front of, open ones first */
+/**
+ * the tripped breakers grouped by the provider they sit in front of and the
+ * organization of their routes, open ones first, keyed by {@link providerKey}
+ */
 function breakersByProvider(state: BreakerStateDto | undefined): Map<string, ProviderBreakers> {
   const byProvider = new Map<string, ProviderBreakers>();
   for (const tg of state?.targets ?? []) {
     if (!isTripped(tg)) continue;
-    const entry = byProvider.get(tg.provider);
-    if (!entry) byProvider.set(tg.provider, { provider: tg.provider, targets: [tg], worst: tg });
+    const org = tg.org_id ?? "";
+    const k = providerKey(org, tg.provider);
+    const entry = byProvider.get(k);
+    if (!entry) byProvider.set(k, { org_id: org, provider: tg.provider, targets: [tg], worst: tg });
     else entry.targets.push(tg);
   }
   for (const entry of byProvider.values()) {
@@ -284,6 +302,28 @@ function breakersByProvider(state: BreakerStateDto | undefined): Map<string, Pro
     entry.worst = entry.targets[0];
   }
   return byProvider;
+}
+
+/**
+ * The worst tripped breaker in front of the provider a health card is about.
+ * A route reaches its own organization's provider first and a config-file one
+ * after it (#1857), so a card of an organization's provider takes that
+ * organization's breakers, and a config-file provider's card the breakers of
+ * every route with no provider of that name in its own organization.
+ */
+function cardBreaker(
+  group: ProviderGroup,
+  byProvider: Map<string, ProviderBreakers>,
+  cards: Set<string>,
+): BreakerTargetDto | undefined {
+  const own = byProvider.get(providerKey(group.org_id, group.provider));
+  if (group.org_id !== "") return own?.worst;
+  const reached = [...byProvider.values()].filter(
+    (entry) =>
+      entry.provider === group.provider &&
+      (entry.org_id === "" || !cards.has(providerKey(entry.org_id, entry.provider))),
+  );
+  return reached.find((entry) => entry.worst.state === "open")?.worst ?? reached[0]?.worst;
 }
 
 /**
@@ -302,6 +342,7 @@ function BreakerPanel({
 }) {
   const { t } = useTranslation();
   const providers = [...byProvider.values()];
+  const shared = sharedNames(providers.map((p) => ({ name: p.provider, orgId: p.org_id })));
   return (
     <section
       aria-labelledby="health-breakers-title"
@@ -327,12 +368,14 @@ function BreakerPanel({
         <ul className="divide-y divide-[color:var(--border-subtle)]">
           {providers.map((entry) => (
             <li
-              key={entry.provider}
+              key={providerKey(entry.org_id, entry.provider)}
               data-testid={`health-breaker-${entry.provider}`}
+              data-org={entry.org_id}
               className="flex flex-col gap-1.5 py-2 first:pt-0 last:pb-0"
             >
               <div className="flex flex-wrap items-center gap-2">
                 <span className="font-mono text-sm font-semibold">{entry.provider}</span>
+                {shared.has(entry.provider) && <OwnerOrgPill orgId={entry.org_id} />}
                 <BreakerBadge breaker={entry.worst} />
               </div>
               <ul className="flex flex-col gap-1">
@@ -475,17 +518,24 @@ export default function Health() {
   const isLoading = uptime.isLoading || mttr.isLoading || timeline.isLoading;
   const error = uptime.error || mttr.error || timeline.error;
 
-  const key = (provider: string, target: string) => `${provider}::${target}`;
-  const mttrByTarget = new Map((mttr.data ?? []).map((m) => [key(m.provider, m.target_id), m]));
+  // a provider is its organization and its name: two organizations may each
+  // have an `openai`, and the rollups answer a series for each (#3441)
+  const key = (org: string | undefined, provider: string, target: string) =>
+    `${providerKey(org, provider)}::${target}`;
+  const mttrByTarget = new Map(
+    (mttr.data ?? []).map((m) => [key(m.org_id, m.provider, m.target_id), m]),
+  );
   const timelineByTarget = new Map<string, TimelineRow[]>();
   for (const row of timeline.data ?? []) {
-    const k = key(row.provider, row.target_id);
+    const k = key(row.org_id, row.provider, row.target_id);
     const list = timelineByTarget.get(k) ?? [];
     list.push(row);
     timelineByTarget.set(k, list);
   }
   const sourceLabel = useSourceLabel();
   const groups = groupByProvider(uptime.data ?? []);
+  const cards = new Set(groups.map((g) => providerKey(g.org_id, g.provider)));
+  const shared = sharedNames(groups.map((g) => ({ name: g.provider, orgId: g.org_id })));
   const since = recentSince(timeline.data ?? []);
 
   return (
@@ -534,27 +584,26 @@ export default function Health() {
       <div className="grid gap-3.5 [grid-template-columns:repeat(auto-fill,minmax(min(340px,100%),1fr))]">
         {groups.map((group) => {
           const head = headline(group);
+          const at = (target: string) => key(group.org_id, group.provider, target);
           const providerMttr =
-            mttrByTarget.get(key(group.provider, group.provider)) ??
+            mttrByTarget.get(at(group.provider)) ??
             (group.overall
               ? undefined
               : // no provider-grain incidents to report: fall back to the worst
                 // target's, which is the one an operator is chasing
                 [...group.targets]
-                  .map((tgt) => mttrByTarget.get(key(group.provider, tgt.target_id)))
+                  .map((tgt) => mttrByTarget.get(at(tgt.target_id)))
                   .filter((m): m is MttrRow => !!m)
                   .sort((a, b) => b.mttr_seconds - a.mttr_seconds)[0]);
           const headBuckets = group.overall
-            ? (timelineByTarget.get(key(group.provider, group.provider)) ?? [])
+            ? (timelineByTarget.get(at(group.provider)) ?? [])
             : mergeBuckets(
-                group.targets.flatMap(
-                  (tgt) => timelineByTarget.get(key(group.provider, tgt.target_id)) ?? [],
-                ),
+                group.targets.flatMap((tgt) => timelineByTarget.get(at(tgt.target_id)) ?? []),
               );
           const targetState = (row: UptimeRow) =>
             slaState(
               row.sla_breached === 1,
-              recentBurn(timelineByTarget.get(key(group.provider, row.target_id)) ?? [], since),
+              recentBurn(timelineByTarget.get(at(row.target_id)) ?? [], since),
             );
           // a probed provider is judged on its own row, like its headline; a
           // rolled-up card takes its worst target, as `headline` does for a breach
@@ -563,8 +612,9 @@ export default function Health() {
             : worstState(group.targets.map(targetState));
           return (
             <div
-              key={group.provider}
+              key={providerKey(group.org_id, group.provider)}
               data-testid={`health-card-${group.provider}`}
+              data-org={group.org_id}
               className="flex flex-col gap-3.5 rounded-lg border bg-card p-4"
               style={{
                 borderColor:
@@ -575,6 +625,7 @@ export default function Health() {
             >
               <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1.5">
                 <span className="font-mono text-sm font-semibold">{group.provider}</span>
+                {shared.has(group.provider) && <OwnerOrgPill orgId={group.org_id} />}
                 <span className="font-mono text-xs text-[color:var(--text-subtle)]">
                   {head.derived
                     ? t("pages.health.grainDerived")
@@ -582,7 +633,7 @@ export default function Health() {
                         sources: head.sources.map(sourceLabel).join(", ") || "—",
                       })}
                 </span>
-                <BreakerBadge breaker={breakersByName.get(group.provider)?.worst} />
+                <BreakerBadge breaker={cardBreaker(group, breakersByName, cards)} />
                 <SlaPill state={state} />
               </div>
               <div className="flex items-end gap-3">
@@ -619,8 +670,8 @@ export default function Health() {
                       <TargetRow
                         key={row.target_id}
                         row={row}
-                        mttr={mttrByTarget.get(key(group.provider, row.target_id))}
-                        buckets={timelineByTarget.get(key(group.provider, row.target_id)) ?? []}
+                        mttr={mttrByTarget.get(at(row.target_id))}
+                        buckets={timelineByTarget.get(at(row.target_id)) ?? []}
                         state={targetState(row)}
                         now={now}
                       />

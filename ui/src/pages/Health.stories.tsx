@@ -4,6 +4,7 @@ import { expect, waitFor, within } from "storybook/test";
 import Health from "./Health";
 import {
   Harness,
+  ORG,
   expectEmptyState,
   expectLoadError,
   expectSkeleton,
@@ -702,5 +703,73 @@ export const BreakerStateUnavailable: Story = {
     await waitFor(() => expect(canvas.getByText("sonnet@eu")).toBeVisible());
     await expect(canvas.queryByTestId("health-breakers")).toBeNull();
     await expect(canvas.queryByRole("alert")).toBeNull();
+  },
+};
+
+const ACME = { id: "org-2", name: "Acme", slug: "acme", created_at: "2026-01-01T00:00:00Z" };
+
+const twinRow = (org: string, uptime: number, breached: boolean): UptimeRow => ({
+  org_id: org,
+  provider: "openai",
+  target_id: "openai",
+  grain: "provider",
+  sources: ["probe"],
+  events: 1000,
+  ok: Math.round(uptime * 1000),
+  errors: 1000 - Math.round(uptime * 1000),
+  timeouts: 0,
+  uptime,
+  failure_rate: 1 - uptime,
+  error_budget_burn: (1 - uptime) / 0.01,
+  sla_breached: breached ? 1 : 0,
+  last_event: "2026-08-06T10:00:00Z",
+});
+
+/**
+ * #3441, #3460: two organizations each have a provider called `openai`. They
+ * are two cards, each with its own organization's uptime and its own breakers,
+ * and each says whose it is; one organization's open breaker never lands on the
+ * other's card.
+ */
+export const TwoOrgsShareAProviderName: Story = {
+  render: () => (
+    <Harness
+      fetchStub={async (input, init) => {
+        const path = new URL(String(input), "http://localhost").pathname;
+        if (path === "/api/v1/orgs") return json([ORG, ACME]);
+        return scoped(
+          routes([
+            [
+              "/health/uptime",
+              () => ({ data: [twinRow(ORG.id, 0.5, true), twinRow(ACME.id, 0.9995, false)] }),
+            ],
+            ["/health/mttr", () => ({ data: [] })],
+            ["/health/timeline", () => ({ data: [] })],
+            [
+              "/breaker-state",
+              () => breakerState([breakerTarget({ org_id: ORG.id, provider: "openai" })]),
+            ],
+          ]),
+        )(input, init);
+      }}
+    >
+      <Health />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getAllByTestId("health-card-openai")).toHaveLength(2));
+    const card = (org: string) =>
+      canvas.getAllByTestId("health-card-openai").find((c) => c.dataset.org === org)!;
+    await waitFor(() => expect(within(card(ORG.id)).getByText("Org: Rolter")).toBeVisible());
+    await expect(within(card(ACME.id)).getByText("Org: Acme")).toBeVisible();
+    // each card its own figures
+    await expect(within(card(ORG.id)).getByText("50.00%")).toBeVisible();
+    await expect(within(card(ACME.id)).queryByText("50.00%")).toBeNull();
+    // the open breaker is on Rolter's routes, so only Rolter's card shows it
+    await waitFor(() =>
+      expect(within(card(ORG.id)).getByText("Breaker open on 2 gateways")).toBeVisible(),
+    );
+    await expect(within(card(ACME.id)).queryByTestId("breaker-badge")).toBeNull();
   },
 };

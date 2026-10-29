@@ -969,6 +969,148 @@ async fn a_recreated_provider_name_does_not_inherit_another_orgs_health_history(
     );
 }
 
+/// #3441: two orgs each have a provider of one name. Every health rollup
+/// answers a series per org, with `org_id`, rather than merging them, and a
+/// probe row a gateway wrote with the provider's runtime id (`name@org`, once
+/// the name became shared) stays in the same series as the rows written
+/// before, as a `provider`-grain row named by the display name. The
+/// parameter-adjustment rollup keys a provider by `provider_org_id` the same way.
+#[tokio::test]
+async fn two_orgs_same_named_providers_are_two_series_that_survive_the_name_becoming_shared() {
+    let ch = skip_without_stack!();
+    let http = reqwest::Client::new();
+    ensure_schema(&http, &ch).await;
+
+    let db = TestSchema::create(&test_database::url().await.unwrap()).await;
+    let pool = db.pool().clone();
+    let app = rolter_control::test_app_with_clickhouse_and_admin_token(
+        pool.clone(),
+        &ch,
+        Some(ADMIN_TOKEN.to_string()),
+    )
+    .await
+    .unwrap();
+    let addr = serve(app).await;
+    let org_a = seed_tenant(&pool, "twin-a").await;
+    let org_b = seed_tenant(&pool, "twin-b").await;
+    let suffix = &Uuid::new_v4().simple().to_string()[..12];
+    let name = format!("hp-twin-{suffix}");
+    seed_provider(&pool, org_a.org, &name).await;
+    seed_provider(&pool, org_b.org, &name).await;
+
+    let at = |ago_ms: i64| {
+        (chrono::Utc::now() - chrono::Duration::milliseconds(ago_ms))
+            .format("%Y-%m-%d %H:%M:%S%.3f")
+            .to_string()
+    };
+    let (a, b) = (org_a.org.to_string(), org_b.org.to_string());
+    let qualified = |org: &str| format!("{name}@{org}");
+    // org a's probe before the name was shared, then after, under its runtime
+    // id; org b's only after. each has one outage and its recovery
+    let mut events = Vec::new();
+    for (ago_ms, outcome, org, target) in [
+        (9000, "ok", &a, name.clone()),
+        (7000, "error", &a, name.clone()),
+        (5000, "ok", &a, qualified(&a)),
+        (8000, "ok", &b, qualified(&b)),
+        (6000, "error", &b, qualified(&b)),
+        (4000, "ok", &b, qualified(&b)),
+    ] {
+        events.push(json!({
+            "ts": at(ago_ms), "target_id": target, "provider": name,
+            "org_id": org, "source": "probe", "outcome": outcome, "latency_ms": 10,
+        }));
+    }
+    insert_rows(&http, &ch, "provider_health_events", &events).await;
+
+    for route in ["uptime", "mttr", "timeline"] {
+        let body: Value = http
+            .get(format!("http://{addr}/api/v1/health/{route}"))
+            .bearer_auth(ADMIN_TOKEN)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let mut series: Vec<(String, String, String)> = body["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|row| row["provider"] == name.as_str())
+            .map(|row| {
+                (
+                    row["org_id"].as_str().unwrap().to_string(),
+                    row["target_id"].as_str().unwrap().to_string(),
+                    row["grain"].as_str().unwrap().to_string(),
+                )
+            })
+            .collect();
+        series.sort();
+        series.dedup();
+        let mut expected = vec![
+            (a.clone(), name.clone(), "provider".to_string()),
+            (b.clone(), name.clone(), "provider".to_string()),
+        ];
+        expected.sort();
+        assert_eq!(series, expected, "{route}: {body}");
+        if route == "uptime" {
+            let events_of = |org: &str| {
+                body["data"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|row| row["provider"] == name.as_str() && row["org_id"] == org)
+                    // a 64-bit count comes back quoted or bare, per the
+                    // server's json settings
+                    .and_then(|row| {
+                        row["events"]
+                            .as_u64()
+                            .or_else(|| row["events"].as_str()?.parse().ok())
+                    })
+            };
+            // org a's series spans the moment its runtime id changed
+            assert_eq!(events_of(&a), Some(3), "{body}");
+            assert_eq!(events_of(&b), Some(3), "{body}");
+        }
+    }
+
+    // each org's request carried a dropped parameter through its own provider
+    let ts = at(3000);
+    let mut logs = Vec::new();
+    for tenant in [&org_a, &org_b] {
+        logs.push(json!({
+            "ts": ts, "request_id": format!("twin-{}", Uuid::new_v4().simple()),
+            "org_id": tenant.org.to_string(), "team_id": tenant.team.to_string(),
+            "project_id": tenant.project_a.to_string(),
+            "model": format!("twin-model-{suffix}"), "provider": name,
+            "provider_org_id": tenant.org.to_string(), "status": 200,
+            "param_adjustments": ["dropped:top_k"],
+        }));
+    }
+    insert_rows(&http, &ch, "request_logs", &logs).await;
+    let body: Value = http
+        .get(format!("http://{addr}/api/v1/analytics/param-adjustments"))
+        .bearer_auth(ADMIN_TOKEN)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let mut rows: Vec<String> = body["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|row| row["provider"] == name.as_str())
+        .map(|row| row["provider_org_id"].as_str().unwrap().to_string())
+        .collect();
+    rows.sort();
+    let mut expected = vec![a, b];
+    expected.sort();
+    assert_eq!(rows, expected, "{body}");
+}
+
 /// Bodies are keyed on the gateway's own `log_id`, which no caller chooses, so
 /// requests that share both the caller's `x-request-id` and the millisecond
 /// still read their own bodies and nobody else's (#1937).

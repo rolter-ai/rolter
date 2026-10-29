@@ -175,6 +175,55 @@ impl Drop for ExportPermit {
     }
 }
 
+/// A running export's permit behind a timer (#3433). The row, time and cancel
+/// checks of [`LogWalk`] only run when the body is polled, and a client that
+/// stops reading without closing its connection parks the body on a full
+/// socket buffer, where it is never polled again and would hold its slot until
+/// TCP gave up. So the permit sits in a slot a deadline task empties at
+/// [`ExportLimits::max_duration`] whether or not the body is ever polled; the
+/// slot is also emptied by the usual drop, and the timer is aborted when the
+/// body is dropped first.
+struct TimedPermit {
+    slot: Arc<parking_lot::Mutex<Option<ExportPermit>>>,
+    timer: Option<tokio::task::JoinHandle<()>>,
+}
+
+impl TimedPermit {
+    /// Hold `permit` until the guard drops or `limit` passes. No limit leaves
+    /// the permit to the drop alone.
+    fn new(permit: ExportPermit, limit: Option<Duration>) -> Self {
+        let slot = Arc::new(parking_lot::Mutex::new(Some(permit)));
+        let timer = limit.map(|limit| {
+            let slot = Arc::clone(&slot);
+            tokio::spawn(async move {
+                tokio::time::sleep(limit).await;
+                if slot.lock().take().is_some() {
+                    tracing::warn!(
+                        "request log export passed its time limit; its place was given back"
+                    );
+                }
+            })
+        });
+        Self { slot, timer }
+    }
+
+    /// The permit is still held, so the export may keep running.
+    fn is_held(&self) -> bool {
+        self.slot.lock().is_some()
+    }
+}
+
+impl Drop for TimedPermit {
+    fn drop(&mut self) {
+        if let Some(timer) = self.timer.take() {
+            timer.abort();
+        }
+        // an aborted task drops its clone of the slot only when the runtime
+        // next polls it, so the permit is given back here and not left to that
+        self.slot.lock().take();
+    }
+}
+
 /// `429` for an export the gate refused, with `Retry-After`.
 fn too_many_exports(busy: Busy) -> Response {
     let message = match busy {
@@ -397,7 +446,7 @@ type Caller = ();
 /// token, or the one shared credential. Open mode and the admin token have no
 /// person behind them, so they share a key.
 #[cfg(feature = "postgres")]
-fn caller_key(caller: &Caller) -> String {
+pub(crate) fn caller_key(caller: &Caller) -> String {
     use crate::rbac::Principal;
     match caller {
         Principal::Superadmin { account: Some(id) } => format!("user:{id}"),
@@ -408,7 +457,7 @@ fn caller_key(caller: &Caller) -> String {
 }
 
 #[cfg(not(feature = "postgres"))]
-fn caller_key(_: &Caller) -> String {
+pub(crate) fn caller_key(_: &Caller) -> String {
     "admin".to_string()
 }
 
@@ -696,7 +745,7 @@ struct LogWalk {
     /// the log has more rows than `max_rows`: the next chunk is the error
     over_rows: bool,
     /// the exports gate's place for this walk, given back when the body drops
-    _permit: Option<ExportPermit>,
+    permit: Option<TimedPermit>,
 }
 
 impl LogWalk {
@@ -704,6 +753,10 @@ impl LogWalk {
     async fn next_chunk(&mut self) -> anyhow::Result<Option<Bytes>> {
         if self.done {
             return Ok(None);
+        }
+        // the timer gave the place back while the body sat unread
+        if self.permit.as_ref().is_some_and(|permit| !permit.is_held()) {
+            anyhow::bail!("the export ran past its time limit");
         }
         if self.over_rows {
             anyhow::bail!(
@@ -844,6 +897,7 @@ async fn export_invocations(
         Err(busy) => return too_many_exports(busy),
     };
     let limits = state.export_gate.limits;
+    let permit = TimedPermit::new(permit, limits.max_duration);
     // which optional columns the table has, so the file still builds before an
     // operator applies the sequence column (see `request_log_columns`)
     let columns = match ch.request_log_columns().await {
@@ -862,7 +916,7 @@ async fn export_invocations(
         deadline: limits.max_duration.map(|limit| Instant::now() + limit),
         written: 0,
         over_rows: false,
-        _permit: Some(permit),
+        permit: Some(permit),
     };
     // the first page is read before the response starts, so a ClickHouse
     // failure is an error the client can read and not a download that ends
@@ -1009,6 +1063,59 @@ mod tests {
         assert_eq!(running.by_caller.get("a"), Some(&1));
     }
 
+    #[tokio::test]
+    async fn a_client_that_stops_reading_loses_its_place_at_the_deadline() {
+        let mut limits = ExportLimits::new(0, 0, 1, 1);
+        limits.max_duration = Some(Duration::from_millis(60));
+        let gate = Arc::new(ExportGate::new(limits));
+        let permit = TimedPermit::new(gate.try_acquire("a").unwrap(), limits.max_duration);
+        // the body of a stalled download: held, and never polled again
+        let stalled = stream::unfold(permit, |permit| async move {
+            Some((Ok::<_, io::Error>(Bytes::new()), permit))
+        });
+        let _body = Body::from_stream(stalled);
+        assert_eq!(gate.try_acquire("a").err(), Some(Busy::Process));
+        let started = Instant::now();
+        loop {
+            if let Ok(again) = gate.try_acquire("a") {
+                drop(again);
+                break;
+            }
+            assert!(
+                started.elapsed() < Duration::from_secs(5),
+                "the place was never given back"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    #[tokio::test]
+    async fn a_finished_export_gives_its_place_back_at_once_and_stops_the_timer() {
+        let gate = Arc::new(ExportGate::new(ExportLimits::new(0, 600, 1, 1)));
+        let held = TimedPermit::new(
+            gate.try_acquire("a").unwrap(),
+            Some(Duration::from_secs(600)),
+        );
+        assert!(held.is_held());
+        assert_eq!(gate.try_acquire("b").err(), Some(Busy::Process));
+        let timer = held
+            .timer
+            .as_ref()
+            .expect("a limit starts a timer")
+            .abort_handle();
+        drop(held);
+        assert!(gate.try_acquire("b").is_ok());
+        // and the ten minute timer does not outlive the export it was for
+        for _ in 0..50 {
+            if timer.is_finished() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(timer.is_finished(), "the timer was left running");
+    }
+
     #[test]
     fn an_unbounded_gate_refuses_nothing() {
         let gate = Arc::new(ExportGate::new(ExportLimits::new(0, 0, 0, 0)));
@@ -1131,6 +1238,36 @@ mod tests {
             "{rows}"
         );
         assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    /// The handler's wiring of the timer (#3433): a body that is never polled,
+    /// as when a client stops reading, still gives its caller's place back.
+    #[tokio::test]
+    async fn an_export_whose_body_is_never_read_gives_its_place_back_at_the_deadline() {
+        let url = fake_log(5000, Duration::ZERO).await;
+        let limits = ExportLimits {
+            max_duration: Some(Duration::from_millis(300)),
+            ..ExportLimits::new(0, 0, 0, 1)
+        };
+        let app = export_app(&url, limits);
+        // the headers arrive; the body is held and never polled
+        let stalled = export(&app).await;
+        assert_eq!(stalled.status(), StatusCode::OK);
+        assert_eq!(
+            export(&app).await.status(),
+            StatusCode::TOO_MANY_REQUESTS,
+            "the caller's place is held while the export runs"
+        );
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        assert_eq!(
+            export(&app).await.status(),
+            StatusCode::OK,
+            "the place came back with nothing polling the body"
+        );
+        // and the stalled body, if it is read after all, ends in the error
+        // rather than passing for a complete file
+        let (_, complete) = drain(stalled).await;
+        assert!(!complete);
     }
 
     #[tokio::test]

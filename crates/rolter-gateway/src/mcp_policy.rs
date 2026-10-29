@@ -161,7 +161,7 @@ impl Caller<'_> {
 }
 
 /// What a call to one server is judged against.
-struct Rules<'a> {
+pub(crate) struct Rules<'a> {
     /// the tools the caller's tool groups allow, when any group names the
     /// server: the organization's set, or the union of the caller's assigned
     /// groups when it has an assignment
@@ -176,7 +176,11 @@ struct Rules<'a> {
 }
 
 impl<'a> Rules<'a> {
-    fn of(snapshot: &'a Snapshot, server: &'a McpServerConfig, caller: &Caller<'_>) -> Self {
+    pub(crate) fn of(
+        snapshot: &'a Snapshot,
+        server: &'a McpServerConfig,
+        caller: &Caller<'_>,
+    ) -> Self {
         // saved settings decide for themselves; an organization with none
         // follows the marker it was created with (#3334)
         let allow_unlisted = snapshot
@@ -197,7 +201,29 @@ impl<'a> Rules<'a> {
     /// for everyone; a caller with an assignment is held to the union of its
     /// assigned groups, and also governed by a *disabled* assigned group that
     /// names the server, with none of that group's tools.
+    ///
+    /// A key of the snapshot with an assignment finds that union already merged
+    /// (`Snapshot::mcp_caller_tools`, #3435): per request that is two lookups
+    /// and a borrow, where [`Self::governed_merged`] builds a `Vec` of the
+    /// caller's groups and clones the union of their tool names. The caller's
+    /// project and team are the key's own, taken from the same snapshot, which
+    /// is what lets the key id stand for all three subjects. Any other caller
+    /// takes the merge.
     fn governed<'s>(
+        snapshot: &'s Snapshot,
+        server: &McpServerConfig,
+        caller: &Caller<'_>,
+    ) -> Option<Cow<'s, HashSet<String>>> {
+        match snapshot.mcp_caller_tools.get(caller.key_id) {
+            Some(merged) => merged.governed.get(&server.id).map(Cow::Borrowed),
+            None => Self::governed_merged(snapshot, server, caller),
+        }
+    }
+
+    /// [`Self::governed`] worked out from the assignments for this one caller:
+    /// what a caller the snapshot built nothing for gets, and the reference the
+    /// precomputed union is held to.
+    fn governed_merged<'s>(
         snapshot: &'s Snapshot,
         server: &McpServerConfig,
         caller: &Caller<'_>,
@@ -227,7 +253,7 @@ impl<'a> Rules<'a> {
 
     /// Whether any rule applies. When none does, the body is forwarded without
     /// being parsed.
-    fn any(&self) -> bool {
+    pub(crate) fn any(&self) -> bool {
         self.governed.is_some() || self.declared.is_some()
     }
 
@@ -238,9 +264,9 @@ impl<'a> Rules<'a> {
 
     /// The filter for a reply that lists this server's tools. Owns its copy of
     /// the rules, so it is only built once something needs it.
-    fn list_filter(self) -> ListFilter {
+    fn list_filter(&self) -> ListFilter {
         ListFilter::new(
-            self.governed.map(Cow::into_owned),
+            self.governed.as_deref().cloned(),
             self.declared.map(<[String]>::to_vec),
         )
     }
@@ -438,8 +464,10 @@ impl<'de> Visitor<'de> for Parse {
 
 /// A request body read once: its messages, and whether any of them repeats a
 /// key. `None` when it is not JSON at all.
-struct Body {
+pub(crate) struct Body {
     messages: Vec<Value>,
+    /// whether the body was a JSON array of messages rather than one message
+    batch: bool,
     /// whether any copy of each message's `method` is `tools/call`
     called: Vec<bool>,
     repeated: bool,
@@ -450,15 +478,60 @@ impl Body {
         let mut parser = serde_json::Deserializer::from_slice(bytes);
         let out = Parse(Level::Body).deserialize(&mut parser).ok()?;
         parser.end().ok()?;
-        let (messages, called) = match out.value {
-            Value::Array(items) => (items, out.calls),
-            other => (vec![other], out.calls),
+        let (messages, called, batch) = match out.value {
+            Value::Array(items) => (items, out.calls, true),
+            other => (vec![other], out.calls, false),
         };
         Some(Self {
             messages,
+            batch,
             called,
             repeated: out.repeated,
         })
+    }
+
+    /// Whether `bytes` can hold a `tools/call`: it spells the method out, or it
+    /// holds a `\u` or `\/` escape that could spell it. Most MCP traffic is neither, and is
+    /// not worth a parse when only the log wants it.
+    fn may_call(bytes: &[u8]) -> bool {
+        const NEEDLE: &[u8] = b"tools/call";
+        // only `\u` and `\/` can spell a character of it
+        bytes.windows(NEEDLE.len()).any(|w| w == NEEDLE)
+            || bytes
+                .windows(2)
+                .any(|w| w[0] == b'\\' && matches!(w[1], b'u' | b'/'))
+    }
+
+    /// The one request a body is made of, when it is a single `tools/call` with
+    /// an id: the only shape whose reply can be matched to a log row. A
+    /// notification and a batch are not recorded when they are allowed; a
+    /// refused one is (#1403). Returned as the canonical request
+    /// [`Self::tool_calls`] builds, so a key written in another case is read as
+    /// a decoder would read it.
+    pub(crate) fn single_call(&self, arguments: bool) -> Option<Map<String, Value>> {
+        if self.batch {
+            return None;
+        }
+        let request = self.messages.first()?.as_object()?;
+        if Self::method(self.messages.first()?) != Some("tools/call") {
+            return None;
+        }
+        let id = get_folded(request, "id").filter(|id| !id.is_null())?;
+        let params = get_folded(request, "params")?.as_object()?;
+        let name = get_folded(params, "name")?;
+        // the arguments are the one deep copy, so they are taken only when the
+        // log will keep them
+        let mut kept = Map::new();
+        kept.insert("name".into(), name.clone());
+        if arguments {
+            if let Some(arguments) = get_folded(params, "arguments") {
+                kept.insert("arguments".into(), arguments.clone());
+            }
+        }
+        let mut canonical = Map::new();
+        canonical.insert("id".into(), id.clone());
+        canonical.insert("params".into(), Value::Object(kept));
+        Some(canonical)
     }
 
     /// The method a message names, read the way a decoder would.
@@ -517,6 +590,38 @@ impl Body {
     }
 }
 
+/// A request body as far as it was read, once, for the policy and the MCP log
+/// alike (#3399): both take their keys from the same case-folded lookup, so a
+/// call the policy allows is a call the log records.
+pub(crate) enum Read {
+    /// nothing needed the body, so it was not parsed
+    Skipped,
+    /// something needed it and it is not JSON
+    Unreadable,
+    Parsed(Body),
+}
+
+impl Read {
+    /// Read `bytes` when a rule applies (`governed`) or when `logging` wants to
+    /// know whether it is a `tools/call`; otherwise leave it alone.
+    pub(crate) fn of(bytes: &[u8], governed: bool, logging: bool) -> Self {
+        let wanted = !bytes.is_empty() && (governed || (logging && Body::may_call(bytes)));
+        if !wanted {
+            return Self::Skipped;
+        }
+        Body::parse(bytes).map_or(Self::Unreadable, Self::Parsed)
+    }
+
+    /// The single `tools/call` the log can follow, when the body was read.
+    /// `arguments` says whether the log keeps them.
+    pub(crate) fn single_call(&self, arguments: bool) -> Option<Map<String, Value>> {
+        match self {
+            Self::Parsed(body) => body.single_call(arguments),
+            _ => None,
+        }
+    }
+}
+
 /// What the policy made of one request body.
 pub(crate) struct Decision {
     pub verdict: Verdict,
@@ -537,38 +642,37 @@ impl Decision {
 /// The filter for a stream the caller opens with `GET`, which can carry
 /// `tools/list` replies to requests posted elsewhere, or `None` when no rule
 /// applies to the server (#3297).
-pub(crate) fn stream_filter(
-    snapshot: &Snapshot,
-    server: &McpServerConfig,
-    caller: &Caller<'_>,
-) -> Option<ListFilter> {
-    let rules = Rules::of(snapshot, server, caller);
+pub(crate) fn stream_filter(rules: &Rules<'_>) -> Option<ListFilter> {
     rules.any().then(|| rules.list_filter())
 }
 
-/// Apply the policy to a request body bound for `server`.
-pub(crate) fn evaluate(
+/// Apply the policy to a request body bound for `server`, read once by the
+/// caller as `read`.
+pub(crate) fn evaluate_read(
     snapshot: &Snapshot,
     server: &McpServerConfig,
-    caller: &Caller<'_>,
-    body: &[u8],
+    rules: &Rules<'_>,
+    read: &Read,
 ) -> Decision {
-    let rules = Rules::of(snapshot, server, caller);
-    if !rules.any() || body.is_empty() {
+    if !rules.any() {
         return Decision::of(Verdict::Allow);
     }
-    let Some(parsed) = Body::parse(body) else {
-        // what to do with a request that cannot be inspected is the
-        // organization's failure policy; refusing is the default
-        let fail_open = snapshot
-            .mcp_org_settings
-            .get(&server.org_id)
-            .is_some_and(|settings| settings.fail_open);
-        return Decision::of(if fail_open {
-            Verdict::Allow
-        } else {
-            Verdict::Unreadable
-        });
+    let parsed = match read {
+        Read::Skipped => return Decision::of(Verdict::Allow),
+        Read::Parsed(parsed) => parsed,
+        Read::Unreadable => {
+            // what to do with a request that cannot be inspected is the
+            // organization's failure policy; refusing is the default
+            let fail_open = snapshot
+                .mcp_org_settings
+                .get(&server.org_id)
+                .is_some_and(|settings| settings.fail_open);
+            return Decision::of(if fail_open {
+                Verdict::Allow
+            } else {
+                Verdict::Unreadable
+            });
+        }
     };
     if parsed.repeated {
         return Decision::of(Verdict::Ambiguous(
@@ -610,12 +714,25 @@ pub(crate) fn evaluate(
     }
 }
 
+/// Read and judge a body in one step, as the proxy does across its own.
+#[cfg(test)]
+pub(crate) fn evaluate(
+    snapshot: &Snapshot,
+    server: &McpServerConfig,
+    caller: &Caller<'_>,
+    body: &[u8],
+) -> Decision {
+    let rules = Rules::of(snapshot, server, caller);
+    let read = Read::of(body, rules.any(), false);
+    evaluate_read(snapshot, server, &rules, &read)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use rolter_core::{
         GatewayConfig, McpOrgSettingsConfig, McpToolGroupConfig, McpToolGroupSubjectConfig,
-        McpToolRefConfig,
+        McpToolRefConfig, VirtualKeyRecord,
     };
 
     fn caller() -> Caller<'static> {
@@ -682,6 +799,31 @@ mod tests {
         let mut config = GatewayConfig::default();
         config.mcp_servers.extend([server.clone(), elsewhere]);
         config.mcp_tool_groups = groups;
+        // the default caller and one nobody is assigned to, as keys of the
+        // snapshot, so their groups are the ones merged when it is built
+        config.db_virtual_keys.extend(
+            [
+                ("key-1", "project-1", "team-1"),
+                ("key-2", "project-2", "team-2"),
+            ]
+            .map(|(id, project, team)| VirtualKeyRecord {
+                id: id.into(),
+                org_id: "org".into(),
+                project_id: project.into(),
+                team_id: team.into(),
+                key_hash: format!("hash-{id}"),
+                previous: None,
+                access_policy: None,
+                user_id: "user-1".into(),
+                models: Vec::new(),
+                providers: Vec::new(),
+                disabled: false,
+                expires_at: None,
+                cache: None,
+                business_unit_id: String::new(),
+                customer_id: String::new(),
+            }),
+        );
         (
             Snapshot::build(&config, &crate::load::LoadTracker::default()),
             server,
@@ -948,6 +1090,173 @@ mod tests {
         );
     }
 
+    /// #3435: the union merged when the snapshot is built is the one a request
+    /// would have merged for itself, for a key with groups on every subject, an
+    /// overlap, a disabled group, a server only a disabled group names, and for
+    /// callers with none.
+    #[test]
+    fn the_precomputed_union_equals_the_merged_one() {
+        let mut off = assigned(
+            named(group("org", "elsewhere", &["z"]), "off"),
+            "team",
+            "team-2",
+        );
+        off.disabled = true;
+        let (snapshot, server) = world(vec![
+            named(group("org", "srv", &["a", "b", "c"]), "all"),
+            assigned(
+                named(group("org", "srv", &["a", "b"]), "g1"),
+                "team",
+                "team-1",
+            ),
+            assigned(
+                named(group("org", "srv", &["b", "c"]), "g2"),
+                "project",
+                "project-1",
+            ),
+            assigned(
+                named(group("org", "srv", &["a"]), "g3"),
+                "virtual_key",
+                "key-1",
+            ),
+            assigned(
+                named(group("org", "elsewhere", &["z"]), "g4"),
+                "virtual_key",
+                "key-1",
+            ),
+            off,
+            // another organization's assignment matches no caller
+            assigned(
+                named(group("other", "srv", &["c"]), "foreign"),
+                "virtual_key",
+                "key-1",
+            ),
+        ]);
+        assert!(snapshot.mcp_caller_tools.contains_key("key-1"));
+        assert!(snapshot.mcp_caller_tools.contains_key("key-2"));
+        let elsewhere = snapshot
+            .mcp_servers
+            .values()
+            .find(|candidate| candidate.id == "elsewhere")
+            .cloned()
+            .unwrap();
+        for caller in [
+            caller(),
+            Caller {
+                key_id: "key-2",
+                project_id: "project-2",
+                team_id: "team-2",
+                ..caller()
+            },
+            Caller {
+                key_id: "unknown",
+                ..caller()
+            },
+        ] {
+            for server in [&server, &elsewhere] {
+                let precomputed = Rules::governed(&snapshot, server, &caller);
+                let merged = Rules::governed_merged(&snapshot, server, &caller);
+                assert_eq!(
+                    precomputed.as_deref(),
+                    merged.as_deref(),
+                    "{} on {}",
+                    caller.key_id,
+                    server.id
+                );
+            }
+        }
+        // the key with groups on all three subjects: a, b and c, each once, and
+        // nothing is cloned to read it
+        let governed = Rules::governed(&snapshot, &server, &caller()).unwrap();
+        assert!(matches!(governed, Cow::Borrowed(_)));
+        assert_eq!(governed.len(), 3);
+        // key-2's only assignment is a disabled group naming another server, so
+        // here it is the organization's set, and there it is narrowed to none
+        assert_eq!(
+            allowed_for(&snapshot, &server, &caller()),
+            [true, true, true]
+        );
+        let other = Caller {
+            key_id: "key-2",
+            project_id: "project-2",
+            team_id: "team-2",
+            ..caller()
+        };
+        assert_eq!(
+            Rules::governed(&snapshot, &elsewhere, &other)
+                .unwrap()
+                .len(),
+            0
+        );
+    }
+
+    /// a governed caller's body is always read, whatever the log wants: the
+    /// policy cannot judge what it did not parse
+    #[test]
+    fn a_governed_body_is_always_read_and_an_ungoverned_one_only_for_the_log() {
+        let plain: &[u8] = br#"{"jsonrpc":"2.0","id":1,"method":"ping"}"#;
+        let call: &[u8] =
+            br#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"a"}}"#;
+        let escaped = br#"{"method":"tools\u002fcall","id":1,"params":{"name":"a"}}"#;
+        for (logging, body) in [(true, plain), (false, plain), (true, call), (false, call)] {
+            assert!(matches!(Read::of(body, true, logging), Read::Parsed(_)));
+        }
+        assert!(matches!(Read::of(plain, false, true), Read::Skipped));
+        assert!(matches!(Read::of(call, false, false), Read::Skipped));
+        assert!(matches!(Read::of(call, false, true), Read::Parsed(_)));
+        assert!(matches!(Read::of(escaped, false, true), Read::Parsed(_)));
+        // an escape that cannot spell the method is not worth a parse
+        let newline = br#"{"method":"ping","id":1,"params":{"q":"a\nb \"c\""}}"#;
+        assert!(matches!(Read::of(newline, false, true), Read::Skipped));
+        assert!(matches!(
+            Read::of(b"not json", true, false),
+            Read::Unreadable
+        ));
+    }
+
+    /// a key's entry holds the servers of its own organization only (#3435)
+    #[test]
+    fn a_precomputed_entry_holds_only_its_own_organizations_servers() {
+        let mut config = GatewayConfig::default();
+        for (id, org) in [("srv-a", "org-a"), ("srv-b", "org-b")] {
+            config.mcp_servers.push(McpServerConfig {
+                id: id.into(),
+                org_id: org.into(),
+                slug: id.into(),
+                ..Default::default()
+            });
+        }
+        config.mcp_tool_groups = vec![
+            assigned(group("org-a", "srv-a", &["a"]), "team", "team-a"),
+            // org-b governs its own server for everyone
+            group("org-b", "srv-b", &["b"]),
+        ];
+        config.mcp_tool_groups[0].id = "g-a".into();
+        config.mcp_tool_groups[1].id = "g-b".into();
+        config.db_virtual_keys.push(VirtualKeyRecord {
+            id: "key-a".into(),
+            org_id: "org-a".into(),
+            project_id: "project-a".into(),
+            team_id: "team-a".into(),
+            key_hash: "hash-a".into(),
+            previous: None,
+            access_policy: None,
+            user_id: "user-1".into(),
+            models: Vec::new(),
+            providers: Vec::new(),
+            disabled: false,
+            expires_at: None,
+            cache: None,
+            business_unit_id: String::new(),
+            customer_id: String::new(),
+        });
+        let snapshot = Snapshot::build(&config, &crate::load::LoadTracker::default());
+        let entry = &snapshot.mcp_caller_tools["key-a"];
+        let mut servers: Vec<&String> = entry.governed.keys().collect();
+        servers.sort();
+        assert_eq!(servers, ["srv-a"], "org-b's server is not this key's");
+    }
+
     #[test]
     fn an_assignment_in_another_organization_matches_no_caller() {
         let (snapshot, server) = world(vec![
@@ -1057,9 +1366,9 @@ mod tests {
     #[test]
     fn a_stream_is_filtered_only_where_a_rule_applies() {
         let (snapshot, server) = snapshot(vec![group("org", "srv", &["get_issue"])]);
-        assert!(stream_filter(&snapshot, &server, &caller()).is_some());
+        assert!(stream_filter(&Rules::of(&snapshot, &server, &caller())).is_some());
         let (snapshot, server) = world(vec![]);
-        assert!(stream_filter(&snapshot, &server, &caller()).is_none());
+        assert!(stream_filter(&Rules::of(&snapshot, &server, &caller())).is_none());
     }
 
     /// a group disabled while callers are assigned to it narrows them to

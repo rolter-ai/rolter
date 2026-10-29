@@ -526,6 +526,21 @@ const MCP_LOGS_QUERY: &[QueryParam] = &[
     ),
 ];
 
+/// The subject lookup behind the Log erasure picker (#3385).
+const LOG_ERASURE_SUBJECT_QUERY: &[QueryParam] = &[
+    QueryParam::required("kind", "string", "virtual_key, user or org"),
+    QueryParam::new(
+        "q",
+        "string",
+        "part of a name or email, case-insensitive; omit for the first few",
+    ),
+    QueryParam::new(
+        "id",
+        "string",
+        "one subject by id, to name an id already in hand",
+    ),
+];
+
 /// The audit log's query string. Keyset-paged like the two logs above — it was
 /// equally undiscoverable — and it pages in both directions, which is the part
 /// a caller cannot guess at all.
@@ -2693,6 +2708,12 @@ fn operations() -> Vec<Op> {
                 "Erase one virtual key's, user's, organization's or single request's logs and captured payloads",
             ),
             Op::get(
+                "/api/v1/log-erasures/subjects",
+                "findLogErasureSubjects",
+                "Find the named virtual keys, users or organizations the erasure form offers (superadmin)",
+            )
+            .query(LOG_ERASURE_SUBJECT_QUERY),
+            Op::get(
                 "/api/v1/log-erasures/{id}",
                 "getLogErasure",
                 "Read an erasure, settling it once ClickHouse reports its mutations done",
@@ -2773,6 +2794,9 @@ fn operations() -> Vec<Op> {
             )
             .body(Payload::Empty)
             .ok(Payload::Open)
+            .too_many_requests(
+                "the relay was checked a moment ago, by this caller (every five seconds) or by anyone (every two); `Retry-After` says how long to wait",
+            )
             .conflict("mail is not configured on this control plane"),
             Op::get(
                 "/api/v1/invitations/accept/{token}",

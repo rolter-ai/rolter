@@ -255,6 +255,7 @@ export {
   listInvitations,
   createInvitation,
   resendInvitation,
+  checkMailRelay,
   revokeInvitation,
   isInvitationSignInRequired,
   previewInvitation,
@@ -263,6 +264,7 @@ export {
 export type {
   Invitation,
   CreatedInvitation,
+  MailRelayCheck,
   InvitationPreview,
   InvitationSignInRequired,
   AcceptInvitationOutcome,
@@ -679,12 +681,21 @@ export {
   revokeApiToken,
 } from "./api-tokens";
 export type { ApiTokenRow, ApiTokenState, MintedApiToken, MintApiTokenInput } from "./api-tokens";
-export { createLogErasure, fetchLogErasure, fetchLogErasures } from "./log-erasure";
+export {
+  createLogErasure,
+  fetchLogErasure,
+  fetchLogErasures,
+  findLogErasureSubjects,
+} from "./log-erasure";
 export type {
   CreateLogErasureInput,
   LogErasureRow,
   LogErasureScope,
   LogErasureStatus,
+  LogErasureStore,
+  LogErasureSubject,
+  LogErasureSubjectList,
+  LogErasureSubjectKind,
 } from "./log-erasure";
 export { fetchVersion, fetchStability, fetchPublicUrl } from "./system";
 export type { SubsystemStability, VersionStatus, PublicUrl } from "./system";
