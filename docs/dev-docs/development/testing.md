@@ -125,6 +125,8 @@ eval "$(just test-pg)"   # starts rolter-test-pg on 127.0.0.1:55433 if needed, e
 cargo nextest run -p rolter-store -p rolter-control --features postgres
 ```
 
+The server url may name a Unix socket instead of a host (`postgres://root@%2Fvar%2Frun%2Fpostgresql/postgres`): every suite, including the out-of-slots test of `test_schema.rs`, derives its urls from the parsed options rather than rebuilding `host:port` by hand (#3257). The out-of-slots test creates a role of its own and connects as it, so over a socket the cluster needs a `trust` or password rule for it; where `pg_hba.conf` says `peer`, Postgres refuses the role before it reaches the connection limit and the test skips with that reason.
+
 The recipe is idempotent: it creates the `rolter-test-pg` container the first
 time, starts it again after a reboot, and otherwise only prints the export line,
 so every session on the machine runs the same command and lands on the same
@@ -383,6 +385,42 @@ forwarder (`testing::Outage`) in front of it and take that down and back up.
 The `nextest / doctests` and coverage jobs in `quality.yml` run a Redis service
 and set the variable, so these tests run in CI rather than passing as silent
 no-ops.
+
+## The examples tests
+
+The reference services under `examples/` carry their own tests (#3429), so a release of one of
+their dependencies cannot break them unseen. Two steps of the `static checks` job in `quality.yml`
+run them, which makes them part of `quality`, so `ci-ok` waits on them. Each installs its example's
+pinned `requirements-dev.txt` through `uv` and runs `pytest`; reproduce one with
+
+```sh
+cd examples/presidio-restore-shim
+uv run --no-project --python 3.13 --with-requirements requirements-dev.txt pytest
+```
+
+dependabot's `pip` ecosystem covers each example's directory, so a new example with a
+`requirements.txt` needs its own entry in `.github/dependabot.yml`.
+
+- **`examples/presidio-restore-shim/`** has its own suite, which drives the shim with a hand-written
+  client. The gateway's `presidio_shim` test (#3444) additionally runs the real shim under uvicorn
+  behind a real gateway route. It reads `ROLTER_TEST_SHIM_PYTHON`, the interpreter to start the
+  shim with; the `nextest / doctests` job builds a virtualenv from the shim's `requirements.txt` and
+  sets it, and a value that cannot import the shim's dependencies fails the test. Left unset, the
+  test tries `python3` and skips with the reason when it cannot import them, so a machine without
+  Python still runs the suite. Locally:
+
+  ```sh
+  uv venv /tmp/shim-venv && uv pip install --python /tmp/shim-venv -r examples/presidio-restore-shim/requirements.txt
+  ROLTER_TEST_SHIM_PYTHON=/tmp/shim-venv/bin/python cargo test -p rolter-gateway --test presidio_shim
+  ```
+
+- **`examples/rolter-linear-trainer/`** holds no service, only a test (#3455). It runs the
+  scikit-learn trainer printed on the semantic guard policies page over the golden vectors in
+  `crates/rolter-gateway/tests/fixtures/local_classifier/golden_features.json`, and the gateway's
+  `local_classifier` unit test holds the same file against the Rust tokenizer and FNV-1a hash. Change
+  the vectors with `ROLTER_TEST_REGENERATE_GOLDEN=1 pytest` in that directory, then run the Rust
+  test: both sides have to agree. The file is written with `json.dumps`, so `.prettierignore` lists
+  it.
 
 ## Layout
 

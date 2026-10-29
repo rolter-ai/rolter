@@ -92,6 +92,12 @@ channels hold back independently, that a JSON channel gets escaped values, that
 a longer one could have outgrown), that an unknown token passes text
 through and that a reset exchange leaves nothing behind for the next.
 
+The gateway's own client is held to the shim too: `crates/rolter-gateway/tests/presidio_shim.rs`
+starts this service under uvicorn and streams a chat completion through a real gateway route whose
+`restore_stream_url` points at it, with a placeholder split across chunks and a JSON-format tool
+call (#3444). It runs when `ROLTER_TEST_SHIM_PYTHON` names a Python with `requirements.txt`
+installed; CI sets it, so there it never skips.
+
 ## What it never logs
 
 No text delta, restored value or mapping reaches a log line or an error body. It
