@@ -212,9 +212,7 @@ fn config(upstream: SocketAddr, sanitizer: SocketAddr, shim: SocketAddr) -> Gate
         strategy: BalancingStrategy::RoundRobin,
         targets: vec![Target {
             provider: "up".to_string(),
-            model: None,
-            weight: 1,
-            takes_over: Vec::new(),
+            ..Default::default()
         }],
         params: Default::default(),
         param_policy: Default::default(),

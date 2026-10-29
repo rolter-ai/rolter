@@ -350,6 +350,7 @@ impl ConfigStore for MergedConfigStore {
         // a bootstrap-only marker (an exported file carries it): the snapshot
         // carries the same fact inside each server, never this table (#3398)
         merged.mcp_manifest_enforcement = db.mcp_manifest_enforcement;
+        merged.mcp_gateway_settings = db.mcp_gateway_settings;
         merged
             .model_prices
             .extend(db.model_prices.into_iter().filter(|p| {
@@ -627,21 +628,9 @@ mod tests {
 
     fn db_vkey(id: &str, hash: &str) -> rolter_core::VirtualKeyRecord {
         rolter_core::VirtualKeyRecord {
-            previous: None,
             key_hash: hash.to_string(),
             id: id.to_string(),
-            org_id: String::new(),
-            team_id: String::new(),
-            project_id: String::new(),
-            user_id: String::new(),
-            models: vec![],
-            providers: vec![],
-            disabled: false,
-            expires_at: None,
-            cache: None,
-            business_unit_id: String::new(),
-            customer_id: String::new(),
-            access_policy: None,
+            ..Default::default()
         }
     }
 
@@ -821,6 +810,27 @@ mod tests {
             .unwrap();
         assert!(
             merged.mcp_manifest_enforcement.is_empty(),
+            "a bootstrap-only table reached the snapshot"
+        );
+    }
+
+    /// `[[mcp_gateway_settings]]` is read by the importer only (#3482): the
+    /// snapshot carries the same values per organization as `mcp_settings`.
+    #[tokio::test(flavor = "current_thread")]
+    async fn merged_store_never_ships_the_bootstrap_mcp_gateway_settings() {
+        let file = GatewayConfig {
+            mcp_gateway_settings: vec![rolter_core::McpGatewaySettingsConfig {
+                org: "acme".to_string(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let merged = merged_with(file, GatewayConfig::default())
+            .load()
+            .await
+            .unwrap();
+        assert!(
+            merged.mcp_gateway_settings.is_empty(),
             "a bootstrap-only table reached the snapshot"
         );
     }

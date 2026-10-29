@@ -277,6 +277,7 @@
       "config": "the effective config",
       "configProblems": "the list of config problems",
       "configExport": "the configuration",
+      "organizations": "organizations",
       "providers": "providers",
       "plugins": "plugins",
       "gettingStarted": "the setup checklist",
@@ -371,6 +372,8 @@
         "kek_unavailable": "The control plane cannot seal credentials. Ask an operator to configure ROLTER_KEK and restart it.",
         "analytics_query_timeout": "The analytics query took too long. Narrow the time range and try again.",
         "api_token_inactive": "This token is revoked or has expired, so there is nothing to rotate. Create a new one.",
+        "config_export_binding_shadowed": "A deployment-wide route or group uses a provider that this organization replaces with its own, so the file could not reproduce it. Rename the organization's provider or point the route at another one.",
+        "config_export_needs_org": "Two or more organizations share a name, so the whole deployment cannot be exported as one file. Pick an organization.",
         "analytics_query_failed": "The analytics query failed.",
         "internal": "The control plane hit an internal error.",
         "invalid_body": "The request was not valid JSON for this action. Reload the page and try again.",
@@ -4576,7 +4579,18 @@
       },
       "export": {
         "action": "Export rolter.toml",
-        "pending": "Exporting…"
+        "pending": "Exporting…",
+        "run": "Export",
+        "title": "Export the configuration",
+        "body": "Download the live configuration as a rolter.toml that rolter-seed --import accepts. Credentials are never written.",
+        "org": "Organization",
+        "orgHint": "One organization's rows, plus the rows no organization owns. Type a slug if it is not listed.",
+        "orgPlaceholder": "Pick an organization",
+        "allOrgs": "All organizations",
+        "noOrgs": "No organizations are listed for you. Type an organization's slug to export it, or leave All organizations to export the whole deployment.",
+        "needsOrg": "Two or more organizations share a route, provider or slug name, so the whole deployment cannot be one file. Pick an organization to export.",
+        "withoutPersonCaps": "Leave per-person caps out",
+        "withoutPersonCapsHint": "A cap on a person names their account by email. Leaving them out keeps every address out of the file."
       },
       "summary": {
         "line": "{{providers}} · {{routes}} · {{keys}}",

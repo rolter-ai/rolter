@@ -507,6 +507,22 @@ disabled = false # revoke without deleting
 # org = "acme"
 # enforce = true
 
+# --- saved mcp gateway settings (imported by rolter-seed, written by config export) ---
+# the mcp settings an organization saved on the MCP Settings screen. `org` is
+# the slug. unlike the manifest marker above this is the desired state: an
+# import sets the organization it targets (`--org-slug`) to exactly these values,
+# stricter or laxer than it was, and skips entries for any other organization.
+# `allow_unlisted_tools = false` is the organization enforcing its servers'
+# tool manifests. the control plane never ships this table in the snapshot.
+# [[mcp_gateway_settings]]
+# org = "acme"
+# default_transport = "streamable_http"   # sse | streamable_http | websocket
+# connect_timeout_ms = 5000               # 100 to 60000
+# request_timeout_ms = 30000              # 1000 to 300000
+# max_retries = 1                         # 0 to 5
+# default_failure_mode = "fail_closed"    # fail_open | fail_closed
+# allow_unlisted_tools = false
+
 # --- spend caps (enforced against redis-tracked cost) ---
 # a request is blocked with 402 when any matching budget's spend has reached its
 # limit (most-restrictive-wins across the scope chain). requires --redis-url;

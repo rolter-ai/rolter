@@ -135,9 +135,7 @@ fn config(a: SocketAddr, b: SocketAddr) -> GatewayConfig {
             strategy: BalancingStrategy::RoundRobin,
             targets: vec![Target {
                 provider: "openai".into(),
-                model: None,
-                weight: 1,
-                takes_over: Vec::new(),
+                ..Default::default()
             }],
             params: Default::default(),
             param_policy: Default::default(),
@@ -147,21 +145,11 @@ fn config(a: SocketAddr, b: SocketAddr) -> GatewayConfig {
             tenancy: owned_by(org),
         });
         config.db_virtual_keys.push(VirtualKeyRecord {
-            previous: None,
-            access_policy: None,
             key_hash: rolter_auth::hash_key(&config.server.resolve_key_pepper(), &key_of(org)),
             id: format!("key-{org}"),
             org_id: org.into(),
-            team_id: String::new(),
-            project_id: String::new(),
-            user_id: String::new(),
-            models: vec![],
             providers: vec!["openai".into()],
-            disabled: false,
-            expires_at: None,
-            cache: None,
-            business_unit_id: String::new(),
-            customer_id: String::new(),
+            ..Default::default()
         });
     }
     config

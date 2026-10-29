@@ -443,7 +443,8 @@ const CONFIG_EXPORT_QUERY: &[QueryParam] = &[
         "string",
         "the slug of one organization: export its rows only (and those no organization owns), \
          which is how a deployment whose organizations share a route or provider name is \
-         exported. A slug no organization has is a 400",
+         exported (without it that deployment answers a 400 with the code \
+         `config_export_needs_org`). A slug no organization has is a 400",
     ),
     QueryParam::new(
         "without_person_caps",
