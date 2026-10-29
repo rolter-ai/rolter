@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use uuid::Uuid;
 
+use rolter_core::config::only_restricted_dialled;
 use rolter_core::failover::{all_targets_restricted, FailureClass};
 use rolter_core::{AdvancedModelConfig, Error, MAX_ROUTE_RETRIES};
 use rolter_store::postgres::models::{Route, RouteTarget, RouteVariant};
@@ -342,11 +343,13 @@ async fn update_route(
                 TargetPaths::InList,
             )
             .await?;
-            // a list of nothing but restricted fallbacks could never dial
-            // anything (#1584)
-            if targets.iter().all(RouteTargetInput::is_restricted)
-                && !variants_have_ordinary_target(&state, id).await?
-            {
+            // a route left with nothing but restricted fallbacks to dial
+            // could never dial anything (#1584); a route with variants dials
+            // only them, so the new pool counts only without (#3487)
+            if only_restricted_dialled(
+                targets.iter().map(RouteTargetInput::is_restricted),
+                stored_variants_restricted(&state, id).await?,
+            ) {
                 return Err(invalid_field(
                     "targets",
                     all_targets_restricted(&existing.model),
@@ -825,16 +828,26 @@ fn validate_takes_over(takes_over: &[String], field: &str) -> ApiResult<()> {
     Ok(())
 }
 
-/// Whether one of the route's variants has an ordinary target. Validation
-/// counts the classic pool and every variant together (#3373), so such a
-/// target is what lets the pool hold only restricted fallbacks.
-async fn variants_have_ordinary_target(state: &ControlState, route_id: Uuid) -> ApiResult<bool> {
+/// Whether each of the route's stored variants' targets is restricted, one
+/// set per variant, for [`only_restricted_dialled`]: a route with variants
+/// dials only them, so they decide whether a write to its pool strands it
+/// (#3487).
+async fn stored_variants_restricted(
+    state: &ControlState,
+    route_id: Uuid,
+) -> ApiResult<Vec<Vec<bool>>> {
     Ok(RouteVariantRepo(pool(state))
         .list(route_id)
         .await?
         .iter()
-        .flat_map(|variant| &variant.targets)
-        .any(|target| target.takes_over.is_empty()))
+        .map(|variant| {
+            variant
+                .targets
+                .iter()
+                .map(|target| !target.takes_over.is_empty())
+                .collect()
+        })
+        .collect())
 }
 
 async fn create_route_target(
@@ -855,13 +868,17 @@ async fn create_route_target(
         TargetPaths::Alone,
     )
     .await?;
-    // a restricted target added to a route with no ordinary one would leave
-    // the route nothing it may dial first (#1584)
+    // a restricted target added to a route with no ordinary one to dial
+    // would leave the route nothing it may dial first (#1584, #3487)
     if body.is_restricted() {
         let existing = RouteTargetRepo(pool(&state)).list(route_id).await?;
-        if existing.iter().all(|t| !t.takes_over.is_empty())
-            && !variants_have_ordinary_target(&state, route_id).await?
-        {
+        if only_restricted_dialled(
+            existing
+                .iter()
+                .map(|t| !t.takes_over.is_empty())
+                .chain([true]),
+            stored_variants_restricted(&state, route_id).await?,
+        ) {
             return Err(invalid_field(
                 "takes_over",
                 all_targets_restricted(&route.model),
@@ -900,15 +917,17 @@ async fn delete_route_target(
     let target = RouteTargetRepo(pool(&state)).get(id).await?;
     let org_id =
         authorize_route(&state, &principal, target.route_id, cap!("route", Update)).await?;
-    // removing the last ordinary target would leave only restricted fallbacks,
-    // which could never dial anything (#1584)
+    // removing the last ordinary target to dial would leave only restricted
+    // fallbacks, which could never dial anything (#1584, #3487)
     if target.takes_over.is_empty() {
         let siblings = RouteTargetRepo(pool(&state)).list(target.route_id).await?;
-        let remaining: Vec<&RouteTarget> = siblings.iter().filter(|t| t.id != id).collect();
-        if !remaining.is_empty()
-            && remaining.iter().all(|t| !t.takes_over.is_empty())
-            && !variants_have_ordinary_target(&state, target.route_id).await?
-        {
+        if only_restricted_dialled(
+            siblings
+                .iter()
+                .filter(|t| t.id != id)
+                .map(|t| !t.takes_over.is_empty()),
+            stored_variants_restricted(&state, target.route_id).await?,
+        ) {
             let route = RouteRepo(pool(&state)).get(target.route_id).await?;
             return Err(ApiError::Conflict(all_targets_restricted(&route.model)));
         }
@@ -1078,19 +1097,18 @@ fn variant_specs(variants: Vec<VariantInput>) -> ApiResult<Vec<RouteVariantSpec>
 }
 
 /// Whether a route with `pool` as its classic targets and `variants` as its
-/// variant set has targets and every one of them is restricted.
+/// variant set would dial only restricted targets: the variants' targets when
+/// there are any, the pool otherwise (#3487).
 fn leaves_only_restricted(pool: &[RouteTarget], variants: &[RouteVariantSpec]) -> bool {
-    let mut restricted = pool
-        .iter()
-        .map(|target| &target.takes_over)
-        .chain(
-            variants
+    only_restricted_dialled(
+        pool.iter().map(|target| !target.takes_over.is_empty()),
+        variants.iter().map(|variant| {
+            variant
+                .targets
                 .iter()
-                .flat_map(|variant| variant.targets.iter().map(|target| &target.takes_over)),
-        )
-        .map(|takes_over| !takes_over.is_empty())
-        .peekable();
-    restricted.peek().is_some() && restricted.all(|restricted| restricted)
+                .map(|target| !target.takes_over.is_empty())
+        }),
+    )
 }
 
 async fn set_route_variants(
@@ -1104,9 +1122,10 @@ async fn set_route_variants(
     let org_id = chain.org;
     authorize(&state, &principal, chain, cap!("route", Update)).await?;
     let specs = variant_specs(body.variants)?;
-    // the classic pool and every variant count together, as the gateway's
-    // validation counts them: a set that leaves the route nothing but
-    // restricted fallbacks could never dial anything (#3373)
+    // a route with variants dials only them and one without dials its pool,
+    // as the gateway's validation counts them: a set that leaves the route
+    // nothing but restricted fallbacks to dial could never dial anything
+    // (#3373, #3487)
     let pool_targets = RouteTargetRepo(pool(&state)).list(id).await?;
     if leaves_only_restricted(&pool_targets, &specs) {
         return Err(invalid_field(

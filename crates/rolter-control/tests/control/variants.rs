@@ -632,3 +632,142 @@ async fn a_variant_target_takes_over_failure_classes() {
     assert_eq!(status, 400, "{refused}");
     assert_eq!(refused["error"]["field"], "variants", "{refused}");
 }
+
+/// #3487: every routes-API write applies the gateway's dialled-targets rule. A
+/// route with variants dials only the variants' targets, so an ordinary pool
+/// no longer lets a set of fallback-only variants through; a route without
+/// variants dials its pool. Each write path that could strand a route is
+/// refused naming `all_targets_restricted`.
+#[tokio::test]
+async fn the_routes_api_counts_only_the_targets_the_gateway_dials() {
+    skip_without_db!();
+    let (app, db) = fresh_app().await;
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+    let (_, project_id, [primary, secondary]) = tenant(&client, &base, "dialled").await;
+    let route = post(
+        &client,
+        format!("{base}/api/v1/projects/{project_id}/routes"),
+        json!({"model": "pooled"}),
+    )
+    .await;
+    let route_id = route["id"].as_str().unwrap();
+    let route_url = format!("{base}/api/v1/routes/{route_id}");
+    let variants_url = format!("{route_url}/variants");
+    let pooled = post(
+        &client,
+        format!("{route_url}/targets"),
+        json!({"provider_id": primary}),
+    )
+    .await;
+    let pooled_id = pooled["id"].as_str().unwrap();
+    let refused_restricted = |(status, body): (u16, Value), code: u16| {
+        assert_eq!(status, code, "{body}");
+        assert!(
+            body["error"]["message"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("all_targets_restricted"),
+            "{body}"
+        );
+    };
+
+    // PUT variants: fallback-only variants over an ordinary pool would leave
+    // the gateway nothing to dial, since it never consults the pool then
+    let before = config_version(db.pool()).await;
+    let fallbacks_only = json!({"variants": [
+        {"name": "a", "targets": [{"provider_id": secondary, "takes_over": ["throttled"]}]},
+        {"name": "b", "targets": [{"provider_id": primary, "takes_over": ["timeout"]}]}
+    ]});
+    refused_restricted(
+        put(&client, variants_url.clone(), fallbacks_only).await,
+        400,
+    );
+    assert_eq!(config_version(db.pool()).await, before);
+
+    // a set with an ordinary target is accepted, and removing that last
+    // ordinary variant target is refused in turn
+    let (status, body) = put(
+        &client,
+        variants_url.clone(),
+        json!({"variants": [{"name": "a", "targets": [
+            {"provider_id": secondary},
+            {"provider_id": primary, "takes_over": ["throttled"]}
+        ]}]}),
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+    refused_restricted(
+        put(
+            &client,
+            variants_url.clone(),
+            json!({"variants": [{"name": "a", "targets": [
+                {"provider_id": primary, "takes_over": ["throttled"]}
+            ]}]}),
+        )
+        .await,
+        400,
+    );
+
+    // with ordinary variant targets the pool is not dialled, so the pool's
+    // writes may leave it only fallbacks
+    let (status, body) = put(
+        &client,
+        route_url.clone(),
+        json!({"targets": [{"provider_id": primary, "takes_over": ["timeout"]}]}),
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+    let (status, body) = put(
+        &client,
+        route_url.clone(),
+        json!({"targets": [{"provider_id": primary}]}),
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+
+    // a route stranded before the rule reached the API (its variants hold
+    // only fallbacks) refuses every pool write that leaves it so: the pool
+    // is not dialled while the variants exist
+    sqlx::query(
+        "update route_variant_targets set takes_over = '{throttled}' \
+         where variant_id in (select id from route_variants where route_id = $1::uuid)",
+    )
+    .bind(route_id)
+    .execute(db.pool())
+    .await
+    .unwrap();
+    // POST a target
+    let resp = client
+        .post(format!("{route_url}/targets"))
+        .json(&json!({"provider_id": secondary, "takes_over": ["refusal"]}))
+        .send()
+        .await
+        .unwrap();
+    let status = resp.status().as_u16();
+    refused_restricted((status, resp.json().await.unwrap()), 400);
+    // PUT the target list
+    refused_restricted(
+        put(
+            &client,
+            route_url.clone(),
+            json!({"targets": [{"provider_id": primary}]}),
+        )
+        .await,
+        400,
+    );
+    // DELETE a target
+    let resp = client
+        .delete(format!("{base}/api/v1/route-targets/{pooled_id}"))
+        .send()
+        .await
+        .unwrap();
+    let status = resp.status().as_u16();
+    refused_restricted((status, resp.json().await.unwrap()), 409);
+
+    // clearing the variants hands the route back to its ordinary pool
+    let (status, body) = put(&client, variants_url.clone(), json!({"variants": []})).await;
+    assert_eq!(status, 200, "{body}");
+    snapshot_route(&client, &base, "pooled").await;
+}

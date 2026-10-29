@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 
 import {
   allRestricted,
+  onlyRestrictedDialled,
   isRestricted,
   refusalCategories,
   refusalCategoryValid,
@@ -34,5 +35,16 @@ describe("failure classes", () => {
     expect(allRestricted([])).toBe(false);
     expect(allRestricted([["refusal"], []])).toBe(false);
     expect(allRestricted([["refusal"], ["timeout"]])).toBe(true);
+  });
+
+  test("a route with variants dials only the variants' targets (#3487)", () => {
+    // without variants the route's own list is dialled
+    expect(onlyRestrictedDialled([["refusal"]], [])).toBe(true);
+    expect(onlyRestrictedDialled([[], ["refusal"]], [])).toBe(false);
+    // fallback-only variants strand the route over an ordinary list
+    expect(onlyRestrictedDialled([[]], [[["throttled"]], [["timeout"]]])).toBe(true);
+    // an ordinary variant target serves over a fallback-only list
+    expect(onlyRestrictedDialled([["refusal"]], [[["throttled"], []]])).toBe(false);
+    expect(onlyRestrictedDialled([], [])).toBe(false);
   });
 });

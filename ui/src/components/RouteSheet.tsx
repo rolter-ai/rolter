@@ -43,7 +43,7 @@ import {
   type UpdateRouteInput,
 } from "@/lib/api";
 import { errorText } from "@/lib/error-copy";
-import { allRestricted } from "@/lib/failure-classes";
+import { onlyRestrictedDialled } from "@/lib/failure-classes";
 import { useErrorVisibility } from "@/lib/error-visibility";
 import { providersUsableFrom } from "@/lib/provider-scope";
 import {
@@ -202,14 +202,16 @@ export function RouteSheet({
   // may stay empty. one that held targets may not be emptied: the update cannot
   // send an empty list, and leaving it out would keep the stored targets
   const emptyAllowed = draft.variants.length > 0 && (targets.data?.length ?? 0) === 0;
-  // a route left with nothing but fallbacks, its own targets and the
-  // variants' together, could never dial anything: the control plane refuses
-  // it as `all_targets_restricted` (#1584, #3373)
-  const onlyFallbacks =
-    allRestricted([
-      ...draft.targets.map((tg) => tg.takesOver),
-      ...draft.variants.flatMap((v) => v.targets.map((tg) => tg.takesOver)),
-    ]) || !!refusal?.allRestricted;
+  // a route left with nothing but fallbacks to dial could never dial
+  // anything: the control plane refuses it as `all_targets_restricted` (#1584).
+  // a route with variants dials only them, so its own list does not count
+  // then, and the problem is said under the variants (#3487)
+  const stranded = onlyRestrictedDialled(
+    draft.targets.map((tg) => tg.takesOver),
+    draft.variants.map((v) => v.targets.map((tg) => tg.takesOver)),
+  );
+  const variantsOnlyFallbacks = stranded && draft.variants.length > 0;
+  const onlyFallbacks = (stranded && draft.variants.length === 0) || !!refusal?.allRestricted;
   const errTargets = onlyFallbacks
     ? t("fallbackTargets.errors.allRestricted")
     : (draft.targets.length === 0 && !emptyAllowed) || refusal?.field === "targets"
@@ -233,7 +235,7 @@ export function RouteSheet({
   };
   const problems = (Object.keys(found) as FieldKey[]).filter((key) => found[key]);
   const variantCheck = validateVariants(draft.variants);
-  const problemCount = problems.length + variantCheck.count;
+  const problemCount = problems.length + variantCheck.count + Number(variantsOnlyFallbacks);
   // a refusal from the control plane is already news: show it without waiting
   // for the field to be visited
   const shownError = (key: FieldKey) =>
@@ -464,6 +466,7 @@ export function RouteSheet({
                 publicName={route?.model ?? ""}
                 strategy={draft.strategy}
                 validation={variantCheck}
+                onlyFallbacks={variantsOnlyFallbacks}
                 showErrors={visibility.attempts > 0}
                 refusal={variantRefusal}
                 onChange={setVariants}
