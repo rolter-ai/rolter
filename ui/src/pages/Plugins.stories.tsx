@@ -375,6 +375,13 @@ export const MarksEveryInvalidField: Story = {
     await userEvent.type(endpoint, "plugins.internal/hook");
     await expect(name).not.toHaveAttribute("aria-invalid");
     await expect(within(dialog).queryByRole("alert")).toBeNull();
+    // mandatory fields are announced up front, without flagging the pristine form (#3451)
+    for (const field of [name, endpoint]) {
+      await expect(field).toHaveAttribute("aria-required", "true");
+      await expect(field).not.toHaveAttribute("required");
+    }
+    await expect(within(dialog).getByLabelText("Description")).not.toBeRequired();
+    await expect(within(dialog).getAllByText("*")).toHaveLength(2);
     await userEvent.click(within(dialog).getByRole("button", { name: "Install plugin" }));
     await waitFor(() => expect(name).toHaveAttribute("aria-invalid", "true"));
     await expect(name).toHaveAccessibleDescription("Name is required.");

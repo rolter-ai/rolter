@@ -729,6 +729,10 @@ export const RenamesATeam: Story = {
     await userEvent.click(await canvas.findByRole("button", { name: "Open Platform" }));
     const panel = within(sheet());
     const field = panel.getByLabelText("Team name");
+    // announced as mandatory without flagging the untouched name (#3451)
+    await expect(field).toHaveAttribute("aria-required", "true");
+    await expect(field).not.toHaveAttribute("required");
+    await expect(field).toBeValid();
     // nothing to send until the name differs
     // story-wait-allow: disabled by the unchanged name from its first paint, not by the gate
     await expect(panel.getByRole("button", { name: "Rename" })).toBeDisabled();

@@ -772,6 +772,8 @@ function UpsertPriceDialog({
           label={t("pages.pricing.modelName")}
           info={t("pages.pricing.modelNameInfo")}
           error={shown("model")}
+          // a priced model is fixed once it exists, so only a new price asks for one
+          markRequired={!existing}
         >
           <Combobox
             allowCustom
@@ -786,6 +788,7 @@ function UpsertPriceDialog({
           label={t("pages.pricing.inputPrice")}
           hint={t("pages.pricing.priceUnit", { currency })}
           error={shown("input")}
+          markRequired
         >
           <Input
             type="number"
@@ -799,6 +802,7 @@ function UpsertPriceDialog({
           label={t("pages.pricing.outputPrice")}
           hint={t("pages.pricing.priceUnit", { currency })}
           error={shown("output")}
+          markRequired
         >
           <Input
             type="number"

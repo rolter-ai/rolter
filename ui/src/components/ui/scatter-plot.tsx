@@ -1,6 +1,7 @@
 import * as React from "react";
 
 import { useFormat } from "@/lib/i18n/format";
+import { useMeasuredWidth } from "@/lib/use-measured-width";
 
 // points in an X/Y plane (latency vs cost, p50 vs p95) with an interactive
 // hover tooltip
@@ -84,7 +85,8 @@ export function ScatterPlot({
   const format = useFormat();
   const fmt = format.compact;
   const [hover, setHover] = React.useState<HoverState | null>(null);
-  const W = 640;
+  // drawn at the width it is given, so its 11 unit labels are 11px at every width (#3457)
+  const { ref: frame, width: W } = useMeasuredWidth<HTMLDivElement>();
   const padL = 48;
   const padR = 14;
   const padT = 14;
@@ -100,7 +102,7 @@ export function ScatterPlot({
   const ticks = 4;
 
   return (
-    <div className={className} style={{ position: "relative" }} {...props}>
+    <div ref={frame} className={className} style={{ position: "relative" }} {...props}>
       <svg
         viewBox={`0 0 ${W} ${H}`}
         width="100%"

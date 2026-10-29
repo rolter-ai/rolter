@@ -146,9 +146,7 @@ export const QueueOffIgnoresAnOutOfRangeCapacity: Story = {
     await waitFor(() => expect(canvas.getByLabelText("Capacity")).toBeDisabled());
     await expect(canvas.queryByText(/Queue capacity must be/)).toBeNull();
     await expect(canvas.getByLabelText("Capacity")).not.toHaveAttribute("aria-invalid");
-    await expect(canvas.getByRole("button", { name: "Save changes" })).not.toHaveAttribute(
-      "aria-disabled",
-    );
+    await expect(canvas.queryByText(/attention/)).toBeNull();
     await userEvent.click(canvas.getByRole("switch", { name: "Admission queue" }));
     await waitFor(() =>
       expect(canvas.getByRole("button", { name: "Save changes" })).toHaveAttribute(
@@ -171,9 +169,7 @@ export const BlockTimeoutIgnoredOutsideBlockMode: Story = {
     const mode = await canvas.findByLabelText("When the queue is full");
     await expect(canvas.getByLabelText("Block timeout (ms)")).toBeDisabled();
     await expect(canvas.queryByText(/Block timeout must be/)).toBeNull();
-    await expect(canvas.getByRole("button", { name: "Save changes" })).not.toHaveAttribute(
-      "aria-disabled",
-    );
+    await expect(canvas.queryByText(/attention/)).toBeNull();
     await pickOption(mode, "Block");
     await waitFor(() =>
       expect(canvas.getByLabelText("Block timeout (ms)")).toHaveAccessibleDescription(
@@ -387,20 +383,20 @@ export const SaveWaitsForAnEditAndDiscardRestores: Story = {
     const retries = await canvas.findByLabelText("Max retries");
     const save = canvas.getByRole("button", { name: "Save changes" });
     const discard = canvas.getByRole("button", { name: "Discard changes" });
-    await expect(save).toBeDisabled();
+    await expect(save).toHaveAttribute("aria-disabled", "true");
     await expect(discard).toBeDisabled();
     await expect(canvas.queryAllByText("Edited")).toHaveLength(0);
 
     await userEvent.clear(retries);
     await userEvent.type(retries, "4");
-    await expect(save).toBeEnabled();
+    await expect(save).not.toHaveAttribute("aria-disabled");
     await expect(discard).toBeEnabled();
     await expect(canvas.getAllByText("Edited")).toHaveLength(1);
     await expect(canvas.getByText(/^1 change not saved yet/)).toBeVisible();
 
     await userEvent.clear(retries);
     await userEvent.type(retries, "2");
-    await expect(save).toBeDisabled();
+    await expect(save).toHaveAttribute("aria-disabled", "true");
     await expect(canvas.queryAllByText("Edited")).toHaveLength(0);
 
     await userEvent.type(retries, "{Backspace}5");
@@ -414,7 +410,7 @@ export const SaveWaitsForAnEditAndDiscardRestores: Story = {
     await expect(canvas.getByLabelText("Connect (s)")).toHaveValue("10");
     await expect(canvas.queryAllByText("Edited")).toHaveLength(0);
     await expect(canvas.queryByText(/changes? not saved yet/)).toBeNull();
-    await expect(save).toBeDisabled();
+    await expect(save).toHaveAttribute("aria-disabled", "true");
   },
 };
 
@@ -453,7 +449,10 @@ export const SavingClearsTheDirtyState: Story = {
     await userEvent.click(canvas.getByRole("button", { name: "Save changes" }));
     await saves.expectSentBody<RuntimePolicyDto>("PUT", "runtime-policy");
     await waitFor(() =>
-      expect(canvas.getByRole("button", { name: "Save changes" })).toBeDisabled(),
+      expect(canvas.getByRole("button", { name: "Save changes" })).toHaveAttribute(
+        "aria-disabled",
+        "true",
+      ),
     );
     await expect(canvas.queryAllByText("Edited")).toHaveLength(0);
   },

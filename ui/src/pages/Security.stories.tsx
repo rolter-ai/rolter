@@ -272,7 +272,10 @@ export const FreshDeployment: Story = {
       "https://app.example.com\nhttps://console.example.com",
     );
     await expect(canvas.getByLabelText("Required headers")).toHaveValue("");
-    await expect(canvas.getByRole("button", { name: "Save changes" })).toBeDisabled();
+    await expect(canvas.getByRole("button", { name: "Save changes" })).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
     fresh.expectNotSent("PUT", SETTINGS);
   },
 };
@@ -327,17 +330,17 @@ export const SaveWaitsForAnEditAndDiscardRestores: Story = {
     const origins = await canvas.findByLabelText("Allowed origins");
     const save = canvas.getByRole("button", { name: "Save changes" });
     const discard = canvas.getByRole("button", { name: "Discard changes" });
-    await expect(save).toBeDisabled();
+    await expect(save).toHaveAttribute("aria-disabled", "true");
     await expect(discard).toBeDisabled();
     await expect(canvas.queryAllByText("Edited")).toHaveLength(0);
 
     // a blank line, or space around an entry, changes nothing that would be sent
     await userEvent.type(origins, "{Enter}{Enter}  ");
-    await expect(save).toBeDisabled();
+    await expect(save).toHaveAttribute("aria-disabled", "true");
     await expect(canvas.queryAllByText("Edited")).toHaveLength(0);
 
     await userEvent.type(origins, "{Enter}https://console.example.com");
-    await expect(save).toBeEnabled();
+    await expect(save).not.toHaveAttribute("aria-disabled");
     await expect(discard).toBeEnabled();
     await expect(canvas.getAllByText("Edited")).toHaveLength(1);
     await expect(canvas.getByText(/^1 change not saved yet\./)).toBeVisible();
@@ -352,7 +355,7 @@ export const SaveWaitsForAnEditAndDiscardRestores: Story = {
     await expect(names).toHaveValue("x-request-id");
     await expect(canvas.queryAllByText("Edited")).toHaveLength(0);
     await expect(canvas.queryByText(/not saved yet/)).toBeNull();
-    await expect(save).toBeDisabled();
+    await expect(save).toHaveAttribute("aria-disabled", "true");
     await expect(discard).toBeDisabled();
     pristine.expectNotSent("PUT", SETTINGS);
   },
@@ -509,7 +512,10 @@ export const ValuesWithCommasRoundTrip: Story = {
       "x-request-id\nX-Stainless-Timeout",
     );
     await expect(canvas.getByLabelText("Auth bypass routes")).toHaveValue("/v1/models\n/v1/ping");
-    await expect(canvas.getByRole("button", { name: "Save changes" })).toBeDisabled();
+    await expect(canvas.getByRole("button", { name: "Save changes" })).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
 
     await userEvent.type(required, "{Enter}x-ids: 1,2,3");
     await userEvent.click(canvas.getByRole("button", { name: "Save changes" }));
@@ -548,7 +554,10 @@ export const StoredProblemIsShownFromTheStart: Story = {
     ).toBeVisible();
     await expect(routes).toBeInvalid();
     await expect(canvas.getByText("1 field needs attention")).toBeVisible();
-    await expect(canvas.getByRole("button", { name: "Save changes" })).toBeDisabled();
+    await expect(canvas.getByRole("button", { name: "Save changes" })).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
   },
 };
 
@@ -635,7 +644,9 @@ export const CancelledLooseningSendsNothing: Story = {
     await expectUxEvent("form_abandon", "security-loosen");
     await expect(routes).toHaveValue("/v1/models\n/v1/ping");
     await expect(canvas.getAllByText("Edited")).toHaveLength(1);
-    await expect(canvas.getByRole("button", { name: "Save changes" })).toBeEnabled();
+    await expect(canvas.getByRole("button", { name: "Save changes" })).not.toHaveAttribute(
+      "aria-disabled",
+    );
   },
 };
 
@@ -728,7 +739,10 @@ export const SavedLineSaysEveryGatewayRunsIt: Story = {
       await canvas.findByText(/^Saved at .+\. Applied to all 2 live gateways\.$/),
     ).toBeVisible();
     await pickedUp.expectSent("GET", "/api/v1/cluster/nodes");
-    await expect(canvas.getByRole("button", { name: "Save changes" })).toBeDisabled();
+    await expect(canvas.getByRole("button", { name: "Save changes" })).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
   },
 };
 
