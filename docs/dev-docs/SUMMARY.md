@@ -60,6 +60,7 @@
   - [ADR-0038 — A negotiated format version for /internal/snapshot](adr/2026-10-27-snapshot-format-version.md)
   - [ADR-0039 — An in-process local classifier for semantic guard policies](adr/2026-10-28-local-semantic-classifier.md)
   - [ADR-0040 — Per-org namespaces for routes, providers and provider groups](adr/2026-10-28-per-org-namespaces.md)
+  - [ADR-0041 — Single-use download tickets for the analytics CSV exports](adr/2026-10-29-export-download-tickets.md)
 
 # API
 
