@@ -13,6 +13,7 @@ import { IncompleteSpendNotice } from "@/components/IncompleteSpendNotice";
 import { SampledLogNotice } from "@/components/SampledLogNotice";
 import { WithheldSpendNotice } from "@/components/WithheldSpendNotice";
 import { LoadError } from "@/components/LoadError";
+import { OwnerOrgPill, sharedNames } from "@/components/OwnerOrgPill";
 import { RowFilterPicker, useAddressRowFilters } from "@/components/RowFilters";
 import { SavedViews } from "@/components/SavedViews";
 import { HttpStatusBadge } from "@/components/ui/badge";
@@ -99,10 +100,22 @@ const pollEvery =
 // categorical colour sequence, so no two rows share a colour
 const MODELS_SHOWN = 8;
 
+// one organization's model (#3486): two organizations may each have a route of
+// one name (#1857), and the read answers them as two rows, so every per-model
+// map is keyed on both. a NUL cannot occur in either part
+const modelKey = (m: AnalyticsByModelRow) => `${m.org_id ?? ""}\u0000${m.model}`;
+
 // the models in the order the card colours them by (#1994): the read arrives
 // by cost, and the card ranks it by requests
 function byRequests(models: AnalyticsByModelRow[]) {
-  return rankedByRequests(models.map((m) => ({ model: m.model, requests: num(m.requests) })));
+  return rankedByRequests(
+    models.map((m) => ({
+      key: modelKey(m),
+      orgId: m.org_id ?? "",
+      model: m.model,
+      requests: num(m.requests),
+    })),
+  );
 }
 
 // the recent requests sit in a card that already has the frame, so the table
@@ -782,15 +795,20 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
               {(models) => {
                 const ranked = byRequests(models);
                 const barMax = Math.max(1, ...ranked.map((m) => m.requests));
-                const p95Of = new Map(models.map((m) => [m.model, m.p95_latency_ms]));
-                const costOf = new Map(models.map((m) => [m.model, m.cost_usd]));
+                const p95Of = new Map(models.map((m) => [modelKey(m), m.p95_latency_ms]));
+                const costOf = new Map(models.map((m) => [modelKey(m), m.cost_usd]));
+                // a name two organizations share is told apart by its owner
+                const shared = sharedNames(ranked.map((m) => ({ name: m.model, orgId: m.orgId })));
                 const rows = ranked.slice(0, MODELS_SHOWN).map((m, i) => ({
+                  key: m.key,
                   model: m.model,
+                  orgId: m.orgId,
+                  shared: shared.has(m.model),
                   color: modelColor(i),
                   requests: m.requests,
                   pct: (m.requests / barMax) * 100,
-                  p95: p95Of.get(m.model),
-                  cost: costOf.get(m.model),
+                  p95: p95Of.get(m.key),
+                  cost: costOf.get(m.key),
                 }));
                 const hidden = ranked.length - rows.length;
                 return rows.length === 0 ? (
@@ -800,7 +818,7 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
                 ) : (
                   <>
                     <Table
-                      rowKey="model"
+                      rowKey="key"
                       className={MODEL_TABLE}
                       columns={[
                         {
@@ -817,6 +835,7 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
                               <span className="truncate" title={v as string}>
                                 {v as string}
                               </span>
+                              {row.shared ? <OwnerOrgPill orgId={row.orgId as string} /> : null}
                             </span>
                           ),
                         },

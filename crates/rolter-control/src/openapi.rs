@@ -172,6 +172,9 @@ struct Op {
     too_many_requests: Option<&'static str>,
     /// a ClickHouse-backed read, which can answer `502` or `504`
     clickhouse: bool,
+    /// cuts its window into buckets, so it can answer `400`
+    /// `too_many_buckets` (#3506)
+    bucketed: bool,
     /// seals a credential with `ROLTER_KEK`, so it can answer `503`
     /// `kek_unavailable` on a control plane that has none
     needs_kek: bool,
@@ -199,6 +202,7 @@ impl Op {
             not_acceptable: None,
             too_many_requests: None,
             clickhouse: false,
+            bucketed: false,
             needs_kek: false,
         }
     }
@@ -282,6 +286,13 @@ impl Op {
         self
     }
 
+    /// Mark a read that cuts its window into buckets: one that would answer
+    /// more than `MAX_BUCKETS` points is a `400` `too_many_buckets` (#3506).
+    fn bucketed(mut self) -> Self {
+        self.bucketed = true;
+        self
+    }
+
     fn to_json(self) -> Value {
         let mut op = Map::new();
         op.insert("summary".into(), json!(self.summary));
@@ -356,6 +367,25 @@ impl Op {
                     "$ref": "#/components/responses/Error",
                     "description": "`ROLTER_KEK` is not configured on the control plane, so the credential cannot be sealed (`kek_unavailable`)"
                 }),
+            );
+        }
+        // every read that takes a window refuses a bound it cannot read or that
+        // names a year outside the ones a window may (#1192, #3506)
+        let windowed = self.query.iter().any(|p| p.name == "since");
+        if windowed || self.bucketed {
+            let mut description = String::from(
+                "a `since` or `until` that does not parse (`invalid_time_bound`) or lies before \
+                 2000-01-01 or more than a day past now (`time_bound_out_of_range`)",
+            );
+            if self.bucketed {
+                description.push_str(
+                    ", or a `bucket` that would cut the window into more than 20000 points \
+                     (`too_many_buckets`)",
+                );
+            }
+            responses.insert(
+                "400".into(),
+                json!({"$ref": "#/components/responses/Error", "description": description}),
             );
         }
         if self.clickhouse {
@@ -747,13 +777,26 @@ const TIMESERIES_QUERY: &[QueryParam] = &[
     QueryParam::new(
         "bucket",
         "string",
-        "time bucket: `hour`, `day`, `week` or `month`",
+        "time bucket: `hour`, `day` (the default), `week` or `month`; one that cuts the \
+         window into more than 20000 points is a 400",
     ),
     MODEL_FILTER,
     KEY_FILTER,
     BUSINESS_UNIT_FILTER,
     CUSTOMER_FILTER,
     PROJECT_FILTER,
+];
+
+/// The health timeline's window plus the bucket it cuts it into.
+const HEALTH_TIMELINE_QUERY: &[QueryParam] = &[
+    SINCE,
+    UNTIL,
+    QueryParam::new(
+        "bucket",
+        "string",
+        "time bucket: `hour` (the default), `day`, `week` or `month`; one that cuts the window \
+         into more than 20000 points is a 400",
+    ),
 ];
 
 /// The uptime endpoint's window plus the target it measures against.
@@ -810,6 +853,35 @@ const LABEL_QUERY: &[QueryParam] = &[
         "source",
         "string",
         "how the label was set; omit for every source",
+    ),
+];
+
+/// The model-label listing: [`LABEL_QUERY`] plus the organization whose models
+/// to list the labels of (#3476).
+const MODEL_LABEL_QUERY: &[QueryParam] = &[
+    QueryParam::new(
+        "subject_type",
+        "string",
+        "what the label is attached to; omit for every kind",
+    ),
+    QueryParam::new(
+        "subject_id",
+        "string",
+        "exact subject id; omit for every subject",
+    ),
+    QueryParam::new("key", "string", "exact label key; omit for every key"),
+    QueryParam::new("value", "string", "exact label value; omit for every value"),
+    QueryParam::new(
+        "source",
+        "string",
+        "how the label was set; omit for every source",
+    ),
+    QueryParam::new(
+        "org_id",
+        "string",
+        "the labels that apply to this organization's models: its own, and each \
+         deployment-wide one whose model, source and key it has not set itself; omit for \
+         every model label",
     ),
 ];
 
@@ -2111,13 +2183,18 @@ fn operations() -> Vec<Op> {
             Op::get(
                 "/api/v1/model-labels",
                 "listModelLabels",
-                "List model labels",
+                "List model labels. A label carries `org_id`, the organization whose model it is \
+                 on, or `null` for a deployment-wide one; an organization's labels are listed \
+                 only to a caller who reaches that organization",
             )
-            .query(LABEL_QUERY),
+            .query(MODEL_LABEL_QUERY),
             Op::post(
                 "/api/v1/model-labels",
                 "createModelLabel",
-                "Attach a custom label to a model",
+                "Attach a custom label to a model: `model`, `key`, an optional `value`, and an \
+                 optional `org_id` naming the organization whose model it is (a 404 when that \
+                 organization serves no route of that name); without `org_id` the label is \
+                 deployment-wide",
             ),
             Op::put(
                 "/api/v1/model-labels/{id}",
@@ -2411,11 +2488,12 @@ fn operations() -> Vec<Op> {
                 "Bucketed spend and usage over a window",
             )
             .clickhouse_read()
+            .bucketed()
             .query(TIMESERIES_QUERY),
             Op::get(
                 "/api/v1/analytics/by-model",
                 "getAnalyticsByModel",
-                "Spend and usage grouped by model",
+                "Spend and usage grouped by organization and model: a row carries `org_id` (an empty string for a request no organization owns) beside `model`, since two organizations may each have a route of one name",
             )
             .clickhouse_read()
             .query(DASHBOARD_QUERY),
@@ -2482,7 +2560,8 @@ fn operations() -> Vec<Op> {
                 "Requests, tokens and cost per bucket as CSV, flagging buckets that hold unpriced requests",
             )
             .clickhouse_read()
-            .query(DASHBOARD_QUERY),
+            .bucketed()
+            .query(TIMESERIES_QUERY),
             Op::get(
                 "/api/v1/analytics/invocations/export",
                 "exportInvocations",
@@ -2576,7 +2655,8 @@ fn operations() -> Vec<Op> {
                 "Per-provider health transitions over a window",
             )
             .clickhouse_read()
-            .query(WINDOW_QUERY),
+            .bucketed()
+            .query(HEALTH_TIMELINE_QUERY),
             Op::get(
                 "/api/v1/health/mttr",
                 "getMttr",
@@ -4589,7 +4669,7 @@ fn governance_schemas(p: &Prim) -> Value {
                 },
                 "spend": {
                     "type": "object",
-                    "description": "where the money went: totals, `multi_attempt` (requests that took more than one upstream attempt), `failed`, `cache` (hits, and misses on routes that cache), and `by_route`, `by_model` (upstream model) and `by_caller` (project and virtual key, the 50 most expensive)",
+                    "description": "where the money went: totals, `multi_attempt` (requests that took more than one upstream attempt), `failed`, `cache` (hits, and misses on routes that cache), and `by_route`, `by_model` (upstream model) and `by_caller` (project and virtual key, the 50 most expensive, each with the name given to its key as `key_name`, `null` for a key with no name, one that is gone, or a deployment without a store)",
                     "properties": {
                         "requests": {"type": "number"},
                         "cost_usd": {"type": "number"},
@@ -5461,6 +5541,67 @@ mod tests {
         assert!(routes.contains(&("/gw/{path}".into(), "any".into())));
         // `#[cfg(test)]` fixtures stand up their own routers; none of them count
         assert!(!routes.contains(&("/v1/ping".into(), "get".into())));
+    }
+
+    #[test]
+    fn every_windowed_read_documents_its_400() {
+        // #3506: a bound outside the years a window may name is a coded 400,
+        // and so is a bucket that cuts the window too fine
+        let doc = document();
+        let mut windowed = 0;
+        for (path, item) in doc["paths"].as_object().expect("paths") {
+            for (method, op) in item.as_object().expect("an item") {
+                let takes_since = op["parameters"].as_array().is_some_and(|ps| {
+                    ps.iter()
+                        .any(|p| p["in"] == "query" && p["name"] == "since")
+                });
+                if !takes_since {
+                    continue;
+                }
+                windowed += 1;
+                let description = op["responses"]["400"]["description"]
+                    .as_str()
+                    .unwrap_or_else(|| panic!("{method} {path} declares no 400"));
+                assert!(
+                    description.contains("time_bound_out_of_range"),
+                    "{method} {path}: {description}"
+                );
+            }
+        }
+        assert!(windowed >= 15, "{windowed}");
+        // the reads the extractor holds to the bucket limit are the ones the
+        // document says it holds, and each documents the parameter it names
+        let mut bucketed: Vec<&str> = operations()
+            .iter()
+            .filter(|op| op.bucketed)
+            .map(|op| op.path)
+            .collect();
+        bucketed.sort_unstable();
+        let mut checked = crate::time_bounds::BUCKETED_READS.to_vec();
+        checked.sort_unstable();
+        assert_eq!(bucketed, checked);
+        for path in checked {
+            let params = doc["paths"][path]["get"]["parameters"]
+                .as_array()
+                .unwrap_or_else(|| panic!("{path} documents no parameters"));
+            assert!(
+                params.iter().any(|p| p["name"] == "bucket"),
+                "{path} documents no bucket"
+            );
+        }
+        for path in [
+            "/api/v1/analytics/timeseries",
+            "/api/v1/analytics/timeseries/export",
+            "/api/v1/health/timeline",
+        ] {
+            assert!(
+                doc["paths"][path]["get"]["responses"]["400"]["description"]
+                    .as_str()
+                    .is_some_and(|d| d.contains("too_many_buckets")
+                        && d.contains(&crate::time_bounds::MAX_BUCKETS.to_string())),
+                "{path}"
+            );
+        }
     }
 
     #[test]

@@ -45,7 +45,9 @@ export const KNOWN_ERROR_CODES = [
   "sso_disabled",
   "state_expired",
   "store_timeout",
+  "time_bound_out_of_range",
   "too_many_attempts",
+  "too_many_buckets",
   "unauthenticated",
   "unknown_provider",
 ] as const;

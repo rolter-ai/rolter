@@ -216,7 +216,7 @@ async fn the_log_export_streams_every_page_under_the_scope_the_json_read_binds()
 
     let response = client
         .get(format!(
-            "{}/api/v1/analytics/invocations/export?since=2026-10-01&until=2026-11-01T00:00:00Z&status=success",
+            "{}/api/v1/analytics/invocations/export?since=2026-09-01&until=2026-10-01T00:00:00Z&status=success",
             app.base
         ))
         .bearer_auth(&token)
@@ -230,7 +230,7 @@ async fn the_log_export_streams_every_page_under_the_scope_the_json_read_binds()
     );
     assert_eq!(
         response.headers()["content-disposition"],
-        "attachment; filename=\"request-log_2026-10-01_to_2026-11-01_USD.csv\""
+        "attachment; filename=\"request-log_2026-09-01_to_2026-10-01_USD.csv\""
     );
     let csv = response.text().await.unwrap();
 
@@ -340,7 +340,7 @@ async fn the_rollup_exports_flag_a_partial_total_and_name_the_window_and_currenc
 
     let response = client
         .get(format!(
-            "{}/api/v1/analytics/by-attribution/export?since=2026-10-01&until=2026-11-01&include_unattributed=true",
+            "{}/api/v1/analytics/by-attribution/export?since=2026-09-01&until=2026-10-01&include_unattributed=true",
             app.base
         ))
         .bearer_auth(ADMIN)
@@ -349,7 +349,7 @@ async fn the_rollup_exports_flag_a_partial_total_and_name_the_window_and_currenc
         .unwrap();
     assert_eq!(
         response.headers()["content-disposition"],
-        "attachment; filename=\"cost-attribution-business_unit_2026-10-01_to_2026-11-01_USD.csv\""
+        "attachment; filename=\"cost-attribution-business_unit_2026-09-01_to_2026-10-01_USD.csv\""
     );
     let csv = response.text().await.unwrap();
     let lines: Vec<&str> = csv.split("\r\n").filter(|l| !l.is_empty()).collect();

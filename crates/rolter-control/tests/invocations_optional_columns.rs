@@ -174,10 +174,36 @@ fn full_row(request_id: &str) -> Value {
 /// after, holding `rows` inserted the way a gateway inserts them, read through
 /// the control plane at `path`. Returns the status and body of the answer.
 async fn read_after(last: u32, rows: &[Value], path: &str) -> Option<(StatusCode, Value)> {
+    read_without(last, &[], rows, path).await
+}
+
+/// As [`read_after`], with each of `dropped` then removed from `request_logs`:
+/// a table that has every later migration but lacks one column, which no
+/// prefix of the migrations produces.
+async fn read_without(
+    last: u32,
+    dropped: &[&str],
+    rows: &[Value],
+    path: &str,
+) -> Option<(StatusCode, Value)> {
     let base = clickhouse_url().filter(|_| test_database::is_configured())?;
     let http = reqwest::Client::new();
     let scratch = ScratchDatabase::create(&http, &base).await;
     clickhouse_ddl::apply_schema_through(&http, &base, Some(&scratch.name), last).await;
+    for column in dropped {
+        let response = http
+            .post(format!("{base}/"))
+            .query(&[("database", scratch.name.as_str())])
+            .body(format!("alter table request_logs drop column {column}"))
+            .send()
+            .await
+            .expect("reach clickhouse");
+        assert!(
+            response.status().is_success(),
+            "drop {column}: {}",
+            response.text().await.unwrap_or_default()
+        );
+    }
 
     let body: String = rows.iter().map(|row| format!("{row}\n")).collect();
     let insert = http
@@ -371,4 +397,78 @@ async fn by_variant_on_a_clickhouse_with_023_counts_the_first_attempts() {
     assert_eq!(rows.len(), 1, "{body}");
     assert_eq!(number(&rows[0]["requests"]), 2.0, "{body}");
     assert_eq!(number(&rows[0]["first_attempt_requests"]), 1.0, "{body}");
+}
+
+/// Requests answered by two variants of one route, one of them failed over to,
+/// as a current gateway writes them.
+fn two_variant_rows(route: &str) -> Vec<Value> {
+    let ts = chrono::Utc::now()
+        .format("%Y-%m-%d %H:%M:%S%.3f")
+        .to_string();
+    let row = |variant: &str, reason: &str| {
+        json!({
+            "ts": ts, "request_id": format!("variant-{}", Uuid::new_v4().simple()),
+            "model": route, "variant": variant, "status": 200, "latency_ms": 100,
+            "fallback_reason": reason,
+        })
+    };
+    vec![
+        row("canary", ""),
+        row("canary", "timeout"),
+        row("stable", ""),
+        row("stable", ""),
+        row("stable", ""),
+    ]
+}
+
+/// The variants a by-variant answer lists, with their request counts.
+fn requests_by_variant(body: &Value) -> Vec<(String, f64)> {
+    let mut rows: Vec<(String, f64)> = body["data"]
+        .as_array()
+        .expect("a data array")
+        .iter()
+        .map(|row| {
+            (
+                row["variant"].as_str().unwrap_or_default().to_string(),
+                number(&row["requests"]),
+            )
+        })
+        .collect();
+    rows.sort_by(|a, b| a.0.cmp(&b.0));
+    rows
+}
+
+/// #3497: a table with every migration but without `fallback_reason` (dropped
+/// by hand, or never added while later files were) still answers by-variant.
+/// No prefix of the migrations is this table, so the 022 test above does not
+/// cover it: the probe has to name the one column missing among the later ones.
+#[tokio::test]
+async fn by_variant_on_a_current_clickhouse_without_fallback_reason_reports_no_first_attempt_count()
+{
+    let _ = skip_without_stack!();
+    let route = format!("variant-route-{}", Uuid::new_v4().simple());
+    let path = format!("/api/v1/analytics/by-variant?model={route}");
+    let rows = two_variant_rows(&route);
+
+    let (status, full) = read_without(u32::MAX, &[], &rows, &path)
+        .await
+        .expect("a configured stack");
+    assert_eq!(status, 200, "{full}");
+    let (status, lacking) = read_without(u32::MAX, &["fallback_reason"], &rows, &path)
+        .await
+        .expect("a configured stack");
+    assert_eq!(status, 200, "{lacking}");
+
+    // every row says the split is unknown rather than reading as first attempts
+    let data = lacking["data"].as_array().expect("a data array");
+    assert_eq!(data.len(), 2, "{lacking}");
+    for row in data {
+        assert!(row["first_attempt_requests"].is_null(), "{lacking}");
+    }
+    // and the requests are the ones the full table counts
+    assert_eq!(requests_by_variant(&lacking), requests_by_variant(&full));
+    assert_eq!(
+        requests_by_variant(&lacking),
+        vec![("canary".to_string(), 2.0), ("stable".to_string(), 3.0)]
+    );
 }

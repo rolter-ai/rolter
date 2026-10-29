@@ -37,7 +37,7 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { Segmented } from "@/components/ui/segmented";
 import { BreakerBadge } from "@/components/BreakerBadge";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
-import { LabelChips, LabelFilterSelect, LabelSheet, useSubjectLabels } from "@/components/Labels";
+import { LabelChips, LabelFilterSelect, LabelSheet, useModelLabels } from "@/components/Labels";
 import {
   deleteModel,
   fetchModelPrices,
@@ -197,10 +197,12 @@ export default function Models() {
 
   const [search, setSearch] = React.useState("");
   const [labelFilter, setLabelFilter] = React.useState("");
-  const [labelling, setLabelling] = React.useState<string | null>(null);
+  // the model whose labels are open, with the organization that owns it
+  // (#3476): two organizations' `gpt-4o` carry labels of their own
+  const [labelling, setLabelling] = React.useState<{ orgId: string; model: string } | null>(null);
   // a model label is keyed by the model's name, not by a row id: the catalog is
   // deployment-wide and has no row of its own to point at
-  const labels = useSubjectLabels(undefined, "model");
+  const labels = useModelLabels();
   const [origin, setOrigin] = React.useState<Origin>("all");
   const [unpricedOnly, setUnpricedOnly] = React.useState(false);
   const { sort, cycle, apply } = useSort<"name" | "provider" | "strategy" | "targets" | "origin">();
@@ -294,7 +296,7 @@ export default function Models() {
     (r) =>
       (origin === "all" || r.origin === origin) &&
       (!unpricedOnly || r.priced === false) &&
-      labels.matches(r.name, labelFilter) &&
+      labels.matches(r.entry.org_id ?? "", r.name, labelFilter) &&
       (!q ||
         r.name.toLowerCase().includes(q) ||
         r.providerNames.some((n) => n.toLowerCase().includes(q))),
@@ -486,7 +488,7 @@ export default function Models() {
                   <StatusDot color={r.enabled ? "var(--status-success)" : "var(--text-subtle)"} />
                   <span className="flex min-w-0 flex-col gap-1">
                     <span className="truncate font-mono text-sm">{r.name}</span>
-                    <LabelChips labels={labels.bySubject(r.name)} />
+                    <LabelChips labels={labels.forModel(r.entry.org_id ?? "", r.name)} />
                   </span>
                   {r.locked && (
                     <span
@@ -639,7 +641,7 @@ export default function Models() {
                     variant="outline"
                     className="h-[30px]"
                     aria-label={t("labels.labelsOf", { name: r.name })}
-                    onClick={() => setLabelling(r.name)}
+                    onClick={() => setLabelling({ orgId: r.entry.org_id ?? "", model: r.name })}
                   >
                     <Tag className="h-3.5 w-3.5" />
                   </Button>
@@ -718,10 +720,10 @@ export default function Models() {
         <LabelSheet
           open
           onOpenChange={(open) => !open && setLabelling(null)}
-          orgId=""
+          orgId={labelling.orgId}
           subjectType="model"
-          subjectId={labelling}
-          subjectName={labelling}
+          subjectId={labelling.model}
+          subjectName={labelling.model}
         />
       )}
 

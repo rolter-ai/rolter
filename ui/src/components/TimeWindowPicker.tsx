@@ -5,6 +5,7 @@ import { Combobox } from "@/components/ui/combobox";
 import { describedBy, FieldError } from "@/components/ui/field-error";
 import { FieldLabel } from "@/components/ui/field-label";
 import { Input } from "@/components/ui/input";
+import { browserTimeZone, chartTimeZone, useFormat } from "@/lib/i18n/format";
 import {
   CUSTOM_WINDOW,
   customRange,
@@ -27,12 +28,16 @@ import { cn } from "@/lib/utils";
  * with the days the current window covers so the screen keeps showing what it
  * was showing. A range is committed only when it is whole: an end before the
  * start is said at the field and the screen keeps the last good range, so it is
- * never asked for a window that does not exist. The days are the viewer's
- * calendar days and the end day is included.
+ * never asked for a window that does not exist. The days are calendar days in
+ * the chart zone (#3500) and the end day is included; where that zone is not
+ * the browser's, a line under the list names it, so "1 to 7 October" is never
+ * read as the browser's October.
  *
  * `value` and `onChange` carry a {@link WindowSelection}; where it is kept (the
  * address, a saved view) is the screen's. `id` and the `aria-*` attributes land
- * on the list, so a `Field` around the picker labels it.
+ * on the list, so a `Field` around the picker labels it and describes it: the
+ * hint or error `Field` ties by `aria-describedby`, and its `aria-invalid` and
+ * `aria-required`, reach the control a screen reader announces (#3507).
  */
 export function TimeWindowPicker({
   value,
@@ -40,16 +45,26 @@ export function TimeWindowPicker({
   className,
   id,
   "aria-label": ariaLabel,
+  "aria-describedby": ariaDescribedBy,
+  "aria-invalid": ariaInvalid,
+  "aria-required": ariaRequired,
 }: {
   value: WindowSelection;
   onChange: (next: WindowSelection) => void;
   className?: string;
   id?: string;
   "aria-label"?: string;
+  "aria-describedby"?: string;
+  "aria-invalid"?: boolean | "true" | "false";
+  "aria-required"?: boolean | "true" | "false";
 }) {
   const { t } = useTranslation();
+  // subscribes to the chart zone, so the note below follows a change to it
+  useFormat();
   const options = useWindowSelectionOptions();
   const uid = React.useId();
+  const zone = chartTimeZone();
+  const countedIn = zone && zone !== browserTimeZone() ? zone : undefined;
   const committed = customRange(value);
   // what the two day fields hold, which may be a half-typed or refused range
   // while `value` is still the last good one
@@ -91,10 +106,18 @@ export function TimeWindowPicker({
       <Combobox
         id={id}
         aria-label={ariaLabel}
+        aria-describedby={describedBy(ariaDescribedBy, countedIn ? `${uid}-zone` : undefined)}
+        aria-invalid={ariaInvalid}
+        aria-required={ariaRequired}
         options={options}
         value={committed ? CUSTOM_WINDOW : value}
         onChange={choose}
       />
+      {countedIn && (
+        <p id={`${uid}-zone`} className="text-xs text-muted-foreground">
+          {t("common.timeWindow.countedIn", { zone: countedIn })}
+        </p>
+      )}
       {committed && (
         <div
           className="grid grid-cols-2 gap-2"

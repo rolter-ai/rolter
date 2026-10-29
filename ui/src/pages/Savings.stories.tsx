@@ -16,8 +16,11 @@ import {
   pending,
   pickOption,
   recording,
+  PROJECT,
   routes,
   scoped,
+  TEAM,
+  type FetchStub,
 } from "./story-harness";
 import type { SavingsReport } from "@/lib/api";
 import en from "@/lib/i18n/locales/en.json";
@@ -470,6 +473,98 @@ export const SpendByCallerNamesTheProjectAndKey: Story = {
     // the fallback is the id as the report sent it
     await expect(within(unnamed).getByRole("cell", { name: "project-gone" })).toBeVisible();
     await expect(within(unnamed).getByRole("cell", { name: "vk-gone" })).toBeVisible();
+  },
+};
+
+const TWO_PROJECT_CALLERS: SavingsReport = {
+  ...REPORT,
+  spend: {
+    ...REPORT.spend,
+    by_caller: [
+      {
+        project_id: "project-1",
+        virtual_key_id: "vk-1",
+        key_name: "ci-runner",
+        requests: 9000,
+        cost_usd: 400,
+        unpriced_requests: 0,
+      },
+      // a project the key picker does not list, since it reads one project's keys
+      {
+        project_id: "project-2",
+        virtual_key_id: "vk-2",
+        key_name: "batch-jobs",
+        requests: 4000,
+        cost_usd: 120,
+        unpriced_requests: 0,
+      },
+      // a key since deleted: the report has no name for it either
+      {
+        project_id: "project-2",
+        virtual_key_id: "vk-gone",
+        key_name: null,
+        requests: 10,
+        cost_usd: 1,
+        unpriced_requests: 0,
+      },
+    ],
+  },
+};
+
+/**
+ * #3499: with no project picked, the table holds callers of several projects.
+ * Their keys are named by the report itself, from one read over all of them,
+ * so the key of a project the key picker does not list is named too; the
+ * picker reads only the scope's project. A key that is gone stays an id.
+ */
+export const SpendByCallerNamesTheKeysOfEveryProject: Story = {
+  render: () => {
+    const rest = routes([
+      ["/analytics/savings", () => TWO_PROJECT_CALLERS],
+      // the one project the picker reads holds only the first key
+      [
+        "/virtual-keys",
+        () => [
+          {
+            id: "vk-1",
+            project_id: "project-1",
+            name: "ci-runner",
+            key_prefix: "rk_live_ab12",
+            models: [],
+            providers: [],
+            disabled: false,
+          },
+        ],
+      ],
+      ["/models", () => [{ model: "chat", strategy: "weighted", targets: 1 }]],
+    ]);
+    const stub: FetchStub = async (input, init) => {
+      const path = new URL(String(input), "http://localhost").pathname;
+      // the org holds two projects, so both callers' projects are named
+      if (/^\/api\/v1\/orgs\/[^/]+\/projects$/.test(path)) {
+        return json([
+          { ...PROJECT, team_name: TEAM.name },
+          { ...PROJECT, id: "project-2", name: "Batch", team_name: TEAM.name },
+        ]);
+      }
+      return rest(input, init);
+    };
+    return (
+      <Harness fetchStub={stub}>
+        <Savings />
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByTestId("savings-limits");
+    const table = canvas.getByRole("table", { name: "Spend by caller (50 costliest)" });
+    const [, first, second, gone] = within(table).getAllByRole("row");
+    await expect(within(first!).getByRole("cell", { name: "ci-runner" })).toBeVisible();
+    await expect(within(second!).getByRole("cell", { name: "batch-jobs" })).toBeVisible();
+    await expect(await within(second!).findByRole("cell", { name: "Batch" })).toBeVisible();
+    await expect(within(second!).queryByText("vk-2")).toBeNull();
+    await expect(within(gone!).getByRole("cell", { name: "vk-gone" })).toBeVisible();
   },
 };
 

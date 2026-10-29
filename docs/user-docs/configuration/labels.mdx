@@ -85,6 +85,25 @@ curl -X POST https://rolter.example.com/api/v1/model-labels \
   -d '{"model": "gpt-4o", "key": "cheap"}'
 ```
 
+Two organizations may each serve a model of one name. A label on one
+organization's `gpt-4o` names that organization in `org_id`, so it never shows
+on the other's:
+
+```bash
+curl -X POST https://rolter.example.com/api/v1/model-labels \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"model": "gpt-4o", "org_id": "'$ORG_ID'", "key": "tier", "value": "gold"}'
+```
+
+The organization must serve a route of that name, or the request is a `404`.
+A label without `org_id` is deployment-wide, and is the only kind a model from
+the gateway's config file can carry. `GET /api/v1/model-labels?org_id=$ORG_ID`
+lists what applies to that organization's models: its own labels, and each
+deployment-wide label whose key it has not set itself. Every label carries its
+`org_id` (`null` when deployment-wide), and an organization's labels are listed
+only to someone with a role in that organization.
+
 Re-using a key on the same subject returns `409 Conflict` rather than
 overwriting what is there. Change the value with `PUT`, or remove the label
 with `DELETE`, using the label's id.
