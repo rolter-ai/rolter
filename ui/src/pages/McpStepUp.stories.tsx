@@ -355,6 +355,42 @@ export const LogDetailAsksTheOwnerToNameTheScope: Story = {
   },
 };
 
+const askedSteps = record(
+  logs(denied({ error: "insufficient scope", error_scopes: ["write", "repo", "read:org"] }), [
+    session({ scopes: ["read", "write"] }),
+  ]),
+);
+
+/** #3375: the refusal recorded what the upstream asked for, so nothing is typed. */
+export const LogDetailOffersTheScopesTheUpstreamAskedFor: Story = {
+  render: () => (
+    <SignedIn>
+      <Harness fetchStub={askedSteps.stub}>
+        <Toasts>
+          <McpLogs />
+        </Toasts>
+      </Harness>
+    </SignedIn>
+  ),
+  play: async ({ canvasElement }) => {
+    const body = await openDetail(canvasElement);
+    await expect(
+      await body.findByText("write, repo, read:org are the scopes this server asked for."),
+    ).toBeVisible();
+    await expect(body.queryByLabelText("Scopes to add")).toBeNull();
+    const action = body.getByRole("button", { name: "Reconnect Linear with more access" });
+    await waitFor(() => expect(action).toBeEnabled());
+    await withPopup(async () => {
+      await userEvent.click(action);
+      await waitFor(() => expect(askedSteps.authorize()).toBeDefined());
+      // `write` is already held, so only what the session lacks is asked for
+      await expect(JSON.parse(askedSteps.authorize()?.body ?? "{}")).toEqual({
+        step_up_scopes: ["repo", "read:org"],
+      });
+    });
+  },
+};
+
 export const LogDetailOfAnotherUsersCallOffersNoAction: Story = {
   render: () => (
     <SignedIn>

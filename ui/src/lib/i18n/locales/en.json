@@ -3604,11 +3604,13 @@
       "actionNamed": "Reconnect {{name}} with more access",
       "missing_one": "Your connection lacks the scope {{scopes}} that this server requires.",
       "missing_other": "Your connection lacks the scopes {{scopes}} that this server requires.",
+      "asked_one": "{{scopes}} is the scope this server asked for.",
+      "asked_other": "{{scopes}} are the scopes this server asked for.",
       "logTitle": "Authorization refused",
       "logBody": "{{server}} refused this call for authorization. If it wanted a scope your connection does not hold, consent again with more access; your current scopes are kept.",
       "notOwner": "Only the key's owner can reconnect with more access.",
       "scopesLabel": "Scopes to add",
-      "scopesHint": "Separate scopes with spaces. The log records the refusal, not the scope the server asked for, so name it here.",
+      "scopesHint": "Separate scopes with spaces. This refusal recorded none, so name the scope here.",
       "scopesPlaceholder": "repo read:org"
     },
     "auditLog": {

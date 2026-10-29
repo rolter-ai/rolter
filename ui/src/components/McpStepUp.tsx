@@ -95,10 +95,12 @@ export function ServerStepUp({
  * In the MCP Logs detail of an `auth_denied` call: what a step-up would add
  * (#3296).
  *
- * The log records that the call was refused, not which scope the upstream
- * named, so the scopes offered are the ones the server declares that the
- * caller's session lacks. When it lacks none, the upstream asked for something
- * the server does not declare, and the owner names it. Only the key's owner can
+ * A refusal for `insufficient_scope` records the scopes the upstream asked for
+ * (#3375), and those are what the action adds. A row without them (written
+ * before the log recorded them, or refused for another reason) offers the ones
+ * the server declares that the caller's session lacks. When it lacks none, the
+ * upstream asked for something the server does not declare, and the owner names
+ * it. Only the key's owner can
  * consent: the step-up widens their own grant, so anyone else is told so.
  * The three reads are best-effort and shared with the catalog, and the note
  * says nothing for a server that is not OAuth, where `auth_denied` means
@@ -138,6 +140,10 @@ export function LogStepUp({ detail }: { detail: McpLogDetail }) {
     heldScopes(grants.data, sessions.data, auth?.user?.id, server.id, Date.now()),
   );
   const named = parseScopes(typed);
+  // what the upstream asked for, less what the session already holds
+  const asked = detail.error_scopes ?? [];
+  const held = heldScopes(grants.data, sessions.data, auth?.user?.id, server.id, Date.now());
+  const toAdd = asked.filter((scope) => !held?.includes(scope));
 
   return (
     <section
@@ -152,6 +158,15 @@ export function LogStepUp({ detail }: { detail: McpLogDetail }) {
       </p>
       {!owner ? (
         <p className="text-xs text-muted-foreground">{t("pages.mcpStepUp.notOwner")}</p>
+      ) : asked.length > 0 ? (
+        <>
+          <p className="text-xs text-[color:var(--status-warning-text)]">
+            {t("pages.mcpStepUp.asked", { count: asked.length, scopes: asked.join(", ") })}
+          </p>
+          <div>
+            <StepUpButton server={server} scopes={toAdd} />
+          </div>
+        </>
       ) : missing.length > 0 ? (
         <>
           <p className="text-xs text-[color:var(--status-warning-text)]">
