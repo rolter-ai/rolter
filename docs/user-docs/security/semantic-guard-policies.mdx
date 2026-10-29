@@ -78,7 +78,7 @@ Every call is bounded by the provider's `timeout_ms` and retried up to `max_retr
 
 An answer that is not a decision follows the failure mode too: a `fail_closed` provider that starts returning garbage refuses traffic rather than waving it through. (Before policies, an unreadable answer always read as allow.)
 
-A [local classifier](#local-classifier) adds two cases: `model` (its model is not loaded) and `overloaded` (no slot freed up within `timeout_ms`); neither is retried. A provider whose `kind` the gateway does not know, which only a newer control plane can send it, is counted as `unsupported` and **always** refuses, whatever its `failure_mode`.
+A [local classifier](#local-classifier) adds three cases: `model` (its model is not loaded), `overloaded` (no slot freed up within `timeout_ms`) and `truncated` (the text is longer than its `max_scored_bytes` under `on_truncated = "fail_closed"`, which **always** refuses, whatever its `failure_mode`; see [Long texts](#long-texts)); none is retried. A provider whose `kind` the gateway does not know, which only a newer control plane can send it, is counted as `unsupported` and **always** refuses, whatever its `failure_mode`.
 
 ## Local classifier
 
@@ -92,7 +92,7 @@ A provider with `kind = "local"` is a classifier the gateway runs in its own pro
   [#3443](https://github.com/rolter-ai/rolter/issues/3443).
 </Warning>
 
-**What it reads.** Every string in the body the stage judges, one per line, except structural fields such as `model`, `role`, `type`, `id`, `finish_reason` and `url`, and inline binary `data` (a base64 image or audio; an Anthropic plain-text document's `data` is read). On a buffered stream that is the assembled text. A text that fits in the provider's `max_body_bytes` is read whole. A longer one is read as its first quarter and its **last three quarters**, so with the default 64 KiB the classifier sees the first 16 KiB (the system prompt and the start of the conversation) and the last 48 KiB (the latest turns, which are usually the ones an injection or an insult is in); what lies between is not read. Raise `max_body_bytes` to read more of a long conversation, at the cost of CPU per call.
+**What it reads.** Every string in the body the stage judges, one per line, except structural fields such as `model`, `role`, `type`, `id`, `finish_reason` and `url`, and inline binary `data` (a base64 image or audio; an Anthropic plain-text document's `data` is read). On a buffered stream that is the assembled text. A text that fits in the provider's `max_body_bytes` is read whole; a longer one is read in windows, as [Long texts](#long-texts) describes.
 
 **The model file.** A JSON file in the `rolter-linear/1` format:
 
@@ -183,6 +183,30 @@ model_root = "/etc/rolter/models"
 
 **On the dashboard**, choose **Local classifier** as the provider's kind and enter the path and digest. The control plane never opens the file, so the provider test is for webhooks only.
 
+### Long texts
+
+A text longer than `max_body_bytes` is read whole in **overlapping windows** of `max_body_bytes`, up to the provider's `max_scored_bytes`, which defaults to 8 × `max_body_bytes` (512 KiB with the default 64 KiB). Each window overlaps the next by an eighth of a window, and by at least 256 bytes, so a phrase that falls on a window boundary is still read whole. Every window is scored, and each category takes its **highest** score across them: an injection in the middle of one huge message counts as much as one at its end. A window of the bundled model takes microseconds, so the default budget costs well under a millisecond per call.
+
+A text longer than `max_scored_bytes` is still cut. The classifier then reads the first quarter and the **last three quarters** of the budget (with the defaults, the first 128 KiB, holding the system prompt and the start of the conversation, and the last 384 KiB, holding the latest turns), and what lies between is not read. Such a request is flagged in three places:
+
+- on its request-log row, as `semantic_truncated:<provider>` in `guardrail_events`;
+- on the [`rolter_semantic_local_truncated_total{provider}`](/observability/metrics#rolter_semantic_local_truncated_total) counter;
+- on the `guardrails.local` span of the provider call, as `truncated = true`.
+
+An operator who cannot accept text that was never read sets `on_truncated = "fail_closed"` on the provider. A request whose text is cut is then refused before it is scored, whatever the provider's `failure_mode` says, and the row carries `provider_error:<provider>` next to `semantic_truncated:<provider>`. The default, `on_truncated = "score"`, scores what fits and only flags the cut. Raise `max_scored_bytes` (up to 16 MiB) to read more of a long conversation, at the cost of CPU per call.
+
+```toml
+[[semantic_guards.providers]]
+name = "injection"
+kind = "local"
+# ...
+max_body_bytes = 65536      # one window
+max_scored_bytes = 1048576  # 16 windows
+on_truncated = "fail_closed"
+```
+
+Both settings are set in a configuration file. A provider created on the dashboard uses the defaults: it scores 8 windows and flags a cut without refusing it.
+
 ## Streamed responses
 
 A `post_call` provider judges a whole response, and a streamed response is never whole while it is being delivered. A client's `"stream": true` never switches the response check off; the policy's `streaming` setting decides instead ([ADR-0037](https://github.com/rolter-ai/rolter/blob/master/docs/dev-docs/adr/2026-10-27-semantic-guard-streaming.md)):
@@ -211,10 +235,11 @@ Protected content never reaches a log, a metric or a span. The gateway exports:
 | `rolter_guardrail_provider_latency_ms`     | `provider` (histogram, failures included) |
 | `rolter_guardrail_stream_rejections_total` | —                                         |
 | `rolter_guardrail_streams_buffered_total`  | —                                         |
+| `rolter_semantic_local_truncated_total`    | `provider`                                |
 
 `outcome` is `allow`, `block`, `transform`, `violation`, `flagged`, `error_open` or `error_closed`. A `category` label is one the policy sets a threshold for by name, or `other`, so a provider cannot add label values. The latency histogram is in the Prometheus endpoint only; the counters also go to OTLP.
 
-On the request log, `guardrail_events` gains `provider_blocked:<provider>`, `provider_transformed:<provider>`, `provider_error:<provider>`, `policy_blocked:<policy>` and `policy_flagged:<policy>`, on both stages: a response a provider rewrote, a response flagged under `on_violation = "annotate"` and a response a fail-open provider gave no verdict on are recorded on the row of the delivered response, cached answers included. A response the policy withheld is also recorded as `blocked:<provider or policy>` with the withheld reason.
+On the request log, `guardrail_events` gains `provider_blocked:<provider>`, `provider_transformed:<provider>`, `provider_error:<provider>`, `policy_blocked:<policy>`, `policy_flagged:<policy>` and, for a local provider that could not read all of the text, `semantic_truncated:<provider>`, on both stages: a response a provider rewrote, a response flagged under `on_violation = "annotate"` and a response a fail-open provider gave no verdict on are recorded on the row of the delivered response, cached answers included. A response the policy withheld is also recorded as `blocked:<provider or policy>` with the withheld reason.
 
 ## Configure in the file
 

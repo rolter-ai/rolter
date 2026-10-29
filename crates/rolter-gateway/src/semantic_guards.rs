@@ -123,7 +123,9 @@ impl SemanticGuard<'_> {
 
     /// Run the policy's providers for `stage` over `content`. `streamed` marks
     /// a buffered stream, sent as `{"stream": true, "text": …}`. Each provider
-    /// leaves at most one event in `events`; a violation leaves one more.
+    /// leaves at most one event in `events`; a violation leaves one more, and
+    /// so does a local provider that could not read all of the text
+    /// (`semantic_truncated:<provider>`, #3513).
     pub async fn check(
         &self,
         stage: WebhookStage,
@@ -158,7 +160,22 @@ impl SemanticGuard<'_> {
                     };
                     consult(provider, self.egress, &envelope).await
                 }
-                GuardProviderKind::Local => self.local.classify(provider, body).await,
+                GuardProviderKind::Local => {
+                    let span = crate::trace::stage_span!(
+                        "guardrails.local",
+                        provider = label,
+                        truncated = tracing::field::Empty
+                    );
+                    let classified = self.local.classify_flagged(provider, body).await;
+                    span.record("truncated", classified.truncated);
+                    if classified.truncated {
+                        // part of the text was never read: say so on the row
+                        // and the counter, whatever the provider answered
+                        self.metrics.observe_local_truncated(label);
+                        events.push(provider_event("semantic_truncated", &provider.name));
+                    }
+                    classified.answer
+                }
                 GuardProviderKind::Unknown => Err(CallFailure::Unsupported),
             };
             self.metrics.observe_guard_latency(
@@ -173,12 +190,14 @@ impl SemanticGuard<'_> {
                         .fetch_add(1, Relaxed);
                     events.push(provider_event("provider_error", &provider.name));
                     // a kind this gateway cannot run fails closed, so a newer
-                    // control plane's provider never silently stops judging
-                    let mode = if failure == CallFailure::Unsupported {
-                        FailureMode::FailClosed
-                    } else {
-                        provider.failure_mode
-                    };
+                    // control plane's provider never silently stops judging;
+                    // so does a cut text its provider refuses to score
+                    let mode =
+                        if matches!(failure, CallFailure::Unsupported | CallFailure::Truncated) {
+                            FailureMode::FailClosed
+                        } else {
+                            provider.failure_mode
+                        };
                     match mode {
                         FailureMode::FailOpen => {
                             self.metrics.observe_guard_decision(
@@ -311,12 +330,20 @@ impl SemanticGuard<'_> {
 /// The verdict for a fail-closed provider that gave none. Names the provider
 /// and the kind of failure, never what the provider said.
 fn unavailable(label: &str, failure: CallFailure) -> Verdict {
-    Verdict::Block {
-        who: label.to_string(),
-        reason: format!(
+    let reason = if failure == CallFailure::Truncated {
+        format!(
+            "the text is longer than guardrail '{label}' reads, and it refuses what it cannot \
+             read in full"
+        )
+    } else {
+        format!(
             "guardrail service '{label}' unavailable ({})",
             failure.label()
-        ),
+        )
+    };
+    Verdict::Block {
+        who: label.to_string(),
+        reason,
     }
 }
 
@@ -758,9 +785,19 @@ mod tests {
         cap: usize,
         timeout_ms: u64,
     ) -> (CompiledSemanticGuards, LocalClassifiers) {
+        local_guards_with(mode, cap, timeout_ms, |_| {})
+    }
+
+    fn local_guards_with(
+        mode: FailureMode,
+        cap: usize,
+        timeout_ms: u64,
+        edit: impl FnOnce(&mut GuardrailWebhookConfig),
+    ) -> (CompiledSemanticGuards, LocalClassifiers) {
         use crate::local_classifier::tests::{fixture_sha256, local_provider};
         let mut provider = local_provider(&fixture_sha256(), timeout_ms);
         provider.failure_mode = mode;
+        edit(&mut provider);
         let compiled = guards(
             vec![provider.clone()],
             &[("prompt_injection", 0.8)],
@@ -829,6 +866,49 @@ mod tests {
         let (verdict, events) = judge(&compiled, &local, &metrics, "what is two plus two").await;
         assert_eq!(verdict, Verdict::Allow(None));
         assert!(events.is_empty());
+    }
+
+    /// A local provider that could not read all of the text flags it on the
+    /// row and the counter, and under `on_truncated = "fail_closed"` refuses
+    /// the request even with a fail-open `failure_mode` (#3513).
+    #[tokio::test]
+    async fn a_cut_text_is_flagged_and_fails_closed_when_asked() {
+        let long = "the quick brown fox ".repeat(4_000);
+        let (compiled, local) = local_guards_with(FailureMode::FailOpen, 2, 2_000, |p| {
+            p.max_body_bytes = 1_024;
+            p.max_scored_bytes = Some(8_192);
+        });
+        let metrics = Metrics::default();
+        let (verdict, events) = judge(&compiled, &local, &metrics, &long).await;
+        assert_eq!(verdict, Verdict::Allow(None));
+        assert_eq!(events, ["semantic_truncated:local"]);
+        // a text that fits leaves no flag
+        let (_, events) = judge(&compiled, &local, &metrics, "what is two plus two").await;
+        assert!(events.is_empty());
+        let rendered = metrics.render();
+        assert!(
+            rendered.contains("rolter_semantic_local_truncated_total{provider=\"local\"} 1"),
+            "{rendered}"
+        );
+
+        let (compiled, local) = local_guards_with(FailureMode::FailOpen, 2, 2_000, |p| {
+            p.max_body_bytes = 1_024;
+            p.on_truncated = rolter_core::OnTruncated::FailClosed;
+        });
+        let metrics = Metrics::default();
+        let (verdict, events) = judge(&compiled, &local, &metrics, &long).await;
+        assert_eq!(events, ["semantic_truncated:local", "provider_error:local"]);
+        match verdict {
+            Verdict::Block { who, reason } => {
+                assert_eq!(who, "local");
+                assert!(
+                    reason.contains("longer than guardrail 'local' reads"),
+                    "{reason}"
+                );
+            }
+            other => panic!("{other:?}"),
+        }
+        assert!(metrics.render().contains("outcome=\"error_closed\""));
     }
 
     #[tokio::test]

@@ -1618,6 +1618,9 @@
     "semantic_guards.providers[].max_retries": [
       "number"
     ],
+    "semantic_guards.providers[].max_scored_bytes": [
+      "number"
+    ],
     "semantic_guards.providers[].model_path": [
       "string"
     ],
@@ -1625,6 +1628,9 @@
       "string"
     ],
     "semantic_guards.providers[].name": [
+      "string"
+    ],
+    "semantic_guards.providers[].on_truncated": [
       "string"
     ],
     "semantic_guards.providers[].stage": [

@@ -131,6 +131,7 @@ entity alone:
 | `BudgetScope` (budgets and rate limits)                                               | the cap counts every request, on a counter of its own, so it binds sooner than configured                                                                           |
 | `UnpricedPolicy`                                                                      | `block`                                                                                                                                                             |
 | `FailureMode` (guardrail webhook, semantic guard providers, PII sanitizer, plugins)   | `fail_closed`                                                                                                                                                       |
+| `OnTruncated` (a local semantic guard provider's `on_truncated`, #3513)               | `fail_closed`                                                                                                                                                       |
 | `GuardAction`, `ViolationAction`                                                      | `block`                                                                                                                                                             |
 | `StreamingPostCall`, `StreamingStrategy` (semantic guards), `StreamingResponse` (PII) | `reject`                                                                                                                                                            |
 | `SanitizeDirection` / `RestorationPolicy`                                             | `both` / `never`                                                                                                                                                    |
@@ -147,7 +148,7 @@ back to `0` for a kind the new snapshot no longer carries. A kind is a fixed nam
 for the enum or entity (`provider_kind`, `route_strategy`, `provider_group_strategy`,
 `budget_scope`, `budget_period`, `rate_limit_scope`, `failure_class`,
 `unpriced_policy`, `queue_backpressure`, `role_profile`, `param_policy_mode`,
-`guard_action`, `streaming_post_call`, `failure_mode`, `violation_action`,
+`guard_action`, `streaming_post_call`, `failure_mode`, `on_truncated`, `violation_action`,
 `streaming_strategy`, `guard_provider_kind`, `pii_direction`, `pii_restoration`,
 `pii_streaming`, `mcp_auth_kind`), never the value or the entity's name, so the label set is bounded
 by the build and leaks no tenant data. A budget or rate limit whose scope or period

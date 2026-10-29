@@ -302,6 +302,13 @@ Both histograms are labelled `{model="..."}` so you can track latency per model 
 
   </Accordion>
 
+  <Accordion title="rolter_semantic_local_truncated_total">
+    **Type:** Counter · **Labels:** `provider`
+
+    Calls of a [local classifier](/security/semantic-guard-policies#long-texts) provider whose text was longer than its `max_scored_bytes`, so the middle of it was not read. The request's log row carries `semantic_truncated:<provider>` too. A provider with `on_truncated = "fail_closed"` refuses these requests; otherwise they are scored on what fits. A steady rate is a reason to raise `max_scored_bytes` or to make the provider fail closed.
+
+  </Accordion>
+
   <Accordion title="rolter_local_classifier_models">
     **Type:** Gauge · **Labels:** `provider`, `state`
 
@@ -419,13 +426,13 @@ the default.
 
 ### What is exported
 
-| Kind                | Metrics                                                                                                                                                                                                                                        | How                      |
-| ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------ |
-| Counters and gauges | every `rolter_*_total`, `rolter_config_version`, `rolter_snapshot_format`, `rolter_snapshot_format_refused`                                                                                                                                    | observable               |
-| Process and runtime | `process.*`, `tokio.runtime.*`                                                                                                                                                                                                                 | observable, OTLP only    |
-| Labelled counters   | `rolter_target_requests_total`, `rolter_variant_requests_total`, `rolter_complexity_route_requests_total`, `rolter_route_limit_blocks_total`, `rolter_redis_reconnects_total`, `rolter_redis_connect_failures_total`, `rolter_fail_open_total` | observable               |
-| Labelled gauges     | `rolter_provider_queue_depth`, `rolter_provider_inflight`, `rolter_redis_connected`, `rolter_snapshot_unknown_values`, `rolter_local_classifier_models`                                                                                        | observable               |
-| Histograms          | `rolter_request_latency_ms`, `rolter_request_ttft_ms`, `rolter_provider_queue_wait_ms`                                                                                                                                                         | recorded per measurement |
+| Kind                | Metrics                                                                                                                                                                                                                                                                                 | How                      |
+| ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------ |
+| Counters and gauges | every `rolter_*_total`, `rolter_config_version`, `rolter_snapshot_format`, `rolter_snapshot_format_refused`                                                                                                                                                                             | observable               |
+| Process and runtime | `process.*`, `tokio.runtime.*`                                                                                                                                                                                                                                                          | observable, OTLP only    |
+| Labelled counters   | `rolter_target_requests_total`, `rolter_variant_requests_total`, `rolter_complexity_route_requests_total`, `rolter_route_limit_blocks_total`, `rolter_redis_reconnects_total`, `rolter_redis_connect_failures_total`, `rolter_fail_open_total`, `rolter_semantic_local_truncated_total` | observable               |
+| Labelled gauges     | `rolter_provider_queue_depth`, `rolter_provider_inflight`, `rolter_redis_connected`, `rolter_snapshot_unknown_values`, `rolter_local_classifier_models`                                                                                                                                 | observable               |
+| Histograms          | `rolter_request_latency_ms`, `rolter_request_ttft_ms`, `rolter_provider_queue_wait_ms`                                                                                                                                                                                                  | recorded per measurement |
 
 Counters and gauges are **observable instruments**: nothing is pushed on the
 request path, and the SDK reads the same atomics on its own schedule
