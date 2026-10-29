@@ -1406,7 +1406,7 @@ async fn summary_measures_the_prompt_cache_over_the_requests_that_reported_it() 
     .unwrap();
     let addr = serve(app).await;
 
-    let model = format!("prompt-cache-{}", Uuid::new_v4().simple());
+    let model = format!("cache-share-{}", Uuid::new_v4().simple());
     let ts = chrono::Utc::now()
         .format("%Y-%m-%d %H:%M:%S%.3f")
         .to_string();
