@@ -26,7 +26,16 @@ export interface SavingsSpend extends SavingsSpendRow {
   cache: { hits: number; misses: number; miss_cost_usd: number };
   by_route: (SavingsSpendRow & { route: string })[];
   by_model: (SavingsSpendRow & { model: string })[];
-  by_caller: (SavingsSpendRow & { project_id: string; virtual_key_id: string })[];
+  by_caller: (SavingsSpendRow & {
+    project_id: string;
+    virtual_key_id: string;
+    /**
+     * the key's name, or its prefix when it has none, read by the control plane
+     * for every caller whichever project it is in (#3499); `null` for a key
+     * that is gone, and absent from a control plane that predates it
+     */
+    key_name?: string | null;
+  })[];
 }
 
 export interface SavingsOption {

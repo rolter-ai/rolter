@@ -164,8 +164,10 @@ export default function Savings() {
   };
   const projects = orgScope.byTeam.flatMap((entry) => entry.projects);
   // the lists the pickers above are drawn from also name the callers in the
-  // spend table. a caller outside them (a project or key the account cannot
-  // read, or one since deleted) stays an id there (#3408)
+  // spend table. a caller's key is named by the report itself, for every
+  // project it lists (#3499), and the key list is only the fallback for a
+  // control plane that does not; a project or key outside both (one the
+  // account cannot read, or one since deleted) stays an id there (#3408)
   const projectNames = new Map(projects.map((project) => [project.id, project.name]));
   const keyNames = new Map((keys.data ?? []).map((k) => [k.id, keyLabel(k)]));
   const unavailable = report.error instanceof AnalyticsUnavailableError ? report.error : null;
@@ -435,8 +437,17 @@ function keyLabel(k: { name?: string | null; key_prefix: string }): string {
  * the id as it came, in the id's own mono type. The id stays in the title of a
  * named cell, so the row can still be matched to the log.
  */
-function CallerCell({ id, names }: { id: string; names: ReadonlyMap<string, string> }) {
-  const name = names.get(id);
+function CallerCell({
+  id,
+  names,
+  name: given,
+}: {
+  id: string;
+  names: ReadonlyMap<string, string>;
+  /** the name the report gave, which wins over the screen's own lists */
+  name?: string;
+}) {
+  const name = given || names.get(id);
   return name ? (
     <ListCell className="truncate text-sm" title={id}>
       {name}
@@ -523,7 +534,11 @@ function Report({
             {spend.by_caller.map((row) => (
               <ListRow key={`${row.project_id}/${row.virtual_key_id}`} grid={CALLER_GRID}>
                 <CallerCell id={row.project_id} names={projectNames} />
-                <CallerCell id={row.virtual_key_id} names={keyNames} />
+                <CallerCell
+                  id={row.virtual_key_id}
+                  names={keyNames}
+                  name={row.key_name ?? undefined}
+                />
                 <ListCell className="text-right font-mono text-xs">{count(row.requests)}</ListCell>
                 <ListCell className="text-right font-mono text-xs">{money(row.cost_usd)}</ListCell>
                 <ListCell className="text-right font-mono text-xs">

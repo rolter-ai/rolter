@@ -4626,7 +4626,7 @@ fn governance_schemas(p: &Prim) -> Value {
                 },
                 "spend": {
                     "type": "object",
-                    "description": "where the money went: totals, `multi_attempt` (requests that took more than one upstream attempt), `failed`, `cache` (hits, and misses on routes that cache), and `by_route`, `by_model` (upstream model) and `by_caller` (project and virtual key, the 50 most expensive)",
+                    "description": "where the money went: totals, `multi_attempt` (requests that took more than one upstream attempt), `failed`, `cache` (hits, and misses on routes that cache), and `by_route`, `by_model` (upstream model) and `by_caller` (project and virtual key, the 50 most expensive, each with the key's `key_name`, `null` for a key that is gone or a deployment without a store)",
                     "properties": {
                         "requests": {"type": "number"},
                         "cost_usd": {"type": "number"},
