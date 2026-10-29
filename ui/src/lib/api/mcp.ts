@@ -35,6 +35,9 @@ export interface McpLogDetail extends McpLogRow {
   /// 1 when the arguments and result were captured but the caller's role is
   /// below the payload floor, so the server blanked them (#2396)
   payload_withheld?: number | string;
+  /// the OAuth scopes an upstream's `insufficient_scope` refusal asked for
+  /// (#3375); absent on a row written before ClickHouse migration 042
+  error_scopes?: string[];
 }
 
 export interface McpLogsQuery extends AnalyticsWindow {

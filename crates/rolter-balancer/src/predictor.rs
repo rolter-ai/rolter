@@ -38,8 +38,8 @@
 //! the least-load pipeline until the model has evidence, so the switch itself
 //! moves no traffic.
 
+use parking_lot::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
-use std::sync::Mutex;
 
 use crate::scorer::LatencyPredictionSource;
 use crate::RouteContext;
@@ -167,7 +167,7 @@ impl LatencyPredictor {
         if !latency_ms.is_finite() || latency_ms < 0.0 {
             return;
         }
-        let mut models = self.models.lock().unwrap_or_else(|e| e.into_inner());
+        let mut models = self.models.lock();
         let Some(model) = models.get_mut(target) else {
             return;
         };
@@ -180,7 +180,7 @@ impl LatencyPredictor {
     /// a target with too little evidence to be trusted.
     #[must_use]
     pub fn predict(&self, n: usize, loads: &[u64], prompt_tokens: usize) -> Vec<Option<f64>> {
-        let models = self.models.lock().unwrap_or_else(|e| e.into_inner());
+        let models = self.models.lock();
         (0..n)
             .map(|i| {
                 let model = models.get(i)?;
@@ -201,14 +201,14 @@ impl LatencyPredictor {
     /// per_ktoken_ms]`, for telemetry and tests. `None` for an unknown target.
     #[must_use]
     pub fn coefficients(&self, target: usize) -> Option<[f64; 3]> {
-        let models = self.models.lock().unwrap_or_else(|e| e.into_inner());
+        let models = self.models.lock();
         models.get(target).map(|m| m.weights)
     }
 
     /// Completed requests folded into `target`'s model.
     #[must_use]
     pub fn samples(&self, target: usize) -> u64 {
-        let models = self.models.lock().unwrap_or_else(|e| e.into_inner());
+        let models = self.models.lock();
         models.get(target).map_or(0, |m| m.samples)
     }
 }
