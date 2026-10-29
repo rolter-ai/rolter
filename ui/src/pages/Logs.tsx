@@ -33,6 +33,7 @@ import { CopyableText } from "@/components/ui/copyable-value";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Input } from "@/components/ui/input";
 import { Segmented } from "@/components/ui/segmented";
+import { Table, type TableColumn } from "@/components/ui/table";
 import { Sheet, SheetBody, SheetHeader } from "@/components/ui/sheet";
 import {
   AnalyticsUnavailableError,
@@ -395,20 +396,7 @@ function useLogFilters() {
 // sidebar, the filter rail and the detail drawer all take width the window
 // still reports as free, so a table that kept its columns scrolled Cost out of
 // view (#1986). `@container` is on the scroll area below
-const TH =
-  "sticky top-0 z-[1] whitespace-nowrap border-b border-[color:var(--border-default)] bg-[color:var(--surface-subtle)] px-2 py-2.5 text-left text-xs font-medium text-muted-foreground @min-[480px]:px-3";
-const TD =
-  "border-b border-[color:var(--border-subtle)] px-2 py-[9px] font-mono text-xs @min-[480px]:px-3";
-// below 480px the table is the wrong shape for a request, so each row stacks
-// instead: model and status on the first line, time and cost on the second,
-// the chevron beside both (#2446). the table elements stay, so the header and
-// the cells keep their names; the header is only taken out of sight. the
-// model gets what the fixed cells leave and is cut with an ellipsis rather than
-// wrapped, its full name in `title` and in the chevron's accessible name.
-// every class is written out whole: tailwind cannot see one built from parts
-const TR_STACKED =
-  "@max-[479px]:grid @max-[479px]:grid-cols-[minmax(0,1fr)_auto_1.75rem] @max-[479px]:items-center @max-[479px]:gap-x-2 @max-[479px]:border-b @max-[479px]:border-[color:var(--border-subtle)] @max-[479px]:px-3 @max-[479px]:py-2";
-const TD_STACKED = "@max-[479px]:border-b-0 @max-[479px]:p-0";
+
 // the model's name beside the operation badge: it wraps in a wide row and is cut
 // with an ellipsis in a stacked one, so the badge keeps its room either way
 const MODEL_BESIDE_BADGE = "min-w-0 [overflow-wrap:anywhere] @max-[479px]:truncate";
@@ -642,6 +630,141 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
   const isWithheld = (row: InvocationRow) => num(row.withheld) === 1;
   const cost = (row: InvocationRow) =>
     isUnpriced(row) || isUsageUnknown(row) ? null : fmt.currency(num(row.cost_usd), currency);
+  // the columns a reader cannot do without stay at every width and the others
+  // give way as the table narrows (see the note above `PROVIDER_COL`); below
+  // 480px each row stacks, a column's `stackedClassName` placing its cell in the
+  // grid (#2446)
+  const columns: TableColumn<InvocationRow>[] = [
+    {
+      key: "ts",
+      header: t("pages.logs.time"),
+      colClassName: "w-[104px] @min-[480px]:w-28",
+      // the clock and its milliseconds, which tell rows apart. the day is in
+      // the title and in the drawer's verdict, not repeated on every row of a
+      // 24 hour window
+      className: "truncate whitespace-nowrap",
+      stackedClassName:
+        "@max-[479px]:col-start-1 @max-[479px]:row-start-2 @max-[479px]:text-[color:var(--text-secondary)]",
+      render: (_, r) => (
+        <time dateTime={r.ts} title={fmt.dateTimeMs(r.ts)}>
+          {fmt.timeMs(r.ts)}
+        </time>
+      ),
+    },
+    {
+      key: "model",
+      header: t("pages.logs.model"),
+      // what is left once the fixed ones have theirs
+      className: "[overflow-wrap:anywhere]",
+      stackedClassName:
+        "@max-[479px]:col-start-1 @max-[479px]:row-start-1 @max-[479px]:truncate @max-[479px]:whitespace-nowrap @max-[479px]:text-sm",
+      cellProps: (r) => ({ title: r.model }),
+      render: (_, r) => {
+        const lifecycle = lifecycleLabel(t, r);
+        return lifecycle ? (
+          <span className="flex min-w-0 items-baseline gap-1.5">
+            {r.model && <span className={MODEL_BESIDE_BADGE}>{r.model}</span>}
+            <LifecycleBadge label={lifecycle} />
+          </span>
+        ) : (
+          r.model
+        );
+      },
+    },
+    {
+      key: "provider",
+      header: t("common.provider"),
+      colClassName: "hidden w-[148px] @min-[840px]:table-column",
+      className: cn(PROVIDER_COL, "truncate whitespace-nowrap text-[color:var(--text-secondary)]"),
+      render: (_, r) => r.provider || "—",
+    },
+    {
+      key: "status",
+      header: t("pages.logs.status"),
+      // wide enough from 600px for the upstream's status beside the caller's;
+      // narrower, it wraps under the badge
+      colClassName: "w-[58px] @min-[480px]:w-[68px] @min-[600px]:w-[104px]",
+      stackedClassName:
+        "@max-[479px]:col-start-2 @max-[479px]:row-start-1 @max-[479px]:justify-self-end",
+      render: (_, r) => {
+        const st = num(r.status);
+        return (
+          <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1">
+            <HttpStatusBadge status={st} className="font-mono">
+              {st ? undefined : "ERR"}
+            </HttpStatusBadge>
+            {isWithheld(r) && <Withheld titled />}
+            <UpstreamHint row={r} />
+          </div>
+        );
+      },
+    },
+    {
+      key: "latency",
+      header: t("pages.logs.latency"),
+      align: "right",
+      colClassName: "hidden w-24 @min-[600px]:table-column",
+      className: cn(LATENCY_COL, "text-[color:var(--text-secondary)]"),
+      render: (_, r) => t("analytics.ms", { value: fmt.number(Math.round(num(r.latency_ms))) }),
+    },
+    {
+      key: "tokens",
+      header: t("pages.logs.tokens"),
+      align: "right",
+      colClassName: "hidden w-[88px] @min-[720px]:table-column",
+      className: cn(TOKENS_COL, "text-[color:var(--text-secondary)]"),
+      render: (_, r) =>
+        isUsageUnknown(r) ? (
+          <span title={t("analytics.usageUnknownHint")}>
+            <Absent />
+          </span>
+        ) : (
+          fmt.number(num(r.total_tokens))
+        ),
+    },
+    {
+      key: "cost",
+      header: t("pages.logs.cost"),
+      align: "right",
+      colClassName: "w-[84px] @min-[480px]:w-24",
+      className: "whitespace-nowrap text-[color:var(--text-secondary)]",
+      stackedClassName: "@max-[479px]:col-start-2 @max-[479px]:row-start-2",
+      render: (_, r) =>
+        cost(r) ??
+        (isUsageUnknown(r) ? (
+          <span title={t("analytics.usageUnknownHint")}>
+            <Absent />
+          </span>
+        ) : (
+          <Unpriced titled />
+        )),
+    },
+    {
+      key: "details",
+      header: <span className="sr-only">{t("analytics.details")}</span>,
+      align: "right",
+      colClassName: "w-7 @min-[480px]:w-9",
+      className: "pl-0 pr-2 @min-[480px]:pl-0 @min-[480px]:pr-2.5",
+      stackedClassName:
+        "@max-[479px]:col-start-3 @max-[479px]:row-span-2 @max-[479px]:row-start-1 @max-[479px]:justify-self-end",
+      // the row's click target is a mouse convenience; this button is the
+      // keyboard's and the screen reader's way into the same drawer
+      render: (_, r) => (
+        <button
+          type="button"
+          aria-label={t("analytics.openDetails", { model: rowName(t, r) })}
+          onClick={(e) => {
+            e.stopPropagation();
+            setSelected(r);
+          }}
+          className="-my-[5px] -mr-[5px] ml-auto flex rounded-sm p-[5px] text-[color:var(--text-subtle)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+        >
+          <ChevronRight className="h-[15px] w-[15px]" />
+        </button>
+      ),
+    },
+  ];
+
   const filterCount =
     (status === "all" ? 0 : 1) +
     (model ? 1 : 0) +
@@ -1158,193 +1281,34 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
         </form>
 
         <div className="@container relative min-h-0 flex-1 overflow-auto">
-          <table className="w-full min-w-[320px] table-fixed border-collapse text-sm @max-[479px]:block">
-            <colgroup>
-              <col className="w-[104px] @min-[480px]:w-28" />
-              {/* what is left once the fixed ones have theirs */}
-              <col />
-              <col className="hidden w-[148px] @min-[840px]:table-column" />
-              {/* wide enough from 600px for the upstream's status beside the
-                  caller's; narrower, it wraps under the badge */}
-              <col className="w-[58px] @min-[480px]:w-[68px] @min-[600px]:w-[104px]" />
-              <col className="hidden w-24 @min-[600px]:table-column" />
-              <col className="hidden w-[88px] @min-[720px]:table-column" />
-              <col className="w-[84px] @min-[480px]:w-24" />
-              <col className="w-7 @min-[480px]:w-9" />
-            </colgroup>
-            <thead className="@max-[479px]:sr-only">
-              <tr>
-                <th scope="col" className={TH}>
-                  {t("pages.logs.time")}
-                </th>
-                <th scope="col" className={TH}>
-                  {t("pages.logs.model")}
-                </th>
-                <th scope="col" className={cn(TH, PROVIDER_COL)}>
-                  {t("common.provider")}
-                </th>
-                <th scope="col" className={TH}>
-                  {t("pages.logs.status")}
-                </th>
-                <th scope="col" className={cn(TH, LATENCY_COL, "text-right")}>
-                  {t("pages.logs.latency")}
-                </th>
-                <th scope="col" className={cn(TH, TOKENS_COL, "text-right")}>
-                  {t("pages.logs.tokens")}
-                </th>
-                <th scope="col" className={cn(TH, "text-right")}>
-                  {t("pages.logs.cost")}
-                </th>
-                <th scope="col" className={TH}>
-                  <span className="sr-only">{t("analytics.details")}</span>
-                </th>
-              </tr>
-            </thead>
-            <tbody className="@max-[479px]:block">
-              {rows.map((r) => {
-                const st = num(r.status);
-                // the drawer beside the table has no other tie back to the
-                // row it describes, so the open row says so, to the eye and
-                // to a screen reader (#1983)
-                const isOpen = selected != null && rowKey(selected) === rowKey(r);
-                const lifecycle = lifecycleLabel(t, r);
-                return (
-                  <tr
-                    key={rowKey(r)}
-                    aria-selected={isOpen}
-                    onClick={() => setSelected(r)}
-                    className={cn(
-                      "cursor-pointer transition-colors",
-                      TR_STACKED,
-                      isOpen
-                        ? "bg-[color:var(--surface-selected)]"
-                        : "hover:bg-[color:var(--surface-hover)]",
-                    )}
-                  >
-                    {/* the clock and its milliseconds, which tell rows apart.
-                        the day is in the title and in the drawer's verdict,
-                        not repeated on every row of a 24 hour window */}
-                    <td
-                      className={cn(
-                        TD,
-                        TD_STACKED,
-                        "truncate whitespace-nowrap @max-[479px]:col-start-1 @max-[479px]:row-start-2 @max-[479px]:text-[color:var(--text-secondary)]",
-                      )}
-                    >
-                      <time dateTime={r.ts} title={fmt.dateTimeMs(r.ts)}>
-                        {fmt.timeMs(r.ts)}
-                      </time>
-                    </td>
-                    <td
-                      title={r.model}
-                      className={cn(
-                        TD,
-                        TD_STACKED,
-                        "[overflow-wrap:anywhere] @max-[479px]:col-start-1 @max-[479px]:row-start-1 @max-[479px]:truncate @max-[479px]:whitespace-nowrap @max-[479px]:text-sm",
-                      )}
-                    >
-                      {lifecycle ? (
-                        <span className="flex min-w-0 items-baseline gap-1.5">
-                          {r.model && <span className={MODEL_BESIDE_BADGE}>{r.model}</span>}
-                          <LifecycleBadge label={lifecycle} />
-                        </span>
-                      ) : (
-                        r.model
-                      )}
-                    </td>
-                    <td
-                      className={cn(
-                        TD,
-                        PROVIDER_COL,
-                        "truncate whitespace-nowrap text-[color:var(--text-secondary)]",
-                      )}
-                    >
-                      {r.provider || "—"}
-                    </td>
-                    <td
-                      className={cn(
-                        TD,
-                        TD_STACKED,
-                        "@max-[479px]:col-start-2 @max-[479px]:row-start-1 @max-[479px]:justify-self-end",
-                      )}
-                    >
-                      <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1">
-                        <HttpStatusBadge status={st} className="font-mono">
-                          {st ? undefined : "ERR"}
-                        </HttpStatusBadge>
-                        {isWithheld(r) && <Withheld titled />}
-                        <UpstreamHint row={r} />
-                      </div>
-                    </td>
-                    <td
-                      className={cn(
-                        TD,
-                        LATENCY_COL,
-                        "text-right text-[color:var(--text-secondary)]",
-                      )}
-                    >
-                      {t("analytics.ms", { value: fmt.number(Math.round(num(r.latency_ms))) })}
-                    </td>
-                    <td
-                      className={cn(
-                        TD,
-                        TOKENS_COL,
-                        "text-right text-[color:var(--text-secondary)]",
-                      )}
-                    >
-                      {isUsageUnknown(r) ? (
-                        <span title={t("analytics.usageUnknownHint")}>
-                          <Absent />
-                        </span>
-                      ) : (
-                        fmt.number(num(r.total_tokens))
-                      )}
-                    </td>
-                    <td
-                      className={cn(
-                        TD,
-                        TD_STACKED,
-                        "@max-[479px]:col-start-2 @max-[479px]:row-start-2",
-                        "whitespace-nowrap text-right text-[color:var(--text-secondary)]",
-                      )}
-                    >
-                      {cost(r) ??
-                        (isUsageUnknown(r) ? (
-                          <span title={t("analytics.usageUnknownHint")}>
-                            <Absent />
-                          </span>
-                        ) : (
-                          <Unpriced titled />
-                        ))}
-                    </td>
-                    <td
-                      className={cn(
-                        TD,
-                        TD_STACKED,
-                        "@max-[479px]:col-start-3 @max-[479px]:row-span-2 @max-[479px]:row-start-1 @max-[479px]:justify-self-end",
-                        "pl-0 pr-2 @min-[480px]:pl-0 @min-[480px]:pr-2.5 text-right",
-                      )}
-                    >
-                      {/* the row's click target is a mouse convenience; this
-                          button is the keyboard's and the screen reader's way
-                          into the same drawer */}
-                      <button
-                        type="button"
-                        aria-label={t("analytics.openDetails", { model: rowName(t, r) })}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setSelected(r);
-                        }}
-                        className="-my-[5px] -mr-[5px] ml-auto flex rounded-sm p-[5px] text-[color:var(--text-subtle)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                      >
-                        <ChevronRight className="h-[15px] w-[15px]" />
-                      </button>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+          <Table
+            bare
+            compact
+            stickyHeader
+            stacked
+            hover={false}
+            caption={t("screens.logs.title")}
+            columns={columns}
+            data={rows}
+            rowKey={rowKey}
+            tableClassName="min-w-[320px] table-fixed"
+            rowProps={(r) => {
+              // the drawer beside the table has no other tie back to the
+              // row it describes, so the open row says so, to the eye and
+              // to a screen reader (#1983)
+              const isOpen = selected != null && rowKey(selected) === rowKey(r);
+              return {
+                "aria-selected": isOpen,
+                onClick: () => setSelected(r),
+                className: cn(
+                  "cursor-pointer",
+                  isOpen
+                    ? "bg-[color:var(--surface-selected)]"
+                    : "hover:bg-[color:var(--surface-hover)]",
+                ),
+              };
+            }}
+          />
           {query.error && (
             <div className="p-4">
               <LoadError
