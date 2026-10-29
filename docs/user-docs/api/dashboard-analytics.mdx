@@ -159,7 +159,7 @@ The file name says what it holds: `<what>_<from>_to_<to>_<CURRENCY>.csv`, such a
 | Limit                                  | Default   | Variable                                  | Past it                                                            |
 | -------------------------------------- | --------- | ----------------------------------------- | ------------------------------------------------------------------ |
 | rows in one export                     | `1000000` | `ROLTER_EXPORT_MAX_ROWS`                  | the body ends in an error after the last row that fits             |
-| wall-clock time of one export          | `600` s   | `ROLTER_EXPORT_MAX_SECS`                  | the body ends in an error                                          |
+| wall-clock time of one export          | `600` s   | `ROLTER_EXPORT_MAX_SECS`                  | the body ends in an error; a stalled client's connection is closed |
 | exports running at once in one process | `4`       | `ROLTER_EXPORT_MAX_CONCURRENT`            | `429 Too Many Requests` with `Retry-After`, before any row is read |
 | exports running at once for one caller | `1`       | `ROLTER_EXPORT_MAX_CONCURRENT_PER_CALLER` | `429 Too Many Requests` with `Retry-After`, before any row is read |
 

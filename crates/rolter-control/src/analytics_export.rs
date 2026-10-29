@@ -37,14 +37,16 @@
 
 use std::collections::HashMap;
 use std::io;
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use axum::body::{Body, Bytes};
-use axum::extract::State;
+use axum::extract::{ConnectInfo, State};
 use axum::http::{header, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
+use axum::Extension;
 use axum::Router;
 use futures_util::stream::{self, StreamExt};
 use serde_json::Value;
@@ -58,6 +60,7 @@ use crate::analytics::{
     WHERE_WINDOW,
 };
 use crate::analytics_access::{AnalyticsAccess, ROW_VISIBLE};
+use crate::conn_close::CloseSwitch;
 use crate::request_log_columns::Columns;
 use crate::time_bounds::Query;
 use crate::ControlState;
@@ -183,15 +186,25 @@ impl Drop for ExportPermit {
 /// [`ExportLimits::max_duration`] whether or not the body is ever polled; the
 /// slot is also emptied by the usual drop, and the timer is aborted when the
 /// body is dropped first.
+///
+/// The slot alone frees the place but leaves the stalled response open: hyper
+/// is parked writing to a full socket, so the connection, its task and the
+/// buffered chunk would stay until TCP gave up (#3477). The timer therefore
+/// also trips the connection's [`CloseSwitch`], which fails the parked write
+/// without the body being polled.
 struct TimedPermit {
     slot: Arc<parking_lot::Mutex<Option<ExportPermit>>>,
     timer: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl TimedPermit {
-    /// Hold `permit` until the guard drops or `limit` passes. No limit leaves
-    /// the permit to the drop alone.
-    fn new(permit: ExportPermit, limit: Option<Duration>) -> Self {
+    /// Hold `permit` until the guard drops or `limit` passes, and close
+    /// `connection` then. No limit leaves the permit to the drop alone.
+    fn new(
+        permit: ExportPermit,
+        limit: Option<Duration>,
+        connection: Option<Arc<CloseSwitch>>,
+    ) -> Self {
         let slot = Arc::new(parking_lot::Mutex::new(Some(permit)));
         let timer = limit.map(|limit| {
             let slot = Arc::clone(&slot);
@@ -199,8 +212,12 @@ impl TimedPermit {
                 tokio::time::sleep(limit).await;
                 if slot.lock().take().is_some() {
                     tracing::warn!(
-                        "request log export passed its time limit; its place was given back"
+                        "request log export passed its time limit; its place was given back \
+                         and its connection closed"
                     );
+                    if let Some(connection) = connection {
+                        connection.trip();
+                    }
                 }
             })
         });
@@ -835,6 +852,7 @@ async fn export_invocations(
     principal: Caller,
     access: AnalyticsAccess,
     State(state): State<ControlState>,
+    connect: Option<Extension<ConnectInfo<SocketAddr>>>,
     Query(q): Query<InvocationsQuery>,
 ) -> Response {
     let ch = match client_or_503(&state) {
@@ -897,7 +915,9 @@ async fn export_invocations(
         Err(busy) => return too_many_exports(busy),
     };
     let limits = state.export_gate.limits;
-    let permit = TimedPermit::new(permit, limits.max_duration);
+    let connection =
+        connect.and_then(|Extension(ConnectInfo(peer))| crate::conn_close::switch_for(peer));
+    let permit = TimedPermit::new(permit, limits.max_duration, connection);
     // which optional columns the table has, so the file still builds before an
     // operator applies the sequence column (see `request_log_columns`)
     let columns = match ch.request_log_columns().await {
@@ -1068,7 +1088,7 @@ mod tests {
         let mut limits = ExportLimits::new(0, 0, 1, 1);
         limits.max_duration = Some(Duration::from_millis(60));
         let gate = Arc::new(ExportGate::new(limits));
-        let permit = TimedPermit::new(gate.try_acquire("a").unwrap(), limits.max_duration);
+        let permit = TimedPermit::new(gate.try_acquire("a").unwrap(), limits.max_duration, None);
         // the body of a stalled download: held, and never polled again
         let stalled = stream::unfold(permit, |permit| async move {
             Some((Ok::<_, io::Error>(Bytes::new()), permit))
@@ -1096,6 +1116,7 @@ mod tests {
         let held = TimedPermit::new(
             gate.try_acquire("a").unwrap(),
             Some(Duration::from_secs(600)),
+            None,
         );
         assert!(held.is_held());
         assert_eq!(gate.try_acquire("b").err(), Some(Busy::Process));
@@ -1268,6 +1289,70 @@ mod tests {
         // rather than passing for a complete file
         let (_, complete) = drain(stalled).await;
         assert!(!complete);
+    }
+
+    /// #3477: the permit coming back is not enough, the stalled client's
+    /// connection has to go too. A real server over the closeable listener, and
+    /// a client that sends the request and then never reads.
+    #[tokio::test]
+    async fn a_client_that_stops_reading_has_its_connection_closed_at_the_deadline() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        // far more rows than fit in the socket buffers
+        let url = fake_log(3_000_000, Duration::ZERO).await;
+        let limits = ExportLimits {
+            max_duration: Some(Duration::from_millis(600)),
+            ..ExportLimits::new(0, 0, 0, 0)
+        };
+        let app = crate::conn_close::MakeCloseable(export_app(&url, limits));
+        // small socket buffers on both ends, so the response stalls after a few
+        // pages and not after however much the kernel will absorb
+        let server = tokio::net::TcpSocket::new_v4().unwrap();
+        server.set_send_buffer_size(4096).unwrap();
+        server.bind("127.0.0.1:0".parse().unwrap()).unwrap();
+        let listener = crate::conn_close::CloseableListener(server.listen(16).unwrap());
+        let addr = listener.0.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await });
+
+        let socket = tokio::net::TcpSocket::new_v4().unwrap();
+        socket.set_recv_buffer_size(4096).unwrap();
+        let mut client = socket.connect(addr).await.unwrap();
+        // a tiny receive window makes the server's send buffer fill quickly
+        client
+            .write_all(b"GET /api/v1/analytics/invocations/export HTTP/1.1\r\nhost: x\r\n\r\n")
+            .await
+            .unwrap();
+        let started = Instant::now();
+        // not reading: the server's side of the socket must be gone within the
+        // deadline plus margin, with the client still holding its end unread
+        let me = client.local_addr().unwrap();
+        while crate::conn_close::switch_for(me).is_none() {
+            assert!(started.elapsed() < Duration::from_secs(5), "never accepted");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        while crate::conn_close::switch_for(me).is_some() {
+            assert!(
+                started.elapsed() < Duration::from_millis(2500),
+                "the server still held the stalled connection"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        // the server has closed its end, so draining what was buffered reaches
+        // end of stream or a reset instead of blocking
+        let mut sink = vec![0u8; 64 * 1024];
+        let ended = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                match client.read(&mut sink).await {
+                    Ok(0) | Err(_) => break,
+                    Ok(_) => {}
+                }
+            }
+        })
+        .await;
+        assert!(
+            ended.is_ok(),
+            "the connection was still open after the deadline"
+        );
+        assert!(started.elapsed() < Duration::from_secs(8));
     }
 
     #[tokio::test]
