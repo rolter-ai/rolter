@@ -1684,6 +1684,9 @@ mod tests {
             .flat_map(u16::to_le_bytes)
             .collect();
         let utf16be: Vec<u8> = text.encode_utf16().flat_map(u16::to_be_bytes).collect();
+        // a BOM is unreadable here: the relay strips it before this layer
+        // sees the body (`without_bom`), so a mark that reaches the policy is
+        // one the relay did not take off and must not be judged around
         let mut bom = BOM.to_vec();
         bom.extend_from_slice(text.as_bytes());
         let nan = text.replace(r#""arguments":{}"#, r#""arguments":{"x":NaN}"#);

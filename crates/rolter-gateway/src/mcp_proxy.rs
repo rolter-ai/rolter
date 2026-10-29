@@ -1766,6 +1766,29 @@ mod tests {
         assert_eq!(*seen.lock(), vec![call_body("get_issue")]);
     }
 
+    /// #3527: a server no tool group or manifest governs has nothing to judge,
+    /// so even with the MCP log on a body that does not parse, and one with a
+    /// byte-order mark, are forwarded byte for byte.
+    #[tokio::test]
+    async fn an_ungoverned_server_gets_every_body_verbatim_with_logging_on() {
+        let mut config = config("user-1", &["tools:execute"]);
+        let (url, seen) = recording().await;
+        config.mcp_servers[0].url = url;
+        let mut with_bom = b"\xef\xbb\xbf".to_vec();
+        with_bom.extend_from_slice(&call_body("drop"));
+        let bodies = [Bytes::from_static(b"{ nope"), Bytes::from(with_bom)];
+        for body in &bodies {
+            let mut state = AppState::new(&config);
+            let (sink, _events) =
+                crate::mcp_log::McpEventSink::capturing(std::sync::Arc::new(Default::default()));
+            state.mcp_events = sink;
+            assert!(state.mcp_events.enabled());
+            let response = post(state, body.clone()).await;
+            assert_eq!(response.status(), StatusCode::OK);
+        }
+        assert_eq!(*seen.lock(), bodies.to_vec());
+    }
+
     /// #3527: a body `serde_json` does not read but a lenient upstream might
     /// (UTF-16, `NaN`) is refused in a `fail_open` organization, and nothing
     /// reaches the upstream.
