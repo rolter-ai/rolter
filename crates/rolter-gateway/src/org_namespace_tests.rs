@@ -382,3 +382,318 @@ async fn cache_hits_report_into_their_own_orgs_metric_series() {
         "no bare series merges the two orgs:\n{body}"
     );
 }
+
+/// A key of `org`, minted in `project`.
+fn project_key(org: &str, project: &str) -> String {
+    key_of(&format!("{org}-{project}"))
+}
+
+/// A control plane's file serves `chat`, the provider `edge` and the group
+/// `pool` to every org; org-a has its own row of each name, narrowed to its
+/// project `proj-a1` (a `project_only` route, a provider and a group scoped to
+/// that project). Each has its own upstream model, so a listing shows which
+/// row a key resolved.
+fn narrowed_shadows(org_base: String, file_base: String) -> GatewayConfig {
+    let narrowed = Some(Tenancy {
+        org_id: "org-a".to_string(),
+        project_id: Some("proj-a1".to_string()),
+    });
+    let mut config: GatewayConfig = serde_json::from_value(json!({
+        "providers": [
+            {"name": "edge", "slug": "edge", "kind": "openai_compatible", "api_base": file_base},
+            {"name": "edge", "slug": "edge", "kind": "openai_compatible", "api_base": org_base,
+             "tenancy": narrowed},
+        ],
+        "provider_groups": [
+            {"name": "pool", "slug": "pool", "members": [{"provider": "edge"}]},
+            {"name": "pool", "slug": "pool", "members": [{"provider": "edge"}],
+             "tenancy": narrowed},
+        ],
+        "routes": [
+            {"model": "chat", "targets": [{"provider": "edge", "model": "file-model"}]},
+            {"model": "chat", "targets": [{"provider": "edge", "model": "org-model"}],
+             "advanced": {"visibility": {"project_only": true}}, "tenancy": narrowed},
+        ],
+    }))
+    .unwrap();
+    config.retry.max_retries = 0;
+    let pepper = config.server.resolve_key_pepper();
+    for (org, project) in [
+        ("org-a", "proj-a1"),
+        ("org-a", "proj-a2"),
+        ("org-b", "proj-b1"),
+    ] {
+        config.db_virtual_keys.push(VirtualKeyRecord {
+            key_hash: rolter_auth::hash_key(&pepper, &project_key(org, project)),
+            id: format!("key-{org}-{project}"),
+            org_id: org.to_string(),
+            project_id: project.to_string(),
+            ..Default::default()
+        });
+    }
+    config
+}
+
+/// Which upstream answers `model` for `key`, or the status when none does.
+async fn answer(gw: SocketAddr, key: &str, model: &str) -> Result<String, u16> {
+    let response = reqwest::Client::new()
+        .post(format!("http://{gw}/v1/chat/completions"))
+        .bearer_auth(key)
+        .json(&json!({"model": model, "messages": [{"role": "user", "content": "hi"}]}))
+        .send()
+        .await
+        .unwrap();
+    let status = response.status().as_u16();
+    let body: Value = response.json().await.unwrap_or_default();
+    match body["choices"][0]["message"]["content"].as_str() {
+        Some(content) if status == 200 => Ok(content.to_string()),
+        _ => Err(status),
+    }
+}
+
+/// An org's row narrowed to one project shadows the global row of its name
+/// for that project only: a sibling project of the same org, like another
+/// org, resolves as if the org had no such row and reaches the global one
+/// (#3546).
+#[tokio::test]
+async fn a_project_narrowed_org_row_shadows_the_global_row_for_its_project_only() {
+    let (org, _) = upstream("from-org-a").await;
+    let (file, _) = upstream("from-file").await;
+    let config = narrowed_shadows(format!("http://{org}"), format!("http://{file}"));
+    let (gw, _) = gateway(&config).await;
+
+    // a `project_only` route, a project-scoped provider and a project-scoped
+    // group, each shadowing a global row of the same name
+    for model in ["chat", "edge/m", "pool/m"] {
+        assert_eq!(
+            answer(gw, &project_key("org-a", "proj-a1"), model).await,
+            Ok("from-org-a".to_string()),
+            "{model}: the narrowed project gets its org's row"
+        );
+        assert_eq!(
+            answer(gw, &project_key("org-a", "proj-a2"), model).await,
+            Ok("from-file".to_string()),
+            "{model}: a sibling project falls through to the global row"
+        );
+        assert_eq!(
+            answer(gw, &project_key("org-b", "proj-b1"), model).await,
+            Ok("from-file".to_string()),
+            "{model}: another org gets the global row"
+        );
+    }
+}
+
+/// `GET /v1/models` lists the row each key resolves, so a sibling project
+/// sees the global `chat`, `edge` and `pool` its requests reach (#3546).
+#[tokio::test]
+async fn the_model_listing_follows_a_project_narrowed_shadow() {
+    let config = narrowed_shadows("http://127.0.0.1:9".into(), "http://127.0.0.1:9".into());
+    let (gw, _) = gateway(&config).await;
+    let listed = |key: String| async move {
+        let body: Value = reqwest::Client::new()
+            .get(format!("http://{gw}/v1/models"))
+            .bearer_auth(key)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let mut ids: Vec<String> = body["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|item| item["id"].as_str())
+            .filter(|id| *id != crate::fake_llm::MODEL_NAME)
+            .map(str::to_string)
+            .collect();
+        ids.sort();
+        ids
+    };
+
+    // the narrowed project lists its org's provider and group
+    assert_eq!(
+        listed(project_key("org-a", "proj-a1")).await,
+        ["chat", "edge/org-model", "pool/org-model"]
+    );
+    for (org, project) in [("org-a", "proj-a2"), ("org-b", "proj-b1")] {
+        assert_eq!(
+            listed(project_key(org, project)).await,
+            ["chat", "edge/file-model", "pool/file-model"],
+            "{org}/{project}"
+        );
+    }
+}
+
+/// Only a row outside the key's tenancy falls through (#3546). An org's own
+/// route the key may not use for any other reason (its visibility, the key's
+/// model allow-list, the key's provider allow-list) is refused as it is, and
+/// never answered by the global row of the same name.
+#[tokio::test]
+async fn a_refusal_that_is_not_about_tenancy_does_not_fall_through() {
+    let (org, org_calls) = upstream("from-org-a").await;
+    let (file, file_calls) = upstream("from-file").await;
+    let mut config: GatewayConfig = serde_json::from_value(json!({
+        "providers": [
+            {"name": "file", "kind": "openai_compatible", "api_base": format!("http://{file}")},
+            {"name": "orgp", "kind": "openai_compatible", "api_base": format!("http://{org}"),
+             "tenancy": {"org_id": "org-a"}},
+        ],
+        "routes": [
+            {"model": "chat", "targets": [{"provider": "file"}]},
+            {"model": "chat", "targets": [{"provider": "orgp"}], "tenancy": {"org_id": "org-a"},
+             "advanced": {"visibility": {
+                 "allowed_key_ids": ["key-ok", "key-models", "key-providers"]}}},
+        ],
+    }))
+    .unwrap();
+    config.retry.max_retries = 0;
+    let pepper = config.server.resolve_key_pepper();
+    for (id, models, providers) in [
+        ("key-ok", vec![], vec![]),
+        ("key-hidden", vec![], vec![]),
+        ("key-models", vec!["other".to_string()], vec![]),
+        // the global route's provider: a fall-through would be served
+        ("key-providers", vec![], vec!["file".to_string()]),
+    ] {
+        config.db_virtual_keys.push(VirtualKeyRecord {
+            key_hash: rolter_auth::hash_key(&pepper, &key_of(id)),
+            id: id.to_string(),
+            org_id: "org-a".to_string(),
+            project_id: "proj-a1".to_string(),
+            models,
+            providers,
+            ..Default::default()
+        });
+    }
+    let (gw, _) = gateway(&config).await;
+
+    assert_eq!(
+        answer(gw, &key_of("key-ok"), "chat").await,
+        Ok("from-org-a".to_string())
+    );
+    for id in ["key-hidden", "key-models", "key-providers"] {
+        let refused = answer(gw, &key_of(id), "chat").await;
+        assert!(
+            matches!(refused, Err(status) if status >= 400),
+            "{id}: {refused:?}"
+        );
+    }
+    assert_eq!(
+        file_calls.load(Ordering::SeqCst),
+        0,
+        "a refusal fell through"
+    );
+    assert_eq!(org_calls.load(Ordering::SeqCst), 1);
+}
+
+/// An upstream that accepts realtime sockets and counts them.
+async fn realtime_upstream() -> (SocketAddr, Arc<AtomicUsize>) {
+    use futures_util::{SinkExt, StreamExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let sockets = Arc::new(AtomicUsize::new(0));
+    let counter = sockets.clone();
+    tokio::spawn(async move {
+        while let Ok((stream, _)) = listener.accept().await {
+            let counter = counter.clone();
+            tokio::spawn(async move {
+                let Ok(mut socket) = tokio_tungstenite::accept_async(stream).await else {
+                    return;
+                };
+                counter.fetch_add(1, Ordering::SeqCst);
+                while let Some(Ok(message)) = socket.next().await {
+                    let close = message.is_close();
+                    if socket.send(message).await.is_err() || close {
+                        break;
+                    }
+                }
+            });
+        }
+    });
+    (addr, sockets)
+}
+
+/// The realtime upgrade resolves its model through the same rule: a sibling
+/// project of an org whose `chat` is `project_only` opens its session on the
+/// global `chat` (#3546).
+#[tokio::test]
+async fn a_realtime_session_falls_through_a_project_narrowed_route() {
+    let (org, org_sockets) = realtime_upstream().await;
+    let (file, file_sockets) = realtime_upstream().await;
+    let config = narrowed_shadows(format!("http://{org}"), format!("http://{file}"));
+    let (gw, _) = gateway(&config).await;
+    let open = |key: String| {
+        let (org_sockets, file_sockets) = (org_sockets.clone(), file_sockets.clone());
+        async move {
+            let mut request =
+                tokio_tungstenite::tungstenite::client::IntoClientRequest::into_client_request(
+                    format!("ws://{gw}/v1/realtime?model=chat"),
+                )
+                .unwrap();
+            request.headers_mut().insert(
+                axum::http::header::AUTHORIZATION,
+                format!("Bearer {key}").parse().unwrap(),
+            );
+            let (socket, _) = tokio_tungstenite::connect_async(request)
+                .await
+                .expect("the session opens");
+            // the gateway dials the upstream before it answers the first frame
+            for _ in 0..200 {
+                if org_sockets.load(Ordering::SeqCst) + file_sockets.load(Ordering::SeqCst) > 0 {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+            drop(socket);
+        }
+    };
+
+    open(project_key("org-a", "proj-a2")).await;
+    assert_eq!(
+        file_sockets.load(Ordering::SeqCst),
+        1,
+        "the sibling project"
+    );
+    assert_eq!(org_sockets.load(Ordering::SeqCst), 0);
+    open(project_key("org-a", "proj-a1")).await;
+    assert_eq!(
+        org_sockets.load(Ordering::SeqCst),
+        1,
+        "the narrowed project"
+    );
+    assert_eq!(file_sockets.load(Ordering::SeqCst), 1);
+}
+
+/// An org's provider and a global group may share a slug (they share one
+/// namespace per org, not across orgs). A project-scoped org provider gives way
+/// to the global group for the org's other projects, and serves its own (#3546).
+#[test]
+fn a_project_scoped_org_provider_gives_way_to_a_global_group_of_its_slug() {
+    let narrowed = json!({"org_id": "org-a", "project_id": "proj-a1"});
+    let config: GatewayConfig = serde_json::from_value(json!({
+        "providers": [
+            {"name": "file", "kind": "openai_compatible", "api_base": "https://file.example"},
+            {"name": "edge", "slug": "edge", "kind": "openai_compatible",
+             "api_base": "https://org.example", "tenancy": narrowed},
+        ],
+        "provider_groups": [
+            {"name": "edge", "slug": "edge", "members": [{"provider": "file"}]},
+        ],
+    }))
+    .unwrap();
+    let snapshot = crate::state::Snapshot::build(&config, &crate::load::LoadTracker::new());
+    let target = |org: &str, project: &str| {
+        let key = crate::state::KeyMeta {
+            org_id: org.to_string(),
+            project_id: project.to_string(),
+            ..Default::default()
+        };
+        snapshot
+            .resolve_for("edge/m", Some(&key))
+            .map(|entry| entry.route.targets[0].provider.clone())
+    };
+    assert_eq!(target("org-a", "proj-a1").as_deref(), Some("edge"));
+    assert_eq!(target("org-a", "proj-a2").as_deref(), Some("file"));
+    assert_eq!(target("org-b", "proj-b1").as_deref(), Some("file"));
+}

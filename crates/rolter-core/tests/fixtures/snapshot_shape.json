@@ -409,6 +409,66 @@
     "mcp_gateway_settings[].request_timeout_ms": [
       "number"
     ],
+    "mcp_gateway_tool_groups": [
+      "array"
+    ],
+    "mcp_gateway_tool_groups[]": [
+      "object"
+    ],
+    "mcp_gateway_tool_groups[].description": [
+      "string"
+    ],
+    "mcp_gateway_tool_groups[].enabled": [
+      "boolean"
+    ],
+    "mcp_gateway_tool_groups[].keys": [
+      "array"
+    ],
+    "mcp_gateway_tool_groups[].keys[]": [
+      "object"
+    ],
+    "mcp_gateway_tool_groups[].keys[].name": [
+      "string"
+    ],
+    "mcp_gateway_tool_groups[].keys[].prefix": [
+      "string"
+    ],
+    "mcp_gateway_tool_groups[].keys[].project": [
+      "string"
+    ],
+    "mcp_gateway_tool_groups[].name": [
+      "string"
+    ],
+    "mcp_gateway_tool_groups[].org": [
+      "string"
+    ],
+    "mcp_gateway_tool_groups[].projects": [
+      "array"
+    ],
+    "mcp_gateway_tool_groups[].projects[]": [
+      "string"
+    ],
+    "mcp_gateway_tool_groups[].slug": [
+      "string"
+    ],
+    "mcp_gateway_tool_groups[].teams": [
+      "array"
+    ],
+    "mcp_gateway_tool_groups[].teams[]": [
+      "string"
+    ],
+    "mcp_gateway_tool_groups[].tools": [
+      "array"
+    ],
+    "mcp_gateway_tool_groups[].tools[]": [
+      "object"
+    ],
+    "mcp_gateway_tool_groups[].tools[].server": [
+      "string"
+    ],
+    "mcp_gateway_tool_groups[].tools[].tool": [
+      "string"
+    ],
     "mcp_manifest_enforcement": [
       "array"
     ],

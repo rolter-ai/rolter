@@ -269,6 +269,10 @@ const CHECKS: &[Check] = &[
         "### \\[\\[mcp_gateway_settings\\]\\]",
         "McpGatewaySettingsConfig",
     ),
+    plain(
+        "### \\[\\[mcp_gateway_tool_groups\\]\\]",
+        "McpGatewayToolGroupConfig",
+    ),
     plain("### \\[\\[budgets\\]\\]", "BudgetConfig"),
     Check {
         heading: "### unpriced_policy",
@@ -494,6 +498,7 @@ fn tables() -> Vec<Table> {
         Table::repeated("mcp_settings").owned("/api/mcp"),
         Table::repeated("mcp_manifest_enforcement"),
         Table::repeated("mcp_gateway_settings"),
+        Table::repeated("mcp_gateway_tool_groups"),
         Table::repeated("model_prices"),
         Table::single("currency"),
         Table::repeated("budgets"),
