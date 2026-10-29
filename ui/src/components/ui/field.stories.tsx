@@ -23,6 +23,28 @@ export const Default: Story = {
   ),
 };
 
+/**
+ * A screen that validates the field itself marks it with `markRequired`: the
+ * marker and `aria-required`, but no native `required`, so the empty control is
+ * not `:invalid` before anyone has pressed Save (#3451).
+ */
+export const MarkedRequired: Story = {
+  args: { markRequired: true },
+  render: (args) => (
+    <Field {...args}>
+      <Input />
+    </Field>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const input = canvas.getByLabelText("Model name");
+    await expect(input).toHaveAttribute("aria-required", "true");
+    await expect(input).not.toHaveAttribute("required");
+    await expect(input).toBeValid();
+    await expect(canvas.getByText("*")).toBeInTheDocument();
+  },
+};
+
 export const WithHint: Story = {
   args: { hint: "The alias callers address; rewritten to the upstream name." },
   render: (args) => (

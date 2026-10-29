@@ -598,6 +598,7 @@ function PluginDialog({
             label={t("pages.plugins.fieldName")}
             htmlFor="plugin-name"
             error={fields.errorOf("name")}
+            markRequired
           >
             <Input
               id="plugin-name"
@@ -661,6 +662,7 @@ function PluginDialog({
           info={t("pages.plugins.fieldEndpointInfo")}
           htmlFor="plugin-endpoint"
           error={fields.errorOf("endpoint")}
+          markRequired
         >
           <Input
             id="plugin-endpoint"

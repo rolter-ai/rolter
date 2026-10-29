@@ -2,6 +2,7 @@ import type { Meta, StoryObj } from "@storybook/react";
 import { expect } from "storybook/test";
 
 import { BarChart, BarTrack } from "./bar-chart";
+import { CHART_WIDTHS, expectLabelsAtTheFloor } from "@/lib/story-charts";
 
 const meta = {
   title: "Charts/BarChart",
@@ -31,6 +32,26 @@ export const TopN: Story = {
 };
 
 /**
+ * The vertical chart is drawn at the width it is given, so its labels are read
+ * at the 11px they are set at on a phone as well as on a desktop card (#3450).
+ */
+export const LabelsKeepTheFloorOnANarrowCard: Story = {
+  args: Default.args,
+  render: (args) => (
+    <div className="flex flex-col gap-4">
+      {CHART_WIDTHS.map((w) => (
+        <div key={w} style={{ width: w }}>
+          <BarChart {...args} />
+        </div>
+      ))}
+    </div>
+  ),
+  play: async ({ canvasElement }) => {
+    await expectLabelsAtTheFloor(canvasElement, CHART_WIDTHS.length);
+  },
+};
+
+/**
  * The single bar the ranked chart draws each row with, and the one a table cell
  * puts beside its number (the dashboard's by-model table): a fill of `share`
  * of a quiet track, clamped to the track.
@@ -46,30 +67,5 @@ export const BarInACell: StoryObj = {
   play: async ({ canvasElement }) => {
     const fills = Array.from(canvasElement.querySelectorAll<HTMLElement>("[aria-hidden] > span"));
     await expect(fills.map((fill) => fill.style.width)).toEqual(["0%", "40%", "100%", "100%"]);
-  },
-};
-
-/** Axis labels are 11 viewBox units in a 640-wide chart, so 11px at that width (#3284). */
-export const LabelsReachTheTextFloor: Story = {
-  args: {
-    height: 180,
-    data: [420, 380, 512, 640],
-    labels: ["Mon", "Tue", "Wed", "Thu"],
-    label: "Requests per day",
-  },
-  render: (args) => (
-    <div style={{ width: 640 }}>
-      <BarChart {...args} />
-    </div>
-  ),
-  play: async ({ canvasElement }) => {
-    const svg = canvasElement.querySelector("svg")!;
-    const scale = svg.getBoundingClientRect().width / svg.viewBox.baseVal.width;
-    await expect(scale).toBeCloseTo(1, 1);
-    for (const text of svg.querySelectorAll("text")) {
-      await expect(parseFloat(getComputedStyle(text).fontSize) * scale).toBeGreaterThanOrEqual(
-        10.9,
-      );
-    }
   },
 };
