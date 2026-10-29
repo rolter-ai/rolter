@@ -4576,6 +4576,20 @@ async fn forward_variants(
         // see the classic path: an abandoned request names the target it left
         cancel.attribute(&out.last_provider, &out.last_target, &out.variant);
 
+        // merge variant params over route params for this candidate's body
+        let forward_body = match payload {
+            VariantPayload::Json { parsed, body } => {
+                let mut injected = parsed.clone();
+                route.apply_variant_params(v, &mut injected);
+                serde_json::to_vec(&injected)
+                    .map(Bytes::from)
+                    .unwrap_or_else(|_| body.clone())
+            }
+            // the params are JSON-only and the upload names its own model, so
+            // the form goes as it came, as on the classic pool
+            VariantPayload::Multipart { body, .. } => body.clone(),
+        };
+
         // count this attempt as in-flight under the variant's key
         let mut guard = state.loads.begin(key, ti);
         // the latency model learns cost as a function of prompt size, so it
@@ -4599,13 +4613,7 @@ async fn forward_variants(
         out.attempts = out.attempts.saturating_add(1);
         let attempt_started = Instant::now();
         let forwarded = match payload {
-            VariantPayload::Json { parsed, body } => {
-                // merge variant params over route params for this candidate's body
-                let mut injected = parsed.clone();
-                route.apply_variant_params(v, &mut injected);
-                let forward_body = serde_json::to_vec(&injected)
-                    .map(Bytes::from)
-                    .unwrap_or_else(|_| body.clone());
+            VariantPayload::Json { .. } => {
                 state
                     .provider_queues
                     .forward_json(
@@ -4621,9 +4629,7 @@ async fn forward_variants(
                     )
                     .await
             }
-            // the params are JSON-only and the upload names its own model,
-            // so the form goes as it came, as on the classic pool
-            VariantPayload::Multipart { body, content_type } => {
+            VariantPayload::Multipart { content_type, .. } => {
                 state
                     .provider_queues
                     .forward_raw(
@@ -4631,7 +4637,7 @@ async fn forward_variants(
                         snap.generation,
                         provider,
                         path,
-                        body.clone(),
+                        forward_body,
                         content_type,
                         api_key,
                         trace_headers,
