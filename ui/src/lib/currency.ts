@@ -15,11 +15,21 @@ import { fetchCurrencySettings } from "@/lib/api";
  * than rendering an amount with no unit at all.
  */
 export function useCurrencyCode(): string {
+  return useBaseCurrency() || "USD";
+}
+
+/**
+ * The settlement currency as the control plane states it, or `undefined`
+ * while the settings are being read or could not be. For a value that must
+ * match the server's own exactly, such as an export's file name (#3498), where
+ * the USD fallback above would be a guess.
+ */
+export function useBaseCurrency(): string | undefined {
   const settings = useQuery({
     queryKey: ["currency-settings"],
     queryFn: fetchCurrencySettings,
     retry: false,
     staleTime: 5 * 60_000,
   });
-  return settings.data?.base || "USD";
+  return settings.data?.base || undefined;
 }

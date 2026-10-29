@@ -35,6 +35,7 @@ import {
   type StoryRole,
   AddressProbe,
   addressOf,
+  ORG,
 } from "./story-harness";
 import { formattersFor } from "@/lib/i18n/format";
 import en from "@/lib/i18n/locales/en.json";
@@ -1712,6 +1713,56 @@ export const EachModelRowCarriesRequestsP95AndSpend: Story = {
     await expect(row).toHaveTextContent(fmt.currency(30.1, "USD"));
     // the mean is not on the card
     await expect(card).not.toHaveTextContent(/avg|mean/i);
+  },
+};
+
+/** a second organization a superadmin reads beside the harness's own */
+const OTHER_ORG = { ...ORG, id: "org-2", name: "Umbrella", slug: "umbrella" };
+
+/**
+ * #3486: two organizations may each have a route named `gpt-4o` (#1857), and
+ * the by-model read answers them as two rows. The card keeps them apart, each
+ * with its own requests, latency and spend, and names the owner of a name that
+ * is shared; a model only one organization serves carries no pill.
+ */
+export const TwoOrganizationsSameNamedModelsAreTwoRows: Story = {
+  render: () =>
+    render(async (input, init) => {
+      if (pathOf(input) === "/api/v1/orgs") return json([ORG, OTHER_ORG]);
+      return withByModel([
+        { ...BY_MODEL[0], org_id: ORG.id, requests: 84, p95_latency_ms: 820, cost_usd: 30.1 },
+        {
+          ...BY_MODEL[0],
+          org_id: OTHER_ORG.id,
+          requests: 61,
+          p95_latency_ms: 1240,
+          cost_usd: 7.25,
+        },
+        { ...BY_MODEL[1], org_id: ORG.id },
+      ])(input, init);
+    }, "superadmin"),
+  play: async ({ canvasElement }) => {
+    const card = within(canvasElement).getByTestId("dashboard-by-model");
+    const owner = (name: string) => en.common.ownerOrg.replace("{{name}}", name);
+    const d = en.pages.dashboard;
+    // two rows of one name, never one row of the two summed
+    await waitFor(() => expect(within(card).getAllByText("gpt-4o")).toHaveLength(2));
+    await expect(card).not.toHaveTextContent(fmt.number(84 + 61));
+    const rowOf = async (org: string) =>
+      (await within(card).findByText(owner(org))).closest("tr") as HTMLElement;
+    const ours = await rowOf(ORG.name);
+    await expect(ours).toHaveTextContent("gpt-4o");
+    await expect(ours).toHaveTextContent(fmt.number(84));
+    await expect(ours).toHaveTextContent(`${fmt.number(820)} ${d.colMs}`);
+    await expect(ours).toHaveTextContent(fmt.currency(30.1, "USD"));
+    const theirs = await rowOf(OTHER_ORG.name);
+    await expect(theirs).toHaveTextContent("gpt-4o");
+    await expect(theirs).toHaveTextContent(fmt.number(61));
+    await expect(theirs).toHaveTextContent(`${fmt.number(1240)} ${d.colMs}`);
+    await expect(theirs).toHaveTextContent(fmt.currency(7.25, "USD"));
+    // a name only one organization has needs nobody to tell it apart
+    const sonnet = within(card).getByText("claude-sonnet-4").closest("tr") as HTMLElement;
+    await expect(sonnet).not.toHaveTextContent(owner(ORG.name));
   },
 };
 

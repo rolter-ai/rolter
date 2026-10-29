@@ -60,11 +60,32 @@ That rules out a foreign key, so three `after delete` triggers sweep a
 subject's labels when the subject goes. Without them a label would outlive the
 row it describes and — worse — be inherited by the next row issued that id.
 
-Tenancy comes from the subject too: the table has no `org_id`, so
-`LabelRepo::list_in_org` joins back through `providers`, `provider_groups` and
-`routes` to decide what an org may see, and a write checks
-`subject_in_org` before it inserts. A label id belonging to another org answers
-`404` through this org's path.
+Tenancy comes from the subject too: `LabelRepo::list_in_org` joins back
+through `providers`, `provider_groups` and `routes` to decide what an org may
+see, and a write checks `subject_in_org` before it inserts. A label id
+belonging to another org answers `404` through this org's path.
+
+A model is the exception, since it is addressed by name and two orgs may each
+serve a `gpt-4o` (#1857). `labels.org_id` (`0228_labels_org_id.sql`, #3476)
+names the org whose model a model label is on, and is null for a
+deployment-wide label: every row from before the column, and every label on a
+config-file model. A check constraint keeps it null on the other subject types.
+Uniqueness is the unique index `labels_subject_org_key_idx` on
+`(subject_type, coalesce(org_id, <nil uuid>), subject_id, source, key)`, so the
+deployment-wide labels count as one owner on every Postgres version (`unique
+nulls not distinct` would need 15). Every `on conflict` on the table names that
+same expression list (`LABEL_UNIQUE_KEY` in `repo/labels.rs`), or Postgres
+cannot infer the index and the write fails. `LabelRepo::list_models_for_org` is the lookup: the org's own rows and
+each deployment-wide row whose `(subject_id, source, key)` it has not set,
+through `distinct on ... order by org_id nulls last`. `POST
+/api/v1/model-labels` takes `org_id` and refuses one that serves no route of
+that name (`org_has_model`); `GET` takes `?org_id=` for the lookup, and hides an
+org's rows from a caller who does not reach that org (`TenantView`, the rule
+`GET /api/v1/models` applies). The Model Catalog keys its chips on `(org_id,
+model)` with the same fallback, and its label sheet writes to the row's org.
+Writes stay `model_label`, superadmin. The gateway reads no label, so the column
+needed no new `config_version` trigger; `labels_bump_config_version` already
+fires on every write, the cascade from a deleted org included.
 
 ## Scopes and the two API surfaces
 

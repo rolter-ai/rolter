@@ -38,7 +38,9 @@ export const KNOWN_ERROR_CODES = [
   "request_timeout",
   "scope_mismatch",
   "store_timeout",
+  "time_bound_out_of_range",
   "too_many_attempts",
+  "too_many_buckets",
   "unauthenticated",
 ] as const;
 

@@ -507,8 +507,17 @@ them with `windowAddress` / `windowFilters`, never by hand, so a named window
 drops the days a range left. `useAddressSelection` and `useTimeWindow` do this
 for a screen that keeps the window in the address; `windowBounds` and
 `previousWindowBounds` take the selection. The range is whole calendar days in
-the viewer's zone with the last day included, so `until` is the start of the
-day after it. The saved-view allow-list in
+the chart zone (`chartTimeZone()`, the browser's when the account sets none,
+#3500) with the last day included, so `until` is the start of the day after
+it; a range that has not ended yet sends no `until` (#3506). The month windows
+and `previousWindowBounds` count in the same zone: each function takes the
+zone as its last argument, the chart zone by default, and does its wall-clock
+arithmetic through `Intl` (`wallClock` / `zonedInstant`) rather than the
+browser-local `Date` getters. Where the chart zone is not the browser's, the
+picker names it under the list, as the list's description. Placed in a
+`Field`, the picker forwards the `id`, `aria-describedby`, `aria-invalid` and
+`aria-required` the field clones onto it to the list (#3507), so the field's
+hint or error is what a screen reader hears beside the zone note. The saved-view allow-list in
 `crates/rolter-control/src/me_saved_views.rs` is the server's copy of the
 shape. `useTimeWindowOptions` stays named-only for a control that offers no
 range (the route sheet's observed-traffic window).

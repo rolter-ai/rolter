@@ -348,12 +348,68 @@ async fn report(access: &AnalyticsAccess, state: &ControlState, q: &SavingsQuery
     };
     let groups: Vec<Group> = groups.iter().map(Group::from_row).collect();
     let mut report = analyse(&groups, &callers, &config, thresholds);
+    name_callers(state, &mut report).await;
     if !SHAPE_COLUMNS.iter().all(|column| columns.has(column)) {
         if let Some(limits) = report["limits"].as_array_mut() {
             limits.push(json!(NO_SHAPE_LIMIT));
         }
     }
     Json(report).into_response()
+}
+
+/// Give each `by_caller` row the name of its virtual key as `key_name` (#3499),
+/// from one store read over every key the rows hold, whichever project each is
+/// in. The dashboard names a caller from the lists its pickers load, which hold
+/// one project's keys, so a key of any other project read as an id.
+///
+/// The rows are already the caller's own traffic, so a name is only ever that
+/// of a key whose requests the caller can read. It is the name the key was
+/// given and never its prefix, which a role that reads the report but not the
+/// keys has no business seeing. A key with no name, one that is gone, an id
+/// that is not a uuid, a deployment without a store, or a store that cannot
+/// answer leaves `key_name` `null`, and the report is still served.
+#[cfg(feature = "postgres")]
+async fn name_callers(state: &ControlState, report: &mut Value) {
+    let Some(rows) = report["spend"]["by_caller"].as_array_mut() else {
+        return;
+    };
+    let ids: Vec<uuid::Uuid> = rows
+        .iter()
+        .filter_map(|row| row["virtual_key_id"].as_str()?.parse().ok())
+        .collect();
+    let names = match state.pool.as_ref() {
+        Some(pool) if !ids.is_empty() => {
+            match rolter_store::postgres::repo::VirtualKeyRepo(pool)
+                .given_names(&ids)
+                .await
+            {
+                Ok(names) => names,
+                Err(err) => {
+                    tracing::warn!(%err, "savings advisor could not name its callers' keys");
+                    Default::default()
+                }
+            }
+        }
+        _ => Default::default(),
+    };
+    for row in rows {
+        let name = row["virtual_key_id"]
+            .as_str()
+            .and_then(|id| id.parse::<uuid::Uuid>().ok())
+            .and_then(|id| names.get(&id).cloned());
+        row["key_name"] = json!(name);
+    }
+}
+
+/// Without a store there are no key names to read, so every `key_name` is
+/// `null`.
+#[cfg(not(feature = "postgres"))]
+async fn name_callers(_state: &ControlState, report: &mut Value) {
+    if let Some(rows) = report["spend"]["by_caller"].as_array_mut() {
+        for row in rows {
+            row["key_name"] = Value::Null;
+        }
+    }
 }
 
 /// Token totals over a set of requests, already scaled by the sampling weight
@@ -1215,6 +1271,105 @@ mod tests {
 
     fn query() -> SavingsQuery {
         serde_json::from_value(json!({})).expect("an empty query")
+    }
+
+    #[tokio::test]
+    async fn without_a_store_every_caller_key_name_is_null() {
+        let state = crate::tests::state_with_token(None);
+        let mut report = json!({"spend": {"by_caller": [
+            {"project_id": "p", "virtual_key_id": "8d7c2a1e-0000-4000-8000-000000000001"},
+        ]}});
+        name_callers(&state, &mut report).await;
+        assert!(
+            report["spend"]["by_caller"][0]["key_name"].is_null(),
+            "{report}"
+        );
+    }
+
+    /// #3499: the callers of two projects are named from one read, whichever
+    /// project each key is in; a key that is gone, or an id that is not a
+    /// key's, stays `null`.
+    #[cfg(feature = "postgres")]
+    #[tokio::test]
+    async fn every_callers_key_is_named_whichever_project_it_is_in() {
+        use rolter_store::postgres::test_schema::TestSchema;
+        let Some(url) = rolter_store::postgres::test_database::url().await else {
+            eprintln!("skipping: ROLTER_TEST_DATABASE_URL not set");
+            return;
+        };
+        let db = TestSchema::migrated(&url).await;
+        let pool = db.pool().clone();
+        let org: uuid::Uuid = sqlx::query_scalar(
+            "insert into orgs (name, slug) values ('acme', 'acme') returning id",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let team: uuid::Uuid =
+            sqlx::query_scalar("insert into teams (org_id, name) values ($1, 'core') returning id")
+                .bind(org)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        let mut keys = Vec::new();
+        for (project, key, prefix) in [("alpha", "ci-deploy", "pfx-a"), ("beta", "batch", "pfx-b")]
+        {
+            let project: uuid::Uuid = sqlx::query_scalar(
+                "insert into projects (team_id, name) values ($1, $2) returning id",
+            )
+            .bind(team)
+            .bind(project)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            let id: uuid::Uuid = sqlx::query_scalar(
+                "insert into virtual_keys (project_id, key_hash, key_prefix, name) \
+                 values ($1, $2, $3, $4) returning id",
+            )
+            .bind(project)
+            .bind(format!("hash-{key}"))
+            .bind(prefix)
+            .bind(key)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            keys.push((project, id));
+        }
+        // a key with no name: its prefix is never handed out in its place
+        let unnamed: uuid::Uuid = sqlx::query_scalar(
+            "insert into virtual_keys (project_id, key_hash, key_prefix) \
+             values ($1, 'hash-unnamed', 'pfx-secret') returning id",
+        )
+        .bind(keys[1].0)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let state = crate::test_state(pool, None, None);
+        let gone = uuid::Uuid::new_v4();
+        let mut report = json!({"spend": {"by_caller": [
+            {"project_id": keys[0].0.to_string(), "virtual_key_id": keys[0].1.to_string()},
+            {"project_id": keys[1].0.to_string(), "virtual_key_id": keys[1].1.to_string()},
+            {"project_id": keys[1].0.to_string(), "virtual_key_id": gone.to_string()},
+            {"project_id": "", "virtual_key_id": "from-the-config-file"},
+            {"project_id": keys[1].0.to_string(), "virtual_key_id": unnamed.to_string()},
+        ]}});
+        name_callers(&state, &mut report).await;
+        let names: Vec<Value> = report["spend"]["by_caller"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| row["key_name"].clone())
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                json!("ci-deploy"),
+                json!("batch"),
+                Value::Null,
+                Value::Null,
+                Value::Null
+            ]
+        );
     }
 
     #[tokio::test]

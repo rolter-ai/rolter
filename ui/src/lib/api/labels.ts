@@ -13,6 +13,13 @@ export interface LabelRow {
   id: string;
   subject_type: "provider" | "provider_group" | "route" | "model";
   subject_id: string;
+  /**
+   * the organization whose model a model label is on (#3476); `null` for a
+   * deployment-wide label and for every provider, group or route label.
+   * Absent from a control plane that predates it, where every label is
+   * deployment-wide
+   */
+  org_id?: string | null;
   key: string;
   value?: string | null;
   source: "auto" | "custom";
@@ -30,6 +37,8 @@ export interface LabelFilter {
   key?: string;
   value?: string;
   source?: "auto" | "custom";
+  /** model labels only: what applies to this organization's models (#3476) */
+  org_id?: string;
 }
 
 function labelQuery(filter: LabelFilter): string {
@@ -62,7 +71,9 @@ export function deleteLabel(orgId: string, id: string): Promise<void> {
 /**
  * The same four calls for models, which live in the deployment-wide pricing
  * catalog rather than in an org — so they are a superadmin's to write, and the
- * subject is the model's own name rather than a row id.
+ * subject is the model's own name rather than a row id. A label may still name
+ * the organization whose model it is (`org_id`, #3476), since two
+ * organizations may each serve a model of one name.
  */
 export function fetchModelLabels(filter: LabelFilter = {}): Promise<LabelRow[]> {
   return getJson<LabelRow[]>(`/api/v1/model-labels${labelQuery(filter)}`);
@@ -70,6 +81,8 @@ export function fetchModelLabels(filter: LabelFilter = {}): Promise<LabelRow[]> 
 
 export function createModelLabel(input: {
   model: string;
+  /** the organization whose model this is; omitted for a deployment-wide label */
+  org_id?: string;
   key: string;
   value?: string;
 }): Promise<LabelRow> {

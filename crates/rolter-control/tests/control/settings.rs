@@ -3046,3 +3046,172 @@ async fn the_models_and_config_reads_show_only_the_callers_organizations() {
         }
     }
 }
+
+/// #3476: two organizations each serve a `gpt-4o`, and a label on one org's
+/// model stays on it. `?org_id=` lists what applies to that org's models, its
+/// own label before the deployment-wide one of the same key, and a member of
+/// one org never reads the other's labels.
+#[tokio::test]
+async fn model_labels_name_the_organization_whose_model_they_are_on() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let admin = "model-labels-admin";
+    let app = rolter_control::test_app_with_admin_token(pool.clone(), Some(admin.to_string()))
+        .await
+        .unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    // two orgs, each with a project serving `gpt-4o`
+    let mut orgs = Vec::new();
+    for slug in ["acme", "globex"] {
+        let org: uuid::Uuid =
+            sqlx::query_scalar("insert into orgs (name, slug) values ($1, $1) returning id")
+                .bind(slug)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        let team: uuid::Uuid =
+            sqlx::query_scalar("insert into teams (org_id, name) values ($1, 'core') returning id")
+                .bind(org)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        let project: uuid::Uuid = sqlx::query_scalar(
+            "insert into projects (team_id, name) values ($1, 'default') returning id",
+        )
+        .bind(team)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        sqlx::query("insert into routes (project_id, model, strategy) values ($1, 'gpt-4o', 'power_of_two')")
+            .bind(project)
+            .execute(&pool)
+            .await
+            .unwrap();
+        orgs.push(org);
+    }
+    let (acme, globex) = (orgs[0], orgs[1]);
+
+    let create = |body: Value| {
+        let client = client.clone();
+        let url = format!("{base}/api/v1/model-labels");
+        async move {
+            client
+                .post(url)
+                .bearer_auth(admin)
+                .json(&body)
+                .send()
+                .await
+                .unwrap()
+        }
+    };
+    let deployment = create(json!({"model": "gpt-4o", "key": "tier", "value": "standard"})).await;
+    assert_eq!(deployment.status(), 201);
+    let deployment: Value = deployment.json().await.unwrap();
+    assert!(deployment["org_id"].is_null(), "{deployment}");
+    for (org, value) in [(acme, "gold"), (globex, "bronze")] {
+        let own =
+            create(json!({"model": "gpt-4o", "org_id": org, "key": "tier", "value": value})).await;
+        assert_eq!(own.status(), 201, "a label on {org}'s gpt-4o");
+        let own: Value = own.json().await.unwrap();
+        assert_eq!(own["org_id"], org.to_string());
+    }
+    // each org's label is in that org's own audit log, the deployment's in none
+    let audited: Vec<Option<uuid::Uuid>> = sqlx::query_scalar(
+        "select org_id from audit_log where action = 'model_label.create' order by org_id nulls first",
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    let mut expected = vec![Some(acme), Some(globex)];
+    expected.sort();
+    expected.insert(0, None);
+    assert_eq!(audited, expected);
+    // the same key twice for one org is the 409 it always was
+    let again = create(json!({"model": "gpt-4o", "org_id": acme, "key": "tier"})).await;
+    assert_eq!(again.status(), 409);
+    // and an org's label is on a model that org serves
+    let unserved = create(json!({"model": "claude", "org_id": acme, "key": "tier"})).await;
+    assert_eq!(unserved.status(), 404);
+
+    let list = |token: String, query: String| {
+        let client = client.clone();
+        let url = format!("{base}/api/v1/model-labels{query}");
+        async move {
+            let response = client.get(url).bearer_auth(token).send().await.unwrap();
+            assert_eq!(response.status(), 200);
+            let rows: Value = response.json().await.unwrap();
+            let mut pairs: Vec<(String, String)> = rows
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|row| {
+                    (
+                        row["org_id"].as_str().unwrap_or("").to_string(),
+                        row["value"].as_str().unwrap_or("").to_string(),
+                    )
+                })
+                .collect();
+            pairs.sort();
+            pairs
+        }
+    };
+    let sorted = |mut pairs: Vec<(String, String)>| {
+        pairs.sort();
+        pairs
+    };
+
+    // what applies to each org: its own tier, never the other's
+    assert_eq!(
+        list(admin.to_string(), format!("?org_id={acme}")).await,
+        vec![(acme.to_string(), "gold".to_string())]
+    );
+    assert_eq!(
+        list(
+            admin.to_string(),
+            format!("?org_id={globex}&subject_id=gpt-4o")
+        )
+        .await,
+        vec![(globex.to_string(), "bronze".to_string())]
+    );
+    // the whole catalog, to a deployment admin, holds all three
+    assert_eq!(
+        list(admin.to_string(), String::new()).await,
+        sorted(vec![
+            (String::new(), "standard".to_string()),
+            (acme.to_string(), "gold".to_string()),
+            (globex.to_string(), "bronze".to_string()),
+        ])
+    );
+
+    // a member of acme reads the deployment's label and acme's, not globex's
+    let member = seed_user(&pool, "label-member@acme.test", false).await;
+    seed_membership(&pool, member, Some(acme), None, None, "viewer").await;
+    let member = seed_session(&pool, member, "model_labels_member").await;
+    assert_eq!(
+        list(member.clone(), String::new()).await,
+        sorted(vec![
+            (String::new(), "standard".to_string()),
+            (acme.to_string(), "gold".to_string()),
+        ])
+    );
+    assert!(
+        list(member.clone(), format!("?org_id={globex}"))
+            .await
+            .is_empty(),
+        "another org's labels stay hidden even when asked for by id"
+    );
+    // without an override of its own, an org reads the deployment's label
+    sqlx::query("delete from labels where org_id = $1")
+        .bind(acme)
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        list(member, format!("?org_id={acme}")).await,
+        vec![(String::new(), "standard".to_string())]
+    );
+}

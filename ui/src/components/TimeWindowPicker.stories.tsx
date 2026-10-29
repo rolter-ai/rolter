@@ -3,6 +3,9 @@ import * as React from "react";
 import { expect, fn, userEvent, waitFor, within } from "storybook/test";
 
 import { TimeWindowPicker } from "./TimeWindowPicker";
+import { Field } from "@/components/ui/field";
+import { setChartTimeZone } from "@/lib/i18n/format";
+import en from "@/lib/i18n/locales/en.json";
 import { formatDay, windowBounds, type WindowSelection } from "@/lib/time-window";
 
 const meta = {
@@ -146,5 +149,131 @@ export const BackToANamedWindowDropsTheDays: Story = {
     await pick(canvas, "Last 30 days");
     await expect(args.onChange).toHaveBeenLastCalledWith("30d");
     await waitFor(() => expect(canvas.queryByLabelText("From")).toBeNull());
+  },
+};
+
+/**
+ * Draws its children with the account's chart zone set to `zone`, and puts the
+ * browser's back when the story unmounts.
+ */
+function InChartZone({ zone, children }: { zone: string; children: React.ReactNode }) {
+  React.useState(() => {
+    setChartTimeZone(zone);
+    return null;
+  });
+  React.useEffect(() => () => setChartTimeZone(null), []);
+  return <>{children}</>;
+}
+
+// fourteen hours ahead of UTC: never the zone a browser running the stories is in
+const FAR_ZONE = "Pacific/Kiritimati";
+
+/**
+ * #3500: a calendar day is a day in the chart zone. Where the account draws its
+ * charts in a zone that is not the browser's, the picker says which zone its
+ * days are counted in, as the list's description, and a custom range starts
+ * from that zone's today.
+ */
+export const DaysAreCountedInTheChartZoneAndThePickerSaysSo: Story = {
+  render: () => (
+    <InChartZone zone={FAR_ZONE}>
+      <Held start="24h" />
+    </InChartZone>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const note = en.common.timeWindow.countedIn.replace("{{zone}}", FAR_ZONE);
+    await expect(canvas.getByText(note)).toBeVisible();
+    await expect(canvas.getByRole("combobox", { name: "Time window" })).toHaveAccessibleDescription(
+      note,
+    );
+    await pick(canvas, "Custom range…");
+    // the last day is today where the charts are drawn, which can already be
+    // tomorrow in the browser
+    await waitFor(() =>
+      expect(canvas.getByLabelText("To")).toHaveValue(formatDay(new Date(), FAR_ZONE)),
+    );
+    const picked = canvas.getByTestId("picked").textContent as WindowSelection;
+    const since = new Date(windowBounds(picked).since);
+    // the range opens at a midnight in that zone
+    await expect(
+      new Intl.DateTimeFormat("en-GB", {
+        timeZone: FAR_ZONE,
+        hour: "2-digit",
+        minute: "2-digit",
+        hourCycle: "h23",
+      }).format(since),
+    ).toBe("00:00");
+  },
+};
+
+/** With no chart zone, or the browser's own, there is nothing to say. */
+export const TheBrowsersOwnZoneIsNotNamed: Story = {
+  render: () => (
+    <InChartZone zone={Intl.DateTimeFormat().resolvedOptions().timeZone}>
+      <Held start="24h" />
+    </InChartZone>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const combobox = canvas.getByRole("combobox", { name: "Time window" });
+    await expect(combobox).toBeVisible();
+    await expect(combobox).not.toHaveAttribute("aria-describedby");
+  },
+};
+
+/**
+ * #3507: inside a `Field`, the picker's list is described by the field's hint,
+ * and by its error once there is one, which also marks the list invalid. The
+ * clone used to forward the label alone, so a screen reader heard neither.
+ */
+export const InAFieldItsHintAndErrorDescribeTheList: Story = {
+  render: () => (
+    <div className="flex w-64 flex-col gap-6">
+      <Field label="Report window" hint="The figures cover these days.">
+        <TimeWindowPicker value="7d" onChange={() => {}} />
+      </Field>
+      <Field label="Comparison window" hint="The figures cover these days." error="Pick a window.">
+        <TimeWindowPicker value="30d" onChange={() => {}} />
+      </Field>
+      <Field label="Required window" required>
+        <TimeWindowPicker value="24h" onChange={() => {}} />
+      </Field>
+    </div>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const hinted = canvas.getByRole("combobox", { name: "Report window" });
+    await expect(hinted).toHaveAccessibleDescription("The figures cover these days.");
+    await expect(hinted).not.toHaveAttribute("aria-invalid");
+
+    const failed = canvas.getByRole("combobox", { name: "Comparison window" });
+    await expect(failed).toHaveAccessibleDescription("Pick a window.");
+    await expect(failed).toHaveAttribute("aria-invalid", "true");
+
+    await expect(canvas.getByRole("combobox", { name: /Required window/ })).toHaveAttribute(
+      "aria-required",
+      "true",
+    );
+  },
+};
+
+/** a field's description and the chart zone's note both describe the list */
+export const InAFieldInAnotherChartZoneBothDescribeTheList: Story = {
+  render: () => (
+    <InChartZone zone={FAR_ZONE}>
+      <div className="w-64">
+        <Field label="Report window" hint="The figures cover these days.">
+          <TimeWindowPicker value="7d" onChange={() => {}} />
+        </Field>
+      </div>
+    </InChartZone>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const note = en.common.timeWindow.countedIn.replace("{{zone}}", FAR_ZONE);
+    await expect(
+      canvas.getByRole("combobox", { name: "Report window" }),
+    ).toHaveAccessibleDescription(`The figures cover these days. ${note}`);
   },
 };

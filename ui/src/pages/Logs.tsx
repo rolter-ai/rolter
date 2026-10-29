@@ -50,7 +50,8 @@ import {
 import type { CodeLanguage } from "@/lib/code";
 import { useCan } from "@/lib/can";
 import { dispositionLabel, parseAdjustment } from "@/lib/param-adjustments";
-import { useCurrencyCode } from "@/lib/currency";
+import { useBaseCurrency, useCurrencyCode } from "@/lib/currency";
+import { exportFileName } from "@/lib/export-file-name";
 import { useFormat } from "@/lib/i18n/format";
 import { parseLogLookup, type LogLookup } from "@/lib/log-lookup";
 import { useModalA11y } from "@/lib/modal-a11y";
@@ -442,6 +443,7 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
   const { t } = useTranslation();
   const fmt = useFormat();
   const currency = useCurrencyCode();
+  const baseCurrency = useBaseCurrency();
   const [filtersOpen, setFiltersOpen] = React.useState(false);
   const filters = useLogFilters();
   const {
@@ -1186,7 +1188,14 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
             {!lookup && (
               <ExportCsvButton
                 what={t("errors.resources.requestLogExport")}
-                fallbackName="request-log.csv"
+                // the name the server gives, so the save dialog suggests it
+                // before the request leaves (#3498). until the base currency
+                // is known the name would be a guess, so the plain one stands
+                fallbackName={() =>
+                  baseCurrency
+                    ? exportFileName("request-log", windowBounds(logWindow), baseCurrency)
+                    : "request-log.csv"
+                }
                 toDisk
                 run={(signal) =>
                   exportInvocationsCsv(

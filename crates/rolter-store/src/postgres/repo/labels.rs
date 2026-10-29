@@ -17,8 +17,15 @@ use rolter_core::Result;
 use super::super::models::Label;
 use super::support::{fetch_optional_or_not_found, require_affected, store_err};
 
-const LABEL_COLUMNS: &str = "id, subject_type, subject_id, key, value, source, observed_at, \
-    observation, created_at, updated_at";
+const LABEL_COLUMNS: &str = "id, subject_type, subject_id, org_id, key, value, source, \
+    observed_at, observation, created_at, updated_at";
+
+/// The expression list of `labels_subject_org_key_idx` (`0228_labels_org_id.sql`,
+/// #3476): one label of a key per subject, source and organization, a null
+/// organization counted as one owner. An `on conflict` target must name this
+/// list exactly for Postgres to infer the index.
+const LABEL_UNIQUE_KEY: &str = "subject_type, \
+    coalesce(org_id, '00000000-0000-0000-0000-000000000000'::uuid), subject_id, source, key";
 
 /// the kinds of thing a label can be attached to, as stored in `subject_type`
 pub const LABEL_SUBJECT_TYPES: [&str; 4] = ["provider", "provider_group", "route", "model"];
@@ -32,6 +39,9 @@ pub const PRICED_LABEL_KEY: &str = "priced";
 pub struct CustomLabelInput<'a> {
     pub subject_type: &'a str,
     pub subject_id: &'a str,
+    /// the organization whose model is labelled (#3476); `None` for every
+    /// other subject and for a deployment-wide model label
+    pub org_id: Option<Uuid>,
     pub key: &'a str,
     pub value: Option<&'a str>,
 }
@@ -97,6 +107,39 @@ impl LabelRepo<'_> {
             ..LabelFilter::default()
         })
         .await
+    }
+
+    /// The model labels that apply to `org_id`'s models (#3476): the org's own,
+    /// and each deployment-wide one whose `(model, source, key)` the org has
+    /// not set itself, so a label set on one org's `gpt-4o` shadows the
+    /// deployment's and never reaches another org's. Only `subject_id`,
+    /// `key`, `value` and `source` of `filter` apply; its `subject_type` is
+    /// always `model`.
+    pub async fn list_models_for_org(
+        &self,
+        org_id: Uuid,
+        filter: LabelFilter<'_>,
+    ) -> Result<Vec<Label>> {
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "select {LABEL_COLUMNS} from (
+                select distinct on (subject_id, source, key) {LABEL_COLUMNS} from labels
+                 where subject_type = 'model'
+                   and (org_id = $1 or org_id is null)
+                   and ($2::text is null or subject_id = $2)
+                 order by subject_id, source, key, org_id nulls last) applying
+              where ($3::text is null or key = $3)
+                and ($4::text is null or value = $4)
+                and ($5::text is null or source = $5)
+              order by subject_type, subject_id, source, key"
+        )))
+        .bind(org_id)
+        .bind(filter.subject_id)
+        .bind(filter.key)
+        .bind(filter.value)
+        .bind(filter.source)
+        .fetch_all(self.0)
+        .await
+        .map_err(store_err)
     }
 
     /// Every label on every provider, provider group and route the org owns.
@@ -167,6 +210,19 @@ impl LabelRepo<'_> {
         Ok(found)
     }
 
+    /// Whether `org_id` serves a model named `model`: a route of that name in
+    /// one of its projects. A model label naming an organization is held to it.
+    pub async fn org_has_model(&self, org_id: Uuid, model: &str) -> Result<bool> {
+        let (found,): (bool,) =
+            sqlx::query_as("select exists(select 1 from routes where org_id = $1 and model = $2)")
+                .bind(org_id)
+                .bind(model)
+                .fetch_one(self.0)
+                .await
+                .map_err(store_err)?;
+        Ok(found)
+    }
+
     pub async fn get(&self, id: Uuid) -> Result<Label> {
         fetch_optional_or_not_found(
             sqlx::query_as(sqlx::AssertSqlSafe(format!(
@@ -187,15 +243,16 @@ impl LabelRepo<'_> {
     /// read-then-insert that both would pass.
     pub async fn create_custom(&self, input: CustomLabelInput<'_>) -> Result<Option<Label>> {
         sqlx::query_as(sqlx::AssertSqlSafe(format!(
-            "insert into labels (subject_type, subject_id, key, value, source)
-             values ($1, $2, $3, $4, 'custom')
-             on conflict (subject_type, subject_id, source, key) do nothing
+            "insert into labels (subject_type, subject_id, key, value, source, org_id)
+             values ($1, $2, $3, $4, 'custom', $5)
+             on conflict ({LABEL_UNIQUE_KEY}) do nothing
              returning {LABEL_COLUMNS}"
         )))
         .bind(input.subject_type)
         .bind(input.subject_id)
         .bind(input.key)
         .bind(input.value)
+        .bind(input.org_id)
         .fetch_optional(self.0)
         .await
         .map_err(store_err)
@@ -240,7 +297,7 @@ impl LabelRepo<'_> {
         sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "insert into labels (subject_type, subject_id, key, value, source, observation, observed_at)
              values ($1, $2, $3, $4, 'auto', $5, $6)
-             on conflict (subject_type, subject_id, source, key) do update
+             on conflict ({LABEL_UNIQUE_KEY}) do update
                 set value = excluded.value,
                     observation = excluded.observation,
                     observed_at = excluded.observed_at,
@@ -272,7 +329,8 @@ impl LabelRepo<'_> {
     {
         sqlx::query(
             "delete from labels
-              where subject_type = $1 and subject_id = $2 and key = $3 and source = 'auto'",
+              where subject_type = $1 and subject_id = $2 and key = $3 and source = 'auto'
+                and org_id is null",
         )
         .bind(subject_type)
         .bind(subject_id)

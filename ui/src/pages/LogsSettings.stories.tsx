@@ -16,6 +16,7 @@ import {
   Toasted,
   type FetchStub,
   type StoryRole,
+  openOptions,
 } from "./story-harness";
 import type { AnalyticsByModelRow, LoggingSettingsDto, VirtualKeyRow } from "@/lib/api";
 
@@ -730,6 +731,34 @@ export const PicksAModelAndMarksAnUnseenOne: Story = {
     await userEvent.click(canvas.getByRole("button", { name: "Save changes" }));
     await expectToast(canvasElement, /logs settings updated/i);
     await expect(sent.body?.payload_capture_models).toEqual(["gpt4o", "claude-sonnet-5"]);
+  },
+};
+
+/**
+ * #3486: the traffic read answers one row per organization's model, and two
+ * organizations may each have a `gpt-4o`. A capture filter matches names, so
+ * the picker offers the name once.
+ */
+export const AModelTwoOrganizationsServeIsOfferedOnce: Story = {
+  render: () => (
+    <Harness
+      reads={{
+        models: [
+          { ...model("gpt-4o"), org_id: "org-1" },
+          { ...model("gpt-4o"), org_id: "org-2" },
+          { ...model("claude-sonnet-5"), org_id: "org-1" },
+        ],
+      }}
+      fetchStub={async () => json(BASE)}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const combobox = await canvas.findByRole("combobox", { name: "Add a model to capture" });
+    await waitFor(() => expect(combobox).toBeEnabled());
+    const listbox = within(await openOptions(combobox));
+    await waitFor(() => expect(listbox.getAllByRole("option", { name: "gpt-4o" })).toHaveLength(1));
+    await expect(listbox.getAllByRole("option", { name: "claude-sonnet-5" })).toHaveLength(1);
   },
 };
 
