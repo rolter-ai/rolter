@@ -337,7 +337,7 @@ export const KillSwitchWaitsForSave: Story = {
     await expect(kill).toHaveAttribute("aria-checked", "false");
     await expect(canvas.getByText("Not saved")).toBeVisible();
     await expect(canvas.getByText(/^1 change not saved yet/)).toHaveAttribute("role", "status");
-    await expect(save).toBeEnabled();
+    await expect(save).not.toHaveAttribute("aria-disabled");
     // discarded: back to what the gateways run
     await userEvent.click(canvas.getByRole("button", { name: "Discard changes" }));
     await expect(kill).toHaveAttribute("aria-checked", "true");

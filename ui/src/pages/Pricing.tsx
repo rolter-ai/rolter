@@ -772,7 +772,8 @@ function UpsertPriceDialog({
           label={t("pages.pricing.modelName")}
           info={t("pages.pricing.modelNameInfo")}
           error={shown("model")}
-          markRequired
+          // a priced model is fixed once it exists, so only a new price asks for one
+          markRequired={!existing}
         >
           <Combobox
             allowCustom

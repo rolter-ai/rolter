@@ -340,7 +340,7 @@ export const SaveWaitsForAnEditAndDiscardRestores: Story = {
     await expect(canvas.queryAllByText("Edited")).toHaveLength(0);
 
     await userEvent.type(origins, "{Enter}https://console.example.com");
-    await expect(save).toBeEnabled();
+    await expect(save).not.toHaveAttribute("aria-disabled");
     await expect(discard).toBeEnabled();
     await expect(canvas.getAllByText("Edited")).toHaveLength(1);
     await expect(canvas.getByText(/^1 change not saved yet\./)).toBeVisible();

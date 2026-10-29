@@ -608,8 +608,12 @@ export const SaveWaitsForAnEdit: Story = {
     const save = await canvas.findByRole("button", { name: "Save changes" });
     await expect(canvas.getByText(/Last saved/)).toBeVisible();
     await expect(save).toHaveAttribute("aria-disabled", "true");
-    await userEvent.type(canvas.getByLabelText("Sample rate percent"), "5");
-    await waitFor(() => expect(save).toBeEnabled());
+    // an edit that leaves the form valid, so Save reads as available
+    const rate = canvas.getByLabelText("Sample rate percent");
+    await userEvent.clear(rate);
+    await userEvent.type(rate, "5");
+    await waitFor(() => expect(save).not.toHaveAttribute("aria-disabled"));
+    await expect(canvas.queryByText(/attention/)).toBeNull();
   },
 };
 

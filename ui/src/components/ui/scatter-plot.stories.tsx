@@ -2,20 +2,7 @@ import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import { ScatterPlot, type ScatterPoint } from "./scatter-plot";
-
-/** The size, in rendered pixels, of the smallest text in each svg under `root` (#3450). */
-function smallestLabels(root: HTMLElement) {
-  return Array.from(root.querySelectorAll("svg")).map((svg) => {
-    const box = svg.getBoundingClientRect();
-    const scale = box.width / (svg.viewBox.baseVal.width || box.width);
-    const sizes = Array.from(svg.querySelectorAll("text")).map(
-      (node) => parseFloat(getComputedStyle(node).fontSize) * scale,
-    );
-    return { scale, smallest: Math.min(...sizes), count: sizes.length };
-  });
-}
-
-const NARROW = [320, 375, 640];
+import { CHART_WIDTHS, expectLabelsAtTheFloor } from "@/lib/story-charts";
 
 // latency against cost, one point per model — the shape the Playground plots
 const POINTS: ScatterPoint[] = [
@@ -58,7 +45,7 @@ export const Default: Story = {
 export const LabelsKeepTheFloorOnANarrowCard: Story = {
   render: (args) => (
     <div className="flex flex-col gap-4">
-      {NARROW.map((w) => (
+      {CHART_WIDTHS.map((w) => (
         <div key={w} style={{ width: w }}>
           <ScatterPlot {...args} />
         </div>
@@ -66,14 +53,7 @@ export const LabelsKeepTheFloorOnANarrowCard: Story = {
     </div>
   ),
   play: async ({ canvasElement }) => {
-    const charts = smallestLabels(canvasElement);
-    await expect(charts).toHaveLength(NARROW.length);
-    for (const chart of charts) {
-      await expect(chart.count).toBeGreaterThan(0);
-      await expect(chart.scale).toBeGreaterThan(0.95);
-      await expect(chart.scale).toBeLessThan(1.05);
-      await expect(chart.smallest).toBeGreaterThanOrEqual(11);
-    }
+    await expectLabelsAtTheFloor(canvasElement, CHART_WIDTHS.length);
   },
 };
 
@@ -126,28 +106,5 @@ export const NoPoints: Story = {
   play: async ({ canvasElement }) => {
     await expect(canvasElement.querySelectorAll("circle")).toHaveLength(0);
     await expect(canvasElement.querySelector("svg")).toBeTruthy();
-  },
-};
-
-/**
- * The labels are drawn in viewBox units of a 640-wide plot, so at that width
- * they read at the dashboard's 11px floor (#3284). Narrower, the plot scales
- * down with its card and so do they; DESIGN.md names that exception.
- */
-export const LabelsReachTheTextFloor: Story = {
-  render: (args) => (
-    <div style={{ width: 640 }}>
-      <ScatterPlot {...args} />
-    </div>
-  ),
-  play: async ({ canvasElement }) => {
-    const svg = canvasElement.querySelector("svg")!;
-    const scale = svg.getBoundingClientRect().width / svg.viewBox.baseVal.width;
-    await expect(scale).toBeCloseTo(1, 1);
-    for (const text of svg.querySelectorAll("text")) {
-      await expect(parseFloat(getComputedStyle(text).fontSize) * scale).toBeGreaterThanOrEqual(
-        10.9,
-      );
-    }
   },
 };

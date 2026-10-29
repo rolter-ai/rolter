@@ -173,7 +173,7 @@ export const TracksUnsavedChanges: Story = {
     await expect(save).toHaveAttribute("aria-disabled", "true");
     await expect(canvas.queryByText(/change not saved yet/)).toBeNull();
     await userEvent.type(url, "/edge");
-    await waitFor(() => expect(save).toBeEnabled());
+    await waitFor(() => expect(save).not.toHaveAttribute("aria-disabled"));
     await expect(canvas.getByText(/1 change not saved yet/)).toHaveAttribute("role", "status");
     await userEvent.clear(url);
     await userEvent.type(url, "https://gateway.example.com");

@@ -61,10 +61,10 @@ export interface ComboboxProps {
   commitOnBlur?: boolean;
   /**
    * with `allowCustom`, report what is typed as the value on every keystroke,
-   * not when focus leaves. For a field beside a Save that stays disabled until
-   * the draft differs: the press that would blur the field lands on the
-   * disabled button (it has `pointer-events: none`), so blur-time commit
-   * enables Save a click too late (#3244). Clearing the text clears the value.
+   * not when focus leaves. For a field whose text is the value as it is typed,
+   * including the empty text: `commitOnBlur` keeps typed text on blur but not an
+   * erased field, so clearing it and moving on would commit nothing (#3244).
+   * Clearing the text clears the value.
    */
   commitOnInput?: boolean;
   /**

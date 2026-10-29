@@ -12,6 +12,9 @@ const meta = {
   args: { invalid: 0, onSave: fn() },
 } satisfies Meta<typeof SaveBar>;
 
+// what the form around the bar in `PristineFormSubmitsNothing` was sent
+const submitted = fn();
+
 export default meta;
 type Story = StoryObj<typeof meta>;
 
@@ -93,5 +96,41 @@ export const PressThatCommitsAFieldSubmits: Story = {
     await userEvent.type(canvas.getByLabelText("Name"), "x");
     await userEvent.click(canvas.getByRole("button", { name: "Save changes" }));
     await expect(args.onSave).toHaveBeenCalledTimes(1);
+  },
+};
+
+/**
+ * Every settings screen renders the bar as the form's submit button, so the
+ * pristine guard is the click handler's `preventDefault`: neither a press on
+ * Save nor Enter in a field sends anything until one edit has been made (#3449).
+ */
+export const PristineFormSubmitsNothing: Story = {
+  args: { onSave: undefined },
+  render: (args) => {
+    const [draft, setDraft] = React.useState("");
+    return (
+      <form
+        onSubmit={(event) => {
+          event.preventDefault();
+          submitted();
+        }}
+      >
+        <input aria-label="Name" value={draft} onChange={(e) => setDraft(e.target.value)} />
+        <SaveBar {...args} disabled={draft === ""} />
+      </form>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    submitted.mockClear();
+    const canvas = within(canvasElement);
+    const name = canvas.getByLabelText("Name");
+    const save = canvas.getByRole("button", { name: "Save changes" });
+    await expect(save).toHaveAttribute("type", "submit");
+    await userEvent.click(save);
+    await userEvent.type(name, "{Enter}");
+    await expect(submitted).not.toHaveBeenCalled();
+    await userEvent.type(name, "x");
+    await userEvent.click(save);
+    await expect(submitted).toHaveBeenCalledTimes(1);
   },
 };

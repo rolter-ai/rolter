@@ -2,20 +2,7 @@ import type { Meta, StoryObj } from "@storybook/react";
 import { expect } from "storybook/test";
 
 import { BarChart, BarTrack } from "./bar-chart";
-
-/** The size, in rendered pixels, of the smallest text in each svg under `root` (#3450). */
-function smallestLabels(root: HTMLElement) {
-  return Array.from(root.querySelectorAll("svg")).map((svg) => {
-    const box = svg.getBoundingClientRect();
-    const scale = box.width / (svg.viewBox.baseVal.width || box.width);
-    const sizes = Array.from(svg.querySelectorAll("text")).map(
-      (node) => parseFloat(getComputedStyle(node).fontSize) * scale,
-    );
-    return { scale, smallest: Math.min(...sizes), count: sizes.length };
-  });
-}
-
-const NARROW = [320, 375, 640];
+import { CHART_WIDTHS, expectLabelsAtTheFloor } from "@/lib/story-charts";
 
 const meta = {
   title: "Charts/BarChart",
@@ -52,7 +39,7 @@ export const LabelsKeepTheFloorOnANarrowCard: Story = {
   args: Default.args,
   render: (args) => (
     <div className="flex flex-col gap-4">
-      {NARROW.map((w) => (
+      {CHART_WIDTHS.map((w) => (
         <div key={w} style={{ width: w }}>
           <BarChart {...args} />
         </div>
@@ -60,14 +47,7 @@ export const LabelsKeepTheFloorOnANarrowCard: Story = {
     </div>
   ),
   play: async ({ canvasElement }) => {
-    const charts = smallestLabels(canvasElement);
-    await expect(charts).toHaveLength(NARROW.length);
-    for (const chart of charts) {
-      await expect(chart.count).toBeGreaterThan(0);
-      await expect(chart.scale).toBeGreaterThan(0.95);
-      await expect(chart.scale).toBeLessThan(1.05);
-      await expect(chart.smallest).toBeGreaterThanOrEqual(11);
-    }
+    await expectLabelsAtTheFloor(canvasElement, CHART_WIDTHS.length);
   },
 };
 
@@ -87,30 +67,5 @@ export const BarInACell: StoryObj = {
   play: async ({ canvasElement }) => {
     const fills = Array.from(canvasElement.querySelectorAll<HTMLElement>("[aria-hidden] > span"));
     await expect(fills.map((fill) => fill.style.width)).toEqual(["0%", "40%", "100%", "100%"]);
-  },
-};
-
-/** Axis labels are 11 viewBox units in a 640-wide chart, so 11px at that width (#3284). */
-export const LabelsReachTheTextFloor: Story = {
-  args: {
-    height: 180,
-    data: [420, 380, 512, 640],
-    labels: ["Mon", "Tue", "Wed", "Thu"],
-    label: "Requests per day",
-  },
-  render: (args) => (
-    <div style={{ width: 640 }}>
-      <BarChart {...args} />
-    </div>
-  ),
-  play: async ({ canvasElement }) => {
-    const svg = canvasElement.querySelector("svg")!;
-    const scale = svg.getBoundingClientRect().width / svg.viewBox.baseVal.width;
-    await expect(scale).toBeCloseTo(1, 1);
-    for (const text of svg.querySelectorAll("text")) {
-      await expect(parseFloat(getComputedStyle(text).fontSize) * scale).toBeGreaterThanOrEqual(
-        10.9,
-      );
-    }
   },
 };

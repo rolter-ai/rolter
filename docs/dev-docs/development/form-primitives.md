@@ -464,7 +464,7 @@ const { draft: form, fields, changed, set } = sf;
 - `set(patch)` also answers the control plane's complaint about the fields it touches. `commit` adopts
   the answer as both the form and the baseline, clears the complaints and stamps `savedAt`; `discard`
   restores the baseline.
-- **Dirty, reset, leave.** Save is disabled until a field differs from what the server holds (a value
+- **Dirty, reset, leave.** Save is `aria-disabled` (and its press ignored) until a field differs from what the server holds (a value
   typed back to the stored one is no edit), Discard is the way back, and leaving with an edit asks first
   (`form.leavePrompt`, rendered by the footer).
 - **Errors.** A wrong field is a `FieldError` with `aria-invalid` and `aria-describedby` through

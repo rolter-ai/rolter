@@ -644,6 +644,12 @@ export const SetsTheCacheWriteRate: Story = {
     const form = within(sheet());
     const write = await form.findByLabelText("5 minute cache-write price per Mtok (optional)");
     await expect(write).toHaveValue(null);
+    // the model is fixed and prefilled while editing, so only the prices are marked
+    await expect(form.getByLabelText("Model name")).not.toHaveAttribute("aria-required");
+    await expect(form.getByLabelText("Input price per Mtok")).toHaveAttribute(
+      "aria-required",
+      "true",
+    );
     await userEvent.type(write, "3.75");
     await userEvent.click(form.getByRole("button", { name: "Save" }));
 
