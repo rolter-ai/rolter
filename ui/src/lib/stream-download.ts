@@ -1,9 +1,9 @@
 // Saving a streamed file without holding it (#3434). The request-log export can
 // run to a million rows, so where the browser lets a page write straight to a
 // file it chose (the File System Access API) the body is copied there a chunk
-// at a time. Elsewhere it is handed to the browser's own Blob, which keeps the
-// body outside the JavaScript heap: collecting chunks into an array here would
-// hold the export twice over.
+// at a time. Elsewhere the export is handed to the browser's own download
+// manager through a single-use ticket (`ticket-download.ts`, #3504), so no
+// copy of the body is ever held in the tab.
 
 /** where a streamed body goes */
 export interface DownloadSink {
@@ -88,37 +88,6 @@ export async function chooseDiskSink(suggestedName: string): Promise<DownloadSin
       if (empty) await handle.remove?.().catch(() => undefined);
     },
   };
-}
-
-/**
- * Gather `stream` into a Blob without holding it in the page. The body is
- * piped through a counter into the browser's own `Response.blob()`, which keeps
- * it outside the JavaScript heap and reports the bytes as they pass. Aborting
- * `signal` stops it with the `AbortError`; a stream that fails any other way is
- * a body cut short, which is {@link ExportTruncatedError}.
- */
-export async function collectBlob(
-  stream: ReadableStream<Uint8Array> | null,
-  options: { signal?: AbortSignal; onProgress?: (bytes: number) => void } = {},
-): Promise<Blob> {
-  const { signal, onProgress } = options;
-  if (!stream) return new Blob([]);
-  let seen = 0;
-  const counter = new TransformStream<Uint8Array, Uint8Array>({
-    transform(chunk, controller) {
-      seen += chunk.byteLength;
-      onProgress?.(seen);
-      controller.enqueue(chunk);
-    },
-  });
-  try {
-    return await new Response(stream.pipeThrough(counter, { signal })).blob();
-  } catch (error) {
-    if (signal?.aborted) throw signal.reason ?? error;
-    if (error instanceof DOMException && error.name === "AbortError") throw error;
-    if (error instanceof TypeError) throw new ExportTruncatedError();
-    throw error;
-  }
 }
 
 /**

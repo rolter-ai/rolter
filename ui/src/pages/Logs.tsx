@@ -38,7 +38,7 @@ import { Table, type TableColumn } from "@/components/ui/table";
 import { Sheet, SheetBody, SheetHeader } from "@/components/ui/sheet";
 import {
   AnalyticsUnavailableError,
-  exportInvocationsCsv,
+  invocationsExport,
   fetchInvocationsPage,
   fetchLoggingSettings,
   fetchVirtualKeys,
@@ -1197,26 +1197,23 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
                     : "request-log.csv"
                 }
                 toDisk
-                run={(signal) =>
-                  exportInvocationsCsv(
-                    {
-                      ...windowBounds(logWindow),
-                      model: model || undefined,
-                      key: keyId || undefined,
-                      business_unit: unitSel.length ? unitSel : undefined,
-                      customer: customerSel.length ? customerSel : undefined,
-                      unpriced: unpriced || undefined,
-                      // the whole rail travels, so a filtered view never
-                      // exports unfiltered (#3386)
-                      withheld: withheld || undefined,
-                      usage_unknown: usageUnknown || undefined,
-                      guardrail: guardrail || undefined,
-                      plugin: plugin || undefined,
-                      outcome: outcome || undefined,
-                      status,
-                    },
-                    { signal },
-                  )
+                request={() =>
+                  invocationsExport({
+                    ...windowBounds(logWindow),
+                    model: model || undefined,
+                    key: keyId || undefined,
+                    business_unit: unitSel.length ? unitSel : undefined,
+                    customer: customerSel.length ? customerSel : undefined,
+                    unpriced: unpriced || undefined,
+                    // the whole rail travels, so a filtered view never
+                    // exports unfiltered (#3386)
+                    withheld: withheld || undefined,
+                    usage_unknown: usageUnknown || undefined,
+                    guardrail: guardrail || undefined,
+                    plugin: plugin || undefined,
+                    outcome: outcome || undefined,
+                    status,
+                  })
                 }
               />
             )}

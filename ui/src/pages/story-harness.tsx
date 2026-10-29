@@ -591,6 +591,61 @@ export function savedText(file: SavedFile): string {
   return file.chunks.map((c) => decoder.decode(c, { stream: true })).join("");
 }
 
+/** the download link every stubbed ticket carries */
+export const STORY_DOWNLOAD_URL = "/api/v1/analytics/exports/download/rolter_dl_story";
+
+/**
+ * Answer the export download tickets (#3504) in front of `inner`: the mint
+ * answers `mint` (a ticket by default), and each status read answers the next
+ * of `reads`, the last one repeating. `reads` are the ticket's states, such as
+ * `{ state: "streaming", rows: 1000 }`; `done` is filled in as the control
+ * plane fills it.
+ */
+export function withExportTickets(
+  inner: FetchStub,
+  reads: Record<string, unknown>[],
+  mint: () => Response = () =>
+    json({
+      id: "story-ticket",
+      download_url: STORY_DOWNLOAD_URL,
+      status_url: "/api/v1/analytics/exports/tickets/story-ticket",
+      expires_at: "2026-10-29T12:01:00Z",
+    }),
+): FetchStub {
+  let read = 0;
+  return async (input, init) => {
+    const path = new URL(String(input), "http://localhost").pathname;
+    if (path === "/api/v1/analytics/exports/tickets") return mint();
+    if (path.startsWith("/api/v1/analytics/exports/tickets/")) {
+      const state = reads[Math.min(read, reads.length - 1)]!;
+      read += 1;
+      const done = !["pending", "streaming"].includes(String(state.state));
+      return json({ id: "story-ticket", export: "invocations", expires_at: "", done, ...state });
+    }
+    return inner(input, init);
+  };
+}
+
+/**
+ * Run `body` with every link click captured instead of followed, collecting
+ * each link's `href`: a download the page hands to the browser is a click on a
+ * hidden link, which a story must not let navigate.
+ */
+export async function captureFollowedLinks(
+  links: string[],
+  body: () => Promise<void>,
+): Promise<void> {
+  const original = HTMLAnchorElement.prototype.click;
+  HTMLAnchorElement.prototype.click = function capture(this: HTMLAnchorElement) {
+    links.push(this.getAttribute("href") ?? "");
+  };
+  try {
+    await body();
+  } finally {
+    HTMLAnchorElement.prototype.click = original;
+  }
+}
+
 /**
  * Click a button once it is actually clickable.
  *
