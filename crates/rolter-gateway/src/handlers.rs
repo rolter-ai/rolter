@@ -3938,7 +3938,7 @@ async fn forward_variants(
         // on a cooldown — same policy as the classic path
         let picked = PickedKey::pick(state, provider, &target.provider, started);
         let api_key = picked.api_key();
-        run.out.provider_key_fingerprint = api_key.map(provider_key_fingerprint);
+        run.out.provider_key_fingerprint = picked.fingerprint();
         let upstream_model = target.model.as_deref();
 
         let dial = run.begin_attempt(attempt, key, ti, &picked);
@@ -4133,7 +4133,7 @@ async fn forward_classic(
         let api_key = picked.api_key();
         // only a JSON request can be a `/v1/responses` call, the one reader
         if matches!(payload, ForwardPayload::Json { .. }) {
-            run.out.provider_key_fingerprint = api_key.map(provider_key_fingerprint);
+            run.out.provider_key_fingerprint = picked.fingerprint();
         }
         let upstream_model = target.model.as_deref();
 
@@ -4281,6 +4281,14 @@ impl PickedKey {
 
     fn api_key(&self) -> Option<&str> {
         self.picked.as_ref().map(|(_, k)| k.as_str())
+    }
+
+    /// The picked key's [`provider_key_fingerprint`], which a
+    /// `/v1/responses` follow-up dials the same key by.
+    fn fingerprint(&self) -> Option<String> {
+        self.picked
+            .as_ref()
+            .map(|(_, k)| provider_key_fingerprint(k))
     }
 }
 
