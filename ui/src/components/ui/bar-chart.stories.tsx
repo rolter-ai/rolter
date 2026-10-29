@@ -3,6 +3,20 @@ import { expect } from "storybook/test";
 
 import { BarChart, BarTrack } from "./bar-chart";
 
+/** The size, in rendered pixels, of the smallest text in each svg under `root` (#3450). */
+function smallestLabels(root: HTMLElement) {
+  return Array.from(root.querySelectorAll("svg")).map((svg) => {
+    const box = svg.getBoundingClientRect();
+    const scale = box.width / (svg.viewBox.baseVal.width || box.width);
+    const sizes = Array.from(svg.querySelectorAll("text")).map(
+      (node) => parseFloat(getComputedStyle(node).fontSize) * scale,
+    );
+    return { scale, smallest: Math.min(...sizes), count: sizes.length };
+  });
+}
+
+const NARROW = [320, 375, 640];
+
 const meta = {
   title: "Charts/BarChart",
   component: BarChart,
@@ -27,6 +41,33 @@ export const TopN: Story = {
     data: [900, 640, 512, 420, 380, 210, 120, 90],
     labels: ["gpt-4o", "claude", "llama", "mistral", "gemini", "groq", "xai", "ollama"],
     topN: 5,
+  },
+};
+
+/**
+ * The vertical chart is drawn at the width it is given, so its labels are read
+ * at the 11px they are set at on a phone as well as on a desktop card (#3450).
+ */
+export const LabelsKeepTheFloorOnANarrowCard: Story = {
+  args: Default.args,
+  render: (args) => (
+    <div className="flex flex-col gap-4">
+      {NARROW.map((w) => (
+        <div key={w} style={{ width: w }}>
+          <BarChart {...args} />
+        </div>
+      ))}
+    </div>
+  ),
+  play: async ({ canvasElement }) => {
+    const charts = smallestLabels(canvasElement);
+    await expect(charts).toHaveLength(NARROW.length);
+    for (const chart of charts) {
+      await expect(chart.count).toBeGreaterThan(0);
+      await expect(chart.scale).toBeGreaterThan(0.95);
+      await expect(chart.scale).toBeLessThan(1.05);
+      await expect(chart.smallest).toBeGreaterThanOrEqual(11);
+    }
   },
 };
 
