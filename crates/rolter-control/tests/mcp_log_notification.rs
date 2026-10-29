@@ -303,9 +303,10 @@ async fn the_list_and_detail_carry_the_notification_flag_and_the_outcome() {
     }
 }
 
-/// #3526: a notification, an `accepted` call and an `unread` body (#3528) say
-/// nothing about the tool, so the summary counts them apart and leaves them
-/// out of both rates
+/// #3526: a notification the upstream accepted, an `accepted` call and an
+/// `unread` body (#3528) say nothing about the tool, so the summary counts them
+/// apart and leaves them out of both rates; a notification that failed is a
+/// failure
 #[tokio::test]
 async fn the_summary_rates_leave_out_the_calls_no_reply_was_awaited_for() {
     let _ = skip_without_stack!();
@@ -319,6 +320,8 @@ async fn the_summary_rates_leave_out_the_calls_no_reply_was_awaited_for() {
         json!({"status": "timeout"}),
         json!({"notification": true}),
         json!({"notification": true}),
+        // not delivered, so a failure like any other
+        json!({"notification": true, "status": "transport_error"}),
         json!({"transport": "sse", "outcome": "accepted"}),
         json!({"outcome": "unread"}),
     ] {
@@ -327,12 +330,12 @@ async fn the_summary_rates_leave_out_the_calls_no_reply_was_awaited_for() {
     let summary = stack.summary().await;
     // clickhouse writes a UInt64 as a JSON string
     let count = |name: &str| summary[name].to_string().trim_matches('"').to_string();
-    assert_eq!(count("calls"), "8", "{summary}");
+    assert_eq!(count("calls"), "9", "{summary}");
     assert_eq!(count("not_awaited"), "4", "{summary}");
     assert_eq!(count("successes"), "2", "{summary}");
-    assert_eq!(count("failures"), "2", "{summary}");
-    assert_eq!(summary["success_rate"], json!(0.5), "{summary}");
-    assert_eq!(summary["failure_rate"], json!(0.5), "{summary}");
+    assert_eq!(count("failures"), "3", "{summary}");
+    assert_eq!(summary["success_rate"], json!(0.4), "{summary}");
+    assert_eq!(summary["failure_rate"], json!(0.6), "{summary}");
 
     // a window with nothing awaited has no rate at all, not a rate of zero
     let only_notes = Stack::migrated_through(51)

@@ -1054,3 +1054,47 @@ export const ABodyForwardedUnreadIsOneRowWithNoTool: Story = {
     await expect(await drawer.findByText(copy.notAwaitedDetail.unread)).toBeInTheDocument();
   },
 };
+
+/**
+ * A notification the server refused was not delivered: its detail says the
+ * summary counts it as a failure, not that it is left out.
+ */
+export const AFailedNotificationCountsAsAFailure: Story = {
+  render: () => (
+    <Harness
+      fetchStub={routes([
+        ["/mcp/logs/summary", () => ({ data: [SUMMARY] })],
+        [
+          "/mcp/logs/evt-note",
+          () => ({
+            ...call({ ...NOTIFICATION, status: "transport_error" }),
+            arguments: null,
+            result: null,
+          }),
+        ],
+        [
+          "/mcp/logs",
+          () => ({
+            data: [call({ ...NOTIFICATION, status: "transport_error" })],
+            next_cursor: null,
+          }),
+        ],
+      ])}
+    >
+      <McpLogs />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const copy = en.pages.mcpLogs;
+    await canvas.findByText(copy.notAwaited.notification);
+    await userEvent.click(
+      await canvas.findByRole("button", { name: /Open call details for notify_build/ }),
+    );
+    const drawer = within(await canvas.findByRole("complementary", { name: "MCP call details" }));
+    await expect(
+      await drawer.findByText(copy.notAwaitedDetail.notificationFailed),
+    ).toBeInTheDocument();
+    await expect(drawer.queryByText(copy.notAwaitedDetail.notification)).toBeNull();
+  },
+};

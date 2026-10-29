@@ -576,7 +576,11 @@ function DetailDrawer({ eventId, onClose }: { eventId: string; onClose: () => vo
           </div>
           {notAwaited(d) && (
             <p className="text-xs text-muted-foreground">
-              {t(`pages.mcpLogs.notAwaitedDetail.${notAwaited(d)}`)}
+              {/* a notification the server refused or failed was not delivered,
+                  so the summary counts it as a failure */}
+              {notAwaited(d) === "notification" && d.status !== "success"
+                ? t("pages.mcpLogs.notAwaitedDetail.notificationFailed")
+                : t(`pages.mcpLogs.notAwaitedDetail.${notAwaited(d)}`)}
             </p>
           )}
           {d.error && <p className="text-xs text-[color:var(--status-danger-text)]">{d.error}</p>}

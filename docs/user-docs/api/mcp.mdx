@@ -131,11 +131,14 @@ an `error`. Some calls have no reply for the proxy to read:
   reads **notification, no reply awaited**.
 
 `GET /api/v1/mcp/logs` and the event detail return both `notification` and
-`outcome`. None of these says whether a tool succeeded, so
+`outcome`. A notification the server accepted (`2xx`), an `accepted` call and
+an `unread` row do not say whether a tool succeeded, so
 `GET /api/v1/mcp/logs/summary` counts them apart in `not_awaited` and leaves
 them out of `successes`, `failures`, `success_rate` and `failure_rate`: the
 rates are over `calls - not_awaited`, and `null` for a window with no awaited
-call. The average and p95 latency are over every call. `outcome` needs
+call. A notification the server refused or failed was not delivered, so it
+counts as a failure like any other call. The average and p95 latency are over
+every call. `outcome` needs
 `clickhouse/051_mcp_log_outcome.sql` and `notification` needs
 `047_mcp_log_notification.sql`; until they are applied such calls are plain
 `success` rows and count as awaited.

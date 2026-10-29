@@ -393,12 +393,14 @@ fn outcome_column(columns: McpColumns) -> &'static str {
 }
 
 /// Whether a row is a call no reply was awaited for, so its status says
-/// nothing about the tool (#3526, #3529): a notification, or a call with an
-/// `outcome` such as `accepted`. Reads `0` for what the table cannot record.
+/// nothing about the tool (#3526, #3529): a notification the upstream
+/// accepted, or a call with an `outcome` such as `accepted`. Reads `0` for what the table cannot record.
 fn not_awaited(columns: McpColumns) -> String {
     let mut parts = Vec::new();
     if columns.notification {
-        parts.push("notification = 1");
+        // a notification the HTTP layer refused or failed was not delivered,
+        // so it is a failure like any other
+        parts.push("(notification = 1 and status = 'success')");
     }
     if columns.outcome {
         parts.push("outcome != ''");
@@ -505,8 +507,8 @@ async fn summary(
     }
 }
 
-/// The summary row. A call no reply was awaited for (a notification, or one
-/// recorded `accepted`) says nothing about whether the tool succeeded, so it is
+/// The summary row. A call no reply was awaited for (a notification the
+/// upstream accepted, or one recorded `accepted` or `unread`) says nothing about whether the tool succeeded, so it is
 /// counted apart in `not_awaited` and left out of `successes`, `failures` and
 /// both rates, whose denominator is `calls - not_awaited` (#3526). A rate is
 /// `null` for a window with no awaited call. The latencies are over every call.
@@ -594,9 +596,12 @@ mod tests {
     #[test]
     fn the_summary_counts_unawaited_calls_apart_from_the_rates() {
         let all = summary_sql(McpColumns::ALL);
-        assert!(all.contains("countIf((notification = 1 or outcome != '')) as not_awaited"));
         assert!(all.contains(
-            "countIf(not (notification = 1 or outcome != '') and status != 'success') as failures"
+            "countIf(((notification = 1 and status = 'success') or outcome != '')) as not_awaited"
+        ));
+        assert!(all.contains(
+            "countIf(not ((notification = 1 and status = 'success') or outcome != '') \
+             and status != 'success') as failures"
         ));
         assert!(all.contains("round(failures / (calls - not_awaited), 4)"));
         let none = summary_sql(McpColumns::default());
@@ -606,7 +611,8 @@ mod tests {
             notification: true,
             ..McpColumns::default()
         });
-        assert!(notes_only.contains("countIf((notification = 1)) as not_awaited"));
+        assert!(notes_only
+            .contains("countIf(((notification = 1 and status = 'success'))) as not_awaited"));
     }
 
     #[test]

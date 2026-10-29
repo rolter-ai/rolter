@@ -747,8 +747,10 @@ The gateway records every proxied JSON-RPC `tools/call` in ClickHouse's
   status reports. With the log off an ungoverned body is never parsed, so only
   `encoded` can be counted then. Only a body actually forwarded is counted, so
   a request refused for its session first is not.
-- **Calls not awaited (#3526).** A notification, an `unread` row and an
-  `accepted` call say nothing about whether the tool succeeded. `GET /api/v1/mcp/logs` returns
+- **Calls not awaited (#3526).** A notification the upstream accepted
+  (`status = success`), an `unread` row and an `accepted` call say nothing
+  about whether the tool succeeded; a notification the HTTP layer refused or
+  failed was not delivered and counts as a failure. `GET /api/v1/mcp/logs` returns
   `notification` and `outcome` beside `status`, and the dashboard marks such a
   row "notification, no reply awaited" or "accepted, reply on the stream". The
   summary (`summary_sql` in `crates/rolter-control/src/mcp_logs.rs`) counts
