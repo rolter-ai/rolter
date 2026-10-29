@@ -125,6 +125,7 @@ fn server_label(url: &str) -> String {
 /// SQLSTATE class 28: the server refused the credentials (invalid
 /// authorization specification), which it does before it looks at a role's
 /// connection limit.
+#[cfg(test)]
 fn is_auth_failure(err: &sqlx::Error) -> bool {
     matches!(err, sqlx::Error::Database(db) if db.code().is_some_and(|code| code.starts_with("28")))
 }
