@@ -1266,8 +1266,12 @@ async fn export_invocations(
     csv_response(Body::from_stream(body), &name)
 }
 
+/// The fake ClickHouse and the body reader the download ticket tests share.
 #[cfg(test)]
-pub(crate) mod tests {
+pub(crate) use tests::{drain, fake_log};
+
+#[cfg(test)]
+mod tests {
     use super::*;
     use serde_json::json;
 

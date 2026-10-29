@@ -1059,8 +1059,7 @@ fn track(
 mod tests {
     use super::*;
     use crate::analytics::ClickHouseClient;
-    use crate::analytics_export::tests::{drain, fake_log};
-    use crate::analytics_export::{ExportGate, ExportLimits};
+    use crate::analytics_export::{drain, fake_log, ExportGate, ExportLimits};
     use tower::ServiceExt;
 
     /// A bearer that is not shaped like any real credential, built at run time.
