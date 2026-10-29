@@ -401,8 +401,10 @@ async fn poll_once_reading(
     if let Err(problems) = body.config.validate_snapshot() {
         anyhow::bail!("snapshot v{} failed validation: {problems:?}", body.version);
     }
-    // model files are read here, on the blocking pool, so the reload below
-    // only installs what is already in memory (#3329)
+    // model files are read here, off the async workers, so the reload below
+    // only installs what is already in memory (#3329). the reads are bounded
+    // by MODEL_READ_DEADLINE, so a hung mount cannot stall this loop and the
+    // revocations it carries (#3512)
     state
         .local_classifiers
         .preload(&body.config.semantic_guards, &body.config.guardrail_webhook)
@@ -663,6 +665,58 @@ mod tests {
         let applied = poll_once(&client, &state, &url, None).await.unwrap();
         assert_eq!(applied, None);
         assert_eq!(state.metrics.config_reloads_total.load(Relaxed), 1);
+    }
+
+    /// A model read that never returns must not hold the snapshot loop: the
+    /// snapshot applies at the read deadline, with the local provider on its
+    /// failure mode (#3512).
+    #[tokio::test]
+    async fn a_model_read_that_never_returns_does_not_stall_the_snapshot() {
+        use axum::routing::get;
+        use axum::{Json, Router};
+
+        use crate::local_classifier::tests::{fixture_sha256, local_provider, HungReader};
+
+        let config = GatewayConfig {
+            semantic_guards: rolter_core::SemanticGuardsConfig {
+                providers: vec![local_provider(&fixture_sha256(), 2_000)],
+                ..Default::default()
+            },
+            ..GatewayConfig::default()
+        };
+        let body = serde_json::json!({
+            "version": 7,
+            "config": serde_json::to_value(&config).unwrap(),
+        });
+        let app = Router::new().route(
+            "/internal/snapshot",
+            get(move || {
+                let body = body.clone();
+                async move { Json(body) }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let state = AppState::new(&GatewayConfig::default());
+        let reader = HungReader::default();
+        reader.install(&state.local_classifiers, Duration::from_millis(200));
+        let url = format!("http://{addr}/internal/snapshot");
+        let applied = tokio::time::timeout(
+            Duration::from_secs(10),
+            poll_once(&Client::new(), &state, &url, None),
+        )
+        .await
+        .expect("the poll is not held by the read")
+        .unwrap();
+        assert_eq!(applied, Some(7));
+        assert_eq!(state.metrics.config_version.load(Relaxed), 7);
+        assert_eq!(reader.reads.load(std::sync::atomic::Ordering::SeqCst), 1);
+        // let the stuck read finish rather than outlive the test
+        reader.open();
     }
 
     #[tokio::test]

@@ -42,9 +42,16 @@
 //! model to one directory (#3454): the path is canonicalised, symlinks
 //! included, and a file that resolves outside the root is refused like any
 //! other model that cannot be loaded.
+//!
+//! Every model read runs on a thread of its own under [`MODEL_READ_DEADLINE`]
+//! (#3512): a read past it, on a hung mount for one, is abandoned and counts as
+//! a failed load, so the snapshot watcher awaiting [`LocalClassifiers::preload`]
+//! moves on. A thread that is stuck cannot be cancelled, so a path with a read
+//! still outstanding is not read again until that read returns: at most one
+//! thread per path is ever stuck.
 
 use std::borrow::Cow;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -79,6 +86,10 @@ pub const MAX_NGRAMS: usize = 3;
 pub const RETRY_FIRST: Duration = Duration::from_secs(1);
 /// The longest wait between two reads of a model that keeps failing.
 pub const RETRY_CAP: Duration = Duration::from_secs(60);
+/// The longest one batch of model reads may take before the reads still
+/// running are abandoned (#3512). A healthy read of the largest model allowed
+/// takes well under a second.
+pub const MODEL_READ_DEADLINE: Duration = Duration::from_secs(30);
 
 /// Whether each local provider's model is loaded, by provider name: what the
 /// `rolter_local_classifier_models` gauge reports. Never holds a path.
@@ -134,6 +145,10 @@ pub enum ModelError {
         resolved: String,
         root: String,
     },
+    /// the read did not return within the deadline and was abandoned
+    Deadline(Duration),
+    /// an earlier, abandoned read of the same path has not returned yet
+    InFlight,
 }
 
 impl std::fmt::Display for ModelError {
@@ -160,6 +175,15 @@ impl std::fmt::Display for ModelError {
                 f,
                 "the model file resolves to {resolved}, outside model_root {root}; it is not read"
             ),
+            Self::Deadline(deadline) => write!(
+                f,
+                "the model file was not read within {} s; the read is abandoned",
+                deadline.as_secs_f64()
+            ),
+            Self::InFlight => write!(
+                f,
+                "an earlier read of the model file has not returned yet; it is not read again until it does"
+            ),
         }
     }
 }
@@ -168,11 +192,15 @@ impl std::error::Error for ModelError {}
 
 impl ModelError {
     /// Whether reading again may succeed with the configuration unchanged: a
-    /// file or root not there yet, or not readable yet. A wrong digest, a
-    /// path outside the root or a malformed file give the same answer until
-    /// the configuration changes, so they are not retried in the background.
+    /// file or root not there yet, not readable yet or too slow to read. A
+    /// wrong digest, a path outside the root or a malformed file give the
+    /// same answer until the configuration changes, so they are not retried
+    /// in the background.
     pub fn is_transient(&self) -> bool {
-        matches!(self, Self::Read(_) | Self::Root { .. })
+        matches!(
+            self,
+            Self::Read(_) | Self::Root { .. } | Self::Deadline(_) | Self::InFlight
+        )
     }
 }
 
@@ -627,6 +655,38 @@ fn wanted(semantic_guards: &SemanticGuardsConfig, legacy: &GuardrailWebhookConfi
         .collect()
 }
 
+/// What reads one model file: `(path, sha256, root)`.
+type ReadFn = dyn Fn(&str, &str, Option<&Path>) -> Result<LinearModel, ModelError> + Send + Sync;
+
+/// How model files are read: [`LinearModel::load_confined`] under
+/// [`MODEL_READ_DEADLINE`], unless a test swaps either.
+struct Reader {
+    deadline: Duration,
+    read: Arc<ReadFn>,
+}
+
+impl Default for Reader {
+    fn default() -> Self {
+        Self {
+            deadline: MODEL_READ_DEADLINE,
+            read: Arc::new(LinearModel::load_confined),
+        }
+    }
+}
+
+/// Removes its path from the in-flight set when the read it guards returns,
+/// or when the thread that would have run it never started.
+struct InFlightGuard {
+    paths: Arc<parking_lot::Mutex<HashSet<String>>>,
+    path: String,
+}
+
+impl Drop for InFlightGuard {
+    fn drop(&mut self) {
+        self.paths.lock().remove(&self.path);
+    }
+}
+
 /// The gateway's local classifiers. Cheap to clone; every clone shares the
 /// same models and the same concurrency cap.
 #[derive(Clone)]
@@ -654,6 +714,10 @@ pub struct LocalClassifiers {
     /// [`configure`](Self::configure) from its bootstrap file; a snapshot
     /// never carries one
     root: Arc<ArcSwapOption<PathBuf>>,
+    reader: Arc<ArcSwap<Reader>>,
+    /// the paths whose read is still running, abandoned or not: a path is
+    /// not read again while it is here (#3512)
+    in_flight: Arc<parking_lot::Mutex<HashSet<String>>>,
 }
 
 impl Default for LocalClassifiers {
@@ -675,6 +739,8 @@ impl Default for LocalClassifiers {
             wanted_epoch: Default::default(),
             given_up: Default::default(),
             root: Default::default(),
+            reader: Default::default(),
+            in_flight: Default::default(),
         }
     }
 }
@@ -714,8 +780,10 @@ impl LocalClassifiers {
     }
 
     /// Read the models `semantic_guards` and `legacy` name that are not
-    /// loaded yet, on the blocking pool, so a reload never reads a file on a
-    /// request worker. A model that cannot be loaded is logged and left out.
+    /// loaded yet, off the async workers, so a reload never reads a file on a
+    /// request worker. A model that cannot be loaded, or is not read within
+    /// [`MODEL_READ_DEADLINE`], is logged and left out, so this returns
+    /// within the deadline however the file system behaves.
     pub async fn preload(
         &self,
         semantic_guards: &SemanticGuardsConfig,
@@ -731,6 +799,97 @@ impl LocalClassifiers {
         }
     }
 
+    /// Read every model of `wanted`, each on a thread of its own, and wait
+    /// for them until one shared deadline. A read still running then is
+    /// abandoned as [`ModelError::Deadline`]; its thread keeps its path in
+    /// `in_flight` until it returns, and a path found there is not read again
+    /// ([`ModelError::InFlight`]), so a hung mount holds one thread per path
+    /// rather than one more on every reload and retry (#3512). Blocks the
+    /// calling thread for at most the deadline.
+    fn read_all(&self, wanted: Vec<Wanted>) -> Vec<(Wanted, Result<LinearModel, ModelError>)> {
+        let reader = self.reader.load_full();
+        let root = self.root.load_full();
+        let deadline = Instant::now() + reader.deadline;
+        let started: Vec<_> = wanted
+            .into_iter()
+            .map(|want| {
+                let receiver = self.start_read(&reader, &want, root.clone());
+                (want, receiver)
+            })
+            .collect();
+        started
+            .into_iter()
+            .map(|(want, receiver)| {
+                let read = receiver.and_then(|receiver| {
+                    let left = deadline.saturating_duration_since(Instant::now());
+                    match receiver.recv_timeout(left) {
+                        Ok(read) => read,
+                        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                            Err(ModelError::Deadline(reader.deadline))
+                        }
+                        // the read panicked
+                        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Err(
+                            ModelError::Read(std::io::Error::other("the model read stopped")),
+                        ),
+                    }
+                });
+                (want, read)
+            })
+            .collect()
+    }
+
+    /// Start reading `want` on a new thread, unless its path is still being
+    /// read.
+    fn start_read(
+        &self,
+        reader: &Reader,
+        want: &Wanted,
+        root: Option<Arc<PathBuf>>,
+    ) -> Result<std::sync::mpsc::Receiver<Result<LinearModel, ModelError>>, ModelError> {
+        if !self.in_flight.lock().insert(want.path.clone()) {
+            return Err(ModelError::InFlight);
+        }
+        let guard = InFlightGuard {
+            paths: self.in_flight.clone(),
+            path: want.path.clone(),
+        };
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+        let read = reader.read.clone();
+        let (path, digest) = (want.path.clone(), want.digest.clone());
+        // a thread of its own rather than the blocking pool: a read that never
+        // returns holds this thread alone, and the guard caps that at one per
+        // path. a spawn that fails drops the closure, and the guard with it
+        std::thread::Builder::new()
+            .name("rolter-model-read".into())
+            .spawn(move || {
+                let read = read(&path, &digest, root.as_deref().map(PathBuf::as_path));
+                // released before the answer, so whoever takes the answer can
+                // read the path again
+                drop(guard);
+                // the receiver is gone when the read was abandoned
+                let _ = sender.send(read);
+            })
+            .map_err(ModelError::Read)?;
+        Ok(receiver)
+    }
+
+    /// Read models through `read` and give up on a batch after `deadline`,
+    /// in place of the file system and [`MODEL_READ_DEADLINE`].
+    #[cfg(test)]
+    pub(crate) fn set_reader(
+        &self,
+        deadline: Duration,
+        read: impl Fn(&str, &str, Option<&Path>) -> Result<LinearModel, ModelError>
+            + Send
+            + Sync
+            + 'static,
+    ) {
+        self.reader.store(Arc::new(Reader {
+            deadline,
+            read: Arc::new(read),
+        }));
+    }
+
     fn loaded(&self, digest: &str) -> Option<Arc<LinearModel>> {
         let registry = self.registry.load();
         registry
@@ -742,16 +901,19 @@ impl LocalClassifiers {
     }
 
     fn load_missing(&self, wanted: &[Wanted]) {
+        let mut missing: Vec<Wanted> = Vec::new();
         for want in wanted {
-            if self.loaded(&want.digest).is_some() {
-                continue;
+            if self.loaded(&want.digest).is_none()
+                && !missing.iter().any(|m| m.digest == want.digest)
+            {
+                missing.push(want.clone());
             }
-            let root = self.root.load_full();
-            match LinearModel::load_confined(
-                &want.path,
-                &want.digest,
-                root.as_deref().map(PathBuf::as_path),
-            ) {
+        }
+        if missing.is_empty() {
+            return;
+        }
+        for (want, read) in self.read_all(missing) {
+            match read {
                 Ok(model) => {
                     tracing::info!(
                         provider = want.provider,
@@ -909,14 +1071,13 @@ impl LocalClassifiers {
         if missing.is_empty() {
             return;
         }
-        let root = self.root.load_full();
-        let given_up = self.given_up.clone();
+        let this = self.clone();
         let generation = self.generation.load(Ordering::Relaxed);
+        // waits on the blocking pool for at most the read deadline
         let read = tokio::task::spawn_blocking(move || {
-            let root = root.as_deref().map(PathBuf::as_path);
             let mut read = Vec::new();
-            for want in missing {
-                match LinearModel::load_confined(&want.path, &want.digest, root) {
+            for (want, model) in this.read_all(missing) {
+                match model {
                     Ok(model) => {
                         tracing::info!(
                             provider = want.provider,
@@ -941,7 +1102,7 @@ impl LocalClassifiers {
                             "local guardrail model not loaded, and not read again until the \
                              configuration changes; the provider follows its failure_mode"
                         );
-                        given_up.lock().insert(want, generation);
+                        this.given_up.lock().insert(want, generation);
                     }
                 }
             }
@@ -1439,6 +1600,96 @@ pub(crate) mod tests {
             classifiers.classify(&provider, &json!("x")).await,
             Err(CallFailure::Model)
         );
+    }
+
+    /// A model reader that blocks until [`open`](Self::open), counting its
+    /// reads, as a read of a hung mount would.
+    #[derive(Clone, Default)]
+    pub(crate) struct HungReader {
+        open: Arc<(parking_lot::Mutex<bool>, parking_lot::Condvar)>,
+        pub(crate) reads: Arc<AtomicU64>,
+    }
+
+    impl HungReader {
+        pub(crate) fn install(&self, classifiers: &LocalClassifiers, deadline: Duration) {
+            let this = self.clone();
+            classifiers.set_reader(deadline, move |path, sha256, root| {
+                this.reads.fetch_add(1, Ordering::SeqCst);
+                let (open, opened) = &*this.open;
+                let mut is_open = open.lock();
+                while !*is_open {
+                    opened.wait(&mut is_open);
+                }
+                drop(is_open);
+                LinearModel::load_confined(path, sha256, root)
+            });
+        }
+
+        /// Let every read, the stuck ones included, return.
+        pub(crate) fn open(&self) {
+            *self.open.0.lock() = true;
+            self.open.1.notify_all();
+        }
+    }
+
+    #[tokio::test]
+    async fn a_read_that_never_returns_is_abandoned_and_its_path_not_read_twice() {
+        let provider = local_provider(&fixture_sha256(), 2_000);
+        let legacy = GuardrailWebhookConfig::default();
+        let guards = guards_with(Some(&provider));
+        let classifiers = LocalClassifiers::default();
+        let reader = HungReader::default();
+        reader.install(&classifiers, Duration::from_millis(200));
+
+        // the preload gives up at the deadline and the apply still happens,
+        // with the provider on its failure mode
+        let started = Instant::now();
+        classifiers.preload(&guards, &legacy).await;
+        assert!(started.elapsed() < Duration::from_secs(5));
+        classifiers.apply(&guards, &legacy);
+        assert_eq!(states(&classifiers), [("local".to_string(), false)]);
+        assert_eq!(
+            classifiers.classify(&provider, &json!("x")).await,
+            Err(CallFailure::Model)
+        );
+        assert_eq!(reader.reads.load(Ordering::SeqCst), 1);
+
+        // the stuck path is not read again, by a reload or by the retry, so
+        // a hung mount holds one thread however often it is asked
+        let started = Instant::now();
+        classifiers.preload(&guards, &legacy).await;
+        classifiers.retry_missing(Duration::ZERO).await;
+        assert!(started.elapsed() < Duration::from_secs(5));
+        assert_eq!(reader.reads.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            classifiers.retryable().len(),
+            1,
+            "an abandoned read is retried later"
+        );
+
+        // the mount recovers: the stuck read returns, and the next retry reads
+        // the path again and loads the model
+        reader.open();
+        let waited = Instant::now();
+        while !classifiers.in_flight.lock().is_empty() {
+            assert!(
+                waited.elapsed() < Duration::from_secs(5),
+                "the read returned"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        classifiers.retry_missing(Duration::ZERO).await;
+        assert_eq!(reader.reads.load(Ordering::SeqCst), 2);
+        assert_eq!(states(&classifiers), [("local".to_string(), true)]);
+        assert!(classifiers.classify(&provider, &json!("x")).await.is_ok());
+    }
+
+    #[test]
+    fn a_read_past_the_deadline_is_a_transient_failure() {
+        let error = ModelError::Deadline(MODEL_READ_DEADLINE);
+        assert!(error.is_transient());
+        assert!(error.to_string().contains("30 s"), "{error}");
+        assert!(ModelError::InFlight.is_transient());
     }
 
     #[test]
