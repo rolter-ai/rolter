@@ -67,7 +67,10 @@ interface RouteTraffic {
 /**
  * the rollup keys on the public model name and is read with the route's
  * project filter (#3101), so two projects that define a route with one model
- * name each see their own figure; a route nothing called has no row
+ * name each see their own figure; a route nothing called has no row. the name
+ * alone is a safe key here even though two organizations may share it
+ * (#1857): a project belongs to one organization, so the filtered read holds
+ * no other organization's rows (#3460)
  */
 function trafficFor(rows: AnalyticsByModelRow[], model: string): RouteTraffic {
   const row = rows.find((r) => r.model === model);

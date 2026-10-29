@@ -1562,6 +1562,48 @@ export const ShowsAConfigRoutesGuardrailOverridesReadOnly: Story = {
 };
 
 /**
+ * #3460: an organization's route of the same name comes first in the effective
+ * config and switches `email` off. The config-file route's sheet shows the
+ * file route's own overrides, never the organization's namesake's.
+ */
+export const AConfigRoutesOverridesAreNotItsNamesakes: Story = {
+  render: () => (
+    <Stage
+      mode="view"
+      configModel={{ model: "fake-llm", strategy: "weighted", targets: 1, source: "config" }}
+      stub={async (input, init) =>
+        /\/api\/v1\/config(\?|$)/.test(String(input))
+          ? json({
+              ...POLICY_DOC,
+              routes: [
+                {
+                  model: "fake-llm",
+                  tenancy: { org_id: "org-2", project_id: "project-9" },
+                  advanced: { guardrails: { disable: ["email"] } },
+                },
+                ...POLICY_DOC.routes,
+              ],
+            })
+          : backing(input, init)
+      }
+    />
+  ),
+  play: async () => {
+    const dialog = within(sheet());
+    await userEvent.click(await dialog.findByRole("button", { name: "Guardrails" }));
+    const off = within(await dialog.findByRole("group", { name: "Switched off on this route" }));
+    await expect(await off.findByRole("button", { name: "phone" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    await expect(off.getByRole("button", { name: "email" })).toHaveAttribute(
+      "aria-pressed",
+      "false",
+    );
+  },
+};
+
+/**
  * A read-only sheet has nothing to discard, so its footer offers a single
  * Close rather than a Cancel beside a Close that do the same (#2046).
  */

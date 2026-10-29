@@ -522,6 +522,62 @@ export const SameNameInTwoOrganizations: Story = {
 };
 
 /**
+ * #3460: two organizations each have a `gpt-4o`, and this scope's project owns
+ * the first. Its row's Edit opens this project's own route; the other
+ * organization's row is never matched to it, so its Edit stays shut rather
+ * than opening a route that belongs to someone else.
+ */
+let sameNameEdits: Recorder;
+export const SameNameRowOpensItsOwnRoute: Story = {
+  render: () => {
+    sameNameEdits = recording(
+      routes([
+        ["/model-prices", () => []],
+        ["/currency", () => ({ base: "USD", rates: {} })],
+        ["/health/uptime", () => ({ data: [] })],
+        [
+          "/models",
+          () => [
+            MODELS[0],
+            {
+              ...MODELS[0],
+              org_id: "org-2",
+              project_id: "project-9",
+              targets: 1,
+              route_targets: [{ provider: "other-edge", model: null, weight: 1 }],
+            },
+          ],
+        ],
+        ["/providers", () => FANOUT_PROVIDERS],
+        ["/routes", () => [FANOUT_ROUTE]],
+      ]),
+    );
+    return (
+      <Harness fetchStub={sameNameEdits.stub}>
+        <Models />
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() =>
+      expect(canvas.getAllByRole("button", { name: "Edit gpt-4o" })).toHaveLength(2),
+    );
+    const editOf = (provider: string) =>
+      canvas
+        .getAllByRole("button", { name: "Edit gpt-4o" })
+        .find((button) => button.closest('[role="row"]')?.textContent?.includes(provider))!;
+    // enabled once the scope's route list has answered and matched the row;
+    // no role is mounted, so no gate holds it
+    await waitFor(() => expect(editOf("sim-a")).toBeEnabled());
+    // story-wait-allow: the route list has answered above, and matched no row of org-2
+    await expect(editOf("other-edge")).toBeDisabled();
+    await userEvent.click(editOf("sim-a"));
+    await sameNameEdits.expectSent("GET", "/routes/route-1/targets");
+  },
+};
+
+/**
  * Two organizations share a model name (#1857): each row deletes its own
  * organization's model, never every route of the name, and only the scope's
  * own project's row is matched to the scope's route.
