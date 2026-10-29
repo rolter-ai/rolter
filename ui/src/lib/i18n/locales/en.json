@@ -359,6 +359,7 @@
       "codes": {
         "kek_unavailable": "The control plane cannot seal credentials. Ask an operator to configure ROLTER_KEK and restart it.",
         "analytics_query_timeout": "The analytics query took too long. Narrow the time range and try again.",
+        "api_token_inactive": "This token is revoked or has expired, so there is nothing to rotate. Create a new one.",
         "analytics_query_failed": "The analytics query failed.",
         "internal": "The control plane hit an internal error.",
         "invalid_body": "The request was not valid JSON for this action. Reload the page and try again.",
