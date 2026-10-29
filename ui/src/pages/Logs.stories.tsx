@@ -29,6 +29,9 @@ import {
   withSampleRate,
   AddressProbe,
   addressOf,
+  captureFollowedLinks,
+  STORY_DOWNLOAD_URL,
+  withExportTickets,
 } from "./story-harness";
 import type { BusinessUnitRow, CustomerRow, InvocationRow, VirtualKeyRow } from "@/lib/api";
 import { formattersFor } from "@/lib/i18n/format";
@@ -4031,32 +4034,26 @@ async function captureDownload(names: string[], run: () => Promise<void>): Promi
   }
 }
 
-const csvFile = (name: string) =>
-  new Response("a,b\r\n", {
-    headers: {
-      "content-type": "text/csv; charset=utf-8",
-      "content-disposition": `attachment; filename="${name}"`,
-    },
-  });
-
 /**
  * The Export button asks the control plane for the log under the filters on
  * screen (#1838): the file is built there, under the caller's own row scope,
- * so the request carries the filters and no page cursor, and the file keeps
- * the name the server gave it (window and currency).
+ * so the request carries the filters and no page cursor. With no save dialog in
+ * the browser the export goes through a download ticket (#3504): the ticket
+ * names the export and its query, and the browser follows the link it gets.
  */
 let logExport: Recorder;
-export const ExportSendsTheFiltersOnScreenAndKeepsTheServersFileName: Story = {
+export const ExportSendsTheFiltersOnScreen: Story = {
   parameters: {
     address:
       "/logs?status=error&unpriced=true&withheld=true&usage_unknown=true&outcome=refused_budget&model=internal-llama&guardrail=blocked:pii&plugin=blocked:acme",
   },
   render: () => {
     logExport = recording(
-      scoped(async (input) =>
-        String(input).includes("/analytics/invocations/export")
-          ? csvFile("request-log_2026-10-01_to_now_EUR.csv")
-          : ((await withLogs(ROWS)(input)) as Response),
+      scoped(
+        withExportTickets(
+          async (input) => (await withLogs(ROWS)(input)) as Response,
+          [{ state: "complete", rows: 2 }],
+        ),
       ),
     );
     return (
@@ -4069,20 +4066,23 @@ export const ExportSendsTheFiltersOnScreenAndKeepsTheServersFileName: Story = {
   },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    const names: string[] = [];
-    // no save dialog in this browser: the file is gathered and downloaded whole
+    const links: string[] = [];
+    // no save dialog in this browser: the browser's download manager gets it
     await stubSavePicker().within(
       () =>
-        captureDownload(names, async () => {
+        captureFollowedLinks(links, async () => {
           await userEvent.click(await canvas.findByRole("button", { name: "Export CSV" }));
-          await waitFor(() => expect(names).toHaveLength(1));
+          await expectToast(canvasElement, /Export downloaded/, "success");
         }),
       false,
     );
-    await expect(names[0]).toBe("request-log_2026-10-01_to_now_EUR.csv");
-    await expectToast(canvasElement, /Export downloaded/, "success");
-    const call = logExport.calls.find((c) => c.url.includes("/invocations/export"))!;
-    const params = new URL(call.url, "http://localhost").searchParams;
+    await expect(links).toEqual([STORY_DOWNLOAD_URL]);
+    const ticket = await logExport.expectSentBody<{ path: string; query: string }>(
+      "POST",
+      "/analytics/exports/tickets",
+    );
+    await expect(ticket.path).toBe("/api/v1/analytics/invocations/export");
+    const params = new URLSearchParams(ticket.query);
     await expect(params.get("status")).toBe("error");
     await expect(params.get("unpriced")).toBe("true");
     await expect(params.get("model")).toBe("internal-llama");
@@ -4098,13 +4098,19 @@ export const ExportSendsTheFiltersOnScreenAndKeepsTheServersFileName: Story = {
   },
 };
 
+/**
+ * A download the control plane answered with an error (here ClickHouse
+ * failing) is a toast. The page learns of it through the ticket's status, since
+ * the browser, not the page, received the answer.
+ */
 export const AFailedExportIsAToastNotAHalfDownload: Story = {
   render: () => (
     <Harness
-      fetchStub={scoped(async (input) =>
-        String(input).includes("/invocations/export")
-          ? json({ error: { message: "analytics query failed" } }, 502)
-          : ((await withLogs(ROWS)(input)) as Response),
+      fetchStub={scoped(
+        withExportTickets(
+          async (input) => (await withLogs(ROWS)(input)) as Response,
+          [{ state: "refused", status: 502 }],
+        ),
       )}
     >
       <Toasted>
@@ -4114,16 +4120,18 @@ export const AFailedExportIsAToastNotAHalfDownload: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    const names: string[] = [];
+    const links: string[] = [];
     await stubSavePicker().within(
       () =>
-        captureDownload(names, async () => {
+        captureFollowedLinks(links, async () => {
           await userEvent.click(await canvas.findByRole("button", { name: "Export CSV" }));
           await expectToast(canvasElement, /Could not export request log export/, "error");
         }),
       false,
     );
-    await expect(names).toHaveLength(0);
+    await expectToast(canvasElement, /refused the download \(HTTP 502\)/, "error");
+    // the link was followed once, and no copy of the body passed through the page
+    await expect(links).toEqual([STORY_DOWNLOAD_URL]);
   },
 };
 
@@ -4393,13 +4401,19 @@ export const ACancelledExportKeepsNoPartialFile: Story = {
 /**
  * A body cut short, at the row or time cap or by a dropped connection (#3434),
  * is its own message and never a finished file: the half-written file is
- * discarded, in the Blob path too.
+ * discarded. Through the browser's download manager (#3504) the page cannot
+ * discard it, so it says the download is incomplete.
  */
 export const ATruncatedExportSaysSoAndKeepsNoFile: Story = {
   render: () => {
     const stub = exportStub(() => chunkedCsv([new TextEncoder().encode("ts,model\r\n")], "cut"));
     return (
-      <Harness fetchStub={stub.stub}>
+      <Harness
+        fetchStub={withExportTickets(stub.stub, [
+          { state: "streaming", rows: 1 },
+          { state: "truncated", rows: 1, reason: "time_limit" },
+        ])}
+      >
         <Toasted>
           <Logs />
         </Toasted>
@@ -4420,18 +4434,17 @@ export const ATruncatedExportSaysSoAndKeepsNoFile: Story = {
     await expect(dialog.files[0]!.closed).toBe(false);
     await expect(dialog.files[0]!.removed).toBe(true);
     await expect(names).toHaveLength(0);
-    // and the Blob path, which must not hand over what it gathered
+    // and the download through the browser, whose partial file the page cannot reach
+    const links: string[] = [];
     await stubSavePicker().within(
       () =>
-        captureDownload(names, async () => {
+        captureFollowedLinks(links, async () => {
           await userEvent.click(canvas.getByRole("button", { name: "Export CSV" }));
-          await waitFor(() =>
-            expect(canvas.getAllByText(/The export stopped before its last row/)).toHaveLength(2),
-          );
+          await expectToast(canvasElement, /The browser's download of it is incomplete/, "error");
         }),
       false,
     );
-    await expect(names).toHaveLength(0);
+    await expect(links).toEqual([STORY_DOWNLOAD_URL]);
   },
 };
 

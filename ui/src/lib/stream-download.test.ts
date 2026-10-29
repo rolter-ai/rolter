@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 
-import { collectBlob, ExportTruncatedError, pump, type DownloadSink } from "./stream-download";
+import { ExportTruncatedError, pump, type DownloadSink } from "./stream-download";
 
 const bytes = (text: string) => new TextEncoder().encode(text);
 
@@ -72,31 +72,5 @@ describe("pump", () => {
     await expect(pump(body(["ab"], "end"), failing)).rejects.toMatchObject({
       name: "QuotaExceededError",
     });
-  });
-});
-
-describe("collectBlob (the download without a save dialog)", () => {
-  it("hands the body to a Blob, counting the bytes as they pass", async () => {
-    const seen: number[] = [];
-    const blob = await collectBlob(body(["ab", "cde"], "end"), { onProgress: (n) => seen.push(n) });
-    expect(seen).toEqual([2, 5]);
-    expect(await blob.text()).toBe("abcde");
-  });
-
-  it("an empty answer is an empty file", async () => {
-    expect((await collectBlob(null)).size).toBe(0);
-  });
-
-  it("a body that fails part way is a truncated export, and no Blob is made", async () => {
-    await expect(collectBlob(body(["ab"], "cut"))).rejects.toBeInstanceOf(ExportTruncatedError);
-  });
-
-  it("an abort stops it with the abort error, even with the connection quiet", async () => {
-    const controller = new AbortController();
-    const done = collectBlob(body(["ab"], "hang"), {
-      signal: controller.signal,
-      onProgress: () => controller.abort(),
-    });
-    await expect(done).rejects.toMatchObject({ name: "AbortError" });
   });
 });

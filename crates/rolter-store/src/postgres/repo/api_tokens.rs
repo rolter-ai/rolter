@@ -92,6 +92,21 @@ impl ApiTokenRepo<'_> {
         .map_err(store_err)
     }
 
+    /// [`Self::find_active_by_hash`] by the token's row id, for a download
+    /// ticket that names the token it was minted with rather than its secret
+    /// (#3504).
+    pub async fn find_active_by_id(&self, id: Uuid) -> Result<Option<ApiToken>> {
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "select {API_TOKEN_COLUMNS} from api_tokens \
+             where id = $1 and revoked_at is null \
+               and (expires_at is null or expires_at > now())"
+        )))
+        .bind(id)
+        .fetch_optional(self.0)
+        .await
+        .map_err(store_err)
+    }
+
     /// Replace the secret of a live token. The old digest stops resolving in
     /// the same statement; a revoked token is not revived (`None`).
     pub async fn rotate(

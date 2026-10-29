@@ -34,6 +34,12 @@
 //!   so a total with a gap is never read as the whole.
 //! * Every cell goes through [`csv_cell`], which defuses a value a spreadsheet
 //!   would run as a formula (a leading `=`, `+`, `-`, `@`, tab or carriage return).
+//! * A browser without the File System Access API downloads an export through
+//!   a single-use ticket (#3504, `export_tickets`). The download route redeems
+//!   the ticket, re-resolves the principal that minted it and calls these same
+//!   handlers through [`run_redeemed`] with that principal's [`Caller`] and
+//!   [`AnalyticsAccess`], so a ticket is checked exactly as a bearer request is.
+//!   An [`ExportProgress`] rides along and is what the ticket's status reports.
 
 use std::collections::HashMap;
 use std::io;
@@ -106,7 +112,7 @@ impl Default for ExportLimits {
 
 /// Which concurrency bound refused an export.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Busy {
+pub(crate) enum Busy {
     Process,
     Caller,
 }
@@ -134,9 +140,8 @@ impl ExportGate {
         }
     }
 
-    /// A place for one more export by `caller`, held until the permit drops.
-    fn try_acquire(self: &Arc<Self>, caller: &str) -> Result<ExportPermit, Busy> {
-        let mut running = self.running.lock();
+    /// Whether `running` has room for one more export by `caller`.
+    fn room(&self, running: &Running, caller: &str) -> Result<u32, Busy> {
         if self
             .limits
             .max_concurrent
@@ -148,6 +153,26 @@ impl ExportGate {
         if self.limits.max_per_caller.is_some_and(|max| held >= max) {
             return Err(Busy::Caller);
         }
+        Ok(held)
+    }
+
+    /// The longest an export may run, `None` when unbounded.
+    pub(crate) fn max_duration(&self) -> Option<Duration> {
+        self.limits.max_duration
+    }
+
+    /// Whether an export by `caller` would be let in now, without taking a
+    /// place: a download ticket is refused at mint when the gate is already
+    /// full (#3504). The export itself still takes its place when it starts,
+    /// so this is a courtesy and not a reservation.
+    pub(crate) fn would_admit(&self, caller: &str) -> Result<(), Busy> {
+        self.room(&self.running.lock(), caller).map(|_| ())
+    }
+
+    /// A place for one more export by `caller`, held until the permit drops.
+    fn try_acquire(self: &Arc<Self>, caller: &str) -> Result<ExportPermit, Busy> {
+        let mut running = self.running.lock();
+        let held = self.room(&running, caller)?;
         running.total += 1;
         running.by_caller.insert(caller.to_string(), held + 1);
         Ok(ExportPermit {
@@ -201,11 +226,14 @@ struct TimedPermit {
 
 impl TimedPermit {
     /// Hold `permit` until the guard drops or `limit` passes, and close
-    /// `connection` then. No limit leaves the permit to the drop alone.
+    /// `connection` then, recording the time limit as the cut on `progress`
+    /// so a download ticket reads `time_limit` rather than a closed client.
+    /// No limit leaves the permit to the drop alone.
     fn new(
         permit: ExportPermit,
         limit: Option<Duration>,
         connection: Option<Arc<CloseSwitch>>,
+        progress: Option<Arc<ExportProgress>>,
     ) -> Self {
         let slot = Arc::new(parking_lot::Mutex::new(Some(permit)));
         let finished = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -220,6 +248,9 @@ impl TimedPermit {
                 // export that already delivered its last page
                 let mut held = slot.lock();
                 if held.take().is_some() {
+                    if let Some(progress) = &progress {
+                        progress.set_cut(Cut::TimeLimit);
+                    }
                     let close = !finished.load(std::sync::atomic::Ordering::Acquire);
                     tracing::warn!(
                         closing = close && connection.is_some(),
@@ -265,7 +296,7 @@ impl Drop for TimedPermit {
 }
 
 /// The HTTP version the request arrived on.
-struct RequestVersion(Version);
+pub(crate) struct RequestVersion(pub(crate) Version);
 
 impl<S: Send + Sync> axum::extract::FromRequestParts<S> for RequestVersion {
     type Rejection = std::convert::Infallible;
@@ -295,7 +326,7 @@ fn closable(
 }
 
 /// `429` for an export the gate refused, with `Retry-After`.
-fn too_many_exports(busy: Busy) -> Response {
+pub(crate) fn too_many_exports(busy: Busy) -> Response {
     let message = match busy {
         Busy::Process => "too many request log exports are running; try again shortly",
         Busy::Caller => "you already have a request log export running; wait for it to finish",
@@ -312,6 +343,48 @@ fn too_many_exports(busy: Busy) -> Response {
     );
     response
 }
+
+/// Why an export ended before its last row, for a download ticket's status
+/// (#3504). The body ends in an error either way; this is the part only the
+/// handler knows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Cut {
+    /// the log holds more rows than [`ExportLimits::max_rows`]
+    RowLimit,
+    /// the export ran past [`ExportLimits::max_duration`]
+    TimeLimit,
+}
+
+/// What an export has done so far, written by the handler and read by the
+/// download route that serves a ticket (#3504). A bearer request carries none.
+#[derive(Debug, Default)]
+pub(crate) struct ExportProgress {
+    rows: std::sync::atomic::AtomicU64,
+    cut: parking_lot::Mutex<Option<Cut>>,
+}
+
+impl ExportProgress {
+    /// Data rows produced so far.
+    pub(crate) fn rows(&self) -> u64 {
+        self.rows.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    fn set_rows(&self, rows: u64) {
+        self.rows.store(rows, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Why the export stopped short, if a bound stopped it.
+    pub(crate) fn cut(&self) -> Option<Cut> {
+        *self.cut.lock()
+    }
+
+    fn set_cut(&self, cut: Cut) {
+        self.cut.lock().get_or_insert(cut);
+    }
+}
+
+/// The progress a handler reports to, when a ticket's download asked for one.
+type Progress = Option<Extension<Arc<ExportProgress>>>;
 
 /// Rows read per query while streaming the request log. A page is the unit of
 /// memory, so this bounds what one export holds however long the window is.
@@ -384,6 +457,153 @@ pub(crate) fn router() -> Router<ControlState> {
             "/api/v1/analytics/invocations/export",
             get(export_invocations),
         )
+        .merge(crate::export_tickets::router())
+}
+
+/// The exports a download ticket may name (#3504), by the path of the bearer
+/// route each one is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ExportKind {
+    Attribution,
+    Timeseries,
+    Invocations,
+}
+
+impl ExportKind {
+    pub(crate) const ALL: [ExportKind; 3] = [
+        ExportKind::Attribution,
+        ExportKind::Timeseries,
+        ExportKind::Invocations,
+    ];
+
+    /// The bearer route of this export.
+    pub(crate) fn path(self) -> &'static str {
+        match self {
+            ExportKind::Attribution => "/api/v1/analytics/by-attribution/export",
+            ExportKind::Timeseries => "/api/v1/analytics/timeseries/export",
+            ExportKind::Invocations => "/api/v1/analytics/invocations/export",
+        }
+    }
+
+    /// The export whose bearer route is exactly `path`; any other path is none.
+    pub(crate) fn from_path(path: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|kind| kind.path() == path)
+    }
+
+    /// The name stored with a ticket and reported in its status.
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            ExportKind::Attribution => "attribution",
+            ExportKind::Timeseries => "timeseries",
+            ExportKind::Invocations => "invocations",
+        }
+    }
+
+    /// The export a stored name names: only the Postgres store reads it back.
+    #[cfg(feature = "postgres")]
+    pub(crate) fn parse(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|kind| kind.as_str() == name)
+    }
+
+    /// Whether the [`ExportGate`] bounds this export: only the request log is
+    /// streamed, the two rollups are one query each.
+    pub(crate) fn is_gated(self) -> bool {
+        self == ExportKind::Invocations
+    }
+}
+
+/// The query string `query` read the way the bearer route of `kind` reads its
+/// own, window checks included, as the request parts that carry it.
+#[allow(clippy::result_large_err)]
+fn stored_parts(kind: ExportKind, query: &str) -> Result<axum::http::request::Parts, Response> {
+    let uri = if query.is_empty() {
+        kind.path().to_string()
+    } else {
+        format!("{}?{query}", kind.path())
+    };
+    axum::http::Request::get(uri)
+        .body(())
+        .map(|request| request.into_parts().0)
+        .map_err(|_| bad_request("the export query is not a valid query string"))
+}
+
+/// Parse `query` as the export `kind` would, so a ticket for a query its export
+/// would refuse is refused when it is minted (#3504).
+#[allow(clippy::result_large_err)]
+pub(crate) async fn check_query(
+    state: &ControlState,
+    kind: ExportKind,
+    query: &str,
+) -> Result<(), Response> {
+    use axum::extract::FromRequestParts;
+    let mut parts = stored_parts(kind, query)?;
+    let parsed = match kind {
+        ExportKind::Attribution => Query::<AttributionQuery>::from_request_parts(&mut parts, state)
+            .await
+            .map(drop),
+        ExportKind::Timeseries => Query::<DashboardQuery>::from_request_parts(&mut parts, state)
+            .await
+            .map(drop),
+        ExportKind::Invocations => Query::<InvocationsQuery>::from_request_parts(&mut parts, state)
+            .await
+            .map(drop),
+    };
+    parsed.map_err(IntoResponse::into_response)
+}
+
+/// Run the export `kind` for a redeemed download ticket: the bearer route's
+/// own handler, given the caller the ticket's principal re-resolved to instead
+/// of one read from a bearer header. The handler runs every check it runs for
+/// a bearer request (the query's, the row scope's and the gate's), and reports
+/// to `progress` as it goes.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn run_redeemed(
+    state: ControlState,
+    kind: ExportKind,
+    query: &str,
+    principal: Caller,
+    access: AnalyticsAccess,
+    version: RequestVersion,
+    connection: Option<Extension<ConnectionHandle>>,
+    progress: Arc<ExportProgress>,
+) -> Response {
+    use axum::extract::FromRequestParts;
+    let mut parts = match stored_parts(kind, query) {
+        Ok(parts) => parts,
+        Err(response) => return response,
+    };
+    let progress = Some(Extension(progress));
+    match kind {
+        ExportKind::Attribution => {
+            match Query::<AttributionQuery>::from_request_parts(&mut parts, &state).await {
+                Ok(q) => export_attribution(access, principal, State(state), progress, q).await,
+                Err(refused) => refused.into_response(),
+            }
+        }
+        ExportKind::Timeseries => {
+            match Query::<DashboardQuery>::from_request_parts(&mut parts, &state).await {
+                Ok(q) => export_timeseries(access, State(state), progress, q).await,
+                Err(refused) => refused.into_response(),
+            }
+        }
+        ExportKind::Invocations => {
+            match Query::<InvocationsQuery>::from_request_parts(&mut parts, &state).await {
+                Ok(q) => {
+                    export_invocations(
+                        access,
+                        principal,
+                        State(state),
+                        version,
+                        connection,
+                        progress,
+                        q,
+                    )
+                    .await
+                }
+                Err(refused) => refused.into_response(),
+            }
+        }
+    }
 }
 
 /// One CSV field. A spreadsheet runs a cell that starts with `=`, `+`, `-`, `@`,
@@ -508,9 +728,9 @@ fn bad_request(message: &str) -> Response {
 /// Who is asking, for the one read that is governed beyond the request log: a
 /// control plane with no database has no accounts, so no caller to check.
 #[cfg(feature = "postgres")]
-type Caller = crate::rbac::Principal;
+pub(crate) type Caller = crate::rbac::Principal;
 #[cfg(not(feature = "postgres"))]
-type Caller = ();
+pub(crate) type Caller = ();
 
 /// Who a concurrency bound counts an export against: the account, or the API
 /// token, or the one shared credential. Open mode and the admin token have no
@@ -585,9 +805,12 @@ async fn names_for(_: &ControlState, _: &Caller, _: &str, _: &[String]) -> HashM
 /// `GET /api/v1/analytics/by-attribution/export`: the Cost Attribution rollup,
 /// one row per business unit or customer.
 async fn export_attribution(
-    principal: Caller,
+    // the access first: without a database it is what refuses a wrong bearer,
+    // and `Principal` would reach for the pool that is not there
     access: AnalyticsAccess,
+    principal: Caller,
     State(state): State<ControlState>,
+    progress: Progress,
     Query(q): Query<AttributionQuery>,
 ) -> Response {
     let ch = match client_or_503(&state) {
@@ -670,6 +893,9 @@ async fn export_attribution(
             ((unpriced > 0.0).to_string(), false),
         ]));
     }
+    if let Some(Extension(progress)) = &progress {
+        progress.set_rows(rows.len() as u64);
+    }
     let name = file_name(
         &format!("cost-attribution-{dimension}"),
         q.since.as_deref(),
@@ -684,6 +910,7 @@ async fn export_attribution(
 async fn export_timeseries(
     access: AnalyticsAccess,
     State(state): State<ControlState>,
+    progress: Progress,
     Query(q): Query<DashboardQuery>,
 ) -> Response {
     let ch = match client_or_503(&state) {
@@ -731,6 +958,9 @@ async fn export_timeseries(
             (cell_text(row.get("unpriced_requests")), true),
             ((unpriced > 0.0).to_string(), false),
         ]));
+    }
+    if let Some(Extension(progress)) = &progress {
+        progress.set_rows(rows.len() as u64);
     }
     let name = file_name(
         &format!("spend-by-{bucket}"),
@@ -816,9 +1046,18 @@ struct LogWalk {
     over_rows: bool,
     /// the exports gate's place for this walk, given back when the body drops
     permit: Option<TimedPermit>,
+    /// where a download ticket reads how far the walk got and why it stopped
+    progress: Option<Arc<ExportProgress>>,
 }
 
 impl LogWalk {
+    /// Record why the walk is about to stop short, for a ticket's status.
+    fn cut(&self, cut: Cut) {
+        if let Some(progress) = &self.progress {
+            progress.set_cut(cut);
+        }
+    }
+
     /// The next chunk of the file, or `None` once the log is exhausted.
     async fn next_chunk(&mut self) -> anyhow::Result<Option<Bytes>> {
         if self.done {
@@ -826,9 +1065,11 @@ impl LogWalk {
         }
         // the timer gave the place back while the body sat unread
         if self.permit.as_ref().is_some_and(|permit| !permit.is_held()) {
+            self.cut(Cut::TimeLimit);
             anyhow::bail!("the export ran past its time limit");
         }
         if self.over_rows {
+            self.cut(Cut::RowLimit);
             anyhow::bail!(
                 "the log holds more rows than the export limit of {}",
                 self.max_rows.unwrap_or_default()
@@ -849,11 +1090,15 @@ impl LogWalk {
             Some(deadline) => {
                 let left = deadline.saturating_duration_since(Instant::now());
                 if left.is_zero() {
+                    self.cut(Cut::TimeLimit);
                     anyhow::bail!("the export ran past its time limit");
                 }
                 tokio::time::timeout(left, self.ch.query(&self.sql, &params))
                     .await
-                    .map_err(|_| anyhow::anyhow!("the export ran past its time limit"))??
+                    .map_err(|_| {
+                        self.cut(Cut::TimeLimit);
+                        anyhow::anyhow!("the export ran past its time limit")
+                    })??
             }
             None => self.ch.query(&self.sql, &params).await?,
         };
@@ -862,6 +1107,9 @@ impl LogWalk {
             rows.truncate(left as usize);
         }
         self.written += rows.len() as u64;
+        if let Some(progress) = &self.progress {
+            progress.set_rows(self.written);
+        }
         let mut out = String::new();
         if !self.header_sent {
             self.header_sent = true;
@@ -907,11 +1155,13 @@ impl LogWalk {
 /// usage, guardrail, plugin and outcome), the same set the JSON list takes, so
 /// a filtered view never exports unfiltered (#3386).
 async fn export_invocations(
-    principal: Caller,
+    // the access first, as for the rollup above
     access: AnalyticsAccess,
+    principal: Caller,
     State(state): State<ControlState>,
     RequestVersion(version): RequestVersion,
     connection: Option<Extension<ConnectionHandle>>,
+    progress: Progress,
     Query(q): Query<InvocationsQuery>,
 ) -> Response {
     let ch = match client_or_503(&state) {
@@ -978,7 +1228,8 @@ async fn export_invocations(
     // carries other requests, which a trip would reset, so there the timer
     // gives the place back and h2's per-stream flow control bounds the buffer
     let connection = closable(version, connection);
-    let permit = TimedPermit::new(permit, limits.max_duration, connection);
+    let progress = progress.map(|Extension(progress)| progress);
+    let permit = TimedPermit::new(permit, limits.max_duration, connection, progress.clone());
     // which optional columns the table has, so the file still builds before an
     // operator applies the sequence column (see `request_log_columns`)
     let columns = match ch.request_log_columns().await {
@@ -998,6 +1249,7 @@ async fn export_invocations(
         written: 0,
         over_rows: false,
         permit: Some(permit),
+        progress,
     };
     // the first page is read before the response starts, so a ClickHouse
     // failure is an error the client can read and not a download that ends
@@ -1025,6 +1277,10 @@ async fn export_invocations(
     let body = stream::iter(first.map(Ok::<_, io::Error>)).chain(rest);
     csv_response(Body::from_stream(body), &name)
 }
+
+/// The fake ClickHouse and the body reader the download ticket tests share.
+#[cfg(test)]
+pub(crate) use tests::{drain, fake_log};
 
 #[cfg(test)]
 mod tests {
@@ -1149,7 +1405,12 @@ mod tests {
         let mut limits = ExportLimits::new(0, 0, 1, 1);
         limits.max_duration = Some(Duration::from_millis(60));
         let gate = Arc::new(ExportGate::new(limits));
-        let permit = TimedPermit::new(gate.try_acquire("a").unwrap(), limits.max_duration, None);
+        let permit = TimedPermit::new(
+            gate.try_acquire("a").unwrap(),
+            limits.max_duration,
+            None,
+            None,
+        );
         // the body of a stalled download: held, and never polled again
         let stalled = stream::unfold(permit, |permit| async move {
             Some((Ok::<_, io::Error>(Bytes::new()), permit))
@@ -1177,6 +1438,7 @@ mod tests {
         let held = TimedPermit::new(
             gate.try_acquire("a").unwrap(),
             Some(Duration::from_secs(600)),
+            None,
             None,
         );
         assert!(held.is_held());
@@ -1207,7 +1469,7 @@ mod tests {
 
     /// A ClickHouse that holds a request log of `total` rows, `delay` slower on
     /// every page, answering the keyset walk the export makes.
-    async fn fake_log(total: u64, delay: Duration) -> String {
+    pub(crate) async fn fake_log(total: u64, delay: Duration) -> String {
         let app = axum::Router::new().fallback(
             move |axum::extract::Query(params): axum::extract::Query<HashMap<String, String>>,
                   body: String| async move {
@@ -1262,7 +1524,7 @@ mod tests {
     }
 
     /// The data rows a body carries and whether it ended cleanly.
-    async fn drain(response: Response) -> (usize, bool) {
+    pub(crate) async fn drain(response: Response) -> (usize, bool) {
         let mut stream = response.into_body().into_data_stream();
         let mut text = String::new();
         let mut complete = true;
@@ -1500,6 +1762,35 @@ mod tests {
             .await
             .unwrap();
         assert!(String::from_utf8_lossy(&body).contains("already have"));
+    }
+
+    /// A store-less control plane refuses a wrong bearer on every export with
+    /// `401`. In a postgres build the `Principal` extractor reaches for the
+    /// pool, which is not there, so the access check has to run first (#3504).
+    #[tokio::test]
+    async fn a_wrong_bearer_is_refused_without_a_database() {
+        use tower::ServiceExt;
+        let token = format!("export-admin-{}", uuid::Uuid::new_v4().simple());
+        let mut state = crate::tests::state_with_token(Some(&token));
+        state.clickhouse = Some(ClickHouseClient::new(&fake_log(10, Duration::ZERO).await));
+        let app = router().with_state(state);
+        for path in [
+            "/api/v1/analytics/by-attribution/export",
+            "/api/v1/analytics/timeseries/export",
+            "/api/v1/analytics/invocations/export",
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    axum::http::Request::get(path)
+                        .header(header::AUTHORIZATION, "Bearer rolter_sess_not-a-session")
+                        .body(Body::empty())
+                        .expect("a valid request"),
+                )
+                .await
+                .expect("the router answers");
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{path}");
+        }
     }
 
     /// The query parameters a statement binds, `{name:Type}`.

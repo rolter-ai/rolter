@@ -59,6 +59,7 @@ mod crud;
 pub mod deprecation;
 #[cfg(feature = "postgres")]
 mod expiry_sweep;
+mod export_tickets;
 #[cfg(feature = "postgres")]
 mod feature_flags;
 #[cfg(feature = "postgres")]
@@ -646,6 +647,9 @@ struct ControlState {
     /// (#3360). Process-local on purpose: it protects this process's
     /// connections and ClickHouse queries, so replicas each hold their own
     export_gate: Arc<analytics_export::ExportGate>,
+    /// single-use download tickets for the analytics exports (#3504): the
+    /// lifetime, and the in-memory store used when there is no database
+    export_tickets: Arc<export_tickets::Tickets>,
     /// the least time between two SMTP relay checks by one caller (#3394)
     #[cfg_attr(not(feature = "postgres"), allow(dead_code))]
     mail_check_gap: Arc<call_gap::CallGap>,
@@ -891,6 +895,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         cors: Arc::default(),
         metrics: metrics.clone(),
         export_gate: export_gate.clone(),
+        export_tickets: Arc::default(),
         mail_check_gap: Arc::default(),
         login_throttle: login_throttle.clone(),
         trust_forwarded_for: args.login_trust_forwarded_for,
@@ -917,6 +922,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         cors: Arc::default(),
         metrics: metrics.clone(),
         export_gate: export_gate.clone(),
+        export_tickets: Arc::default(),
         mail_check_gap: Arc::default(),
         login_throttle: login_throttle.clone(),
         trust_forwarded_for: args.login_trust_forwarded_for,
@@ -1156,7 +1162,8 @@ fn api_not_found(path: &str) -> Response {
     (
         StatusCode::NOT_FOUND,
         Json(json!({"error": {
-            "message": format!("no such endpoint: {path}"),
+            // a mistyped download URL must not hand its secret back (#3504)
+            "message": format!("no such endpoint: {}", export_tickets::redact_path(path)),
             // stable code so the dashboard can tell "this route is not mounted
             // on this control plane" (a store-less deployment) from any other 404
             "code": "no_such_endpoint",
@@ -1697,6 +1704,7 @@ fn test_state(
         // real, with production defaults: the wiring is part of what these
         // tests cover, and no test signs in wrongly five times by accident
         export_gate: Default::default(),
+        export_tickets: Default::default(),
         mail_check_gap: Default::default(),
         login_throttle: login_throttle::LoginThrottle::new(Default::default(), String::new(), None),
         trust_forwarded_for: false,
@@ -3747,6 +3755,7 @@ mod tests {
             cors: Arc::default(),
             metrics: Default::default(),
             export_gate: Default::default(),
+            export_tickets: Default::default(),
             mail_check_gap: Default::default(),
             login_throttle: Default::default(),
             trust_forwarded_for: false,

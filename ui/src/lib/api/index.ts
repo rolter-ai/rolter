@@ -66,8 +66,22 @@ export type {
   AlertNotificationRow,
   AlertEvaluation,
 } from "./alerts";
-export { exportAttributionCsv, exportInvocationsCsv } from "./analytics-export";
-export type { AnalyticsExportOptions, AnalyticsExportStream } from "./analytics-export";
+export {
+  attributionExport,
+  exportTicketStatus,
+  invocationsExport,
+  mintExportTicket,
+  streamExport,
+} from "./analytics-export";
+export type {
+  AnalyticsExportOptions,
+  AnalyticsExportStream,
+  ExportRequest,
+  ExportTicket,
+  ExportTicketState,
+  ExportTicketStatus,
+  ExportTruncatedReason,
+} from "./analytics-export";
 export {
   AnalyticsUnavailableError,
   fetchAnalyticsSummary,

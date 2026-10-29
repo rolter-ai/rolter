@@ -28,6 +28,9 @@ import {
   withSampleRate,
   AddressProbe,
   addressOf,
+  captureFollowedLinks,
+  STORY_DOWNLOAD_URL,
+  withExportTickets,
 } from "./story-harness";
 import type { AttributionSpendRow, BusinessUnitRow, CustomerRow } from "@/lib/api";
 import { formattersFor } from "@/lib/i18n/format";
@@ -1354,40 +1357,17 @@ export const CustomersFailToLoadAndRetry: Story = {
   },
 };
 
-async function captureDownload(names: string[], run: () => Promise<void>): Promise<void> {
-  const original = HTMLAnchorElement.prototype.click;
-  HTMLAnchorElement.prototype.click = function capture(this: HTMLAnchorElement) {
-    names.push(this.download);
-  };
-  try {
-    await run();
-  } finally {
-    HTMLAnchorElement.prototype.click = original;
-  }
-}
-
-const csvFile = (name: string) =>
-  new Response("a,b\r\n", {
-    headers: {
-      "content-type": "text/csv; charset=utf-8",
-      "content-disposition": `attachment; filename="${name}"`,
-    },
-  });
-
 /**
  * Export on the Customers screen asks for the customer rollup over the window
- * on screen, unattributed spend included (#1838), and keeps the server's file
- * name, which says the window and the currency.
+ * on screen, unattributed spend included (#1838), through a download ticket
+ * the browser follows (#3504), so the file keeps the server's name, which says
+ * the window and the currency.
  */
 let spendExport: Recorder;
 export const ExportAsksForTheDimensionAndWindowOnScreen: Story = {
   render: () => {
     const base = router({});
-    spendExport = recording(async (input, init) =>
-      String(input).includes("/by-attribution/export")
-        ? csvFile("cost-attribution-customer_2026-10-01_to_2026-11-01_USD.csv")
-        : base(input, init),
-    );
+    spendExport = recording(withExportTickets(base, [{ state: "complete", rows: 3 }]));
     return (
       <Harness fetchStub={spendExport.stub}>
         <Toasted>
@@ -1398,15 +1378,19 @@ export const ExportAsksForTheDimensionAndWindowOnScreen: Story = {
   },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    const names: string[] = [];
-    await captureDownload(names, async () => {
+    const links: string[] = [];
+    await captureFollowedLinks(links, async () => {
       await userEvent.click(await canvas.findByRole("button", { name: "Export CSV" }));
-      await waitFor(() => expect(names).toHaveLength(1));
+      await expectToast(canvasElement, /Export downloaded/, "success");
     });
-    await expect(names[0]).toBe("cost-attribution-customer_2026-10-01_to_2026-11-01_USD.csv");
-    await expectToast(canvasElement, /Export downloaded/, "success");
-    const call = spendExport.calls.find((c) => c.url.includes("/by-attribution/export"))!;
-    const params = new URL(call.url, "http://localhost").searchParams;
+    // handed to the browser's download manager, which keeps the server's name
+    await expect(links).toEqual([STORY_DOWNLOAD_URL]);
+    const ticket = await spendExport.expectSentBody<{ path: string; query: string }>(
+      "POST",
+      "/analytics/exports/tickets",
+    );
+    await expect(ticket.path).toBe("/api/v1/analytics/by-attribution/export");
+    const params = new URLSearchParams(ticket.query);
     await expect(params.get("dimension")).toBe("customer");
     await expect(params.get("include_unattributed")).toBe("true");
     await expect(params.get("since")).toBeTruthy();
