@@ -95,6 +95,12 @@ pub struct GatewayConfig {
     /// the snapshot, which carries the marker inside each server instead.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub mcp_manifest_enforcement: Vec<McpManifestEnforcementConfig>,
+    /// The MCP gateway settings an organization saved (#3482). Read by
+    /// `rolter-seed --import` and written by `rolter config export`; the
+    /// control plane never ships it in the snapshot, which carries the same
+    /// values per organization as `mcp_settings`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mcp_gateway_settings: Vec<McpGatewaySettingsConfig>,
     #[serde(default)]
     pub model_prices: Vec<ModelPriceConfig>,
     /// settlement currency and rate table. Budgets and accumulated spend are
@@ -2358,6 +2364,26 @@ pub struct McpOrgSettingsConfig {
 pub struct McpManifestEnforcementConfig {
     pub org: String,
     pub enforce: bool,
+}
+
+/// One organization's saved `mcp_gateway_settings` row in a bootstrap file
+/// (#3482): the organization by slug, and the settings it saved.
+///
+/// Unlike [`McpManifestEnforcementConfig`] this is the desired state: an import
+/// sets the targeted organization to exactly these values, stricter or laxer
+/// than it was, and only that organization. `allow_unlisted_tools = false` is
+/// the organization enforcing its servers' tool manifests.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+pub struct McpGatewaySettingsConfig {
+    pub org: String,
+    /// one of [`MCP_TRANSPORTS`]
+    pub default_transport: String,
+    pub connect_timeout_ms: i32,
+    pub request_timeout_ms: i32,
+    pub max_retries: i32,
+    /// `fail_open` or `fail_closed`
+    pub default_failure_mode: String,
+    pub allow_unlisted_tools: bool,
 }
 
 /// One tool of one server, as a tool group names it.

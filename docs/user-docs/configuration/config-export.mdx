@@ -34,6 +34,7 @@ The export deliberately carries only the sections the importer consumes, so noth
 | `[[model_prices]]`                                                                  | input, output, cached-input and cache-write rates with their currency                               |
 | `[[budgets]]` and `[[rate_limits]]`                                                 | spend and rate caps, each naming its scope by a portable reference (below)                          |
 | `[[mcp_manifest_enforcement]]`                                                      | for each org that never saved MCP settings, whether it enforces its servers' tool manifests (below) |
+| `[[mcp_gateway_settings]]`                                                          | for each org that saved MCP settings, those settings (below)                                        |
 | `[prompt_templates]`                                                                | published templates with their variables, decorators and route bindings                             |
 | `[logging]` `ui_events`                                                             | whether the control plane records dashboard usage events                                            |
 | `[logging.payload_capture]`                                                         | the capture policy, its size cap and its redaction and model filters                                |
@@ -47,6 +48,12 @@ A variant target on a provider that is left out of the gateway snapshot is still
 An organization created after manifests were enforced (#3334) refuses a tool its server's manifest leaves out until it saves MCP settings, and one that existed before allows it. That marker (`orgs.mcp_enforce_manifests`) is not part of any saved setting, so the export writes it for each organization with no saved MCP settings, as `[[mcp_manifest_enforcement]]` with the organization's `org` slug and `enforce`. An organization that saved its settings follows them and has no entry.
 
 The import never makes an existing organization stricter. The import is the desired state, with this one exception. An entry with `enforce = false` relaxes the organization the import targets (`--org-slug`), which is how an import that creates the organization anew keeps one that was grandfathered, and the import logs it. `enforce = true` is what a new organization already has and changes nothing on one that exists. An entry for any other organization is skipped with a warning, so a staging file cannot loosen the same-named organization of a database it was not aimed at.
+
+### Saved MCP gateway settings
+
+An organization that saved its MCP settings (default transport, timeouts, retries, failure mode and whether unlisted tools are allowed) has them written as `[[mcp_gateway_settings]]` with the organization's `org` slug. Without it a round trip into a fresh database resets that organization to the new-organization defaults, which enforce tool manifests.
+
+This table is the desired state, not a marker. The import sets the organization it targets (`--org-slug`) to exactly the values of its entry, stricter or laxer than it had, and logs the previous and new values. An entry that already matches writes nothing. An entry for any other organization is skipped with a warning, so a file cannot reconfigure an organization it was not aimed at. A value outside what the MCP Settings screen accepts fails the import before it writes. The control plane never ships the table in the snapshot, so a `--config` file that holds it changes nothing until it is imported. Exporting, wiping, importing and exporting again gives the same bytes. Tool groups are not part of the table.
 
 ### Import warnings
 
@@ -130,7 +137,7 @@ rolter seed --org-slug acme --import acme.toml
 - the caps on the organization, its teams, projects, business units and customers, and on the keys minted in it (counted in the trailing comment, as keys are never exported);
 - a cap on a person when its `within` names the organization or one of its projects, or, with no `within`, when the person is a member of the organization (directly or through a team or project). With `--without-person-caps` none is written;
 - the payload-capture policy: kept as it is when it is not limited to keys. A policy limited to virtual keys spans organizations and cannot be split, so the file leaves `[logging.payload_capture]` out and says so in a comment; importing the file then leaves the deployment's capture policy as it is;
-- its `[[mcp_manifest_enforcement]]` entry.
+- its `[[mcp_manifest_enforcement]]` or `[[mcp_gateway_settings]]` entry, whichever applies.
 
 Rows owned by no organization (those of the gateway's own config file) and the deployment-wide sections (model prices, currency, the rest of logging) are written as the whole-deployment export writes them, except a row the organization shadows: when the organization has a route, provider or provider group of the same name as a deployment-wide one, its own row wins (ADR-0040), so the file leaves the deployment-wide row out and names it in a comment (`# left out because this organization has a row of the same name`). Importing the file therefore reproduces the organization's view instead of refusing on the clash. There is no option for this. Logging is a deployment-wide setting, so importing an organization's file applies the logging it declares to the deployment. Importing the file into the same organization and exporting again gives the same bytes. A slug no organization has is a `400`.
 

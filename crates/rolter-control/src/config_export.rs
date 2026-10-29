@@ -85,6 +85,10 @@ const HEADER: &str = "\
 # ever relaxes the org it targets with `enforce = false`; it never makes one
 # stricter.
 #
+# `[[mcp_gateway_settings]]` records the MCP settings an org saved. Unlike the
+# marker it is the desired state: an import sets the org it targets to exactly
+# these values, and no other org.
+#
 # Budgets and rate limits round-trip too, and name what they cap the way the
 # importer finds it, never by database id: `scope = \"team\"` with `id =
 # \"acme/platform\"` is the team called `platform` of the org with slug `acme`
@@ -272,6 +276,7 @@ fn render_document(
     render_model_prices(&mut out, config);
     render_caps(&mut out, config, refs);
     render_mcp_manifest_enforcement(&mut out, config);
+    render_mcp_gateway_settings(&mut out, config);
     render_prompt_templates(&mut out, config);
     render_logging(&mut out, config, omit_capture);
     out
@@ -660,6 +665,24 @@ fn render_mcp_manifest_enforcement(out: &mut String, config: &GatewayConfig) {
     }
 }
 
+/// `[[mcp_gateway_settings]]`: the settings each org saved on the MCP Settings
+/// screen (#3482). Without them a round trip into a fresh database resets the
+/// org to the new-org defaults.
+fn render_mcp_gateway_settings(out: &mut String, config: &GatewayConfig) {
+    let mut rows: Vec<_> = config.mcp_gateway_settings.iter().collect();
+    rows.sort_by(|a, b| a.org.cmp(&b.org));
+    for row in rows {
+        out.push_str("\n[[mcp_gateway_settings]]\n");
+        key(out, "org", &row.org);
+        key(out, "default_transport", &row.default_transport);
+        key(out, "connect_timeout_ms", &row.connect_timeout_ms);
+        key(out, "request_timeout_ms", &row.request_timeout_ms);
+        key(out, "max_retries", &row.max_retries);
+        key(out, "default_failure_mode", &row.default_failure_mode);
+        key(out, "allow_unlisted_tools", &row.allow_unlisted_tools);
+    }
+}
+
 fn period_rank(period: rolter_core::BudgetPeriod) -> u8 {
     match period {
         rolter_core::BudgetPeriod::Daily => 0,
@@ -942,6 +965,7 @@ pub async fn export_document(
     }
     with_stored_variants(pool, &mut config).await?;
     config.mcp_manifest_enforcement = load_mcp_manifest_enforcement(pool, options).await?;
+    config.mcp_gateway_settings = load_mcp_gateway_settings(pool, options).await?;
     Ok(render_document(
         &config,
         &refs,
@@ -971,6 +995,49 @@ async fn load_mcp_manifest_enforcement(
     Ok(rows
         .into_iter()
         .map(|(org, enforce)| rolter_core::McpManifestEnforcementConfig { org, enforce })
+        .collect())
+}
+
+/// The settings each org saved, which are the only ones the marker above does
+/// not decide for (#3482).
+#[cfg(feature = "postgres")]
+async fn load_mcp_gateway_settings(
+    pool: &sqlx::PgPool,
+    options: &ExportOptions,
+) -> rolter_core::Result<Vec<rolter_core::McpGatewaySettingsConfig>> {
+    use rolter_store::postgres::store_err;
+    let rows: Vec<(String, String, i32, i32, i32, String, bool)> = sqlx::query_as(
+        "select o.slug, s.default_transport, s.connect_timeout_ms, s.request_timeout_ms,
+                s.max_retries, s.default_failure_mode, s.allow_unlisted_tools
+         from mcp_gateway_settings s join orgs o on o.id = s.org_id
+         where $1::text is null or o.slug = $1
+         order by o.slug",
+    )
+    .bind(&options.org)
+    .fetch_all(pool)
+    .await
+    .map_err(store_err)?;
+    Ok(rows
+        .into_iter()
+        .map(
+            |(
+                org,
+                default_transport,
+                connect_timeout_ms,
+                request_timeout_ms,
+                max_retries,
+                default_failure_mode,
+                allow_unlisted_tools,
+            )| rolter_core::McpGatewaySettingsConfig {
+                org,
+                default_transport,
+                connect_timeout_ms,
+                request_timeout_ms,
+                max_retries,
+                default_failure_mode,
+                allow_unlisted_tools,
+            },
+        )
         .collect())
 }
 
@@ -2735,8 +2802,12 @@ model = "gpt-4o"
                 "{all}"
             );
             assert!(
-                !all.contains("org = \"saved\""),
+                !all.contains("[[mcp_manifest_enforcement]]\norg = \"saved\""),
                 "an org with saved settings follows them, not the marker:\n{all}"
+            );
+            assert!(
+                all.contains("[[mcp_gateway_settings]]\norg = \"saved\"\n"),
+                "{all}"
             );
             let one = super::export_document(
                 &pool,
@@ -2750,6 +2821,150 @@ model = "gpt-4o"
             .unwrap();
             assert!(one.contains("org = \"lax\""), "{one}");
             assert!(!one.contains("org = \"strict\""), "{one}");
+        }
+
+        /// Saved MCP gateway settings survive export, wipe, import, export
+        /// (#3482): the import sets the targeted org to exactly the file, in
+        /// either direction, and touches no other org.
+        #[tokio::test]
+        async fn saved_mcp_gateway_settings_round_trip_for_one_org() {
+            use super::ExportOptions;
+
+            let Some(db) = scratch_db().await else {
+                return;
+            };
+            let pool = db.pool().clone();
+            let dir = tempdir("mcp-settings");
+            let (org_a, project_a) = bootstrap_named_org(&pool, "org-a").await;
+            let (org_b, _) = bootstrap_named_org(&pool, "org-b").await;
+            for (org, transport, retries, mode, allow) in [
+                (org_a, "sse", 3, "fail_open", true),
+                (org_b, "websocket", 0, "fail_closed", false),
+            ] {
+                sqlx::query(
+                    "insert into mcp_gateway_settings
+                     (org_id, default_transport, connect_timeout_ms, request_timeout_ms,
+                      max_retries, default_failure_mode, allow_unlisted_tools)
+                     values ($1, $2, 2500, 45000, $3, $4, $5)",
+                )
+                .bind(org)
+                .bind(transport)
+                .bind(retries)
+                .bind(mode)
+                .bind(allow)
+                .execute(&pool)
+                .await
+                .unwrap();
+            }
+            let store = PostgresConfigStore::new(pool.clone());
+            let options = ExportOptions {
+                org: Some("org-a".to_string()),
+                ..Default::default()
+            };
+            let first = super::export_document(&pool, &store.load().await.unwrap(), &options)
+                .await
+                .unwrap();
+            assert!(
+                first.contains(
+                    "[[mcp_gateway_settings]]\norg = \"org-a\"\ndefault_transport = \"sse\"\n\
+                     connect_timeout_ms = 2500\nrequest_timeout_ms = 45000\nmax_retries = 3\n\
+                     default_failure_mode = \"fail_open\"\nallow_unlisted_tools = true\n"
+                ),
+                "{first}"
+            );
+            assert!(!first.contains("org-b"), "{first}");
+            let all = super::export_document(
+                &pool,
+                &store.load().await.unwrap(),
+                &ExportOptions::default(),
+            )
+            .await
+            .unwrap();
+            assert!(all.contains("org = \"org-b\"\ndefault_transport = \"websocket\""));
+            let file = dir.join("org-a.toml");
+            std::fs::write(&file, &first).unwrap();
+
+            // wipe, import, export: the same bytes, and org-b left alone
+            sqlx::query("delete from mcp_gateway_settings")
+                .execute(&pool)
+                .await
+                .unwrap();
+            crate::seed::import_bootstrap_toml(&pool, org_a, project_a, &file)
+                .await
+                .unwrap();
+            let again = super::export_document(&pool, &store.load().await.unwrap(), &options)
+                .await
+                .unwrap();
+            assert_eq!(first, again, "export, wipe, import changed the settings");
+            let rows: i64 = sqlx::query_scalar("select count(*) from mcp_gateway_settings")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+            assert_eq!(rows, 1, "an import wrote another org's settings");
+
+            // an import sets exactly the file: stricter than the row it finds
+            // as readily as laxer, and a repeat writes nothing
+            let strict = first
+                .replace(
+                    "allow_unlisted_tools = true",
+                    "allow_unlisted_tools = false",
+                )
+                .replace("fail_open", "fail_closed");
+            let file = dir.join("strict.toml");
+            std::fs::write(&file, &strict).unwrap();
+            let version = || async {
+                sqlx::query_scalar::<_, i64>("select version from config_version")
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap()
+            };
+            crate::seed::import_bootstrap_toml(&pool, org_a, project_a, &file)
+                .await
+                .unwrap();
+            let after = super::export_document(&pool, &store.load().await.unwrap(), &options)
+                .await
+                .unwrap();
+            assert!(after.contains("allow_unlisted_tools = false"), "{after}");
+            assert!(after.contains("default_failure_mode = \"fail_closed\""));
+            // an entry that already matches writes nothing (the file's other
+            // sections, `[logging]` among them, bump the version on their own)
+            let only = dir.join("only.toml");
+            std::fs::write(
+                &only,
+                &strict[strict.find("\n[[mcp_gateway_settings]]\n").unwrap()
+                    ..strict.find("\n[logging]\n").unwrap()],
+            )
+            .unwrap();
+            let before = version().await;
+            crate::seed::import_bootstrap_toml(&pool, org_a, project_a, &only)
+                .await
+                .unwrap();
+            assert_eq!(version().await, before, "an unchanged entry bumped config");
+
+            // a value the MCP Settings screen would refuse fails the import
+            let bad = dir.join("bad.toml");
+            std::fs::write(&bad, strict.replace("max_retries = 3", "max_retries = 9")).unwrap();
+            let refused = crate::seed::import_bootstrap_toml(&pool, org_a, project_a, &bad)
+                .await
+                .unwrap_err()
+                .to_string();
+            assert!(refused.contains("max_retries"), "{refused}");
+
+            // a file naming another org never reaches it
+            let foreign = strict.replace("org = \"org-a\"", "org = \"org-b\"");
+            let file = dir.join("foreign.toml");
+            std::fs::write(&file, &foreign).unwrap();
+            crate::seed::import_bootstrap_toml(&pool, org_a, project_a, &file)
+                .await
+                .unwrap();
+            // (org-b's row went with the wipe, and the import did not bring it back)
+            let b: i64 =
+                sqlx::query_scalar("select count(*) from mcp_gateway_settings where org_id = $1")
+                    .bind(org_b)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            assert_eq!(b, 0, "an import wrote another org's settings");
         }
 
         /// A cap whose scope does not resolve is left alone rather than

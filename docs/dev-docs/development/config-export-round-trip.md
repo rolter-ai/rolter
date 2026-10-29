@@ -109,6 +109,20 @@ bumps `config_version` even for an update that matches no row. Tests:
 `config_export::tests::round_trip::the_mcp_manifest_marker_is_exported_for_an_org_without_settings`
 and `seed::tests::the_mcp_manifest_marker_never_makes_an_org_stricter`.
 
+## Saved MCP gateway settings (#3482)
+
+An org's saved `mcp_gateway_settings` row is exported as `[[mcp_gateway_settings]]`
+(`load_mcp_gateway_settings`, `render_mcp_gateway_settings`) from
+`GatewayConfig::mcp_gateway_settings`, a bootstrap-only field like the marker
+above: `MergedConfigStore::load` clears it and the snapshot carries the same
+values as `mcp_settings`. Unlike the marker it is the desired state.
+`import_mcp_gateway_settings` sets the targeted org to exactly the entry,
+stricter or laxer, only when the stored row differs (the `0114` trigger is a
+statement trigger), logs the previous and new values, validates the ranges the
+table's check constraints hold, and skips entries for other orgs with a warning.
+No migration was needed. Test:
+`config_export::tests::round_trip::saved_mcp_gateway_settings_round_trip_for_one_org`.
+
 ## Budgets and rate limits (#1312)
 
 `BudgetConfig::id` is a database id, which the one identity rule of the format
