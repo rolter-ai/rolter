@@ -29,8 +29,10 @@ There are no query parameters. The organization id is the only input.
 
 ## Response
 
-An array of the same virtual key objects `GET /api/v1/projects/{project_id}/virtual-keys`
-returns, oldest first. Each carries its `project_id`; join it to
+An array of virtual keys, oldest first. Each is the object
+`GET /api/v1/projects/{project_id}/virtual-keys` returns, without any digest of a
+secret: there is no `key_hash`, and none of the `previous_*` fields of a rotation.
+Each carries its `project_id`; join it to
 [`GET /api/v1/orgs/{org_id}/projects`](/api/org-projects) to name the project
 and its team.
 
@@ -45,6 +47,11 @@ and its team.
     "providers": [],
     "disabled": false,
     "expires_at": null,
+    "cache_enabled": null,
+    "created_by": null,
+    "business_unit_id": null,
+    "customer_id": null,
+    "purpose": null,
     "created_at": "2026-01-14T09:05:40.221Z"
   }
 ]

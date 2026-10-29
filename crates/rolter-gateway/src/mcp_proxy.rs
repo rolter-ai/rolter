@@ -293,6 +293,7 @@ async fn proxy(
     if method == Method::POST {
         let decision = crate::mcp_policy::evaluate_read(&snapshot, server, &rules, &read);
         list_filter = decision.list_filter.map(Arc::new);
+        state.mcp_events.count_dropped(decision.unlogged);
         let (refused, message) = match decision.verdict {
             Verdict::Allow => (None, String::new()),
             Verdict::Denied(refused) => {
@@ -542,7 +543,10 @@ fn pending_calls(
     if !state.mcp_events.enabled() {
         return Vec::new();
     }
-    read.into_calls(keep_arguments)
+    let calls = read.into_calls(keep_arguments, crate::mcp_log::MAX_CALLS_PER_REQUEST);
+    state.mcp_events.count_dropped(calls.dropped);
+    calls
+        .kept
         .into_iter()
         .filter_map(|request| PendingCall::from_request(&state.mcp_events, request, context))
         .collect()
@@ -1069,6 +1073,135 @@ mod tests {
         assert_ne!(rows[0].event_id, rows[1].event_id);
     }
 
+    /// the batch of `n` allowed calls, ids 1..=n
+    fn batch_of(n: usize, tool: &str) -> String {
+        let calls: Vec<String> = (1..=n)
+            .map(|id| {
+                format!(
+                    r#"{{"jsonrpc":"2.0","id":{id},"method":"tools/call","params":{{"name":"{tool}"}}}}"#
+                )
+            })
+            .collect();
+        format!("[{}]", calls.join(","))
+    }
+
+    /// a request is bounded only by the body limit, so the rows made from it
+    /// are bounded by `MAX_CALLS_PER_REQUEST`: the calls past it are forwarded
+    /// and counted as dropped, never held as pending rows through the wait
+    #[tokio::test]
+    async fn a_batch_past_the_cap_records_the_cap_and_counts_the_rest() {
+        let cap = crate::mcp_log::MAX_CALLS_PER_REQUEST;
+        let extra = 10;
+        let reply = r#"[{"jsonrpc":"2.0","id":1,"result":{}}]"#;
+        let mut config = with_group(&["get_issue"]);
+        config.mcp_servers[0].url = replying(200, reply).await;
+        let mut state = AppState::new(&config);
+        let metrics = std::sync::Arc::new(crate::metrics::Metrics::default());
+        // room for every row, so a dropped count can only be the cap's
+        let (sink, mut events) =
+            crate::mcp_log::McpEventSink::capturing_with(metrics.clone(), cap * 2);
+        state.mcp_events = sink;
+        let response = post(state, Bytes::from(batch_of(cap + extra, "get_issue"))).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let _ = axum::body::to_bytes(response.into_body(), 4096).await;
+        let mut rows = 0;
+        while events.try_recv().is_ok() {
+            rows += 1;
+        }
+        assert_eq!(rows, cap);
+        assert_eq!(
+            metrics
+                .mcp_events_dropped_total
+                .load(std::sync::atomic::Ordering::Relaxed),
+            extra as u64
+        );
+    }
+
+    /// the same bound holds for the refusals a batch of forbidden calls logs
+    #[tokio::test]
+    async fn a_refused_batch_past_the_cap_logs_the_cap_and_counts_the_rest() {
+        let cap = crate::mcp_log::MAX_CALLS_PER_REQUEST;
+        let mut state = AppState::new(&with_group(&["get_issue"]));
+        let metrics = std::sync::Arc::new(crate::metrics::Metrics::default());
+        let (sink, mut events) =
+            crate::mcp_log::McpEventSink::capturing_with(metrics.clone(), cap * 2);
+        state.mcp_events = sink;
+        let (status, _) = code_of(post(state, Bytes::from(batch_of(cap + 5, "drop"))).await).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        let mut rows = 0;
+        while events.try_recv().is_ok() {
+            rows += 1;
+        }
+        assert_eq!(rows, cap);
+        assert_eq!(
+            metrics
+                .mcp_events_dropped_total
+                .load(std::sync::atomic::Ordering::Relaxed),
+            5
+        );
+    }
+
+    /// a batch holding a `tools/list` has its reply rewritten for the caller, so
+    /// its calls cannot be read from the reply: they are rows with the HTTP
+    /// status and no result
+    #[tokio::test]
+    async fn the_calls_of_a_batch_whose_reply_is_narrowed_are_recorded_by_status() {
+        let batch = format!(
+            "[{},{}]",
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#,
+            r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"get_issue"}}"#,
+        );
+        let reply = r#"[{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"get_issue"}]}},{"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":"x"}]}}]"#;
+        let (status, rows) = recorded(&["get_issue"], 200, reply, &batch).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            (rows[0].tool.as_str(), rows[0].status),
+            ("get_issue", "success")
+        );
+        assert_eq!(rows[0].result, "");
+    }
+
+    /// `Content-Encoding` is read from every header line, and a value that is
+    /// empty or not text is not `identity`
+    #[test]
+    fn only_identity_codings_are_unencoded() {
+        let with = |values: &[&[u8]]| {
+            let mut headers = HeaderMap::new();
+            for value in values {
+                headers.append(
+                    header::CONTENT_ENCODING,
+                    HeaderValue::from_bytes(value).unwrap(),
+                );
+            }
+            is_encoded(&headers)
+        };
+        assert!(!is_encoded(&HeaderMap::new()));
+        assert!(!with(&[b"identity"]));
+        assert!(!with(&[b" Identity , identity"]));
+        assert!(with(&[b"identity", b"gzip"]), "a second line");
+        assert!(with(&[b""]), "an empty value");
+        assert!(with(&[b"\xff\xfe"]), "bytes that are not text");
+        assert!(with(&[b"identity,"]), "an empty coding in the list");
+    }
+
+    /// a server no group governs forwards a compressed body as it came: nothing
+    /// is judged, so nothing is refused
+    #[tokio::test]
+    async fn an_ungoverned_server_passes_a_compressed_body_through() {
+        let mut config = config("user-1", &["tools:execute"]);
+        config.mcp_servers[0].url = replying(200, "{}").await;
+        let mut headers = bearer();
+        headers.insert(header::CONTENT_ENCODING, HeaderValue::from_static("gzip"));
+        let response = post_with(
+            AppState::new(&config),
+            headers,
+            Bytes::from_static(b"\x1f\x8b\x08\x00 compressed"),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
     /// #3466: one refused call refuses the batch whole. Only the refusal is a
     /// row: the allowed call beside it never reached the server, so there is no
     /// call to record.
@@ -1102,10 +1235,7 @@ mod tests {
             (rows[0].tool.as_str(), rows[0].status, rows[0].notification),
             ("get_issue", "success", true)
         );
-        assert_eq!(
-            serde_json::to_value(&rows[0]).unwrap()["notification"],
-            true
-        );
+        assert_eq!(serde_json::to_value(&rows[0]).unwrap()["notification"], 1);
 
         // beside a call that has one: each ends as its own kind of call
         let batch = format!(

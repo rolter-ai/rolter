@@ -633,6 +633,40 @@ mod tests {
         assert_eq!(cache.fresh(now), None);
     }
 
+    /// #3466: an ingested row naming `notification` is stored by a table that
+    /// has not applied `047`, because the insert skips the fields it lacks
+    #[tokio::test]
+    async fn an_ingest_insert_skips_a_column_the_table_lacks() {
+        use axum::routing::post;
+        let seen = Arc::new(Mutex::new(Vec::<String>::new()));
+        let recorded = seen.clone();
+        let app = Router::new().fallback(post(move |uri: axum::http::Uri, _body: String| {
+            let recorded = recorded.clone();
+            async move {
+                recorded
+                    .lock()
+                    .push(uri.query().unwrap_or_default().to_string());
+                StatusCode::OK
+            }
+        }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, app).await });
+        let ch = crate::analytics::ClickHouseClient::new(&url);
+        ch.insert_mcp_tool_call(&json!({"event_id": "e", "notification": 1}))
+            .await
+            .unwrap();
+        let query = seen.lock()[0].clone();
+        assert!(
+            query.contains("input_format_skip_unknown_fields=1"),
+            "{query}"
+        );
+        assert!(
+            query.contains("date_time_input_format=best_effort"),
+            "{query}"
+        );
+    }
+
     #[test]
     fn cursor_requires_timestamp_and_event_id() {
         assert!(parse_keyset_cursor(Some("2026-07-19 12:00:00.000|evt-1"), "event_id").is_ok());

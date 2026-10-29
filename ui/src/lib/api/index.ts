@@ -775,4 +775,9 @@ export {
   rotateVirtualKey,
   revokeVirtualKeyPreviousSecret,
 } from "./virtual-keys";
-export type { VirtualKeyRow, CreatedVirtualKey, CreateVirtualKeyInput } from "./virtual-keys";
+export type {
+  VirtualKeyRow,
+  OrgVirtualKeyRow,
+  CreatedVirtualKey,
+  CreateVirtualKeyInput,
+} from "./virtual-keys";

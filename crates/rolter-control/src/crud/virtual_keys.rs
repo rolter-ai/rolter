@@ -68,31 +68,77 @@ async fn list_virtual_keys(
     Ok(Json(VirtualKeyRepo(pool(&state)).list(project_id).await?))
 }
 
+/// A virtual key as the organization-wide listing returns it: the row without
+/// any digest of a secret, `key_hash` and the retired secret's included. A
+/// screen that picks keys needs to name them, not to check them.
+#[derive(Serialize)]
+struct OrgVirtualKey {
+    id: Uuid,
+    project_id: Uuid,
+    key_prefix: String,
+    name: Option<String>,
+    models: Vec<String>,
+    providers: Vec<String>,
+    disabled: bool,
+    expires_at: Option<chrono::DateTime<chrono::Utc>>,
+    cache_enabled: Option<bool>,
+    created_by: Option<Uuid>,
+    business_unit_id: Option<Uuid>,
+    customer_id: Option<Uuid>,
+    purpose: Option<String>,
+    created_at: chrono::DateTime<chrono::Utc>,
+}
+
+impl From<VirtualKey> for OrgVirtualKey {
+    fn from(key: VirtualKey) -> Self {
+        Self {
+            id: key.id,
+            project_id: key.project_id,
+            key_prefix: key.key_prefix,
+            name: key.name,
+            models: key.models,
+            providers: key.providers,
+            disabled: key.disabled,
+            expires_at: key.expires_at,
+            cache_enabled: key.cache_enabled,
+            created_by: key.created_by,
+            business_unit_id: key.business_unit_id,
+            customer_id: key.customer_id,
+            purpose: key.purpose,
+            created_at: key.created_at,
+        }
+    }
+}
+
 /// The keys of every project of an organization, each carrying its
 /// `project_id`, so a screen that names keys across projects reads one list
 /// instead of one per project (#3467). Scoped to what the caller may already
-/// read: the same `virtual_key:read` floor as the per-project list, applied per
-/// row, so a caller with a role on one team gets that team's projects' keys and
-/// a caller with a role nowhere in the organization is refused.
+/// read: the same `virtual_key:read` floor as the per-project list, decided for
+/// each project, so a caller with a role on one team gets that team's projects'
+/// keys and a caller with a role nowhere in the organization is refused. The
+/// readable projects are settled first and only their keys are read.
 async fn list_org_virtual_keys(
     principal: Principal,
     State(state): State<ControlState>,
     Path(org_id): Path<Uuid>,
-) -> ApiResult<Json<Vec<VirtualKey>>> {
+) -> ApiResult<Json<Vec<OrgVirtualKey>>> {
     let filter = ScopeFilter::load(&state, &principal, cap!("virtual_key", Read)).await?;
-    // the capability is read at a project, so the verdict is per row. a caller
-    // with a role nowhere in the organization is refused rather than shown an
-    // empty list that would say the organization exists and has no keys
+    // the capability is read at a project, so the verdict is per project. a
+    // caller with a role nowhere in the organization is refused rather than
+    // shown an empty list that would say the organization exists and has no keys
     if !filter.is_superadmin() {
         require_reach(&state, &filter, org_id).await?;
     }
-    let keys = VirtualKeyRepo(pool(&state)).list_in_org(org_id).await?;
     let teams_of = project_teams(&state, org_id).await?;
-    Ok(Json(
-        keys.into_iter()
-            .filter(|key| filter.allows(row_chain(org_id, None, Some(key.project_id), &teams_of)))
-            .collect(),
-    ))
+    let readable: Vec<Uuid> = teams_of
+        .keys()
+        .copied()
+        .filter(|project| filter.allows(row_chain(org_id, None, Some(*project), &teams_of)))
+        .collect();
+    let keys = VirtualKeyRepo(pool(&state))
+        .list_in_projects(&readable)
+        .await?;
+    Ok(Json(keys.into_iter().map(OrgVirtualKey::from).collect()))
 }
 
 #[derive(Deserialize)]

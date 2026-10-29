@@ -412,7 +412,11 @@ async fn the_org_wide_key_list_holds_only_the_keys_the_caller_may_read() {
         .unwrap();
     assert_eq!(app_row["project_id"], app_project.to_string());
     assert_eq!(app_row["id"], keys["app-key"]);
-    assert!(app_row.get("previous_key_hash").is_none());
+    // and no digest of any secret is part of a listing
+    for field in ["key_hash", "previous_key_hash", "previous_key_prefix"] {
+        assert!(app_row.get(field).is_none(), "{field} leaked: {app_row}");
+    }
+    assert_eq!(app_row["key_prefix"], "app");
 
     // a team admin: the keys of their own team's projects, not the sibling team's
     let (status, names, _) = list(acme, lead_session).await;

@@ -212,7 +212,7 @@ after the caller is authenticated and before anything is forwarded.
   organization's keys in one request, `GET /api/v1/orgs/{org_id}/virtual-keys`,
   and groups them by `project_id`, #3380, #3467) and mounts its editor only once the stored assignments
   are read, so it can never save an empty set over them; a stored key is dropped
-  only once every project's keys were read and it is not among them. Both snapshot fields added for assignments and the manifest default
+  only once the organization's keys were read and it is not among them. Both snapshot fields added for assignments and the manifest default
   restrict what the gateway serves, which ADR-0038 would call a format bump; they
   stay in format 1 because everything before the 1.0.0 tag does, and the shape
   fixture carries them.
@@ -226,7 +226,7 @@ after the caller is authenticated and before anything is forwarded.
   `Content-Encoding` is end to end, so an upstream that honours it would run a tool
   the policy never saw. A `POST` to a governed server whose `Content-Encoding` is
   anything but `identity` (in any header line or comma-separated value) is refused
-  `415` `mcp_request_unreadable` before the body is read, whatever `fail_open`
+  `415` `mcp_request_unreadable` before it is parsed, whatever `fail_open`
   says: that setting covers a body the relay cannot read through no fault of the
   client, not one the client chose to compress. There is deliberately no decoder:
   MCP clients do not compress requests, and one on this path would be a
@@ -656,10 +656,18 @@ The gateway records every proxied JSON-RPC `tools/call` in ClickHouse's
   methods are not. The calls are moved out of the parsed body
   (`Read::into_calls`) only once they are needed, by a refusal before the
   request is forwarded or by the forward itself, so a request refused for
-  another reason pays nothing for the log and nothing in the body is cloned but
-  `arguments`, and only when payload capture keeps them. The reply is parsed
-  once (`Replies`) and each call takes the reply with its own `id`, whatever
-  order a batch's replies come in; two calls sharing an id get one reply each.
+  another reason pays nothing for the log. Nothing in the body is cloned: the
+  policy asks the tool a call names before it copies anything of it, so an
+  allowed call costs no clone, and only a refused call is copied into the
+  canonical request its row is made from. The reply is parsed once (`Replies`,
+  indexed by the id's JSON text) and each call takes the reply with its own
+  `id`, whatever order a batch's replies come in; two calls sharing an id get one
+  reply each.
+  A request is bounded only by `max_body_bytes`, and every pending row is held
+  through the wait on the upstream, so at most `MAX_CALLS_PER_REQUEST` (256)
+  calls of one request become rows, allowed or refused. The rest are still
+  judged and forwarded or refused, and are counted in
+  `rolter_mcp_events_dropped_total`.
   A batch the policy refuses is refused whole and forwarded nowhere, so only its
   refused calls are recorded (`auth_denied`); an allowed call beside them never
   reached the server and has no row. A batch whose reply is rewritten (it holds a
@@ -680,7 +688,7 @@ The gateway records every proxied JSON-RPC `tools/call` in ClickHouse's
   the column (`McpColumnCache`, the lifetimes of the request-log probe) and
   selects an empty array in its place until the migration is applied.
 - **Notifications (#3466).** A `tools/call` without an `id` (or with a `null`
-  one) is answered by nothing, so there is no reply to read its outcome from. It
+  one, which cannot be matched to a reply) has no reply to read its outcome from. It
   is recorded when the upstream's response arrives, with the status the HTTP
   layer gave (`success` for a `2xx`, `auth_denied` for `401`/`403`, and so on) and
   `notification = 1` (`clickhouse/047_mcp_log_notification.sql`, `UInt8`), which

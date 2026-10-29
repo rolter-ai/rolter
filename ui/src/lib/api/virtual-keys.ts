@@ -77,11 +77,20 @@ export function fetchVirtualKeys(projectId: string): Promise<VirtualKeyRow[]> {
 }
 
 /**
+ * A key as the organization-wide listing returns it: the row without any
+ * digest of a secret (`key_hash`, `previous_*`).
+ */
+export type OrgVirtualKeyRow = Omit<
+  VirtualKeyRow,
+  "key_hash" | "previous_key_prefix" | "previous_expires_at"
+>;
+
+/**
  * Every key of every project of an organization the caller may read, each
  * carrying its `project_id` (#3467): one request in place of one per project.
  */
-export function fetchOrgVirtualKeys(orgId: string): Promise<VirtualKeyRow[]> {
-  return getJson<VirtualKeyRow[]>(`/api/v1/orgs/${orgId}/virtual-keys`);
+export function fetchOrgVirtualKeys(orgId: string): Promise<OrgVirtualKeyRow[]> {
+  return getJson<OrgVirtualKeyRow[]>(`/api/v1/orgs/${orgId}/virtual-keys`);
 }
 
 export function createVirtualKey(

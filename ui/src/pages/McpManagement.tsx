@@ -2141,7 +2141,9 @@ function AssignmentEditor({
   // one read for the organization's keys, each naming its project (#3467); the
   // picker groups them under the project names it already has
   const keys = useQuery({
-    queryKey: ["org-virtual-keys", orgId],
+    // under the `virtual-keys` prefix, so the Keys page invalidating a
+    // project's keys refreshes this list too
+    queryKey: ["virtual-keys", "org", orgId],
     queryFn: () => fetchOrgVirtualKeys(orgId as string),
     enabled: !!orgId,
     retry: false,

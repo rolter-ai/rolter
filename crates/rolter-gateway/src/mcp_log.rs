@@ -39,6 +39,14 @@ use crate::sink_drain::SinkTasks;
 /// status the HTTP layer gave and no result.
 const MAX_OBSERVED_BYTES: usize = 1 << 20;
 
+/// The most `tools/call`s of one request that become log rows. A body is
+/// bounded only by the request size limit (32 MiB by default), and every call
+/// recorded is held as a pending row for the whole wait on the upstream, so an
+/// unbounded batch would be a memory amplifier. The calls past this are still
+/// forwarded and judged; they are counted in `rolter_mcp_events_dropped_total`
+/// and have no row.
+pub(crate) const MAX_CALLS_PER_REQUEST: usize = 256;
+
 /// One row of `mcp_tool_call_logs`; field names match the columns so it
 /// serializes directly as a `JSONEachRow` line.
 #[derive(Debug, Clone, Serialize)]
@@ -73,12 +81,18 @@ pub struct McpEvent {
     /// what the tool did (#3466). Left out of the row while `false`, for the
     /// same reason as `error_scopes`: a ClickHouse that has not applied
     /// migration `047` drops it under `input_format_skip_unknown_fields`
-    #[serde(skip_serializing_if = "is_false")]
+    #[serde(skip_serializing_if = "is_false", serialize_with = "as_u8")]
     pub notification: bool,
 }
 
 fn is_false(value: &bool) -> bool {
     !*value
+}
+
+/// the column is a `UInt8`, so the flag is written as the number the table
+/// stores rather than as a JSON boolean
+fn as_u8<S: serde::Serializer>(value: &bool, serializer: S) -> Result<S::Ok, S::Error> {
+    serializer.serialize_u8(u8::from(*value))
 }
 
 /// Handle the proxy uses to record tool calls. Cheap to clone.
@@ -94,7 +108,16 @@ impl McpEventSink {
     /// proxy's tests to read back what was recorded.
     #[cfg(test)]
     pub(crate) fn capturing(metrics: Arc<Metrics>) -> (Self, mpsc::Receiver<McpEvent>) {
-        let (tx, rx) = mpsc::channel(16);
+        Self::capturing_with(metrics, 16)
+    }
+
+    /// [`Self::capturing`] with room for `capacity` events.
+    #[cfg(test)]
+    pub(crate) fn capturing_with(
+        metrics: Arc<Metrics>,
+        capacity: usize,
+    ) -> (Self, mpsc::Receiver<McpEvent>) {
+        let (tx, rx) = mpsc::channel(capacity);
         (
             Self {
                 tx: Some(tx),
@@ -173,6 +196,16 @@ impl McpEventSink {
     pub async fn shutdown(&self) {
         if let Some(tasks) = &self.tasks {
             tasks.stop().await;
+        }
+    }
+
+    /// Count `n` calls that were not recorded, as a full queue would have
+    /// dropped them.
+    pub(crate) fn count_dropped(&self, n: usize) {
+        if n > 0 && self.tx.is_some() {
+            self.metrics
+                .mcp_events_dropped_total
+                .fetch_add(n as u64, Relaxed);
         }
     }
 
@@ -473,23 +506,21 @@ impl PendingCall {
 }
 
 /// The JSON-RPC replies in a buffered response body, parsed once for every call
-/// the request held, each handed to the call it answers by `id`.
-struct Replies(Vec<Value>);
+/// the request held, each handed to the call it answers by `id`. Indexed by the
+/// id's JSON text (ids compare as JSON values, so `1` is not `1.0`), so handing
+/// out a reply costs the same however many a batch holds.
+struct Replies(std::collections::HashMap<String, std::collections::VecDeque<Value>>);
 
 impl Replies {
+    fn empty() -> Self {
+        Self(Default::default())
+    }
+
     fn of(buf: &[u8], is_sse: bool) -> Self {
-        let answers = |value: &Value| {
-            value.get("id").is_some_and(|id| !id.is_null())
-                && (value.get("result").is_some() || value.get("error").is_some())
-        };
-        let mut replies = Vec::new();
+        let mut replies = Self::empty();
         let mut collect = |value: Value| match value {
-            Value::Array(items) => replies.extend(items.into_iter().filter(answers)),
-            other => {
-                if answers(&other) {
-                    replies.push(other);
-                }
-            }
+            Value::Array(items) => items.into_iter().for_each(|item| replies.add(item)),
+            other => replies.add(other),
         };
         if !is_sse {
             if let Ok(value) = serde_json::from_slice(buf) {
@@ -504,17 +535,22 @@ impl Replies {
                 .filter_map(|data| serde_json::from_slice::<Value>(data.trim_ascii()).ok())
                 .for_each(collect);
         }
-        Self(replies)
+        replies
+    }
+
+    fn add(&mut self, reply: Value) {
+        let answers = reply.get("id").is_some_and(|id| !id.is_null())
+            && (reply.get("result").is_some() || reply.get("error").is_some());
+        if answers {
+            let key = reply["id"].to_string();
+            self.0.entry(key).or_default().push_back(reply);
+        }
     }
 
     /// The reply answering `rpc_id`. Each reply answers one call, so two calls
     /// sharing an id (which JSON-RPC forbids) are not both given the first one.
     fn take(&mut self, rpc_id: &Value) -> Option<Value> {
-        let at = self
-            .0
-            .iter()
-            .position(|reply| reply.get("id") == Some(rpc_id))?;
-        Some(self.0.remove(at))
+        self.0.get_mut(&rpc_id.to_string())?.pop_front()
     }
 }
 
@@ -630,7 +666,7 @@ impl<S> ObservedBody<S> {
         let mut replies = if self.awaiting && !self.overflow {
             Replies::of(&self.buf, self.is_sse)
         } else {
-            Replies(Vec::new())
+            Replies::empty()
         };
         for call in calls {
             let outcome = if call.notification() {
@@ -735,7 +771,14 @@ mod tests {
     /// policy's reader, then taken as a single call
     fn parse(sink: &McpEventSink, body: &[u8], ctx: &CallContext<'_>) -> Option<PendingCall> {
         let read = crate::mcp_policy::Read::of(body, false, sink.enabled());
-        PendingCall::from_request(sink, read.into_calls(true).into_iter().next()?, ctx)
+        PendingCall::from_request(
+            sink,
+            read.into_calls(true, MAX_CALLS_PER_REQUEST)
+                .kept
+                .into_iter()
+                .next()?,
+            ctx,
+        )
     }
 
     /// the outcome of one awaited call, the way a finished body reads it
@@ -984,7 +1027,7 @@ mod tests {
         let note = serde_json::to_value(rx.try_recv().unwrap()).unwrap();
         assert_eq!(
             (&note["status"], &note["notification"]),
-            (&json!("success"), &json!(true))
+            (&json!("success"), &json!(1))
         );
         let call = parse(&sink, &request("tools/call", Some(1)), &ctx).unwrap();
         assert!(!call.notification());

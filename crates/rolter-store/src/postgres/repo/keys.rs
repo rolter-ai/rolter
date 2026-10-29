@@ -80,19 +80,17 @@ impl VirtualKeyRepo<'_> {
         .map_err(store_err)
     }
 
-    /// Every key of every project of an organization, oldest first: what a
-    /// screen that names keys across projects reads in one query instead of one
-    /// per project (#3467).
-    pub async fn list_in_org(&self, org_id: Uuid) -> Result<Vec<VirtualKey>> {
+    /// Every key of the given projects, oldest first: what a screen that names
+    /// keys across projects reads in one query instead of one per project
+    /// (#3467). The caller passes the projects it may read, so the cost follows
+    /// what it can see and not the size of the organization.
+    pub async fn list_in_projects(&self, project_ids: &[Uuid]) -> Result<Vec<VirtualKey>> {
         sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "select {VIRTUAL_KEY_COLUMNS}
-             from virtual_keys
-             where project_id in (
-                 select p.id from projects p join teams t on t.id = p.team_id
-                 where t.org_id = $1)
+             from virtual_keys where project_id = any($1)
              order by created_at, id"
         )))
-        .bind(org_id)
+        .bind(project_ids)
         .fetch_all(self.0)
         .await
         .map_err(store_err)
