@@ -3,6 +3,20 @@ import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import { ScatterPlot, type ScatterPoint } from "./scatter-plot";
 
+/** The size, in rendered pixels, of the smallest text in each svg under `root` (#3450). */
+function smallestLabels(root: HTMLElement) {
+  return Array.from(root.querySelectorAll("svg")).map((svg) => {
+    const box = svg.getBoundingClientRect();
+    const scale = box.width / (svg.viewBox.baseVal.width || box.width);
+    const sizes = Array.from(svg.querySelectorAll("text")).map(
+      (node) => parseFloat(getComputedStyle(node).fontSize) * scale,
+    );
+    return { scale, smallest: Math.min(...sizes), count: sizes.length };
+  });
+}
+
+const NARROW = [320, 375, 640];
+
 // latency against cost, one point per model — the shape the Playground plots
 const POINTS: ScatterPoint[] = [
   { x: 340, y: 0.4, label: "llama-3.1-70b", group: 0 },
@@ -34,6 +48,32 @@ export const Default: Story = {
       canvas.getByRole("img", { name: "Latency against cost per thousand tokens" }),
     ).toBeVisible();
     await expect(canvasElement.querySelectorAll("circle")).toHaveLength(POINTS.length);
+  },
+};
+
+/**
+ * The plot is drawn at the width it is given, so its axis and point labels stay
+ * at 11px on a phone-width card (#3457).
+ */
+export const LabelsKeepTheFloorOnANarrowCard: Story = {
+  render: (args) => (
+    <div className="flex flex-col gap-4">
+      {NARROW.map((w) => (
+        <div key={w} style={{ width: w }}>
+          <ScatterPlot {...args} />
+        </div>
+      ))}
+    </div>
+  ),
+  play: async ({ canvasElement }) => {
+    const charts = smallestLabels(canvasElement);
+    await expect(charts).toHaveLength(NARROW.length);
+    for (const chart of charts) {
+      await expect(chart.count).toBeGreaterThan(0);
+      await expect(chart.scale).toBeGreaterThan(0.95);
+      await expect(chart.scale).toBeLessThan(1.05);
+      await expect(chart.smallest).toBeGreaterThanOrEqual(11);
+    }
   },
 };
 
