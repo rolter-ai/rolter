@@ -1668,6 +1668,31 @@ pub(crate) mod tests {
         }
     }
 
+    /// What the docs say scoring costs, measured: run with
+    /// `cargo test --release -p rolter-gateway --lib scoring_cost -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "a timing measurement, not a check"]
+    fn scoring_cost() {
+        let model = fixture();
+        let window = rolter_core::guardrail_webhook::DEFAULT_MAX_BODY_BYTES;
+        for windows_long in [1, 9] {
+            let body = long_message(window, windows_long, NEEDLE, window / 2);
+            let (text, _) = bounded_text(&body, 8 * window);
+            let rounds = 50;
+            let started = Instant::now();
+            for _ in 0..rounds {
+                std::hint::black_box(model.score_windows(&text, window));
+            }
+            let each = started.elapsed() / rounds;
+            println!(
+                "{} KiB of text, {} window(s): {:?} per call",
+                text.len() / 1024,
+                windows(&text, window).len(),
+                each
+            );
+        }
+    }
+
     #[tokio::test]
     async fn a_needle_in_the_middle_of_a_long_message_is_caught() {
         let provider = small_window_provider(OnTruncated::Score);

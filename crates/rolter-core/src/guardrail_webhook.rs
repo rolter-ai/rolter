@@ -22,6 +22,11 @@ pub const DEFAULT_MAX_BODY_BYTES: usize = 64 * 1024;
 pub const DEFAULT_SCORED_WINDOWS: usize = 8;
 /// The largest `max_scored_bytes` a local provider may set.
 pub const MAX_SCORED_BYTES: usize = 16 * 1024 * 1024;
+/// The largest `max_scored_bytes` a local provider may set, in windows of
+/// its `max_body_bytes`, so a tiny window cannot turn the budget into
+/// millions of windows. Windows overlap by at most half a window, so this
+/// bounds a call to twice as many windows.
+pub const MAX_SCORED_WINDOWS: usize = 64;
 
 /// Stage at which the webhook is consulted.
 ///
@@ -238,11 +243,14 @@ impl Default for GuardrailWebhookConfig {
 
 impl GuardrailWebhookConfig {
     /// The bytes of text a local provider scores at most: `max_scored_bytes`,
-    /// or [`DEFAULT_SCORED_WINDOWS`] windows of `max_body_bytes`, and never
-    /// less than one window.
+    /// or [`DEFAULT_SCORED_WINDOWS`] windows of `max_body_bytes`, held to
+    /// [`MAX_SCORED_BYTES`] and [`MAX_SCORED_WINDOWS`] windows whichever way
+    /// it was set, and never less than one window.
     pub fn scored_bytes(&self) -> usize {
         self.max_scored_bytes
             .unwrap_or_else(|| self.max_body_bytes.saturating_mul(DEFAULT_SCORED_WINDOWS))
+            .min(MAX_SCORED_BYTES)
+            .min(self.max_body_bytes.saturating_mul(MAX_SCORED_WINDOWS))
             .max(self.max_body_bytes)
     }
 
@@ -315,10 +323,12 @@ impl GuardrailWebhookConfig {
             problems.push("guardrail_webhook.auth does not apply to a local provider".into());
         }
         if let Some(scored) = self.max_scored_bytes {
-            if scored < self.max_body_bytes || scored > MAX_SCORED_BYTES {
+            let most = MAX_SCORED_BYTES.min(self.max_body_bytes.saturating_mul(MAX_SCORED_WINDOWS));
+            if scored < self.max_body_bytes || scored > most {
                 problems.push(format!(
                     "guardrail_webhook.max_scored_bytes must be at least max_body_bytes ({}) \
-                     and at most {MAX_SCORED_BYTES}",
+                     and at most {most} ({MAX_SCORED_BYTES}, or {MAX_SCORED_WINDOWS} × \
+                     max_body_bytes when that is less)",
                     self.max_body_bytes
                 ));
             }
@@ -449,6 +459,20 @@ mod tests {
         provider.max_scored_bytes = Some(DEFAULT_MAX_BODY_BYTES * 2);
         assert_eq!(provider.scored_bytes(), DEFAULT_MAX_BODY_BYTES * 2);
         assert!(provider.validate().is_empty(), "{:?}", provider.validate());
+        // a large window: the default budget is held to the cap too
+        provider.max_scored_bytes = None;
+        provider.max_body_bytes = 4 * 1024 * 1024;
+        assert_eq!(provider.scored_bytes(), MAX_SCORED_BYTES);
+        // a tiny window: the budget is held to MAX_SCORED_WINDOWS windows,
+        // and setting more is a problem
+        provider.max_body_bytes = 1;
+        provider.max_scored_bytes = Some(MAX_SCORED_BYTES);
+        assert_eq!(provider.scored_bytes(), MAX_SCORED_WINDOWS);
+        assert!(provider
+            .validate()
+            .join("")
+            .contains("max_scored_bytes must be"));
+        provider.max_body_bytes = DEFAULT_MAX_BODY_BYTES;
         for bad in [DEFAULT_MAX_BODY_BYTES - 1, MAX_SCORED_BYTES + 1] {
             provider.max_scored_bytes = Some(bad);
             assert!(

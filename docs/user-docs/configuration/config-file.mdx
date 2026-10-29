@@ -1860,7 +1860,7 @@ A vendor-neutral hook to a self-hosted semantic guardrail service, such as Guard
 </ParamField>
 
 <ParamField path="max_scored_bytes" type="integer">
-  With `kind = "local"`, the most text the classifier reads in all, in bytes, from `max_body_bytes` to 16777216. Unset, it is 8 × `max_body_bytes`. A longer text keeps the first quarter and the last three quarters of this budget, and the cut is flagged; see [Long texts](/security/semantic-guard-policies#long-texts). A webhook ignores it.
+  With `kind = "local"`, the most text the classifier reads in all, in bytes, from `max_body_bytes` to 16777216 or 64 × `max_body_bytes`, whichever is less. Unset, it is 8 × `max_body_bytes`. A longer text keeps the first quarter and the last three quarters of this budget, and the cut is flagged; see [Long texts](/security/semantic-guard-policies#long-texts). A webhook ignores it.
 </ParamField>
 
 <ParamField path="on_truncated" default="score" type="string">
@@ -1952,7 +1952,7 @@ The same keys as [`[guardrail_webhook]`](#guardrail_webhook), one table per prov
 </ParamField>
 
 <ParamField path="max_scored_bytes" type="integer">
-  A `local` provider's budget over the whole text, in bytes, from `max_body_bytes` to 16777216; unset, 8 × `max_body_bytes`. Text past it is cut, and the cut flagged ([Long texts](/security/semantic-guard-policies#long-texts)).
+  A `local` provider's budget over the whole text, in bytes, from `max_body_bytes` to 16777216 or 64 × `max_body_bytes`, whichever is less; unset, 8 × `max_body_bytes`. Text past it is cut, and the cut flagged ([Long texts](/security/semantic-guard-policies#long-texts)).
 </ParamField>
 
 <ParamField path="on_truncated" default="score" type="string">
