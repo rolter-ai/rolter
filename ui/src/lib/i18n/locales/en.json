@@ -388,7 +388,7 @@
         "invalid_query": "The filter is not valid.",
         "invalid_time_bound": "The time range is not valid.",
         "last_org_admin": "This is the organization's last admin, so the grant cannot be revoked. Make someone else an admin first, or ask a superadmin.",
-        "last_superadmin": "This is the last superadmin, so it cannot be removed or demoted.",
+        "last_superadmin": "This is the last active superadmin, so the change was refused. Make another account superadmin first, then try again.",
         "mfa_enrolment_required": "Your organization requires a second factor, and this control plane cannot enrol one. Ask an operator.",
         "name_taken": "That name is already taken. Choose another.",
         "no_local_password": "This account signs in through single sign-on and has no local password to change.",
@@ -4554,8 +4554,7 @@
         "superadminRemoveSelf": "This is your own account. Without superadmin you lose every deployment-wide setting and every organization where you hold no role, and only another superadmin can give it back.",
         "superadminRemoveConfirm": "Remove superadmin",
         "accountRefused": "Editing, deactivating or deleting an account takes a superadmin.",
-        "accountGone": "This account no longer exists, most likely because it was just deleted. The list has been refreshed.",
-        "lastSuperadmin": "This is the last active superadmin, so the change was refused. Make another account superadmin first, then try again."
+        "accountGone": "This account no longer exists, most likely because it was just deleted. The list has been refreshed."
       },
       "scopeFilterAria": "Filter by team or project",
       "scopeFilterAll": "All teams and projects",

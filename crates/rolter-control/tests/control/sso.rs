@@ -1475,6 +1475,8 @@ async fn sso_off_hides_the_provider_and_refuses_its_login() {
         .unwrap();
     assert_eq!(unknown_json.status(), 400);
     assert!(unknown_json.headers().get("location").is_none());
+    let unknown_body: Value = unknown_json.json().await.unwrap();
+    assert_eq!(unknown_body["error"]["code"], "unknown_provider");
     let unknown_browser = client
         .get(format!("{base}/auth/sso/nobody/start"))
         .header("accept", "text/html,application/xhtml+xml;q=0.9,*/*;q=0.8")

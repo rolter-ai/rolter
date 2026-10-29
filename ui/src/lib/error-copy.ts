@@ -61,7 +61,12 @@ const known = new Set<string>(KNOWN_ERROR_CODES);
 // words stay underneath as detail: an `invalid_field` message names the field
 // and the rule it broke (#2567), an `invalid_body` one says what did not parse
 // (#2729)
-const keepsDetail = new Set<string>(["invalid_field", "invalid_body"]);
+const keepsDetail = new Set<string>([
+  "invalid_field",
+  "invalid_body",
+  "referenced",
+  "scope_mismatch",
+]);
 
 /**
  * The inline copy for a failure: a translated line, plus the raw server message

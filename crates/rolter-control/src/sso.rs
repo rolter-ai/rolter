@@ -637,10 +637,7 @@ impl SsoFailure {
                 "the account is in no group mapped to a role, and the provider has no default role"
             }
             Self::AccountDeactivated => "the account is deactivated",
-            Self::AccountOutsideOrg => {
-                "this provider may not sign in as this account: it is a superadmin, holds a \
-                 deployment role or holds roles outside the provider's organization"
-            }
+            Self::AccountOutsideOrg => "this provider may not sign in as this account",
             Self::IdpVerificationFailed => {
                 "the identity provider could not be reached or its response did not verify"
             }
@@ -656,7 +653,12 @@ impl SsoFailure {
 /// does not ask for HTML saw only the generic role refusal for a cross-org
 /// adoption, and could not tell it from any other `403`.
 fn json_refusal(failure: CallbackFailure) -> Response {
-    let status = failure.error.into_response().status();
+    // a store NotFound behind an internal error (a provider deleted mid-login)
+    // would otherwise read as a 404 under a code the docs publish as a 500
+    let status = match failure.reason {
+        SsoFailure::InternalError => StatusCode::INTERNAL_SERVER_ERROR,
+        _ => failure.error.into_response().status(),
+    };
     let error = serde_json::json!({
         "code": failure.reason.code(),
         "message": failure.reason.message(),
@@ -2023,6 +2025,29 @@ mod tests {
             refusal_url("https://r.example", &named),
             "https://r.example/login?sso_error=no_mapped_group&sso=a%20b"
         );
+    }
+
+    #[test]
+    fn every_failure_has_its_own_message_and_none_names_an_account() {
+        let all = [
+            SsoFailure::IdpError,
+            SsoFailure::StateExpired,
+            SsoFailure::SsoDisabled,
+            SsoFailure::UnknownProvider,
+            SsoFailure::NoMappedGroup,
+            SsoFailure::AccountDeactivated,
+            SsoFailure::AccountOutsideOrg,
+            SsoFailure::IdpVerificationFailed,
+            SsoFailure::NotConfigured,
+            SsoFailure::InternalError,
+        ];
+        let mut seen = std::collections::HashSet::new();
+        for failure in all {
+            let message = failure.message();
+            assert!(!message.is_empty(), "{failure:?}");
+            assert!(!message.contains('@'), "{failure:?}: {message}");
+            assert!(seen.insert(message), "{failure:?} repeats a message");
+        }
     }
 
     #[test]

@@ -407,6 +407,11 @@ credentials and MFA enrolment share this contract. Existing sign-in and policy
 lockout guards retain their specific refusals. The MCP editor checks the code
 first, falling back to `ROLTER_KEK` in the message only for older uncoded servers.
 
+`invalid_field` and `invalid_body` keep the server's message as `detail` because
+the translated line cannot say which input was wrong, and so do `referenced` and
+`scope_mismatch`, whose message names the dependents or the provider
+(`keepsDetail` in `error-copy.ts`).
+
 ### Coded refusals in a confirmation (#3484)
 
 `ConfirmDialog` prints the failed action's error under its buttons. A thrown
@@ -416,11 +421,9 @@ first, falling back to `ROLTER_KEK` in the message only for older uncoded server
 codes `describeError` keeps a detail for. Everything else stays verbatim, as
 before: an uncoded `Error`, a string, and an `ApiError` with a code the
 dashboard has no sentence for, whose English message is then the only
-explanation there is. A screen never maps a code to a sentence of its own
+explanation there is. A screen does not map a code to a sentence of its own
 before handing the error to the dialog; the `api_token_inactive` mapping in
-`ApiTokens.tsx` is gone for that reason. The `ConfirmDialog` stories show a
+`ApiTokens.tsx` and the `last_superadmin` hint in `Users.tsx` are gone for that
+reason (the catalog sentence carries the way out). The `last_org_admin` mappings
+in `Users.tsx` still predate the rule and are tracked as a follow-up. The `ConfirmDialog` stories show a
 coded refusal in `en` and `ru`.
-
-`invalid_field` is the one
-known code whose server message `describeError` keeps as `detail`, because the
-translated line cannot say which field was wrong.
