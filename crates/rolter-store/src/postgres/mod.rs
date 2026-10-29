@@ -943,6 +943,27 @@ impl PostgresConfigStore {
                     ))
                 }),
         );
+        // the MCP proxy refuses every call through such a server (#3424)
+        let servers: Vec<(String, Uuid, String)> =
+            sqlx::query_as("select slug, org_id, auth_kind from mcp_servers order by slug")
+                .fetch_all(&self.pool)
+                .await
+                .map_err(store_err)?;
+        for (slug, org, auth_kind) in servers {
+            if parse_mcp_auth_kind(&auth_kind) == McpAuthKind::Unknown {
+                problems.push(ConfigProblem {
+                    message: format!(
+                        "mcp server '{slug}' has auth kind '{auth_kind}', which this build does \
+                         not know; every call through it is refused until the control plane is \
+                         upgraded or the auth kind is changed"
+                    ),
+                    owner: ProblemOwner::Tenant(Tenancy {
+                        org_id: org.to_string(),
+                        project_id: None,
+                    }),
+                });
+            }
+        }
         let limits: Vec<(Uuid, String)> =
             sqlx::query_as("select id, scope_type from rate_limits order by created_at")
                 .fetch_all(&self.pool)
@@ -4898,7 +4919,8 @@ mod tests {
                for c in select conname, conrelid::regclass::text as t from pg_constraint
                         where contype = 'c'
                           and conrelid::regclass::text in
-                              ('routes', 'providers', 'budgets', 'rate_limits', 'route_targets')
+                              ('routes', 'providers', 'budgets', 'rate_limits', 'route_targets',
+                               'mcp_servers')
                loop execute format('alter table %s drop constraint %I', c.t, c.conname);
                end loop; end $$",
         )
@@ -4989,6 +5011,14 @@ mod tests {
         .fetch_one(&pool)
         .await
         .unwrap();
+        sqlx::query(
+            "insert into mcp_servers (org_id, name, slug, url, transport, auth_kind)
+             values ($1, 'tools', 'tools', 'https://mcp.example', 'streamable_http', 'telepathy')",
+        )
+        .bind(org_id)
+        .execute(&pool)
+        .await
+        .unwrap();
 
         let store = PostgresConfigStore::new(pool);
         let problems = store.load_problem_records().await.unwrap();
@@ -5026,6 +5056,17 @@ mod tests {
         assert!(scope.message.contains("every request"), "{scope:?}");
         let rate = find(&format!("rate limit '{limit}'"));
         assert!(rate.message.contains("scope 'galaxy'"), "{rate:?}");
+
+        let mcp = find("auth kind 'telepathy'");
+        assert!(mcp.message.contains("mcp server 'tools'"), "{mcp:?}");
+        assert!(mcp.message.contains("refused"), "{mcp:?}");
+        assert_eq!(
+            mcp.owner,
+            crate::ProblemOwner::Tenant(rolter_core::Tenancy {
+                org_id: org_id.to_string(),
+                project_id: None,
+            })
+        );
 
         let period = find("period 'fortnightly'");
         assert!(period.message.contains("monthly"), "{period:?}");

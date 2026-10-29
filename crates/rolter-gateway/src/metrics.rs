@@ -1348,14 +1348,19 @@ impl Metrics {
         &self,
         kinds: &std::collections::BTreeMap<&'static str, u32>,
     ) {
+        // each series is written once with its final value, so a scrape in
+        // between never reads a kind that persists as 0
         for entry in self.snapshot_unknown.iter() {
-            entry.value().store(0, Relaxed);
+            let count = kinds.get(entry.key()).copied().unwrap_or(0);
+            entry.value().store(u64::from(count), Relaxed);
         }
         for (kind, count) in kinds {
-            self.snapshot_unknown
-                .entry(kind)
-                .or_default()
-                .store(u64::from(*count), Relaxed);
+            if !self.snapshot_unknown.contains_key(kind) {
+                self.snapshot_unknown
+                    .entry(kind)
+                    .or_default()
+                    .store(u64::from(*count), Relaxed);
+            }
         }
     }
 

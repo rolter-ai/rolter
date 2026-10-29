@@ -4335,6 +4335,20 @@ impl GatewayConfig {
                 );
             }
         }
+        // refused per request by the MCP proxy rather than rewritten, so it
+        // is named here rather than in `resolve_unknown_settings`
+        for server in &self.mcp_servers {
+            if server.auth_kind == McpAuthKind::Unknown {
+                problems.push(
+                    "mcp_auth_kind",
+                    format!(
+                        "mcp server '{}' has an auth kind this gateway does not know; every \
+                         call through it is refused until the gateway is upgraded",
+                        server.slug
+                    ),
+                );
+            }
+        }
         let unknown_kinds = self
             .providers
             .iter()
@@ -11683,6 +11697,9 @@ mod tests {
                 "direction": "sideways", "restoration": "always",
                 "streaming": "trickle", "failure_mode": "fail_sideways"
             },
+            "mcp_servers": [{"id": "m1", "org_id": "org-1", "slug": "tools",
+                             "url": "https://mcp.example", "transport": "streamable_http",
+                             "auth_kind": "telepathy"}],
             "plugins": {"instances": [
                 {"slug": "pl", "org_id": "org-1", "stage": "pre_route", "position": 0,
                  "failure_mode": "fail_sideways", "endpoint": "https://pl.example"}
@@ -11708,6 +11725,7 @@ mod tests {
         assert_eq!(count("unpriced_policy"), 2, "{:?}", report.kinds);
         assert_eq!(count("role_profile"), 2, "{:?}", report.kinds);
         assert_eq!(count("failure_mode"), 4, "{:?}", report.kinds);
+        assert_eq!(count("mcp_auth_kind"), 1, "{:?}", report.kinds);
         for kind in report.kinds.keys() {
             assert!(
                 kind.bytes().all(|b| b.is_ascii_lowercase() || b == b'_'),
