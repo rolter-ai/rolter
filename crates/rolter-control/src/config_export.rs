@@ -242,6 +242,12 @@ impl ScopeRefs {
 
 /// [`render`], with the names the caps' scopes go by (#1312).
 pub fn render_with(config: &GatewayConfig, refs: &ScopeRefs) -> String {
+    render_document(config, refs, false)
+}
+
+/// [`render_with`], optionally leaving the payload-capture table out because it
+/// is limited to keys and so cannot be split per org (#3440).
+fn render_document(config: &GatewayConfig, refs: &ScopeRefs, omit_capture: bool) -> String {
     let mut out = String::from(HEADER);
     // the stamp goes before any table header, and is sourced from the constant
     // rather than written as a literal so it cannot drift from the chain. it is
@@ -259,7 +265,7 @@ pub fn render_with(config: &GatewayConfig, refs: &ScopeRefs) -> String {
     render_caps(&mut out, config, refs);
     render_mcp_manifest_enforcement(&mut out, config);
     render_prompt_templates(&mut out, config);
-    render_logging(&mut out, config);
+    render_logging(&mut out, config, omit_capture);
     out
 }
 
@@ -696,12 +702,22 @@ fn template_slug(id: &str) -> &str {
     id.rsplit_once(':').map_or(id, |(_, slug)| slug)
 }
 
-fn render_logging(out: &mut String, config: &GatewayConfig) {
+fn render_logging(out: &mut String, config: &GatewayConfig, omit_capture: bool) {
     // always written, even at the default: the importer applies ui_events only
     // when the file names it, so an omitted key would let a re-import onto a
     // deployment with the stream off leave it off where this one had it on
     out.push_str("\n[logging]\n");
     key(out, "ui_events", &config.logging.ui_events);
+    if omit_capture {
+        // the importer applies a capture table the file declares to the whole
+        // deployment, so a file without one leaves capture as it is
+        out.push_str(
+            "\n# [logging.payload_capture] is not exported: this deployment limits capture to \
+             virtual keys across organizations, which a per-organization file cannot \
+             split. Export the whole deployment to carry it.\n",
+        );
+        return;
+    }
     let capture = &config.logging.payload_capture;
     out.push_str("\n[logging.payload_capture]\n");
     key(out, "enabled", &capture.enabled);
@@ -865,9 +881,10 @@ pub async fn export_document(
 ) -> rolter_core::Result<String> {
     let mut config = config.clone();
     let refs = load_scope_refs(pool, !options.without_person_caps).await?;
+    let mut omit_capture = false;
     if let Some(slug) = &options.org {
         let view = load_org_view(pool, slug, &config).await?;
-        scope_to_org(&mut config, &view, &refs);
+        omit_capture = scope_to_org(&mut config, &view, &refs);
     }
     let clashes = clashing_names(&config);
     if !clashes.is_empty() {
@@ -901,7 +918,7 @@ pub async fn export_document(
     }
     with_stored_variants(pool, &mut config).await?;
     config.mcp_manifest_enforcement = load_mcp_manifest_enforcement(pool, options).await?;
-    Ok(render_with(&config, &refs))
+    Ok(render_document(&config, &refs, omit_capture))
 }
 
 /// The marker of each org that has not saved MCP settings, which is the only
@@ -980,11 +997,11 @@ async fn load_org_view(
 }
 
 /// Leave in `config` what belongs in the file of `org` (#3440): its providers,
-/// groups, routes, prompt templates and caps, the payload-capture key ids of its
-/// own keys, and the rows no org owns. Prices, currency and the rest of logging
-/// are deployment-wide and stay.
+/// groups, routes, prompt templates and caps, and the rows no org owns. Prices,
+/// currency and logging are deployment-wide and stay. Returns whether the
+/// payload-capture policy is limited to keys, in which case the file omits it.
 #[cfg(feature = "postgres")]
-fn scope_to_org(config: &mut GatewayConfig, org: &OrgView, refs: &ScopeRefs) {
+fn scope_to_org(config: &mut GatewayConfig, org: &OrgView, refs: &ScopeRefs) -> bool {
     let owned = |tenancy: &Option<rolter_core::Tenancy>| {
         tenancy.as_ref().is_none_or(|owner| owner.org_id == org.id)
     };
@@ -1002,16 +1019,9 @@ fn scope_to_org(config: &mut GatewayConfig, org: &OrgView, refs: &ScopeRefs) {
     config
         .rate_limits
         .retain(|l| refs.in_org(org, l.scope, &l.id, l.within.as_ref()));
-    let capture = &mut config.logging.payload_capture;
-    let limited = !capture.virtual_key_ids.is_empty();
-    capture
-        .virtual_key_ids
-        .retain(|id| org.key_orgs.get(id) == Some(&org.id));
-    // an empty list means every key, so a capture limited to other orgs' keys
-    // must not come out of this org's file as a capture of all of them
-    if limited && capture.virtual_key_ids.is_empty() {
-        capture.enabled = false;
-    }
+    // capture is one deployment-wide policy, which the importer applies whole.
+    // one limited to keys spans orgs, so a per-org file leaves it out
+    !config.logging.payload_capture.virtual_key_ids.is_empty()
 }
 
 /// The names two rows share in `config`, which a flat file cannot carry.
@@ -1262,6 +1272,24 @@ mod tests {
             );
         }
         assert_eq!(clashing_names(&config), ["prompt template 'greet'"]);
+    }
+
+    /// A capture policy limited to keys is left out of a per-org file, one not
+    /// limited stays, as the rest of logging does (#3440).
+    #[test]
+    fn the_capture_table_is_left_out_only_when_asked() {
+        let mut config = GatewayConfig::default();
+        config.logging.payload_capture.enabled = true;
+        let refs = ScopeRefs::default();
+        let whole = render_document(&config, &refs, false);
+        assert!(whole.contains("\n[logging.payload_capture]\n"), "{whole}");
+        let omitted = render_document(&config, &refs, true);
+        assert!(
+            !omitted.contains("\n[logging.payload_capture]"),
+            "{omitted}"
+        );
+        assert!(omitted.contains("[logging]\nui_events"), "{omitted}");
+        assert!(omitted.contains("is not exported"), "{omitted}");
     }
 
     /// Everything the export claims to round-trip, in one file.
@@ -2356,12 +2384,17 @@ period = "daily"
                     !first.contains(&format!("org-{}", if n == 0 { 'b' } else { 'a' })),
                     "{first}"
                 );
-                let own_key = keys[n].to_string();
-                let other_key = keys[1 - n].to_string();
-                if n == 1 {
-                    assert!(first.contains(&own_key), "{first}");
+                // capture is limited to keys across both orgs, so no per-org file
+                // declares it (a re-import would apply it to everyone), and the
+                // file says why
+                for key in &keys {
+                    assert!(!first.contains(&key.to_string()), "{first}");
                 }
-                assert!(!first.contains(&other_key), "{first}");
+                assert!(!first.contains("\n[logging.payload_capture]"), "{first}");
+                assert!(
+                    first.contains("# [logging.payload_capture] is not exported"),
+                    "{first}"
+                );
                 // the stored variants are the org's own: one variant, not both
                 assert_eq!(first.matches("[[routes.variants]]").count(), 1, "{first}");
 
@@ -2381,6 +2414,19 @@ period = "daily"
                     .unwrap();
                 assert_eq!(first, second, "re-importing the {slug} export changed it");
             }
+
+            // the re-imports left the deployment's capture policy as it was
+            let limited: Option<i32> = sqlx::query_scalar(
+                "select cardinality(payload_capture_virtual_key_ids) from logging_settings limit 1",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            assert_eq!(
+                limited,
+                Some(2),
+                "a per-org import changed the capture policy"
+            );
 
             let unknown = ExportOptions {
                 org: Some("nobody".to_string()),
