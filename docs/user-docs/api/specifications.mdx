@@ -147,8 +147,9 @@ response payload.
 `openai-audio` · OpenAI · [primary source](https://developers.openai.com/api/reference/resources/audio)
 
 - **Supported:** speech: JSON request forwarded, binary audio streamed back
-- **Supported:** transcriptions and translations: the multipart body is forwarded verbatim; the gateway reads only the `model` field
-- **Evidence:** `crates/rolter-gateway/tests/integration.rs::builtin_fake_llm_serves_audio_speech`<br />`crates/rolter-gateway/tests/integration.rs::builtin_fake_llm_serves_audio_transcriptions`<br />`crates/rolter-gateway/tests/integration.rs::audio_translations_rejects_non_multipart`
+- **Supported:** transcriptions and translations: the multipart body is forwarded verbatim; the gateway reads only the `model`, `response_format` and `stream` fields
+- **Supported:** transcriptions with `stream=true` (#3432): `transcript.text.delta` / `transcript.text.done` events are relayed; under response guardrails the stream is refused before the upstream call or buffered, judged on the joined transcript text and replayed, as the policy's `streaming` setting says
+- **Evidence:** `crates/rolter-gateway/tests/semantic_guards.rs::a_streamed_transcription_streams_through`<br />`crates/rolter-gateway/tests/semantic_guards.rs::a_streamed_transcription_follows_the_policy_streaming_setting`<br />`crates/rolter-gateway/tests/semantic_guards.rs::a_streamed_transcription_under_output_rules_is_refused`<br />`crates/rolter-gateway/tests/integration.rs::builtin_fake_llm_serves_audio_speech`<br />`crates/rolter-gateway/tests/integration.rs::builtin_fake_llm_serves_audio_transcriptions`<br />`crates/rolter-gateway/tests/integration.rs::audio_translations_rejects_non_multipart`
 
 #### OpenAI Realtime (WebSocket)
 

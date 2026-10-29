@@ -3440,6 +3440,7 @@ async fn proxy_multipart(
     // `gpt-4o-transcribe` and `gpt-4o-mini-transcribe` answer `stream=true`
     // with `transcript.text.*` events; the response stage treats such a
     // request as the chat path treats `"stream": true` (#3432)
+    // spec-ref: openai-audio
     let stream = crate::multipart::text_field(&body, &boundary, "stream")
         .is_some_and(|value| value.trim().eq_ignore_ascii_case("true"));
 
