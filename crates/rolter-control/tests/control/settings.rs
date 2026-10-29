@@ -189,6 +189,75 @@ async fn an_unscoped_export_of_organizations_sharing_names_answers_a_code() {
     assert!(body["error"]["code"].is_null(), "{body}");
 }
 
+/// An org's provider that the bootstrap file repeats as a global row (#3516):
+/// the unscoped export answers `config_export_needs_org`, as for two orgs
+/// sharing a name, and `?org=` writes the org's own row.
+#[tokio::test]
+async fn an_unscoped_export_of_an_org_shadowing_a_bootstrap_row_answers_a_code() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let mut file = rolter_core::GatewayConfig::default();
+    file.providers.push(rolter_core::ProviderConfig {
+        name: "openai".to_string(),
+        kind: rolter_core::ProviderKind::Openai,
+        api_base: "https://file.example.com".to_string(),
+        api_key_env: Some("OPENAI_API_KEY".to_string()),
+        ..Default::default()
+    });
+    let app = rolter_control::test_app_with_file_config(
+        pool.clone(),
+        Some(admin_token().to_string()),
+        file,
+    )
+    .await
+    .unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+    let org: Value = client
+        .post(format!("{base}/api/v1/orgs"))
+        .bearer_auth(admin_token())
+        .json(&json!({"name": "acme", "slug": "acme"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let org_id = org["id"].as_str().expect("org id");
+    // written around the API, as the write-time guard refuses the name
+    sqlx::query(
+        "insert into providers (org_id, name, slug, kind, api_base) \
+         values ($1::uuid, 'openai', 'openai', 'openai', 'https://org.example.com')",
+    )
+    .bind(org_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let refused = client
+        .get(format!("{base}/api/v1/config/export"))
+        .bearer_auth(admin_token())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(refused.status(), 400);
+    let body: Value = refused.json().await.unwrap();
+    assert_eq!(body["error"]["code"], "config_export_needs_org", "{body}");
+
+    let one = client
+        .get(format!("{base}/api/v1/config/export?org=acme"))
+        .bearer_auth(admin_token())
+        .send()
+        .await
+        .unwrap();
+    assert!(one.status().is_success(), "{}", one.status());
+    let document = one.text().await.unwrap();
+    assert!(document.contains("https://org.example.com"), "{document}");
+    assert!(!document.contains("https://file.example.com"), "{document}");
+}
+
 /// `GET /api/v1/version` is the dashboard's one source for the update hint
 /// (#902): any signed-in caller reads it, an anonymous one does not, and with
 /// the check disabled it reports the running version and nothing else — no

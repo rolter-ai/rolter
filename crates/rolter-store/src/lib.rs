@@ -148,9 +148,13 @@ impl ConfigStore for InMemoryConfigStore {
 /// Layers a read-only bootstrap config over a mutable inner store,
 /// LiteLLM-style: file-declared providers/routes are "config models" (owned
 /// by the file, immutable at runtime), inner-store rows are "DB models"
-/// (full runtime CRUD). `load()` returns the merged view; on a name/model
-/// collision the config entry wins and the DB entry is dropped from the
-/// effective set. Writes pass through to the inner store, so config entries
+/// (full runtime CRUD). `load()` returns the merged view. A provider, route or
+/// provider group is named by `(org, name)` (ADR-0040): on a collision in the
+/// same namespace the config entry wins and the DB entry is dropped from the
+/// effective set, while an org's DB row that shares a name with a global
+/// config row is kept and shadows it for that org's keys only, and
+/// [`load_problem_records`](ConfigStore::load_problem_records) lists it as a
+/// warning (#3516). Writes pass through to the inner store, so config entries
 /// can never be edited or deleted through it.
 ///
 /// Every other table has one owner, set out in `load` and in
