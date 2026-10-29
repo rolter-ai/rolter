@@ -1670,26 +1670,31 @@ macro_rules! proceed {
 /// Shared by [`proxy`] and [`proxy_multipart`]. It holds only borrows and the
 /// refusal log's plugin events, so a stage is handed `&RequestCtx` and nothing
 /// is cloned to call it.
-struct RequestCtx<'a> {
-    snap: &'a Snapshot,
+///
+/// `'s` is the gateway's state and the snapshot, which outlive the request;
+/// `'r` is what the handler owns for this request (the key, its scope, the
+/// model name), which it moves into the log row once the stages are done.
+struct RequestCtx<'s, 'r> {
+    state: &'s AppState,
+    snap: &'s Snapshot,
     /// the endpoint the request was sent to
-    path: &'a str,
-    vk: Option<&'a KeyMeta>,
-    refuse: Refusals<'a>,
+    path: &'r str,
+    vk: Option<&'r KeyMeta>,
+    refuse: Refusals<'r>,
 }
 
-impl<'a> RequestCtx<'a> {
-    fn state(&self) -> &'a AppState {
-        self.refuse.state
+impl<'s, 'r> RequestCtx<'s, 'r> {
+    fn state(&self) -> &'s AppState {
+        self.state
     }
 
     /// The caller's scope (empty for an anonymous request).
-    fn scope(&self) -> &'a ScopeIds {
+    fn scope(&self) -> &'r ScopeIds {
         self.refuse.scope
     }
 
     /// The model the caller asked for.
-    fn model(&self) -> &'a str {
+    fn model(&self) -> &'r str {
         self.refuse.model
     }
 
@@ -1884,6 +1889,240 @@ impl<'a> RequestCtx<'a> {
         Stage::Next(())
     }
 
+    /// Versioned prompt templates: render the immutable versions active for
+    /// this route and inject their decorator messages around the caller's own
+    /// messages (ROL-256). Variable substitution is structural (values land as
+    /// inert JSON strings); an unknown, missing or oversized variable rejects
+    /// with a client error. The template-variables field is rolter-only and
+    /// never reaches an upstream: a body that carried it loses it whether or
+    /// not a template renders. Passes on whether the body must be
+    /// re-serialized.
+    fn prompt_templates(
+        &self,
+        entry: &crate::state::RouteEntry,
+        parsed: &mut Value,
+    ) -> Stage<bool> {
+        let scope = self.scope();
+        let mut template_applied = false;
+        let carried_template_vars = parsed
+            .get(rolter_core::prompt_templates::TEMPLATE_VARS_FIELD)
+            .is_some();
+        let template_scope = rolter_core::PromptTemplateRequestScope {
+            route_model: &entry.route.model,
+            org_id: &scope.org,
+            project_id: &scope.project,
+            virtual_key_id: &scope.key,
+        };
+        let metrics = &self.state().metrics;
+        if self.snap.prompt_templates.active_for_scope(&template_scope) {
+            match crate::prompt_templates::apply_for_scope(
+                &self.snap.prompt_templates,
+                &template_scope,
+                self.path,
+                parsed,
+            ) {
+                Ok(report) => {
+                    if report.decorations > 0 {
+                        template_applied = true;
+                        metrics
+                            .prompt_template_decorations_total
+                            .fetch_add(report.decorations as u64, Relaxed);
+                    }
+                }
+                Err(err) => {
+                    metrics
+                        .prompt_template_rejections_total
+                        .fetch_add(1, Relaxed);
+                    return Stage::Answer(
+                        self.refused(
+                            crate::error::ApiError::new(StatusCode::BAD_REQUEST, err.message())
+                                .with_code("invalid_prompt_template")
+                                .into_response(),
+                        ),
+                    );
+                }
+            }
+        } else if carried_template_vars {
+            if let Some(object) = parsed.as_object_mut() {
+                object.remove(rolter_core::prompt_templates::TEMPLATE_VARS_FIELD);
+            }
+        }
+        Stage::Next(template_applied | carried_template_vars)
+    }
+
+    /// Built-in guardrails: scan request content before proxying (ROL-261).
+    /// A block rule rejects with an OpenAI-compatible error; redactions
+    /// rewrite `parsed` in place, and the stage passes on whether any did.
+    /// What each rule did is appended to `events` for the request's rows
+    /// (#2158); raw matches are never logged. The route's override decides
+    /// which rules apply, and a route that disables every rule skips the JSON
+    /// walk entirely (#590).
+    fn builtin_guardrails(
+        &self,
+        entry: &crate::state::RouteEntry,
+        parsed: &mut Value,
+        events: &mut Vec<String>,
+    ) -> Stage<bool> {
+        let guardrails = &self.snap.guardrails;
+        if !guardrails.pre_call_active_for(&entry.guardrails) {
+            return Stage::Next(false);
+        }
+        let metrics = &self.state().metrics;
+        match crate::guardrails::apply_input(guardrails, &entry.guardrails, self.path, parsed) {
+            Ok(report) => {
+                *events = report.events();
+                if report.redactions > 0 {
+                    metrics
+                        .guardrail_redactions_total
+                        .fetch_add(report.redactions as u64, Relaxed);
+                }
+                Stage::Next(report.redactions > 0)
+            }
+            Err(blocked) => {
+                metrics.guardrail_blocks_total.fetch_add(1, Relaxed);
+                // the rules that ran before the blocking one may already have
+                // redacted this request, and the rollup should count that
+                let rule = blocked.rule;
+                let events = blocked.report.events();
+                Stage::Answer(
+                    self.refuse.log_with_events(
+                        crate::error::ApiError::new(
+                            StatusCode::BAD_REQUEST,
+                            format!("request blocked by guardrail '{rule}'"),
+                        )
+                        .with_code("guardrail_blocked")
+                        .into_response(),
+                        events,
+                    ),
+                )
+            }
+        }
+    }
+
+    /// The semantic guardrail policy for this request (#459): the most
+    /// specific enabled policy for this key, route, project or org, else the
+    /// providers no policy lists, picks the providers that judge it.
+    /// `post_call_only` keeps a policy only when it runs on the response,
+    /// for a request no request-stage provider can read. `trace_id` is the
+    /// id the providers are called under.
+    fn semantic_guard(
+        &self,
+        entry: &crate::state::RouteEntry,
+        trace_id: &str,
+        post_call_only: bool,
+    ) -> Option<crate::semantic_guards::SemanticGuard<'s>> {
+        let (state, snap) = (self.state, self.snap);
+        let scope = self.scope();
+        snap.semantic_guards
+            .resolve(&crate::semantic_guards::policy_request(
+                scope,
+                &entry.route.model,
+            ))
+            .filter(|policy| !post_call_only || policy.runs_at(rolter_core::WebhookStage::PostCall))
+            .map(|policy| crate::semantic_guards::SemanticGuard {
+                guards: &snap.semantic_guards,
+                policy,
+                metrics: &state.metrics,
+                egress: &state.side_client,
+                local: &state.local_classifiers,
+                model: self.model().to_string(),
+                route: entry.route.model.clone(),
+                trace_id: trace_id.to_string(),
+                tenant: plugin_tenant(scope),
+            })
+    }
+
+    /// The semantic policy's pre_call providers (#459): block answers with an
+    /// OpenAI-compatible error; transform replaces the request body, and the
+    /// stage passes on whether one did; a call with no verdict resolves per
+    /// that provider's fail-open/closed mode. Only the assembled envelope is
+    /// sent; content is never logged.
+    async fn guardrail_webhook(
+        &self,
+        guard: Option<&crate::semantic_guards::SemanticGuard<'_>>,
+        parsed: &mut Value,
+        events: &mut Vec<String>,
+    ) -> Stage<bool> {
+        let Some(guard) = guard.filter(|guard| guard.runs_at(rolter_core::WebhookStage::PreCall))
+        else {
+            return Stage::Next(false);
+        };
+        match guard
+            .check(rolter_core::WebhookStage::PreCall, parsed, false, events)
+            .await
+        {
+            crate::semantic_guards::Verdict::Allow(None) => Stage::Next(false),
+            crate::semantic_guards::Verdict::Allow(Some(content)) => {
+                *parsed = content;
+                Stage::Next(true)
+            }
+            crate::semantic_guards::Verdict::Block { reason, .. } => Stage::Answer(
+                self.refuse.log_with_events(
+                    crate::error::ApiError::new(StatusCode::BAD_REQUEST, reason)
+                        .with_code("guardrail_blocked")
+                        .into_response(),
+                    std::mem::take(events),
+                ),
+            ),
+        }
+    }
+
+    /// The external PII sanitizer's request leg (#848). Unlike the webhook,
+    /// it returns transformed *content* (entities replaced by deterministic
+    /// placeholders) plus an opaque ticket the same service accepts back to
+    /// reverse the transform. The mapping never enters this process, so
+    /// there is nothing here to leak into a log, metric or span. Passes on
+    /// whether the body changed and the ticket, if any.
+    async fn sanitize_request(
+        &self,
+        entry: &crate::state::RouteEntry,
+        pii_scope: &rolter_core::TokenScope,
+        will_restore: bool,
+        parsed: &mut Value,
+    ) -> Stage<(bool, Option<rolter_core::RestorationTicket>)> {
+        let config = &self.snap.pii_sanitizer;
+        if !config.sanitizes_request() {
+            return Stage::Next((false, None));
+        }
+        let state = self.state();
+        match crate::pii_sanitizer::sanitize(
+            config,
+            &state.metrics,
+            &state.side_client,
+            "request",
+            self.model(),
+            &entry.route.model,
+            self.refuse.request_id,
+            plugin_tenant(self.scope()),
+            pii_scope.clone(),
+            will_restore,
+            parsed,
+        )
+        .await
+        {
+            crate::pii_sanitizer::SanitizeOutcome::Unchanged => Stage::Next((false, None)),
+            crate::pii_sanitizer::SanitizeOutcome::Sanitized {
+                content,
+                ticket,
+                replaced,
+            } => {
+                // `replaced > 0` short-circuits the deep compare for the case
+                // that matters; a service that rewrote the body while reporting
+                // nothing is still honoured, it just costs a comparison
+                let sanitized = replaced > 0 || content != *parsed;
+                *parsed = content;
+                Stage::Next((sanitized, ticket))
+            }
+            crate::pii_sanitizer::SanitizeOutcome::Block(reason) => Stage::Answer(
+                self.refused(
+                    crate::error::ApiError::new(StatusCode::BAD_GATEWAY, reason)
+                        .with_code("pii_sanitizer_unavailable")
+                        .into_response(),
+                ),
+            ),
+        }
+    }
+
     /// Answer with `refusal`, logged, when there is one; else go on.
     fn refuse_if(&self, refusal: Option<Response>) -> Stage<()> {
         match refusal {
@@ -1970,6 +2209,7 @@ async fn proxy(
     // looked up, and a row nobody owns is one anonymous traffic could write
     // without limit (#2807)
     let req = RequestCtx {
+        state: &state,
         snap: &snap,
         path,
         vk: vk.as_ref(),
@@ -2044,59 +2284,9 @@ async fn proxy(
     // the request. the permit is held to the end of the response (#2936)
     let mut route_permit = proceed!(req.route_permit(entry).await);
 
-    // versioned prompt templates: render the immutable versions active for this
-    // route and inject their decorator messages around the caller's own messages.
-    // variable substitution is structural (values land as inert JSON strings);
-    // an unknown/missing/oversized variable rejects with a client error. runs
-    // before guardrails so any appended user/assistant content is still scanned
-    // (ROL-256).
-    let mut template_applied = false;
-    // the field is rolter-only, so it must never reach an upstream: whether or not
-    // a template ends up rendering, a body that carried it is re-serialized
-    // without it rather than forwarded as received
-    let carried_template_vars = parsed
-        .get(rolter_core::prompt_templates::TEMPLATE_VARS_FIELD)
-        .is_some();
-    let template_scope = rolter_core::PromptTemplateRequestScope {
-        route_model: &entry.route.model,
-        org_id: &scope.org,
-        project_id: &scope.project,
-        virtual_key_id: &scope.key,
-    };
-    if snap.prompt_templates.active_for_scope(&template_scope) {
-        match crate::prompt_templates::apply_for_scope(
-            &snap.prompt_templates,
-            &template_scope,
-            path,
-            &mut parsed,
-        ) {
-            Ok(report) => {
-                if report.decorations > 0 {
-                    template_applied = true;
-                    state
-                        .metrics
-                        .prompt_template_decorations_total
-                        .fetch_add(report.decorations as u64, Relaxed);
-                }
-            }
-            Err(err) => {
-                state
-                    .metrics
-                    .prompt_template_rejections_total
-                    .fetch_add(1, Relaxed);
-                return refuse.log(
-                    crate::error::ApiError::new(StatusCode::BAD_REQUEST, err.message())
-                        .with_code("invalid_prompt_template")
-                        .into_response(),
-                );
-            }
-        }
-    } else if carried_template_vars {
-        if let Some(object) = parsed.as_object_mut() {
-            object.remove(rolter_core::prompt_templates::TEMPLATE_VARS_FIELD);
-        }
-    }
-    template_applied |= carried_template_vars;
+    // versioned prompt templates, before guardrails so any appended
+    // user/assistant content is still scanned (ROL-256)
+    let template_applied = proceed!(req.prompt_templates(entry, &mut parsed));
 
     // both the built-in scan and the webhook consult are pre-call guardrail work,
     // so they share one stage: a request slowed by a sluggish guardrail service
@@ -2108,107 +2298,18 @@ async fn proxy(
         webhook = !snap.semantic_guards.is_empty()
     );
 
-    // built-in guardrails: scan request content before proxying. a block rule
-    // rejects with an OpenAI-compatible error; redactions rewrite `parsed` in
-    // place and force the re-serialized forward path below. never logs raw
-    // matches — only rule-name/count counters (ROL-261).
-    let mut guardrail_redacted = false;
     // what each guardrail did to this request, for its log row (#2158)
     let mut guardrail_events: Vec<String> = Vec::new();
-    // the route's override decides which rules apply here; a route that
-    // disables every rule skips the JSON walk entirely (#590)
-    if snap.guardrails.pre_call_active_for(&entry.guardrails) {
-        match crate::guardrails::apply_input(&snap.guardrails, &entry.guardrails, path, &mut parsed)
-        {
-            Ok(report) => {
-                guardrail_events = report.events();
-                if report.redactions > 0 {
-                    guardrail_redacted = true;
-                    state
-                        .metrics
-                        .guardrail_redactions_total
-                        .fetch_add(report.redactions as u64, Relaxed);
-                }
-            }
-            Err(blocked) => {
-                state.metrics.guardrail_blocks_total.fetch_add(1, Relaxed);
-                // the rules that ran before the blocking one may already have
-                // redacted this request, and the rollup should count that
-                let rule = blocked.rule;
-                let events = blocked.report.events();
-                return refuse.log_with_events(
-                    crate::error::ApiError::new(
-                        StatusCode::BAD_REQUEST,
-                        format!("request blocked by guardrail '{rule}'"),
-                    )
-                    .with_code("guardrail_blocked")
-                    .into_response(),
-                    events,
-                );
-            }
-        }
-    }
-
-    // semantic guardrail policy (#459): the most specific enabled policy for
-    // this key, route, project or org — else the providers no policy lists —
-    // picks the providers that judge this request. pre_call ones run here:
-    // block -> OpenAI-compatible error; transform -> replace the request body;
-    // a call with no verdict resolves per that provider's fail-open/closed
-    // mode. only the assembled envelope is sent; content is never logged
-    let semantic_guard = snap
-        .semantic_guards
-        .resolve(&crate::semantic_guards::policy_request(
-            &scope,
-            &entry.route.model,
-        ))
-        .map(|policy| crate::semantic_guards::SemanticGuard {
-            guards: &snap.semantic_guards,
-            policy,
-            metrics: &state.metrics,
-            egress: &state.side_client,
-            local: &state.local_classifiers,
-            model: model.clone(),
-            route: entry.route.model.clone(),
-            trace_id: trace_id.to_string(),
-            tenant: plugin_tenant(&scope),
-        });
-    let mut webhook_transformed = false;
-    if let Some(guard) = semantic_guard
-        .as_ref()
-        .filter(|guard| guard.runs_at(rolter_core::WebhookStage::PreCall))
-    {
-        match guard
-            .check(
-                rolter_core::WebhookStage::PreCall,
-                &parsed,
-                false,
-                &mut guardrail_events,
-            )
+    // built-in guardrails, then the semantic policy's pre_call providers
+    let guardrail_redacted =
+        proceed!(req.builtin_guardrails(entry, &mut parsed, &mut guardrail_events));
+    let semantic_guard = req.semantic_guard(entry, trace_id, false);
+    let webhook_transformed = proceed!(
+        req.guardrail_webhook(semantic_guard.as_ref(), &mut parsed, &mut guardrail_events)
             .await
-        {
-            crate::semantic_guards::Verdict::Allow(None) => {}
-            crate::semantic_guards::Verdict::Allow(Some(content)) => {
-                parsed = content;
-                webhook_transformed = true;
-            }
-            crate::semantic_guards::Verdict::Block { reason, .. } => {
-                return refuse.log_with_events(
-                    crate::error::ApiError::new(StatusCode::BAD_REQUEST, reason)
-                        .with_code("guardrail_blocked")
-                        .into_response(),
-                    guardrail_events,
-                );
-            }
-        }
-    }
+    );
 
-    // external PII sanitizer: unlike the webhook above, this returns transformed
-    // *content* — entities replaced by deterministic placeholders — plus an
-    // opaque token the same service accepts back to reverse the transform. the
-    // mapping never enters this process, so there is nothing here to leak into
-    // a log, metric or span (#848)
-    let mut pii_sanitized = false;
-    let mut pii_ticket: Option<rolter_core::RestorationTicket> = None;
+    // external PII sanitizer (#848)
     let pii_scope = rolter_core::TokenScope {
         org: scope.org.clone(),
         team: scope.team.clone(),
@@ -2226,44 +2327,10 @@ async fn proxy(
         .pii_sanitizer
         .restoration
         .should_restore(restore_requested);
-    if snap.pii_sanitizer.sanitizes_request() {
-        match crate::pii_sanitizer::sanitize(
-            &snap.pii_sanitizer,
-            &state.metrics,
-            &state.side_client,
-            "request",
-            &model,
-            &entry.route.model,
-            trace_id,
-            plugin_tenant(&scope),
-            pii_scope.clone(),
-            will_restore,
-            &parsed,
-        )
-        .await
-        {
-            crate::pii_sanitizer::SanitizeOutcome::Unchanged => {}
-            crate::pii_sanitizer::SanitizeOutcome::Sanitized {
-                content,
-                ticket,
-                replaced,
-            } => {
-                // `replaced > 0` short-circuits the deep compare for the case
-                // that matters; a service that rewrote the body while reporting
-                // nothing is still honoured, it just costs a comparison
-                pii_sanitized = replaced > 0 || content != parsed;
-                parsed = content;
-                pii_ticket = ticket;
-            }
-            crate::pii_sanitizer::SanitizeOutcome::Block(reason) => {
-                return refuse.log(
-                    crate::error::ApiError::new(StatusCode::BAD_GATEWAY, reason)
-                        .with_code("pii_sanitizer_unavailable")
-                        .into_response(),
-                );
-            }
-        }
-    }
+    let (pii_sanitized, pii_ticket) = proceed!(
+        req.sanitize_request(entry, &pii_scope, will_restore, &mut parsed)
+            .await
+    );
 
     // captured here because `model`, `trace_id` and `scope` are moved into the
     // spend recorder and log row before the response leg runs
@@ -3238,6 +3305,7 @@ async fn proxy_multipart(
     let scope = request_scope(vk.as_ref());
     // as on the chat path: a refusal of a caller we know is logged (#2807)
     let req = RequestCtx {
+        state: &state,
         snap: &snap,
         path,
         vk: vk.as_ref(),
@@ -3320,24 +3388,7 @@ async fn proxy_multipart(
     {
         return refuse.log(output_rules_stream_refusal(&state));
     }
-    let semantic_guard = snap
-        .semantic_guards
-        .resolve(&crate::semantic_guards::policy_request(
-            &scope,
-            &entry.route.model,
-        ))
-        .filter(|policy| policy.runs_at(rolter_core::WebhookStage::PostCall))
-        .map(|policy| crate::semantic_guards::SemanticGuard {
-            guards: &snap.semantic_guards,
-            policy,
-            metrics: &state.metrics,
-            egress: &state.side_client,
-            local: &state.local_classifiers,
-            model: model.clone(),
-            route: entry.route.model.clone(),
-            trace_id: trace_id.to_string(),
-            tenant: plugin_tenant(&scope),
-        });
+    let semantic_guard = req.semantic_guard(entry, &trace_id, true);
     let semantic_leg = semantic_guard
         .as_ref()
         .map(|guard| SemanticLeg { guard, stream });
