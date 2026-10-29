@@ -230,8 +230,8 @@ async fn an_erasure_removes_exactly_its_rows_from_a_real_clickhouse() {
         json!({"kind": "virtual_key", "id": acme.key}),
     )
     .await;
-    // the lookup of older payload rows adds a statement to payloads, logs and
-    // the MCP log
+    // payloads, logs and the MCP log, plus one more payload statement for the
+    // rows that predate the column, found through their log row
     assert_eq!(created["statements"], 4, "{created}");
 
     // the marker stayed in the mutations' text, one per statement
