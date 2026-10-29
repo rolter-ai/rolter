@@ -27,7 +27,7 @@ import {
   createCustomer,
   deleteBusinessUnit,
   deleteCustomer,
-  exportAttributionCsv,
+  attributionExport,
   fetchAttributionSpend,
   fetchBusinessUnits,
   fetchCustomers,
@@ -640,11 +640,10 @@ function AttributionScreen<T extends BusinessUnitRow | CustomerRow>({
             what={t("errors.resources.attributionExport")}
             fallbackName="cost-attribution.csv"
             disabled={disabled}
-            run={(signal) =>
-              exportAttributionCsv(
+            request={() =>
+              attributionExport(
                 windowBounds(spendWindow),
                 kind === "unit" ? "business_unit" : "customer",
-                { signal },
               )
             }
           />

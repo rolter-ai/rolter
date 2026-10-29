@@ -2572,6 +2572,29 @@ fn operations() -> Vec<Op> {
             )
             .clickhouse_read()
             .query(INVOCATIONS_QUERY),
+            Op::post(
+                "/api/v1/analytics/exports/tickets",
+                "mintExportTicket",
+                "Mint a single-use download ticket for one CSV export, for a browser that cannot stream the file to disk itself (#3504). The body names `path` (one of the three `.../export` routes above; any other is a `400`) and `query`, the query string that export would be sent, which is checked as the export checks it. The export's own credential and scope checks run here, and the request log export is refused with `429` at once when its concurrency bound is full. Answers `id`, `download_url` (the secret is in it: hand it to the browser, never log it), `status_url` and `expires_at`, 60 seconds out",
+            )
+            .body(Payload::Ref("ExportTicketRequest"))
+            .ok(Payload::Ref("ExportTicket"))
+            .too_many_requests(
+                "the request log export's concurrency bound is already full, in this process or for this caller; wait for `Retry-After` seconds",
+            ),
+            Op::get(
+                "/api/v1/analytics/exports/tickets/{id}",
+                "getExportTicket",
+                "How a ticket's export is going, for the principal that minted it only (anyone else gets `404`). `state` is `pending`, `streaming` (with `rows` so far), `complete` (`rows`), `truncated` (`rows` and a `reason`: `row_limit`, `time_limit`, `read_error`, `client_closed`, or `interrupted` when the replica serving it stopped reporting), `refused` (the download's HTTP `status`, and `retry_after` for a `429`) or `expired` (never redeemed); `done` is `true` once it can no longer change",
+            )
+            .ok(Payload::Ref("ExportTicketStatus")),
+            Op::get(
+                "/api/v1/analytics/exports/download/{ticket}",
+                "downloadExport",
+                "Redeem a download ticket and send its export as the bearer route would, under the principal that minted it, re-checked now. The ticket in the path is the credential, and it is spent by the first request whatever its outcome; an unknown, used or expired ticket is one uniform `410`, and any method but `GET` (a `HEAD` from a link checker included) is a `405` that leaves the ticket unspent. Answers `Cache-Control: no-store` and `Referrer-Policy: no-referrer`. The body is CSV, not JSON",
+            )
+            .public()
+            .clickhouse_read(),
             Op::get(
                 "/api/v1/analytics/guardrails",
                 "getAnalyticsGuardrails",
@@ -3372,6 +3395,7 @@ fn schemas() -> Value {
         alerting_schemas(&p),
         config_problem_schemas(&p),
         cluster_schemas(&p),
+        export_ticket_schemas(&p),
     ] {
         if let Value::Object(entries) = group {
             out.extend(entries);
@@ -3380,6 +3404,77 @@ fn schemas() -> Value {
     let mut schemas = Value::Object(out);
     crate::deprecation::mark_fields(&mut schemas);
     schemas
+}
+
+/// The download tickets of the analytics CSV exports (#3504).
+fn export_ticket_schemas(p: &Prim) -> Value {
+    let uuid = &p.uuid;
+    let timestamp = &p.timestamp;
+    json!({
+        "ExportTicketRequest": {
+            "type": "object",
+            "required": ["path"],
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "enum": [
+                        "/api/v1/analytics/by-attribution/export",
+                        "/api/v1/analytics/timeseries/export",
+                        "/api/v1/analytics/invocations/export"
+                    ],
+                    "description": "the export, by the exact path of its bearer route"
+                },
+                "query": {
+                    "type": "string",
+                    "description": "the query string that export would be sent, without the `?`; checked as the export checks it"
+                }
+            }
+        },
+        "ExportTicket": {
+            "type": "object",
+            "required": ["id", "download_url", "status_url", "expires_at"],
+            "properties": {
+                "id": uuid,
+                "download_url": {
+                    "type": "string",
+                    "description": "the same-origin link that downloads the export once; it carries the secret, so hand it to the browser and never log it"
+                },
+                "status_url": {"type": "string"},
+                "expires_at": timestamp
+            }
+        },
+        "ExportTicketStatus": {
+            "type": "object",
+            "required": ["id", "export", "expires_at", "done", "state"],
+            "properties": {
+                "id": uuid,
+                "export": {"type": "string", "enum": ["attribution", "timeseries", "invocations"]},
+                "expires_at": timestamp,
+                "done": {"type": "boolean", "description": "the state can no longer change"},
+                "state": {
+                    "type": "string",
+                    "enum": ["pending", "streaming", "complete", "truncated", "refused", "expired"]
+                },
+                "rows": {
+                    "type": "integer",
+                    "description": "rows written so far, on `streaming`, `complete` and `truncated`"
+                },
+                "reason": {
+                    "type": "string",
+                    "enum": ["row_limit", "time_limit", "read_error", "client_closed", "interrupted"],
+                    "description": "why a `truncated` export stopped short"
+                },
+                "status": {
+                    "type": "integer",
+                    "description": "the HTTP status a `refused` download was answered with"
+                },
+                "retry_after": {
+                    "type": "integer",
+                    "description": "seconds to wait, on a `refused` `429`"
+                }
+            }
+        }
+    })
 }
 
 /// Alert history rows and rules, where the stable `detail_code` and
