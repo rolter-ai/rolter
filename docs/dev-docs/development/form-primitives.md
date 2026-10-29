@@ -510,8 +510,8 @@ for a screen that keeps the window in the address; `windowBounds` and
 the viewer's zone with the last day included, so `until` is the start of the
 day after it. The saved-view allow-list in
 `crates/rolter-control/src/me_saved_views.rs` is the server's copy of the
-shape. `useAddressWindow` and `useTimeWindowOptions` stay named-only for a
-screen that has not adopted the picker.
+shape. `useTimeWindowOptions` stays named-only for a control that offers no
+range (the route sheet's observed-traffic window).
 
 ## Still to do
 

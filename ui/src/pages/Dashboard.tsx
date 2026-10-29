@@ -44,6 +44,7 @@ import { modelColor, rankedByRequests } from "@/lib/model-colors";
 import { isAwaiting } from "@/lib/read-state";
 import {
   DEFAULT_TIME_WINDOW,
+  chartBucket,
   useAddressSelection,
   useWindowLabel,
   previousWindowBounds,
@@ -65,13 +66,13 @@ const num = (v: number | string | undefined): number => Number(v ?? 0);
 // the name is what the query keys carry
 const readWindow = (name: WindowSelection, filters: AnalyticsRowFilters) => ({
   ...windowBounds(name),
-  bucket: "hour",
+  bucket: chartBucket(name),
   ...filters,
 });
 // the same figures over the window before, for each tile's arrow (#2010)
 const readPrevious = (name: WindowSelection, filters: AnalyticsRowFilters) => ({
   ...previousWindowBounds(name),
-  bucket: "hour",
+  bucket: chartBucket(name),
   ...filters,
 });
 // "recent" is the latest requests, whatever window the figures are read over
@@ -713,7 +714,14 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
             >
               {(points) => {
                 const spendPoints = points.map((p) => num(p.cost_usd));
-                const spendLabels = points.map((p) => fmt.timeShort(p.bucket) || p.bucket);
+                // an hourly bucket is named by its clock, a daily one (a long
+                // custom range) by its date, which the clock cannot tell apart
+                const daily = chartBucket(timeWindow) === "day";
+                const spendLabels = points.map((p) =>
+                  daily
+                    ? fmt.calendarDay(String(p.bucket).slice(0, 10))
+                    : fmt.timeShort(p.bucket) || p.bucket,
+                );
                 // buckets exist but every one of them is zero: the window had
                 // traffic that was never priced, which is not the same as spend
                 // that happened to be zero

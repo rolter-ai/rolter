@@ -1,6 +1,6 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import * as React from "react";
-import { createMemoryRouter, RouterProvider, useInRouterContext } from "react-router";
+import { createMemoryRouter, RouterProvider, useInRouterContext, useLocation } from "react-router";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import { Toaster } from "@/components/ui/toaster";
@@ -82,6 +82,19 @@ export const scopeResponse = (url: string): Response | null => {
   }
   return null;
 };
+
+/**
+ * Puts the router's query string where a story can read it: render it beside
+ * the screen and read the address back with {@link addressOf}.
+ */
+export function AddressProbe() {
+  const { search } = useLocation();
+  return <span data-testid="address" data-search={search} hidden />;
+}
+
+/** the address an {@link AddressProbe} in `canvasElement` holds, as parameters */
+export const addressOf = (canvasElement: HTMLElement) =>
+  new URLSearchParams(within(canvasElement).getByTestId("address").dataset.search ?? "");
 
 /** A stub that resolves the scope and then answers `handler`. */
 export function scoped(handler: FetchStub): FetchStub {
@@ -510,6 +523,8 @@ export interface SavedFile {
   chunks: Uint8Array[];
   closed: boolean;
   aborted: boolean;
+  /** the file was taken away again, as the page does for an export that wrote nothing */
+  removed: boolean;
 }
 
 /**
@@ -526,9 +541,15 @@ export function stubSavePicker(options: { reject?: boolean } = {}) {
       chunks: [],
       closed: false,
       aborted: false,
+      removed: false,
     };
     files.push(file);
     return {
+      // a file the picker just made: nothing in it yet
+      getFile: async () => ({ size: 0 }),
+      remove: async () => {
+        file.removed = true;
+      },
       createWritable: async () => ({
         write: async (chunk: Uint8Array) => {
           file.chunks.push(chunk);

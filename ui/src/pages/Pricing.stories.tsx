@@ -1,5 +1,4 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { useLocation } from "react-router";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import Pricing from "./Pricing";
@@ -33,19 +32,14 @@ import {
   expectToast,
   uxEvents,
   type Recorder,
+  AddressProbe,
+  addressOf,
 } from "./story-harness";
 import type { CurrencySettings, ModelPriceRow, PriceCatalogue } from "@/lib/api";
 import ru from "@/lib/i18n/locales/ru.json";
 import en from "@/lib/i18n/locales/en.json";
 import { expectFieldHints } from "@/lib/story-hints";
 import { UxScreenProvider } from "@/lib/ux-react";
-
-function AddressProbe() {
-  const { search } = useLocation();
-  return <span data-testid="address" data-search={search} hidden />;
-}
-const addressOf = (canvasElement: HTMLElement) =>
-  new URLSearchParams(within(canvasElement).getByTestId("address").dataset.search ?? "");
 
 const price = (
   model: string,

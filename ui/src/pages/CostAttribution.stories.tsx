@@ -1,6 +1,6 @@
 import type { Meta, StoryObj } from "@storybook/react";
 import * as React from "react";
-import { MemoryRouter, Route, Routes, useLocation, useNavigate } from "react-router";
+import { MemoryRouter, Route, Routes, useNavigate } from "react-router";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import { BusinessUnits, Customers } from "./CostAttribution";
@@ -26,6 +26,8 @@ import {
   type Recorder,
   type StoryRole,
   withSampleRate,
+  AddressProbe,
+  addressOf,
 } from "./story-harness";
 import type { AttributionSpendRow, BusinessUnitRow, CustomerRow } from "@/lib/api";
 import { formattersFor } from "@/lib/i18n/format";
@@ -775,14 +777,6 @@ export const CustomersRefusedToAMember: Story = {
  * wrote to the address. It rides on a data attribute with no text, so no
  * `getByText` can match it.
  */
-function AddressProbe() {
-  const { search } = useLocation();
-  return <span data-testid="address" data-search={search} hidden />;
-}
-
-const addressOf = (canvasElement: HTMLElement) =>
-  new URLSearchParams(within(canvasElement).getByTestId("address").dataset.search ?? "");
-
 /** the query string of every spend rollup the screen asked for, oldest first */
 const spendQueries = (recorder: Recorder) =>
   recorder.calls

@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 
 import {
+  chartBucket,
   customRange,
   customWindow,
   dayRangeProblem,
@@ -264,6 +265,10 @@ describe("custom range (#3407)", () => {
     expect(dayRangeProblem({ since: "2026-02-31", until: "2026-03-02" })).toBe("invalid");
     expect(dayRangeProblem({ since: "2026-10-01", until: "" })).toBe("invalid");
     expect(dayRangeProblem({ since: "10/01/2026", until: "2026-10-02" })).toBe("invalid");
+    // before the year 2000 is not a day, as the server holds a saved view to
+    expect(dayRangeProblem({ since: "0001-01-01", until: "2026-10-02" })).toBe("invalid");
+    expect(dayRangeProblem({ since: "1999-12-31", until: "2026-10-02" })).toBe("invalid");
+    expect(dayRangeProblem({ since: "2000-01-01", until: "2000-01-02" })).toBeNull();
     expect(customWindow(null, "2026-10-02")).toBeNull();
   });
 
@@ -316,5 +321,18 @@ describe("custom range (#3407)", () => {
       DEFAULT_TIME_WINDOW,
     );
     expect(windowFromFilters({})).toBe(DEFAULT_TIME_WINDOW);
+  });
+});
+
+describe("chartBucket (#3407)", () => {
+  it("keeps the named windows hourly, as they always were", () => {
+    for (const w of TIME_WINDOWS) expect(chartBucket(w)).toBe("hour");
+  });
+
+  it("draws up to three days an hour at a time and anything longer a day at a time", () => {
+    expect(chartBucket(customWindow("2026-10-05", "2026-10-05")!)).toBe("hour");
+    expect(chartBucket(customWindow("2026-10-01", "2026-10-03")!)).toBe("hour");
+    expect(chartBucket(customWindow("2026-10-01", "2026-10-04")!)).toBe("day");
+    expect(chartBucket(customWindow("2026-01-01", "2026-10-29")!)).toBe("day");
   });
 });

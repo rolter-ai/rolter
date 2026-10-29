@@ -33,6 +33,8 @@ import {
   type FetchStub,
   type Recorder,
   type StoryRole,
+  AddressProbe,
+  addressOf,
 } from "./story-harness";
 import { formattersFor } from "@/lib/i18n/format";
 import en from "@/lib/i18n/locales/en.json";
@@ -2226,13 +2228,6 @@ const filterable = (
     }),
   );
 
-function AddressProbe() {
-  const { search } = useLocation();
-  return <span data-testid="address" data-search={search} hidden />;
-}
-const addressOf = (canvasElement: HTMLElement) =>
-  new URLSearchParams(within(canvasElement).getByTestId("address").dataset.search ?? "");
-
 const renderAt = (recorder: Recorder, address = "/", role?: StoryRole) => (
   <MemoryRouter initialEntries={[address]}>
     <Harness fetchStub={recorder.stub} role={role}>
@@ -2365,6 +2360,10 @@ export const ACustomRangeComesBackFromTheAddress: Story = {
     );
     await expect(canvas.getByLabelText("From")).toHaveValue("2026-10-01");
     await expect(canvas.getByLabelText("To")).toHaveValue("2026-10-07");
+    // seven days drawn an hour at a time would be 168 points: the chart is cut by the day
+    await waitFor(() =>
+      expect(lastRead(ranged, "/api/v1/analytics/timeseries").get("bucket")).toBe("day"),
+    );
   },
 };
 

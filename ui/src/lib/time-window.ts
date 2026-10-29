@@ -52,6 +52,9 @@ export function isTimeWindow(value: unknown): value is TimeWindow {
   return typeof value === "string" && (TIME_WINDOWS as readonly string[]).includes(value);
 }
 
+/** the first year a custom range may name; `me_saved_views.rs` holds the server to it too */
+const MIN_DAY_YEAR = 2000;
+
 const DAY = /^(\d{4})-(\d{2})-(\d{2})$/;
 
 /** `YYYY-MM-DD` as local midnight, or null when it is not a real day */
@@ -59,6 +62,9 @@ function parseDay(raw: string | null | undefined): Date | null {
   const match = raw ? DAY.exec(raw) : null;
   if (!match) return null;
   const [year, month, day] = [Number(match[1]), Number(match[2]) - 1, Number(match[3])];
+  // the server holds a saved range to the same years (`MIN_DAY_YEAR`), and
+  // `new Date(99, …)` is 1999 besides, so an earlier year is not a day here
+  if (year < MIN_DAY_YEAR) return null;
   const date = new Date(year, month, day);
   // `new Date(2026, 1, 31)` is the 3rd of March, which is not the day that was typed
   return date.getFullYear() === year && date.getMonth() === month && date.getDate() === day
@@ -246,6 +252,22 @@ export function windowBounds(window: WindowSelection, now: Date = new Date()): W
       // `readWindowSelection`) reads as the default rather than as no bounds
       return windowBounds(DEFAULT_TIME_WINDOW, now);
   }
+}
+
+/** the longest custom range, in days, that is still drawn an hour at a time */
+const HOURLY_CUSTOM_DAYS = 3;
+
+/**
+ * How finely a chart over `window` is cut (#3407). The named windows are drawn
+ * an hour at a time as they always were. A custom range is as long as the
+ * person made it, and a month of hours is thousands of points, so one longer
+ * than three days is drawn a day at a time.
+ */
+export function chartBucket(window: WindowSelection): "hour" | "day" {
+  const range = customRange(window);
+  if (!range) return "hour";
+  const days = daysBetween(parseDay(range.since) as Date, parseDay(range.until) as Date) + 1;
+  return days > HOURLY_CUSTOM_DAYS ? "day" : "hour";
 }
 
 /**
@@ -440,36 +462,14 @@ export function useWindowLabel(): (window: WindowSelection) => string {
 }
 
 /**
- * The window a screen reads, kept in the address and nowhere else.
+ * The window a screen reads, kept in the address and nowhere else (#3407).
  *
  * {@link useTimeWindow} also remembers the pick for the next screen opened from
- * the nav rail. LLM Logs and the Dashboard do not: a saved view (#2452) names
- * its window, and a window carried in from another screen would make the same
- * address read two ways. An unknown value reads as the default.
- */
-export function useAddressWindow(): [TimeWindow, (next: TimeWindow) => void] {
-  const [params, setParams] = useSearchParams();
-  const window = readTimeWindow(params.get(TIME_WINDOW_PARAM));
-  const pick = React.useCallback(
-    (next: TimeWindow) =>
-      setParams(
-        (prev) => {
-          const out = new URLSearchParams(prev);
-          if (next === DEFAULT_TIME_WINDOW) out.delete(TIME_WINDOW_PARAM);
-          else out.set(TIME_WINDOW_PARAM, next);
-          return out;
-        },
-        { replace: true },
-      ),
-    [setParams],
-  );
-  return [window, pick];
-}
-
-/**
- * {@link useAddressWindow} for a screen that takes a custom range (#3407): the
- * selection is read from `window`, `since` and `until`, and a pick writes all
- * three, so a named window drops the days a range left in the address.
+ * the nav rail. LLM Logs, MCP Logs and the Dashboard do not: a saved view
+ * (#2452) names its window, and a window carried in from another screen would
+ * make the same address read two ways. The selection is read from `window`,
+ * `since` and `until`, and a pick writes all three, so a named window drops the
+ * days a range left in the address. An unknown value reads as `fallback`.
  */
 export function useAddressSelection(
   fallback: WindowSelection = DEFAULT_TIME_WINDOW,

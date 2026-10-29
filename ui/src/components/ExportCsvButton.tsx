@@ -10,8 +10,8 @@ import { downloadBlob } from "@/lib/audit-export";
 import { errorText } from "@/lib/error-copy";
 import { useFormat } from "@/lib/i18n/format";
 import {
-  blobSink,
   chooseDiskSink,
+  collectBlob,
   diskSaveSupported,
   ExportTruncatedError,
   pump,
@@ -19,8 +19,14 @@ import {
 } from "@/lib/stream-download";
 import { useToast } from "@/lib/toast";
 
-/** how an export ended, when it ended without a failure */
-type Outcome = "saved" | "cancelled";
+/**
+ * How an export ended, when it ended without a failure. `dismissed` is the save
+ * dialog being closed before anything was asked: a no that needs no toast.
+ */
+type Outcome = "saved" | "downloaded" | "cancelled" | "dismissed";
+
+/** how often the byte count under an export is redrawn */
+const PROGRESS_EVERY_MS = 1000;
 
 /**
  * The Export button of a screen whose figures end in a spreadsheet (#1838).
@@ -59,28 +65,54 @@ export function ExportCsvButton({
   const toast = useToast();
   const [bytes, setBytes] = React.useState(0);
   const controller = React.useRef<AbortController | null>(null);
+  // the count is redrawn about once a second, not per chunk: a screen reader
+  // announces each change of a live region, and a chunk is a few kilobytes
+  const shownAt = React.useRef(0);
+  const progress = (received: number) => {
+    const now = Date.now();
+    if (shownAt.current === 0 || now - shownAt.current >= PROGRESS_EVERY_MS) {
+      shownAt.current = now;
+      setBytes(received);
+    }
+  };
+  // an export outlives nothing: leaving the screen stops the request and drops
+  // the half-written file instead of finishing a download nobody is waiting on
+  const mounted = React.useRef(true);
+  React.useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      controller.current?.abort();
+    };
+  }, []);
   const exportFile = useMutation<Outcome>({
     mutationFn: async () => {
-      let sink: DownloadSink;
-      const gathered = blobSink();
+      let disk: DownloadSink | null = null;
       if (toDisk && diskSaveSupported()) {
-        const chosen = await chooseDiskSink(fallbackName);
+        disk = await chooseDiskSink(fallbackName);
         // the dialog was closed: nothing was asked of the server
-        if (!chosen) return "cancelled";
-        sink = chosen;
-      } else {
-        sink = gathered;
+        if (!disk) return "dismissed";
       }
       const abort = new AbortController();
       controller.current = abort;
+      shownAt.current = 0;
       setBytes(0);
       try {
         const file = await run(abort.signal);
-        await pump(file.stream, sink, { signal: abort.signal, onProgress: setBytes });
-        if (sink === gathered) downloadBlob(file.name ?? fallbackName, gathered.blob("text/csv"));
-        return "saved";
+        if (disk) {
+          await pump(file.stream, disk, { signal: abort.signal, onProgress: progress });
+          return "saved";
+        }
+        const blob = await collectBlob(file.stream, {
+          signal: abort.signal,
+          onProgress: progress,
+        });
+        downloadBlob(file.name ?? fallbackName, blob);
+        return "downloaded";
       } catch (error) {
-        await sink.abort();
+        // pump has dropped the file already when it failed; a request that
+        // failed before any byte came (a 429, a refusal) has not
+        await disk?.abort();
         if (abort.signal.aborted) return "cancelled";
         throw error;
       } finally {
@@ -88,10 +120,16 @@ export function ExportCsvButton({
       }
     },
     onSuccess: (outcome) => {
-      if (outcome === "saved") {
-        toast.push({ tone: "success", title: t("analytics.export.downloaded") });
-      } else {
+      if (outcome === "dismissed" || !mounted.current) return;
+      if (outcome === "cancelled") {
         toast.push({ tone: "info", title: t("analytics.export.cancelled") });
+      } else {
+        // the disk path saves under the name the person picked, so the sentence
+        // about the server's file name is only for the download
+        toast.push({
+          tone: "success",
+          title: t(outcome === "saved" ? "analytics.export.saved" : "analytics.export.downloaded"),
+        });
       }
     },
     onError: (error) =>

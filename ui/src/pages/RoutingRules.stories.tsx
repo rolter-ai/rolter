@@ -1433,8 +1433,8 @@ export const ShowsTheObservedShareBesideTheConfiguredSplit: Story = {
 /**
  * The log records the variant that answered, so a variant others fail over to
  * reads high in Observed (#3409). The first-attempt column counts the requests
- * it served without a failover, which is the share the weights set: here the
- * canary is configured at 10%, answered 22% of the requests because of
+ * it answered with no failover, the closer comparison with the weights: here
+ * the canary is configured at 10%, answered 22% of the requests because of
  * failovers, and took 10% of the first attempts.
  */
 const failingOver = observing([
@@ -1462,7 +1462,7 @@ export const FirstAttemptsAreComparedWithTheConfiguredSplit: Story = {
     );
     await expect(cells("canary").slice(0, 4)).toEqual(["canary", "10%", "22%", "10%"]);
     await expect(
-      dialog.getByText(/counts only the requests it served without another target/),
+      dialog.getByText(/share of requests answered on the first attempt, with no failover/),
     ).toBeVisible();
   },
 };

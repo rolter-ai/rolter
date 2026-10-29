@@ -49,9 +49,11 @@ const num = (v: number | string | null | undefined) => Number(v ?? 0);
  * diluting every share. It counts first attempts and failovers alike, because
  * the log records the variant that answered, so a variant that is failed over
  * to reads higher than its weight; the note under the table says so. Beside
- * it, the first-attempt share counts only the requests a variant served
- * without another target failing over to it (#3409): that is the share the
- * weights set, so it is the one to compare with the configured split. A
+ * it, the first-attempt share counts only the requests a variant answered
+ * with no failover (#3409), the closer comparison with the configured split.
+ * It is not exact: a request first sent to one variant that failed over is
+ * logged under the variant that answered, so it counts for neither, and a
+ * variant that often fails over reads below its weight (#3505). A
  * ClickHouse that cannot tell the two apart sends no first-attempt count, and
  * the column is left out rather than drawn as a guess.
  *

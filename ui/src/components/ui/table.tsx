@@ -17,13 +17,17 @@ export interface TableColumn<T> {
   rowHeader?: boolean;
   width?: string | number;
   /**
-   * Classes for this column's header and body cells, for what only some
-   * columns do: hide below a container width (`hidden @min-[720px]:table-cell`),
-   * truncate, take a colour.
+   * Classes for this column's header and body cells, for what both share:
+   * hiding below a container width (`hidden @min-[720px]:table-cell`).
    */
   className?: string;
   /** classes for this column's header cell alone, after `className` */
   headerClassName?: string;
+  /**
+   * Classes for this column's body cells alone, after `className`: truncating,
+   * a colour. A colour belongs here, since a header keeps the header's own.
+   */
+  cellClassName?: string;
   /**
    * Classes for this column's `<col>`. A table where any column sets one draws a
    * `<colgroup>`, which is what sizes the columns of a `table-fixed` table and
@@ -240,6 +244,7 @@ export function Table<T extends object>({
                         c.align ? ALIGN[c.align] : c.rowHeader ? "text-left" : undefined,
                         stacked && STACKED_CELL,
                         c.className,
+                        c.cellClassName,
                         stacked && c.stackedClassName,
                         cellClass,
                       )}

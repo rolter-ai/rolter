@@ -1,6 +1,6 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { focusManager } from "@tanstack/react-query";
-import { MemoryRouter, useLocation } from "react-router";
+import { MemoryRouter } from "react-router";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import Logs from "./Logs";
@@ -27,6 +27,8 @@ import {
   type FetchStub,
   type Recorder,
   withSampleRate,
+  AddressProbe,
+  addressOf,
 } from "./story-harness";
 import type { BusinessUnitRow, CustomerRow, InvocationRow, VirtualKeyRow } from "@/lib/api";
 import { formattersFor } from "@/lib/i18n/format";
@@ -985,6 +987,33 @@ export const TimeStatusAndCostStayInFrameInRussian: Story = {
 };
 
 /**
+ * Every column header is drawn the same way (#3448): a column's body colour
+ * (the muted Provider, Latency, Tokens and Cost cells) stays off its header,
+ * which keeps the header's own, so the row of headers reads as one.
+ */
+export const EveryColumnHeaderHasTheHeaderColour: Story = {
+  render: () => (
+    <Harness fetchStub={withLogs(ROWS)}>
+      <Logs />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByText(fmt.timeMs(ROWS[0].ts));
+    // the rail and the drawer are closed, so every column has room
+    const headers = Array.from(canvasElement.querySelectorAll("thead th")).filter(
+      (th) => getComputedStyle(th).display !== "none",
+    );
+    await expect(headers.length).toBeGreaterThanOrEqual(6);
+    const colours = new Set(headers.map((th) => getComputedStyle(th).color));
+    await expect(Array.from(colours)).toHaveLength(1);
+    // and it is the header's muted colour, not the body text's
+    const body = getComputedStyle(canvasElement.querySelector("tbody td")!).color;
+    await expect(Array.from(colours)[0]).not.toBe(body);
+  },
+};
+
+/**
  * #1986: the table is narrower than the window once the filter rail and the
  * detail drawer are open beside it, and it gives up columns to the width it
  * actually has, widest need first, never Status or Cost. With both panels open
@@ -1158,14 +1187,6 @@ export const TheAttributionFilterIsSentToTheServer: Story = {
  * wrote to the address (#1985). It rides on a data attribute with no text, so
  * no `getByText` can match it.
  */
-function AddressProbe() {
-  const { search } = useLocation();
-  return <span data-testid="address" data-search={search} hidden />;
-}
-
-const addressOf = (canvasElement: HTMLElement) =>
-  new URLSearchParams(within(canvasElement).getByTestId("address").dataset.search ?? "");
-
 /** the query string of the screen's latest read of the log */
 const lastLogQuery = (recorder: Recorder) => {
   const reads = recorder.calls.filter((c) => c.url.includes("/analytics/invocations"));
@@ -4172,7 +4193,7 @@ export const ExportStreamsToTheFileThePersonChose: Story = {
     await dialog.within(() =>
       captureDownload(names, async () => {
         await userEvent.click(await canvas.findByRole("button", { name: "Export CSV" }));
-        await expectToast(canvasElement, /Export downloaded/, "success");
+        await expectToast(canvasElement, /Export saved to the file you chose/, "success");
       }),
     );
     await expect(dialog.files).toHaveLength(1);
@@ -4209,6 +4230,8 @@ export const ClosingTheSaveDialogSendsNoExport: Story = {
     await expect(dialog.files).toHaveLength(0);
     await expect(canvas.queryByRole("alert", { name: /export/i })).toBeNull();
     await expect(canvas.queryByText(/Export downloaded/)).toBeNull();
+    // closing the dialog is a no, not a cancelled export: nothing to announce
+    await expect(canvas.queryByText(/Export cancelled/)).toBeNull();
   },
 };
 
@@ -4239,6 +4262,8 @@ export const ACancelledExportKeepsNoPartialFile: Story = {
     const [file] = dialog.files;
     await expect(file!.aborted).toBe(true);
     await expect(file!.closed).toBe(false);
+    // and the empty file the dialog made is not left behind
+    await expect(file!.removed).toBe(true);
     await expect(await canvas.findByRole("button", { name: "Export CSV" })).toBeEnabled();
   },
 };
@@ -4271,6 +4296,7 @@ export const ATruncatedExportSaysSoAndKeepsNoFile: Story = {
     );
     await expect(dialog.files[0]!.aborted).toBe(true);
     await expect(dialog.files[0]!.closed).toBe(false);
+    await expect(dialog.files[0]!.removed).toBe(true);
     await expect(names).toHaveLength(0);
     // and the Blob path, which must not hand over what it gathered
     await stubSavePicker().within(
@@ -4319,5 +4345,6 @@ export const ABusyExportGateAsksToWait: Story = {
     await expectToast(canvasElement, /Could not export request log export/, "error");
     // the file chosen for an export that never started is not left behind
     await expect(dialog.files[0]!.aborted).toBe(true);
+    await expect(dialog.files[0]!.removed).toBe(true);
   },
 };

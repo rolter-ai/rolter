@@ -1,8 +1,9 @@
 // Saving a streamed file without holding it (#3434). The request-log export can
 // run to a million rows, so where the browser lets a page write straight to a
-// file it chosen (the File System Access API) the body is copied there a chunk
-// at a time; elsewhere it is gathered into a Blob and handed over at the end,
-// which is the only way left, and costs the memory the other path saves.
+// file it chose (the File System Access API) the body is copied there a chunk
+// at a time. Elsewhere it is handed to the browser's own Blob, which keeps the
+// body outside the JavaScript heap: collecting chunks into an array here would
+// hold the export twice over.
 
 /** where a streamed body goes */
 export interface DownloadSink {
@@ -11,12 +12,6 @@ export interface DownloadSink {
   close(): Promise<void>;
   /** the body did not end whole: drop what was written so far */
   abort(): Promise<void>;
-}
-
-/** a sink that gathers the body in memory, for browsers that cannot write to disk */
-export interface BlobSink extends DownloadSink {
-  /** the gathered body, once `close` has run */
-  blob(type: string): Blob;
 }
 
 /** the body stopped before its end: a row or time cap, or a dropped connection */
@@ -33,11 +28,17 @@ interface WritableFile {
   close(): Promise<void>;
   abort(reason?: unknown): Promise<void>;
 }
+interface SavedFileHandle {
+  createWritable(): Promise<WritableFile>;
+  getFile?(): Promise<{ size: number }>;
+  /** Chromium only */
+  remove?(): Promise<void>;
+}
 interface SavePicker {
   (options: {
     suggestedName?: string;
     types?: { description?: string; accept: Record<string, string[]> }[];
-  }): Promise<{ createWritable(): Promise<WritableFile> }>;
+  }): Promise<SavedFileHandle>;
 }
 
 function picker(): SavePicker | undefined {
@@ -60,11 +61,17 @@ export async function chooseDiskSink(suggestedName: string): Promise<DownloadSin
   const pick = picker();
   if (!pick) return null;
   let writable: WritableFile;
+  let handle: SavedFileHandle;
+  let empty = false;
   try {
-    const handle = await pick({
+    handle = await pick({
       suggestedName,
       types: [{ description: "CSV", accept: { "text/csv": [".csv"] } }],
     });
+    // the picker creates a file that was not there, at zero bytes. one that was
+    // empty when picked is one an aborted export may take away again; a file
+    // with content is the person's and is left as it was
+    empty = ((await handle.getFile?.().catch(() => undefined))?.size ?? 1) === 0;
     writable = await handle.createWritable();
   } catch (error) {
     if (error instanceof DOMException && error.name === "AbortError") return null;
@@ -73,24 +80,45 @@ export async function chooseDiskSink(suggestedName: string): Promise<DownloadSin
   return {
     write: (chunk) => writable.write(chunk),
     close: () => writable.close(),
-    // the writable stages into a swap file, so aborting leaves nothing behind
-    abort: () => writable.abort().catch(() => undefined),
+    abort: async () => {
+      // the writable stages into a swap file, so aborting drops what was written
+      await writable.abort().catch(() => undefined);
+      // and the empty file the picker made is not left behind, where the browser
+      // lets a page remove it (best effort: the rest of the export is unaffected)
+      if (empty) await handle.remove?.().catch(() => undefined);
+    },
   };
 }
 
-/** a sink that gathers the body in memory */
-export function blobSink(): BlobSink {
-  let chunks: Uint8Array[] = [];
-  return {
-    write: async (chunk) => {
-      chunks.push(chunk);
+/**
+ * Gather `stream` into a Blob without holding it in the page. The body is
+ * piped through a counter into the browser's own `Response.blob()`, which keeps
+ * it outside the JavaScript heap and reports the bytes as they pass. Aborting
+ * `signal` stops it with the `AbortError`; a stream that fails any other way is
+ * a body cut short, which is {@link ExportTruncatedError}.
+ */
+export async function collectBlob(
+  stream: ReadableStream<Uint8Array> | null,
+  options: { signal?: AbortSignal; onProgress?: (bytes: number) => void } = {},
+): Promise<Blob> {
+  const { signal, onProgress } = options;
+  if (!stream) return new Blob([]);
+  let seen = 0;
+  const counter = new TransformStream<Uint8Array, Uint8Array>({
+    transform(chunk, controller) {
+      seen += chunk.byteLength;
+      onProgress?.(seen);
+      controller.enqueue(chunk);
     },
-    close: async () => undefined,
-    abort: async () => {
-      chunks = [];
-    },
-    blob: (type) => new Blob(chunks as BlobPart[], { type }),
-  };
+  });
+  try {
+    return await new Response(stream.pipeThrough(counter, { signal })).blob();
+  } catch (error) {
+    if (signal?.aborted) throw signal.reason ?? error;
+    if (error instanceof DOMException && error.name === "AbortError") throw error;
+    if (error instanceof TypeError) throw new ExportTruncatedError();
+    throw error;
+  }
 }
 
 /**

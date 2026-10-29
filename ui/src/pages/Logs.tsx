@@ -396,6 +396,10 @@ function useLogFilters() {
   };
 }
 
+// the model's name beside the operation badge: it wraps in a wide row and is cut
+// with an ellipsis in a stacked one, so the badge keeps its room either way
+const MODEL_BESIDE_BADGE = "min-w-0 [overflow-wrap:anywhere] @max-[479px]:truncate";
+
 // the columns a reader cannot do without stay at every width: time, model,
 // status and cost, then the way into the drawer. the others give way as the
 // table narrows, the widest to go first, and each is also in the drawer. it is
@@ -403,10 +407,6 @@ function useLogFilters() {
 // sidebar, the filter rail and the detail drawer all take width the window
 // still reports as free, so a table that kept its columns scrolled Cost out of
 // view (#1986). `@container` is on the scroll area below
-
-// the model's name beside the operation badge: it wraps in a wide row and is cut
-// with an ellipsis in a stacked one, so the badge keeps its room either way
-const MODEL_BESIDE_BADGE = "min-w-0 [overflow-wrap:anywhere] @max-[479px]:truncate";
 const PROVIDER_COL = "hidden @min-[840px]:table-cell";
 const TOKENS_COL = "hidden @min-[720px]:table-cell";
 const LATENCY_COL = "hidden @min-[600px]:table-cell";
@@ -637,7 +637,7 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
   const cost = (row: InvocationRow) =>
     isUnpriced(row) || isUsageUnknown(row) ? null : fmt.currency(num(row.cost_usd), currency);
   // the columns a reader cannot do without stay at every width and the others
-  // give way as the table narrows (see the note above `PROVIDER_COL`); below
+  // give way as the table narrows (see the note above `PROVIDER_COL`, which decides each width); below
   // 480px each row stacks, a column's `stackedClassName` placing its cell in the
   // grid (#2446)
   const columns: TableColumn<InvocationRow>[] = [
@@ -648,7 +648,7 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
       // the clock and its milliseconds, which tell rows apart. the day is in
       // the title and in the drawer's verdict, not repeated on every row of a
       // 24 hour window
-      className: "truncate whitespace-nowrap",
+      cellClassName: "truncate whitespace-nowrap",
       stackedClassName:
         "@max-[479px]:col-start-1 @max-[479px]:row-start-2 @max-[479px]:text-[color:var(--text-secondary)]",
       render: (_, r) => (
@@ -661,7 +661,7 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
       key: "model",
       header: t("pages.logs.model"),
       // what is left once the fixed ones have theirs
-      className: "[overflow-wrap:anywhere]",
+      cellClassName: "[overflow-wrap:anywhere]",
       stackedClassName:
         "@max-[479px]:col-start-1 @max-[479px]:row-start-1 @max-[479px]:truncate @max-[479px]:whitespace-nowrap @max-[479px]:text-sm",
       cellProps: (r) => ({ title: r.model }),
@@ -681,7 +681,8 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
       key: "provider",
       header: t("common.provider"),
       colClassName: "hidden w-[148px] @min-[840px]:table-column",
-      className: cn(PROVIDER_COL, "truncate whitespace-nowrap text-[color:var(--text-secondary)]"),
+      className: PROVIDER_COL,
+      cellClassName: "truncate whitespace-nowrap text-[color:var(--text-secondary)]",
       render: (_, r) => r.provider || "—",
     },
     {
@@ -710,7 +711,8 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
       header: t("pages.logs.latency"),
       align: "right",
       colClassName: "hidden w-24 @min-[600px]:table-column",
-      className: cn(LATENCY_COL, "text-[color:var(--text-secondary)]"),
+      className: LATENCY_COL,
+      cellClassName: "text-[color:var(--text-secondary)]",
       render: (_, r) => t("analytics.ms", { value: fmt.number(Math.round(num(r.latency_ms))) }),
     },
     {
@@ -718,7 +720,8 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
       header: t("pages.logs.tokens"),
       align: "right",
       colClassName: "hidden w-[88px] @min-[720px]:table-column",
-      className: cn(TOKENS_COL, "text-[color:var(--text-secondary)]"),
+      className: TOKENS_COL,
+      cellClassName: "text-[color:var(--text-secondary)]",
       render: (_, r) =>
         isUsageUnknown(r) ? (
           <span title={t("analytics.usageUnknownHint")}>
@@ -733,7 +736,7 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
       header: t("pages.logs.cost"),
       align: "right",
       colClassName: "w-[84px] @min-[480px]:w-24",
-      className: "whitespace-nowrap text-[color:var(--text-secondary)]",
+      cellClassName: "whitespace-nowrap text-[color:var(--text-secondary)]",
       stackedClassName: "@max-[479px]:col-start-2 @max-[479px]:row-start-2",
       render: (_, r) =>
         cost(r) ??
@@ -750,7 +753,7 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
       header: <span className="sr-only">{t("analytics.details")}</span>,
       align: "right",
       colClassName: "w-7 @min-[480px]:w-9",
-      className: "pl-0 pr-2 @min-[480px]:pl-0 @min-[480px]:pr-2.5",
+      cellClassName: "pl-0 pr-2 @min-[480px]:pl-0 @min-[480px]:pr-2.5",
       stackedClassName:
         "@max-[479px]:col-start-3 @max-[479px]:row-span-2 @max-[479px]:row-start-1 @max-[479px]:justify-self-end",
       // the row's click target is a mouse convenience; this button is the
