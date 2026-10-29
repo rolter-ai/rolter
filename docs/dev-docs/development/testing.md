@@ -125,7 +125,7 @@ eval "$(just test-pg)"   # starts rolter-test-pg on 127.0.0.1:55433 if needed, e
 cargo nextest run -p rolter-store -p rolter-control --features postgres
 ```
 
-The server url may name a Unix socket instead of a host (`postgres://root@%2Fvar%2Frun%2Fpostgresql/postgres`): every suite, including the out-of-slots test of `test_schema.rs`, derives its urls from the parsed options rather than rebuilding `host:port` by hand (#3257). A socket still has to accept the role without a password prompt that peer authentication would refuse (`trust`, or a role matching the OS user).
+The server url may name a Unix socket instead of a host (`postgres://root@%2Fvar%2Frun%2Fpostgresql/postgres`): every suite, including the out-of-slots test of `test_schema.rs`, derives its urls from the parsed options rather than rebuilding `host:port` by hand (#3257). The out-of-slots test creates a role of its own and connects as it, so over a socket the cluster needs a `trust` or password rule for it; where `pg_hba.conf` says `peer`, Postgres refuses the role before it reaches the connection limit and the test skips with that reason.
 
 The recipe is idempotent: it creates the `rolter-test-pg` container the first
 time, starts it again after a reboot, and otherwise only prints the export line,
