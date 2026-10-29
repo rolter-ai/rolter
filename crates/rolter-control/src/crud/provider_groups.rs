@@ -166,6 +166,26 @@ fn require_group_not_config_owned(state: &ControlState, slug: &str) -> ApiResult
     Ok(())
 }
 
+/// [`require_group_not_config_owned`] for a stored group of `org`: refused only
+/// when the file owns that very row, so an org's group that shares a slug with
+/// a global file group stays its own (#3516).
+fn require_group_row_not_config_owned(
+    state: &ControlState,
+    org: Uuid,
+    slug: &str,
+) -> ApiResult<()> {
+    if state
+        .config_owned
+        .group_rows
+        .contains(&(org.to_string(), slug.to_string()))
+    {
+        return Err(ApiError::Core(Error::Config(format!(
+            "provider group '{slug}' is config-owned and cannot be modified via the API"
+        ))));
+    }
+    Ok(())
+}
+
 async fn view_of(state: &ControlState, group: ProviderGroup) -> ApiResult<ProviderGroupView> {
     let members = ProviderGroupRepo(pool(state)).members(group.id).await?;
     Ok(ProviderGroupView { group, members })
@@ -289,7 +309,7 @@ async fn update_provider_group(
         _ => ScopeChain::org(existing.org_id),
     };
     authorize(&state, &principal, chain, cap!("provider_group", Update)).await?;
-    require_group_not_config_owned(&state, &existing.slug)?;
+    require_group_row_not_config_owned(&state, existing.org_id, &existing.slug)?;
     if let Some(Some(project_id)) = body.project_id {
         require_scope_project(&state, existing.org_id, project_id).await?;
     }
@@ -368,7 +388,7 @@ async fn delete_provider_group(
         None => ScopeChain::org(existing.org_id),
     };
     authorize(&state, &principal, chain, cap!("provider_group", Delete)).await?;
-    require_group_not_config_owned(&state, &existing.slug)?;
+    require_group_row_not_config_owned(&state, existing.org_id, &existing.slug)?;
     repo.delete(id).await?;
     publish_config_change(&state).await?;
     log_audit(
