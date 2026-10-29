@@ -299,7 +299,15 @@ impl ProviderRow {
             "falcon" => ProviderKind::Falcon,
             "system_one" => ProviderKind::SystemOne,
             "infinity" => ProviderKind::Infinity,
-            other => return Err(Error::Store(format!("unknown provider kind '{other}'"))),
+            // a kind from a newer release, a downgrade or a hand-written row
+            // (#3469): read fail-closed as `Unknown`, which the snapshot
+            // sanitizer omits with everything that named it, rather than
+            // failing every tenant's config load over one row (#3347)
+            other => {
+                tracing::warn!(provider = %row.name, kind = other,
+                    "provider kind this build does not know; the provider is not served");
+                ProviderKind::Unknown
+            }
         };
         let api_key = match (row.ciphertext.as_deref(), row.nonce.as_deref(), kek) {
             (Some(ciphertext), Some(nonce), Some(kek)) => match kek.decrypt(ciphertext, nonce) {
@@ -872,9 +880,9 @@ impl PostgresConfigStore {
     /// problem each, naming the entity, the value and what happens to the row
     /// (#3446). Since #3347 such a value no longer fails the snapshot, so
     /// without these lines the row would simply stop being served: a route on
-    /// an unknown strategy is left out by the sanitizer, a provider of an
-    /// unknown kind cannot be read into the config, and a budget or rate limit
-    /// on an unknown scope is skipped by the loader and not enforced.
+    /// an unknown strategy and a provider of an unknown kind (#3469) are left
+    /// out by the sanitizer, and a budget or rate limit on an unknown scope is
+    /// skipped by the loader and not enforced.
     async fn unknown_value_problems(
         &self,
         budgets: &[Budget],
@@ -910,8 +918,8 @@ impl PostgresConfigStore {
                 problems.push(ConfigProblem {
                     message: format!(
                         "provider '{name}' has kind '{kind}', which this build does not know; \
-                         it is not served until the control plane is upgraded or the kind is \
-                         changed"
+                         it is left out of the snapshot, and so is what named it, until the \
+                         control plane is upgraded or the kind is changed"
                     ),
                     owner: ProblemOwner::Tenant(Tenancy {
                         org_id: org.to_string(),
@@ -4996,9 +5004,9 @@ mod tests {
         assert!(strategy.message.contains("left out"), "{strategy:?}");
         assert_eq!(strategy.owner, tenant);
 
-        let kind = find("kind 'quantum'");
+        let kind = find("has kind 'quantum'");
         assert!(kind.message.contains("provider 'future'"), "{kind:?}");
-        assert!(kind.message.contains("not served"), "{kind:?}");
+        assert!(kind.message.contains("left out"), "{kind:?}");
         assert_eq!(
             kind.owner,
             crate::ProblemOwner::Tenant(rolter_core::Tenancy {
@@ -5020,6 +5028,87 @@ mod tests {
         assert!(class.message.contains("route 'kept'"), "{class:?}");
         assert!(class.message.contains("omitted"), "{class:?}");
         assert_eq!(class.owner, tenant);
+    }
+
+    /// #3469: one org's provider row of a kind this build does not know used
+    /// to fail the whole load, so no tenant's config was published. It now
+    /// reads as `Unknown`, the sanitizer leaves out that provider and the route
+    /// that named it, and every other org's config loads and serves.
+    #[tokio::test]
+    async fn an_unknown_provider_kind_is_left_out_and_the_other_orgs_still_load() {
+        if !test_database::is_configured() {
+            eprintln!("skipping: {} not set", test_database::URL_ENV);
+            return;
+        }
+        let db = fresh_db().await;
+        let pool = db.pool().clone();
+        sqlx::query("alter table providers drop constraint if exists providers_kind_check")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let mut projects = Vec::new();
+        for (slug, provider, kind) in [("acme", "known", "openai"), ("newer", "future", "quantum")]
+        {
+            let org: Uuid =
+                sqlx::query_scalar("insert into orgs (name, slug) values ($1, $1) returning id")
+                    .bind(slug)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            let team: Uuid = sqlx::query_scalar(
+                "insert into teams (org_id, name) values ($1, 'core') returning id",
+            )
+            .bind(org)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            let project: Uuid = sqlx::query_scalar(
+                "insert into projects (team_id, name) values ($1, 'api') returning id",
+            )
+            .bind(team)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            let provider_id: Uuid = sqlx::query_scalar(
+                "insert into providers (org_id, name, slug, kind, api_base)
+                 values ($1, $2, $2, $3, 'https://a.example') returning id",
+            )
+            .bind(org)
+            .bind(provider)
+            .bind(kind)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            let route: Uuid = sqlx::query_scalar(
+                "insert into routes (project_id, model, strategy)
+                 values ($1, $2, 'round_robin') returning id",
+            )
+            .bind(project)
+            .bind(format!("{slug}-model"))
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            sqlx::query(
+                "insert into route_targets (route_id, provider_id, weight) values ($1, $2, 1)",
+            )
+            .bind(route)
+            .bind(provider_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+            projects.push(project);
+        }
+
+        let mut config = PostgresConfigStore::new(pool).load().await.unwrap();
+        let unknown = config.fail_closed_unknown_report();
+        assert_eq!(unknown.kinds.get("provider_kind"), Some(&1), "{unknown:?}");
+        let providers: Vec<&str> = config.providers.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(providers, ["known"]);
+        let routes: Vec<&str> = config.routes.iter().map(|r| r.model.as_str()).collect();
+        assert_eq!(routes, ["acme-model"]);
+        config
+            .validate_snapshot()
+            .expect("the rest of the config is servable");
     }
 
     // the adaptive-routing kill switch and blend weights are control-plane

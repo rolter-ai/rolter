@@ -156,7 +156,10 @@ stays `Unknown` is counted and logged there too. On the control plane,
 way in `GET /api/v1/config/problems` (#3446, `unknown_value_problems` in the
 postgres store), owned by the row's tenant: a route's strategy, a provider's kind,
 a budget's or rate limit's scope, beside the budget period (#1902) and the
-`takes_over` class (#3321) it already named. The
+`takes_over` class (#3321) it already named. The postgres store reads a stored provider kind it
+does not know as `ProviderKind::Unknown` (#3469) and a route strategy the same
+way, so one such row never fails the load for every tenant; the sanitizer then
+leaves it out. The
 control plane's sanitizer applies the same readings, so an older control plane
 reading a newer row serves them too. A config file is written by hand, so there
 an unknown value is a typo: `GatewayConfig::from_toml_str` refuses it, and the
