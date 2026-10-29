@@ -65,8 +65,6 @@ def keycloak(stack) -> Keycloak:
         realm=REALM,
         redirect_uris=[f"{CONTROL_URL}/*"],
         groups=[GROUP_PLATFORM, GROUP_UNMAPPED],
-        user=KeycloakUser(username="seed", email="seed@example.com", password="seed-password"),
-        member_of=[],
     )
     try:
         yield kc
@@ -200,7 +198,6 @@ def test_leaving_the_idp_group_revokes_the_role_it_granted(
         assert refused.status_code == 403, refused.text
     finally:
         browser.close()
-        keycloak.set_group_membership(REALM, user.username, GROUP_PLATFORM, member=True)
 
     roles = {
         (m["role"], m["source"])
