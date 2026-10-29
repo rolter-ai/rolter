@@ -538,8 +538,8 @@ async fn variants_take_the_route_s_permissions() {
 
 /// #3373: a variant target's `takes_over` is validated like a route target's,
 /// stored, returned and carried to the snapshot; the all-restricted rule counts
-/// the route's own targets and every variant together, on the variants write
-/// and on the route's target writes.
+/// the targets the gateway dials (the variants' when there are any, the pool
+/// otherwise, #3487), on the variants write and on the route's target writes.
 #[tokio::test]
 async fn a_variant_target_takes_over_failure_classes() {
     skip_without_db!();
@@ -698,6 +698,7 @@ async fn the_routes_api_counts_only_the_targets_the_gateway_dials() {
     )
     .await;
     assert_eq!(status, 200, "{body}");
+    let before = config_version(db.pool()).await;
     refused_restricted(
         put(
             &client,
@@ -709,6 +710,7 @@ async fn the_routes_api_counts_only_the_targets_the_gateway_dials() {
         .await,
         400,
     );
+    assert_eq!(config_version(db.pool()).await, before);
 
     // with ordinary variant targets the pool is not dialled, so the pool's
     // writes may leave it only fallbacks
@@ -738,6 +740,8 @@ async fn the_routes_api_counts_only_the_targets_the_gateway_dials() {
     .execute(db.pool())
     .await
     .unwrap();
+    // every refusal below writes nothing
+    let before = config_version(db.pool()).await;
     // POST a target
     let resp = client
         .post(format!("{route_url}/targets"))
@@ -747,6 +751,7 @@ async fn the_routes_api_counts_only_the_targets_the_gateway_dials() {
         .unwrap();
     let status = resp.status().as_u16();
     refused_restricted((status, resp.json().await.unwrap()), 400);
+    assert_eq!(config_version(db.pool()).await, before);
     // PUT the target list
     refused_restricted(
         put(
@@ -757,6 +762,7 @@ async fn the_routes_api_counts_only_the_targets_the_gateway_dials() {
         .await,
         400,
     );
+    assert_eq!(config_version(db.pool()).await, before);
     // DELETE a target
     let resp = client
         .delete(format!("{base}/api/v1/route-targets/{pooled_id}"))
@@ -765,6 +771,7 @@ async fn the_routes_api_counts_only_the_targets_the_gateway_dials() {
         .unwrap();
     let status = resp.status().as_u16();
     refused_restricted((status, resp.json().await.unwrap()), 409);
+    assert_eq!(config_version(db.pool()).await, before);
 
     // clearing the variants hands the route back to its ordinary pool
     let (status, body) = put(&client, variants_url.clone(), json!({"variants": []})).await;

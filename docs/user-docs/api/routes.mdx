@@ -216,11 +216,15 @@ restricted target that would be the route's only kind, on `takes_over`, and
 `DELETE /api/v1/route-targets/{id}` answers `409` rather than remove the last
 ordinary target of a route that has restricted ones.
 
-The rule counts the route's own targets and every variant's together, the way
-the gateway validates a route. A route whose variants have an ordinary target
-may keep only restricted targets of its own, and a variant set that would leave
-the route with only restricted targets, its own and the variants' together, is
-refused on `variants`, an empty set included.
+The rule counts the targets the gateway dials, the way it validates a route: a
+route with variants dials only the variants' targets, and a route without them
+dials its own. So while a route has variants with an ordinary target, its own
+targets may all be restricted. A variant set whose targets are all restricted is
+refused on `variants`, even when the route's own targets include an ordinary
+one. An empty set is refused too when the route's own targets are then all
+restricted. On a route whose variants already hold only restricted targets,
+every write to its own targets is refused until the variants are fixed or
+cleared.
 
 ## Audit log
 
