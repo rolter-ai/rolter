@@ -406,24 +406,23 @@ pub(crate) fn random_token() -> String {
 /// refusal the callback gives (#2339): a browser is sent back to the login
 /// screen, any other caller gets the `403`. A slug no enabled provider answers
 /// to is refused the same way with `unknown_provider` (#2606), the JSON caller
-/// keeping its `400`.
+/// keeping its `400` and now getting the code (#3468).
 async fn start_login(
     State(state): State<ControlState>,
     headers: HeaderMap,
     Path(slug): Path<String>,
 ) -> ApiResult<Response> {
     let Some(provider) = SsoRepo(pool(&state)).find_provider_by_slug(&slug).await? else {
-        let error = invalid(format!("no enabled sso provider '{slug}'"));
-        if !crate::mcp_oauth_flow::prefers_html(&headers) {
-            return Ok(([(header::VARY, "accept")], error.into_response()).into_response());
-        }
         // the slug is not echoed: nothing vouches for it, and the login
         // screen has no provider to name
         let failure = CallbackFailure {
             reason: SsoFailure::UnknownProvider,
             slug: None,
-            error,
+            error: invalid(format!("no enabled sso provider '{slug}'")),
         };
+        if !crate::mcp_oauth_flow::prefers_html(&headers) {
+            return Ok(([(header::VARY, "accept")], json_refusal(failure)).into_response());
+        }
         tracing::info!(
             reason = failure.reason.code(),
             "sso sign-in refused: unknown provider"
@@ -624,6 +623,45 @@ impl SsoFailure {
             Self::InternalError => "internal_error",
         }
     }
+
+    /// What a JSON caller is told, beside the code. Written once per family
+    /// and free of anything that would identify the account or repeat what the
+    /// identity provider said; the detail an operator acts on is logged.
+    const fn message(self) -> &'static str {
+        match self {
+            Self::IdpError => "the identity provider refused the sign-in",
+            Self::StateExpired => "the sign-in is unknown or has expired; start it again",
+            Self::SsoDisabled => SSO_DISABLED_MESSAGE,
+            Self::UnknownProvider => "no single sign-on provider answers to this address",
+            Self::NoMappedGroup => {
+                "the account is in no group mapped to a role, and the provider has no default role"
+            }
+            Self::AccountDeactivated => "the account is deactivated",
+            Self::AccountOutsideOrg => {
+                "this provider may not sign in as this account: it is a superadmin, holds a \
+                 deployment role or holds roles outside the provider's organization"
+            }
+            Self::IdpVerificationFailed => {
+                "the identity provider could not be reached or its response did not verify"
+            }
+            Self::NotConfigured => "this deployment cannot finish a single sign-on sign-in",
+            Self::InternalError => crate::crud::INTERNAL_ERROR,
+        }
+    }
+}
+
+/// What a JSON caller is answered when the callback refuses: the status the
+/// failure already carried, with the failure's published code (#3468). A
+/// browser is sent the same code in `sso_error`; without this a client that
+/// does not ask for HTML saw only the generic role refusal for a cross-org
+/// adoption, and could not tell it from any other `403`.
+fn json_refusal(failure: CallbackFailure) -> Response {
+    let status = failure.error.into_response().status();
+    let error = serde_json::json!({
+        "code": failure.reason.code(),
+        "message": failure.reason.message(),
+    });
+    (status, Json(serde_json::json!({ "error": error }))).into_response()
 }
 
 /// A callback that did not complete: the family for a browser, the error a
@@ -636,12 +674,14 @@ struct CallbackFailure {
     error: ApiError,
 }
 
+const SSO_DISABLED_MESSAGE: &str = "single sign-on is turned off for this provider's organization";
+
 /// The refusal for a provider whose org has single sign-on turned off, at the
 /// start of a login and at its callback alike.
 fn sso_disabled() -> ApiError {
     ApiError::CodedForbidden {
         code: SsoFailure::SsoDisabled.code(),
-        message: "single sign-on is turned off for this provider's organization".to_string(),
+        message: SSO_DISABLED_MESSAGE.to_string(),
     }
 }
 
@@ -740,7 +780,7 @@ async fn callback(
             if browser {
                 Redirect::to(&refusal_url(public_base_url(&state), &failure)).into_response()
             } else {
-                failure.error.into_response()
+                json_refusal(failure)
             }
         }
     };

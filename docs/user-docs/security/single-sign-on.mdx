@@ -224,7 +224,7 @@ Choosing **Continue with …** on the sign-in screen takes the user to the ident
 
 If the sign-in is refused, the user comes back to the sign-in screen with the reason. The reasons are: the provider declined the sign-in, the sign-in took too long or was already used, SSO is turned off for the organization, the user is in no mapped group, the account is deactivated, the account belongs to another organization, to a superadmin or to a holder of a deployment role, or the provider's answer could not be verified. The provider's own error text is never shown.
 
-Scripts and other non-browser clients that call the callback directly (without asking for `text/html`) still receive the session as JSON.
+Scripts and other non-browser clients that call the callback directly (without asking for `text/html`) still receive the session as JSON. When the sign-in is refused they receive the reason as a stable `error.code` in the JSON body, with the status the refusal always had. The codes are `idp_error`, `state_expired`, `sso_disabled`, `unknown_provider`, `no_mapped_group`, `account_deactivated`, `account_outside_org`, `idp_verification_failed`, `not_configured` and `internal_error`; `account_outside_org`, for example, is a `403` for an account that is a superadmin, holds a deployment role or has roles in another organization. The message never names the account.
 
 ## What the login flow refuses to do
 

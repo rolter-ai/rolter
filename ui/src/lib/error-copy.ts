@@ -12,9 +12,13 @@ import { GatewayError } from "@/lib/gateway";
 
 /** the `code`s the control plane sends that the dashboard has a sentence for */
 export const KNOWN_ERROR_CODES = [
+  "account_deactivated",
+  "account_outside_org",
   "analytics_query_failed",
   "analytics_query_timeout",
   "api_token_inactive",
+  "idp_error",
+  "idp_verification_failed",
   "internal",
   "invalid_body",
   "invalid_credentials",
@@ -29,15 +33,19 @@ export const KNOWN_ERROR_CODES = [
   "mfa_enrolment_required",
   "name_taken",
   "no_local_password",
+  "no_mapped_group",
   "no_such_endpoint",
   "open_mode_no_session",
   "password_login_disabled",
   "referenced",
   "request_timeout",
   "scope_mismatch",
+  "sso_disabled",
+  "state_expired",
   "store_timeout",
   "too_many_attempts",
   "unauthenticated",
+  "unknown_provider",
 ] as const;
 
 export interface ErrorCopy {
