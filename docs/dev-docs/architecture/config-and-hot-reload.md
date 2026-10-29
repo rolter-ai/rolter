@@ -139,7 +139,19 @@ entity alone:
 | `McpAuthKind` (#952)                                                                  | the server is refused, in the MCP proxy                                                                                                                             |
 | `FailureClass` (a route target's `takes_over`, #3390)                                 | kept in the set but matches no failure, so the target stays a fallback that is never dialled for it; dropping it would empty the set and put the target in the pool |
 
-Each value read this way is logged once per applied snapshot at `warn`. The
+Each value read this way is logged once per applied snapshot at `warn`, and
+counted (#3424): `GatewayConfig::fail_closed_unknown_report` returns the same
+lines with a count per _kind_ (`UnknownValues::kinds`), and the watcher sets the
+gauge `rolter_snapshot_unknown_values{kind}` from it once the snapshot applies,
+back to `0` for a kind the new snapshot no longer carries. A kind is a fixed name
+for the enum or entity (`provider_kind`, `route_strategy`, `provider_group_strategy`,
+`budget_scope`, `budget_period`, `rate_limit_scope`, `failure_class`,
+`unpriced_policy`, `queue_backpressure`, `role_profile`, `param_policy_mode`,
+`guard_action`, `streaming_post_call`, `failure_mode`, `violation_action`,
+`streaming_strategy`, `guard_provider_kind`, `pii_direction`, `pii_restoration`,
+`pii_streaming`), never the value or the entity's name, so the label set is bounded
+by the build and leaks no tenant data. A budget or rate limit whose scope or period
+stays `Unknown` is counted and logged there too. The
 control plane's sanitizer applies the same readings, so an older control plane
 reading a newer row serves them too. A config file is written by hand, so there
 an unknown value is a typo: `GatewayConfig::from_toml_str` refuses it, and the

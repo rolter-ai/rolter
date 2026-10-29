@@ -312,6 +312,13 @@ Both histograms are labelled `{model="..."}` so you can track latency per model 
 
   </Accordion>
 
+  <Accordion title="rolter_snapshot_unknown_values">
+    **Type:** Gauge · **Labels:** `kind`
+
+    How many values of the configuration snapshot the gateway applied last it does not know, by the kind of enum or entity they belong to: `provider_kind`, `route_strategy`, `budget_period`, `failure_mode` and so on. A value from a newer release is read fail-closed for its own entity: the provider or route is left out, the setting takes its most restrictive reading, or the budget refuses (see [Upgrading](/deployment/upgrading#upgrade-order)). The label is the kind, never the value or the name of the entity, and a kind drops back to `0` once a snapshot applies without it. Alert on any non-zero value: the gateway is ignoring part of its configuration until it is upgraded, and its log names each value at `warn`.
+
+  </Accordion>
+
   <Accordion title="rolter_usage_records_dropped_total">
     **Type:** Counter
 
@@ -406,7 +413,7 @@ the default.
 | Counters and gauges | every `rolter_*_total`, `rolter_config_version`, `rolter_snapshot_format`, `rolter_snapshot_format_refused`                                                                                                                                    | observable               |
 | Process and runtime | `process.*`, `tokio.runtime.*`                                                                                                                                                                                                                 | observable, OTLP only    |
 | Labelled counters   | `rolter_target_requests_total`, `rolter_variant_requests_total`, `rolter_complexity_route_requests_total`, `rolter_route_limit_blocks_total`, `rolter_redis_reconnects_total`, `rolter_redis_connect_failures_total`, `rolter_fail_open_total` | observable               |
-| Labelled gauges     | `rolter_provider_queue_depth`, `rolter_provider_inflight`, `rolter_redis_connected`                                                                                                                                                            | observable               |
+| Labelled gauges     | `rolter_provider_queue_depth`, `rolter_provider_inflight`, `rolter_redis_connected`, `rolter_snapshot_unknown_values`                                                                                                                          | observable               |
 | Histograms          | `rolter_request_latency_ms`, `rolter_request_ttft_ms`, `rolter_provider_queue_wait_ms`                                                                                                                                                         | recorded per measurement |
 
 Counters and gauges are **observable instruments**: nothing is pushed on the

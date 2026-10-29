@@ -23,6 +23,7 @@ const LABELLED_FAIL_OPEN: &str = "rolter_fail_open_total";
 const LABELLED_PROVIDER_INFLIGHT: &str = "rolter_provider_inflight";
 const LABELLED_PROVIDER_QUEUE_DEPTH: &str = "rolter_provider_queue_depth";
 const LABELLED_REDIS_CONNECTED: &str = "rolter_redis_connected";
+const LABELLED_SNAPSHOT_UNKNOWN: &str = "rolter_snapshot_unknown_values";
 const LABELLED_GUARD_DECISIONS: &str = "rolter_guardrail_policy_decisions_total";
 const LABELLED_GUARD_VIOLATIONS: &str = "rolter_guardrail_policy_violations_total";
 const GUARD_PROVIDER_LATENCY: &str = "rolter_guardrail_provider_latency_ms";
@@ -86,6 +87,10 @@ pub const LABELLED_GAUGE_FAMILIES: &[rolter_core::telemetry::LabelledFamily] = &
     (
         LABELLED_REDIS_CONNECTED,
         "1 while a redis consumer holds a live connection, 0 once its last attempt failed or its connection was lost",
+    ),
+    (
+        LABELLED_SNAPSHOT_UNKNOWN,
+        "values of the last applied snapshot this gateway does not know and read fail-closed, by the kind of enum or entity",
     ),
 ];
 
@@ -491,6 +496,11 @@ pub struct Metrics {
     /// is built against a redis url. A deployment without redis registers
     /// none and reports none (#1772)
     redis: DashMap<RedisConsumer, Arc<RedisConnStats>>,
+    /// how many values of each kind the last applied snapshot carried that
+    /// this build does not know (#3424). A kind is a fixed name
+    /// (`rolter_core::UnknownValues::kinds`), never a value or an entity, so
+    /// the label set is bounded by the build; a kind once seen stays at `0`
+    snapshot_unknown: DashMap<&'static str, AtomicU64>,
     /// semantic guardrail calls keyed by (policy, provider, stage, outcome)
     /// (#459). Policy and provider names come from the configuration; stage
     /// and outcome are fixed vocabularies
@@ -1239,6 +1249,13 @@ impl Metrics {
                 ));
             }
         }
+        for entry in self.snapshot_unknown.iter() {
+            out.push((
+                LABELLED_SNAPSHOT_UNKNOWN,
+                vec![("kind", (*entry.key()).to_string())],
+                entry.value().load(Relaxed),
+            ));
+        }
         out
     }
 
@@ -1320,7 +1337,42 @@ impl Metrics {
         self.render_rejection_counters(&mut out);
         self.render_provider_load(&mut out);
         self.render_redis(&mut out);
+        self.render_snapshot_unknown(&mut out);
         out
+    }
+
+    /// Record what the snapshot just applied read fail-closed (#3424): each
+    /// kind's count, and `0` for a kind an earlier snapshot had and this one
+    /// does not. Called once per applied snapshot, off the request path.
+    pub fn set_snapshot_unknown_values(
+        &self,
+        kinds: &std::collections::BTreeMap<&'static str, u32>,
+    ) {
+        for entry in self.snapshot_unknown.iter() {
+            entry.value().store(0, Relaxed);
+        }
+        for (kind, count) in kinds {
+            self.snapshot_unknown
+                .entry(kind)
+                .or_default()
+                .store(u64::from(*count), Relaxed);
+        }
+    }
+
+    /// Append `rolter_snapshot_unknown_values{kind}` (#3424).
+    fn render_snapshot_unknown(&self, out: &mut String) {
+        let name = LABELLED_SNAPSHOT_UNKNOWN;
+        let help = family_help(name);
+        let _ = writeln!(out, "# HELP {name} {help}");
+        let _ = writeln!(out, "# TYPE {name} gauge");
+        for entry in self.snapshot_unknown.iter() {
+            let _ = writeln!(
+                out,
+                "{name}{{kind=\"{}\"}} {}",
+                entry.key(),
+                entry.value().load(Relaxed)
+            );
+        }
     }
 
     /// Append the per-provider queue gauges and the queue-wait histogram
@@ -1757,6 +1809,7 @@ mod tests {
         m.observe_rejection("missing_key");
         let _load = m.provider_load("vllm");
         watch_all_redis_consumers(&m);
+        m.set_snapshot_unknown_values(&[("provider_kind", 1)].into_iter().collect());
 
         let produced: Vec<&str> = m
             .labelled_for_export()

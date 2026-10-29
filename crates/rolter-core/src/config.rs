@@ -4219,16 +4219,46 @@ fn resolve_unknown<T: PartialEq + Copy>(
     value: &mut T,
     unknown: T,
     reading: T,
-    problems: &mut Vec<String>,
+    problems: &mut UnknownValues,
+    kind: &'static str,
     what: impl FnOnce() -> String,
 ) {
     if *value == unknown {
         *value = reading;
-        problems.push(format!(
-            "{} has a value this gateway does not know; it is read as the most \
-             restrictive known value until the gateway is upgraded",
-            what()
-        ));
+        problems.push(
+            kind,
+            format!(
+                "{} has a value this gateway does not know; it is read as the most \
+                 restrictive known value until the gateway is upgraded",
+                what()
+            ),
+        );
+    }
+}
+
+/// The values of a snapshot a gateway read fail-closed (#3347), from
+/// [`GatewayConfig::fail_closed_unknown_report`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct UnknownValues {
+    /// one line per value, plus one per entity a value made the sanitizer
+    /// leave out, for the gateway's log. Names entities, which are tenant
+    /// data, so it never becomes a metric label
+    pub lines: Vec<String>,
+    /// how many values of each kind were read fail-closed (#3424). A kind is
+    /// the enum or entity a value belongs to, from a fixed vocabulary
+    /// (`provider_kind`, `route_strategy`, `failure_mode`, ...), never the
+    /// value itself, so it is safe as a bounded metric label
+    pub kinds: std::collections::BTreeMap<&'static str, u32>,
+}
+
+impl UnknownValues {
+    fn push(&mut self, kind: &'static str, line: String) {
+        self.count(kind);
+        self.lines.push(line);
+    }
+
+    fn count(&mut self, kind: &'static str) {
+        *self.kinds.entry(kind).or_default() += 1;
     }
 }
 
@@ -4258,18 +4288,71 @@ impl GatewayConfig {
     /// rest of the snapshot is untouched. Costs a walk of the config and
     /// nothing more when every value is known.
     pub fn fail_closed_unknown_values(&mut self) -> Vec<String> {
-        let mut problems = Vec::new();
+        self.fail_closed_unknown_report().lines
+    }
+
+    /// [`fail_closed_unknown_values`](Self::fail_closed_unknown_values) with
+    /// a count of the values read per kind, which the gateway exports as
+    /// `rolter_snapshot_unknown_values{kind}` (#3424). A budget or rate limit
+    /// whose scope or period stays `Unknown` is counted, and logged, here too:
+    /// it is no less a value the gateway does not know for being enforced as
+    /// binding rather than rewritten.
+    pub fn fail_closed_unknown_report(&mut self) -> UnknownValues {
+        let mut problems = UnknownValues::default();
         self.resolve_unknown_settings(&mut problems);
-        let unknown_entity = self
+        for budget in &self.budgets {
+            if budget.scope == BudgetScope::Unknown {
+                problems.push(
+                    "budget_scope",
+                    format!(
+                        "budget '{}' has a scope this gateway does not know; it is enforced \
+                         as binding until the gateway is upgraded",
+                        budget.id
+                    ),
+                );
+            }
+            if budget.period == BudgetPeriod::Unknown {
+                problems.push(
+                    "budget_period",
+                    format!(
+                        "budget {} '{}' has a period this gateway does not know; it is \
+                         enforced as binding until the gateway is upgraded",
+                        budget.scope.key_label(),
+                        budget.id
+                    ),
+                );
+            }
+        }
+        for limit in &self.rate_limits {
+            if limit.scope == BudgetScope::Unknown {
+                problems.push(
+                    "rate_limit_scope",
+                    format!(
+                        "rate limit '{}' has a scope this gateway does not know; it is \
+                         enforced as binding until the gateway is upgraded",
+                        limit.id
+                    ),
+                );
+            }
+        }
+        let unknown_kinds = self
             .providers
             .iter()
-            .any(|p| p.kind == ProviderKind::Unknown)
-            || self
-                .routes
-                .iter()
-                .any(|r| r.strategy == BalancingStrategy::Unknown);
-        if unknown_entity {
-            problems.extend(self.sanitize_for_snapshot());
+            .filter(|p| p.kind == ProviderKind::Unknown)
+            .count();
+        let unknown_strategies = self
+            .routes
+            .iter()
+            .filter(|r| r.strategy == BalancingStrategy::Unknown)
+            .count();
+        for _ in 0..unknown_kinds {
+            problems.count("provider_kind");
+        }
+        for _ in 0..unknown_strategies {
+            problems.count("route_strategy");
+        }
+        if unknown_kinds + unknown_strategies > 0 {
+            problems.lines.extend(self.sanitize_for_snapshot());
         }
         problems
     }
@@ -4277,7 +4360,7 @@ impl GatewayConfig {
     /// The settings half of
     /// [`fail_closed_unknown_values`](Self::fail_closed_unknown_values), also
     /// run first by the sanitizer so a control plane serves the same reading.
-    fn resolve_unknown_settings(&mut self, problems: &mut Vec<String>) {
+    fn resolve_unknown_settings(&mut self, problems: &mut UnknownValues) {
         use crate::guardrail_webhook::FailureMode;
         use crate::guardrails::{GuardAction, StreamingPostCall};
         use crate::pii_sanitizer::{RestorationPolicy, SanitizeDirection, StreamingResponse};
@@ -4288,6 +4371,7 @@ impl GatewayConfig {
             UnpricedPolicy::Unknown,
             UnpricedPolicy::Block,
             problems,
+            "unpriced_policy",
             || "unpriced_policy".to_string(),
         );
         resolve_unknown(
@@ -4295,6 +4379,7 @@ impl GatewayConfig {
             BackpressurePolicy::Unknown,
             BackpressurePolicy::Error,
             problems,
+            "queue_backpressure",
             || "queue.backpressure".to_string(),
         );
         for provider in &mut self.providers {
@@ -4305,6 +4390,7 @@ impl GatewayConfig {
                     RoleProfile::Unknown,
                     RoleProfile::SystemOnly,
                     problems,
+                    "role_profile",
                     || format!("provider '{name}' role_profile"),
                 );
             }
@@ -4314,6 +4400,7 @@ impl GatewayConfig {
                     RoleProfile::Unknown,
                     RoleProfile::SystemOnly,
                     problems,
+                    "role_profile",
                     || format!("provider '{name}' role profile for model '{model}'"),
                 );
             }
@@ -4321,11 +4408,14 @@ impl GatewayConfig {
         for group in &mut self.provider_groups {
             if group.strategy == BalancingStrategy::Unknown && !group.members.is_empty() {
                 group.members.clear();
-                problems.push(format!(
-                    "provider group '{}' has a balancing strategy this gateway does not know; \
+                problems.push(
+                    "provider_group_strategy",
+                    format!(
+                        "provider group '{}' has a balancing strategy this gateway does not know; \
                      it keeps no members, so it resolves nothing until the gateway is upgraded",
-                    group_slug(group)
-                ));
+                        group_slug(group)
+                    ),
+                );
             }
         }
         for route in &mut self.routes {
@@ -4335,16 +4425,20 @@ impl GatewayConfig {
                 OverrideMode::Unknown,
                 OverrideMode::Deny,
                 problems,
+                "param_policy_mode",
                 || format!("route '{model}' param_policy.mode"),
             );
             // left in place: the class matches no failure, and keeping it keeps
             // the target out of the pool (#3390)
             for (provider, class) in unknown_failure_classes(route) {
-                problems.push(format!(
-                    "route '{model}' target '{provider}' takes over a failure class this \
-                     gateway does not know ('{class}'); it takes over nothing for it until \
-                     the gateway is upgraded"
-                ));
+                problems.push(
+                    "failure_class",
+                    format!(
+                        "route '{model}' target '{provider}' takes over a failure class this \
+                         gateway does not know ('{class}'); it takes over nothing for it until \
+                         the gateway is upgraded"
+                    ),
+                );
             }
         }
         for budget in &mut self.budgets {
@@ -4355,6 +4449,7 @@ impl GatewayConfig {
                     UnpricedPolicy::Unknown,
                     UnpricedPolicy::Block,
                     problems,
+                    "unpriced_policy",
                     || format!("budget {scope} '{id}' unpriced_policy"),
                 );
             }
@@ -4366,6 +4461,7 @@ impl GatewayConfig {
                 GuardAction::Unknown,
                 GuardAction::Block,
                 problems,
+                "guard_action",
                 || format!("guardrail rule '{name}' action"),
             );
         }
@@ -4374,6 +4470,7 @@ impl GatewayConfig {
             StreamingPostCall::Unknown,
             StreamingPostCall::Reject,
             problems,
+            "streaming_post_call",
             || "guardrails.streaming_post_call".to_string(),
         );
         resolve_unknown(
@@ -4381,6 +4478,7 @@ impl GatewayConfig {
             FailureMode::Unknown,
             FailureMode::FailClosed,
             problems,
+            "failure_mode",
             || "guardrail_webhook.failure_mode".to_string(),
         );
         for provider in &mut self.semantic_guards.providers {
@@ -4390,6 +4488,7 @@ impl GatewayConfig {
                 FailureMode::Unknown,
                 FailureMode::FailClosed,
                 problems,
+                "failure_mode",
                 || format!("semantic guard provider '{name}' failure_mode"),
             );
         }
@@ -4400,6 +4499,7 @@ impl GatewayConfig {
                 ViolationAction::Unknown,
                 ViolationAction::Block,
                 problems,
+                "violation_action",
                 || format!("semantic guard policy '{name}' on_violation"),
             );
             resolve_unknown(
@@ -4407,6 +4507,7 @@ impl GatewayConfig {
                 StreamingStrategy::Unknown,
                 StreamingStrategy::Reject,
                 problems,
+                "streaming_strategy",
                 || format!("semantic guard policy '{name}' streaming"),
             );
         }
@@ -4418,7 +4519,9 @@ impl GatewayConfig {
             .chain(&self.semantic_guards.providers);
         for provider in guard_providers {
             if provider.kind == crate::guardrail_webhook::GuardProviderKind::Unknown {
-                problems.push(format!(
+                problems.push(
+                    "guard_provider_kind",
+                    format!(
                     "semantic guard provider '{}' kind has a value this gateway does not know; \
                      it blocks its stage until the gateway is upgraded",
                     if provider.name.trim().is_empty() {
@@ -4426,7 +4529,8 @@ impl GatewayConfig {
                     } else {
                         provider.name.trim()
                     }
-                ));
+                    ),
+                );
             }
         }
         let pii = &mut self.pii_sanitizer;
@@ -4435,6 +4539,7 @@ impl GatewayConfig {
             SanitizeDirection::Unknown,
             SanitizeDirection::Both,
             problems,
+            "pii_direction",
             || "pii_sanitizer.direction".to_string(),
         );
         resolve_unknown(
@@ -4442,6 +4547,7 @@ impl GatewayConfig {
             RestorationPolicy::Unknown,
             RestorationPolicy::Never,
             problems,
+            "pii_restoration",
             || "pii_sanitizer.restoration".to_string(),
         );
         resolve_unknown(
@@ -4449,6 +4555,7 @@ impl GatewayConfig {
             StreamingResponse::Unknown,
             StreamingResponse::Reject,
             problems,
+            "pii_streaming",
             || "pii_sanitizer.streaming".to_string(),
         );
         resolve_unknown(
@@ -4456,6 +4563,7 @@ impl GatewayConfig {
             FailureMode::Unknown,
             FailureMode::FailClosed,
             problems,
+            "failure_mode",
             || "pii_sanitizer.failure_mode".to_string(),
         );
         for instance in &mut self.plugins.instances {
@@ -4465,6 +4573,7 @@ impl GatewayConfig {
                 FailureMode::Unknown,
                 FailureMode::FailClosed,
                 problems,
+                "failure_mode",
                 || format!("plugin '{slug}' failure_mode"),
             );
         }
@@ -4957,9 +5066,10 @@ impl GatewayConfig {
     /// every provider, route and file key it dropped whole, so a client does
     /// not have to read the sentences to learn which.
     pub fn sanitize_for_snapshot_report(&mut self) -> SnapshotReport {
-        let mut warnings = Vec::new();
+        let mut unknown = UnknownValues::default();
+        self.resolve_unknown_settings(&mut unknown);
+        let mut warnings = unknown.lines;
         let mut omitted_entries = Vec::new();
-        self.resolve_unknown_settings(&mut warnings);
         self.prune_invalid_prompt_templates(&mut warnings);
         self.prune_invalid_model_prices(&mut warnings);
 
@@ -11578,6 +11688,41 @@ mod tests {
                  "failure_mode": "fail_sideways", "endpoint": "https://pl.example"}
             ]}
         })
+    }
+
+    /// Each value read fail-closed is counted under its kind, a fixed name
+    /// that never carries the value or the entity (#3424).
+    #[test]
+    fn unknown_values_are_counted_by_kind_and_never_by_value() {
+        let mut cfg: GatewayConfig = serde_json::from_value(snapshot_from_the_future())
+            .expect("a snapshot from a newer release decodes");
+        let report = cfg.fail_closed_unknown_report();
+        let count = |kind: &str| report.kinds.get(kind).copied().unwrap_or(0);
+        assert_eq!(count("provider_kind"), 1, "{:?}", report.kinds);
+        assert_eq!(count("route_strategy"), 1, "{:?}", report.kinds);
+        assert_eq!(count("provider_group_strategy"), 1, "{:?}", report.kinds);
+        assert_eq!(count("budget_scope"), 1, "{:?}", report.kinds);
+        assert_eq!(count("budget_period"), 1, "{:?}", report.kinds);
+        assert_eq!(count("rate_limit_scope"), 1, "{:?}", report.kinds);
+        assert_eq!(count("failure_class"), 1, "{:?}", report.kinds);
+        assert_eq!(count("unpriced_policy"), 2, "{:?}", report.kinds);
+        assert_eq!(count("role_profile"), 2, "{:?}", report.kinds);
+        assert_eq!(count("failure_mode"), 4, "{:?}", report.kinds);
+        for kind in report.kinds.keys() {
+            assert!(
+                kind.bytes().all(|b| b.is_ascii_lowercase() || b == b'_'),
+                "{kind}"
+            );
+            for value in ["quantum", "galaxy", "fortnightly", "future", "pool"] {
+                assert!(!kind.contains(value), "{kind}");
+            }
+        }
+        // every value is a line too, and the sanitizer's cascade adds more
+        let values: u32 = report.kinds.values().sum();
+        assert!(report.lines.len() >= values as usize, "{report:?}");
+        // a snapshot whose values are all known counts nothing
+        let mut known = GatewayConfig::default();
+        assert_eq!(known.fail_closed_unknown_report(), UnknownValues::default());
     }
 
     #[test]
