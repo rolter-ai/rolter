@@ -89,6 +89,12 @@ pub struct GatewayConfig {
     /// organization with no entry has never saved any and gets the defaults
     #[serde(default)]
     pub mcp_settings: Vec<McpOrgSettingsConfig>,
+    /// Whether an organization that never saved MCP settings enforces its
+    /// servers' tool manifests (#3398). Read by `rolter-seed --import` and
+    /// written by `rolter config export`; the control plane never ships it in
+    /// the snapshot, which carries the marker inside each server instead.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mcp_manifest_enforcement: Vec<McpManifestEnforcementConfig>,
     #[serde(default)]
     pub model_prices: Vec<ModelPriceConfig>,
     /// settlement currency and rate table. Budgets and accumulated spend are
@@ -2298,6 +2304,19 @@ pub struct McpOrgSettingsConfig {
     /// whether a call may name a tool the server's manifest does not declare
     #[serde(default)]
     pub allow_unlisted_tools: bool,
+}
+
+/// One organization's `orgs.mcp_enforce_manifests` marker in a bootstrap file
+/// (#3398): the organization by slug, and whether it enforces manifests until it
+/// saves MCP settings of its own.
+///
+/// An import never makes an existing organization stricter, so `enforce = true`
+/// is what a new organization already has and `enforce = false` is the only
+/// value that changes a row.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+pub struct McpManifestEnforcementConfig {
+    pub org: String,
+    pub enforce: bool,
 }
 
 /// One tool of one server, as a tool group names it.

@@ -406,6 +406,23 @@ const UNTIL: QueryParam = QueryParam::new(
      does not parse is a 400",
 );
 
+/// What `GET /api/v1/config/export` narrows by.
+const CONFIG_EXPORT_QUERY: &[QueryParam] = &[
+    QueryParam::new(
+        "org",
+        "string",
+        "the slug of one organization: export its rows only (and those no organization owns), \
+         which is how a deployment whose organizations share a route or provider name is \
+         exported. A slug no organization has is a 400",
+    ),
+    QueryParam::new(
+        "without_person_caps",
+        "boolean",
+        "`true` leaves caps on a person out, which name an account by its email, and counts \
+         them in the trailing comment; defaults to `false`",
+    ),
+];
+
 /// What a gateway sends on every snapshot poll (ADR-0038).
 const SNAPSHOT_QUERY: &[QueryParam] = &[
     QueryParam::new(
@@ -971,7 +988,8 @@ fn operations() -> Vec<Op> {
                 "/api/v1/config/export",
                 "exportConfig",
                 "The live configuration as an importable rolter.toml",
-            ),
+            )
+            .query(CONFIG_EXPORT_QUERY),
             Op::get(
                 "/api/v1/currency",
                 "getCurrency",

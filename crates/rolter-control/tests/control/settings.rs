@@ -88,6 +88,26 @@ async fn config_export_serves_importable_toml_without_credentials() {
     assert_eq!(parsed.providers.len(), 1);
     assert_eq!(parsed.providers[0].name, "openai");
     assert!(parsed.providers[0].api_key.is_none());
+
+    // the options narrow the document, and a slug nobody has is a 400 (#3440)
+    let scoped = client
+        .get(format!(
+            "{base}/api/v1/config/export?org=acme&without_person_caps=true"
+        ))
+        .bearer_auth(admin_token())
+        .send()
+        .await
+        .unwrap();
+    assert!(scoped.status().is_success(), "{}", scoped.status());
+    let scoped = scoped.text().await.unwrap();
+    assert!(scoped.contains("name = \"openai\""), "{scoped}");
+    let unknown = client
+        .get(format!("{base}/api/v1/config/export?org=nobody"))
+        .bearer_auth(admin_token())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(unknown.status(), 400);
 }
 
 /// `GET /api/v1/version` is the dashboard's one source for the update hint

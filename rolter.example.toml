@@ -489,6 +489,16 @@ disabled = false # revoke without deleting
 # base = "USD"
 # rates = { EUR = 1.09, GBP = 1.27, RUB = 0.011 }
 
+# --- mcp manifest enforcement (imported by rolter-seed, written by config export) ---
+# whether an organization that never saved mcp settings enforces its servers'
+# tool manifests. `org` is the slug. an import never makes an existing
+# organization stricter: `enforce = false` relaxes the organization the import
+# targets (other entries are skipped), and `enforce = true` changes nothing on
+# an organization that exists.
+# [[mcp_manifest_enforcement]]
+# org = "acme"
+# enforce = true
+
 # --- spend caps (enforced against redis-tracked cost) ---
 # a request is blocked with 402 when any matching budget's spend has reached its
 # limit (most-restrictive-wins across the scope chain). requires --redis-url;
