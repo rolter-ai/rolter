@@ -652,6 +652,16 @@ jobs:
       - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
         with:
           tool: nextest
+      - name: set up uv
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+      # the gateway's presidio_shim test spawns the reference shim under uvicorn
+      # (#3444). naming the interpreter makes a missing dependency fail that test
+      # instead of skipping it
+      - name: presidio shim virtualenv
+        run: |
+          uv venv --python 3.13 "${RUNNER_TEMP}/shim-venv"
+          uv pip install --python "${RUNNER_TEMP}/shim-venv" -r examples/presidio-restore-shim/requirements.txt
+          echo "ROLTER_TEST_SHIM_PYTHON=${RUNNER_TEMP}/shim-venv/bin/python" >> "${GITHUB_ENV}"
       - name: nextest (workspace, all features)
         # `shell: bash` adds pipefail, so the `| tee` keeps nextest's exit status
         shell: bash
@@ -669,8 +679,6 @@ jobs:
         run: cargo test --doc --workspace --all-features
       # the chart's own preflight must pass on the env it renders (#1939). it
       # needs the built launcher, which nextest has just compiled
-      - name: set up uv
-        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
       - name: set up helm
         uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
         with:
@@ -1031,6 +1039,25 @@ jobs:
           uvx --from "$ruff" ruff check scripts integration
           uvx --from "$ruff" ruff format --check scripts integration
 
+      # ── examples: the reference services under examples/ ──────────────────
+      # `examples/presidio-restore-shim/` has its own pytest suite, which
+      # nothing ran until #3429, so it could rot unseen when presidio or
+      # starlette moved. each example installs its own pinned
+      # requirements-dev.txt, which dependabot's pip entry for the directory
+      # bumps. the trainer printed on the semantic guard policies page is held
+      # to the golden vectors the gateway's local classifier is also tested
+      # against (#3455)
+      - name: examples (presidio restore shim, pytest)
+        id: examples-shim
+        if: ${{ !cancelled() && steps.uv.outcome == 'success' }}
+        working-directory: examples/presidio-restore-shim
+        run: uv run --no-project --python 3.13 --with-requirements requirements-dev.txt pytest -q
+      - name: examples (rolter-linear/1 trainer vectors, pytest)
+        id: examples-trainer
+        if: ${{ !cancelled() && steps.uv.outcome == 'success' }}
+        working-directory: examples/rolter-linear-trainer
+        run: uv run --no-project --python 3.13 --with-requirements requirements-dev.txt pytest -q
+
       # ── board automation: the add-to-board retry policy ───────────────────
       # project-automation.yml decides which GitHub API failures to wait out and
       # which to report, and it only runs on master when an issue or PR is
@@ -1163,6 +1190,8 @@ jobs:
           OUTCOME_RELEASE_HANDOFF_SELF_TEST: ${{ steps.release-handoff-self-test.outcome }}
           OUTCOME_RELEASE_GATE: ${{ steps.release-gate.outcome }}
           OUTCOME_RUFF: ${{ steps.ruff.outcome }}
+          OUTCOME_EXAMPLES_SHIM: ${{ steps.examples-shim.outcome }}
+          OUTCOME_EXAMPLES_TRAINER: ${{ steps.examples-trainer.outcome }}
           OUTCOME_PROJECT_AUTOMATION: ${{ steps.project-automation.outcome }}
           OUTCOME_DOGFOOD_SCRIPTS: ${{ steps.dogfood-scripts.outcome }}
           OUTCOME_SHELLCHECK: ${{ steps.shellcheck.outcome }}
@@ -1254,6 +1283,10 @@ jobs:
           row "release handoff wired" "release gate scripts against a fake gh" "${OUTCOME_RELEASE_GATE}" yes \
             "prek run release-gate --all-files"
           row "ruff" "ruff (python)" "${OUTCOME_RUFF}" yes "prek run ruff --all-files"
+          row "examples" "presidio restore shim (pytest)" "${OUTCOME_EXAMPLES_SHIM}" yes \
+            "cd examples/presidio-restore-shim && uv run --no-project --python 3.13 --with-requirements requirements-dev.txt pytest"
+          row "examples" "rolter-linear/1 trainer vectors (pytest)" "${OUTCOME_EXAMPLES_TRAINER}" yes \
+            "cd examples/rolter-linear-trainer && uv run --no-project --python 3.13 --with-requirements requirements-dev.txt pytest"
           row "board automation retry policy" "board automation retry policy" "${OUTCOME_PROJECT_AUTOMATION}" yes \
             "prek run project-automation --all-files"
           row "dogfood scripts" "dogfood scripts against a stub server" "${OUTCOME_DOGFOOD_SCRIPTS}" yes \

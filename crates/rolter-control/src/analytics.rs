@@ -35,6 +35,9 @@ pub struct ClickHouseClient {
     /// what the last `system.columns` probe found, shared by every clone so the
     /// whole control plane asks once per window (#2903)
     columns: Arc<ColumnCache>,
+    /// the same for `mcp_tool_call_logs`' optional columns (#3375)
+    #[cfg_attr(not(feature = "postgres"), allow(dead_code))]
+    pub(crate) mcp_columns: Arc<crate::request_log_columns::McpColumnCache>,
 }
 
 /// How long a connection to ClickHouse may take to open. A healthy server on
@@ -116,6 +119,7 @@ impl ClickHouseClient {
             base: url.trim_end_matches('/').to_string(),
             client: build_http(connect, request, pool_idle),
             columns: Arc::new(ColumnCache::new()),
+            mcp_columns: Arc::new(crate::request_log_columns::McpColumnCache::default()),
         }
     }
 
@@ -755,7 +759,7 @@ pub(crate) fn query_failed(what: &'static str, err: &anyhow::Error) -> Response 
 
 /// Whether the request never got an answer from ClickHouse: a refused or
 /// timed-out connection, as opposed to a status line carrying its error.
-fn is_transport(err: &anyhow::Error) -> bool {
+pub(crate) fn is_transport(err: &anyhow::Error) -> bool {
     err.chain()
         .any(|cause| cause.downcast_ref::<reqwest::Error>().is_some())
 }

@@ -133,31 +133,49 @@ async fn proxy(
             "mcp_transport_unsupported",
         );
     }
-    // a `tools/call` is recorded in the MCP tool-call log (#2395). `None` for
-    // every other request, and without parsing anything when no ClickHouse is
-    // configured, so the common path pays one flag check
-    let call = if method == Method::POST {
-        PendingCall::parse(
-            &state.mcp_events,
-            &body,
-            &CallContext {
-                server: &server.slug,
-                transport: &server.transport,
-                org_id: &key.org_id,
-                team_id: &key.team_id,
-                project_id: &key.project_id,
-                virtual_key_id: &key.id,
-                // the session is looked up by this id below, so on a per-user
-                // OAuth server it is the session owner
-                user_id: &key.user_id,
-                request_id: request_id.as_str(),
-                capture: &snapshot.logging.payload_capture,
-                redactor: &snapshot.payload_redactor,
-            },
-        )
-    } else {
-        None
+    // the body is read once, for the tool policy and the MCP tool-call log
+    // alike (#3399): a `tools/call` the policy lets through is recorded under
+    // the same case-folded keys it was judged by. Nothing is parsed when no rule
+    // applies and no ClickHouse is configured, so the common path pays two flag
+    // checks
+    let caller = crate::mcp_policy::Caller {
+        org_id: &key.org_id,
+        key_id: &key.id,
+        project_id: &key.project_id,
+        team_id: &key.team_id,
     };
+    let rules = crate::mcp_policy::Rules::of(&snapshot, server, &caller);
+    let is_post = method == Method::POST;
+    let read = if is_post {
+        crate::mcp_policy::Read::of(&body, rules.any(), state.mcp_events.enabled())
+    } else {
+        crate::mcp_policy::Read::Skipped
+    };
+    // a `tools/call` is recorded in the MCP tool-call log (#2395). `None` for
+    // every other request
+    let capture = &snapshot.logging.payload_capture;
+    let call = read
+        .single_call(capture.enabled && capture.max_bytes > 0)
+        .and_then(|request| {
+            PendingCall::from_request(
+                &state.mcp_events,
+                request,
+                &CallContext {
+                    server: &server.slug,
+                    transport: &server.transport,
+                    org_id: &key.org_id,
+                    team_id: &key.team_id,
+                    project_id: &key.project_id,
+                    virtual_key_id: &key.id,
+                    // the session is looked up by this id below, so on a per-user
+                    // OAuth server it is the session owner
+                    user_id: &key.user_id,
+                    request_id: request_id.as_str(),
+                    capture: &snapshot.logging.payload_capture,
+                    redactor: &snapshot.payload_redactor,
+                },
+            )
+        });
     // the credential is chosen by what the server row says it is. only `oauth`
     // consults the per-user session; the static kinds are a deployment-wide
     // credential and deliberately do not require one, which is the whole point
@@ -252,21 +270,15 @@ async fn proxy(
     // naming a tool outside them is refused before anything is forwarded, and
     // recorded in the MCP log like any other denial (#1403)
     let mut list_filter = None;
-    let caller = crate::mcp_policy::Caller {
-        org_id: &key.org_id,
-        key_id: &key.id,
-        project_id: &key.project_id,
-        team_id: &key.team_id,
-    };
     if method == Method::GET {
         // a stream the caller opens can carry the reply to a `tools/list`
         // posted elsewhere: a legacy `sse` server answers every POST with 202
         // and delivers the reply here, and a streamable-HTTP stream can be
         // replayed (#3297)
-        list_filter = crate::mcp_policy::stream_filter(&snapshot, server, &caller).map(Arc::new);
+        list_filter = crate::mcp_policy::stream_filter(&rules).map(Arc::new);
     }
     if method == Method::POST {
-        let decision = crate::mcp_policy::evaluate(&snapshot, server, &caller, &body);
+        let decision = crate::mcp_policy::evaluate_read(&snapshot, server, &rules, &read);
         list_filter = decision.list_filter.map(Arc::new);
         let (refused, message) = match decision.verdict {
             Verdict::Allow => (None, String::new()),
@@ -314,6 +326,10 @@ async fn proxy(
         }
     }
 
+    // the parsed body can be many times the size of the bytes. the log row has
+    // taken what it needs, so it is released before the wait on the upstream
+    drop(read);
+
     let Some(url) = downstream_url(&server.url, tail.as_deref(), query) else {
         return error(
             StatusCode::BAD_GATEWAY,
@@ -321,7 +337,6 @@ async fn proxy(
             "mcp_server_invalid",
         );
     };
-    let is_post = method == Method::POST;
     let mut headers = end_to_end_headers(headers);
     if list_filter.is_some() {
         // a compressed reply cannot be narrowed
@@ -346,9 +361,9 @@ async fn proxy(
             // an upstream that says the user's token was valid but too narrow
             // gets the step-up answer, not a bare 403 (#1417)
             if matches!(server.auth_kind, McpAuthKind::Oauth) {
-                if let Some(step_up) = insufficient_scope(&response, &server.slug) {
+                if let Some((step_up, scopes)) = insufficient_scope(&response, &server.slug) {
                     if let Some(call) = call {
-                        call.fail("auth_denied");
+                        call.fail_insufficient_scope(scopes);
                     }
                     return step_up;
                 }
@@ -393,8 +408,10 @@ async fn proxy(
 /// the upstream's would point `resource_metadata` at the upstream itself. The
 /// key's owner then re-consents with those scopes, through the dashboard or
 /// `POST /api/v1/mcp-servers/{id}/oauth/authorize` with `step_up_scopes`; until
-/// they do, every such call fails the same way and is logged as `auth_denied`.
-fn insufficient_scope(response: &reqwest::Response, slug: &str) -> Option<Response> {
+/// they do, every such call fails the same way and is logged as `auth_denied`,
+/// with the error `insufficient scope` and the scopes the challenge named
+/// (#3375), which are returned beside the answer.
+fn insufficient_scope(response: &reqwest::Response, slug: &str) -> Option<(Response, Vec<String>)> {
     use rolter_core::mcp_challenge::{challenge_scopes, is_insufficient_scope};
 
     if response.status() != reqwest::StatusCode::FORBIDDEN {
@@ -430,7 +447,7 @@ fn insufficient_scope(response: &reqwest::Response, slug: &str) -> Option<Respon
     if let Ok(value) = HeaderValue::from_str(&rebuilt) {
         answer.headers_mut().insert(header::WWW_AUTHENTICATE, value);
     }
-    Some(answer)
+    Some((answer, scopes))
 }
 
 /// A server configured to present a credential that did not reach the snapshot.
@@ -896,6 +913,29 @@ mod tests {
                 .unwrap_or_default()
                 .to_string(),
         )
+    }
+
+    /// #3399: a call a group governs, the policy allows and a decoder reads
+    /// through differently cased keys is forwarded and recorded, from the one
+    /// parse the policy made.
+    #[tokio::test]
+    async fn a_governed_allowed_call_with_other_key_cases_is_recorded() {
+        let mut config = with_group(&["get_issue"]);
+        config.mcp_servers[0].url = serving(200, None).await;
+        let mut state = AppState::new(&config);
+        let (sink, mut events) =
+            crate::mcp_log::McpEventSink::capturing(std::sync::Arc::new(Default::default()));
+        state.mcp_events = sink;
+        let body = Bytes::from(
+            r#"{"jsonrpc":"2.0","ID":1,"Method":"tools/call","Params":{"Name":"get_issue","Arguments":{}}}"#,
+        );
+        let response = post(state, body).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        // the row is written when the reply has been read
+        let _ = axum::body::to_bytes(response.into_body(), 4096).await;
+        let event = events.try_recv().expect("the allowed call is recorded");
+        assert_eq!(event.tool, "get_issue");
+        assert_ne!(event.status, "auth_denied");
     }
 
     /// #1403: a tool outside the organization's groups is refused before
@@ -1402,6 +1442,9 @@ mod tests {
             (event.status, event.tool.as_str()),
             ("auth_denied", "anything")
         );
+        // the row says why, and which scopes the upstream asked for (#3375)
+        assert_eq!(event.error, "insufficient scope");
+        assert_eq!(event.error_scopes, ["repo", "read:org"]);
     }
 
     #[tokio::test]

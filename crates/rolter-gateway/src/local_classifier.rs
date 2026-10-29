@@ -698,6 +698,34 @@ pub(crate) mod tests {
         );
     }
 
+    /// The vectors the documented python trainer is held to
+    /// (`examples/rolter-linear-trainer/`, #3455): the same file, so a model
+    /// trained with the script on the docs page scores what this computes.
+    #[test]
+    fn the_golden_vectors_match_the_documented_trainer() {
+        let vectors: Vec<Value> = serde_json::from_str(include_str!(
+            "../tests/fixtures/local_classifier/golden_features.json"
+        ))
+        .expect("the golden vectors are json");
+        assert!(!vectors.is_empty());
+        for vector in vectors {
+            let text = vector["text"].as_str().expect("text");
+            let ngrams = vector["ngrams"].as_u64().expect("ngrams") as usize;
+            let buckets = vector["buckets"].as_u64().expect("buckets") as usize;
+            let expected: Vec<usize> = vector["present"]
+                .as_array()
+                .expect("present")
+                .iter()
+                .map(|bucket| bucket.as_u64().expect("a bucket") as usize)
+                .collect();
+            assert_eq!(
+                features(text, ngrams, buckets),
+                expected,
+                "{text:?} at {buckets} buckets and {ngrams}-grams"
+            );
+        }
+    }
+
     #[test]
     fn words_lowercase_and_split_on_anything_not_alphanumeric() {
         assert_eq!(
