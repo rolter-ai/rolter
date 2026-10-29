@@ -183,6 +183,7 @@
               "api/tenancy",
               "api/member-management",
               "api/org-projects",
+              "api/org-virtual-keys",
               "api/teams",
               "api/deployment-users",
               "api/api-tokens",

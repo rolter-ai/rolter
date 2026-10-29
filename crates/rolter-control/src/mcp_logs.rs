@@ -26,6 +26,7 @@ use crate::crud::{ApiError, ApiResult};
 use crate::ingest_failure::{self, Stream};
 use crate::rbac::{authorize_superadmin, Principal};
 use crate::rbac_matrix::superadmin_cap;
+use crate::request_log_columns::McpColumns;
 use crate::time_bounds::{InvalidParam, Query, TimeBounds};
 use crate::ControlState;
 
@@ -45,37 +46,43 @@ pub(crate) fn router() -> Router<ControlState> {
 const MCP_PROBE_SQL: &str = "select name from system.columns \
      where database = currentDatabase() and table = 'mcp_tool_call_logs' format JSON";
 
-/// Whether the table has `error_scopes` (`042`). A table the probe cannot see,
-/// or a probe ClickHouse refuses, reads as "present", the behaviour before the
-/// probe existed, so it is no worse than it was; a server that cannot be
-/// reached is an error, since the select that follows would fail on the same
-/// connection.
-async fn has_error_scopes(ch: &crate::analytics::ClickHouseClient) -> anyhow::Result<bool> {
+/// Which optional columns the table has: `error_scopes` (`042`) and
+/// `notification` (`047`). A table the probe cannot see, or a probe ClickHouse
+/// refuses, reads as having them all, the behaviour before the probe existed, so
+/// it is no worse than it was; a server that cannot be reached is an error, since
+/// the select that follows would fail on the same connection.
+async fn mcp_columns(ch: &crate::analytics::ClickHouseClient) -> anyhow::Result<McpColumns> {
     let now = std::time::Instant::now();
-    if let Some(present) = ch.mcp_columns.fresh(now) {
-        return Ok(present);
+    if let Some(columns) = ch.mcp_columns.fresh(now) {
+        return Ok(columns);
     }
-    let present = match ch.query(MCP_PROBE_SQL, &[]).await {
-        Ok(rows) if rows.is_empty() => true,
-        Ok(rows) => rows
-            .iter()
-            .any(|row| row.get("name").and_then(Value::as_str) == Some("error_scopes")),
+    let columns = match ch.query(MCP_PROBE_SQL, &[]).await {
+        Ok(rows) if rows.is_empty() => McpColumns::ALL,
+        Ok(rows) => McpColumns::from_names(
+            rows.iter()
+                .filter_map(|row| row.get("name").and_then(Value::as_str)),
+        ),
         Err(err) if crate::analytics::is_transport(&err) => return Err(err),
         Err(err) => {
             tracing::warn!(
                 error = %err,
                 "could not read the columns of mcp_tool_call_logs; selecting every optional column"
             );
-            true
+            McpColumns::ALL
         }
     };
-    ch.mcp_columns.store(now, present);
-    if !present {
+    ch.mcp_columns.store(now, columns);
+    if !columns.error_scopes {
         tracing::info!(
             "mcp_tool_call_logs lacks error_scopes; apply clickhouse/042_mcp_log_error_scopes.sql to record them"
         );
     }
-    Ok(present)
+    if !columns.notification {
+        tracing::info!(
+            "mcp_tool_call_logs lacks notification; apply clickhouse/047_mcp_log_notification.sql to tell notifications from replied calls"
+        );
+    }
+    Ok(columns)
 }
 
 #[derive(Debug, Deserialize)]
@@ -108,6 +115,10 @@ struct IngestEvent {
     /// the column to its `now64(3)` default stamps the ingest time instead
     /// (#1210)
     ts: Option<String>,
+    /// the call was a JSON-RPC notification, so no reply was awaited (#3466).
+    /// Stored only when set, so a table without `047` still accepts the row
+    #[serde(default)]
+    notification: bool,
 }
 
 fn validate_atom(value: &str, name: &str) -> Result<(), String> {
@@ -182,7 +193,7 @@ async fn ingest_event(
     let redactor = redactor_for(&capture_policy);
     let ts = event_ts(event.ts.as_deref())
         .map_err(|message| ApiError::Core(rolter_core::Error::Config(message)))?;
-    let row = json!({
+    let mut row = json!({
         "ts": ts,
         "event_id": event.event_id,
         "server": event.server,
@@ -201,6 +212,9 @@ async fn ingest_event(
         "result": capture(event.result, capture_policy.enabled, capture_policy.max_bytes, &redactor),
         "error": safe_error(&event.status, event.error.as_deref()),
     });
+    if event.notification {
+        row["notification"] = json!(1);
+    }
     let ch = client_or_503(&state).map_err(|_| {
         ingest_failure::unconfigured(
             &state.metrics,
@@ -333,13 +347,18 @@ async fn list_events(
 /// table-qualified columns because an unqualified `arguments` in the same
 /// select would resolve to the masked alias and always report "nothing
 /// withheld".
-fn event_detail_sql(error_scopes: bool) -> String {
+fn event_detail_sql(columns: McpColumns) -> String {
     // the column's own default stands in until the migration is applied, typed
     // as the column is so the row reads the same either way
-    let error_scopes = if error_scopes {
+    let error_scopes = if columns.error_scopes {
         "error_scopes"
     } else {
         "emptyArrayString() as error_scopes"
+    };
+    let notification = if columns.notification {
+        "notification"
+    } else {
+        "toUInt8(0) as notification"
     };
     format!(
         "select ts, event_id, server, tool, transport, status, latency_ms, org_id, team_id, project_id, \
@@ -349,7 +368,7 @@ fn event_detail_sql(error_scopes: bool) -> String {
                 toUInt8(not {PAYLOAD_VISIBLE} \
                         and (notEmpty(mcp_tool_call_logs.arguments) \
                              or notEmpty(mcp_tool_call_logs.result))) as payload_withheld, \
-                error, {error_scopes} \
+                error, {error_scopes}, {notification} \
          from mcp_tool_call_logs \
          where event_id = {{event_id:String}} and {MCP_ROW_VISIBLE} \
          order by ts desc limit 1 format JSON"
@@ -375,11 +394,11 @@ async fn event_detail(
         Err(response) => return response,
     };
     let params = with_access(vec![("param_event_id".to_string(), event_id)], &access);
-    let error_scopes = match has_error_scopes(ch).await {
+    let columns = match mcp_columns(ch).await {
         Ok(present) => present,
         Err(error) => return query_failed("mcp log query failed", &error),
     };
-    match ch.query(&event_detail_sql(error_scopes), &params).await {
+    match ch.query(&event_detail_sql(columns), &params).await {
         Ok(data) => match data.into_iter().next() {
             Some(row) => Json(row).into_response(),
             None => StatusCode::NOT_FOUND.into_response(),
@@ -442,6 +461,7 @@ mod tests {
                 result: None,
                 error: None,
                 ts: None,
+                notification: false,
             };
             assert!(validate_event(&event).is_ok());
         }
@@ -501,7 +521,7 @@ mod tests {
         // list and summary share the row filter; the detail query adds the mask
         let list = list_events_sql();
         assert!(list.contains(&format!("and {MCP_ROW_VISIBLE}")));
-        let detail = event_detail_sql(true);
+        let detail = event_detail_sql(McpColumns::ALL);
         assert!(detail.contains(&format!("and {MCP_ROW_VISIBLE}")));
         assert!(detail.contains(&format!(
             "if({PAYLOAD_VISIBLE}, arguments, '') as arguments"
@@ -513,32 +533,49 @@ mod tests {
     }
 
     #[test]
-    fn the_detail_reads_a_missing_scopes_column_as_empty() {
-        // before `042` is applied the select stands the column's default in, so
-        // it still answers and the row has the same shape
-        assert!(event_detail_sql(true).contains("error, error_scopes from"));
-        assert!(event_detail_sql(false).contains("error, emptyArrayString() as error_scopes from"));
+    fn the_detail_reads_a_missing_optional_column_as_its_default() {
+        // before `042` or `047` is applied the select stands the column's default
+        // in, so it still answers and the row has the same shape
+        let all = event_detail_sql(McpColumns::ALL);
+        assert!(all.contains("error, error_scopes, notification from"));
+        let none = event_detail_sql(McpColumns::default());
+        assert!(none.contains(
+            "error, emptyArrayString() as error_scopes, toUInt8(0) as notification from"
+        ));
+        let scopes_only = event_detail_sql(McpColumns {
+            error_scopes: true,
+            notification: false,
+        });
+        assert!(scopes_only.contains("error, error_scopes, toUInt8(0) as notification from"));
     }
 
     /// a ClickHouse stand-in for the detail read: it answers the probe from
-    /// `columns`, and refuses a select that names `error_scopes` bare when the
-    /// table lacks it, as the real engine does
-    async fn detail_stand_in(has_scopes: bool) -> String {
+    /// `present`, and refuses a select that names a column bare when the table
+    /// lacks it, as the real engine does
+    async fn detail_stand_in(present: McpColumns) -> String {
         use axum::routing::post;
         let app = Router::new().fallback(post(move |sql: String| async move {
             if sql.contains("system.columns") {
                 let mut rows = vec![json!({"name": "ts"}), json!({"name": "error"})];
-                if has_scopes {
+                if present.error_scopes {
                     rows.push(json!({"name": "error_scopes"}));
+                }
+                if present.notification {
+                    rows.push(json!({"name": "notification"}));
                 }
                 return Json(json!({"data": rows})).into_response();
             }
-            if !has_scopes && sql.contains(", error_scopes from") {
-                return (
-                    StatusCode::NOT_FOUND,
-                    "Code: 47. DB::Exception: Unknown expression identifier `error_scopes`",
-                )
-                    .into_response();
+            for (column, has) in [
+                (", error_scopes,", present.error_scopes),
+                (", notification ", present.notification),
+            ] {
+                if !has && sql.contains(column) {
+                    return (
+                        StatusCode::NOT_FOUND,
+                        "Code: 47. DB::Exception: Unknown expression identifier",
+                    )
+                        .into_response();
+                }
             }
             Json(json!({"data": [{"event_id": "e"}]})).into_response()
         }));
@@ -549,39 +586,85 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_detail_reads_a_table_without_error_scopes_and_one_with_it() {
-        for has_scopes in [false, true] {
-            let ch = crate::analytics::ClickHouseClient::new(&detail_stand_in(has_scopes).await);
-            let present = has_error_scopes(&ch).await.unwrap();
-            assert_eq!(present, has_scopes);
+    async fn the_detail_reads_a_table_without_the_optional_columns_and_one_with_them() {
+        for (error_scopes, notification) in
+            [(false, false), (true, false), (false, true), (true, true)]
+        {
+            let present = McpColumns {
+                error_scopes,
+                notification,
+            };
+            let ch = crate::analytics::ClickHouseClient::new(&detail_stand_in(present).await);
+            let probed = mcp_columns(&ch).await.unwrap();
+            assert_eq!(probed, present);
             let rows = ch
-                .query(&event_detail_sql(present), &[])
+                .query(&event_detail_sql(probed), &[])
                 .await
                 .expect("the select names only columns the table has");
             assert_eq!(rows.len(), 1);
             // the unprobed select is what failed before the probe existed
             assert_eq!(
-                ch.query(&event_detail_sql(true), &[]).await.is_ok(),
-                has_scopes
+                ch.query(&event_detail_sql(McpColumns::ALL), &[])
+                    .await
+                    .is_ok(),
+                present.complete()
             );
         }
     }
 
     #[test]
-    fn the_scopes_probe_settles_only_once_the_column_is_found() {
+    fn the_column_probe_settles_only_once_every_column_is_found() {
         let cache = McpColumnCache::default();
         let now = std::time::Instant::now();
         assert_eq!(cache.fresh(now), None);
-        cache.store(now, false);
-        assert_eq!(cache.fresh(now), Some(false));
-        // a missing column is looked for again within the minute, a found one
+        let partial = McpColumns {
+            error_scopes: true,
+            notification: false,
+        };
+        cache.store(now, partial);
+        assert_eq!(cache.fresh(now), Some(partial));
+        // a missing column is looked for again within the minute, a full set
         // is kept for longer
         let later = now + crate::request_log_columns::UNSETTLED_FOR;
         assert_eq!(cache.fresh(later), None);
-        cache.store(now, true);
-        assert_eq!(cache.fresh(later), Some(true));
+        cache.store(now, McpColumns::ALL);
+        assert_eq!(cache.fresh(later), Some(McpColumns::ALL));
         cache.forget();
         assert_eq!(cache.fresh(now), None);
+    }
+
+    /// #3466: an ingested row naming `notification` is stored by a table that
+    /// has not applied `047`, because the insert skips the fields it lacks
+    #[tokio::test]
+    async fn an_ingest_insert_skips_a_column_the_table_lacks() {
+        use axum::routing::post;
+        let seen = Arc::new(Mutex::new(Vec::<String>::new()));
+        let recorded = seen.clone();
+        let app = Router::new().fallback(post(move |uri: axum::http::Uri, _body: String| {
+            let recorded = recorded.clone();
+            async move {
+                recorded
+                    .lock()
+                    .push(uri.query().unwrap_or_default().to_string());
+                StatusCode::OK
+            }
+        }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, app).await });
+        let ch = crate::analytics::ClickHouseClient::new(&url);
+        ch.insert_mcp_tool_call(&json!({"event_id": "e", "notification": 1}))
+            .await
+            .unwrap();
+        let query = seen.lock()[0].clone();
+        assert!(
+            query.contains("input_format_skip_unknown_fields=1"),
+            "{query}"
+        );
+        assert!(
+            query.contains("date_time_input_format=best_effort"),
+            "{query}"
+        );
     }
 
     #[test]

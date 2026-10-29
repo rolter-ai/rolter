@@ -13,10 +13,11 @@ use rolter_store::postgres::models::VirtualKey;
 use rolter_store::postgres::repo::{BusinessUnitRepo, CustomerRepo, NewVirtualKey, VirtualKeyRepo};
 
 use super::{
-    authorize_virtual_key, invalid_field, log_audit, pool, publish_config_change, ApiError,
-    ApiResult, KeyBudgetBody, KeyCapsBody, KeyRateLimitBody, SafeJson,
+    authorize_virtual_key, invalid_field, log_audit, pool, project_teams, publish_config_change,
+    require_reach, row_chain, ApiError, ApiResult, KeyBudgetBody, KeyCapsBody, KeyRateLimitBody,
+    SafeJson,
 };
-use crate::rbac::{authorize, Principal, ScopeChain};
+use crate::rbac::{authorize, Principal, ScopeChain, ScopeFilter};
 use crate::rbac_matrix::cap;
 use crate::ControlState;
 
@@ -27,6 +28,10 @@ pub(super) fn router() -> Router<ControlState> {
         .route(
             "/api/v1/projects/{project_id}/virtual-keys",
             get(list_virtual_keys).post(create_virtual_key),
+        )
+        .route(
+            "/api/v1/orgs/{org_id}/virtual-keys",
+            get(list_org_virtual_keys),
         )
         .route(
             "/api/v1/virtual-keys/{id}",
@@ -61,6 +66,79 @@ async fn list_virtual_keys(
     let chain = ScopeChain::from_project(pool(&state), project_id).await?;
     authorize(&state, &principal, chain, cap!("virtual_key", Read)).await?;
     Ok(Json(VirtualKeyRepo(pool(&state)).list(project_id).await?))
+}
+
+/// A virtual key as the organization-wide listing returns it: the row without
+/// any digest of a secret, `key_hash` and the retired secret's included. A
+/// screen that picks keys needs to name them, not to check them.
+#[derive(Serialize)]
+struct OrgVirtualKey {
+    id: Uuid,
+    project_id: Uuid,
+    key_prefix: String,
+    name: Option<String>,
+    models: Vec<String>,
+    providers: Vec<String>,
+    disabled: bool,
+    expires_at: Option<chrono::DateTime<chrono::Utc>>,
+    cache_enabled: Option<bool>,
+    created_by: Option<Uuid>,
+    business_unit_id: Option<Uuid>,
+    customer_id: Option<Uuid>,
+    purpose: Option<String>,
+    created_at: chrono::DateTime<chrono::Utc>,
+}
+
+impl From<VirtualKey> for OrgVirtualKey {
+    fn from(key: VirtualKey) -> Self {
+        Self {
+            id: key.id,
+            project_id: key.project_id,
+            key_prefix: key.key_prefix,
+            name: key.name,
+            models: key.models,
+            providers: key.providers,
+            disabled: key.disabled,
+            expires_at: key.expires_at,
+            cache_enabled: key.cache_enabled,
+            created_by: key.created_by,
+            business_unit_id: key.business_unit_id,
+            customer_id: key.customer_id,
+            purpose: key.purpose,
+            created_at: key.created_at,
+        }
+    }
+}
+
+/// The keys of every project of an organization, each carrying its
+/// `project_id`, so a screen that names keys across projects reads one list
+/// instead of one per project (#3467). Scoped to what the caller may already
+/// read: the same `virtual_key:read` floor as the per-project list, decided for
+/// each project, so a caller with a role on one team gets that team's projects'
+/// keys and a caller with a role nowhere in the organization is refused. The
+/// readable projects are settled first and only their keys are read.
+async fn list_org_virtual_keys(
+    principal: Principal,
+    State(state): State<ControlState>,
+    Path(org_id): Path<Uuid>,
+) -> ApiResult<Json<Vec<OrgVirtualKey>>> {
+    let filter = ScopeFilter::load(&state, &principal, cap!("virtual_key", Read)).await?;
+    // the capability is read at a project, so the verdict is per project. a
+    // caller with a role nowhere in the organization is refused rather than
+    // shown an empty list that would say the organization exists and has no keys
+    if !filter.is_superadmin() {
+        require_reach(&state, &filter, org_id).await?;
+    }
+    let teams_of = project_teams(&state, org_id).await?;
+    let readable: Vec<Uuid> = teams_of
+        .keys()
+        .copied()
+        .filter(|project| filter.allows(row_chain(org_id, None, Some(*project), &teams_of)))
+        .collect();
+    let keys = VirtualKeyRepo(pool(&state))
+        .list_in_projects(&readable)
+        .await?;
+    Ok(Json(keys.into_iter().map(OrgVirtualKey::from).collect()))
 }
 
 #[derive(Deserialize)]
