@@ -157,8 +157,9 @@ pub const MODEL_ROOT_ENV: &str = "ROLTER_SEMANTIC_MODEL_ROOT";
 /// Read the bootstrap config. A path the operator named (`explicit`) must
 /// exist, so a typo cannot silently drop every setting it holds, a
 /// `model_root` among them (#3511); only the default path may be missing,
-/// and then the gateway starts empty.
+/// and then the gateway starts empty. A blank path counts as unset.
 fn bootstrap_config(explicit: Option<&Path>, default: &Path) -> anyhow::Result<GatewayConfig> {
+    let explicit = explicit.filter(|path| !path.to_string_lossy().trim().is_empty());
     let path = explicit.unwrap_or(default);
     if path.exists() {
         // `load` also warns about every key in the file rolter does not read
@@ -194,10 +195,51 @@ impl ModelRootSource {
     }
 }
 
+/// Fix the effective `model_root` in `config` from the flag, the
+/// environment variable's value (`env`, as [`std::env::var`] read it) and the
+/// file, and log it once (#3511). A value that is not UTF-8 is refused rather
+/// than dropped, since dropping it would leave the models unconfined.
+fn apply_model_root(
+    config: &mut GatewayConfig,
+    flag: Option<&Path>,
+    env: Result<String, std::env::VarError>,
+) -> anyhow::Result<()> {
+    let flag = match flag {
+        Some(flag) => Some(flag.to_str().ok_or_else(|| {
+            anyhow::anyhow!("--semantic-model-root {} is not UTF-8", flag.display())
+        })?),
+        None => None,
+    };
+    let env = match env {
+        Ok(value) => Some(value),
+        Err(std::env::VarError::NotPresent) => None,
+        Err(std::env::VarError::NotUnicode(_)) => {
+            anyhow::bail!("{MODEL_ROOT_ENV} is not UTF-8")
+        }
+    };
+    config.semantic_guards.model_root = match effective_model_root(
+        flag,
+        env.as_deref(),
+        config.semantic_guards.model_root.as_deref(),
+    ) {
+        Some((root, source)) => {
+            tracing::info!(model_root = %root, source = source.as_str(), "local guardrail model_root");
+            Some(root)
+        }
+        None => {
+            tracing::info!(
+                "no local guardrail model_root: local classifier model files are read unconfined"
+            );
+            None
+        }
+    };
+    Ok(())
+}
+
 /// The effective `model_root`: the flag, else the environment variable, else
 /// the file's. An empty or blank value counts as unset.
 fn effective_model_root(
-    flag: Option<&Path>,
+    flag: Option<&str>,
     env: Option<&str>,
     file: Option<&str>,
 ) -> Option<(String, ModelRootSource)> {
@@ -205,7 +247,7 @@ fn effective_model_root(
         let value = value.trim();
         (!value.is_empty()).then(|| value.to_string())
     };
-    flag.and_then(|flag| set(&flag.to_string_lossy()))
+    flag.and_then(set)
         .map(|root| (root, ModelRootSource::Flag))
         .or_else(|| env.and_then(set).map(|root| (root, ModelRootSource::Env)))
         .or_else(|| file.and_then(set).map(|root| (root, ModelRootSource::File)))
@@ -217,18 +259,11 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     let mut config = bootstrap_config(args.config.as_deref(), Path::new(DEFAULT_CONFIG))?;
     // fixed here, before the classifiers are configured: a snapshot never
     // carries a root, so nothing after startup can widen it
-    let env_root = std::env::var(MODEL_ROOT_ENV).ok();
-    config.semantic_guards.model_root = match effective_model_root(
+    apply_model_root(
+        &mut config,
         args.semantic_model_root.as_deref(),
-        env_root.as_deref(),
-        config.semantic_guards.model_root.as_deref(),
-    ) {
-        Some((root, source)) => {
-            tracing::info!(model_root = %root, source = source.as_str(), "local guardrail model_root");
-            Some(root)
-        }
-        None => None,
-    };
+        std::env::var(MODEL_ROOT_ENV),
+    )?;
     if let Some(host) = args.host {
         config.server.host = host;
     }
@@ -699,7 +734,8 @@ mod bootstrap_tests {
 
     use clap::Parser;
 
-    use super::{bootstrap_config, effective_model_root, ModelRootSource};
+    use super::{apply_model_root, bootstrap_config, effective_model_root, ModelRootSource};
+    use rolter_core::GatewayConfig;
 
     fn missing() -> PathBuf {
         std::env::temp_dir().join(format!("rolter-missing-{}.toml", std::process::id()))
@@ -741,9 +777,58 @@ mod bootstrap_tests {
     }
 
     #[test]
+    fn a_blank_explicit_config_path_counts_as_unset() {
+        for blank in ["", "  "] {
+            let config = bootstrap_config(Some(Path::new(blank)), &missing())
+                .expect("a blank path falls back to the default");
+            assert!(config.semantic_guards.model_root.is_none());
+        }
+    }
+
+    #[test]
+    fn the_model_root_is_applied_to_the_config_from_each_source() {
+        use std::env::VarError;
+        let file = || {
+            let mut config = GatewayConfig::default();
+            config.semantic_guards.model_root = Some("/file".to_string());
+            config
+        };
+        let applied =
+            |mut config: GatewayConfig, flag: Option<&Path>, env: Result<String, VarError>| {
+                apply_model_root(&mut config, flag, env).map(|()| config.semantic_guards.model_root)
+            };
+        assert_eq!(
+            applied(file(), Some(Path::new("/flag")), Ok("/env".into())).unwrap(),
+            Some("/flag".to_string())
+        );
+        assert_eq!(
+            applied(file(), None, Ok("/env".into())).unwrap(),
+            Some("/env".to_string())
+        );
+        assert_eq!(
+            applied(file(), None, Err(VarError::NotPresent)).unwrap(),
+            Some("/file".to_string())
+        );
+        assert_eq!(
+            applied(GatewayConfig::default(), None, Err(VarError::NotPresent)).unwrap(),
+            None
+        );
+        // a value that is not UTF-8 is refused, never dropped
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStringExt;
+            let bad = std::ffi::OsString::from_vec(vec![b'/', 0xff]);
+            let error = applied(file(), None, Err(VarError::NotUnicode(bad.clone()))).unwrap_err();
+            assert!(error.to_string().contains("not UTF-8"), "{error}");
+            let flag = std::path::PathBuf::from(bad);
+            assert!(applied(file(), Some(&flag), Ok("/env".into())).is_err());
+        }
+    }
+
+    #[test]
     fn the_model_root_flag_wins_over_the_env_which_wins_over_the_file() {
-        let flag = Path::new("/flag");
-        let pick = |flag: Option<&Path>, env: Option<&str>, file: Option<&str>| {
+        let flag = "/flag";
+        let pick = |flag: Option<&str>, env: Option<&str>, file: Option<&str>| {
             effective_model_root(flag, env, file)
         };
         assert_eq!(
@@ -760,7 +845,7 @@ mod bootstrap_tests {
         );
         // a blank source is unset and falls through to the next
         assert_eq!(
-            pick(Some(Path::new(" ")), Some(""), Some(" /file ")),
+            pick(Some(" "), Some(""), Some(" /file ")),
             Some(("/file".to_string(), ModelRootSource::File))
         );
         assert_eq!(pick(None, None, None), None);
