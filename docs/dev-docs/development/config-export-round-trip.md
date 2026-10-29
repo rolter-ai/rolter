@@ -148,22 +148,27 @@ write is logged. `resolve_tool_group_subjects` resolves the references: one that
 names another org or nothing here is skipped with a warning, and while one is
 missing the import only adds assignments, never removes them, as the missing
 one may be one the group has. A key reference that matches more than one key of
-the project (a prefix matches unnamed keys only) is assigned to each, since an
-assignment never grants a tool outside the org's enabled groups (`mcp_policy.rs`)
-and holding one key too many fails closed where leaving
-the meant one out would not. A tool on a server the org lacks fails the import
-before anything is written (`refuse_tool_groups_on_missing_servers`, run with the
-other validations), since dropping it would leave a server later created under
+the project (a prefix matches unnamed keys only) refuses the import before any
+write (#3575). Assigned groups are unioned (`mcp_policy.rs`), so assigning a
+group to an unintended key can grant tools even when that key already has a
+restriction. `preflight_mcp_tool_groups` resolves every targeted group's subjects
+before any import write and retains those ids for the write phase, rather than
+resolving a reference again after the file starts applying. Give colliding keys
+distinct names before importing. A tool on a server the org lacks also fails
+preflight, since dropping it would leave a server later created under
 that slug ungoverned. An assignment the export cannot name (a team or project
 whose name holds `/` or is empty, or a key of such a project) is in no file, so
 a replace keeps it (`unportable_subjects`) with a warning, rather than handing
-its subject the org-wide set back. A group that cannot be written fails the import. The export
-deduplicates key references, so the file reads back the same after an
-ambiguous import. No migration was needed. Tests in
+its subject the org-wide set back. A group that cannot be written fails the import.
+The export deduplicates public key references, but an import still requires each
+to identify at most one key. No migration was needed. Tests in
 `config_export::tests::round_trip`:
 `mcp_tool_groups_round_trip_with_their_assignments`,
-`an_mcp_tool_group_keeps_its_group_when_a_key_is_missing` and
-`an_ambiguous_key_reference_holds_every_match_to_the_group`.
+`an_mcp_tool_group_keeps_its_group_when_a_key_is_missing`,
+`an_ambiguous_key_prefix_cannot_grant_another_keys_tools` and
+`an_ambiguous_key_name_cannot_grant_another_keys_tools`. The ambiguity regressions
+check the snapshot's tool union for the unintended key, unchanged config version
+on repeated refusals, and no-op repeated imports after the collision is resolved.
 
 ## Budgets and rate limits (#1312)
 

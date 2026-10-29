@@ -423,7 +423,8 @@ before: an uncoded `Error`, a string, and an `ApiError` with a code the
 dashboard has no sentence for, whose English message is then the only
 explanation there is. A screen does not map a code to a sentence of its own
 before handing the error to the dialog; the `api_token_inactive` mapping in
-`ApiTokens.tsx` and the `last_superadmin` hint in `Users.tsx` are gone for that
-reason (the catalog sentence carries the way out). The `last_org_admin` mappings
-in `Users.tsx` still predate the rule and are tracked as a follow-up. The `ConfirmDialog` stories show a
+`ApiTokens.tsx`, the `last_superadmin` hint and the two `last_org_admin`
+mappings in `Users.tsx` (#3522) are gone for that reason (the catalog sentence
+carries the way out, and `last_org_admin`'s is worded for a revoke and a
+demotion alike). The `ConfirmDialog` stories show a
 coded refusal in `en` and `ru`.

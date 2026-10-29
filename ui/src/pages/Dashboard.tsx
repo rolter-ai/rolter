@@ -52,6 +52,7 @@ import {
   windowBounds,
   windowFilters,
   type WindowSelection,
+  useWindowQueryKey,
 } from "@/lib/time-window";
 import { compare, toneOfChange, type Comparison } from "@/lib/compare";
 import { cn } from "@/lib/utils";
@@ -235,6 +236,8 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
   const money = (n: number) => fmt.currency(n, currency);
   const overviewPoll = pollEvery(pollMs ?? OVERVIEW_POLL_MS);
   const [timeWindow, setWindow] = useAddressSelection();
+  // the window's days are the chart zone's, so a zone change reads it again (#3519)
+  const windowKey = useWindowQueryKey(timeWindow);
   const windowLabel = useWindowLabel()(timeWindow);
   // the figures cover the rows the caller's roles reach, not the org picked in
   // the scope switcher, so the scope line says that and not the switcher's pick
@@ -251,7 +254,7 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
   // fixed at an hour here
   const savedFilters: SavedViewFilters = { ...windowFilters(timeWindow), ...rowFilters.saved };
   const summary = useQuery({
-    queryKey: ["analytics", "summary", timeWindow, filterKey],
+    queryKey: ["analytics", "summary", ...windowKey, filterKey],
     queryFn: () => fetchAnalyticsSummary(readWindow(timeWindow, rowFilters.query)),
     refetchInterval: overviewPoll,
     retry: false,
@@ -261,7 +264,7 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
   // no card, no loading state and no error of its own, and while it is out or
   // has failed a tile simply draws no arrow (#2010)
   const previous = useQuery({
-    queryKey: ["analytics", "summary", "previous", timeWindow, filterKey],
+    queryKey: ["analytics", "summary", "previous", ...windowKey, filterKey],
     queryFn: () => fetchAnalyticsSummary(readPrevious(timeWindow, rowFilters.query)),
     refetchInterval: overviewPoll,
     retry: false,
@@ -271,13 +274,13 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
   // `summary` is the query the user is actually waiting on for this screen
   useScreenReady(!summary.isLoading);
   const series = useQuery({
-    queryKey: ["analytics", "timeseries", timeWindow, filterKey],
+    queryKey: ["analytics", "timeseries", ...windowKey, filterKey],
     queryFn: () => fetchAnalyticsTimeseries(readWindow(timeWindow, rowFilters.query)),
     refetchInterval: overviewPoll,
     retry: false,
   });
   const byModel = useQuery({
-    queryKey: ["analytics", "by-model", timeWindow, filterKey],
+    queryKey: ["analytics", "by-model", ...windowKey, filterKey],
     queryFn: () => fetchAnalyticsByModel(readWindow(timeWindow, rowFilters.query)),
     refetchInterval: overviewPoll,
     retry: false,

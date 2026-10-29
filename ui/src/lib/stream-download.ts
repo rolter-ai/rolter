@@ -51,13 +51,28 @@ export function diskSaveSupported(): boolean {
   return picker() !== undefined;
 }
 
+/** what a save dialog offers to save an export as */
+export type ExportFileType = "csv" | "json";
+
+const PICKER_TYPES: Record<
+  ExportFileType,
+  { description: string; accept: Record<string, string[]> }
+> = {
+  csv: { description: "CSV", accept: { "text/csv": [".csv"] } },
+  json: { description: "JSON", accept: { "application/json": [".json"] } },
+};
+
 /**
  * Ask where to save, and open that file for writing. Resolves to `null` when
  * the person closed the dialog. It has to run straight from the click: the
  * dialog needs the click's user activation, which a download that has already
- * waited on the network may no longer have.
+ * waited on the network may no longer have. `type` is what the dialog offers
+ * to save it as.
  */
-export async function chooseDiskSink(suggestedName: string): Promise<DownloadSink | null> {
+export async function chooseDiskSink(
+  suggestedName: string,
+  type: ExportFileType = "csv",
+): Promise<DownloadSink | null> {
   const pick = picker();
   if (!pick) return null;
   let writable: WritableFile;
@@ -66,7 +81,7 @@ export async function chooseDiskSink(suggestedName: string): Promise<DownloadSin
   try {
     handle = await pick({
       suggestedName,
-      types: [{ description: "CSV", accept: { "text/csv": [".csv"] } }],
+      types: [PICKER_TYPES[type]],
     });
     // the picker creates a file that was not there, at zero bytes. one that was
     // empty when picked is one an aborted export may take away again; a file

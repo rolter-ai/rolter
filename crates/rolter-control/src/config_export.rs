@@ -94,7 +94,9 @@ const HEADER: &str = "\
 # assigned to. A key is named by its project and its name, or the prefix the
 # dashboard shows when it has none, never by its secret. Keys are not exported,
 # so a key assignment survives a round trip only where the key exists; an
-# import skips, with a warning, an assignment it cannot resolve.
+# import skips, with a warning, an assignment it cannot resolve. A name or
+# prefix matching several keys refuses the import before any write; give
+# those keys distinct names before importing.
 #
 # Budgets and rate limits round-trip too, and name what they cap the way the
 # importer finds it, never by database id: `scope = \"team\"` with `id =
@@ -721,8 +723,8 @@ fn render_mcp_gateway_tool_groups(out: &mut String, config: &GatewayConfig) {
             keys.sort_by(|a, b| {
                 (&a.project, &a.name, &a.prefix).cmp(&(&b.project, &b.name, &b.prefix))
             });
-            // two keys that share a name or prefix are one reference, which
-            // an import assigns to both
+            // duplicate public references are written once; an import refuses
+            // one that matches several keys rather than guessing its subject
             keys.dedup();
             key(out, "keys", &keys);
         }
@@ -3947,12 +3949,17 @@ model = "gpt-4o"
             );
         }
 
-        /// A key reference two keys of the project answer is assigned to both:
-        /// an assignment only narrows, so that fails closed where leaving the
-        /// meant key out would not, and the file still reads back the same
-        /// (#3514).
         #[tokio::test]
-        async fn an_ambiguous_key_reference_holds_every_match_to_the_group() {
+        async fn an_ambiguous_key_prefix_cannot_grant_another_keys_tools() {
+            ambiguous_key_import_is_refused(false).await;
+        }
+
+        #[tokio::test]
+        async fn an_ambiguous_key_name_cannot_grant_another_keys_tools() {
+            ambiguous_key_import_is_refused(true).await;
+        }
+
+        async fn ambiguous_key_import_is_refused(named: bool) {
             use super::ExportOptions;
 
             let Some(db) = scratch_db().await else {
@@ -3961,6 +3968,42 @@ model = "gpt-4o"
             let pool = db.pool().clone();
             let dir = tempdir("mcp-tool-groups-ambiguous");
             let world = tool_group_world(&pool).await;
+            let intended: Uuid = if named {
+                world.ci_key
+            } else {
+                sqlx::query_scalar(
+                    "select id from virtual_keys where project_id = $1 and name is null",
+                )
+                .bind(world.project_a)
+                .fetch_one(&pool)
+                .await
+                .unwrap()
+            };
+            let write_group: Uuid = sqlx::query_scalar(
+                "insert into mcp_tool_groups (org_id, name, slug, tools)
+                 values ($1, 'Write only', 'write-only', $2) returning id",
+            )
+            .bind(world.org_a)
+            .bind(serde_json::json!([{"server_id": world.server, "tool": "write"}]))
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            sqlx::query(
+                "insert into mcp_tool_group_assignments (group_id, subject_kind, subject_id)
+                 values ($1, 'virtual_key', $2)",
+            )
+            .bind(write_group)
+            .bind(intended)
+            .execute(&pool)
+            .await
+            .unwrap();
+            sqlx::query(
+                "insert into mcp_gateway_settings (org_id, allow_unlisted_tools) values ($1, false)",
+            )
+            .bind(world.org_a)
+            .execute(&pool)
+            .await
+            .unwrap();
             let store = PostgresConfigStore::new(pool.clone());
             let options = ExportOptions {
                 org: Some("org-a".to_string()),
@@ -3970,39 +4013,111 @@ model = "gpt-4o"
                 .await
                 .unwrap();
             let file = dir.join("org-a.toml");
-            std::fs::write(&file, &first).unwrap();
-            // a second unnamed key with the same display prefix
-            sqlx::query(
-                "insert into virtual_keys (project_id, key_hash, key_prefix) values ($1, $2, $3)",
+            assert!(first.contains("allow_unlisted_tools = false"));
+            // keep the no-op assertion about MCP policy; unchanged logging
+            // sections still write on import independently of this fix (#3577)
+            let policy = &first[first.find("\n[[mcp_gateway_settings]]\n").unwrap()
+                ..first.find("\n[logging]\n").unwrap()];
+            std::fs::write(
+                &file,
+                policy.replace(
+                    "allow_unlisted_tools = false",
+                    "allow_unlisted_tools = true",
+                ),
+            )
+            .unwrap();
+            // the target already holds another key with the same public reference
+            let other: Uuid = sqlx::query_scalar(
+                "insert into virtual_keys (project_id, key_hash, key_prefix, name)
+                 values ($1, $2, $3, $4) returning id",
             )
             .bind(world.project_a)
             .bind(format!("digest-{}", Uuid::new_v4()))
             .bind(concat!("sk-", "rolter-ab"))
+            .bind(named.then_some("ci"))
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            sqlx::query(
+                "insert into mcp_tool_group_assignments (group_id, subject_kind, subject_id)
+                 values ($1, 'virtual_key', $2)",
+            )
+            .bind(world.group)
+            .bind(other)
             .execute(&pool)
             .await
             .unwrap();
-            sqlx::query("delete from mcp_tool_groups where org_id = $1")
-                .bind(world.org_a)
+            let team: Uuid = sqlx::query_scalar("select team_id from projects where id = $1")
+                .bind(world.project_a)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+            let caller = [
+                ("virtual_key", other.to_string()),
+                ("project", world.project_a.to_string()),
+                ("team", team.to_string()),
+            ];
+            // policy unions all three subjects: adding write-only would grant write
+            let tools = || async {
+                let config = store.load().await.unwrap();
+                config
+                    .mcp_tool_groups
+                    .iter()
+                    .filter(|group| {
+                        !group.disabled
+                            && group.assignments.iter().any(|subject| {
+                                caller
+                                    .iter()
+                                    .any(|(kind, id)| subject.kind == *kind && &subject.id == id)
+                            })
+                    })
+                    .flat_map(|group| group.tools.iter().map(|tool| tool.tool.clone()))
+                    .collect::<std::collections::BTreeSet<_>>()
+            };
+            let read_only =
+                std::collections::BTreeSet::from(["fetch".to_string(), "search".to_string()]);
+            assert_eq!(tools().await, read_only);
+            let version = || async {
+                sqlx::query_scalar::<_, i64>("select version from config_version")
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap()
+            };
+            let before = version().await;
+            for _ in 0..2 {
+                let result =
+                    crate::seed::import_bootstrap_toml(&pool, world.org_a, world.project_a, &file)
+                        .await;
+                assert_eq!(
+                    tools().await,
+                    read_only,
+                    "a refused import widened another key's tools"
+                );
+                let refused = result.unwrap_err().to_string();
+                for named in ["org-a/", "org-a/default/default", "2 keys"] {
+                    assert!(refused.contains(named), "{refused}");
+                }
+                assert_eq!(
+                    version().await,
+                    before,
+                    "a refused import wrote configuration"
+                );
+            }
+            // a distinct name resolves either collision; valid repeated imports are no-ops
+            sqlx::query("update virtual_keys set name = 'another-key' where id = $1")
+                .bind(other)
                 .execute(&pool)
                 .await
                 .unwrap();
             crate::seed::import_bootstrap_toml(&pool, world.org_a, world.project_a, &file)
                 .await
                 .unwrap();
-            let keys: i64 = sqlx::query_scalar(
-                "select count(*) from mcp_tool_group_assignments a
-                 join mcp_tool_groups g on g.id = a.group_id
-                 where g.org_id = $1 and a.subject_kind = 'virtual_key'",
-            )
-            .bind(world.org_a)
-            .fetch_one(&pool)
-            .await
-            .unwrap();
-            assert_eq!(keys, 3, "the named key and both unnamed ones");
-            let again = super::export_document(&pool, &store.load().await.unwrap(), &options)
+            assert_eq!(tools().await, read_only);
+            let before = version().await;
+            crate::seed::import_bootstrap_toml(&pool, world.org_a, world.project_a, &file)
                 .await
                 .unwrap();
-            assert_eq!(first, again);
+            assert_eq!(version().await, before);
         }
 
         /// What the tool-group tests export: two orgs, org-a with a `github`

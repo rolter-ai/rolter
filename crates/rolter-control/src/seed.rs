@@ -723,7 +723,7 @@ async fn import_config(
     refuse_reserved_env_names(config)?;
     validate_mcp_gateway_settings(config)?;
     validate_mcp_gateway_tool_groups(config)?;
-    refuse_tool_groups_on_missing_servers(pool, org_id, config).await?;
+    let tool_group_subjects = preflight_mcp_tool_groups(pool, org_id, config).await?;
     let providers = ProviderRepo(pool);
     let routes = RouteRepo(pool);
     let targets = RouteTargetRepo(pool);
@@ -978,7 +978,7 @@ async fn import_config(
     import_caps(pool, config).await?;
     import_mcp_manifest_enforcement(pool, org_id, config).await?;
     import_mcp_gateway_settings(pool, org_id, config).await?;
-    import_mcp_gateway_tool_groups(pool, org_id, config).await?;
+    import_mcp_gateway_tool_groups(pool, org_id, config, tool_group_subjects).await?;
     import_prompt_templates(pool, org_id, project_id, config).await?;
 
     Ok(())
@@ -1446,22 +1446,28 @@ fn validate_mcp_gateway_tool_groups(config: &GatewayConfig) -> anyhow::Result<()
     Ok(())
 }
 
-/// Refuse the file when a tool of an `[[mcp_gateway_tool_groups]]` entry for
-/// the organization the import targets names a server that organization does
-/// not have (#3514), naming the group, the server and the tool.
+/// The subjects resolved before an import writes anything.
+struct ToolGroupSubjects {
+    subjects: Vec<(String, Uuid)>,
+    complete: bool,
+}
+
+/// Resolve the targeted organization's tool-group subjects and refuse missing
+/// servers or ambiguous key references before anything is written (#3514, #3575).
 ///
 /// The tool cannot be dropped instead: a server created later under that slug
 /// would start ungoverned when no other group names it. Runs with the other
 /// checks, before anything is written, so a refused file leaves the
 /// organization as it was, its MCP settings included. MCP servers are not part
 /// of the file, so the ones the organization already has are the ones checked.
-async fn refuse_tool_groups_on_missing_servers(
+async fn preflight_mcp_tool_groups(
     pool: &PgPool,
     org_id: Uuid,
     config: &GatewayConfig,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<HashMap<String, ToolGroupSubjects>> {
+    let mut subjects = HashMap::new();
     if config.mcp_gateway_tool_groups.is_empty() {
-        return Ok(());
+        return Ok(subjects);
     }
     let slug: String = sqlx::query_scalar("select slug from orgs where id = $1")
         .bind(org_id)
@@ -1493,8 +1499,12 @@ async fn refuse_tool_groups_on_missing_servers(
                 tool.server
             );
         }
+        subjects.insert(
+            entry.slug.clone(),
+            resolve_tool_group_subjects(pool, &slug, entry).await?,
+        );
     }
-    Ok(())
+    Ok(subjects)
 }
 
 /// Apply the `[[mcp_gateway_tool_groups]]` entries of the file (#3514).
@@ -1508,12 +1518,12 @@ async fn refuse_tool_groups_on_missing_servers(
 ///
 /// A tool on a server the organization does not have has already failed the
 /// import, before anything was written (see
-/// `refuse_tool_groups_on_missing_servers`). An assignment that
+/// `preflight_mcp_tool_groups`). An assignment that
 /// names nothing here is skipped with a warning that names it: a team, project
 /// or key that does not exist (keys are never exported, so a key assignment
-/// survives only where the key does). A key reference that matches more than
-/// one key of its project is assigned to each. The group is still written, so its
-/// other assignments still narrow their callers. While an entry has such a
+/// survives only where the key does). An ambiguous key reference has already
+/// failed preflight: adding a group can expand an assigned caller's union.
+/// The group is still written for a missing reference. While an entry has such a
 /// reference, the group's assignments are only added to, never removed, since
 /// the one that did not resolve may be one the group already has. A group that
 /// cannot be written fails the import, rather than leaving the organization's
@@ -1523,6 +1533,7 @@ async fn import_mcp_gateway_tool_groups(
     pool: &PgPool,
     org_id: Uuid,
     config: &GatewayConfig,
+    mut resolved: HashMap<String, ToolGroupSubjects>,
 ) -> anyhow::Result<()> {
     use rolter_store::postgres::repo::{
         McpToolGroupAssignmentRepo, McpToolGroupRepo, NewMcpToolGroup,
@@ -1550,7 +1561,7 @@ async fn import_mcp_gateway_tool_groups(
             .await?
             .into_iter()
             .collect();
-    // every server was checked by `refuse_tool_groups_on_missing_servers`
+    // every server and key reference was checked before any import write
     for entry in entries.iter().filter(|entry| entry.org == slug) {
         let group = entry.slug.as_str();
         let tools: Vec<rolter_core::McpToolRefConfig> = entry
@@ -1563,7 +1574,9 @@ async fn import_mcp_gateway_tool_groups(
                 })
             })
             .collect();
-        let (subjects, complete) = resolve_tool_group_subjects(pool, &slug, entry).await?;
+        let ToolGroupSubjects { subjects, complete } = resolved
+            .remove(group)
+            .with_context(|| format!("MCP tool group '{group}' was not preflighted"))?;
         let tools_value = serde_json::to_value(&tools)?;
         let existing: Option<(Uuid, String, String, bool, serde_json::Value)> = sqlx::query_as(
             "select id, name, description, enabled, tools from mcp_tool_groups
@@ -1723,14 +1736,12 @@ async fn unportable_subjects(
 /// group to in organization `org`, and whether every reference resolved. A
 /// reference that names another organization, or nothing on this deployment,
 /// is skipped with a warning. A key reference its project holds more than one
-/// key by is assigned to every one of them, with a warning: an assignment only
-/// narrows, so holding one key too many to the group fails closed where
-/// leaving the one that was meant out would not.
+/// key by is refused: assigning another group can grant tools to the wrong key.
 async fn resolve_tool_group_subjects(
     pool: &PgPool,
     org: &str,
     entry: &rolter_core::McpGatewayToolGroupConfig,
-) -> anyhow::Result<(Vec<(String, Uuid)>, bool)> {
+) -> anyhow::Result<ToolGroupSubjects> {
     let group = entry.slug.as_str();
     let in_org = |reference: &str| reference.split('/').next() == Some(org);
     let mut subjects = Vec::new();
@@ -1801,21 +1812,16 @@ async fn resolve_tool_group_subjects(
             continue;
         }
         if found.len() > 1 {
-            // leaving them all out would leave the one that was meant
-            // unrestricted, so every match is held to the group instead
-            tracing::warn!(
-                org,
-                group,
-                project = %key.project,
-                key = %value,
-                matches = found.len(),
-                "the project holds more than one key by that {column}; assigning the MCP tool \
-                 group to each of them"
+            anyhow::bail!(
+                "mcp_gateway_tool_groups '{org}/{group}': project '{}' holds {} keys by \
+                 {column} '{value}'; give the keys distinct names before importing",
+                key.project,
+                found.len()
             );
         }
         subjects.extend(found.into_iter().map(|id| ("virtual_key".to_string(), id)));
     }
-    Ok((subjects, complete))
+    Ok(ToolGroupSubjects { subjects, complete })
 }
 
 /// Apply the `[[mcp_gateway_settings]]` entry of the file (#3482).

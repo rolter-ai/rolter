@@ -1,4 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/react";
+import * as React from "react";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import Savings from "./Savings";
@@ -23,6 +24,7 @@ import {
   type FetchStub,
 } from "./story-harness";
 import type { SavingsReport } from "@/lib/api";
+import { setChartTimeZone } from "@/lib/i18n/format";
 import en from "@/lib/i18n/locales/en.json";
 import ru from "@/lib/i18n/locales/ru.json";
 import { atMobile, expectNoHorizontalOverflow } from "@/lib/story-viewport";
@@ -398,6 +400,58 @@ export const ACustomRangeInTheAddressIsRead: Story = {
         }),
       ).toBe(true),
     );
+  },
+};
+
+const zoned = recording(withReport(REPORT));
+
+/** puts the chart zone back to the browser's when the story unmounts */
+function RestoresChartZone({ children }: { children: React.ReactNode }) {
+  React.useEffect(() => () => setChartTimeZone(null), []);
+  return <>{children}</>;
+}
+
+// fourteen hours ahead of UTC with no daylight saving: never the zone a browser
+// running the stories is in
+const FAR_ZONE = "Pacific/Kiritimati";
+const FAR_OFFSET = 14 * 3_600_000;
+
+/**
+ * #3519: the month so far starts at the chart zone's midnight, so a change of
+ * **Time zone** in Preferences with the month on screen is a new read whose
+ * `since` is the new zone's first of the month, not the cached answer read
+ * over the old zone's.
+ */
+export const ChangingTheChartZoneReadsTheMonthAgain: Story = {
+  render: () => (
+    <RestoresChartZone>
+      <Harness fetchStub={zoned.stub} route="/savings?window=mtd">
+        <Savings />
+      </Harness>
+    </RestoresChartZone>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByTestId("savings-limits");
+    await expect(canvas.getByRole("combobox", { name: "Time window" })).toHaveValue(
+      "Month to date",
+    );
+    const reads = () =>
+      zoned.calls
+        .filter((c) => c.url.includes("/analytics/savings"))
+        .map((c) => new URL(c.url, "http://x").searchParams.get("since"));
+    await waitFor(() => expect(reads().length).toBeGreaterThan(0));
+    const before = reads().length;
+
+    setChartTimeZone(FAR_ZONE);
+    // the first of this month on the zone's own calendar, at its midnight
+    const there = new Date(Date.now() + FAR_OFFSET);
+    const midnight = new Date(
+      Date.UTC(there.getUTCFullYear(), there.getUTCMonth(), 1) - FAR_OFFSET,
+    ).toISOString();
+    await waitFor(() => expect(reads().length).toBeGreaterThan(before));
+    await expect(reads()[reads().length - 1]).toBe(midnight);
+    await expect(reads()[0]).not.toBe(midnight);
   },
 };
 

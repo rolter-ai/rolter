@@ -18,6 +18,8 @@ import {
   windowBounds,
   windowFilters,
   windowFromFilters,
+  windowQueryKey,
+  countsCalendarDays,
   windowSpan,
 } from "@/lib/time-window";
 
@@ -482,5 +484,31 @@ describe("a custom range is always a window the control plane reads (#3506)", ()
       since: now.toISOString(),
       until: now.toISOString(),
     });
+  });
+});
+
+describe("windowQueryKey: a calendar-day read is keyed on the chart zone (#3519)", () => {
+  afterEach(() => setChartTimeZone(null));
+
+  it("carries the zone for the windows counted in calendar days", () => {
+    const custom = customWindow("2026-10-01", "2026-10-07")!;
+    for (const window of ["mtd", "last-month", custom] as const) {
+      expect(countsCalendarDays(window)).toBe(true);
+      expect(windowQueryKey(window, "Europe/Warsaw")).toEqual([window, "Europe/Warsaw"]);
+      // the browser's own zone is a zone too, told apart from a named one
+      expect(windowQueryKey(window, undefined)).toEqual([window, ""]);
+    }
+  });
+
+  it("leaves a rolling window unkeyed on the zone", () => {
+    for (const window of ["24h", "7d", "30d"] as const) {
+      expect(countsCalendarDays(window)).toBe(false);
+      expect(windowQueryKey(window, "Europe/Warsaw")).toEqual([window, null]);
+    }
+  });
+
+  it("reads the chart zone by default", () => {
+    setChartTimeZone("Pacific/Kiritimati");
+    expect(windowQueryKey("mtd")).toEqual(["mtd", "Pacific/Kiritimati"]);
   });
 });
