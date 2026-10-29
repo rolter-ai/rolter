@@ -23,6 +23,7 @@ import { LoadError } from "@/components/LoadError";
 import { ErasePayloadAction } from "@/components/LogErasure";
 import { SampledLogNotice } from "@/components/SampledLogNotice";
 import { SavedViews } from "@/components/SavedViews";
+import { TimeWindowPicker } from "@/components/TimeWindowPicker";
 import { ListSkeleton } from "@/components/LoadingState";
 import { Badge, HttpStatusBadge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -55,10 +56,12 @@ import { parseLogLookup, type LogLookup } from "@/lib/log-lookup";
 import { useModalA11y } from "@/lib/modal-a11y";
 import {
   DEFAULT_TIME_WINDOW,
-  readTimeWindow,
-  useTimeWindowOptions,
+  readWindowSelection,
+  windowAddress,
   windowBounds,
-  type TimeWindow,
+  windowFilters,
+  windowFromFilters,
+  type WindowSelection,
 } from "@/lib/time-window";
 import { useDrawerA11y } from "@/lib/use-drawer-a11y";
 import { BELOW_MD, BELOW_XL, useMediaQuery } from "@/lib/use-media-query";
@@ -193,6 +196,8 @@ function outcomeLabel(t: TFunction, outcome: string): string {
 
 type FilterParam =
   | "window"
+  | "since"
+  | "until"
   | "status"
   | "model"
   | "key"
@@ -230,7 +235,8 @@ type FilterParam =
  */
 function useLogFilters() {
   const [params, setParams] = useSearchParams();
-  const timeWindow = readTimeWindow(params.get("window"));
+  // a named window, or a custom range of days (`window=custom&since=…&until=…`, #3407)
+  const timeWindow = readWindowSelection(params);
   const status = readStatus(params.get("status"));
   const keyId = (params.get("key") ?? "").trim();
   const model = params.get("model") ?? "";
@@ -308,7 +314,8 @@ function useLogFilters() {
       lookup?.kind,
       lookup?.value,
     ].join("|"),
-    setWindow: (next: TimeWindow) => update({ window: next === DEFAULT_TIME_WINDOW ? "" : next }),
+    // all three parameters in one write, so a named window drops a range's days
+    setWindow: (next: WindowSelection) => update(windowAddress(next)),
     /**
      * Replace every filter a saved view holds with the view's own, and leave
      * the rest of the address alone. A filter the view does not name is
@@ -320,7 +327,7 @@ function useLogFilters() {
      */
     applyView: (view: SavedViewFilters) =>
       update({
-        window: view.window && view.window !== DEFAULT_TIME_WINDOW ? view.window : "",
+        ...windowAddress(windowFromFilters(view)),
         status: view.status && view.status !== "all" ? view.status : "",
         model: view.model ?? "",
         key: view.key ?? "",
@@ -452,7 +459,6 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
     outcome,
     lookup,
   } = filters;
-  const windowOptions = useTimeWindowOptions();
   const lookupKey = lookup ? `${lookup.kind}:${lookup.value}` : "";
   // the cursor each page after the first was opened with, oldest first. a
   // stack rather than a page index: the control plane pages on a keyset, so
@@ -781,7 +787,7 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
   // unpriced flag are not filters it holds, and an `all` status or an empty
   // value is left out rather than saved as a filter that filters nothing
   const savedFilters: SavedViewFilters = {
-    window: logWindow,
+    ...windowFilters(logWindow),
     ...(status !== "all" ? { status } : {}),
     ...(model ? { model } : {}),
     ...(keyId ? { key: keyId } : {}),
@@ -1074,11 +1080,10 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
                 defaultOpen
                 count={logWindow === DEFAULT_TIME_WINDOW ? 0 : 1}
               >
-                <Combobox
+                <TimeWindowPicker
                   aria-label={t("pages.logs.window")}
-                  options={windowOptions}
                   value={logWindow}
-                  onChange={(next) => filters.setWindow(readTimeWindow(next))}
+                  onChange={filters.setWindow}
                 />
               </FilterSection>
               {/* what the gateway recorded happened to each request (#3307),

@@ -25,7 +25,12 @@
 //!
 //! `window` is a rolling window's *name* (`24h`, `7d`, ...), never a pair of
 //! timestamps: a saved "last 7 days" has to mean the seven days before it is
-//! applied, not before it was saved.
+//! applied, not before it was saved. The one exception is `custom` (#3407), a
+//! range of calendar days the person chose, which is saved as exactly those
+//! days in `since` and `until` (`YYYY-MM-DD`, the last day included) and reads
+//! the same whenever the view is applied. `since` and `until` go with `custom`
+//! and with nothing else, and `custom` needs both, the end on or after the
+//! start.
 //!
 //! # What a preset that outlived its access says
 //!
@@ -43,7 +48,7 @@ use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::routing::get;
 use axum::{Json, Router};
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use uuid::Uuid;
@@ -74,10 +79,16 @@ const MAX_IDS: usize = 100;
 /// the other copy, and a window this list lacks is refused, not passed on
 const WINDOWS: &[&str] = &["24h", "7d", "30d", "mtd", "last-month"];
 
+/// the window name for a range of calendar days, whose days ride in `since`
+/// and `until`
+const CUSTOM_WINDOW: &str = "custom";
+
 const SURFACES: &[&str] = &["llm_logs", "dashboard"];
 
 const LLM_LOGS_KEYS: &[&str] = &[
     "window",
+    "since",
+    "until",
     "status",
     "model",
     "key",
@@ -86,6 +97,8 @@ const LLM_LOGS_KEYS: &[&str] = &[
 ];
 const DASHBOARD_KEYS: &[&str] = &[
     "window",
+    "since",
+    "until",
     "bucket",
     "model",
     "key",
@@ -178,7 +191,13 @@ pub(crate) fn validate_filters(surface: &str, filters: &Value) -> ApiResult<Map<
             continue;
         }
         let checked = match name.as_str() {
-            "window" => one_of(name, value, |w| WINDOWS.contains(&w), &WINDOWS.join(", "))?,
+            "window" => one_of(
+                name,
+                value,
+                |w| WINDOWS.contains(&w) || w == CUSTOM_WINDOW,
+                &format!("{}, {CUSTOM_WINDOW}", WINDOWS.join(", ")),
+            )?,
+            "since" | "until" => Value::String(day_of(name, value)?.to_string()),
             "status" => one_of(
                 name,
                 value,
@@ -231,7 +250,50 @@ pub(crate) fn validate_filters(surface: &str, filters: &Value) -> ApiResult<Map<
         };
         out.insert(name.clone(), checked);
     }
+    check_custom_window(&out)?;
     Ok(out)
+}
+
+/// A calendar day written `YYYY-MM-DD`, as a date. The shape is exact (four
+/// digit year, two digit month and day) so one day has one stored spelling.
+fn day_of(field: &str, value: &Value) -> ApiResult<NaiveDate> {
+    value
+        .as_str()
+        .filter(|text| text.len() == 10)
+        .and_then(|text| NaiveDate::parse_from_str(text, "%Y-%m-%d").ok())
+        .ok_or_else(|| {
+            bad_request(&format!(
+                "filter '{field}' must be a day written YYYY-MM-DD"
+            ))
+        })
+}
+
+/// The days of a custom window belong together: `since` and `until` are
+/// stored only beside `window: custom`, which in turn needs both, the end on or
+/// after the start.
+fn check_custom_window(filters: &Map<String, Value>) -> ApiResult<()> {
+    let custom = filters.get("window").and_then(Value::as_str) == Some(CUSTOM_WINDOW);
+    let (since, until) = (filters.get("since"), filters.get("until"));
+    if !custom {
+        if since.is_some() || until.is_some() {
+            return Err(bad_request(&format!(
+                "filters 'since' and 'until' go with window '{CUSTOM_WINDOW}'"
+            )));
+        }
+        return Ok(());
+    }
+    let (Some(since), Some(until)) = (since, until) else {
+        return Err(bad_request(&format!(
+            "window '{CUSTOM_WINDOW}' needs both 'since' and 'until'"
+        )));
+    };
+    // both were checked as days above, so parsing again cannot fail
+    let since = day_of("since", since)?;
+    let until = day_of("until", until)?;
+    if until < since {
+        return Err(bad_request("filter 'until' must not be before 'since'"));
+    }
+    Ok(())
 }
 
 /// A filter entry the caller can no longer read.
@@ -670,6 +732,80 @@ mod tests {
         assert!(refused("dashboard", json!({"model": ""})));
         // and llm_logs does not take the dashboard's bucket
         assert!(refused("llm_logs", json!({"bucket": "day"})));
+    }
+
+    #[test]
+    fn a_custom_window_is_saved_as_its_days() {
+        for surface in ["llm_logs", "dashboard"] {
+            let got = ok(
+                surface,
+                json!({"window": "custom", "since": "2026-10-01", "until": "2026-10-07"}),
+            );
+            assert_eq!(got["window"], "custom");
+            assert_eq!(got["since"], "2026-10-01");
+            assert_eq!(got["until"], "2026-10-07");
+            // a single day is a range
+            ok(
+                surface,
+                json!({"window": "custom", "since": "2026-10-05", "until": "2026-10-05"}),
+            );
+        }
+    }
+
+    #[test]
+    fn a_custom_window_needs_both_days_in_order() {
+        assert!(refused("llm_logs", json!({"window": "custom"})));
+        assert!(refused(
+            "llm_logs",
+            json!({"window": "custom", "since": "2026-10-01"})
+        ));
+        assert!(refused(
+            "dashboard",
+            json!({"window": "custom", "until": "2026-10-01"})
+        ));
+        // an end before the start
+        assert!(refused(
+            "llm_logs",
+            json!({"window": "custom", "since": "2026-10-07", "until": "2026-10-01"})
+        ));
+        // not days: a timestamp, a day that is not on the calendar, another spelling
+        for bad in [
+            "2026-10-01T00:00:00Z",
+            "2026-02-31",
+            "2026-1-5",
+            "10/01/2026",
+            "",
+        ] {
+            assert!(
+                refused(
+                    "llm_logs",
+                    json!({"window": "custom", "since": bad, "until": "2026-10-07"})
+                ),
+                "{bad}"
+            );
+        }
+        assert!(refused(
+            "llm_logs",
+            json!({"window": "custom", "since": 20261001, "until": "2026-10-07"})
+        ));
+    }
+
+    #[test]
+    fn days_without_a_custom_window_are_refused() {
+        assert!(refused(
+            "llm_logs",
+            json!({"since": "2026-10-01", "until": "2026-10-07"})
+        ));
+        assert!(refused(
+            "llm_logs",
+            json!({"window": "7d", "since": "2026-10-01", "until": "2026-10-07"})
+        ));
+        // null reads as unset, the same as leaving the key out
+        let got = ok(
+            "llm_logs",
+            json!({"window": "7d", "since": null, "until": null}),
+        );
+        assert_eq!(got.len(), 1);
     }
 
     #[test]

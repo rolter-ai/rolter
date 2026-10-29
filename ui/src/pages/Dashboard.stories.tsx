@@ -2268,6 +2268,85 @@ export const FiltersComeBackFromTheAddress: Story = {
   },
 };
 
+const ranged = filterable();
+
+/**
+ * A custom range comes back from the address (#3407): every read is sent the
+ * start of its first day and the start of the day after its last, in the
+ * viewer's calendar, and the arrows compare it with the same number of days
+ * straight before it. The picker shows the range, not a stale name.
+ */
+export const ACustomRangeComesBackFromTheAddress: Story = {
+  render: () => renderAt(ranged, "/?window=custom&since=2026-10-01&until=2026-10-07"),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findAllByText(fmt.number(132));
+    const first = new Date(2026, 9, 1).toISOString();
+    const after = new Date(2026, 9, 8).toISOString();
+    const before = new Date(2026, 8, 24).toISOString();
+    await waitFor(() => {
+      for (const path of READS.slice(0, 3)) {
+        const reads = ranged.calls
+          .map((c) => new URL(c.url, "http://localhost"))
+          .filter((u) => u.pathname === path);
+        expect(reads.some((u) => u.searchParams.get("since") === first)).toBe(true);
+        expect(
+          reads.some(
+            (u) => u.searchParams.get("since") === first && u.searchParams.get("until") === after,
+          ),
+        ).toBe(true);
+      }
+      // the previous period: seven days ending where the range begins
+      const summaries = ranged.calls
+        .map((c) => new URL(c.url, "http://localhost"))
+        .filter((u) => u.pathname === "/api/v1/analytics/summary");
+      expect(
+        summaries.some(
+          (u) => u.searchParams.get("since") === before && u.searchParams.get("until") === first,
+        ),
+      ).toBe(true);
+    });
+    await expect(canvas.getByRole("combobox", { name: "Time window" })).toHaveValue(
+      "Custom range…",
+    );
+    await expect(canvas.getByLabelText("From")).toHaveValue("2026-10-01");
+    await expect(canvas.getByLabelText("To")).toHaveValue("2026-10-07");
+  },
+};
+
+const rangedPick = filterable();
+
+/**
+ * Choosing Custom range… and typing the days writes all three parameters to
+ * the address; going back to a named window takes the days out again.
+ */
+export const PickingACustomRangeWritesItToTheAddress: Story = {
+  render: () => renderAt(rangedPick),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findAllByText(fmt.number(132));
+    await userEvent.click(canvas.getByRole("combobox", { name: "Time window" }));
+    await userEvent.click(await canvas.findByRole("option", { name: "Custom range…" }));
+    const from = await canvas.findByLabelText("From");
+    await userEvent.clear(from);
+    await userEvent.type(from, "2026-09-01");
+    const to = canvas.getByLabelText("To");
+    await userEvent.clear(to);
+    await userEvent.type(to, "2026-09-03");
+    await waitFor(() => {
+      const address = addressOf(canvasElement);
+      expect(address.get("window")).toBe("custom");
+      expect(address.get("since")).toBe("2026-09-01");
+      expect(address.get("until")).toBe("2026-09-03");
+    });
+    await userEvent.click(canvas.getByRole("combobox", { name: "Time window" }));
+    await userEvent.click(await canvas.findByRole("option", { name: "Last 7 days" }));
+    await waitFor(() => expect(addressOf(canvasElement).get("window")).toBe("7d"));
+    await expect(addressOf(canvasElement).has("since")).toBe(false);
+    await expect(addressOf(canvasElement).has("until")).toBe(false);
+  },
+};
+
 const noMatch = filterable((path, init) => {
   void init;
   if (path === "/api/v1/analytics/summary")

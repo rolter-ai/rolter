@@ -171,7 +171,14 @@
       "last7d": "Last 7 days",
       "last30d": "Last 30 days",
       "monthToDate": "Month to date",
-      "lastMonth": "Last month"
+      "lastMonth": "Last month",
+      "custom": "Custom range…",
+      "range": "Custom range",
+      "from": "From",
+      "to": "To",
+      "endBeforeStart": "The end day is before the start day. Pick an end on or after the start.",
+      "rangeLabel": "{{from}} – {{to}}",
+      "pickBothDays": "Pick a start day and an end day."
     },
     "sampledLog": {
       "title_one": "The request log keeps about {{numerator}} in {{denominator}} request.",
@@ -2672,7 +2679,8 @@
         "last7d": "Spend, last 7 days",
         "last30d": "Spend, last 30 days",
         "monthToDate": "Spend, month to date",
-        "lastMonth": "Spend, last month"
+        "lastMonth": "Spend, last month",
+        "custom": "Spend, custom range"
       },
       "spendRange": "{{from}} – {{to}}",
       "spendAttributed": "Attributed",

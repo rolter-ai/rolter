@@ -3472,6 +3472,77 @@ export const ApplyingASavedViewSetsTheAddress: Story = {
   },
 };
 
+const CUSTOM_VIEW = {
+  ...SAVED_VIEW,
+  id: "55555555-5555-4555-8555-555555555555",
+  name: "October incident",
+  filters: { window: "custom", since: "2026-10-01", until: "2026-10-07" },
+  effective_filters: { window: "custom", since: "2026-10-01", until: "2026-10-07" },
+  unavailable: [],
+};
+
+const withCustomView = recording(
+  scoped(async (input, init) => {
+    const path = new URL(String(input), "http://localhost").pathname;
+    if (path === "/api/v1/me/saved-views") return json([CUSTOM_VIEW]);
+    return serverFiltered(MIXED)(input, init);
+  }),
+);
+
+/**
+ * A saved view can hold a custom range (#3407): applying it writes the window
+ * and both days to the address, the log is read over exactly those days, and
+ * applying a view with a named window afterwards takes the days out again.
+ */
+export const ApplyingASavedCustomRangeSetsTheDays: Story = {
+  parameters: { address: "/logs?window=30d" },
+  render: () => (
+    <Harness fetchStub={withCustomView.stub}>
+      <Logs />
+      <AddressProbe />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByRole("button", { name: "Saved views" }));
+    await userEvent.click(await screen().findByRole("button", { name: "Apply October incident" }));
+    await waitFor(() => expect(addressOf(canvasElement).get("window")).toBe("custom"));
+    const address = addressOf(canvasElement);
+    await expect(address.get("since")).toBe("2026-10-01");
+    await expect(address.get("until")).toBe("2026-10-07");
+    await waitFor(() => {
+      const sent = lastLogQuery(withCustomView);
+      expect(sent.get("since")).toBe(new Date(2026, 9, 1).toISOString());
+      expect(sent.get("until")).toBe(new Date(2026, 9, 8).toISOString());
+    });
+  },
+};
+
+const readingACustomRange = recording(
+  scoped(async (input, init) => serverFiltered(MIXED)(input, init)),
+);
+
+/** An address that names a custom range reads the log over those days, and the rail shows them. */
+export const ACustomRangeInTheAddressIsReadAsTheWindow: Story = {
+  parameters: { address: "/logs?window=custom&since=2026-10-01&until=2026-10-07" },
+  render: () => (
+    <Harness fetchStub={readingACustomRange.stub}>
+      <Logs />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => {
+      const sent = lastLogQuery(readingACustomRange);
+      expect(sent.get("since")).toBe(new Date(2026, 9, 1).toISOString());
+      expect(sent.get("until")).toBe(new Date(2026, 9, 8).toISOString());
+    });
+    await userEvent.click(await canvas.findByRole("button", { name: /Filters/ }));
+    await expect(await canvas.findByLabelText("From")).toHaveValue("2026-10-01");
+    await expect(canvas.getByLabelText("To")).toHaveValue("2026-10-07");
+  },
+};
+
 const savingFromLogs = recording(
   scoped(async (input, init) => {
     const path = new URL(String(input), "http://localhost").pathname;

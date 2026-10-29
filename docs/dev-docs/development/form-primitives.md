@@ -487,6 +487,26 @@ The Prompt Repository and the Skills Repository are both a named thing with immu
 
 What differs stays with the screen: the editor, the copy that names the thing, and what a make-live dialog says about impact. A screen passes its own already-translated title and description. Selecting a row, a version, or the row a create just made goes through `useDraftSwitch`, so unsaved edits are never replaced without the discard prompt.
 
+## The reporting window picker
+
+A screen that reads over a reporting window draws it with `TimeWindowPicker`
+(`ui/src/components/TimeWindowPicker.tsx`), not a `Combobox` of
+`useTimeWindowOptions()` (#3407). It offers the named windows and **Custom
+range…**, a start and an end day. The selection is a `WindowSelection` from
+`ui/src/lib/time-window.ts`: a named window, or the string
+`custom:YYYY-MM-DD:YYYY-MM-DD`, so it still works as a query key and in `===`.
+The address and a saved view hold the three fields (`window=custom`, `since`,
+`until`); read them with `readWindowSelection` / `windowFromFilters` and write
+them with `windowAddress` / `windowFilters`, never by hand, so a named window
+drops the days a range left. `useAddressSelection` and `useTimeWindow` do this
+for a screen that keeps the window in the address; `windowBounds` and
+`previousWindowBounds` take the selection. The range is whole calendar days in
+the viewer's zone with the last day included, so `until` is the start of the
+day after it. The saved-view allow-list in
+`crates/rolter-control/src/me_saved_views.rs` is the server's copy of the
+shape. `useAddressWindow` and `useTimeWindowOptions` stay named-only for a
+screen that has not adopted the picker.
+
 ## Still to do
 
 `ModelSheet` is the only consumer today. `ProviderSheet`, `ProviderGroupSheet`

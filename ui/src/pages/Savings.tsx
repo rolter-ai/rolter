@@ -19,6 +19,7 @@ import {
 } from "@/components/screen";
 import { SampledLogNotice } from "@/components/SampledLogNotice";
 import { Button } from "@/components/ui/button";
+import { TimeWindowPicker } from "@/components/TimeWindowPicker";
 import { Combobox } from "@/components/ui/combobox";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Field } from "@/components/ui/field";
@@ -38,9 +39,8 @@ import { useCan } from "@/lib/can";
 import { useFormat } from "@/lib/i18n/format";
 import { useScope } from "@/lib/scope";
 import {
-  readTimeWindow,
-  TIME_WINDOW_PARAM,
-  useTimeWindowOptions,
+  readWindowSelection,
+  windowAddress,
   windowBounds,
   type TimeWindow,
 } from "@/lib/time-window";
@@ -98,10 +98,8 @@ export default function Savings() {
   const scope = useScope();
   const orgScope = useOrgScope(scope.orgId);
   const can = useCan();
-  const windowOptions = useTimeWindowOptions();
 
-  const rawWindow = params.get(TIME_WINDOW_PARAM);
-  const timeWindow = rawWindow === null ? DEFAULT_WINDOW : readTimeWindow(rawWindow);
+  const timeWindow = readWindowSelection(params, DEFAULT_WINDOW);
   const value = (name: string) => params.get(name) ?? "";
   const filters = {
     org: value("org"),
@@ -192,10 +190,9 @@ export default function Savings() {
 
       <div className="flex flex-wrap items-end gap-3">
         <Field label={t("common.timeWindow.label")} className="w-48">
-          <Combobox
+          <TimeWindowPicker
             value={timeWindow}
-            onChange={(next) => write({ [TIME_WINDOW_PARAM]: readTimeWindow(next) })}
-            options={windowOptions}
+            onChange={(next) => write(windowAddress(next, DEFAULT_WINDOW))}
           />
         </Field>
         <Field label={t("pages.savings.org")} className="w-48">
@@ -298,7 +295,7 @@ export default function Savings() {
                 {t("common.clearFilters")}
               </Button>
             ) : timeWindow !== "30d" ? (
-              <Button variant="outline" onClick={() => write({ [TIME_WINDOW_PARAM]: "30d" })}>
+              <Button variant="outline" onClick={() => write(windowAddress("30d", DEFAULT_WINDOW))}>
                 {t("pages.savings.widen")}
               </Button>
             ) : undefined

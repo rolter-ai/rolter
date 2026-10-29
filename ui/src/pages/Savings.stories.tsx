@@ -359,6 +359,45 @@ export const PickingAWindowReadsItAgain: Story = {
   },
 };
 
+const ranged = recording(withReport(REPORT));
+
+/**
+ * The advisor reads a custom range of days from the address (#3407): the read
+ * is sent the start of the first day and the start of the day after the last,
+ * and the picker shows the days.
+ */
+export const ACustomRangeInTheAddressIsRead: Story = {
+  render: () => (
+    <Harness
+      fetchStub={ranged.stub}
+      route="/savings?window=custom&since=2026-10-01&until=2026-10-07"
+    >
+      <Savings />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByTestId("savings-limits");
+    await expect(canvas.getByRole("combobox", { name: "Time window" })).toHaveValue(
+      "Custom range…",
+    );
+    await expect(canvas.getByLabelText("From")).toHaveValue("2026-10-01");
+    await expect(canvas.getByLabelText("To")).toHaveValue("2026-10-07");
+    await waitFor(() =>
+      expect(
+        ranged.calls.some((c) => {
+          const q = new URL(c.url, "http://x").searchParams;
+          return (
+            c.url.includes("/analytics/savings") &&
+            q.get("since") === new Date(2026, 9, 1).toISOString() &&
+            q.get("until") === new Date(2026, 9, 8).toISOString()
+          );
+        }),
+      ).toBe(true),
+    );
+  },
+};
+
 /** a route name is unique per project only: the picker offers it once, not once per project */
 export const ARouteNameSharedByTwoProjectsIsOfferedOnce: Story = {
   render: () => (

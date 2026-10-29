@@ -164,7 +164,12 @@ export type SavedViewSurface = "llm_logs" | "dashboard";
  * sends; the control plane refuses any it does not allow-list for the surface.
  */
 export interface SavedViewFilters {
+  /** a window's name, or `custom` with the days in `since` and `until` (#3407) */
   window?: string;
+  /** the first day of a `custom` window, `YYYY-MM-DD` */
+  since?: string;
+  /** the last day of a `custom` window, `YYYY-MM-DD`, itself included */
+  until?: string;
   status?: string;
   model?: string;
   key?: string;

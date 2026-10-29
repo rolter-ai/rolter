@@ -17,7 +17,7 @@ import { RowFilterPicker, useAddressRowFilters } from "@/components/RowFilters";
 import { SavedViews } from "@/components/SavedViews";
 import { HttpStatusBadge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Combobox } from "@/components/ui/combobox";
+import { TimeWindowPicker } from "@/components/TimeWindowPicker";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { BarTrack } from "@/components/ui/bar-chart";
 import { LineChart } from "@/components/ui/line-chart";
@@ -43,12 +43,12 @@ import { modelColor, rankedByRequests } from "@/lib/model-colors";
 import { isAwaiting } from "@/lib/read-state";
 import {
   DEFAULT_TIME_WINDOW,
-  readTimeWindow,
-  useAddressWindow,
-  useTimeWindowOptions,
+  useAddressSelection,
+  useWindowLabel,
   previousWindowBounds,
   windowBounds,
-  type TimeWindow,
+  windowFilters,
+  type WindowSelection,
 } from "@/lib/time-window";
 import { compare, toneOfChange, type Comparison } from "@/lib/compare";
 import { cn } from "@/lib/utils";
@@ -62,13 +62,13 @@ const num = (v: number | string | undefined): number => Number(v ?? 0);
 // request leaves rather than once when the module loads, so a tab left open
 // reads the window as it is now and not as it was when it was opened (#1975).
 // the name is what the query keys carry
-const readWindow = (name: TimeWindow, filters: AnalyticsRowFilters) => ({
+const readWindow = (name: WindowSelection, filters: AnalyticsRowFilters) => ({
   ...windowBounds(name),
   bucket: "hour",
   ...filters,
 });
 // the same figures over the window before, for each tile's arrow (#2010)
-const readPrevious = (name: TimeWindow, filters: AnalyticsRowFilters) => ({
+const readPrevious = (name: WindowSelection, filters: AnalyticsRowFilters) => ({
   ...previousWindowBounds(name),
   bucket: "hour",
   ...filters,
@@ -219,9 +219,8 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
   const currency = useCurrencyCode();
   const money = (n: number) => fmt.currency(n, currency);
   const overviewPoll = pollEvery(pollMs ?? OVERVIEW_POLL_MS);
-  const [timeWindow, setWindow] = useAddressWindow();
-  const windowOptions = useTimeWindowOptions();
-  const windowLabel = windowOptions.find((o) => o.value === timeWindow)?.label ?? timeWindow;
+  const [timeWindow, setWindow] = useAddressSelection();
+  const windowLabel = useWindowLabel()(timeWindow);
   // the figures cover the rows the caller's roles reach, not the org picked in
   // the scope switcher, so the scope line says that and not the switcher's pick
   const auth = useOptionalAuth();
@@ -235,7 +234,7 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
   const filtered = rowFilters.count > 0;
   // what a saved view keeps: the window and the row filters. the buckets are
   // fixed at an hour here
-  const savedFilters: SavedViewFilters = { window: timeWindow, ...rowFilters.saved };
+  const savedFilters: SavedViewFilters = { ...windowFilters(timeWindow), ...rowFilters.saved };
   const summary = useQuery({
     queryKey: ["analytics", "summary", timeWindow, filterKey],
     queryFn: () => fetchAnalyticsSummary(readWindow(timeWindow, rowFilters.query)),
@@ -370,12 +369,11 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
   return (
     <PageBody className="gap-[18px]">
       <div className="flex flex-wrap items-center gap-2">
-        <Combobox
+        <TimeWindowPicker
           aria-label={t("common.timeWindow.label")}
           className="w-48"
-          options={windowOptions}
           value={timeWindow}
-          onChange={(next) => setWindow(readTimeWindow(next))}
+          onChange={setWindow}
         />
         <SavedViews surface="dashboard" current={savedFilters} onApply={rowFilters.apply} />
         <Button
