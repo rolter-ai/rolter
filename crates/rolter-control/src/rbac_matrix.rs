@@ -300,7 +300,8 @@ const CAPABILITIES: &[Capability] = &[
         action_scopes: NONE,
     },
     Capability {
-        // a label on a provider, provider group or route. its own capability
+        // a label on a provider, provider group or route, or on a model of the
+        // org's own (a model label with `org_id`, #3520). its own capability
         // rather than the subject's, so an operator role can be allowed to
         // annotate a provider without being allowed to re-point it
         resource: "label",
@@ -312,9 +313,11 @@ const CAPABILITIES: &[Capability] = &[
         action_scopes: NONE,
     },
     Capability {
-        // a label on a model. models live in the deployment-wide pricing
-        // catalog and not in any one org, so labelling one is a
-        // deployment-wide act and mirrors `model_price` exactly
+        // a deployment-wide label on a model. models live in the
+        // deployment-wide pricing catalog and not in any one org, so a label
+        // that names no org is a deployment-wide act and mirrors
+        // `model_price` exactly. one that names an org is written under that
+        // org's `label` instead (#3520)
         resource: "model_label",
         scope: "deployment",
         read: ANYONE,

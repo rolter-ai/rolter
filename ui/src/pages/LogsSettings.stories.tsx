@@ -49,7 +49,6 @@ const model = (name: string): AnalyticsByModelRow => ({
 const key = (id: string, name: string, prefix: string): VirtualKeyRow => ({
   id,
   project_id: "project-1",
-  key_hash: "hash",
   key_prefix: prefix,
   name,
   models: [],

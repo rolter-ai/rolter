@@ -933,11 +933,11 @@ export const NoLabelMatch: Story = {
 };
 
 /**
- * Labelling a model is a superadmin's act — the catalog is deployment-wide, the
- * way `model_price` is — so an admin sees the panel and its contents with the
- * write controls disabled rather than a form that answers 403.
+ * #3520: a label on an organization's own model is that organization's act,
+ * under the `label` capability its provider and route labels use, so an admin
+ * of org-1 writes the labels on org-1's `gpt-4o`.
  */
-export const AdminCannotWriteAModelLabel: Story = {
+export const AnOrgAdminWritesItsOwnOrgsModelLabels: Story = {
   render: () => (
     <Harness fetchStub={withLabels()} role="admin">
       <Models />
@@ -949,19 +949,81 @@ export const AdminCannotWriteAModelLabel: Story = {
     await userEvent.click(canvas.getByRole("button", { name: "Labels on gpt-4o" }));
     const panel = await within(document.body).findByRole("dialog");
     await waitFor(() => expect(within(panel).getByText(/a price row exists/)).toBeVisible());
-    // `expectRefused` rather than a bare `toBeDisabled`, on both counts. The
-    // sheet fires its own label query as it opens and the effective-permissions
-    // answer is a request behind that again, so a one-shot assertion here is
-    // only ever reading whichever of the two happened to land first (#1689) —
-    // and the `title` half is what distinguishes a refusal from `Add label`
-    // being disabled for its own reason, an empty key, which is what made that
-    // line pass while the gate was still in flight
-    await expectRefused(panel, "Add label", NEEDS_SUPERADMIN);
-    await expectRefused(panel, "Remove tier=flagship", NEEDS_SUPERADMIN);
+    // `expectAllowed` rather than a bare `toBeEnabled`: the sheet fires its own
+    // label query as it opens and the effective-permissions answer is a request
+    // behind that again, so a one-shot assertion reads whichever landed first
+    // (#1689, #1707)
+    await expectAllowed(panel, "Remove tier=flagship");
   },
 };
 
-/** and a superadmin gets both */
+/**
+ * #3520: the same admin holds nothing over another organization's model. The
+ * sheet asks at the row's own organization, not the switcher's, so org-2's
+ * `gpt-4o` is refused to an admin of org-1 alone.
+ */
+export const AnOrgAdminCannotLabelAnotherOrgsModel: Story = {
+  render: () => (
+    <Harness
+      fetchStub={withLabels(TWO_ORGS_LABELS, TWO_ORGS_MODELS)}
+      role={[{ role: "admin", orgId: "org-1" }]}
+    >
+      <Models />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getByLabelText("tier=bronze, your label")).toBeVisible());
+    // their own org's row first: the controls are theirs
+    await userEvent.click(
+      within(rowOfChip(canvas, "tier=gold")).getByRole("button", { name: "Labels on gpt-4o" }),
+    );
+    let dialog = await within(document.body).findByRole("dialog");
+    await expectAllowed(dialog, "Remove tier=gold");
+    await userEvent.keyboard("{Escape}");
+    await expectSheetClosed();
+    // and another org's: refused, naming the role it would take there
+    await userEvent.click(
+      within(rowOfChip(canvas, "tier=bronze")).getByRole("button", { name: "Labels on gpt-4o" }),
+    );
+    dialog = await within(document.body).findByRole("dialog");
+    await expectRefused(dialog, "Remove tier=bronze");
+    await expectRefused(dialog, "Add label");
+  },
+};
+
+/**
+ * A deployment-wide label is every organization's, so it stays a superadmin's
+ * (`model_label`, the way `model_price` is): an org admin sees the config-file
+ * model's panel with the write controls refused rather than a form that
+ * answers 403.
+ */
+export const AnOrgAdminCannotWriteADeploymentWideLabel: Story = {
+  render: () => (
+    <Harness fetchStub={withLabels(TWO_ORGS_LABELS, TWO_ORGS_MODELS)} role="admin">
+      <Models />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getAllByText("gpt-4o")).toHaveLength(3));
+    const rows = canvas
+      .getAllByText("gpt-4o")
+      .map((name) => name.closest("[role='row']") as HTMLElement);
+    await waitFor(() =>
+      expect(rows.filter((row) => within(row).queryByLabelText(/^tier=/) === null)).toHaveLength(1),
+    );
+    const config = rows.find((row) => within(row).queryByLabelText(/^tier=/) === null)!;
+    await userEvent.click(within(config).getByRole("button", { name: "Labels on gpt-4o" }));
+    const panel = await within(document.body).findByRole("dialog");
+    // the `title` half of `expectRefused` is what tells a refusal from `Add
+    // label` being disabled for its own reason, an empty key
+    await expectRefused(panel, "Add label", NEEDS_SUPERADMIN);
+    await expectRefused(panel, "Remove family=gpt", NEEDS_SUPERADMIN);
+  },
+};
+
+/** and a superadmin gets them too */
 export const SuperadminCanWriteAModelLabel: Story = {
   render: () => (
     <Harness fetchStub={withLabels()} role="superadmin">

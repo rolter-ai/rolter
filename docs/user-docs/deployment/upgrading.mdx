@@ -337,6 +337,10 @@ Before you upgrade, check that every gateway's `--config` or `ROLTER_CONFIG` nam
 
 The gateway's local classifier [model root](/security/semantic-guard-policies#local-classifier) can now also come from `--semantic-model-root` or `ROLTER_SEMANTIC_MODEL_ROOT`, which take precedence over the file's key in that order, so a gateway with no file can confine its models too.
 
+## Virtual key responses no longer carry `key_hash`
+
+The virtual-key endpoints of the control-plane API no longer return `key_hash` from any endpoint that returns a key (the per-project listing, create, rotate, disable, the cache, provider and attribution settings, and the self-service keys under `/api/v1/me`), the peppered digest of the key's secret ([#3525](https://github.com/rolter-ai/rolter/issues/3525)). The digest of a retired secret was already withheld, and the organization-wide listing never returned either. Nothing in the dashboard read the field. A script that used it to tell keys apart should use `id` or `key_prefix` instead; the gateway still receives the digest through its config snapshot, so authentication is unchanged.
+
 ## A checklist
 
 1. Back up the control-plane database, and confirm you have `ROLTER_KEK` outside it.

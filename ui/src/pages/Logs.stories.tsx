@@ -1901,7 +1901,6 @@ export const AFailedRequestLeadsWithItsError: Story = {
 const CI_KEY: VirtualKeyRow = {
   id: "vk-ci",
   project_id: "project-1",
-  key_hash: "",
   key_prefix: "rk_live_ab12",
   name: "ci-runner",
   models: [],
