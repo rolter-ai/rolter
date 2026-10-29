@@ -269,6 +269,7 @@
       "config": "the effective config",
       "configProblems": "the list of config problems",
       "configExport": "the configuration",
+      "organizations": "organizations",
       "providers": "providers",
       "plugins": "plugins",
       "gettingStarted": "the setup checklist",
@@ -367,6 +368,7 @@
         "internal": "The control plane hit an internal error.",
         "invalid_body": "The request was not valid JSON for this action. Reload the page and try again.",
         "invalid_credentials": "The email or password is wrong.",
+        "config_export_needs_org": "Two or more organizations share a name, so the whole deployment cannot be exported as one file. Pick an organization.",
         "invalid_cursor": "The page position is no longer valid. Reload the list.",
         "invalid_exchange_code": "This sign-in link has expired or was already used. Start again.",
         "invalid_field": "One of the values is not accepted. Correct it and try again.",
@@ -4563,7 +4565,18 @@
       },
       "export": {
         "action": "Export rolter.toml",
-        "pending": "Exporting…"
+        "pending": "Exporting…",
+        "run": "Export",
+        "title": "Export the configuration",
+        "body": "Download the live configuration as a rolter.toml that rolter-seed --import accepts. Credentials are never written.",
+        "org": "Organization",
+        "orgHint": "One organization's rows, plus the rows no organization owns.",
+        "orgPlaceholder": "Pick an organization",
+        "allOrgs": "All organizations",
+        "noOrgs": "No organization exists yet, so the export is the whole deployment.",
+        "needsOrg": "Two or more organizations share a route, provider or slug name, so the whole deployment cannot be one file. Pick an organization to export.",
+        "withoutPersonCaps": "Leave per-person caps out",
+        "withoutPersonCapsHint": "A cap on a person names their account by email. Leaving them out keeps every address out of the file."
       },
       "summary": {
         "line": "{{providers}} · {{routes}} · {{keys}}",

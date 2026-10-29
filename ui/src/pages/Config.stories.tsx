@@ -6,6 +6,7 @@ import Config from "./Config";
 import {
   Harness,
   Toasted,
+  expectAllowed,
   expectEmptyState,
   expectGateAnswered,
   expectListTable,
@@ -105,6 +106,12 @@ const CONVERGED = [
   node({ id: "cp-1", role: "control" }),
 ];
 
+// the organizations the export dialog offers
+const ORGS = [
+  { id: "org-acme", name: "Acme", slug: "acme", created_at: "2026-01-01T00:00:00Z" },
+  { id: "org-globex", name: "Globex", slug: "globex", created_at: "2026-01-01T00:00:00Z" },
+];
+
 /**
  * The control plane as this screen talks to it: the stored config, the lines
  * the snapshot leaves out, the cluster inventory and the export. Each answer
@@ -116,13 +123,15 @@ function api({
   problems = () => json({ problems: [] }),
   nodes = () => json(CONVERGED),
   exported = () => json({ error: { message: "not stubbed" } }, 500),
+  orgs = () => json(ORGS),
 }: {
   config?: () => Response;
   problems?: () => Response;
   nodes?: () => Response;
   exported?: () => Response;
+  orgs?: () => Response | Promise<Response>;
 } = {}): FetchStub {
-  return scoped(async (input) => {
+  const rest = scoped(async (input) => {
     const path = new URL(String(input), "http://localhost").pathname;
     if (path === "/api/v1/config") return config();
     if (path === "/api/v1/config/problems") return problems();
@@ -130,6 +139,12 @@ function api({
     if (path === "/api/v1/cluster/nodes") return nodes();
     return json([]);
   });
+  // the export dialog's organization picker; the screen mounts no scope chain
+  // of its own, so nothing else reads this list
+  return (input, init) =>
+    new URL(String(input), "http://localhost").pathname === "/api/v1/orgs"
+      ? Promise.resolve(orgs())
+      : rest(input, init);
 }
 
 const loaded = api();
@@ -525,21 +540,183 @@ const NEEDS_SUPERADMIN = en.rbac.needsSuperadmin;
 
 const exporting = recording(api({ exported: toml }));
 
-// the whole point of the button: one GET to the endpoint the control plane
-// already gates, and the document handed to the browser as a dated file
+/** Open the export dialog from the screen's button and hand back the dialog. */
+async function openExport(canvasElement: HTMLElement): Promise<HTMLElement> {
+  await userEvent.click(
+    await within(canvasElement).findByRole("button", { name: "Export rolter.toml" }),
+  );
+  return within(document.body).findByRole("dialog", { name: "Export the configuration" });
+}
+
+/** The organization picker, once the list behind it has loaded. */
+async function orgPicker(dialog: HTMLElement): Promise<HTMLElement> {
+  return within(dialog).findByRole("combobox", { name: "Organization" });
+}
+
+// the button opens a dialog, and its defaults are the old button's behaviour:
+// every organization, person caps in. One GET to the endpoint the control plane
+// already gates, with no query, and the document handed to the browser as a
+// dated file
 export const ExportsTheConfiguration: Story = {
   render: () => (
     <Stage fetchStub={withCapabilities("superadmin", exporting.stub)} role="superadmin" />
   ),
   play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement);
     const names: string[] = [];
+    const dialog = await openExport(canvasElement);
+    await expect(await orgPicker(dialog)).toHaveValue("All organizations");
+    await expect(within(dialog).getByRole("switch", { name: /per-person caps/ })).not.toBeChecked();
     await captureDownload(names, async () => {
-      await userEvent.click(await canvas.findByRole("button", { name: "Export rolter.toml" }));
+      await userEvent.click(within(dialog).getByRole("button", { name: "Export" }));
       await exporting.expectSent("GET", EXPORT_PATH);
       await waitFor(() => expect(names).toHaveLength(1));
     });
     await expect(names[0]).toMatch(/^rolter-config-\d{4}-\d{2}-\d{2}\.toml$/);
+    await expect(exporting.calls.find((c) => c.url.includes(EXPORT_PATH))?.url).toBe(EXPORT_PATH);
+    // saved, so the dialog is gone
+    await waitFor(() => expect(within(document.body).queryByRole("dialog")).toBeNull());
+  },
+};
+
+const scopedExport = recording(api({ exported: toml }));
+
+// one organization and no addresses: both choices reach the endpoint as the
+// query it reads, and nothing else is asked for
+export const ExportsOneOrganizationWithoutPersonCaps: Story = {
+  render: () => (
+    <Stage fetchStub={withCapabilities("superadmin", scopedExport.stub)} role="superadmin" />
+  ),
+  play: async ({ canvasElement }) => {
+    const names: string[] = [];
+    const dialog = await openExport(canvasElement);
+    await userEvent.click(await orgPicker(dialog));
+    await userEvent.click(await within(document.body).findByRole("option", { name: /Globex/ }));
+    await userEvent.click(within(dialog).getByRole("switch", { name: /per-person caps/ }));
+    await captureDownload(names, async () => {
+      await userEvent.click(within(dialog).getByRole("button", { name: "Export" }));
+      await scopedExport.expectSent("GET", `${EXPORT_PATH}?org=globex&without_person_caps=true`);
+      await waitFor(() => expect(names).toHaveLength(1));
+    });
+  },
+};
+
+// the unscoped export is refused while two organizations share a name. The
+// dialog says to pick an organization in its own words, rather than the
+// control plane's, takes "All organizations" off the list, and exports the one
+// picked
+const NEEDS_ORG = {
+  error: { code: "config_export_needs_org", message: "this deployment cannot be exported" },
+};
+const whole = api({ exported: toml });
+const refusing = recording(async (input, init) => {
+  const url = new URL(String(input), "http://localhost");
+  if (url.pathname === "/api/v1/config/export") {
+    return url.searchParams.has("org") ? toml() : json(NEEDS_ORG, 400);
+  }
+  return whole(input, init);
+});
+
+export const ExportRefusedWithoutAnOrganization: Story = {
+  render: () => (
+    <Stage fetchStub={withCapabilities("superadmin", refusing.stub)} role="superadmin" />
+  ),
+  play: async ({ canvasElement }) => {
+    const names: string[] = [];
+    const dialog = await openExport(canvasElement);
+    await userEvent.click(within(dialog).getByRole("button", { name: "Export" }));
+    const picker = await orgPicker(dialog);
+    // the dashboard's sentence, not the control plane's, tied to the picker
+    await waitFor(() => expect(picker).toBeInvalid());
+    await expect(within(dialog).getByText(en.pages.config.export.needsOrg)).toBeVisible();
+    await expect(within(dialog).queryByText(NEEDS_ORG.error.message)).toBeNull();
+    await expect(picker).toHaveValue("");
+    // said once, as the picker's own error
+    await expect(within(dialog).getAllByRole("alert")).toHaveLength(1);
+    await userEvent.click(picker);
+    const listbox = await within(document.body).findByRole("listbox");
+    await expect(within(listbox).queryByRole("option", { name: "All organizations" })).toBeNull();
+    await userEvent.click(within(listbox).getByRole("option", { name: /Acme/ }));
+    await waitFor(() => expect(picker).toBeValid());
+    await captureDownload(names, async () => {
+      await userEvent.click(within(dialog).getByRole("button", { name: "Export" }));
+      await refusing.expectSent("GET", `${EXPORT_PATH}?org=acme`);
+      await waitFor(() => expect(names).toHaveLength(1));
+    });
+  },
+};
+
+// the refusal is remembered while the screen lives: opening the dialog again
+// does not offer the export the control plane just refused
+export const RefusalIsRememberedOnReopen: Story = {
+  render: () => (
+    <Stage fetchStub={withCapabilities("superadmin", refusing.stub)} role="superadmin" />
+  ),
+  play: async ({ canvasElement }) => {
+    const dialog = await openExport(canvasElement);
+    await userEvent.click(within(dialog).getByRole("button", { name: "Export" }));
+    await within(dialog).findByText(en.pages.config.export.needsOrg);
+    await userEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(within(document.body).queryByRole("dialog")).toBeNull());
+    const again = await openExport(canvasElement);
+    await expect(await orgPicker(again)).toHaveValue("");
+    await expect(within(again).getByText(en.pages.config.export.needsOrg)).toBeVisible();
+  },
+};
+
+// the list behind the picker is still on its way: a skeleton stands in for it,
+// and the export cannot be pressed on a choice nobody has seen
+export const OrganizationsLoading: Story = {
+  render: () => (
+    <Stage
+      fetchStub={withCapabilities("superadmin", api({ orgs: () => new Promise(() => {}) }))}
+      role="superadmin"
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const dialog = await openExport(canvasElement);
+    await expectSkeleton(dialog);
+    await expect(within(dialog).queryByRole("combobox")).toBeNull();
+  },
+};
+
+const orgsFail = recording(
+  api({ exported: toml, orgs: () => json({ error: { message: "store unavailable" } }, 500) }),
+);
+
+// the list failing is not the export failing: the dialog says so, offers a
+// retry, and the whole-deployment export stays one press away
+export const OrganizationsFailToLoad: Story = {
+  render: () => (
+    <Stage fetchStub={withCapabilities("superadmin", orgsFail.stub)} role="superadmin" />
+  ),
+  play: async ({ canvasElement }) => {
+    const names: string[] = [];
+    const dialog = await openExport(canvasElement);
+    await expectLoadError(dialog, /organizations/i);
+    await expect(within(dialog).getByRole("button", { name: "Try again" })).toBeVisible();
+    await captureDownload(names, async () => {
+      await userEvent.click(within(dialog).getByRole("button", { name: "Export" }));
+      await orgsFail.expectSent("GET", EXPORT_PATH);
+      await waitFor(() => expect(names).toHaveLength(1));
+    });
+  },
+};
+
+// a deployment with no organization has nothing to pick, and says so
+export const NoOrganizations: Story = {
+  render: () => (
+    <Stage
+      fetchStub={withCapabilities("superadmin", api({ orgs: () => json([]) }))}
+      role="superadmin"
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const dialog = await openExport(canvasElement);
+    await expect(await within(dialog).findByRole("note")).toHaveTextContent(
+      en.pages.config.export.noOrgs,
+    );
+    await expect(within(dialog).queryByRole("combobox")).toBeNull();
+    await expectAllowed(dialog, "Export");
   },
 };
 
@@ -554,10 +731,10 @@ export const ExportFails: Story = {
     <Stage fetchStub={withCapabilities("superadmin", exportFails.stub)} role="superadmin" toasted />
   ),
   play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement);
     const names: string[] = [];
+    const dialog = await openExport(canvasElement);
     await captureDownload(names, async () => {
-      await userEvent.click(await canvas.findByRole("button", { name: "Export rolter.toml" }));
+      await userEvent.click(within(dialog).getByRole("button", { name: "Export" }));
       await expectToast(canvasElement, /Could not export the configuration(?! export)/, "error");
     });
     await expect(names).toHaveLength(0);

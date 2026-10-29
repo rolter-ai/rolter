@@ -917,6 +917,35 @@ pub struct ExportOptions {
     pub without_person_caps: bool,
 }
 
+/// Why an export failed, for a caller that answers the refusal to export the
+/// whole deployment differently from every other failure (#3480).
+#[cfg(feature = "postgres")]
+#[derive(Debug)]
+pub enum ExportError {
+    /// two organizations share a name, so the whole deployment is not one
+    /// loadable file; exporting a single organization is. Carries the message
+    /// naming each shared name
+    NeedsOrganization(String),
+    Other(rolter_core::Error),
+}
+
+#[cfg(feature = "postgres")]
+impl From<rolter_core::Error> for ExportError {
+    fn from(err: rolter_core::Error) -> Self {
+        Self::Other(err)
+    }
+}
+
+#[cfg(feature = "postgres")]
+impl From<ExportError> for rolter_core::Error {
+    fn from(err: ExportError) -> Self {
+        match err {
+            ExportError::NeedsOrganization(message) => Self::Config(message),
+            ExportError::Other(err) => err,
+        }
+    }
+}
+
 /// The deployment's configuration as an importable document, caps included.
 /// The one call both the endpoint and `rolter config export` make, so they
 /// cannot drift.
@@ -926,6 +955,19 @@ pub async fn export_document(
     config: &GatewayConfig,
     options: &ExportOptions,
 ) -> rolter_core::Result<String> {
+    export_document_typed(pool, config, options)
+        .await
+        .map_err(Into::into)
+}
+
+/// [`export_document`], keeping the refusal to export the whole deployment
+/// apart so the endpoint can give it a stable code.
+#[cfg(feature = "postgres")]
+pub(crate) async fn export_document_typed(
+    pool: &sqlx::PgPool,
+    config: &GatewayConfig,
+    options: &ExportOptions,
+) -> Result<String, ExportError> {
     let mut config = config.clone();
     let refs = load_scope_refs(pool, !options.without_person_caps).await?;
     let mut scope = OrgScope::default();
@@ -944,7 +986,8 @@ pub async fn export_document(
             tenanted.routes.retain(|r| r.tenancy.is_some());
             clashing_names(&tenanted) == clashes
         };
-        let hint = if options.org.is_none() && across_orgs {
+        let needs_org = options.org.is_none() && across_orgs;
+        let hint = if needs_org {
             format!(
                 "two or more organizations use the same {}, and a file carries no \
                  organization, so it would not load; export one organization at a time with \
@@ -959,9 +1002,12 @@ pub async fn export_document(
                 clashes.join(", ")
             )
         };
-        return Err(rolter_core::Error::Config(format!(
-            "this deployment cannot be exported as one file: {hint} (#3440)"
-        )));
+        let message = format!("this deployment cannot be exported as one file: {hint} (#3440)");
+        return Err(if needs_org {
+            ExportError::NeedsOrganization(message)
+        } else {
+            ExportError::Other(rolter_core::Error::Config(message))
+        });
     }
     with_stored_variants(pool, &mut config).await?;
     config.mcp_manifest_enforcement = load_mcp_manifest_enforcement(pool, options).await?;
@@ -1324,6 +1370,12 @@ pub(crate) fn router() -> Router<ControlState> {
     Router::new().route("/api/v1/config/export", get(export_config))
 }
 
+/// stable code of the 400 an export of the whole deployment answers while two
+/// organizations share a name: the caller exports one organization instead
+/// (`?org=<slug>`). Part of the API and never renamed (#3480)
+#[cfg(feature = "postgres")]
+pub(crate) const CONFIG_EXPORT_NEEDS_ORG: &str = "config_export_needs_org";
+
 /// Query of `GET /api/v1/config/export`.
 #[cfg(feature = "postgres")]
 #[derive(serde::Deserialize)]
@@ -1354,7 +1406,21 @@ async fn export_config(
         org: query.org,
         without_person_caps: query.without_person_caps,
     };
-    let document = export_document(crate::crud::pool(&state), &config, &options).await?;
+    let document = match export_document_typed(crate::crud::pool(&state), &config, &options).await {
+        Ok(document) => document,
+        // the same envelope every refusal renders, with a code the dashboard
+        // can translate (#3480)
+        Err(ExportError::NeedsOrganization(message)) => {
+            return Ok((
+                axum::http::StatusCode::BAD_REQUEST,
+                axum::Json(serde_json::json!({
+                    "error": {"code": CONFIG_EXPORT_NEEDS_ORG, "message": message}
+                })),
+            )
+                .into_response());
+        }
+        Err(ExportError::Other(err)) => return Err(err.into()),
+    };
     Ok((
         [
             (

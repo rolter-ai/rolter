@@ -175,6 +175,7 @@ export {
   omittedRows,
   unservedModels,
   exportConfigToml,
+  CONFIG_EXPORT_NEEDS_ORG,
 } from "./config";
 export type {
   TargetDto,
@@ -185,6 +186,7 @@ export type {
   OmittedKind,
   OmittedEntry,
   ConfigProblems,
+  ConfigExportOptions,
 } from "./config";
 export {
   fetchConnectors,
