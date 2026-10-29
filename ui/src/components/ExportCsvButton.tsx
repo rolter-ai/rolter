@@ -23,6 +23,7 @@ import {
   ExportNotStartedError,
   ExportRefusedError,
   ExportStalledError,
+  isUnknownExport,
 } from "@/lib/ticket-download";
 import { useToast } from "@/lib/toast";
 
@@ -90,6 +91,7 @@ export function ExportCsvButton({
   fileType = "csv",
   done,
   fallback,
+  bounded = true,
 }: {
   /** the export to run, read when the button is pressed */
   request: () => ExportRequest;
@@ -115,6 +117,11 @@ export function ExportCsvButton({
    * ticket for it, is not there (an older one): resolves with the toast to show
    */
   fallback?: () => Promise<FallbackDone>;
+  /**
+   * the export has a row and time limit, so a body cut short may have hit
+   * one; the audit log's has neither, and its message does not say so
+   */
+  bounded?: boolean;
 }) {
   const { t } = useTranslation();
   const fmt = useFormat();
@@ -181,7 +188,11 @@ export function ExportCsvButton({
         // failed before any byte came (a 429, a refusal) has not
         await disk?.abort();
         if (abort.signal.aborted) return "cancelled";
-        if (fallback && isEndpointNotMounted(error)) return { fallback: await fallback() };
+        // an older control plane: no such export or ticket route (`404`), or a
+        // mint that does not know this export yet (`400`)
+        if (fallback && (isEndpointNotMounted(error) || isUnknownExport(error))) {
+          return { fallback: await fallback() };
+        }
         throw error;
       } finally {
         controller.current = null;
@@ -211,7 +222,7 @@ export function ExportCsvButton({
       toast.push({
         tone: "error",
         title: t("toast.exportFailed", { what }),
-        detail: exportError(error, t),
+        detail: exportError(error, t, bounded),
       }),
   });
   const pending = exportFile.isPending;
@@ -276,7 +287,7 @@ export function ExportCsvButton({
 }
 
 /** the sentence for a failed export: the ways an export ends early have their own */
-function exportError(error: unknown, t: TFunction) {
+function exportError(error: unknown, t: TFunction, bounded: boolean) {
   if (error instanceof ApiError && error.status === 429) {
     return error.retryAfterSeconds
       ? t("analytics.export.busyRetry", { seconds: error.retryAfterSeconds })
@@ -284,8 +295,16 @@ function exportError(error: unknown, t: TFunction) {
   }
   // before the plain truncated error, which it extends: here the browser holds
   // the partial file, and the page cannot take it away
-  if (error instanceof DownloadTruncatedError) return t("analytics.export.truncatedDownload");
-  if (error instanceof ExportTruncatedError) return t("analytics.export.truncated");
+  if (error instanceof DownloadTruncatedError) {
+    return t(
+      bounded
+        ? "analytics.export.truncatedDownload"
+        : "analytics.export.truncatedDownloadUnbounded",
+    );
+  }
+  if (error instanceof ExportTruncatedError) {
+    return t(bounded ? "analytics.export.truncated" : "analytics.export.truncatedUnbounded");
+  }
   if (error instanceof ExportRefusedError) {
     return t("analytics.export.refused", { status: error.status });
   }

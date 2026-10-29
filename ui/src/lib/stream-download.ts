@@ -51,12 +51,6 @@ export function diskSaveSupported(): boolean {
   return picker() !== undefined;
 }
 
-/**
- * Ask where to save, and open that file for writing. Resolves to `null` when
- * the person closed the dialog. It has to run straight from the click: the
- * dialog needs the click's user activation, which a download that has already
- * waited on the network may no longer have.
- */
 /** what a save dialog offers to save an export as */
 export type ExportFileType = "csv" | "json";
 
@@ -68,6 +62,13 @@ const PICKER_TYPES: Record<
   json: { description: "JSON", accept: { "application/json": [".json"] } },
 };
 
+/**
+ * Ask where to save, and open that file for writing. Resolves to `null` when
+ * the person closed the dialog. It has to run straight from the click: the
+ * dialog needs the click's user activation, which a download that has already
+ * waited on the network may no longer have. `type` is what the dialog offers
+ * to save it as.
+ */
 export async function chooseDiskSink(
   suggestedName: string,
   type: ExportFileType = "csv",

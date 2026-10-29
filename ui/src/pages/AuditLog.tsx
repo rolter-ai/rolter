@@ -479,6 +479,8 @@ export default function AuditLog() {
                     downloaded: t("pages.auditLog.export.downloaded"),
                   }}
                   fallback={() => readPagesInstead(format)}
+                  // the audit log export has no row or time limit
+                  bounded={false}
                 />
               ))}
             </div>

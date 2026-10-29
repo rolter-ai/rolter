@@ -1398,6 +1398,100 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn an_analytics_export_is_named_by_its_exact_path() {
+        for kind in ExportKind::ANALYTICS {
+            assert_eq!(ExportKind::from_path(&kind.path(), false), Some(kind));
+            assert_eq!(ExportKind::from_path(&kind.path(), true), Some(kind));
+            assert!(!kind.is_audit());
+        }
+        for path in [
+            "/api/v1/analytics/invocations/export/",
+            "/API/V1/ANALYTICS/INVOCATIONS/EXPORT",
+            "/api/v1/analytics/invocations",
+            "",
+        ] {
+            assert_eq!(ExportKind::from_path(path, true), None, "{path}");
+        }
+    }
+
+    /// The audit exports (#3545): the deployment's path, and one org's with
+    /// its id in the canonical hyphenated spelling only, so a path names one
+    /// org one way; neither where the audit log is not there.
+    #[cfg(feature = "postgres")]
+    #[test]
+    fn an_audit_export_is_named_by_one_spelling_of_its_path() {
+        let org = uuid::Uuid::new_v4();
+        let path = format!("/api/v1/orgs/{org}/audit-log/export");
+        assert_eq!(
+            ExportKind::from_path(&path, true),
+            Some(ExportKind::OrgAudit(org))
+        );
+        assert_eq!(ExportKind::OrgAudit(org).path(), path);
+        assert_eq!(
+            ExportKind::from_path("/api/v1/audit-log/export", true),
+            Some(ExportKind::DeploymentAudit)
+        );
+        assert!(ExportKind::DeploymentAudit.is_audit() && ExportKind::OrgAudit(org).is_audit());
+        // without a database neither is an export path
+        assert_eq!(ExportKind::from_path(&path, false), None);
+        assert_eq!(
+            ExportKind::from_path("/api/v1/audit-log/export", false),
+            None
+        );
+        let hyphenated = org.hyphenated().to_string();
+        for id in [
+            hyphenated.to_uppercase(),
+            org.simple().to_string(),
+            format!("{{{hyphenated}}}"),
+            org.urn().to_string(),
+            format!("{hyphenated}0"),
+            hyphenated[1..].to_string(),
+            "not-a-uuid".to_string(),
+            String::new(),
+        ] {
+            let path = format!("/api/v1/orgs/{id}/audit-log/export");
+            assert_eq!(ExportKind::from_path(&path, true), None, "{path}");
+        }
+        for path in [
+            format!("/api/v1/orgs/{org}/audit-log/export/"),
+            format!("/api/v1/orgs/{org}/audit-log"),
+            format!("/api/v1/orgs/{org}/x/audit-log/export"),
+        ] {
+            assert_eq!(ExportKind::from_path(&path, true), None, "{path}");
+        }
+    }
+
+    /// What a ticket stores reads back as the same export, and nothing else
+    /// reads as one.
+    #[cfg(feature = "postgres")]
+    #[test]
+    fn a_stored_export_name_reads_back_as_itself() {
+        let org = uuid::Uuid::new_v4();
+        let kinds = ExportKind::ANALYTICS
+            .into_iter()
+            .chain([ExportKind::DeploymentAudit, ExportKind::OrgAudit(org)]);
+        for kind in kinds {
+            assert_eq!(ExportKind::parse(&kind.stored()), Some(kind), "{kind:?}");
+        }
+        assert_eq!(
+            ExportKind::OrgAudit(org).stored(),
+            format!("org_audit_log:{org}")
+        );
+        assert_eq!(ExportKind::OrgAudit(org).as_str(), "org_audit_log");
+        assert_eq!(ExportKind::DeploymentAudit.stored(), "audit_log");
+        for name in [
+            "org_audit_log",
+            "org_audit_log:",
+            "org_audit_log:not-a-uuid",
+            "org_audit_logx",
+            "Invocations",
+            "",
+        ] {
+            assert_eq!(ExportKind::parse(name), None, "{name}");
+        }
+    }
+
+    #[test]
     fn a_file_names_its_window_and_currency() {
         assert_eq!(
             file_name(
