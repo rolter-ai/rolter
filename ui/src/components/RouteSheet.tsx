@@ -110,9 +110,13 @@ export interface RouteSheetProps {
  * The first three travel in one `PUT /api/v1/routes/{id}`, applied in one
  * transaction by the control plane, so a refused weight leaves the route as it
  * was rather than half-edited. The variants are their own resource and go in a
- * second `PUT /api/v1/routes/{id}/variants`, sent only when they changed and
- * after the route itself saved. The name, parameters, pricing and the rest stay
- * in the model sheet.
+ * second `PUT /api/v1/routes/{id}/variants`, sent only when they changed. The
+ * control plane judges each write against what is stored at that moment (a
+ * route with variants dials only them, #3487), so the order is the one that
+ * lets every end state it accepts land in one save (#3510): variants that stay
+ * go first, since they decide whether the pool counts at all, and a removal of
+ * every variant goes last, once the pool it hands the route to is stored. The
+ * name, parameters, pricing and the rest stay in the model sheet.
  */
 export function RouteSheet({
   open,
@@ -211,12 +215,15 @@ export function RouteSheet({
     draft.variants.map((v) => v.targets.map((tg) => tg.takesOver)),
   );
   const variantsOnlyFallbacks = stranded && draft.variants.length > 0;
-  const onlyFallbacks = (stranded && draft.variants.length === 0) || !!refusal?.allRestricted;
-  const errTargets = onlyFallbacks
-    ? t("fallbackTargets.errors.allRestricted")
-    : (draft.targets.length === 0 && !emptyAllowed) || refusal?.field === "targets"
-      ? t("modelSheet.errors.targets")
-      : "";
+  const onlyFallbacks = stranded && draft.variants.length === 0;
+  // a refusal of the whole list that is about the variants is said under them
+  // (`onRefusal` below), so it never lands here while the route has variants
+  const errTargets =
+    onlyFallbacks || !!refusal?.allRestricted
+      ? t("fallbackTargets.errors.allRestricted")
+      : (draft.targets.length === 0 && !emptyAllowed) || refusal?.field === "targets"
+        ? t("modelSheet.errors.targets")
+        : "";
   const takesOverError = (tg: DraftTarget) =>
     refusal?.field === "takesOver" && refusal.key === tg.key
       ? t("fallbackTargets.errors.refused")
@@ -257,6 +264,18 @@ export function RouteSheet({
   const save = useMutation({
     mutationFn: async () => {
       const r = route!;
+      const saveVariants = async () => {
+        stageRef.current = "variants";
+        await setRouteVariants(r.id, variantsToApi(draft.variants));
+        initialVariantsRef.current = variantPart(draft);
+      };
+      // variants that stay decide whether the pool is dialled, so they are
+      // stored first: a pool PUT judged against stored variants that are only
+      // fallbacks would be refused, though the variants being saved repair them
+      // (#3510). a removal of every variant waits for the pool instead, which
+      // the variants PUT then judges
+      const variantsFirst = variantsDirty && draft.variants.length > 0;
+      if (variantsFirst) await saveVariants();
       if (routeDirty) {
         stageRef.current = "route";
         const input: UpdateRouteInput = {};
@@ -267,10 +286,7 @@ export function RouteSheet({
         await updateRoute(r.id, input);
         initialRouteRef.current = routePart(draft);
       }
-      if (variantsDirty) {
-        stageRef.current = "variants";
-        await setRouteVariants(r.id, variantsToApi(draft.variants));
-      }
+      if (variantsDirty && !variantsFirst) await saveVariants();
     },
     onSuccess: () => {
       ux.saved();
@@ -289,9 +305,9 @@ export function RouteSheet({
     },
     onError: (error) => {
       ux.failed();
+      // the other request may have saved; the lists show what is stored now
+      queryClient.invalidateQueries({ queryKey: ["routes"] });
       if (stageRef.current === "variants") {
-        // the route itself may have saved; the lists show what is stored now
-        queryClient.invalidateQueries({ queryKey: ["routes"] });
         const named =
           error instanceof ApiError && error.code === "invalid_field" && error.field
             ? variantRefusalOf(error.field, draft.variants, error.message)
@@ -309,6 +325,16 @@ export function RouteSheet({
         return;
       }
       const named = refusalOf(error, draft.targets);
+      // a route with variants dials only them, so a list refused for holding
+      // only fallbacks is the variants' problem and is said beside them
+      if (named?.allRestricted && draft.variants.length > 0) {
+        setVariantRefusal({
+          field: "variants",
+          message: t("fallbackTargets.errors.variantsAllRestricted"),
+        });
+        setVariantsOpen(true);
+        return;
+      }
       // a refusal about one line is said at that line; anything else (an
       // unknown provider, a scope mismatch, a 403) has no row to sit on
       if (named) {

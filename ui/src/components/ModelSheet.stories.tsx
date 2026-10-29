@@ -1365,7 +1365,13 @@ export const FallbackOnlyVariantsOverAnOrdinaryListAreRefused: Story = {
     await userEvent.clear(weight);
     await userEvent.type(weight, "2");
     await userEvent.click(dialog.getByRole("button", { name: "Save route" }));
-    await waitFor(() => expect(dialog.getByText(/Every target is a fallback/)).toBeVisible());
+    // the variants strand it, so the message sits beside them rather than under
+    // the list, and focus moves to where they are edited (#3510)
+    const edit = dialog.getByRole("link", { name: "Edit the variants on Routing Rules" });
+    await waitFor(() => expect(edit).toHaveFocus());
+    await expect(edit).toHaveAccessibleDescription(/Variants.*every one of this route's/);
+    await expect(dialog.getAllByText(/Every target is a fallback/)).toHaveLength(1);
+    await expect(dialog.getByLabelText("Target 1 weight")).toBeValid();
     calls.expectNotSent("PUT", "/routes/route-1");
   },
 };

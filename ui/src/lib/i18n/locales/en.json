@@ -470,7 +470,8 @@
     },
     "routing": {
       "strategy": "Strategy",
-      "strategyInfo": "How the gateway picks a target for each request. The load-balancing docs describe what each strategy does."
+      "strategyInfo": "How the gateway picks a target for each request. The load-balancing docs describe what each strategy does.",
+      "editVariants": "Edit the variants on Routing Rules"
     },
     "targets": {
       "title": "Targets",
@@ -730,6 +731,8 @@
     "errors": {
       "category": "A category is 1 to 64 lowercase letters, digits, _ or -.",
       "allRestricted": "Every target is a fallback, so the route could never dial anything. Leave at least one target ordinary.",
+      "variantsAllRestricted": "Every target is a fallback: a route with variants dials only the variants' targets, so this one could never dial anything. Leave at least one variant target ordinary.",
+      "variantsAllRestrictedElsewhere": "Every target is a fallback: a route with variants dials only the variants' targets, and every one of this route's is a fallback, so it could never dial anything. Give a variant an ordinary target on Routing Rules.",
       "refused": "The control plane refused this set: a class it does not know, or one listed twice."
     }
   },

@@ -1171,7 +1171,12 @@ export const RejectedSave: Story = {
 const variantRow = (
   name: string,
   weight: number,
-  targets: { provider_id: string; upstream_model?: string | null; weight: number }[],
+  targets: {
+    provider_id: string;
+    upstream_model?: string | null;
+    weight: number;
+    takes_over?: string[];
+  }[],
   position: number,
 ): RouteVariantRow => ({
   id: `var-${name}`,
@@ -2547,5 +2552,117 @@ export const AcceptsAFallbackOnlyListUnderOrdinaryVariants: Story = {
     );
     await expect(body.targets.map((tg) => tg.takes_over)).toEqual([["timeout"], ["timeout"]]);
     await expect(dialog.queryByText(/Every target is a fallback/)).toBeNull();
+  },
+};
+
+/**
+ * route-1 as the API could store it before #3487: variants whose every target
+ * is a fallback, over an ordinary pool, so the snapshot drops the route
+ */
+const STRANDED: RouteVariantRow[] = [
+  variantRow("stable", 9, [{ provider_id: "prov-1", weight: 1, takes_over: ["throttled"] }], 0),
+  variantRow("canary", 1, [{ provider_id: "prov-2", weight: 1, takes_over: ["timeout"] }], 1),
+];
+
+/**
+ * The stranded route with the control plane's rule applied to each write: the
+ * pool PUT is judged against the variants stored at that moment, so it is
+ * refused while they are still only fallbacks (#3487)
+ */
+const strandedRoute = () => {
+  let storedStranded = true;
+  return recording(
+    scoped(async (input, init) => {
+      const url = String(input);
+      if (/\/routes\/route-1\/variants$/.test(url)) {
+        if (init?.method === "PUT") {
+          storedStranded = false;
+          return json([]);
+        }
+        return json(STRANDED);
+      }
+      if (init?.method === "PUT" && /\/routes\/route-1$/.test(url)) {
+        return storedStranded
+          ? json(
+              {
+                error: {
+                  code: "invalid_field",
+                  message: "route gpt-4o: all_targets_restricted",
+                  field: "targets",
+                },
+              },
+              400,
+            )
+          : json(ROUTES[0]);
+      }
+      return answer(ROUTES)(input, init);
+    }),
+  );
+};
+
+/**
+ * One save repairs a stored route whose variants hold only fallbacks (#3510):
+ * the edit gives a variant an ordinary target and touches the pool, and the
+ * sheet stores the variants first, so the pool PUT is judged against variants
+ * that can be dialled and both writes land.
+ */
+let repair: Recorder;
+export const RepairsFallbackOnlyVariantsInOneSave: Story = {
+  render: () => {
+    repair = strandedRoute();
+    return (
+      <Harness fetchStub={repair.stub} role="admin">
+        <Toasted>
+          <RoutingRules />
+        </Toasted>
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const dialog = await openRouteSheet(canvasElement);
+    await dialog.findByLabelText("Variant 2 target 1 provider");
+    const set = fallbackOf(dialog, "Fallback classes of target 1 of variant 1");
+    await userEvent.click(set.getByRole("button", { name: "throttled" }));
+    const weight = dialog.getByLabelText("Target 1 weight");
+    await userEvent.clear(weight);
+    await userEvent.type(weight, "2");
+    await userEvent.click(dialog.getByRole("button", { name: "Save route" }));
+    await expectToast(canvasElement, /gpt-4o updated/);
+    const puts = repair.calls
+      .filter((c) => c.method === "PUT")
+      .map((c) => new URL(c.url, "http://x").pathname);
+    await expect(puts).toEqual(["/api/v1/routes/route-1/variants", "/api/v1/routes/route-1"]);
+    const sent = await repair.expectSentBody<{ variants: RouteVariantInput[] }>(
+      "PUT",
+      "/api/v1/routes/route-1/variants",
+    );
+    await expect(sent.variants[0].targets[0].takes_over).toEqual([]);
+  },
+};
+
+/**
+ * A save refused for the variants as a whole moves focus to the variants'
+ * own control, and the stranded message is said there rather than under the
+ * route's targets, which are not what strands it (#3510).
+ */
+let strandedFocus: Recorder;
+export const FocusMovesToTheStrandedVariants: Story = {
+  render: () => {
+    strandedFocus = strandedRoute();
+    return (
+      <Harness fetchStub={strandedFocus.stub} role="admin">
+        <RoutingRules />
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const dialog = await openRouteSheet(canvasElement);
+    await dialog.findByLabelText("Variant 2 target 1 provider");
+    await userEvent.click(dialog.getByRole("button", { name: "Save route" }));
+    const add = dialog.getByRole("button", { name: "Add variant" });
+    await waitFor(() => expect(add).toHaveFocus());
+    await expect(add).toHaveAccessibleDescription(/a route with variants dials only/);
+    await expect(dialog.getAllByText(/Every target is a fallback/)).toHaveLength(1);
+    strandedFocus.expectNotSent("PUT", "/api/v1/routes/route-1");
   },
 };

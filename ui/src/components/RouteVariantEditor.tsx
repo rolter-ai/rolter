@@ -100,7 +100,7 @@ export function RouteVariantEditor({
       : showErrors && validation.tooMany
         ? t("routeSheet.variants.errors.tooMany", { max: MAX_VARIANTS })
         : showErrors && onlyFallbacks
-          ? t("fallbackTargets.errors.allRestricted")
+          ? t("fallbackTargets.errors.variantsAllRestricted")
           : "";
   const full = variants.length >= MAX_VARIANTS;
   const weightsIgnored = !usesWeights(strategy) && variants.some((v) => v.targets.length > 1);
@@ -119,8 +119,9 @@ export function RouteVariantEditor({
           disabled={providers.length === 0 || full}
           title={full ? t("routeSheet.variants.full", { max: MAX_VARIANTS }) : undefined}
           aria-describedby={describedBy(setError && setErrId)}
-          // a refusal of the whole set has no field of its own to take focus
-          data-error-anchor={refusal?.field === "variants" || undefined}
+          // an error about the whole set, refused or found here, has no field
+          // of its own to take focus (#3510)
+          data-error-anchor={!!setError || undefined}
           onClick={add}
         >
           <Plus className="h-3.5 w-3.5" />
