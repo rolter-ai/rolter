@@ -46,7 +46,8 @@ use serde_json::json;
 /// That covers RFC 3339 the way the dashboard and the common SDKs write it, the
 /// `YYYY-MM-DD hh:mm:ss.sss` form ClickHouse itself returns (and so the form
 /// inside every cursor this API hands out), and a bare date. A value with no
-/// zone is read in the ClickHouse server's time zone, as it always was.
+/// zone is read as UTC: the analytics `where` clause parses it with the zone
+/// `'UTC'` (#2984), whatever zone the ClickHouse server runs in.
 ///
 /// It is narrower than RFC 3339 exactly where ClickHouse misreads it: a
 /// lowercase `t` or `z`, year `0000` and a day the calendar does not have all
@@ -110,9 +111,10 @@ fn scan(mut rest: &[u8]) -> Option<()> {
 /// (`me_saved_views.rs`).
 pub(crate) const EARLIEST_BOUND: &str = "2000-01-01T00:00:00Z";
 
-/// How far past now a `since` or `until` may name. A dashboard range whose last
-/// day is today ends at the next midnight, which in a zone ahead of UTC can be
-/// most of a day away.
+/// How far past now a `since` or `until` may name: a little slack for a
+/// client whose clock runs ahead of the control plane's. The dashboard itself
+/// never sends a bound past its own clock, since a range that has not ended
+/// sends no `until` and one that has not started starts now.
 pub(crate) const LATEST_BOUND_AHEAD: Duration = Duration::days(1);
 
 fn earliest_bound() -> DateTime<Utc> {
@@ -178,10 +180,20 @@ fn out_of_range(param: &'static str, value: &str, now: DateTime<Utc>) -> Option<
 
 /// The most points a bucketed read answers (#3506). A bucket that would cut
 /// the window into more is a `400` `too_many_buckets` rather than a series
-/// nobody can draw. The dashboard never asks for more: its charts are hourly
-/// over at most a month (745 points) and daily over a custom range, which
-/// starts in 2000 at the earliest (about 9,800 days in 2026).
+/// nobody can draw. The dashboard stays well inside it: its charts are hourly
+/// over at most a month (745 points), and daily over a custom range, which
+/// starts in 2000 at the earliest (about 9,800 days in 2026, and inside the
+/// limit until 2054).
 pub(crate) const MAX_BUCKETS: i64 = 20_000;
+
+/// The reads that cut their window into buckets, the only ones whose `bucket`
+/// [`Query`] holds to [`MAX_BUCKETS`]. The OpenAPI document marks the same
+/// three (`bucketed()`), and a test holds the two to each other.
+pub(crate) const BUCKETED_READS: &[&str] = &[
+    "/api/v1/analytics/timeseries",
+    "/api/v1/analytics/timeseries/export",
+    "/api/v1/health/timeline",
+];
 
 /// The shortest a bucket of each name can be, so the count below is the most
 /// a window can be cut into. A bucket name outside the list is the handler's
@@ -378,7 +390,12 @@ where
                 return Err(refused);
             }
         }
-        if let Some(bucket) = query.bucket() {
+        // only the reads that cut their window into buckets: a summary that was
+        // sent a `bucket` too answers one row whatever it says
+        if let Some(bucket) = query
+            .bucket()
+            .filter(|_| BUCKETED_READS.contains(&parts.uri.path()))
+        {
             check_buckets(since, until, bucket, Utc::now())?;
         }
         Ok(Self(query))
@@ -570,7 +587,7 @@ mod tests {
             "2000-01-01",
             "2000-01-01T00:00:00Z",
             "2026-10-29T12:00:00Z",
-            // tomorrow's midnight, where a range that ends today ends
+            // a day of slack past the control plane's clock
             "2026-10-30",
             "2026-10-30T12:00:00Z",
         ] {
@@ -880,8 +897,11 @@ mod tests {
             seen.lock().is_empty(),
             "a refused bucket reached clickhouse"
         );
-        // the same span a day at a time is answered, the timeseries default
+        // the same span a day at a time is answered, the timeseries default,
+        // and a read that buckets nothing ignores a bucket it was sent
         for uri in [
+            "/api/v1/analytics/summary?since=2000-01-01&bucket=hour",
+            "/api/v1/analytics/by-model?since=2000-01-01&bucket=hour",
             "/api/v1/analytics/timeseries?since=2000-01-01",
             "/api/v1/analytics/timeseries?since=2000-01-01&bucket=day",
             "/api/v1/health/timeline?since=2000-01-01&bucket=day",

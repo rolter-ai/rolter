@@ -776,13 +776,26 @@ const TIMESERIES_QUERY: &[QueryParam] = &[
     QueryParam::new(
         "bucket",
         "string",
-        "time bucket: `hour`, `day`, `week` or `month`",
+        "time bucket: `hour`, `day` (the default), `week` or `month`; one that cuts the \
+         window into more than 20000 points is a 400",
     ),
     MODEL_FILTER,
     KEY_FILTER,
     BUSINESS_UNIT_FILTER,
     CUSTOMER_FILTER,
     PROJECT_FILTER,
+];
+
+/// The health timeline's window plus the bucket it cuts it into.
+const HEALTH_TIMELINE_QUERY: &[QueryParam] = &[
+    SINCE,
+    UNTIL,
+    QueryParam::new(
+        "bucket",
+        "string",
+        "time bucket: `hour` (the default), `day`, `week` or `month`; one that cuts the window \
+         into more than 20000 points is a 400",
+    ),
 ];
 
 /// The uptime endpoint's window plus the target it measures against.
@@ -2541,7 +2554,7 @@ fn operations() -> Vec<Op> {
             )
             .clickhouse_read()
             .bucketed()
-            .query(DASHBOARD_QUERY),
+            .query(TIMESERIES_QUERY),
             Op::get(
                 "/api/v1/analytics/invocations/export",
                 "exportInvocations",
@@ -2636,7 +2649,7 @@ fn operations() -> Vec<Op> {
             )
             .clickhouse_read()
             .bucketed()
-            .query(WINDOW_QUERY),
+            .query(HEALTH_TIMELINE_QUERY),
             Op::get(
                 "/api/v1/health/mttr",
                 "getMttr",
@@ -4627,7 +4640,7 @@ fn governance_schemas(p: &Prim) -> Value {
                 },
                 "spend": {
                     "type": "object",
-                    "description": "where the money went: totals, `multi_attempt` (requests that took more than one upstream attempt), `failed`, `cache` (hits, and misses on routes that cache), and `by_route`, `by_model` (upstream model) and `by_caller` (project and virtual key, the 50 most expensive, each with the key's `key_name`, `null` for a key that is gone or a deployment without a store)",
+                    "description": "where the money went: totals, `multi_attempt` (requests that took more than one upstream attempt), `failed`, `cache` (hits, and misses on routes that cache), and `by_route`, `by_model` (upstream model) and `by_caller` (project and virtual key, the 50 most expensive, each with the name given to its key as `key_name`, `null` for a key with no name, one that is gone, or a deployment without a store)",
                     "properties": {
                         "requests": {"type": "number"},
                         "cost_usd": {"type": "number"},
@@ -5527,6 +5540,26 @@ mod tests {
             }
         }
         assert!(windowed >= 15, "{windowed}");
+        // the reads the extractor holds to the bucket limit are the ones the
+        // document says it holds, and each documents the parameter it names
+        let mut bucketed: Vec<&str> = operations()
+            .iter()
+            .filter(|op| op.bucketed)
+            .map(|op| op.path)
+            .collect();
+        bucketed.sort_unstable();
+        let mut checked = crate::time_bounds::BUCKETED_READS.to_vec();
+        checked.sort_unstable();
+        assert_eq!(bucketed, checked);
+        for path in checked {
+            let params = doc["paths"][path]["get"]["parameters"]
+                .as_array()
+                .unwrap_or_else(|| panic!("{path} documents no parameters"));
+            assert!(
+                params.iter().any(|p| p["name"] == "bucket"),
+                "{path} documents no bucket"
+            );
+        }
         for path in [
             "/api/v1/analytics/timeseries",
             "/api/v1/analytics/timeseries/export",

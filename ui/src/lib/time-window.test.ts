@@ -387,7 +387,11 @@ describe("calendar days in the chart zone (#3500)", () => {
       });
       // and the window before it is the two days before, the change included
       expect(
-        previousWindowBounds(customWindow("2026-11-02", "2026-11-03")!, undefined, zone),
+        previousWindowBounds(
+          customWindow("2026-11-02", "2026-11-03")!,
+          new Date("2026-12-01T00:00:00Z"),
+          zone,
+        ),
       ).toEqual({
         since: "2026-10-31T04:00:00.000Z",
         until: "2026-11-02T05:00:00.000Z",
@@ -426,7 +430,7 @@ describe("calendar days in the chart zone (#3500)", () => {
         since: "2026-10-23T22:00:00.000Z",
         until: "2026-10-26T23:00:00.000Z",
       });
-      expect(previousWindowBounds(range, undefined, zone)).toEqual({
+      expect(previousWindowBounds(range, new Date("2026-12-01T00:00:00Z"), zone)).toEqual({
         since: "2026-10-20T22:00:00.000Z",
         until: "2026-10-23T22:00:00.000Z",
       });
@@ -453,6 +457,30 @@ describe("calendar days in the chart zone (#3500)", () => {
       setChartTimeZone("America/New_York");
       expect(windowBounds("mtd", now)).toEqual({ since: "2026-11-01T04:00:00.000Z" });
       expect(formatDay(new Date("2026-11-10T02:00:00Z"))).toBe("2026-11-09");
+    });
+  });
+});
+
+describe("a custom range is always a window the control plane reads (#3506)", () => {
+  const now = new Date("2026-10-29T12:00:00Z");
+
+  it("starts no earlier than 2000 in a zone ahead of UTC", () => {
+    // midnight on 1 January 2000 in Berlin is 1999 in UTC
+    const range = customWindow("2000-01-01", "2000-01-03")!;
+    expect(windowBounds(range, now, "Europe/Berlin")).toEqual({
+      since: "2000-01-01T00:00:00.000Z",
+      until: "2000-01-03T23:00:00.000Z",
+    });
+    expect(windowBounds(range, now, "Asia/Tokyo").since).toBe("2000-01-01T00:00:00.000Z");
+  });
+
+  it("starts no later than now when its first day is in the future", () => {
+    const range = customWindow("2026-11-10", "2026-11-12")!;
+    expect(windowBounds(range, now, "UTC")).toEqual({ since: now.toISOString() });
+    // and the window before it ends now, not on the future first day
+    expect(previousWindowBounds(range, now, "UTC")).toEqual({
+      since: now.toISOString(),
+      until: now.toISOString(),
     });
   });
 });
