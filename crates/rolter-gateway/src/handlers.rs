@@ -133,7 +133,7 @@ pub async fn metrics(State(state): State<AppState>) -> impl IntoResponse {
         };
         // the namespace, which is the route's name unless another org's route
         // shares it, so two orgs' series stay apart (ADR-0040)
-        let model = entry.namespace.as_str();
+        let model: &str = &entry.namespace;
         let label = model.replace('\\', "\\\\").replace('"', "\\\"");
         // the same per-target scores the control plane serves (#751), so a
         // deployment that scrapes prometheus does not need the dashboard to
@@ -712,10 +712,18 @@ async fn response_lifecycle(
     let Some(route) = state.response_registry.get(&tenant, &response_id) else {
         return call.log(None, UpstreamLeg::NotReached, response_not_found());
     };
+    // the stored provider is its stable `(org, name)` (#3461), found again by
+    // its runtime id in this snapshot, which may have qualified it since
+    let provider_id = route.provider_id(&snap);
     // the registry proves the caller created this response, not that it may
     // still reach the route it came from: access revoked since then must stop
     // the retrieve, cancel, delete and input-items calls too (#1779)
-    if let Err(denial) = authorize_lifecycle(&snap, vk.as_ref(), &route) {
+    if let Err(denial) = authorize_lifecycle(
+        &snap,
+        vk.as_ref(),
+        &route,
+        provider_id.unwrap_or(&route.provider),
+    ) {
         return call.log(
             Some(&route),
             UpstreamLeg::NotReached,
@@ -734,7 +742,7 @@ async fn response_lifecycle(
             .into_response(),
         );
     }
-    let Some(provider) = snap.providers.get(&route.provider) else {
+    let Some(provider) = provider_id.and_then(|id| snap.providers.get(id)) else {
         return call.log(Some(&route), UpstreamLeg::NotReached, response_not_found());
     };
     if provider.kind != rolter_core::ProviderKind::Openai {
@@ -785,7 +793,7 @@ async fn response_lifecycle(
             call.log(
                 Some(&route),
                 UpstreamLeg::Answered(upstream_status),
-                lifecycle_response(response, &route, snap.provider_name(&route.provider)),
+                lifecycle_response(response, &route, snap.provider_name(&provider.name)),
             )
         }
         Err(err) => {
@@ -865,9 +873,17 @@ impl LifecycleLog<'_> {
             lifecycle_operation: self.operation.to_string(),
             ..ctx.into_log()
         };
+        // a stored identity is the row's display name and org as they are; a
+        // runtime id is turned into both as the row is queued
+        let provider = |row: &mut RequestLog, route: &crate::response_registry::ResponseRoute| {
+            row.provider = route.provider.clone();
+            if let Some(org) = &route.provider_org {
+                row.provider_org_id = org.clone();
+            }
+        };
         match (leg, route) {
             (UpstreamLeg::Answered(status), Some(route)) => {
-                row.provider = route.provider.clone();
+                provider(&mut row, route);
                 row.target = route.target.clone();
                 row.upstream_status = status;
                 row.attempts = 1;
@@ -876,7 +892,7 @@ impl LifecycleLog<'_> {
                 }
             }
             (UpstreamLeg::Failed(message), Some(route)) => {
-                row.provider = route.provider.clone();
+                provider(&mut row, route);
                 row.target = route.target.clone();
                 row.attempts = 1;
                 row.error = rolter_core::redact::redact_urls_in_text(message);
@@ -907,17 +923,21 @@ impl LifecycleLog<'_> {
 /// with the route gone there is nothing left to check visibility and policy
 /// against, and allowing it would let a deleted route keep serving calls for
 /// the registry's lifetime.
+///
+/// `provider_id` is the runtime id the stored provider has in `snap`, which a
+/// key's provider allow-list is checked against.
 fn authorize_lifecycle(
     snap: &crate::state::Snapshot,
     key: Option<&KeyMeta>,
     route: &crate::response_registry::ResponseRoute,
+    provider_id: &str,
 ) -> Result<(), AccessDenial> {
     authorize_model(key, &route.model)?;
     let entry = snap
         .resolve_for(&route.route, key)
         .ok_or(AccessDenial::RouteRemoved)?;
     authorize_route(key, &entry)?;
-    if key.is_some_and(|key| !key.provider_allowed(&route.provider)) {
+    if key.is_some_and(|key| !key.provider_allowed(provider_id)) {
         return Err(AccessDenial::ProviderNotAllowed);
     }
     Ok(())
@@ -1783,6 +1803,10 @@ async fn proxy(
             )
         }
     };
+    // what the requested route's metric series are labelled by: its runtime
+    // namespace, which tells two orgs' same-named routes apart (#3462). shared
+    // with the route's entry, so each row takes a reference, not a copy
+    let route_namespace = std::sync::Arc::clone(&entry.namespace);
     // The policy consumes only the request's already-bounded byte count. Its
     // ordered tier selection never retains prompt text. If an operator removes
     // a tier route or a key cannot access it, preserve the requested route and
@@ -1806,7 +1830,7 @@ async fn proxy(
         }
         state
             .metrics
-            .observe_complexity(&model, &tier, &entry.route.model, fallback);
+            .observe_complexity(&route_namespace, &tier, &entry.namespace, fallback);
     }
     if entry.route.targets.is_empty() && !entry.route.has_variants() {
         return refuse.log(error_json(
@@ -2428,6 +2452,7 @@ async fn proxy(
                     business_unit_id: business_unit_id.clone(),
                     customer_id: customer_id.clone(),
                     model: model.clone(),
+                    route_namespace: Some(route_namespace.clone()),
                     sample_rate: snap.logging.sample_rate,
                     guardrail_events: guardrail_events.clone(),
                     plugin_events: plugin_events.clone(),
@@ -2495,6 +2520,7 @@ async fn proxy(
                             business_unit_id: business_unit_id.clone(),
                             customer_id: customer_id.clone(),
                             model: model.clone(),
+                            route_namespace: Some(route_namespace.clone()),
                             sample_rate: snap.logging.sample_rate,
                             guardrail_events: guardrail_events.clone(),
                             plugin_events: plugin_events.clone(),
@@ -2548,6 +2574,7 @@ async fn proxy(
             business_unit_id: business_unit_id.clone(),
             customer_id: customer_id.clone(),
             model: model.clone(),
+            route_namespace: Some(route_namespace.clone()),
             stream: stream as u8,
             sample_rate: snap.logging.sample_rate,
             guardrail_events: guardrail_events.clone(),
@@ -3058,7 +3085,13 @@ async fn proxy(
                             },
                         )
                         .map(|template| {
-                            let template = template.with_route(entry.route.model.clone());
+                            // the provider's stable identity, not its runtime
+                            // id, which changes once another org shares the
+                            // name (#3461)
+                            let (name, org) = snap.provider_label(&last_provider);
+                            let template = template
+                                .with_route(entry.route.model.clone())
+                                .with_provider_identity(name.to_string(), org.to_string());
                             let registry = state.response_registry.clone();
                             Box::new(move |body: &[u8]| {
                                 registry.record_body(template, is_sse, body);
@@ -3079,6 +3112,7 @@ async fn proxy(
                 business_unit_id,
                 customer_id,
                 model,
+                route_namespace: Some(route_namespace.clone()),
                 // the org that owns the provider in the snapshot that served
                 // the request; the row keeps the runtime id until it is queued
                 provider_org_id: snap.provider_label(&last_provider).1.to_string(),
@@ -3336,6 +3370,7 @@ async fn proxy(
                 business_unit_id,
                 customer_id,
                 model,
+                route_namespace: Some(route_namespace.clone()),
                 provider_org_id: if no_target {
                     String::new()
                 } else {
@@ -3499,6 +3534,8 @@ async fn proxy_multipart(
             )
         }
     };
+    // the series label of the route, as on the JSON pipeline (#3462)
+    let route_namespace = std::sync::Arc::clone(&entry.namespace);
     if entry.route.targets.is_empty() {
         return refuse.log(error_json(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -3683,6 +3720,7 @@ async fn proxy_multipart(
             customer_id: customer_id.clone(),
             model: model.clone(),
             stream: u8::from(stream),
+            route_namespace: Some(route_namespace.clone()),
             sample_rate: snap.logging.sample_rate,
             ..Default::default()
         },
@@ -3998,6 +4036,7 @@ async fn proxy_multipart(
                 business_unit_id,
                 customer_id,
                 model,
+                route_namespace: Some(route_namespace.clone()),
                 // the org that owns the provider in the snapshot that served
                 // the request; the row keeps the runtime id until it is queued
                 provider_org_id: snap.provider_label(&last_provider).1.to_string(),
@@ -4091,6 +4130,7 @@ async fn proxy_multipart(
                 business_unit_id,
                 customer_id,
                 model,
+                route_namespace: Some(route_namespace.clone()),
                 provider_org_id: if no_target {
                     String::new()
                 } else {
@@ -5493,6 +5533,9 @@ struct RequestLogCtx {
     business_unit_id: String,
     customer_id: String,
     model: String,
+    /// the resolved route's runtime namespace, which labels the request's
+    /// metric series (#3462); `None` before a route is resolved
+    route_namespace: Option<std::sync::Arc<str>>,
     sample_rate: f64,
     started: Instant,
     /// what each guardrail did to the request (#2158)
@@ -5526,6 +5569,7 @@ impl RequestLogCtx {
             business_unit_id: scope.business_unit.clone(),
             customer_id: scope.customer.clone(),
             model: model.to_string(),
+            route_namespace: None,
             sample_rate,
             started,
             guardrail_events: Vec::new(),
@@ -5550,6 +5594,7 @@ impl RequestLogCtx {
             business_unit_id: self.business_unit_id,
             customer_id: self.customer_id,
             model: self.model,
+            route_namespace: self.route_namespace,
             latency_ms,
             ttft_ms: latency_ms,
             sample_rate: self.sample_rate,
@@ -7351,7 +7396,7 @@ mod tests {
         let ctx = RouteContext::default();
         // the balancer's pick leads; declared order forms the fallback tail
         let entry = crate::state::RouteEntry {
-            namespace: route.model.clone(),
+            namespace: route.model.clone().into(),
             project_scope: None,
             overrides: Default::default(),
             throughput: None,
@@ -7366,7 +7411,7 @@ mod tests {
         );
         // an out-of-range pick degrades to plain declared order
         let entry = crate::state::RouteEntry {
-            namespace: route.model.clone(),
+            namespace: route.model.clone().into(),
             project_scope: None,
             overrides: Default::default(),
             throughput: None,
@@ -7381,7 +7426,7 @@ mod tests {
         );
         // no balancer built for the variant: declared order
         let entry = crate::state::RouteEntry {
-            namespace: route.model.clone(),
+            namespace: route.model.clone().into(),
             project_scope: None,
             overrides: Default::default(),
             throughput: None,
@@ -7431,7 +7476,7 @@ mod tests {
         let cache_aware = rolter_balancer::CacheAware::new(3, 0.5);
         rolter_balancer::LoadBalancer::observe(&cache_aware, 1, &ctx);
         let entry = crate::state::RouteEntry {
-            namespace: route.model.clone(),
+            namespace: route.model.clone().into(),
             project_scope: None,
             overrides: Default::default(),
             throughput: None,
@@ -7535,7 +7580,7 @@ mod tests {
             tenancy: None,
         };
         let entry = crate::state::RouteEntry {
-            namespace: route.model.clone(),
+            namespace: route.model.clone().into(),
             project_scope: None,
             overrides: Default::default(),
             throughput: None,
@@ -7616,7 +7661,7 @@ mod tests {
             tenancy: None,
         };
         crate::state::RouteEntry {
-            namespace: route.model.clone(),
+            namespace: route.model.clone().into(),
             project_scope: None,
             overrides: Default::default(),
             throughput: None,
@@ -7932,7 +7977,7 @@ mod tests {
             tenancy: None,
         };
         let entry = crate::state::RouteEntry {
-            namespace: route.model.clone(),
+            namespace: route.model.clone().into(),
             project_scope: None,
             overrides: Default::default(),
             throughput: None,
@@ -7992,7 +8037,7 @@ mod tests {
             tenancy: None,
         };
         let entry = crate::state::RouteEntry {
-            namespace: route.model.clone(),
+            namespace: route.model.clone().into(),
             project_scope: None,
             overrides: Default::default(),
             throughput: None,
@@ -8045,7 +8090,7 @@ mod tests {
             tenancy: None,
         };
         let entry = crate::state::RouteEntry {
-            namespace: route.model.clone(),
+            namespace: route.model.clone().into(),
             project_scope: None,
             overrides: Default::default(),
             throughput: None,
@@ -8118,7 +8163,7 @@ mod tests {
             tenancy: None,
         };
         let entry = crate::state::RouteEntry {
-            namespace: route.model.clone(),
+            namespace: route.model.clone().into(),
             project_scope: None,
             overrides: Default::default(),
             throughput: None,
@@ -8216,7 +8261,7 @@ mod tests {
             tenancy: None,
         };
         let entry = crate::state::RouteEntry {
-            namespace: route.model.clone(),
+            namespace: route.model.clone().into(),
             project_scope: None,
             overrides: Default::default(),
             throughput: None,
@@ -8346,7 +8391,7 @@ mod tests {
             tenancy: None,
         };
         let entry = crate::state::RouteEntry {
-            namespace: route.model.clone(),
+            namespace: route.model.clone().into(),
             project_scope: None,
             overrides: Default::default(),
             throughput: None,
@@ -8405,7 +8450,7 @@ mod tests {
             tenancy: None,
         };
         let entry = crate::state::RouteEntry {
-            namespace: route.model.clone(),
+            namespace: route.model.clone().into(),
             project_scope: None,
             overrides: Default::default(),
             throughput: None,
@@ -8796,7 +8841,7 @@ mod tests {
                     tenancy: None,
                 };
                 let entry = crate::state::RouteEntry {
-                    namespace: route.model.clone(),
+                    namespace: route.model.clone().into(),
                     project_scope: None,
                     overrides: Default::default(),
                     throughput: None,
@@ -8861,7 +8906,7 @@ mod tests {
             tenancy: None,
         };
         let entry = crate::state::RouteEntry {
-            namespace: route.model.clone(),
+            namespace: route.model.clone().into(),
             project_scope: None,
             overrides: Default::default(),
             throughput: None,
@@ -8912,7 +8957,7 @@ mod tests {
             tenancy: None,
         };
         let entry = crate::state::RouteEntry {
-            namespace: route.model.clone(),
+            namespace: route.model.clone().into(),
             project_scope: None,
             overrides: Default::default(),
             throughput: None,

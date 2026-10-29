@@ -559,6 +559,9 @@ pub struct ClusterNode {
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
 pub struct AdaptiveRoutingTelemetry {
     pub node_id: String,
+    /// the org that owns the route, empty for a deployment-wide route or a
+    /// gateway that predates the column (#3458)
+    pub org_id: String,
     /// public model name of the route
     pub model: String,
     /// whether the blend was routing at sample time
@@ -1317,6 +1320,9 @@ pub struct LogErasure {
     pub status: String,
     pub statements: i32,
     pub error: Option<String>,
+    /// which stores the erasure searched and which it skipped, as a list of
+    /// `{store, searched, code?, reason?}`; `[]` on a record from before it was kept
+    pub stores: serde_json::Value,
     pub created_at: DateTime<Utc>,
     pub completed_at: Option<DateTime<Utc>>,
 }
@@ -1541,6 +1547,9 @@ pub struct SavedView {
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
 pub struct BreakerState {
     pub node_id: String,
+    /// the org that owns the route, empty for a deployment-wide route or a
+    /// gateway that predates the column (#3458)
+    pub org_id: String,
     /// public model name of the route
     pub model: String,
     /// position in the route's target list on that node

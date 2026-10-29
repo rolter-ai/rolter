@@ -67,7 +67,10 @@ interface RouteTraffic {
 /**
  * the rollup keys on the public model name and is read with the route's
  * project filter (#3101), so two projects that define a route with one model
- * name each see their own figure; a route nothing called has no row
+ * name each see their own figure; a route nothing called has no row. the name
+ * alone is a safe key here even though two organizations may share it
+ * (#1857): a project belongs to one organization, so the filtered read holds
+ * no other organization's rows (#3460)
  */
 function trafficFor(rows: AnalyticsByModelRow[], model: string): RouteTraffic {
   const row = rows.find((r) => r.model === model);
@@ -185,6 +188,10 @@ export default function RoutingRules() {
 
   const providerName = (id: string) =>
     providers.data?.find((p) => p.id === id)?.name ?? id.slice(0, 8);
+  // a stored target names its provider by id, so its organization is known
+  // exactly; another organization's provider of the same name has health of
+  // its own (#3460)
+  const providerOrg = (id: string) => providers.data?.find((p) => p.id === id)?.org_id;
 
   // a target's health is looked up by provider name, which the rollups key on,
   // so it waits for the provider list as well as for the rollup: a row judged
@@ -198,6 +205,7 @@ export default function RoutingRules() {
             providerName(tg.provider_id),
             tg.upstream_model || route.model,
             timeline.data,
+            providerOrg(tg.provider_id),
           )
       : undefined;
 
@@ -378,6 +386,7 @@ export default function RoutingRules() {
                   providerName={providerName}
                   healthFor={healthFor}
                   breakers={breakers.data}
+                  orgId={scope.orgId}
                 />
               )}
               <RouteTrafficLine traffic={traffic} model={r.model} />
@@ -612,6 +621,7 @@ function RouteTargets({
   providerName,
   healthFor,
   breakers,
+  orgId,
 }: {
   route: RouteRow;
   state: TargetsState;
@@ -620,6 +630,11 @@ function RouteTargets({
   healthFor?: (target: RouteTargetRow, route: RouteRow) => TargetHealth | null;
   /** the gateways' live breakers, matched on the route's model and the target's position */
   breakers?: Pick<BreakerStateDto, "targets">;
+  /**
+   * the organization the route belongs to: another organization's route of
+   * the same name has breakers of its own (#3460)
+   */
+  orgId?: string;
 }) {
   const { t } = useTranslation();
   const fmt = useFormat();
@@ -682,7 +697,10 @@ function RouteTargets({
                 )}
               </div>
               {healthFor && <TargetHealthLine health={healthFor(tg, route)} />}
-              <BreakerBadge breaker={breakerFor(breakers, route.model, i)} className="self-start" />
+              <BreakerBadge
+                breaker={breakerFor(breakers, route.model, i, orgId)}
+                className="self-start"
+              />
               {weighted && !fallback && (
                 <div
                   data-testid="target-share"

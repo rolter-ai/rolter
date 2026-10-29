@@ -124,6 +124,12 @@ pub(crate) const OPTIONAL_COLUMNS: &[OptionalColumn] = &[
         name: "turns",
         default: "toUInt16(0)",
     },
+    // 037_request_log_provider_org.sql: the org that owns the provider, which
+    // tells two orgs' same-named providers apart (#1857, #3441)
+    OptionalColumn {
+        name: "provider_org_id",
+        default: "''",
+    },
     // 045_cache_usage_reported.sql: whether the upstream stated its
     // prompt-cache reads, read by the summary's read share (#3410)
     OptionalColumn {
@@ -401,6 +407,7 @@ mod tests {
             "has_audio_input",
             "has_response_schema",
             "turns",
+            "provider_org_id",
             "cache_usage_reported",
         ]))
         .expect("the table is visible");

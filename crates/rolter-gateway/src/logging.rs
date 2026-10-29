@@ -221,6 +221,14 @@ pub struct RequestLog {
     /// accepting every row (#1857)
     #[serde(skip_serializing_if = "String::is_empty")]
     pub provider_org_id: String,
+    /// the runtime namespace of the route the caller asked for, which labels
+    /// the per-model latency and variant series: the route's name, unless a
+    /// route of another org shares it, then `name@org` (ADR-0040, #3462).
+    /// Never written to the row; `None` where no route was resolved, and the
+    /// series then take `model`. Shared with the route's own entry, so carrying
+    /// it costs a reference count rather than a copy
+    #[serde(skip)]
+    pub route_namespace: Option<std::sync::Arc<str>>,
     pub target: String,
     /// chosen variant name for A/B attribution; empty on the classic single-pool
     /// path (a route with no variants)
@@ -449,6 +457,7 @@ impl Default for RequestLog {
             model: String::new(),
             provider: String::new(),
             provider_org_id: String::new(),
+            route_namespace: None,
             target: String::new(),
             variant: String::new(),
             status: 0,
@@ -1684,14 +1693,17 @@ impl LogSink {
     /// the attempt this row describes was already counted against its target,
     /// or when there is no target to count it against.
     fn observe(&self, record: &RequestLog, attribute_target: bool) {
+        // two orgs' same-named routes are two series (#3462)
+        let series = record.route_namespace.as_deref().unwrap_or(&record.model);
         self.metrics.observe_request(
             &record.provider,
             &record.model,
+            series,
             record.latency_ms,
             record.ttft_ms,
             record.completion_tokens,
         );
-        self.metrics.observe_variant(&record.model, &record.variant);
+        self.metrics.observe_variant(series, &record.variant);
         // a caller leaving is not the target's verdict, in either direction
         // (#1933). It stays visible in `rolter_client_disconnects_total`
         if !attribute_target || record.is_client_disconnect() {

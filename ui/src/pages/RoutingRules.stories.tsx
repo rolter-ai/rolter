@@ -1951,6 +1951,61 @@ export const TargetBreakerProbing: Story = {
   },
 };
 
+/**
+ * #3460: another organization also has a `gpt-4o` route through a provider
+ * called `openai-prod`. Its breaker is open and its provider is below SLA, but
+ * this organization's card shows its own route's breaker and its own
+ * provider's health, never the namesake's.
+ */
+export const TwoOrgsShareARouteName: Story = {
+  render: () => (
+    <Harness
+      fetchStub={scoped(async (input, init) => {
+        const url = String(input);
+        if (url.includes("/breaker-state"))
+          return json(
+            breakerState([
+              breakerTarget({ org_id: "org-2", target_index: 0, state: "open" }),
+              breakerTarget({
+                org_id: "org-1",
+                target_index: 0,
+                state: "half_open",
+                nodes_open: 0,
+                nodes_half_open: 1,
+              }),
+            ]),
+          );
+        if (url.includes("/health/uptime"))
+          return json({
+            data: [
+              uptimeRow({ org_id: "org-1" }),
+              uptimeRow({
+                org_id: "org-2",
+                ok: 1000,
+                errors: 1000,
+                uptime: 0.5,
+                sla_breached: 1,
+              }),
+            ],
+          });
+        if (url.includes("/health/timeline")) return json({ data: [] });
+        return answer(ROUTES)(input, init);
+      })}
+    >
+      <RoutingRules />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const list = within(await canvas.findByRole("list", { name: "Targets of gpt-4o" }));
+    const badge = await list.findByText("Probing on 1 gateway");
+    await expect(badge.closest("li")).toHaveTextContent(/openai-prod/);
+    await expect(list.queryByText("Breaker open on 2 gateways")).toBeNull();
+    await expect(await list.findByText("99.95% uptime")).toBeInTheDocument();
+    await expect(list.queryByText(/50\.00% uptime/)).toBeNull();
+  },
+};
+
 /** a failed breaker read leaves the cards exactly as they were, with no error */
 export const BreakerStateUnavailable: Story = {
   render: () => (

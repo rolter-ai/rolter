@@ -31,8 +31,13 @@ pub struct GatewayConfig {
     /// a typo. This set lets that pass tell the two apart and prune the
     /// reference like any other omitted provider. Never read from or written
     /// to a file or the wire: it only travels from the store to the sanitizer.
+    ///
+    /// Each entry is `(org, name)`, with the global namespace written `""`
+    /// ([`crate::namespace::GLOBAL`]), since two orgs may each have a provider
+    /// of one name (#1857) and one org's unreadable row must not take the
+    /// other's references with it (#3464).
     #[serde(skip)]
-    pub left_out_providers: std::collections::HashSet<String>,
+    pub left_out_providers: std::collections::HashSet<(String, String)>,
     #[serde(default)]
     pub server: ServerConfig,
     /// outbound TLS trust configuration shared by upstream providers
@@ -5151,8 +5156,7 @@ impl GatewayConfig {
         });
         // a provider the store loader left out never reached `providers`, so
         // the passes above could not see it (#2950); it is omitted all the same
-        let omitted =
-            OmittedProviders::new(every_provider, omitted, self.left_out_providers.clone());
+        let omitted = OmittedProviders::new(every_provider, omitted, &self.left_out_providers);
 
         self.report_denied_operator_urls(&mut warnings);
         // the omission above leaves every reference to that provider dangling,
@@ -6314,28 +6318,42 @@ impl GatewayConfig {
 struct OmittedProviders {
     every: crate::namespace::Namespaced<()>,
     omitted: crate::namespace::Namespaced<()>,
-    left_out: std::collections::HashSet<String>,
 }
 
 impl OmittedProviders {
+    /// `every` is each provider as `(org, name)` before any was dropped,
+    /// `omitted` the ones the sanitizer dropped, and `left_out` the ones the
+    /// store loader never returned (#2950). A left-out provider joins both
+    /// tables, so a reference resolves to it by the same `(org, name)` rule as
+    /// to any other row and is pruned, rather than falling through to a
+    /// namesake: another org's (#3464), or a global row its own org's row
+    /// would have shadowed.
     fn new(
-        every: crate::namespace::Namespaced<()>,
+        mut every: crate::namespace::Namespaced<()>,
         omitted: Vec<(String, String)>,
-        left_out: std::collections::HashSet<String>,
+        left_out: &std::collections::HashSet<(String, String)>,
     ) -> Self {
         let mut set = crate::namespace::Namespaced::new();
         for (org, name) in &omitted {
             let _ = set.insert(org, name, ());
         }
+        for (org, name) in left_out {
+            // a provider the config still carries as `(org, name)` is that
+            // provider, not the row the store could not read
+            if every.owned_by(org, name).is_some() {
+                continue;
+            }
+            let _ = every.insert(org, name, ());
+            let _ = set.insert(org, name, ());
+        }
         Self {
             every,
             omitted: set,
-            left_out,
         }
     }
 
     fn is_empty(&self) -> bool {
-        self.omitted.is_empty() && self.left_out.is_empty()
+        self.omitted.is_empty()
     }
 
     /// Why a row of `org` may not use the provider it calls `name`, if it
@@ -6350,9 +6368,6 @@ impl OmittedProviders {
                 .omitted
                 .owned_by(owner, name)
                 .map(|()| "the provider is itself omitted from the snapshot"),
-            None if self.left_out.contains(name) => {
-                Some("the provider is itself omitted from the snapshot")
-            }
             None if self.every.contains_name(name) && org.is_empty() => Some(
                 "a deployment-wide row uses deployment-wide providers only, and this provider \
                  belongs to an organization",
@@ -6372,7 +6387,7 @@ impl OmittedProviders {
             .iter()
             .filter(|name| match self.every.resolve(org, name) {
                 Some((owner, ())) => self.omitted.owned_by(owner, name).is_some(),
-                None => self.left_out.contains(name.as_str()),
+                None => false,
             })
             .cloned()
             .collect()
@@ -9974,7 +9989,8 @@ mod tests {
             cfg.validate_snapshot().is_err(),
             "precondition: an unknown name is refused"
         );
-        cfg.left_out_providers.insert("stored".to_string());
+        cfg.left_out_providers
+            .insert((String::new(), "stored".to_string()));
 
         let warnings = cfg.sanitize_for_snapshot();
 
@@ -10021,7 +10037,8 @@ mod tests {
             providers = ["stored"]
             "#,
         );
-        cfg.left_out_providers.insert("stored".to_string());
+        cfg.left_out_providers
+            .insert((String::new(), "stored".to_string()));
 
         let report = cfg.sanitize_for_snapshot_report();
 
@@ -10053,7 +10070,8 @@ mod tests {
             provider = "openai"
             "#,
         );
-        cfg.left_out_providers.insert("openai".to_string());
+        cfg.left_out_providers
+            .insert((String::new(), "openai".to_string()));
         let warnings = cfg.sanitize_for_snapshot();
         assert_eq!(cfg.routes[0].targets.len(), 1, "{warnings:?}");
     }
@@ -10736,6 +10754,75 @@ mod tests {
             Some("org-b")
         );
         assert_eq!(cfg.routes[0].targets.len(), 1);
+        cfg.validate_snapshot().unwrap();
+    }
+
+    /// #3464: the store left out one org's `openai` because its row could not
+    /// be read. Only that org's references go: the other org's route and group
+    /// keep their own `openai`, and the left-out org's route does not fall
+    /// through to the global namesake its own row shadowed.
+    #[test]
+    fn a_left_out_provider_prunes_only_its_own_orgs_references() {
+        let mut cfg = two_orgs_one_name();
+        let mut extra: GatewayConfig = toml::from_str(
+            r#"
+            [[providers]]
+            name = "openai"
+            kind = "openai"
+            api_base = "https://api.openai.com/v1"
+
+            [[provider_groups]]
+            name = "pool-a"
+            slug = "pool-a"
+            [[provider_groups.members]]
+            provider = "openai"
+
+            [[provider_groups]]
+            name = "pool-b"
+            slug = "pool-b"
+            [[provider_groups.members]]
+            provider = "openai"
+
+            [[virtual_keys]]
+            key = "k"
+            name = "operator"
+            providers = ["openai"]
+            "#,
+        )
+        .unwrap();
+        for (i, org) in ["org-a", "org-b"].into_iter().enumerate() {
+            let tenancy = Some(Tenancy {
+                org_id: org.to_string(),
+                project_id: None,
+            });
+            extra.provider_groups[i].tenancy = tenancy;
+        }
+        // org-a's row never reached the config; the global `openai` did
+        cfg.providers.remove(0);
+        cfg.providers.append(&mut extra.providers);
+        cfg.provider_groups.append(&mut extra.provider_groups);
+        cfg.virtual_keys.append(&mut extra.virtual_keys);
+        cfg.left_out_providers
+            .insert(("org-a".to_string(), "openai".to_string()));
+
+        let problems = cfg.sanitize_for_snapshot();
+
+        let org = |t: Option<&Tenancy>| t.map(|t| t.org_id.clone());
+        let routes: Vec<_> = cfg
+            .routes
+            .iter()
+            .map(|r| (org(r.tenancy.as_ref()), r.targets.len()))
+            .collect();
+        assert_eq!(routes, [(Some("org-b".into()), 1)], "{problems:?}");
+        let groups: Vec<_> = cfg
+            .provider_groups
+            .iter()
+            .map(|g| (g.name.as_str(), g.members.len()))
+            .collect();
+        // org-a's group lost its member, and an empty group serves nothing
+        assert_eq!(groups, [("pool-a", 0), ("pool-b", 1)], "{problems:?}");
+        // the operator's key resolves the global `openai`, which is served
+        assert_eq!(cfg.virtual_keys[0].providers, ["openai"], "{problems:?}");
         cfg.validate_snapshot().unwrap();
     }
 

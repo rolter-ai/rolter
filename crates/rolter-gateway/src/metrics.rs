@@ -532,18 +532,22 @@ pub struct Scalar {
 
 impl Metrics {
     /// Record one completed request's total latency and time-to-first-token
-    /// against the `model` label. Called once per request from the log sink.
+    /// against the `model` label, which is `series`: the requested route's
+    /// runtime namespace, so two orgs' same-named routes are two series
+    /// (#3462). The OTLP histograms keep the requested `model`, which the GenAI
+    /// conventions define. Called once per request from the log sink.
     pub fn observe_request(
         &self,
         provider: &str,
         model: &str,
+        series: &str,
         latency_ms: u32,
         ttft_ms: u32,
         output_tokens: u32,
     ) {
         let hist = self
             .by_model
-            .entry(model.to_string())
+            .entry(series.to_string())
             .or_insert_with(ModelHist::new);
         hist.latency.observe(latency_ms);
         hist.ttft.observe(ttft_ms);
@@ -575,7 +579,8 @@ impl Metrics {
     }
 
     /// Record one completed request against the A/B variant that served it.
-    /// Classic single-pool routes pass an empty variant and are not counted.
+    /// `model` is the route's runtime namespace (#3462). Classic single-pool
+    /// routes pass an empty variant and are not counted.
     pub fn observe_variant(&self, model: &str, variant: &str) {
         if variant.is_empty() {
             return;
@@ -586,9 +591,11 @@ impl Metrics {
             .fetch_add(1, Relaxed);
     }
 
-    /// Record an opt-in complexity-routing decision. `fallback` means the
-    /// selected tier route was unavailable or not permitted, so the request
-    /// kept its originally requested route.
+    /// Record an opt-in complexity-routing decision. `model` and `route` are
+    /// the requested and the selected route's runtime namespaces, so two orgs'
+    /// same-named routes are two series (#3462). `fallback` means the selected
+    /// tier route was unavailable or not permitted, so the request kept its
+    /// originally requested route.
     pub fn observe_complexity(&self, model: &str, tier: &str, route: &str, fallback: bool) {
         self.by_complexity
             .entry((
@@ -1918,12 +1925,12 @@ mod tests {
     fn request_observation_works_without_an_otlp_recorder() {
         let m = Metrics::default();
         // the OnceLock is empty here, which is the default deployment
-        m.observe_request("openai", "gpt-4o", 42, 7, 0);
+        m.observe_request("openai", "gpt-4o", "gpt-4o", 42, 7, 0);
         assert!(m.render().contains("rolter_request_latency_ms"));
 
         // and an inert recorder is safe to install and record into
         m.set_otlp_histograms(rolter_core::telemetry::RequestHistograms::default());
-        m.observe_request("openai", "gpt-4o", 9, 3, 0);
+        m.observe_request("openai", "gpt-4o", "gpt-4o", 9, 3, 0);
         assert!(!rolter_core::telemetry::RequestHistograms::default().is_active());
     }
 
@@ -1933,9 +1940,9 @@ mod tests {
     fn histogram_observe_and_render() {
         let m = Metrics::default();
         // three requests on one model: 3ms, 40ms, 8000ms (last > 5000 bucket)
-        m.observe_request("openai", "gpt-4o", 3, 2, 0);
-        m.observe_request("openai", "gpt-4o", 40, 10, 0);
-        m.observe_request("openai", "gpt-4o", 8000, 200, 0);
+        m.observe_request("openai", "gpt-4o", "gpt-4o", 3, 2, 0);
+        m.observe_request("openai", "gpt-4o", "gpt-4o", 40, 10, 0);
+        m.observe_request("openai", "gpt-4o", "gpt-4o", 8000, 200, 0);
         let out = m.render();
 
         // type header emitted once

@@ -2089,6 +2089,141 @@ async fn native_responses_lifecycle_is_tenant_scoped_and_pinned() {
     assert_eq!(after_delete.status(), 404);
 }
 
+/// #3461: a stored response keeps its provider as `(org, name)`, not as the
+/// runtime id that served it. When a second org creates a provider of the same
+/// name, the first org's runtime id changes from `openai` to `openai@org-a`
+/// (ADR-0040), and a response created before that must still be retrieved and
+/// deleted on the provider that holds it.
+#[tokio::test]
+async fn a_stored_response_survives_its_provider_name_becoming_shared() {
+    async fn create(State(provider): State<String>) -> impl IntoResponse {
+        Json(json!({"id": format!("resp_{provider}"), "object": "response"}))
+    }
+    async fn retrieve(State(provider): State<String>, Path(id): Path<String>) -> impl IntoResponse {
+        Json(json!({"id": id, "object": "response", "provider": provider}))
+    }
+    async fn delete_response(
+        State(provider): State<String>,
+        Path(id): Path<String>,
+    ) -> impl IntoResponse {
+        Json(json!({"id": id, "deleted": true, "provider": provider}))
+    }
+    async fn upstream(provider: &str) -> SocketAddr {
+        serve(
+            Router::new()
+                .route("/v1/responses", post(create))
+                .route("/v1/responses/{id}", get(retrieve).delete(delete_response))
+                .with_state(provider.to_string()),
+        )
+        .await
+    }
+    let tenancy = |org: &str| {
+        Some(rolter_core::Tenancy {
+            org_id: org.to_string(),
+            project_id: None,
+        })
+    };
+    let org_config = |config: &mut GatewayConfig, org: &str, addr: SocketAddr| {
+        let mut one = config_for("native-model", vec![("openai", addr)]);
+        one.providers[0].kind = ProviderKind::Openai;
+        one.providers[0].tenancy = tenancy(org);
+        one.routes[0].tenancy = tenancy(org);
+        config.providers.append(&mut one.providers);
+        config.routes.append(&mut one.routes);
+        let key = format!("sk-{org}");
+        config.db_virtual_keys.push(VirtualKeyRecord {
+            previous: None,
+            access_policy: None,
+            key_hash: rolter_auth::hash_key(&config.server.resolve_key_pepper(), &key),
+            id: format!("key-{org}"),
+            org_id: org.to_string(),
+            team_id: String::new(),
+            project_id: String::new(),
+            user_id: String::new(),
+            models: Vec::new(),
+            providers: vec!["openai".to_string()],
+            disabled: false,
+            expires_at: None,
+            cache: None,
+            business_unit_id: String::new(),
+            customer_id: String::new(),
+        });
+    };
+    let upstream_a = upstream("a").await;
+    let upstream_b = upstream("b").await;
+    let mut config = GatewayConfig::default();
+    org_config(&mut config, "org-a", upstream_a);
+    let state = rolter_gateway::AppState::with_logging(&config, None);
+    let gw = serve(rolter_gateway::build_router(
+        state.clone(),
+        "/metrics",
+        32 * 1024 * 1024,
+    ))
+    .await;
+    let client = reqwest::Client::new();
+    let created: Value = client
+        .post(format!("http://{gw}/v1/responses"))
+        .bearer_auth("sk-org-a")
+        .json(&json!({"model": "native-model", "input": "hello"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(created["id"], "resp_a", "{created}");
+
+    // org-b takes the name: org-a's provider is `openai@org-a` from now on
+    org_config(&mut config, "org-b", upstream_b);
+    state.reload(&config, 1);
+
+    let retrieved = client
+        .get(format!("http://{gw}/v1/responses/resp_a"))
+        .bearer_auth("sk-org-a")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(retrieved.status(), 200);
+    assert_eq!(
+        retrieved
+            .headers()
+            .get("x-rolter-provider")
+            .and_then(|v| v.to_str().ok()),
+        Some("openai"),
+        "the header carries the display name"
+    );
+    let retrieved: Value = retrieved.json().await.unwrap();
+    assert_eq!(retrieved["provider"], "a", "org-a's own provider holds it");
+    // org-b's key cannot reach org-a's response
+    let foreign = client
+        .get(format!("http://{gw}/v1/responses/resp_a"))
+        .bearer_auth("sk-org-b")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(foreign.status(), 404);
+    let deleted: Value = client
+        .delete(format!("http://{gw}/v1/responses/resp_a"))
+        .bearer_auth("sk-org-a")
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        (&deleted["deleted"], &deleted["provider"]),
+        (&json!(true), &json!("a"))
+    );
+    let gone = client
+        .get(format!("http://{gw}/v1/responses/resp_a"))
+        .bearer_auth("sk-org-a")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(gone.status(), 404);
+}
+
 #[tokio::test]
 async fn response_lifecycle_operations_require_auth_without_leaking_key_scope() {
     let config = GatewayConfig {
@@ -2802,6 +2937,126 @@ async fn param_adjustments_are_recorded_on_the_request_log() {
     );
     // left out entirely, so a clickhouse without the column accepts the row
     assert!(row("untouched").get("param_adjustments").is_none());
+}
+
+/// #3462: two orgs each have a `router` route with a complexity tier onto a
+/// `capable` route split into variants. Every per-route series (latency,
+/// variant split, complexity decision) is labelled by the route's runtime
+/// namespace, `name@org` once the name is shared, so each org's numbers are
+/// a series of their own rather than one merged with the other org's.
+#[tokio::test]
+async fn two_orgs_same_named_routes_report_their_own_metric_series() {
+    async fn openai_response() -> Json<Value> {
+        Json(json!({"choices":[{"message":{"role":"assistant","content":"pong"}}]}))
+    }
+    let upstream = serve(Router::new().route("/v1/chat/completions", post(openai_response))).await;
+    let mut config = GatewayConfig::default();
+    for org in ["org-a", "org-b"] {
+        let tenancy = Some(rolter_core::Tenancy {
+            org_id: org.to_string(),
+            project_id: None,
+        });
+        let mut one = config_for("router", vec![("up", upstream)]);
+        one.providers[0].tenancy = tenancy.clone();
+        one.routes[0].tenancy = tenancy.clone();
+        one.routes[0].params.insert(
+            "_rolter_complexity".to_string(),
+            json!({"tiers": [{"name": "complex", "route": "capable"}]}),
+        );
+        let mut capable = one.routes[0].clone();
+        capable.model = "capable".to_string();
+        capable.params.clear();
+        capable.variants = vec![rolter_core::Variant {
+            name: "control".to_string(),
+            weight: 1,
+            targets: std::mem::take(&mut capable.targets),
+            params: Default::default(),
+        }];
+        one.routes.push(capable);
+        config.providers.append(&mut one.providers);
+        config.routes.append(&mut one.routes);
+        config.db_virtual_keys.push(VirtualKeyRecord {
+            previous: None,
+            access_policy: None,
+            key_hash: rolter_auth::hash_key(
+                &config.server.resolve_key_pepper(),
+                &format!("sk-{org}"),
+            ),
+            id: format!("key-{org}"),
+            org_id: org.to_string(),
+            team_id: String::new(),
+            project_id: String::new(),
+            user_id: String::new(),
+            models: Vec::new(),
+            providers: Vec::new(),
+            disabled: false,
+            expires_at: None,
+            cache: None,
+            business_unit_id: String::new(),
+            customer_id: String::new(),
+        });
+    }
+    let state = rolter_gateway::AppState::with_logging(&config, None);
+    let gw = serve(rolter_gateway::build_router(
+        state.clone(),
+        "/metrics",
+        32 * 1024 * 1024,
+    ))
+    .await;
+    let client = reqwest::Client::new();
+    // org-a sends twice, org-b once, so a merged series would read three
+    for org in ["org-a", "org-a", "org-b"] {
+        let resp = client
+            .post(format!("http://{gw}/v1/chat/completions"))
+            .bearer_auth(format!("sk-{org}"))
+            .json(&json!({"model": "router", "messages": [{"role": "user", "content": "hi"}]}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        resp.bytes().await.unwrap();
+    }
+    let expected = |org: &str, n: u32| {
+        [
+            format!("rolter_request_latency_ms_count{{model=\"router@{org}\"}} {n}"),
+            format!(
+                "rolter_variant_requests_total{{model=\"router@{org}\",variant=\"control\"}} {n}"
+            ),
+            format!(
+                "rolter_complexity_route_requests_total{{model=\"router@{org}\",tier=\"complex\",\
+                 route=\"capable@{org}\",outcome=\"selected\"}} {n}"
+            ),
+        ]
+    };
+    let mut body = String::new();
+    // the row that feeds the histograms is written as the answer finishes
+    for _ in 0..50 {
+        body = client
+            .get(format!("http://{gw}/metrics"))
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+        if expected("org-b", 1)
+            .iter()
+            .all(|line| body.contains(line.as_str()))
+        {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    for line in expected("org-a", 2)
+        .iter()
+        .chain(expected("org-b", 1).iter())
+    {
+        assert!(body.contains(line.as_str()), "missing {line} in:\n{body}");
+    }
+    assert!(
+        !body.contains("model=\"router\""),
+        "no bare series merges the two orgs:\n{body}"
+    );
 }
 
 #[tokio::test]

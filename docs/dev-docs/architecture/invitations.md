@@ -217,7 +217,12 @@ fails an invitation.
   `create_invitation` also stores the token sealed (`token_ciphertext` and
   `token_nonce`, migration `0155`, listed in `SEALED_COLUMNS`); a resend opens
   it, keeps the expiry and records the outcome on the row. Accepting, revoking
-  or replacing an invitation clears the sealed copy. One without it (created
+  or replacing an invitation clears the sealed copy, and so does expiry: the
+  background `expiry_sweep` (every five minutes) calls
+  `InvitationRepo::sweep_expired_sealed_tokens` for each invitation past
+  `expires_at`, since an expired link opens nothing and the copy would otherwise
+  live as long as the row (#3397). `sealed_token` refuses an expired row itself,
+  so one waiting for the sweep is inert. One without it (created
   before `0155`, without a relay, or without a KEK) answers `409` and has to be
   revoked and sent again. It is guarded as creating the invitation is, at the
   invitation's own scope, and audits `invitation.resend` followed by the usual
@@ -226,7 +231,11 @@ fails an invitation.
   mode of `rolter check` run `Mailer::check`: connect, TLS and authentication
   against the relay, no message. A failure names its stage (`connect`, `tls`,
   `auth`, `relay`) with a fixed sentence; the relay's reply, its address and the
-  credential never leave the process.
+  credential never leave the process. Every run dials the relay, so `CallGap`
+  (`call_gap.rs`, held in `ControlState::mail_check_gap`) lets a caller (the
+  `caller_key` the CSV export counts against) run one every five seconds (and anyone one every two, the relay being one shared resource) and
+  answers `ApiError::TooManyAttempts` (`429` with `Retry-After`, #3394) in
+  between. It is process-local; the integration suite's app shortens the gap.
 - The send is awaited, bounded by a 15 second timeout, so the response says what
   happened. `Mailer` (`mail.rs`) is the seam the integration suite installs to
   record messages and to fail on demand.

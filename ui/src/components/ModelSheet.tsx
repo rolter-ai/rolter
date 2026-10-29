@@ -1375,10 +1375,16 @@ export function ModelSheet({
       return { ...d, caps, params: [...paramDefs("chat", on), ...custom] };
     });
 
-  // the overrides a config-file route carries, which the sheet only shows
+  // the overrides a config-file route carries, which the sheet only shows.
+  // the effective config also lists every organization's routes, and one may
+  // share the file route's name (#1857), so only a route of the same owner is it
   const fileOverride =
     readonly && configModel
-      ? policy?.routes.find((route) => route.model === configModel.model)
+      ? policy?.routes.find(
+          (route) =>
+            route.model === configModel.model &&
+            (route.org_id ?? "") === (configModel.org_id ?? ""),
+        )
       : undefined;
 
   const providerName = (id: string) => providers.find((p) => p.id === id)?.name ?? "";
@@ -1389,11 +1395,16 @@ export function ModelSheet({
   // separate question, answered by `visibility` (#2810)
   const publicName = draft.name.trim();
   const nameMissing = !readonly && !publicName;
+  // a name is taken only in this organization, across its projects, or by a
+  // config-file model, which every organization shares: another
+  // organization's model of the same name is no conflict (#1857, #3460), and
+  // the control plane accepts it
   const nameConflict =
     !readonly &&
     publicName !== "" &&
     models.some(
       (m) =>
+        (!m.org_id || m.org_id === orgId) &&
         m.model.toLowerCase() === publicName.toLowerCase() &&
         (mode !== "edit" || m.model !== route?.model),
     );

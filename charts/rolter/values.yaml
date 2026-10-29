@@ -150,6 +150,17 @@ control:
     # overwrites X-Forwarded-For: an unverified header hands an attacker
     # unlimited budgets and the ability to spend somebody else's
     trustForwardedFor: false
+  # bounds on the request log CSV export (#3360, #3421). an export past the row
+  # or time cap ends its body in an error, so the file cannot pass for complete;
+  # one past the concurrency bounds is answered 429 with Retry-After. 0 turns a
+  # bound off. maxSeconds is also a timer: a client that opens an export and
+  # stops reading loses its place when it passes, though nothing polls it
+  # (#3433). the concurrency counts are per control-plane pod
+  export:
+    maxRows: 1000000
+    maxSeconds: 600
+    maxConcurrent: 4
+    maxConcurrentPerCaller: 1
   # the control plane asks github once at boot and every six hours whether a
   # newer stable rolter release exists, so the dashboard footer can hint at it
   # (#902). one bounded request carrying nothing but a user-agent; offline is

@@ -24,6 +24,12 @@ export function eventAt(row: UptimeRow): number | undefined {
 export type Grain = "provider" | "target";
 
 export interface ProviderGroup {
+  /**
+   * the organization that owns the provider, `""` for a config-file provider
+   * or a control plane that predates the field. Two organizations may each
+   * have a provider of one name, and each is a group of its own (#3441)
+   */
+  org_id: string;
   provider: string;
   /** the provider-grain row, when probes or a status page feed this provider */
   overall: UptimeRow | undefined;
@@ -94,13 +100,19 @@ export function headline(group: ProviderGroup): Headline {
   };
 }
 
+/** a provider's identity across organizations, for a map key or a React key */
+export function providerKey(org: string | undefined, provider: string): string {
+  return `${org ?? ""}/${provider}`;
+}
+
 export function groupByProvider(rows: UptimeRow[]): ProviderGroup[] {
   const byProvider = new Map<string, ProviderGroup>();
   for (const row of rows) {
-    let group = byProvider.get(row.provider);
+    const org = row.org_id ?? "";
+    let group = byProvider.get(providerKey(org, row.provider));
     if (!group) {
-      group = { provider: row.provider, overall: undefined, targets: [] };
-      byProvider.set(row.provider, group);
+      group = { org_id: org, provider: row.provider, overall: undefined, targets: [] };
+      byProvider.set(providerKey(org, row.provider), group);
     }
     // fall back on the id comparison the server derives `grain` from, so a
     // control plane that predates the column still groups correctly

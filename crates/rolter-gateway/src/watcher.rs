@@ -983,7 +983,7 @@ mod tests {
             ("org-b", "https://b.example"),
         ] {
             let entry = held.routes.get(org, "gpt-4o").unwrap();
-            assert_eq!(entry.namespace, format!("gpt-4o@{org}"));
+            assert_eq!(*entry.namespace, format!("gpt-4o@{org}"));
             let provider = &held.providers[&entry.route.targets[0].provider];
             assert_eq!(provider.api_base, base);
             assert_eq!(held.provider_label(&provider.name), ("openai", org));

@@ -54,6 +54,7 @@ without a database answers with an empty view, because nothing can push to it.
   "gateways_live": 3,
   "targets": [
     {
+      "org_id": "3f2c9a1e-7b4d-4c55-9a0e-2d1f6b8c4e10",
       "model": "gpt-4o",
       "target_index": 1,
       "provider": "azure-eu",
@@ -78,6 +79,8 @@ without a database answers with an empty view, because nothing can push to it.
 | Field                       | Meaning                                                                                      |
 | --------------------------- | -------------------------------------------------------------------------------------------- |
 | `gateways_live`             | gateways that polled in the last minute, whether or not they hold a breaker entry            |
+| `targets[].org_id`          | the organization that owns the route; empty for a route from the gateway's own config file   |
+| `targets[].model`           | the route's name; with `org_id`, which route this is                                         |
 | `targets[].target_index`    | the target's position in the route's target list                                             |
 | `targets[].state`           | the worst state any gateway reports: `open`, else `half_open`, else `closed`                 |
 | `targets[].nodes_open`      | gateways whose breaker for this target is open                                               |
@@ -86,3 +89,8 @@ without a database answers with an empty view, because nothing can push to it.
 
 A `closed` row is a target that has been failing without reaching the threshold yet; its
 `consecutive_failures` shows how close it is.
+
+Two organizations may each have a route of the same name, so a route is `(org_id, model)`, never
+the name alone: each organization's members see their own route's breaker, and a caller who sees
+both organizations gets one entry per route. A gateway older than this release reports no
+`org_id`; its rows for an organization's route stay out of the view until it is upgraded.

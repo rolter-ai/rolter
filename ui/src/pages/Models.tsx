@@ -240,6 +240,9 @@ export default function Models() {
           healthKnown ? uptime.data : undefined,
           timeline.data,
           breakers.data,
+          // the entry's own organization's breakers and providers, never
+          // those of another organization's route of the same name (#3460)
+          entry.org_id ?? "",
         )
       : null;
     // the first provider names the column; a route spread over several says so
