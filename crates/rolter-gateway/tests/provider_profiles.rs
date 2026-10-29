@@ -43,8 +43,11 @@ struct Seen {
 /// How a case was grounded in the vendor's documentation.
 #[derive(Debug, Clone, Copy)]
 enum Source {
-    /// base, path and request read from the documentation page
-    Fetched,
+    /// base, path, credential header and request read from the documentation
+    /// page `doc` on the given date (`YYYY-MM-DD`). A page that prints no
+    /// response example leaves the response the OpenAI chat completion shape
+    /// its client examples read
+    Fetched(&'static str),
     /// written from memory of the documentation; not checked against the page
     Recalled,
 }
@@ -190,7 +193,7 @@ fn messages() -> Value {
 async fn azure_openai_v1_authenticates_with_the_api_key_header() {
     replay(&Profile {
         kind: ProviderKind::AzureOpenai,
-        source: Source::Fetched,
+        source: Source::Fetched("2026-10-27"),
         doc: "https://learn.microsoft.com/en-us/azure/ai-foundry/openai/api-version-lifecycle",
         base: "/openai/v1",
         path: "/chat/completions",
@@ -229,7 +232,7 @@ async fn azure_openai_v1_authenticates_with_the_api_key_header() {
 async fn bedrock_runtime_authenticates_with_a_bearer_api_key_under_openai_v1() {
     replay(&Profile {
         kind: ProviderKind::Bedrock,
-        source: Source::Fetched,
+        source: Source::Fetched("2026-10-27"),
         doc: "https://docs.aws.amazon.com/bedrock/latest/userguide/inference-chat-completions.html",
         base: "/openai/v1",
         path: "/chat/completions",
@@ -256,8 +259,8 @@ async fn bedrock_runtime_authenticates_with_a_bearer_api_key_under_openai_v1() {
 async fn vertex_takes_an_oauth_access_token_as_a_bearer_under_the_project_endpoint() {
     replay(&Profile {
         kind: ProviderKind::Vertex,
-        source: Source::Recalled,
-        doc: "https://cloud.google.com/vertex-ai/generative-ai/docs/migrate/openai/overview",
+        source: Source::Fetched("2026-10-29"),
+        doc: "https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/migrate/openai/examples",
         base: "/v1/projects/PROJECT/locations/global/endpoints/openapi",
         path: "/chat/completions",
         // the access token (`gcloud auth print-access-token`) is the key
@@ -284,6 +287,8 @@ async fn vertex_takes_an_oauth_access_token_as_a_bearer_under_the_project_endpoi
 async fn gigachat_takes_an_oauth_access_token_as_a_bearer() {
     replay(&Profile {
         kind: ProviderKind::Gigachat,
+        // not checked: the reference page prints no host, auth scheme or example, and
+        // the overview now names `https://api.giga.chat/v1` as the base, not `/api/v1`
         source: Source::Recalled,
         doc: "https://developers.sber.ru/docs/ru/gigachat/api/reference/rest/post-chat",
         base: "/api/v1",
@@ -311,7 +316,7 @@ async fn gigachat_takes_an_oauth_access_token_as_a_bearer() {
 async fn gemini_openai_shim_lives_under_v1beta_openai() {
     replay(&Profile {
         kind: ProviderKind::Gemini,
-        source: Source::Recalled,
+        source: Source::Fetched("2026-10-29"),
         doc: "https://ai.google.dev/gemini-api/docs/openai",
         base: "/v1beta/openai",
         path: "/chat/completions",
@@ -343,7 +348,7 @@ async fn gemini_openai_shim_lives_under_v1beta_openai() {
 async fn groq_keeps_the_openai_prefix_of_its_base() {
     replay(&Profile {
         kind: ProviderKind::Groq,
-        source: Source::Recalled,
+        source: Source::Fetched("2026-10-29"),
         doc: "https://console.groq.com/docs/openai",
         base: "/openai/v1",
         path: "/chat/completions",
@@ -382,7 +387,7 @@ async fn groq_keeps_the_openai_prefix_of_its_base() {
 async fn mistral_base_carries_v1_and_the_gateway_prefix_is_not_doubled() {
     replay(&Profile {
         kind: ProviderKind::Mistral,
-        source: Source::Recalled,
+        source: Source::Fetched("2026-10-29"),
         doc: "https://docs.mistral.ai/api/",
         base: "/v1",
         path: "/chat/completions",
@@ -409,7 +414,7 @@ async fn mistral_base_carries_v1_and_the_gateway_prefix_is_not_doubled() {
 async fn deepseek_base_has_no_version_segment() {
     replay(&Profile {
         kind: ProviderKind::Deepseek,
-        source: Source::Recalled,
+        source: Source::Fetched("2026-10-29"),
         doc: "https://api-docs.deepseek.com/",
         base: "",
         path: "/chat/completions",
