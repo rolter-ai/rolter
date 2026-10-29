@@ -307,7 +307,9 @@ export const LogDetailOffersTheMissingScope: Story = {
   ),
   play: async ({ canvasElement }) => {
     const body = await openDetail(canvasElement);
-    await expect(await body.findByRole("heading", { name: "Authorization refused" })).toBeVisible();
+    await waitFor(() =>
+      expect(body.getByRole("heading", { name: "Authorization refused" })).toBeVisible(),
+    );
     await waitFor(() =>
       expect(
         body.getByText("Your connection lacks the scope write that this server requires."),
@@ -375,9 +377,11 @@ export const LogDetailOffersTheScopesTheUpstreamAskedFor: Story = {
   ),
   play: async ({ canvasElement }) => {
     const body = await openDetail(canvasElement);
-    await expect(
-      await body.findByText("write, repo, read:org are the scopes this server asked for."),
-    ).toBeVisible();
+    await waitFor(() =>
+      expect(
+        body.getByText("write, repo, read:org are the scopes this server asked for."),
+      ).toBeVisible(),
+    );
     await expect(body.queryByLabelText("Scopes to add")).toBeNull();
     const action = body.getByRole("button", { name: "Reconnect Linear with more access" });
     await waitFor(() => expect(action).toBeEnabled());
@@ -407,8 +411,7 @@ export const LogDetailWithEveryAskedScopeHeldExplainsWhy: Story = {
   ),
   play: async ({ canvasElement }) => {
     const body = await openDetail(canvasElement);
-    const why = await body.findByText(/already holds these scopes/);
-    await waitFor(() => expect(why).toBeVisible());
+    await waitFor(() => expect(body.getByText(/already holds these scopes/)).toBeVisible());
     const action = body.getByRole("button", { name: "Reconnect Linear with more access" });
     await expect(action).toBeDisabled();
     await expect(action).toHaveAccessibleDescription(/already holds these scopes/);
@@ -425,10 +428,8 @@ export const LogDetailOfAnotherUsersCallOffersNoAction: Story = {
   ),
   play: async ({ canvasElement }) => {
     const body = await openDetail(canvasElement);
-    await waitFor(async () =>
-      expect(
-        await body.findByText("Only the key's owner can reconnect with more access."),
-      ).toBeVisible(),
+    await waitFor(() =>
+      expect(body.getByText("Only the key's owner can reconnect with more access.")).toBeVisible(),
     );
     await expect(body.queryByRole("button", { name: /with more access/ })).toBeNull();
   },
@@ -444,9 +445,9 @@ export const LogDetailOfASuccessfulCallHasNoStepUp: Story = {
   ),
   play: async ({ canvasElement }) => {
     const body = await openDetail(canvasElement);
-    await expect(
-      await body.findByText("create_issue", { selector: "span,p,dd,div" }),
-    ).toBeVisible();
+    await waitFor(() =>
+      expect(body.getByText("create_issue", { selector: "span,p,dd,div" })).toBeVisible(),
+    );
     await expect(body.queryByRole("heading", { name: "Authorization refused" })).toBeNull();
   },
 };
