@@ -53,6 +53,7 @@ import {
   windowSpan,
   type TimeWindow,
   type WindowSelection,
+  useWindowQueryKey,
 } from "@/lib/time-window";
 import { cn } from "@/lib/utils";
 import { useScreenReady } from "@/lib/ux-react";
@@ -86,12 +87,15 @@ async function fetchWindowSpend(
  * so the business units and the customers of one chargeback are read over the
  * same month. The key holds the window's name rather than its bounds, which
  * would differ on every render; picking another window changes the name, so it
- * refetches.
+ * refetches, and so does a change of the chart zone a window of calendar days
+ * is counted in (`useWindowQueryKey`).
  */
 function useWindowSpend(dimension: AttributionDimension) {
   const [spendWindow, setSpendWindow] = useTimeWindow();
+  // the window's days are the chart zone's, so a zone change reads it again (#3519)
+  const windowKey = useWindowQueryKey(spendWindow);
   const spend = useQuery({
-    queryKey: ["analytics", "by-attribution", dimension, spendWindow],
+    queryKey: ["analytics", "by-attribution", dimension, ...windowKey],
     queryFn: () => fetchWindowSpend(spendWindow, dimension),
     retry: false,
   });

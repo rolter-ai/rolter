@@ -46,7 +46,7 @@ import { useScope } from "@/lib/scope";
 import { useFormat } from "@/lib/i18n/format";
 import { useDrawerA11y } from "@/lib/use-drawer-a11y";
 import { BELOW_LG, useMediaQuery } from "@/lib/use-media-query";
-import { useAddressSelection, windowBounds } from "@/lib/time-window";
+import { useAddressSelection, useWindowQueryKey, windowBounds } from "@/lib/time-window";
 import { useScreenReady } from "@/lib/ux-react";
 
 // a tool payload is JSON when it parses as JSON, and opaque text when it does
@@ -128,10 +128,12 @@ function McpLogsScreen() {
   // from two days ago can be traced and the view shared (#3300). its bounds are
   // worked out as each read leaves, not when the screen opened
   const [timeWindow, pickWindow] = useAddressSelection();
+  // the window's days are the chart zone's, so a zone change reads it again (#3519)
+  const windowKey = useWindowQueryKey(timeWindow);
   const [selected, setSelected] = React.useState<string | null>(null);
 
   const summary = useQuery({
-    queryKey: ["mcp-summary", timeWindow],
+    queryKey: ["mcp-summary", ...windowKey],
     queryFn: () => fetchMcpSummary(windowBounds(timeWindow)),
     retry: false,
   });
@@ -143,7 +145,7 @@ function McpLogsScreen() {
   useScreenReady(!summary.isLoading);
 
   const logs = useQuery({
-    queryKey: ["mcp-logs", timeWindow, status, transport, server, tool, mine ? myId : "", cursor],
+    queryKey: ["mcp-logs", ...windowKey, status, transport, server, tool, mine ? myId : "", cursor],
     queryFn: () =>
       fetchMcpLogs({
         ...windowBounds(timeWindow),

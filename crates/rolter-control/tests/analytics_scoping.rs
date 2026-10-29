@@ -2125,6 +2125,17 @@ async fn by_variant_groups_one_route_inside_the_callers_scope() {
             (response.status(), response.json::<Value>().await.unwrap())
         }
     };
+    // rows are keyed on the org too (#3548), so a name is `org/variant` here
+    let org_name = |r: &Value| {
+        let org = r["org_id"].as_str().unwrap_or_default();
+        if org == acme.org.to_string() {
+            "acme"
+        } else if org == umbrella.org.to_string() {
+            "umbrella"
+        } else {
+            panic!("a row of an org this test did not seed: {r}")
+        }
+    };
     let by_variant = |body: &Value| -> Vec<(String, f64, f64, f64)> {
         let mut out: Vec<_> = body["data"]
             .as_array()
@@ -2132,7 +2143,7 @@ async fn by_variant_groups_one_route_inside_the_callers_scope() {
             .iter()
             .map(|r| {
                 (
-                    r["variant"].as_str().unwrap().to_string(),
+                    format!("{}/{}", org_name(r), r["variant"].as_str().unwrap()),
                     number(&r["requests"]),
                     number(&r["errors"]),
                     number(&r["cost_usd"]),
@@ -2144,15 +2155,17 @@ async fn by_variant_groups_one_route_inside_the_callers_scope() {
     };
 
     // the admin token reads every org: requests and cost are weighted, errors count
-    // the weight of the failed row, and the empty variant is the classic pool
+    // the weight of the failed row, and the empty variant is the classic pool.
+    // umbrella's route of the same name is its own row (#3548)
     let (status, body) = read(ADMIN_TOKEN, format!("model={route}")).await;
     assert_eq!(status, 200);
     assert_eq!(
         by_variant(&body),
         vec![
-            ("".to_string(), 1.0, 0.0, 2.0),
-            ("canary".to_string(), 4.0, 2.0, 1.0),
-            ("stable".to_string(), 4.0, 0.0, 14.0),
+            ("acme/".to_string(), 1.0, 0.0, 2.0),
+            ("acme/canary".to_string(), 4.0, 2.0, 1.0),
+            ("acme/stable".to_string(), 3.0, 0.0, 6.0),
+            ("umbrella/stable".to_string(), 1.0, 0.0, 8.0),
         ]
     );
     // the first attempts leave out the requests another target failed over to
@@ -2165,7 +2178,7 @@ async fn by_variant_groups_one_route_inside_the_callers_scope() {
             .iter()
             .map(|r| {
                 (
-                    r["variant"].as_str().unwrap().to_string(),
+                    format!("{}/{}", org_name(r), r["variant"].as_str().unwrap()),
                     number(&r["first_attempt_requests"]),
                 )
             })
@@ -2176,9 +2189,10 @@ async fn by_variant_groups_one_route_inside_the_callers_scope() {
     assert_eq!(
         first_attempts(&body),
         vec![
-            ("".to_string(), 1.0),
-            ("canary".to_string(), 2.0),
-            ("stable".to_string(), 3.0),
+            ("acme/".to_string(), 1.0),
+            ("acme/canary".to_string(), 2.0),
+            ("acme/stable".to_string(), 2.0),
+            ("umbrella/stable".to_string(), 1.0),
         ]
     );
     // the percentiles are read off the kept rows, not scaled
@@ -2186,7 +2200,7 @@ async fn by_variant_groups_one_route_inside_the_callers_scope() {
         .as_array()
         .unwrap()
         .iter()
-        .find(|r| r["variant"] == "stable")
+        .find(|r| r["variant"] == "stable" && org_name(r) == "acme")
         .unwrap();
     assert!(number(&stable["p50_latency_ms"]) >= 100.0);
     assert!(number(&stable["p95_latency_ms"]) <= 300.0);
@@ -2202,18 +2216,18 @@ async fn by_variant_groups_one_route_inside_the_callers_scope() {
     assert_eq!(
         by_variant(&body),
         vec![
-            ("".to_string(), 1.0, 0.0, 2.0),
-            ("canary".to_string(), 4.0, 2.0, 1.0),
-            ("stable".to_string(), 2.0, 0.0, 2.0),
+            ("acme/".to_string(), 1.0, 0.0, 2.0),
+            ("acme/canary".to_string(), 4.0, 2.0, 1.0),
+            ("acme/stable".to_string(), 2.0, 0.0, 2.0),
         ]
     );
     // the member's first attempts are their own project's, not the route's
     assert_eq!(
         first_attempts(&body),
         vec![
-            ("".to_string(), 1.0),
-            ("canary".to_string(), 2.0),
-            ("stable".to_string(), 1.0),
+            ("acme/".to_string(), 1.0),
+            ("acme/canary".to_string(), 2.0),
+            ("acme/stable".to_string(), 1.0),
         ]
     );
     // and a project filter cannot reach past what the member already reads
@@ -2469,6 +2483,129 @@ async fn by_model_keeps_two_orgs_same_named_routes_as_two_rows() {
     assert_eq!(
         by_model_rows(&http, addr, &umbrella_member, &model).await,
         vec![(umbrella.org.to_string(), 3.0)],
+        "nor a member of umbrella acme's"
+    );
+}
+
+/// The by-variant rows `token` reads for `model`, as `(org_id, variant,
+/// requests, assigned_requests)`, sorted.
+async fn by_variant_rows(
+    client: &reqwest::Client,
+    addr: SocketAddr,
+    token: &str,
+    model: &str,
+) -> Vec<(String, String, f64, f64)> {
+    let response = client
+        .get(format!(
+            "http://{addr}/api/v1/analytics/by-variant?model={model}"
+        ))
+        .bearer_auth(token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200, "by-variant as {token}");
+    let body: Value = response.json().await.unwrap();
+    let mut rows: Vec<_> = body["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| {
+            assert_eq!(row["model"], model, "{body}");
+            (
+                row["org_id"].as_str().unwrap_or_default().to_string(),
+                row["variant"].as_str().unwrap_or_default().to_string(),
+                number(&row["requests"]),
+                number(&row["assigned_requests"]),
+            )
+        })
+        .collect();
+    rows.sort_by(|a, b| (&a.0, &a.1).cmp(&(&b.0, &b.1)));
+    rows
+}
+
+/// #3548: as by-model since #3486, two orgs' routes of one name, with variants
+/// of one name, are two sets of by-variant rows for a caller who reads both,
+/// in the answered and the assigned halves alike, and a member of one org
+/// reads only its own.
+#[tokio::test]
+async fn by_variant_keeps_two_orgs_same_named_routes_as_two_sets_of_rows() {
+    let ch = skip_without_stack!();
+    let http = reqwest::Client::new();
+    ensure_schema(&http, &ch).await;
+
+    let db = TestSchema::create(&test_database::url().await.unwrap()).await;
+    let pool = db.pool().clone();
+    let app = rolter_control::test_app_with_clickhouse_and_admin_token(
+        pool.clone(),
+        &ch,
+        Some(ADMIN_TOKEN.to_string()),
+    )
+    .await
+    .unwrap();
+    let addr = serve(app).await;
+    let acme = seed_tenant(&pool, "variant-org-acme").await;
+    let umbrella = seed_tenant(&pool, "variant-org-umbrella").await;
+
+    let model = format!("shared-variants-{}", Uuid::new_v4().simple());
+    let ts = chrono::Utc::now()
+        .format("%Y-%m-%d %H:%M:%S%.3f")
+        .to_string();
+    let row = |tenant: &Tenant, first: &str, answered: &str| {
+        let mut row = json!({
+            "ts": ts, "request_id": format!("shared-variant-{}", Uuid::new_v4().simple()),
+            "org_id": tenant.org.to_string(), "team_id": tenant.team.to_string(),
+            "project_id": tenant.project_a.to_string(),
+            "model": model, "variant": answered, "first_variant": first,
+            "status": 200, "latency_ms": 10,
+        });
+        if first != answered {
+            row["fallback_reason"] = json!("timeout");
+        }
+        row
+    };
+    insert_rows(
+        &http,
+        &ch,
+        "request_logs",
+        &[
+            // acme: two requests for "a", one dialled to "b" that failed over to "a"
+            row(&acme, "a", "a"),
+            row(&acme, "a", "a"),
+            row(&acme, "b", "a"),
+            // umbrella: one request for "a", one for "b"
+            row(&umbrella, "a", "a"),
+            row(&umbrella, "b", "b"),
+        ],
+    )
+    .await;
+
+    let (acme_org, umbrella_org) = (acme.org.to_string(), umbrella.org.to_string());
+    let acme_rows = vec![
+        (acme_org.clone(), "a".to_string(), 3.0, 2.0),
+        (acme_org.clone(), "b".to_string(), 0.0, 1.0),
+    ];
+    let umbrella_rows = vec![
+        (umbrella_org.clone(), "a".to_string(), 1.0, 1.0),
+        (umbrella_org.clone(), "b".to_string(), 1.0, 1.0),
+    ];
+    let mut both: Vec<_> = acme_rows.iter().chain(&umbrella_rows).cloned().collect();
+    both.sort_by(|a, b| (&a.0, &a.1).cmp(&(&b.0, &b.1)));
+    assert_eq!(
+        by_variant_rows(&http, addr, ADMIN_TOKEN, &model).await,
+        both,
+        "the deployment admin reads each org's variants as their own rows"
+    );
+
+    let acme_viewer = seed_user(&pool, Some(acme.org), None, None, "viewer").await;
+    assert_eq!(
+        by_variant_rows(&http, addr, &acme_viewer, &model).await,
+        acme_rows,
+        "a member of acme never reads umbrella's rows"
+    );
+    let umbrella_member = seed_user(&pool, None, None, Some(umbrella.project_a), "member").await;
+    assert_eq!(
+        by_variant_rows(&http, addr, &umbrella_member, &model).await,
+        umbrella_rows,
         "nor a member of umbrella acme's"
     );
 }
