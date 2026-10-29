@@ -3024,7 +3024,7 @@ fn operations() -> Vec<Op> {
                  dashboard's `/login` screen with `sso_error=sso_disabled&sso=` instead, and any \
                  other caller gets a `403` with `error.code` `sso_disabled`. A slug no enabled provider \
                  answers to sends a browser to `/login` with `sso_error=unknown_provider`, and any \
-                 other caller a `400`",
+                 other caller a `400` with `error.code` `unknown_provider`",
             ),
             Op::get(
                 "/auth/sso/{slug}/callback",
@@ -3036,7 +3036,9 @@ fn operations() -> Vec<Op> {
                 "sent to a browser (`Accept: text/html`): the dashboard's `/login` screen, with \
                  `sso_code=` (a one-time code for `POST /auth/sso/exchange`) on success or \
                  `sso_error=` (a stable code, plus `sso=` once the provider is known) on a \
-                 refusal. Any other caller gets the session JSON or the error",
+                 refusal. Any other caller gets the session JSON, or on a refusal the status it \
+                 always had with the same code as `error.code` and a fixed message that names \
+                 no account",
             ),
             Op::post(
                 "/auth/sso/exchange",

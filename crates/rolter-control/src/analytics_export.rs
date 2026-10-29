@@ -42,9 +42,10 @@ use std::time::{Duration, Instant};
 
 use axum::body::{Body, Bytes};
 use axum::extract::State;
-use axum::http::{header, HeaderValue, StatusCode};
+use axum::http::{header, HeaderValue, StatusCode, Version};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
+use axum::Extension;
 use axum::Router;
 use futures_util::stream::{self, StreamExt};
 use serde_json::Value;
@@ -58,6 +59,7 @@ use crate::analytics::{
     WHERE_WINDOW,
 };
 use crate::analytics_access::{AnalyticsAccess, ROW_VISIBLE};
+use crate::conn_close::{CloseSwitch, ConnectionHandle};
 use crate::request_log_columns::Columns;
 use crate::time_bounds::Query;
 use crate::ControlState;
@@ -183,28 +185,66 @@ impl Drop for ExportPermit {
 /// [`ExportLimits::max_duration`] whether or not the body is ever polled; the
 /// slot is also emptied by the usual drop, and the timer is aborted when the
 /// body is dropped first.
+///
+/// The slot alone frees the place but leaves the stalled response open: hyper
+/// is parked writing to a full socket, so the connection, its task and the
+/// buffered chunk would stay until TCP gave up (#3477). The timer therefore
+/// also trips the connection's [`CloseSwitch`], which fails the parked write
+/// without the body being polled.
 struct TimedPermit {
     slot: Arc<parking_lot::Mutex<Option<ExportPermit>>>,
+    /// the last page has been produced, so the connection is no longer this
+    /// export's to cut
+    finished: Arc<std::sync::atomic::AtomicBool>,
     timer: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl TimedPermit {
-    /// Hold `permit` until the guard drops or `limit` passes. No limit leaves
-    /// the permit to the drop alone.
-    fn new(permit: ExportPermit, limit: Option<Duration>) -> Self {
+    /// Hold `permit` until the guard drops or `limit` passes, and close
+    /// `connection` then. No limit leaves the permit to the drop alone.
+    fn new(
+        permit: ExportPermit,
+        limit: Option<Duration>,
+        connection: Option<Arc<CloseSwitch>>,
+    ) -> Self {
         let slot = Arc::new(parking_lot::Mutex::new(Some(permit)));
+        let finished = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let timer = limit.map(|limit| {
             let slot = Arc::clone(&slot);
+            let finished = Arc::clone(&finished);
             tokio::spawn(async move {
                 tokio::time::sleep(limit).await;
-                if slot.lock().take().is_some() {
+                // decided under the slot's lock, with the export's end marked
+                // before the body is dropped: a keep-alive connection that has
+                // moved on to another request is never cut by the timer of an
+                // export that already delivered its last page
+                let mut held = slot.lock();
+                if held.take().is_some() {
+                    let close = !finished.load(std::sync::atomic::Ordering::Acquire);
                     tracing::warn!(
+                        closing = close && connection.is_some(),
                         "request log export passed its time limit; its place was given back"
                     );
+                    if let (true, Some(connection)) = (close, connection) {
+                        connection.trip();
+                    }
                 }
             })
         });
-        Self { slot, timer }
+        Self {
+            slot,
+            finished,
+            timer,
+        }
+    }
+
+    /// The export has produced its last page: disarm the timer's close, so a
+    /// connection that outlives the export is left be. The place is still held
+    /// until the body drops or the timer gives it back.
+    fn finish(&self) {
+        let _held = self.slot.lock();
+        self.finished
+            .store(true, std::sync::atomic::Ordering::Release);
     }
 
     /// The permit is still held, so the export may keep running.
@@ -222,6 +262,36 @@ impl Drop for TimedPermit {
         // next polls it, so the permit is given back here and not left to that
         self.slot.lock().take();
     }
+}
+
+/// The HTTP version the request arrived on.
+struct RequestVersion(Version);
+
+impl<S: Send + Sync> axum::extract::FromRequestParts<S> for RequestVersion {
+    type Rejection = std::convert::Infallible;
+
+    async fn from_request_parts(
+        parts: &mut axum::http::request::Parts,
+        _: &S,
+    ) -> Result<Self, Self::Rejection> {
+        Ok(Self(parts.version))
+    }
+}
+
+/// The switch the timer may trip, if this request owns its connection (#3477).
+///
+/// Only an HTTP/1.x connection is one client's alone. An HTTP/2 one carries
+/// other requests, often other users' behind a proxy that speaks h2c to the
+/// control plane, and tripping it would reset them all; there the timer only
+/// gives the place back, and h2's per-stream flow control bounds what is
+/// buffered for the stalled stream.
+fn closable(
+    version: Version,
+    connection: Option<Extension<ConnectionHandle>>,
+) -> Option<Arc<CloseSwitch>> {
+    connection
+        .filter(|_| version <= Version::HTTP_11)
+        .map(|Extension(ConnectionHandle(switch))| switch)
 }
 
 /// `429` for an export the gate refused, with `Retry-After`.
@@ -820,7 +890,12 @@ impl LogWalk {
                     })
                     .unwrap_or_default();
             }
-            _ => self.done = true,
+            _ => {
+                self.done = true;
+                if let Some(permit) = &self.permit {
+                    permit.finish();
+                }
+            }
         }
         Ok(Some(Bytes::from(out)))
     }
@@ -835,6 +910,8 @@ async fn export_invocations(
     principal: Caller,
     access: AnalyticsAccess,
     State(state): State<ControlState>,
+    RequestVersion(version): RequestVersion,
+    connection: Option<Extension<ConnectionHandle>>,
     Query(q): Query<InvocationsQuery>,
 ) -> Response {
     let ch = match client_or_503(&state) {
@@ -897,7 +974,11 @@ async fn export_invocations(
         Err(busy) => return too_many_exports(busy),
     };
     let limits = state.export_gate.limits;
-    let permit = TimedPermit::new(permit, limits.max_duration);
+    // only an HTTP/1.x connection is this client's alone: an HTTP/2 one
+    // carries other requests, which a trip would reset, so there the timer
+    // gives the place back and h2's per-stream flow control bounds the buffer
+    let connection = closable(version, connection);
+    let permit = TimedPermit::new(permit, limits.max_duration, connection);
     // which optional columns the table has, so the file still builds before an
     // operator applies the sequence column (see `request_log_columns`)
     let columns = match ch.request_log_columns().await {
@@ -1068,7 +1149,7 @@ mod tests {
         let mut limits = ExportLimits::new(0, 0, 1, 1);
         limits.max_duration = Some(Duration::from_millis(60));
         let gate = Arc::new(ExportGate::new(limits));
-        let permit = TimedPermit::new(gate.try_acquire("a").unwrap(), limits.max_duration);
+        let permit = TimedPermit::new(gate.try_acquire("a").unwrap(), limits.max_duration, None);
         // the body of a stalled download: held, and never polled again
         let stalled = stream::unfold(permit, |permit| async move {
             Some((Ok::<_, io::Error>(Bytes::new()), permit))
@@ -1096,6 +1177,7 @@ mod tests {
         let held = TimedPermit::new(
             gate.try_acquire("a").unwrap(),
             Some(Duration::from_secs(600)),
+            None,
         );
         assert!(held.is_held());
         assert_eq!(gate.try_acquire("b").err(), Some(Busy::Process));
@@ -1268,6 +1350,118 @@ mod tests {
         // rather than passing for a complete file
         let (_, complete) = drain(stalled).await;
         assert!(!complete);
+    }
+
+    /// #3477: the permit coming back is not enough, the stalled client's
+    /// connection has to go too. A real server over the closeable listener, and
+    /// a client that sends the request and then never reads.
+    #[tokio::test]
+    async fn a_client_that_stops_reading_has_its_connection_closed_at_the_deadline() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        // far more rows than fit in the socket buffers
+        let url = fake_log(3_000_000, Duration::ZERO).await;
+        let limits = ExportLimits {
+            max_duration: Some(Duration::from_millis(600)),
+            ..ExportLimits::new(0, 0, 0, 0)
+        };
+        let app = crate::conn_close::MakeCloseable(export_app(&url, limits));
+        // small socket buffers on both ends, so the response stalls after a few
+        // pages and not after however much the kernel will absorb
+        let server = tokio::net::TcpSocket::new_v4().unwrap();
+        server.set_send_buffer_size(4096).unwrap();
+        server.bind("127.0.0.1:0".parse().unwrap()).unwrap();
+        let listener = crate::conn_close::CloseableListener(server.listen(16).unwrap());
+        let addr = listener.0.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await });
+
+        let socket = tokio::net::TcpSocket::new_v4().unwrap();
+        socket.set_recv_buffer_size(4096).unwrap();
+        let mut client = socket.connect(addr).await.unwrap();
+        client
+            .write_all(b"GET /api/v1/analytics/invocations/export HTTP/1.1\r\nhost: x\r\n\r\n")
+            .await
+            .unwrap();
+        // not reading through the deadline, plus margin
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        // the server reset the connection while the client had read nothing:
+        // the socket error is pending, where an open connection has none
+        let reset = client.take_error().unwrap();
+        assert!(
+            reset.is_some(),
+            "no reset arrived: the connection is still open"
+        );
+        // so what the client still holds is
+        // only what its small buffers took before the stall, and then the end.
+        // an open connection would keep delivering the log
+        let started = Instant::now();
+        let mut total = 0usize;
+        let mut sink = vec![0u8; 64 * 1024];
+        loop {
+            match client.read(&mut sink).await {
+                Ok(0) | Err(_) => break,
+                Ok(n) => total += n,
+            }
+            assert!(
+                total < 2_000_000 && started.elapsed() < Duration::from_secs(5),
+                "the connection was still open after the deadline ({total} bytes)"
+            );
+        }
+    }
+
+    #[test]
+    fn only_an_http1_connection_is_cut_by_the_timer() {
+        use crate::conn_close::CloseSwitch;
+        let handle = || {
+            Some(Extension(ConnectionHandle(
+                Arc::new(CloseSwitch::default()),
+            )))
+        };
+        assert!(closable(Version::HTTP_10, handle()).is_some());
+        assert!(closable(Version::HTTP_11, handle()).is_some());
+        // an h2 connection carries other users' requests behind a proxy
+        assert!(closable(Version::HTTP_2, handle()).is_none());
+        assert!(closable(Version::HTTP_3, handle()).is_none());
+        // and a request with no handle (a test, an unwrapped listener) has none
+        assert!(closable(Version::HTTP_11, None).is_none());
+    }
+
+    /// The same request over h2c, which the control plane also serves: the
+    /// export is stalled past its deadline and the connection it shares is
+    /// left open, so only its permit is gone.
+    #[tokio::test]
+    async fn an_h2_export_past_the_deadline_leaves_the_shared_connection_open() {
+        let url = fake_log(3_000_000, Duration::ZERO).await;
+        let limits = ExportLimits {
+            max_duration: Some(Duration::from_millis(400)),
+            ..ExportLimits::new(0, 0, 0, 1)
+        };
+        let app = crate::conn_close::MakeCloseable(export_app(&url, limits));
+        let listener = crate::conn_close::CloseableListener(
+            tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap(),
+        );
+        let addr = listener.0.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await });
+        let client = reqwest::Client::builder()
+            .http2_prior_knowledge()
+            .pool_max_idle_per_host(1)
+            .build()
+            .unwrap();
+        let export_url = format!("http://{addr}/api/v1/analytics/invocations/export");
+        let stalled = client.get(&export_url).send().await.unwrap();
+        assert_eq!(stalled.version(), reqwest::Version::HTTP_2);
+        assert_eq!(stalled.status(), 200);
+        tokio::time::sleep(Duration::from_millis(800)).await;
+        // the permit came back (the caller's bound is 1), and the same
+        // connection answers a new stream
+        let again = client.get(&export_url).send().await.unwrap();
+        assert_eq!(again.status(), 200);
+        assert_eq!(again.version(), reqwest::Version::HTTP_2);
+        // the first stream, read late, ends in the time limit's error: its own
+        // stream, not the connection
+        let mut body = stalled;
+        let mut ended_in_error = false;
+        while let Ok(Some(_)) = body.chunk().await.map_err(|_| ended_in_error = true) {}
+        assert!(ended_in_error);
     }
 
     #[tokio::test]

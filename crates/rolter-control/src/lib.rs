@@ -42,6 +42,7 @@ mod cluster;
 mod collector_config;
 #[cfg(feature = "postgres")]
 mod compatibility_policy;
+mod conn_close;
 #[cfg(feature = "postgres")]
 mod egress_client;
 // the renderer is pure and compiles without a store so its determinism and
@@ -984,11 +985,12 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     );
 
     tracing::info!(%addr, ui_dir = %args.ui_dir.display(), "rolter-control listening");
-    let listener = tokio::net::TcpListener::bind(addr).await?;
+    // a stalled export closes its own connection at its deadline (#3477)
+    let listener = conn_close::CloseableListener(tokio::net::TcpListener::bind(addr).await?);
 
     // connect info carries the socket peer address into the request, which is
     // the only client identity the failed-login throttle can trust (#1079)
-    let app = app.into_make_service_with_connect_info::<SocketAddr>();
+    let app = conn_close::MakeCloseable(app);
 
     let shutdown = shutdown_channel();
     let Some(internal_addr) = args.internal_addr else {
