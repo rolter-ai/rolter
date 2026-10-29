@@ -273,6 +273,9 @@ async fn an_image_request_is_priced_by_the_images_returned() {
     assert_eq!(row["cost_usd"], 0.12, "{row}");
     assert_eq!(row["unpriced"], 0, "{row}");
     assert_eq!(row["usage_unknown"], 0, "{row}");
+    // no prompt-cache figure was stated, so the row leaves the column out and
+    // a ClickHouse without it accepts the row (#3410)
+    assert!(row.get("cache_usage_reported").is_none(), "{row}");
 }
 
 #[tokio::test]

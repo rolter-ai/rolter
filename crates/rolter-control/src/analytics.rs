@@ -788,12 +788,18 @@ async fn summary(
         Ok(ch) => ch,
         Err(resp) => return resp,
     };
+    let columns = match ch.request_log_columns().await {
+        Ok(columns) => columns,
+        Err(error) => return query_failed("analytics query failed", &error),
+    };
+    let cache_measured = cache_measured_terms(&columns);
     let sql = format!(
         "select {REQUESTS} as requests, \
                 {TOKENS} as tokens, \
                 {PROMPT_TOKENS} as prompt_tokens, \
                 {COMPLETION_TOKENS} as completion_tokens, \
                 {CACHE_READ_TOKENS} as cache_read_tokens, \
+                {cache_measured}\
                 {COST} as cost_usd, \
                 {UNPRICED} as unpriced_requests, \
                 uniqIf(model, unpriced = 1) as unpriced_models, \
@@ -807,7 +813,29 @@ async fn summary(
          from request_logs where {WHERE_WINDOW} and {ROW_VISIBLE} and {ROW_FILTERS} \
          format JSON"
     );
-    run(ch.query(&sql, &with_access(q.params(), &access)).await)
+    let result = ch.query(&sql, &with_access(q.params(), &access)).await;
+    if result.is_err() {
+        // the table may have changed under the probe's answer
+        ch.forget_request_log_columns();
+    }
+    run(result)
+}
+
+/// The summary's prompt-cache measurement (#3410): the prompt tokens of the
+/// requests whose upstream stated its cache reads, the denominator of the read
+/// share, and how many requests with a prompt it could not measure. Empty when
+/// `request_logs` lacks `cache_usage_reported`
+/// (`clickhouse/045_cache_usage_reported.sql`): every row would read as
+/// unmeasured, so the two fields are left out and the dashboard keeps the share
+/// over every prompt token, as an older control plane does.
+fn cache_measured_terms(columns: &Columns) -> String {
+    if !columns.has("cache_usage_reported") {
+        return String::new();
+    }
+    format!(
+        "{CACHE_REPORTED_PROMPT_TOKENS} as cache_reported_prompt_tokens, \
+         {CACHE_UNMEASURED} as cache_unmeasured_requests, "
+    )
 }
 
 /// The 95th latency percentile, weighted by `sample_weight` (#3355): each kept row
@@ -848,6 +876,16 @@ pub(crate) const COMPLETION_TOKENS: &str = "round(sum(completion_tokens * sample
 /// ClickHouse resolves a bare name to the select alias before the column.
 pub(crate) const CACHE_READ_TOKENS: &str =
     "round(sum(request_logs.cache_read_tokens * sample_weight))";
+/// The prompt tokens of the requests whose upstream stated its prompt-cache
+/// reads, zero included (#3410): the read share's denominator, so a provider
+/// that does not report them does not dilute it. Qualified for the same reason
+/// as [`CACHE_READ_TOKENS`].
+pub(crate) const CACHE_REPORTED_PROMPT_TOKENS: &str =
+    "round(sumIf(request_logs.prompt_tokens * sample_weight, cache_usage_reported = 1))";
+/// Requests with a prompt whose upstream did not state its prompt-cache reads,
+/// so the read share leaves them out (#3410).
+pub(crate) const CACHE_UNMEASURED: &str =
+    "round(sumIf(sample_weight, cache_usage_reported = 0 and request_logs.prompt_tokens > 0))";
 pub(crate) const COST: &str = "round(sum(cost_usd * sample_weight), 6)";
 pub(crate) const UNPRICED: &str = "round(sumIf(sample_weight, unpriced = 1))";
 /// Requests whose provider answered, and billed, but whose response a post-call
@@ -1370,6 +1408,8 @@ pub(crate) fn invocations_sql(status_expr: &str, columns: &Columns) -> String {
     let has_audio_input = columns.select("has_audio_input");
     let has_response_schema = columns.select("has_response_schema");
     let turns = columns.select("turns");
+    // whether the row's cache reads were stated at all (#3410)
+    let cache_usage_reported = columns.select("cache_usage_reported");
     format!(
         "select ts, request_id, trace_id, org_id, team_id, project_id, virtual_key_id, \
                 business_unit_id, customer_id, \
@@ -1379,6 +1419,7 @@ pub(crate) fn invocations_sql(status_expr: &str, columns: &Columns) -> String {
                 {upstream_status}, {attempts}, {lifecycle_operation}, {guardrail_events}, {plugin_events}, {seq}, \
                 {fallback_reason}, {param_adjustments}, \
                 {outcome}, {has_tools}, {has_image_input}, {has_audio_input}, {has_response_schema}, {turns}, \
+                {cache_usage_reported}, \
                 if({PAYLOAD_VISIBLE}, payload.request_payload, '') as request_payload, \
                 if({PAYLOAD_VISIBLE}, payload.response_payload, '') as response_payload, \
                 toUInt8(not {PAYLOAD_VISIBLE} \
@@ -1797,6 +1838,26 @@ mod tests {
         assert_eq!(
             server.connections.load(std::sync::atomic::Ordering::SeqCst),
             2
+        );
+    }
+
+    /// The read share's measurement is selected only when the table can say
+    /// which requests reported their cache reads (#3410), and is weighted like
+    /// every other sum.
+    #[test]
+    fn the_summary_measures_the_prompt_cache_only_with_the_reported_column() {
+        let terms = cache_measured_terms(&Columns::default());
+        assert!(terms.contains("as cache_reported_prompt_tokens"), "{terms}");
+        assert!(terms.contains("as cache_unmeasured_requests"), "{terms}");
+        for expr in [CACHE_REPORTED_PROMPT_TOKENS, CACHE_UNMEASURED] {
+            assert!(expr.contains("sample_weight"), "{expr}");
+            assert!(expr.contains("cache_usage_reported"), "{expr}");
+        }
+        // an un-migrated table leaves both fields out rather than reading
+        // every request as unmeasured
+        assert_eq!(
+            cache_measured_terms(&Columns::lacking(&["cache_usage_reported"])),
+            ""
         );
     }
 

@@ -124,6 +124,12 @@ pub(crate) const OPTIONAL_COLUMNS: &[OptionalColumn] = &[
         name: "turns",
         default: "toUInt16(0)",
     },
+    // 045_cache_usage_reported.sql: whether the upstream stated its
+    // prompt-cache reads, read by the summary's read share (#3410)
+    OptionalColumn {
+        name: "cache_usage_reported",
+        default: "toUInt8(0)",
+    },
 ];
 
 /// The probe: every column `request_logs` has in the database the client reads
@@ -365,6 +371,7 @@ mod tests {
             "has_audio_input",
             "has_response_schema",
             "turns",
+            "cache_usage_reported",
         ]))
         .expect("the table is visible");
         assert_eq!(columns.missing(), ["cache_write_1h_tokens"]);

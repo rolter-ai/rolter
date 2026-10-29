@@ -837,6 +837,8 @@
       "statPromptCache": "Prompt-cache read share",
       "promptCacheTokens": "{{read}} of {{prompt}} prompt tokens",
       "promptCacheNone": "No provider reported cached prompt tokens",
+      "promptCacheUnmeasured_one": "{{count}} request could not be measured",
+      "promptCacheUnmeasured_other": "{{count}} requests could not be measured",
       "statFleet": "Gateways",
       "statProviders": "Providers",
       "providers": {

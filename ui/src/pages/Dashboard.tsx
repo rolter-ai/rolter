@@ -33,6 +33,7 @@ import {
   fetchInvocations,
   type AnalyticsByModelRow,
   type AnalyticsRowFilters,
+  type AnalyticsSummary,
   type InvocationRow,
   type SavedViewFilters,
 } from "@/lib/api";
@@ -476,22 +477,57 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
                   ? (num(before.cache_hit_requests) / prevRequests) * 100
                   : undefined;
               // the provider's prompt cache, apart from rolter's response cache: the
-              // signal cache-aware balancing exists to improve (#3356). A window in
-              // which no provider reported a cached token reads as unmeasured, since
-              // a provider that does not report it looks the same as one that never hits
+              // signal cache-aware balancing exists to improve (#3356). The share is
+              // over the prompt tokens of the requests whose provider stated its cache
+              // reads (#3410), so a provider that does not report them neither dilutes
+              // it nor hides a real 0%. An older control plane sends no such count, and
+              // there a window in which no provider reported a cached token reads as
+              // unmeasured, since a provider that does not report it looks the same as
+              // one that never hits
               const promptTokens = num(s?.prompt_tokens);
               const cacheRead = s?.cache_read_tokens != null ? num(s.cache_read_tokens) : undefined;
+              const cacheShareOf = (summary: AnalyticsSummary) => {
+                const read = num(summary.cache_read_tokens);
+                if (summary.cache_reported_prompt_tokens != null) {
+                  const reported = num(summary.cache_reported_prompt_tokens);
+                  return {
+                    read,
+                    prompt: reported,
+                    share: reported > 0 ? read / reported : undefined,
+                  };
+                }
+                const prompt = num(summary.prompt_tokens);
+                return {
+                  read,
+                  prompt,
+                  share:
+                    summary.cache_read_tokens != null && read > 0 && prompt > 0
+                      ? read / prompt
+                      : undefined,
+                };
+              };
+              const cacheShare = s ? cacheShareOf(s) : undefined;
               const readShare =
-                cacheRead !== undefined && cacheRead > 0 && promptTokens > 0
-                  ? (cacheRead / promptTokens) * 100
-                  : undefined;
-              const prevReadShare =
-                before &&
-                before.cache_read_tokens != null &&
-                num(before.cache_read_tokens) > 0 &&
-                num(before.prompt_tokens) > 0
-                  ? (num(before.cache_read_tokens) / num(before.prompt_tokens)) * 100
-                  : undefined;
+                cacheShare?.share !== undefined ? cacheShare.share * 100 : undefined;
+              const prevShare = before ? cacheShareOf(before).share : undefined;
+              const prevReadShare = prevShare !== undefined ? prevShare * 100 : undefined;
+              const cacheUnmeasured =
+                s?.cache_unmeasured_requests != null ? num(s.cache_unmeasured_requests) : 0;
+              // the read and prompt tokens the share is over, and the requests it left out
+              const cacheDetail = () => {
+                const detail = t("pages.dashboard.promptCacheTokens", {
+                  read: fmt.compact(cacheShare?.read ?? 0),
+                  prompt: fmt.compact(cacheShare?.prompt ?? 0),
+                });
+                return cacheUnmeasured > 0
+                  ? t("pages.dashboard.withChange", {
+                      detail,
+                      change: t("pages.dashboard.promptCacheUnmeasured", {
+                        count: cacheUnmeasured,
+                      }),
+                    })
+                  : detail;
+              };
               const changes = {
                 readShare: compare(readShare, prevReadShare),
                 requests: compare(requests, was(before?.requests)),
@@ -610,16 +646,10 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
                             ? t("pages.dashboard.promptCacheNone")
                             : changes.readShare
                               ? t("pages.dashboard.withChange", {
-                                  detail: t("pages.dashboard.promptCacheTokens", {
-                                    read: fmt.compact(cacheRead),
-                                    prompt: fmt.compact(promptTokens),
-                                  }),
+                                  detail: cacheDetail(),
                                   change: said(changes.readShare),
                                 })
-                              : t("pages.dashboard.promptCacheTokens", {
-                                  read: fmt.compact(cacheRead),
-                                  prompt: fmt.compact(promptTokens),
-                                })
+                              : cacheDetail()
                     }
                   />
                   <StatCard
