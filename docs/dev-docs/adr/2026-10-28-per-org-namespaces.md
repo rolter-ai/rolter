@@ -280,9 +280,9 @@ org. `MergedConfigStore::load_problem_records` adds it, owned by the org's
 tenancy, so a caller who cannot see that org does not see the line. The per-org
 export writes the org's row, so a re-import leaves it as it was.
 
-No control-plane gauge of config problems exists yet, so the overlap is
-counted nowhere else: the `warning:` line is the whole report. A gauge by
-problem kind is #3542.
+The overlap is also counted, as `kind = bootstrap_shadow`, in the control
+plane's `rolter_config_problems{kind}` gauge, sampled when it builds a snapshot
+(#3542).
 
 The control plane's config-owned guards follow the same key. An org's row that
 shares a name with a global file row is the org's: its admin edits and deletes

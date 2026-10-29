@@ -6,6 +6,10 @@
 //! nothing. This fails when the page names a `rolter_*` series that no source
 //! file of the gateway spells as a metric name. The same shape of guard as
 //! `the_docs_page_lists_exactly_these_subsystems` in `rolter-core`.
+//!
+//! The page also has a section on the control plane's OTLP-only series, whose
+//! instruments are named in `rolter-core`'s telemetry module, so that file is
+//! read beside the gateway's sources (#3542).
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -30,6 +34,8 @@ fn gateway_source() -> String {
         &mut files,
     );
     files.sort();
+    // where the control plane's instruments are built
+    files.push(Path::new(env!("CARGO_MANIFEST_DIR")).join("../rolter-core/src/telemetry.rs"));
     files
         .iter()
         .map(|path| std::fs::read_to_string(path).expect("source file is utf-8"))
@@ -93,7 +99,9 @@ fn the_metrics_page_names_only_series_the_gateway_exports() {
     assert!(
         unknown.is_empty(),
         "docs/user-docs/observability/metrics.mdx names series the gateway does not render: \
-         {unknown:?}. Use the name `crates/rolter-gateway/src/metrics.rs` renders, or drop the row"
+         {unknown:?}. Use the name `crates/rolter-gateway/src/metrics.rs` renders (or, for a \
+         control-plane series, the one `crates/rolter-core/src/telemetry.rs` builds), or drop \
+         the row"
     );
 }
 

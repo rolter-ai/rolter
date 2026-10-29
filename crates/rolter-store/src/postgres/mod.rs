@@ -905,6 +905,7 @@ impl PostgresConfigStore {
         for row in self.enabled_route_rows().await? {
             if parse_strategy(&row.strategy)? == BalancingStrategy::Unknown {
                 problems.push(ConfigProblem {
+                    kind: crate::ConfigProblemKind::Misread,
                     message: format!(
                         "route '{}' has balancing strategy '{}', which this build does not \
                          know; the route is left out of the snapshot until the control plane \
@@ -929,6 +930,7 @@ impl PostgresConfigStore {
                     .unwrap_or(ProviderKind::Unknown);
             if read == ProviderKind::Unknown {
                 problems.push(ConfigProblem {
+                    kind: crate::ConfigProblemKind::Misread,
                     message: format!(
                         "provider '{name}' has kind '{kind}', which this build does not know; \
                          it is left out of the snapshot, and so is what named it, until the \
@@ -965,6 +967,7 @@ impl PostgresConfigStore {
         for (slug, org, auth_kind) in servers {
             if parse_mcp_auth_kind(&auth_kind) == McpAuthKind::Unknown {
                 problems.push(ConfigProblem {
+                    kind: crate::ConfigProblemKind::Misread,
                     message: format!(
                         "mcp server '{slug}' has auth kind '{auth_kind}', which this build does \
                          not know; every call through it is refused until the control plane is \
@@ -1138,6 +1141,7 @@ impl PostgresConfigStore {
                 route_problems
                     .into_iter()
                     .map(|message| crate::ConfigProblem {
+                        kind: crate::ConfigProblemKind::Misread,
                         message,
                         owner: crate::ProblemOwner::Tenant(tenancy.clone()),
                     }),
@@ -2503,6 +2507,7 @@ impl ConfigStore for PostgresConfigStore {
             .iter()
             .filter(|row| BudgetPeriod::parse(&row.period).is_none())
             .map(|row| ConfigProblem {
+                kind: crate::ConfigProblemKind::Misread,
                 message: unrecognised_budget_period(row),
                 owner: match BudgetScope::from_scope_type(&row.scope_type) {
                     Some(scope) => ProblemOwner::Scope {
@@ -2528,6 +2533,7 @@ impl ConfigStore for PostgresConfigStore {
             route_settings_from_row(row)
                 .err()
                 .map(|message| ConfigProblem {
+                    kind: crate::ConfigProblemKind::Misread,
                     message,
                     owner: ProblemOwner::Tenant(rolter_core::Tenancy {
                         org_id: row.org_id.to_string(),
@@ -2561,6 +2567,7 @@ impl ConfigStore for PostgresConfigStore {
                 // the provider `load_providers` leaves out for it
                 left_out.insert((*org, name.clone()));
                 ConfigProblem {
+                    kind: crate::ConfigProblemKind::Misread,
                     message,
                     owner: ProblemOwner::Tenant(rolter_core::Tenancy {
                         org_id: org.to_string(),

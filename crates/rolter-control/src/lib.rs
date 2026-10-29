@@ -2618,6 +2618,56 @@ fn snapshot_problems(
     (problems, omitted)
 }
 
+/// Sample `rolter_config_problems{kind}` for `version`, once per version (#3542).
+///
+/// The counts are those of every line `GET /api/v1/config/problems` lists for
+/// the whole deployment, classified by where the line comes from rather than
+/// by its wording: the sanitizer's records and lines and the structural
+/// problems for `config` as the store loaded it, before any format's
+/// down-step, and the store's own records, which say whether a line is a
+/// misread row or a bootstrap shadow. With no `config` (the store refused to
+/// load) only the store's records count, as only they are listed.
+///
+/// It runs beside the snapshot rather than in it, so no gateway waits on the
+/// store's second read. A sample that cannot read the store's records gives
+/// its claim back, so the next build of the same version tries again.
+fn sample_config_problems(state: &ControlState, version: i64, config: Option<&GatewayConfig>) {
+    if !state.metrics.config_problems().claim(version) {
+        return;
+    }
+    let config = config.cloned();
+    let state = state.clone();
+    tokio::spawn(async move {
+        use rolter_core::telemetry::{ConfigProblemCounts, ConfigProblemKind};
+        let gauge = state.metrics.config_problems();
+        let mut counts = ConfigProblemCounts::default();
+        if let Some(mut config) = config {
+            let report = sanitize_snapshot(&state, &mut config);
+            counts.add(ConfigProblemKind::Omitted, report.omitted.len());
+            // every omitted record has its line among the problems
+            counts.add(
+                ConfigProblemKind::Sanitized,
+                report.problems.len().saturating_sub(report.omitted.len()),
+            );
+            if let Err(fatal) = config.validate_snapshot() {
+                counts.add(ConfigProblemKind::Invalid, fatal.len());
+            }
+        }
+        match state.store.load_problem_records().await {
+            Ok(records) => {
+                for record in records {
+                    counts.add(record.kind, 1);
+                }
+                gauge.record(version, counts);
+            }
+            Err(error) => {
+                tracing::warn!(%error, "could not sample the config problems");
+                gauge.release(version);
+            }
+        }
+    });
+}
+
 /// The lines of `all` that `seen` also has, with multiplicity and in the order
 /// of `all`: two tenants' identical lines leave one for a caller who sees one.
 #[cfg(feature = "postgres")]
@@ -2932,7 +2982,9 @@ async fn build_snapshot(
             bytes: 0,
         };
     }
-    match state.store.load().await {
+    let loaded = state.store.load().await;
+    sample_config_problems(&state, version, loaded.as_ref().ok());
+    match loaded {
         Ok(mut config) => {
             // an older gateway gets what its format can express: the omitting
             // half of each down-step runs before the sanitizer, so the cascade
@@ -4538,6 +4590,68 @@ mod tests {
             .await
             .unwrap();
         assert!(body.get("problems").is_none(), "{body}");
+    }
+
+    /// `rolter_config_problems{kind}` follows the config: a problem counts
+    /// from the first snapshot built after it appears, and stops counting
+    /// from the first one built after it is gone (#3542).
+    #[tokio::test]
+    async fn the_config_problem_gauge_moves_with_the_config() {
+        use rolter_core::telemetry::ConfigProblemKind::{self, *};
+
+        let bootstrap: GatewayConfig = serde_json::from_value(json!({
+            "providers": [{"name": "p", "kind": "openai_compatible", "api_base": "https://p.example"}],
+            "routes": [{"model": "chat", "targets": [{"provider": "p"}]}],
+        }))
+        .unwrap();
+        let org = json!({"org_id": "org-a"});
+        let troubled: GatewayConfig = serde_json::from_value(json!({
+            "providers": [
+                {"name": "q", "kind": "openai_compatible", "api_base": "https://q.example",
+                 "tenancy": org},
+                {"name": "broken", "kind": "openai_compatible", "api_base": "not a url",
+                 "tenancy": org},
+            ],
+            // shadows the file's `chat` for org-a (#3516)
+            "routes": [{"model": "chat", "targets": [{"provider": "q"}], "tenancy": org}],
+        }))
+        .unwrap();
+        let inner = Arc::new(rolter_store::InMemoryConfigStore::new(troubled));
+        let mut state = state_with_token(None);
+        state.store = Arc::new(rolter_store::MergedConfigStore::new(
+            bootstrap,
+            inner.clone(),
+        ));
+        let metrics = state.metrics.clone();
+        let addr = serve(build_app_with_internal(state)).await;
+        // the sample runs beside the snapshot, so wait for the one of `version`
+        let sampled = |version: i64| {
+            let metrics = metrics.clone();
+            async move {
+                reqwest::get(format!("http://{addr}/internal/snapshot"))
+                    .await
+                    .unwrap();
+                for _ in 0..200 {
+                    match metrics.config_problems().sampled() {
+                        Some((at, counts)) if at == version => return counts,
+                        _ => tokio::time::sleep(std::time::Duration::from_millis(10)).await,
+                    }
+                }
+                panic!("no sample of version {version}");
+            }
+        };
+        let counts = sampled(1).await;
+        assert_eq!(counts.get(Omitted), 1, "{counts:?}");
+        assert_eq!(counts.get(BootstrapShadow), 1, "{counts:?}");
+        assert_eq!(counts.get(Invalid), 0, "{counts:?}");
+        assert_eq!(counts.get(Misread), 0, "{counts:?}");
+
+        // the broken provider and the shadowing route are gone
+        inner.save(GatewayConfig::default()).await.unwrap();
+        let counts = sampled(2).await;
+        for kind in ConfigProblemKind::ALL {
+            assert_eq!(counts.get(kind), 0, "{} {counts:?}", kind.label());
+        }
     }
 
     #[tokio::test]

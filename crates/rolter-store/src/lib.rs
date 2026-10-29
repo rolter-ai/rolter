@@ -15,6 +15,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use parking_lot::RwLock;
+pub use rolter_core::telemetry::ConfigProblemKind;
 use rolter_core::{GatewayConfig, Result};
 
 #[cfg(feature = "postgres")]
@@ -42,6 +43,10 @@ pub enum ProblemOwner {
 pub struct ConfigProblem {
     pub message: String,
     pub owner: ProblemOwner,
+    /// what the line reports, for the control plane's
+    /// `rolter_config_problems{kind}` gauge (#3542): a row the loader misread
+    /// or left out, or an org row shadowing a bootstrap row
+    pub kind: ConfigProblemKind,
 }
 
 impl ConfigProblem {
@@ -49,6 +54,7 @@ impl ConfigProblem {
         Self {
             message: message.into(),
             owner: ProblemOwner::Deployment,
+            kind: ConfigProblemKind::Misread,
         }
     }
 }
@@ -358,6 +364,7 @@ fn bootstrap_shadows(file: &GatewayConfig, db: &GatewayConfig) -> Vec<ConfigProb
                 owner.org_id
             ),
             owner: ProblemOwner::Tenant(owner.clone()),
+            kind: ConfigProblemKind::BootstrapShadow,
         });
     };
     for provider in &db.providers {
