@@ -1678,7 +1678,7 @@ struct RequestCtx<'s, 'r> {
     state: &'s AppState,
     snap: &'s Snapshot,
     /// the endpoint the request was sent to
-    path: &'r str,
+    path: &'s str,
     vk: Option<&'r KeyMeta>,
     refuse: Refusals<'r>,
 }
@@ -2123,6 +2123,92 @@ impl<'s, 'r> RequestCtx<'s, 'r> {
         }
     }
 
+    /// The built-in post_call rules for this route (#591). They mask the
+    /// response body, which means buffering it in full, so a streamed request
+    /// is refused under `streaming_post_call = "reject"` (the default) and
+    /// otherwise served without them; the caller decides what a stream that
+    /// got here gets.
+    fn output_guard<'e>(
+        &self,
+        entry: &'e crate::state::RouteEntry,
+        stream: bool,
+    ) -> Stage<Option<crate::guardrails::OutputGuard<'e>>>
+    where
+        's: 'e,
+    {
+        let (state, snap) = (self.state, self.snap);
+        let guard = crate::guardrails::OutputGuard::resolve(
+            &snap.guardrails,
+            &entry.guardrails,
+            &state.metrics,
+            self.path,
+        );
+        if guard.is_some()
+            && stream
+            && snap.guardrails.streaming_post_call() == rolter_core::StreamingPostCall::Reject
+        {
+            return Stage::Answer(self.refused(output_rules_stream_refusal(state)));
+        }
+        Stage::Next(guard)
+    }
+
+    /// The semantic policy's post_call providers judge a whole response, and
+    /// the policy, never the caller's `stream`, says what a stream gets:
+    /// refused here before the upstream call, or buffered in full and judged
+    /// once (ADR-0037).
+    fn admit_semantic_leg(&self, leg: Option<SemanticLeg<'_, '_>>) -> Stage<()> {
+        match leg.filter(|leg| leg.rejects_stream()) {
+            Some(leg) => Stage::Answer(self.refused(policy_stream_refusal(self.state, leg.guard))),
+            None => Stage::Next(()),
+        }
+    }
+
+    /// Refuse a stream the sanitizer's `streaming` setting rejects
+    /// (#848, #911).
+    fn admit_pii_stream(&self, mode: Option<rolter_core::StreamingResponse>) -> Stage<()> {
+        if mode == Some(rolter_core::StreamingResponse::Reject) {
+            return Stage::Answer(self.refused(pii_stream_refusal(self.state)));
+        }
+        Stage::Next(())
+    }
+
+    /// The post_response plugins for this key's org and project (#509). A
+    /// plugin judges a whole body and a stream never is one, so a stream is
+    /// refused when any of them is fail closed ("never deliver what I have not
+    /// approved"); a fail-open plugin has already chosen delivery without its
+    /// verdict, which is all a stream would get (#1776). The chain is built
+    /// only when `build` is set, and only when a plugin applies.
+    fn post_response_plugins(
+        &self,
+        entry: &crate::state::RouteEntry,
+        stream: bool,
+        build: bool,
+        trace_id: &str,
+    ) -> Stage<Option<crate::plugin_dispatch::PostResponsePlugins<'s>>> {
+        let (state, scope) = (self.state, self.scope());
+        let plugins = self.snap.plugins.for_stage(
+            rolter_core::PluginStage::PostResponse,
+            &scope.org,
+            (!scope.project.is_empty()).then_some(scope.project.as_str()),
+        );
+        if stream {
+            if let Some(refusal) = plugin_stream_refusal(state, &plugins) {
+                return Stage::Answer(self.refused(refusal));
+            }
+        }
+        Stage::Next((build && !plugins.is_empty()).then(|| {
+            crate::plugin_dispatch::PostResponsePlugins {
+                plugins,
+                metrics: &state.metrics,
+                egress: &state.side_client,
+                model: self.model().to_string(),
+                route: entry.route.model.clone(),
+                trace_id: trace_id.to_string(),
+                tenant: plugin_tenant(scope),
+            }
+        }))
+    }
+
     /// Answer with `refusal`, logged, when there is one; else go on.
     fn refuse_if(&self, refusal: Option<Response>) -> Stage<()> {
         match refusal {
@@ -2130,6 +2216,73 @@ impl<'s, 'r> RequestCtx<'s, 'r> {
             None => Stage::Next(()),
         }
     }
+}
+
+/// The body sent upstream: the caller's, untouched, unless something must be
+/// re-serialized: the route forwards as another model, sets param defaults
+/// (temperature, max_tokens, ...) the override policy merges over the
+/// caller's, or a stage `rewrote` the parsed body. Falls back to the
+/// untouched body if re-serialization fails.
+fn forward_body(
+    entry: &crate::state::RouteEntry,
+    model: &str,
+    parsed: &Value,
+    body: &Bytes,
+    rewrote: bool,
+) -> Bytes {
+    let effective_model = &entry.route.model;
+    let rewrite_model = effective_model != model;
+    let has_forward_params = entry.route.params.keys().any(|key| key != POLICY_PARAM);
+    if !has_forward_params && !rewrite_model && !rewrote {
+        return body.clone();
+    }
+    let mut injected = parsed.clone();
+    if rewrite_model {
+        if let Some(object) = injected.as_object_mut() {
+            object.insert("model".to_string(), Value::String(effective_model.clone()));
+        }
+    }
+    entry.route.apply_params(&mut injected);
+    if let Some(object) = injected.as_object_mut() {
+        object.remove(POLICY_PARAM);
+    }
+    serde_json::to_vec(&injected)
+        .map(Bytes::from)
+        .unwrap_or_else(|_| body.clone())
+}
+
+/// The streamed restore of a stream the sanitizer restores through its
+/// streaming endpoint (#911). It needs a token for this request's own scope;
+/// with none (nothing was replaced, or the service cannot reverse) there is
+/// nothing to restore and the stream is served as it is.
+fn pii_stream_restore(
+    state: &AppState,
+    config: &rolter_core::PiiSanitizerConfig,
+    ticket: Option<&rolter_core::RestorationTicket>,
+    scope: &rolter_core::TokenScope,
+    trace_id: &str,
+    tenant: &rolter_core::WebhookTenant,
+) -> Option<crate::pii_stream::StreamRestore> {
+    let token = ticket.and_then(|ticket| {
+        let token = ticket.token_for(scope);
+        if token.is_none() {
+            // as `pii_sanitizer::restore` does: never reached today, and
+            // counted if a change ever makes it reachable
+            state.metrics.pii_restore_errors_total.fetch_add(1, Relaxed);
+            tracing::warn!(
+                "refusing to restore a pii token outside the tenant and route that produced it"
+            );
+        }
+        token
+    })?;
+    Some(crate::pii_stream::StreamRestore::new(
+        config,
+        &state.side_client,
+        &state.metrics,
+        token,
+        trace_id,
+        tenant.clone(),
+    ))
 }
 
 /// Complexity-tier selection: the route's policy picks a tier route by the
@@ -2363,37 +2516,19 @@ async fn proxy(
     );
     drop(guardrails_pre_stage);
 
-    // inject the admin's per-model param defaults (temperature, max_tokens, ...)
-    // before forwarding; caller values survive only where the override policy
-    // permits. falls back to the untouched body if re-serialization fails
     let effective_model = entry.route.model.clone();
-    let rewrite_model = effective_model != model;
-    let has_forward_params = entry.route.params.keys().any(|key| key != POLICY_PARAM);
-    let forward_body = if !has_forward_params
-        && !rewrite_model
-        && !guardrail_redacted
-        && !webhook_transformed
-        && !plugin_transformed
-        && !pre_route_transformed
-        && !template_applied
-        && !pii_sanitized
-    {
-        body.clone()
-    } else {
-        let mut injected = parsed.clone();
-        if rewrite_model {
-            if let Some(object) = injected.as_object_mut() {
-                object.insert("model".to_string(), Value::String(effective_model.clone()));
-            }
-        }
-        entry.route.apply_params(&mut injected);
-        if let Some(object) = injected.as_object_mut() {
-            object.remove(POLICY_PARAM);
-        }
-        serde_json::to_vec(&injected)
-            .map(Bytes::from)
-            .unwrap_or_else(|_| body.clone())
-    };
+    let forward_body = forward_body(
+        entry,
+        &model,
+        &parsed,
+        &body,
+        guardrail_redacted
+            || webhook_transformed
+            || plugin_transformed
+            || pre_route_transformed
+            || template_applied
+            || pii_sanitized,
+    );
 
     // capture log fields independent of the chosen target
     let stream = parsed
@@ -2401,37 +2536,20 @@ async fn proxy(
         .and_then(|s| s.as_bool())
         .unwrap_or(false);
 
-    // post-call rules mask the response body, which means buffering it in full. a
-    // streamed response cannot have both, so the operator's `streaming_post_call`
-    // choice decides: refuse the request (the default) or serve the stream with
-    // output rules not applied. read after the webhook stage so it judges the body
-    // that will actually be sent upstream (#591)
-    let output_guard = crate::guardrails::OutputGuard::resolve(
-        &snap.guardrails,
-        &entry.guardrails,
-        &state.metrics,
-        path,
-    );
-    if output_guard.is_some()
-        && stream
-        && snap.guardrails.streaming_post_call() == rolter_core::StreamingPostCall::Reject
-    {
-        return refuse.log(output_rules_stream_refusal(&state));
-    }
+    // post-call rules mask the response body, which means buffering it in
+    // full. read after the webhook stage so it judges the body that will
+    // actually be sent upstream (#591)
+    let output_guard = proceed!(req.output_guard(entry, stream));
     // a stream that got here is one the operator opted out of masking for
     let output_guard = if stream { None } else { output_guard };
 
-    // the policy's post_call providers judge a whole response too, and the
-    // policy — never the caller's `"stream": true` — says what a stream gets:
-    // refused here before the upstream call, or buffered in full and judged
-    // once (ADR-0037). there is no setting that streams with them skipped
+    // there is no setting that streams with the policy's post_call providers
+    // skipped (ADR-0037)
     let semantic_leg = semantic_guard
         .as_ref()
         .filter(|guard| guard.runs_at(rolter_core::WebhookStage::PostCall))
         .map(|guard| SemanticLeg { guard, stream });
-    if let Some(leg) = semantic_leg.filter(|leg| leg.rejects_stream()) {
-        return refuse.log(policy_stream_refusal(&state, leg.guard));
-    }
+    proceed!(req.admit_semantic_leg(semantic_leg));
 
     // the sanitizer's buffered response leg needs the whole body for the same
     // reason the output guardrails do: an entity — or a placeholder — can
@@ -2445,9 +2563,7 @@ async fn proxy(
     } else {
         None
     };
-    if pii_stream_mode == Some(rolter_core::StreamingResponse::Reject) {
-        return refuse.log(pii_stream_refusal(&state));
-    }
+    proceed!(req.admit_pii_stream(pii_stream_mode));
     // a stream that got here is one the operator opted out of the response leg
     // for, or one restored below; the request leg still ran, so PII still did
     // not reach the provider
@@ -2465,33 +2581,16 @@ async fn proxy(
         // pre-restore body has no reader, so it is never kept (#3240)
         capture: payload_capture_enabled(&snap.logging.payload_capture, &model, &scope.key),
     });
-    // a streamed restore needs a token for this request's own scope; with none
-    // (nothing was replaced, or the service cannot reverse) there is nothing to
-    // restore and the stream is served as it is. taken by whichever path
-    // answers
+    // a streamed restore, taken by whichever path answers
     let mut pii_stream = if pii_stream_mode == Some(rolter_core::StreamingResponse::Restore) {
-        let token = pii_ticket.as_ref().and_then(|ticket| {
-            let token = ticket.token_for(&pii_scope);
-            if token.is_none() {
-                // as `pii_sanitizer::restore` does: never reached today, and
-                // counted if a change ever makes it reachable
-                state.metrics.pii_restore_errors_total.fetch_add(1, Relaxed);
-                tracing::warn!(
-                    "refusing to restore a pii token outside the tenant and route that produced it"
-                );
-            }
-            token
-        });
-        token.map(|token| {
-            crate::pii_stream::StreamRestore::new(
-                &snap.pii_sanitizer,
-                &state.side_client,
-                &state.metrics,
-                token,
-                &pii_trace_id,
-                pii_tenant.clone(),
-            )
-        })
+        pii_stream_restore(
+            &state,
+            &snap.pii_sanitizer,
+            pii_ticket.as_ref(),
+            &pii_scope,
+            &pii_trace_id,
+            &pii_tenant,
+        )
     } else {
         None
     };
@@ -2502,33 +2601,9 @@ async fn proxy(
     let trace_id = crate::trace::request_trace_id(&headers);
 
     // post_response plugins: same buffering constraint as output guardrails
-    // above, since a plugin judges a whole body and a stream never is one (#509)
-    let post_response_plugin_list = snap.plugins.for_stage(
-        rolter_core::PluginStage::PostResponse,
-        &scope.org,
-        (!scope.project.is_empty()).then_some(scope.project.as_str()),
-    );
-    // a fail-closed plugin means "never deliver what I have not approved", and a
-    // stream cannot be shown to it, so the stream is refused the way
-    // `streaming_post_call` refuses one for the built-in rules. a fail-open
-    // plugin has already chosen delivery without its verdict, which is all a
-    // stream would get, so it keeps streaming (#1776)
-    if stream {
-        if let Some(refusal) = plugin_stream_refusal(&state, &post_response_plugin_list) {
-            return refuse.log(refusal);
-        }
-    }
-    let post_response_plugins = (!stream && !post_response_plugin_list.is_empty()).then(|| {
-        crate::plugin_dispatch::PostResponsePlugins {
-            plugins: post_response_plugin_list,
-            metrics: &state.metrics,
-            egress: &state.side_client,
-            model: model.clone(),
-            route: entry.route.model.clone(),
-            trace_id: trace_id.clone(),
-            tenant: plugin_tenant(&scope),
-        }
-    });
+    // above; a stream that got here keeps streaming without them
+    let post_response_plugins =
+        proceed!(req.post_response_plugins(entry, stream, !stream, &trace_id));
     // scope identity for log attribution (empty for config-defined keys)
     let (vk_id, org_id, team_id, project_id) = (
         scope.key.clone(),
@@ -3320,7 +3395,6 @@ async fn proxy_multipart(
             plugin_events: parking_lot::Mutex::new(Vec::new()),
         },
     };
-    let refuse = &req.refuse;
     proceed!(req.admit_model());
     proceed!(req.admit_budget().await);
     proceed!(req.admit_rate().await);
@@ -3376,53 +3450,20 @@ async fn proxy_multipart(
     // placeholder went upstream, so nothing is restored. a streamed
     // transcription gets what a streamed chat completion gets, refused before
     // the upstream call or served as the chat path serves it (#3432)
-    let output_guard = crate::guardrails::OutputGuard::resolve(
-        &snap.guardrails,
-        &entry.guardrails,
-        &state.metrics,
-        path,
-    );
-    if output_guard.is_some()
-        && stream
-        && snap.guardrails.streaming_post_call() == rolter_core::StreamingPostCall::Reject
-    {
-        return refuse.log(output_rules_stream_refusal(&state));
-    }
+    let output_guard = proceed!(req.output_guard(entry, stream));
     let semantic_guard = req.semantic_guard(entry, &trace_id, true);
     let semantic_leg = semantic_guard
         .as_ref()
         .map(|guard| SemanticLeg { guard, stream });
     // `reject` refuses before dialling; `buffer` holds the stream up to the
     // cap, judges its transcript text and replays it (`stream_response`)
-    if let Some(leg) = semantic_leg.filter(|leg| leg.rejects_stream()) {
-        return refuse.log(policy_stream_refusal(&state, leg.guard));
-    }
-    let post_response_plugin_list = snap.plugins.for_stage(
-        rolter_core::PluginStage::PostResponse,
-        &scope.org,
-        (!scope.project.is_empty()).then_some(scope.project.as_str()),
-    );
-    if stream {
-        if let Some(refusal) = plugin_stream_refusal(&state, &post_response_plugin_list) {
-            return refuse.log(refusal);
-        }
-    }
+    proceed!(req.admit_semantic_leg(semantic_leg));
     // the legs a stream cannot be shown to are built whatever the form field
     // says, and set aside only once the upstream has actually answered with
     // an event stream: a model that ignores `stream` answers JSON, which is
     // judged like any other transcript, so the caller cannot switch a leg
     // off by asking for a stream (#3432)
-    let post_response_plugins = (!post_response_plugin_list.is_empty()).then(|| {
-        crate::plugin_dispatch::PostResponsePlugins {
-            plugins: post_response_plugin_list,
-            metrics: &state.metrics,
-            egress: &state.side_client,
-            model: model.clone(),
-            route: entry.route.model.clone(),
-            trace_id: trace_id.clone(),
-            tenant: plugin_tenant(&scope),
-        }
-    });
+    let post_response_plugins = proceed!(req.post_response_plugins(entry, stream, true, &trace_id));
     // the log row takes these before the response leg runs
     let pii_model = model.clone();
     let pii_trace_id = trace_id.clone();
@@ -3433,11 +3474,8 @@ async fn proxy_multipart(
         route: entry.route.model.clone(),
     };
     let pii_sanitizes = snap.pii_sanitizer.sanitizes_response();
-    if stream
-        && pii_sanitizes
-        && snap.pii_sanitizer.stream_handling(false) == Some(rolter_core::StreamingResponse::Reject)
-    {
-        return refuse.log(pii_stream_refusal(&state));
+    if stream && pii_sanitizes {
+        proceed!(req.admit_pii_stream(snap.pii_sanitizer.stream_handling(false)));
     }
     let pii_leg = pii_sanitizes.then(|| PiiResponseLeg {
         state: &state,
