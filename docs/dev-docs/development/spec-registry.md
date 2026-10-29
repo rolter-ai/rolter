@@ -50,7 +50,9 @@ A `[[provider]]` is one `ProviderKind`: `kind`, `authority`, `url`, an example
 `base`, the `dialects` (spec ids) it speaks, its `auth` scheme (`bearer`,
 `x-api-key`, `api-key` or `x-goog-api-key`), the `primary_path` rolter sends its
 primary request to, a `conformance` (here `provider-profile` is allowed: an
-auth/path profile over an OpenAI-shaped transport), `reviewed_at`, `notes` and
+auth/path profile over an OpenAI-shaped transport; so is `unverified`, for a kind
+with no located public API reference, which the dashboard marks as unverified
+through `GET /api/v1/provider-kinds` and `spec_registry::is_unverified`), `reviewed_at`, `notes` and
 `tests`. `auth` and `primary_path` are not just documentation: a test holds them
 to `ProviderKind::auth_header` and `primary_upstream_path`.
 

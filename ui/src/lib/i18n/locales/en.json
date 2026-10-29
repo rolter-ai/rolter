@@ -5231,6 +5231,10 @@
     "rawOutput": "Show raw text"
   },
   "providerSheet": {
+    "unverified": {
+      "note": "Unverified: no public API reference for this provider was found, so whether it speaks an OpenAI-compatible API at a stable base URL is not established. Check its documentation before relying on it.",
+      "option": "Unverified"
+    },
     "apiBase": {
       "doubled": "This base ends in /v1 and rolter appends /v1 itself, so requests would 404. Remove the trailing /v1.",
       "excludesV1": "Leave off the version prefix — rolter appends /v1 itself for {{kind}}",
