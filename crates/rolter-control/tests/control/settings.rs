@@ -1353,6 +1353,60 @@ async fn adaptive_routing_telemetry_round_trips_from_the_data_plane() {
     assert_eq!(nodes.len(), 1);
     assert_eq!(nodes[0]["node_id"], "gw-2");
 
+    // two orgs' `gpt-4o` are two routes (#3458): a report naming each with its
+    // org stores both, and the next report that drops one org's route drops
+    // that row alone
+    let same_name = |orgs: &[&str]| {
+        json!({"routes": orgs.iter().map(|org| json!({
+            "org_id": org, "model": "gpt-4o", "engaged": *org == "org-a", "observed": 1
+        })).collect::<Vec<_>>()})
+    };
+    for body in [same_name(&["org-a", "org-b"]), same_name(&["org-b"])] {
+        let accepted = client
+            .post(format!("{base}/internal/adaptive-telemetry"))
+            .bearer_auth(admin_token())
+            .header("x-rolter-node-id", "gw-3")
+            .json(&body)
+            .send()
+            .await
+            .unwrap();
+        assert!(accepted.status().is_success());
+        let view: Value = client
+            .get(format!("{base}/api/v1/adaptive-routing-telemetry"))
+            .bearer_auth(admin_token())
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let mut routes: Vec<(String, String)> = view["routes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|r| r["nodes"][0]["node_id"] == "gw-3")
+            .map(|r| {
+                (
+                    r["org_id"].as_str().unwrap().to_string(),
+                    r["model"].as_str().unwrap().to_string(),
+                )
+            })
+            .collect();
+        routes.sort();
+        let expected: Vec<(String, String)> = body["routes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| {
+                (
+                    r["org_id"].as_str().unwrap().to_string(),
+                    "gpt-4o".to_string(),
+                )
+            })
+            .collect();
+        assert_eq!(routes, expected, "{view}");
+    }
+
     // a sample older than the freshness window is not current state
     sqlx::query(
         "update adaptive_routing_telemetry set reported_at = now() - interval '10 minutes'",

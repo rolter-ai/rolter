@@ -272,6 +272,10 @@ These series are scraped, not measured by Rolter. They appear only for providers
 
 Both histograms are labelled `{model="..."}` so you can track latency per model independently. Each histogram exposes the standard `_bucket`, `_sum`, and `_count` series.
 
+<Note>
+  The `model` label of the latency histograms, of `rolter_variant_requests_total` and of `rolter_complexity_route_requests_total` (and that counter's `route` label) is the route's **runtime name**: its plain name, unless another organization has a route of the same name, then `name@<organization id>`. Two organizations' `gpt-4o` routes are therefore two series, each with that organization's own numbers, the same way the circuit-breaker and adaptive-routing series keep them apart. When a second organization takes a name, the first organization's series continue under the new label. A deployment where no two organizations share a route name sees the plain names it always did. The OTLP latency histograms keep the requested model name, as the GenAI conventions define it.
+</Note>
+
 <AccordionGroup>
   <Accordion title="rolter_request_latency_ms">
     **Type:** Histogram · Labels: `model`
@@ -432,7 +436,9 @@ inert and allocates nothing.
 Prometheus labels are exported as OTLP attributes with the same names:
 `provider`, `target`, `outcome` on target counters; `model` and `variant` on
 variant counters; `model`, `tier`, `route`, `outcome` on complexity counters;
-and `model` on both histograms.
+and `model` on both histograms. The variant and complexity attributes carry the
+route's runtime name, as their Prometheus labels do; the histograms carry the
+requested model.
 
 Values are carried raw. The backslash-escaping you see in the Prometheus text
 format exists for that format only — OTLP carries attribute values as typed

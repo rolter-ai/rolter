@@ -165,6 +165,8 @@
       "unlocked": "Unlocked — clients can override. Click to lock."
     },
     "noneAvailable": "none available",
+    "ownerOrg": "Org: {{name}}",
+    "ownerDeployment": "Deployment-wide",
     "timeWindow": {
       "label": "Time window",
       "last24h": "Last 24 hours",
@@ -3104,6 +3106,7 @@
       "updated": "Updated {{time}}",
       "reportsExpire": "· reports expire after {{seconds}} s",
       "routeAria": "Adaptive route {{model}}",
+      "routeAriaOwned": "Adaptive route {{model}}, {{owner}}",
       "decisions_one": "{{value}} decision",
       "decisions_other": "{{value}} decisions",
       "reported": "Reported {{time}}",

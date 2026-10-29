@@ -312,12 +312,54 @@ fn a_route_name_spelling_another_orgs_namespace_does_not_share_its_state() {
         ]),
     );
     let squatter = snapshot.routes.get("org-a", "faq@org-b").unwrap();
-    assert_eq!(squatter.namespace, "faq@org-b");
+    assert_eq!(&*squatter.namespace, "faq@org-b");
     assert!(snapshot.routes.owned_by("org-b", "faq").is_none());
     let namespaces: std::collections::HashSet<&str> = snapshot
         .routes
         .values()
-        .map(|entry| entry.namespace.as_str())
+        .map(|entry| &*entry.namespace)
         .collect();
     assert_eq!(namespaces.len(), snapshot.routes.len());
+}
+
+/// #3462: a cache hit feeds the same metric series as the miss before it,
+/// the route's runtime namespace, so two orgs' `chat` hits never land in one
+/// bare `chat` series. The integration test of the same name covers misses,
+/// variants and complexity; this one needs the in-memory cache.
+#[tokio::test]
+async fn cache_hits_report_into_their_own_orgs_metric_series() {
+    let (a, _) = upstream("from-a").await;
+    let (b, _) = upstream("from-b").await;
+    let config = config([format!("http://{a}"), format!("http://{b}")], false);
+    let (gw, _) = gateway(&config).await;
+    for org in ORGS {
+        // a miss, then a hit
+        assert_eq!(ask(gw, org, "hello").await.0, 200);
+        assert_eq!(ask(gw, org, "hello").await.0, 200);
+    }
+    let expected: Vec<String> = ORGS
+        .iter()
+        .map(|org| format!("rolter_request_latency_ms_count{{model=\"chat@{org}\"}} 2"))
+        .collect();
+    let mut body = String::new();
+    // the row that feeds the histograms is written as the answer finishes
+    for _ in 0..50 {
+        body = reqwest::get(format!("http://{gw}{}", config.server.metrics_path))
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+        if expected.iter().all(|line| body.contains(line.as_str())) {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    for line in &expected {
+        assert!(body.contains(line.as_str()), "missing {line} in:\n{body}");
+    }
+    assert!(
+        !body.contains("model=\"chat\""),
+        "no bare series merges the two orgs:\n{body}"
+    );
 }

@@ -44,6 +44,7 @@ const RETENTION_SECS: i64 = 3600;
 const MAX_TARGETS: usize = 5000;
 const MAX_MODEL_LEN: usize = 512;
 const MAX_LABEL_LEN: usize = 512;
+const MAX_ORG_LEN: usize = 128;
 
 pub(crate) fn router() -> Router<ControlState> {
     Router::new().route("/api/v1/breaker-state", get(get_breaker_state))
@@ -56,6 +57,11 @@ pub(crate) fn internal_router() -> Router<ControlState> {
 
 #[derive(Debug, Clone, Deserialize)]
 struct TargetReport {
+    /// the org that owns the route, empty for a deployment-wide route and from
+    /// a gateway that predates per-org namespaces (#3458)
+    #[serde(default)]
+    org_id: String,
+    /// the route's name, never its qualified runtime namespace
     model: String,
     target_index: i64,
     #[serde(default)]
@@ -82,6 +88,7 @@ fn storable(target: &TargetReport) -> bool {
     let model = target.model.trim();
     !model.is_empty()
         && model.len() <= MAX_MODEL_LEN
+        && target.org_id.len() <= MAX_ORG_LEN
         && target.provider.len() <= MAX_LABEL_LEN
         && target.upstream_model.len() <= MAX_LABEL_LEN
         && (0..=i64::from(i32::MAX)).contains(&target.target_index)
@@ -118,6 +125,7 @@ async fn ingest(
     let samples: Vec<BreakerSample<'_>> = reports
         .iter()
         .map(|target| BreakerSample {
+            org_id: target.org_id.trim(),
             model: target.model.trim(),
             // the range was checked by `storable`
             target_index: target.target_index as i32,
@@ -165,9 +173,12 @@ struct NodeBreaker {
     reported_at: DateTime<Utc>,
 }
 
-/// A `(model, target)` and what the fleet says about its breaker.
+/// A route's target and what the fleet says about its breaker. A route is
+/// `(org_id, model)`: two orgs may each have a route of one name (#1857).
 #[derive(Debug, Serialize)]
 struct TargetBreakers {
+    /// the org that owns the route, empty for a deployment-wide route
+    org_id: String,
     model: String,
     /// position in the route's target list
     target_index: i32,
@@ -205,23 +216,24 @@ fn rank(state: &str) -> u8 {
     }
 }
 
-/// Fold per-node rows into one entry per `(model, target)`. Rows arrive
-/// ordered by model and target, so the output order is stable. Targets whose
-/// model is not in `visible` are dropped: the table is keyed on the public
-/// model name, which another tenant's route may share or own.
+/// Fold per-node rows into one entry per `(org, model, target)`. The output
+/// is ordered by model, org and target, so it is stable. Targets whose route
+/// is not in `visible`, as `(org, model)`, are dropped: another org may have a
+/// route of the same name (#3458).
 fn group(
     rows: Vec<BreakerState>,
-    visible: &HashSet<String>,
+    visible: &HashSet<(String, String)>,
     with_nodes: bool,
 ) -> Vec<TargetBreakers> {
-    let mut grouped: BTreeMap<(String, i32), TargetBreakers> = BTreeMap::new();
+    let mut grouped: BTreeMap<(String, String, i32), TargetBreakers> = BTreeMap::new();
     for row in rows {
-        if !visible.contains(&row.model) {
+        if !visible.contains(&(row.org_id.clone(), row.model.clone())) {
             continue;
         }
         let entry = grouped
-            .entry((row.model.clone(), row.target_index))
+            .entry((row.model.clone(), row.org_id.clone(), row.target_index))
             .or_insert_with(|| TargetBreakers {
+                org_id: row.org_id.clone(),
                 model: row.model.clone(),
                 target_index: row.target_index,
                 provider: row.provider.clone(),
@@ -273,7 +285,8 @@ async fn get_breaker_state(
     let mut visible = HashSet::new();
     for route in &config.routes {
         if policy.permits_model(&route.model) && view.sees(&state, route.tenancy.as_ref()).await {
-            visible.insert(route.model.clone());
+            let org = rolter_core::namespace::org_of(route.tenancy.as_ref());
+            visible.insert((org.to_string(), route.model.clone()));
         }
     }
     let pool = pool(&state);
@@ -301,6 +314,7 @@ mod tests {
     fn row(node: &str, model: &str, idx: i32, state: &str) -> BreakerState {
         BreakerState {
             node_id: node.to_string(),
+            org_id: String::new(),
             model: model.to_string(),
             target_index: idx,
             provider: "openai".to_string(),
@@ -312,8 +326,57 @@ mod tests {
         }
     }
 
-    fn visible(models: &[&str]) -> HashSet<String> {
-        models.iter().map(|m| m.to_string()).collect()
+    fn visible(models: &[&str]) -> HashSet<(String, String)> {
+        models
+            .iter()
+            .map(|m| (String::new(), m.to_string()))
+            .collect()
+    }
+
+    /// #3458: two orgs' `gpt-4o` are two routes. An admin of one org sees
+    /// only that org's breaker, and a caller who sees both gets two entries
+    /// rather than one merged one.
+    #[test]
+    fn two_orgs_same_named_routes_are_two_entries_each_visible_to_its_own_org() {
+        let of = |org: &str, node: &str, state: &str| BreakerState {
+            org_id: org.to_string(),
+            ..row(node, "gpt-4o", 0, state)
+        };
+        let rows = || {
+            vec![
+                of("org-a", "gw-1", "open"),
+                of("org-b", "gw-1", "half_open"),
+                of("org-b", "gw-2", "closed"),
+            ]
+        };
+        let org = |org: &str| -> HashSet<(String, String)> {
+            [(org.to_string(), "gpt-4o".to_string())].into()
+        };
+        let a = group(rows(), &org("org-a"), false);
+        assert_eq!(a.len(), 1);
+        assert_eq!(
+            (a[0].org_id.as_str(), a[0].state.as_str()),
+            ("org-a", "open")
+        );
+        let b = group(rows(), &org("org-b"), false);
+        assert_eq!(b.len(), 1);
+        assert_eq!(
+            (
+                b[0].org_id.as_str(),
+                b[0].state.as_str(),
+                b[0].nodes_half_open
+            ),
+            ("org-b", "half_open", 1)
+        );
+        // a global route of the same name is a third route, seen by neither
+        assert!(group(rows(), &visible(&["gpt-4o"]), false).is_empty());
+        let both: HashSet<_> = org("org-a").union(&org("org-b")).cloned().collect();
+        let all = group(rows(), &both, true);
+        let seen: Vec<_> = all
+            .iter()
+            .map(|t| (t.org_id.as_str(), t.state.as_str(), t.nodes.len()))
+            .collect();
+        assert_eq!(seen, [("org-a", "open", 1), ("org-b", "half_open", 2)]);
     }
 
     #[test]
@@ -354,6 +417,7 @@ mod tests {
     #[test]
     fn unknown_states_and_out_of_range_indices_are_not_stored() {
         let report = |state: &str, idx: i64| TargetReport {
+            org_id: String::new(),
             model: "m".to_string(),
             target_index: idx,
             provider: String::new(),
@@ -369,6 +433,9 @@ mod tests {
         let mut blank = report("open", 0);
         blank.model = "  ".to_string();
         assert!(!storable(&blank));
+        let mut long_org = report("open", 0);
+        long_org.org_id = "o".repeat(MAX_ORG_LEN + 1);
+        assert!(!storable(&long_org));
     }
 
     #[test]

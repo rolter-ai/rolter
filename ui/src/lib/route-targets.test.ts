@@ -100,3 +100,48 @@ describe("targetViews", () => {
     expect(targetViews(route, [])[0].health).toBeNull();
   });
 });
+
+// two organizations may each have a provider and a route of one name (#3460)
+describe("two organizations sharing a name", () => {
+  const rows = [
+    row({ org_id: "org-a", uptime: 0.5, sla_breached: 1 }),
+    row({ org_id: "org-b", uptime: 0.999 }),
+    row({ org_id: "", provider: "global", target_id: "global", uptime: 0.97, sla_breached: 1 }),
+  ];
+
+  it("reads each organization's own provider", () => {
+    expect(targetHealth(rows, "sim-a", "m", undefined, "org-a")?.uptime).toBe(0.5);
+    expect(targetHealth(rows, "sim-a", "m", undefined, "org-b")?.uptime).toBe(0.999);
+  });
+
+  it("falls back to a config-file provider, never another organization's", () => {
+    expect(targetHealth(rows, "sim-a", "m", undefined, "org-c")).toBeNull();
+    expect(targetHealth(rows, "global", "m", undefined, "org-a")?.uptime).toBe(0.97);
+  });
+
+  it("matches on the name alone for a control plane that predates org_id", () => {
+    const old = [row({ uptime: 0.9 })];
+    expect(targetHealth(old, "sim-a", "m", undefined, "org-a")?.uptime).toBe(0.9);
+  });
+
+  it("gives each route its own breaker", () => {
+    const breaker = (org: string, state: "open" | "half_open") => ({
+      org_id: org,
+      model: "gpt-4o",
+      target_index: 0,
+      provider: "sim-a",
+      upstream_model: "gpt-4o",
+      state,
+      nodes_open: state === "open" ? 1 : 0,
+      nodes_half_open: state === "half_open" ? 1 : 0,
+      nodes: [],
+    });
+    const breakers = { targets: [breaker("org-a", "open"), breaker("org-b", "half_open")] };
+    const route = { model: "gpt-4o", targets: [{ provider: "sim-a", model: null, weight: 1 }] };
+    expect(targetViews(route, rows, undefined, breakers, "org-a")[0].breaker?.state).toBe("open");
+    expect(targetViews(route, rows, undefined, breakers, "org-b")[0].breaker?.state).toBe(
+      "half_open",
+    );
+    expect(targetViews(route, rows, undefined, breakers, "")[0].breaker).toBeUndefined();
+  });
+});

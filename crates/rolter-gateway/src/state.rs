@@ -33,7 +33,7 @@ pub struct RouteEntry {
     /// org shares it, then `name@org`, so two orgs' `gpt-4o` never share a
     /// breaker (ADR-0040). For a synthetic `slug/model` entry it is the address,
     /// qualified the same way when the provider or group it pins is
-    pub namespace: String,
+    pub namespace: Arc<str>,
     /// the pool's balancer. `Arc` rather than `Box` because a group's balancer
     /// is owned by the snapshot and handed to every synthetic entry built for
     /// that group, so its rotation state outlives one request (#1655)
@@ -826,7 +826,7 @@ impl Snapshot {
                 org,
                 &route.model,
                 RouteEntry {
-                    namespace,
+                    namespace: namespace.into(),
                     project_scope,
                     overrides: rolter_proxy::RouteOverrides::from_advanced(&route.advanced),
                     throughput: crate::rate_limits::RouteWindow::new(
@@ -1194,6 +1194,21 @@ impl Snapshot {
         (rolter_core::namespace::display_name(id, org), org)
     }
 
+    /// The runtime id of the provider `org` owns under display name `name`,
+    /// the reverse of [`provider_label`](Self::provider_label): `name` itself
+    /// while no other provider shares it, `name@org` once one does. `None`
+    /// when the snapshot holds no such provider. Allocates, so it is for the
+    /// paths that keep a provider's stable identity across snapshots, not for
+    /// a request's own routing.
+    pub fn provider_id(&self, org: &str, name: &str) -> Option<&str> {
+        let owned = |id: &str| {
+            self.providers.get_key_value(id).and_then(|(id, p)| {
+                (rolter_core::namespace::org_of(p.tenancy.as_ref()) == org).then_some(id.as_str())
+            })
+        };
+        owned(name).or_else(|| owned(&rolter_core::namespace::qualify(name, org)))
+    }
+
     /// The display name of the provider with runtime id `id`; see
     /// [`provider_label`](Self::provider_label).
     pub fn provider_name<'a>(&'a self, id: &'a str) -> &'a str {
@@ -1239,7 +1254,7 @@ impl Snapshot {
             tenancy,
         };
         RouteEntry {
-            namespace,
+            namespace: namespace.into(),
             project_scope,
             overrides: Default::default(),
             throughput: None,
