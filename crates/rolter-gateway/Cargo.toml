@@ -41,25 +41,6 @@ tracing.workspace = true
 clap.workspace = true
 chrono.workspace = true
 scalar_api_reference = { version = "0.2.12", default-features = false }
-# the `onnx/1` model format of local semantic guard providers (#3443), behind
-# the `onnx` feature. ONNX Runtime is loaded from its shared library at run
-# time (`load-dynamic`), so the build links and downloads nothing native;
-# `api-22` accepts ONNX Runtime 1.22 or newer. The tokenizer uses the pure-Rust
-# regex engine rather than oniguruma's C library
-ort = { version = "=2.0.0-rc.15", default-features = false, features = [
-  "std",
-  "load-dynamic",
-  "api-22",
-], optional = true }
-tokenizers = { version = "0.22.2", default-features = false, features = [
-  "fancy-regex",
-], optional = true }
-
-[features]
-default = []
-# run `onnx/1` local guardrail models (#3443); off by default, see
-# docs/user-docs/security/semantic-guard-policies.mdx for the runtime library
-onnx = ["dep:ort", "dep:tokenizers"]
 
 [dev-dependencies]
 libc.workspace = true

@@ -85,11 +85,11 @@ A [local classifier](#local-classifier) adds two cases: `model` (its model is no
 A provider with `kind = "local"` is a classifier the gateway runs in its own process: no sidecar, no network hop, no URL. It is meant for cheap, high-volume checks such as keyword-style prompt injection ("ignore all previous instructions") or obvious toxicity, and answers like any other provider: one score from 0 to 1 per category, held to the policy's `thresholds`. It never answers `block` or `transform` itself, so set a threshold for every category it should act on. The design decision is [ADR-0039](https://github.com/rolter-ai/rolter/blob/master/docs/dev-docs/adr/2026-10-28-local-semantic-classifier.md).
 
 <Warning>
-  The default local classifier is a hashed word n-gram logistic model. It is fast and small, and
-  far weaker than a transformer: paraphrased or obfuscated attacks get past it. A gateway built with
-  the `onnx` feature can run a transformer classifier in process instead (see [ONNX
-  models](#onnx-models)); otherwise run one such as a fine-tuned DeBERTa behind a
-  [webhook](/security/guardrails#external-providers).
+  The local classifier is a hashed word n-gram logistic model. It is fast and small, and far weaker
+  than a transformer: paraphrased or obfuscated attacks get past it. Run a model such as a
+  fine-tuned DeBERTa behind a [webhook](/security/guardrails#external-providers) when you need
+  one; an ONNX runtime for local providers is tracked in
+  [#3443](https://github.com/rolter-ai/rolter/issues/3443).
 </Warning>
 
 **What it reads.** Every string in the body the stage judges, one per line, except structural fields such as `model`, `role`, `type`, `id`, `finish_reason` and `url`, and inline binary `data` (a base64 image or audio; an Anthropic plain-text document's `data` is read). On a buffered stream that is the assembled text. A text that fits in the provider's `max_body_bytes` is read whole. A longer one is read as its first quarter and its **last three quarters**, so with the default 64 KiB the classifier sees the first 16 KiB (the system prompt and the start of the conversation) and the last 48 KiB (the latest turns, which are usually the ones an injection or an insult is in); what lies between is not read. Raise `max_body_bytes` to read more of a long conversation, at the cost of CPU per call.
@@ -180,40 +180,6 @@ model_root = "/etc/rolter/models"
 ```
 
 **CPU.** Inference runs off the request workers, behind one limit per gateway shared by every local provider: `[semantic_guards] local_concurrency`, by default half the CPUs the process may use (at least one). A gateway fed by a control plane takes it from the control plane's own config file, since the dashboard does not set it. A call waits for a slot at most its provider's `timeout_ms`, which also bounds the inference; a call that gets no slot is `overloaded` and follows the provider's `failure_mode`, exactly like a webhook that answered `503`. A typical 64 KiB body takes well under a millisecond, so `timeout_ms` of a few tens of milliseconds is plenty. The limit is per gateway replica.
-
-### ONNX models
-
-A gateway built with the `onnx` cargo feature also runs transformer classifiers exported to ONNX (a DeBERTa, DistilBERT or MiniLM prompt-injection or toxicity model, say) through [ONNX Runtime](https://onnxruntime.ai). The feature is off by default and the published image does not enable it. A gateway built without it refuses an ONNX model: the log says `this gateway was built without the onnx cargo feature` and the provider follows its `failure_mode`.
-
-The provider's `model_path` then names a small JSON **manifest** in the `onnx/1` format, and `model_sha256` pins the manifest, which in turn pins the model and its tokenizer, so the one pin covers all three files:
-
-```json
-{
-  "format": "onnx/1",
-  "model": { "path": "model.onnx", "sha256": "<sha256sum of model.onnx>" },
-  "tokenizer": { "path": "tokenizer.json", "sha256": "<sha256sum of tokenizer.json>" },
-  "labels": [null, "prompt_injection"],
-  "activation": "softmax",
-  "max_tokens": 512
-}
-```
-
-- `model` and `tokenizer` each name a `path`, relative to the manifest's directory (or absolute), and its `sha256`. Both fall under [`model_root`](#local-classifier) like the manifest. `tokenizer` is the model's Hugging Face `tokenizer.json`.
-- `labels` names the model's output columns in order: each becomes a category the policy's `thresholds` apply to, and a `null` column (typically the "safe" class) is not reported. At most 32 named labels.
-- `activation` turns the logits into scores from 0 to 1: `softmax` (the default) across the columns for a single-label classifier, `sigmoid` per column for a multi-label one.
-- `max_tokens` (default 512, at most 8192) is the model's input length. A longer text keeps its first quarter and its last three quarters of tokens, as the text itself does, so the latest turn is always read.
-- `output` optionally names the output to read; the model's first otherwise. The model must take `input_ids` and may take `attention_mask` and `token_type_ids`; no other input.
-
-Limits: the manifest and the tokenizer at most 64 MiB each, the ONNX model at most 1 GiB. Each model holds one ONNX Runtime session run on a single thread, so one model answers one call at a time per gateway: a call that waits for it longer than the provider's `timeout_ms` is `overloaded`, like a call that finds no `local_concurrency` slot. A transformer takes milliseconds to tens of milliseconds per call on a CPU, so give such a provider a `timeout_ms` of a few hundred milliseconds and watch its latency in `rolter_guardrail_provider_latency_ms`.
-
-**The runtime library.** The `onnx` build links nothing native and downloads nothing: it loads ONNX Runtime's shared library (`libonnxruntime.so`, version 1.22 or newer) when the first ONNX model is loaded, from `ORT_DYLIB_PATH` or the system library path. A gateway that cannot load it logs `cannot load the ONNX Runtime library` and fails every ONNX provider through its `failure_mode`; `rolter-linear/1` models are unaffected. The prebuilt x86-64 ONNX Runtime releases assume a CPU with AVX. To run ONNX models in a container, build the image with the feature and add the library from an official [ONNX Runtime release](https://github.com/microsoft/onnxruntime/releases) to the distroless image, which already carries the C++ runtime the library needs:
-
-```dockerfile
-# docker build --build-arg CARGO_FEATURES="postgres onnx" -t rolter:onnx -f docker/Dockerfile .
-FROM rolter:onnx
-COPY onnxruntime-linux-x64-1.22.0/lib/libonnxruntime.so.1.22.0 /usr/local/lib/libonnxruntime.so
-ENV ORT_DYLIB_PATH=/usr/local/lib/libonnxruntime.so
-```
 
 **On the dashboard**, choose **Local classifier** as the provider's kind and enter the path and digest. The control plane never opens the file, so the provider test is for webhooks only.
 
