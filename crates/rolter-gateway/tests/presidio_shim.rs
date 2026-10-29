@@ -75,7 +75,29 @@ fn python() -> Result<String, String> {
     Err(reason)
 }
 
+/// How many times start-up is attempted on a fresh port before the test fails.
+const START_ATTEMPTS: usize = 4;
+
+/// Start the shim, retrying on a fresh port when the child exits early. The
+/// port is probed by binding and dropping it, so another test in the binary
+/// (or on the machine) can take it before uvicorn does and uvicorn then exits
+/// with `EADDRINUSE`; that is a retry, not a 30 second wait followed by a
+/// misleading panic.
 fn start_shim(python: &str) -> Shim {
+    let mut failures = Vec::new();
+    for _ in 0..START_ATTEMPTS {
+        match try_start_shim(python) {
+            Ok(shim) => return shim,
+            Err(failure) => failures.push(failure),
+        }
+    }
+    panic!(
+        "the shim did not start in {START_ATTEMPTS} attempts:\n{}",
+        failures.join("\n---\n")
+    );
+}
+
+fn try_start_shim(python: &str) -> Result<Shim, String> {
     let port = {
         let probe = TcpListener::bind("127.0.0.1:0").expect("a free port");
         probe.local_addr().expect("a bound address").port()
@@ -94,22 +116,44 @@ fn start_shim(python: &str) -> Shim {
         .arg(TOKEN)
         .arg(mapping)
         .stdout(Stdio::null())
-        .stderr(Stdio::inherit())
+        .stderr(Stdio::piped())
         .spawn()
         .expect("python starts");
-    let shim = Shim {
+    let mut shim = Shim {
         child,
         addr: SocketAddr::from(([127, 0, 0, 1], port)),
     };
     let deadline = Instant::now() + Duration::from_secs(30);
-    while std::net::TcpStream::connect_timeout(&shim.addr, Duration::from_millis(200)).is_err() {
-        assert!(
-            Instant::now() < deadline,
-            "the shim never started listening"
-        );
+    loop {
+        if let Some(status) = shim.child.try_wait().expect("the child can be polled") {
+            let mut stderr = String::new();
+            if let Some(mut pipe) = shim.child.stderr.take() {
+                let _ = std::io::Read::read_to_string(&mut pipe, &mut stderr);
+            }
+            return Err(format!(
+                "the shim exited with {status} on port {port}: {}",
+                stderr.trim()
+            ));
+        }
+        if std::net::TcpStream::connect_timeout(&shim.addr, Duration::from_millis(200)).is_ok() {
+            // a process that is not ours may be what answered: the child has
+            // to still be alive a moment later for the port to be its own
+            std::thread::sleep(Duration::from_millis(150));
+            if shim
+                .child
+                .try_wait()
+                .expect("the child can be polled")
+                .is_none()
+            {
+                return Ok(shim);
+            }
+            continue;
+        }
+        if Instant::now() >= deadline {
+            return Err(format!("the shim never listened on port {port} in 30s"));
+        }
         std::thread::sleep(Duration::from_millis(100));
     }
-    shim
 }
 
 async fn serve(app: Router) -> SocketAddr {
