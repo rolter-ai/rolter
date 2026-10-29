@@ -30,8 +30,8 @@ There are no query parameters. The organization id is the only input.
 ## Response
 
 An array of virtual keys, oldest first. Each is the object
-`GET /api/v1/projects/{project_id}/virtual-keys` returns, without any digest of a
-secret: there is no `key_hash`, and none of the `previous_*` fields of a rotation.
+`GET /api/v1/projects/{project_id}/virtual-keys` returns, without the
+`previous_*` fields of a rotation. Neither listing carries a digest of a secret.
 Each carries its `project_id`; join it to
 [`GET /api/v1/orgs/{org_id}/projects`](/api/org-projects) to name the project
 and its team.

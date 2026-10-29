@@ -371,6 +371,9 @@ pub struct ProviderCacheProbe {
 pub struct VirtualKey {
     pub id: Uuid,
     pub project_id: Uuid,
+    /// peppered digest of the secret. the gateway learns it through the
+    /// snapshot; no API response carries it (#3525)
+    #[serde(default, skip_serializing)]
     pub key_hash: String,
     pub key_prefix: String,
     pub name: Option<String>,
@@ -1466,6 +1469,39 @@ pub struct EffectiveGrant {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// every endpoint that returns a key serialises this type, so pinning it
+    /// here keeps the digests out of all of them at once (#3525)
+    #[test]
+    fn a_virtual_key_serialises_without_either_digest() {
+        let key = VirtualKey {
+            id: Uuid::nil(),
+            project_id: Uuid::nil(),
+            key_hash: "digest-of-the-secret".to_string(),
+            key_prefix: "rk_live_ab".to_string(),
+            name: Some("ci".to_string()),
+            models: vec![],
+            providers: vec![],
+            disabled: false,
+            expires_at: None,
+            cache_enabled: None,
+            created_by: None,
+            business_unit_id: None,
+            customer_id: None,
+            purpose: None,
+            created_at: DateTime::<Utc>::UNIX_EPOCH,
+            previous_key_hash: Some("digest-of-the-old-secret".to_string()),
+            previous_key_prefix: Some("rk_live_cd".to_string()),
+            previous_expires_at: None,
+        };
+        let json = serde_json::to_value(&key).expect("a key serialises");
+        assert!(json.get("key_hash").is_none(), "{json}");
+        assert!(json.get("previous_key_hash").is_none(), "{json}");
+        assert_eq!(json["key_prefix"], "rk_live_ab");
+        assert_eq!(json["previous_key_prefix"], "rk_live_cd");
+        let text = json.to_string();
+        assert!(!text.contains("digest-of-the"), "{text}");
+    }
 
     fn provider(secret: Option<Vec<u8>>) -> SsoProvider {
         SsoProvider {

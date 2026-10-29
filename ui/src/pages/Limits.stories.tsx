@@ -100,7 +100,6 @@ const KEYS: VirtualKeyRow[] = [
   {
     id: "vk-1",
     project_id: "project-1",
-    key_hash: "hash",
     key_prefix: "sk-rolter-backend",
     name: "backend service",
     models: [],

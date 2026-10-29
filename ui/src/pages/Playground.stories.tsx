@@ -93,7 +93,6 @@ const expiry = () => new Date(Date.now() + 30 * 60_000).toISOString();
 const minted = (key = "sk-rolter-minted") => ({
   id: "vk-1",
   project_id: "project-1",
-  key_hash: "hash",
   key_prefix: key.slice(0, 12),
   name: "Playground",
   models: ["minicpm5-1b"],
