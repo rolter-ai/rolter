@@ -92,7 +92,8 @@ const HEADER: &str = "\
 # left alone, not half applied. A cap on a person is named by the account's
 # email (`scope = \"user\"`, `id = \"alice@example.com\"`), narrowed to an org or a
 # project by the same slug path, `within = { org = \"acme\" }`. The import finds
-# an existing account by that email and never creates one. A cap on a virtual
+# an existing account by that email and never creates one; `--without-person-caps`
+# leaves these caps, and with them every address, out of the file. A cap on a virtual
 # key is not exported: keys are never exported, so it would name nothing.
 #
 # Deliberately not exported, because the importer does not consume them and a
@@ -576,8 +577,9 @@ fn render_caps(out: &mut String, config: &GatewayConfig, refs: &ScopeRefs) {
     if skipped_budgets + skipped_limits > 0 {
         out.push_str(&format!(
             "\n# not exported: {skipped_budgets} budget(s) and {skipped_limits} rate limit(s) on a \
-             virtual key (keys are never exported), on an account or place with no portable \
-             name, or on another scope with no name that survives a move\n"
+             virtual key (keys are never exported), on an account (or any account, when person \
+             caps are left out) or place with no portable name, or on another scope with no \
+             name that survives a move\n"
         ));
     }
 }
@@ -729,7 +731,10 @@ fn key<T: Serialize + ?Sized>(out: &mut String, name: &str, value: &T) {
 /// Read from the tables directly, since the snapshot a [`GatewayConfig`] is
 /// built from carries ids and nothing that names them (#1312).
 #[cfg(feature = "postgres")]
-pub async fn load_scope_refs(pool: &sqlx::PgPool) -> rolter_core::Result<ScopeRefs> {
+pub async fn load_scope_refs(
+    pool: &sqlx::PgPool,
+    with_people: bool,
+) -> rolter_core::Result<ScopeRefs> {
     use rolter_core::BudgetScope;
     use rolter_store::postgres::store_err;
     let mut refs = ScopeRefs::default();
@@ -765,16 +770,18 @@ pub async fn load_scope_refs(pool: &sqlx::PgPool) -> rolter_core::Result<ScopeRe
     // a person is named by the account's email, so only the accounts that hold
     // a cap are read: a deployment's whole user table has no business in a
     // configuration file (#3311)
-    let rows: Vec<(uuid::Uuid, String)> = sqlx::query_as(
-        "select id, email from users where id in (
-             select scope_id from budgets where scope_type = 'user'
-             union select scope_id from rate_limits where scope_type = 'user')",
-    )
-    .fetch_all(pool)
-    .await
-    .map_err(store_err)?;
-    for (id, email) in rows {
-        refs.insert(BudgetScope::User, &id.to_string(), email);
+    if with_people {
+        let rows: Vec<(uuid::Uuid, String)> = sqlx::query_as(
+            "select id, email from users where id in (
+                 select scope_id from budgets where scope_type = 'user'
+                 union select scope_id from rate_limits where scope_type = 'user')",
+        )
+        .fetch_all(pool)
+        .await
+        .map_err(store_err)?;
+        for (id, email) in rows {
+            refs.insert(BudgetScope::User, &id.to_string(), email);
+        }
     }
     for (table, scope) in [
         ("business_units", BudgetScope::BusinessUnit),
@@ -802,6 +809,11 @@ pub struct ExportOptions {
     /// org (those of the gateway's own config file) are written as they are in
     /// the unscoped export.
     pub org: Option<String>,
+    /// Leave caps on a person out (#3396). Such a cap names the account by its
+    /// email, and a team that commits `rolter.toml` may keep addresses out of
+    /// it (#1312). The caps are counted in the trailing comment as key caps are,
+    /// and no address is read from the database at all.
+    pub without_person_caps: bool,
 }
 
 /// The deployment's configuration as an importable document, caps included.
@@ -816,7 +828,7 @@ pub async fn export_document(
     use rolter_store::postgres::store_err;
 
     let mut config = config.clone();
-    let refs = load_scope_refs(pool).await?;
+    let refs = load_scope_refs(pool, !options.without_person_caps).await?;
     if let Some(slug) = &options.org {
         let org_id: Option<uuid::Uuid> = sqlx::query_scalar("select id from orgs where slug = $1")
             .bind(slug)
@@ -1032,6 +1044,9 @@ pub(crate) fn router() -> Router<ControlState> {
 struct ExportQuery {
     /// export this organization's rows only, by slug (#3440)
     org: Option<String>,
+    /// leave caps on a person, which name an account by email, out (#3396)
+    #[serde(default)]
+    without_person_caps: bool,
 }
 
 /// The whole deployment's configuration as an importable `rolter.toml`, or one
@@ -1049,7 +1064,10 @@ async fn export_config(
 ) -> ApiResult<Response> {
     authorize_superadmin(&principal, superadmin_cap!("config_export", Read))?;
     let config = state.store.load().await?;
-    let options = ExportOptions { org: query.org };
+    let options = ExportOptions {
+        org: query.org,
+        without_person_caps: query.without_person_caps,
+    };
     let document = export_document(crate::crud::pool(&state), &config, &options).await?;
     Ok((
         [
@@ -2023,6 +2041,7 @@ model = "gpt-4o"
             for (slug, org_id, project_id) in &orgs {
                 let options = ExportOptions {
                     org: Some(slug.to_string()),
+                    ..Default::default()
                 };
                 let first = super::export_document(&pool, &served, &options)
                     .await
@@ -2057,12 +2076,72 @@ model = "gpt-4o"
 
             let unknown = ExportOptions {
                 org: Some("nobody".to_string()),
+                ..Default::default()
             };
             let err = super::export_document(&pool, &served, &unknown)
                 .await
                 .unwrap_err()
                 .to_string();
             assert!(err.contains("'nobody'"), "{err}");
+        }
+
+        /// With person caps left out the file names no account, and the trailing
+        /// comment counts them (#3396). The default still writes them (#3305).
+        #[tokio::test]
+        async fn no_address_is_exported_when_person_caps_are_left_out() {
+            use super::ExportOptions;
+
+            let Some(db) = scratch_db().await else {
+                return;
+            };
+            let pool = db.pool().clone();
+            let (org_id, project_id) = bootstrap_org(&pool).await;
+            let dir = tempdir("no-people");
+            let path = dir.join("rolter.toml");
+            let address = "carol.cap@corp.example";
+            sqlx::query(
+                "insert into users (email, password_hash, is_superadmin)
+                 values ($1, null, false)",
+            )
+            .bind(address)
+            .execute(&pool)
+            .await
+            .unwrap();
+            std::fs::write(&path, FIXTURE.replace("alice@example.com", address)).unwrap();
+            crate::seed::import_bootstrap_toml(&pool, org_id, project_id, &path)
+                .await
+                .unwrap();
+
+            let served = PostgresConfigStore::new(pool.clone()).load().await.unwrap();
+            let with = super::export_document(&pool, &served, &ExportOptions::default())
+                .await
+                .unwrap();
+            assert!(with.contains(&format!("id = \"{address}\"")), "{with}");
+
+            let without = super::export_document(
+                &pool,
+                &served,
+                &ExportOptions {
+                    without_person_caps: true,
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+            assert!(
+                !without.contains(address),
+                "an address was exported:\n{without}"
+            );
+            // (the header's own example names a user, so look for a table)
+            assert!(!without.contains("\nscope = \"user\""), "{without}");
+            // the other caps are still there, and the person's are counted
+            assert!(without.contains("scope = \"team\""), "{without}");
+            assert!(
+                without.contains("# not exported: 2 budget(s) and 1 rate limit(s)"),
+                "{without}"
+            );
+            // a file without the addresses still loads
+            rolter_core::GatewayConfig::from_toml_str(&without).unwrap();
         }
 
         /// The marker is exported for an org that never saved MCP settings, in
@@ -2110,6 +2189,7 @@ model = "gpt-4o"
                 &served,
                 &super::ExportOptions {
                     org: Some("lax".to_string()),
+                    ..Default::default()
                 },
             )
             .await

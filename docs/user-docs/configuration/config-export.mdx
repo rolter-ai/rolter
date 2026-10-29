@@ -99,6 +99,8 @@ limit_usd = 50.0
 period = "monthly"
 ```
 
+To keep addresses out of a file you commit, leave person caps out: `rolter config export --without-person-caps` (`?without_person_caps=true` on the endpoint). The export then reads no account address from the database, writes no `scope = "user"` cap, and counts those caps in the trailing `# not exported:` comment, as it counts caps on a virtual key. Importing such a file leaves the receiving deployment's person caps as they are. The default is to write them.
+
 On import the email is looked up among the receiving deployment's accounts. An account that does not exist there is **never created**: the cap is skipped and reported in the log, like a scope that names nothing. A `within` that names nothing there skips the cap the same way. Keep the account list and the file in step by inviting or provisioning the person first.
 
 On import each reference is looked up on the receiving deployment. A cap whose scope does not exist there, or whose `id` is a database id, is left alone and reported in the log; it is never half applied. A cap is matched to an existing row by its scope, its `within` place and, for a budget, its window, so re-importing an edited file changes the cap instead of adding another, and an unchanged file writes nothing. Caps the file does not mention are not deleted. A cap on a virtual key is not exported: keys are never exported, so it would name nothing on the other side, and the export counts it in a comment instead. A team or project whose name contains `/` is not portable for the same reason and is counted the same way.
@@ -193,6 +195,7 @@ The control plane serves the same document over HTTP:
 ```http
 GET /api/v1/config/export
 GET /api/v1/config/export?org=acme
+GET /api/v1/config/export?without_person_caps=true
 ```
 
 ```bash

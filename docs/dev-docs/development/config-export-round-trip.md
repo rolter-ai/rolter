@@ -58,6 +58,16 @@ logging are deployment-wide and stay. The clash check then runs on what is
 left, so an unscoped export of such a deployment still refuses and names the
 option. Test: `config_export::tests::round_trip::two_orgs_sharing_names_export_one_file_each`.
 
+## Leaving person caps out (#3396)
+
+A cap on a person names the account by email (#3311), and #1312 kept addresses
+out of committed files on purpose. `ExportOptions::without_person_caps`
+(`--without-person-caps`, `?without_person_caps=true`) makes `load_scope_refs`
+skip the `users` query, so no address is read, and `render_caps` then counts
+those caps in its trailing comment because they have no portable name, as it
+counts key caps. The default stays as decided on #3305. Test:
+`config_export::tests::round_trip::no_address_is_exported_when_person_caps_are_left_out`.
+
 ## The MCP manifest marker (#3398)
 
 `orgs.mcp_enforce_manifests` decides for an org with no `mcp_gateway_settings`
