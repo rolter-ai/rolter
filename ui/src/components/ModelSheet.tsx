@@ -2348,32 +2348,6 @@ export function ModelSheet({
                     />
                   </>
                 )}
-                <div className="space-y-1 sm:col-span-2">
-                  <FieldLabel
-                    label={t("modelSheet.caps.contextLength")}
-                    htmlFor="ms-context-length"
-                  />
-                  <Input
-                    id="ms-context-length"
-                    type="number"
-                    min={1}
-                    className="font-mono"
-                    value={draft.contextLength}
-                    placeholder="128000"
-                    disabled={readonly}
-                    aria-invalid={shownError("contextLength") ? true : undefined}
-                    aria-describedby={describedBy(
-                      ids.contextLengthHint,
-                      shownError("contextLength") && ids.contextLengthErr,
-                    )}
-                    onChange={(e) => set({ contextLength: e.target.value })}
-                    onBlur={() => visibility.touch("contextLength")}
-                  />
-                  <p id={ids.contextLengthHint} className="text-xs text-muted-foreground">
-                    {t("modelSheet.caps.contextLengthHint")}
-                  </p>
-                  <FieldError id={ids.contextLengthErr} error={shownError("contextLength")} />
-                </div>
               </FormSection>
             )}
 
@@ -2512,6 +2486,35 @@ export function ModelSheet({
                   { id: ids.concurrencyHint, text: t("modelSheet.net.concurrencyHint") },
                   { field: "concurrency", errId: ids.concurrencyErr },
                 )}
+                {/* served on /v1/models whatever the model type, so it sits in
+                    a section every type shows rather than with the chat and
+                    audio flags (#3406) */}
+                <div className="space-y-1 sm:col-span-2">
+                  <FieldLabel
+                    label={t("modelSheet.caps.contextLength")}
+                    htmlFor="ms-context-length"
+                  />
+                  <Input
+                    id="ms-context-length"
+                    type="number"
+                    min={1}
+                    className="font-mono"
+                    value={draft.contextLength}
+                    placeholder="128000"
+                    disabled={readonly}
+                    aria-invalid={shownError("contextLength") ? true : undefined}
+                    aria-describedby={describedBy(
+                      ids.contextLengthHint,
+                      shownError("contextLength") && ids.contextLengthErr,
+                    )}
+                    onChange={(e) => set({ contextLength: e.target.value })}
+                    onBlur={() => visibility.touch("contextLength")}
+                  />
+                  <p id={ids.contextLengthHint} className="text-xs text-muted-foreground">
+                    {t("modelSheet.caps.contextLengthHint")}
+                  </p>
+                  <FieldError id={ids.contextLengthErr} error={shownError("contextLength")} />
+                </div>
               </div>
             </FormSection>
 

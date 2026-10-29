@@ -20,6 +20,11 @@ CLAUDE.md
 # a short array such as `chain_at`'s would fail cargo test
 crates/rolter-control/rbac-matrix.json
 
+# written by the rolter-control test suite with serde_json, which owns its
+# formatting: the test compares it byte for byte with the rendering of
+# EXCLUSION_REASONS (#3423), like rbac-matrix.json above
+crates/rolter-control/savings-reasons.json
+
 # rewritten by rolter-core's snapshot shape guard with serde_json whenever
 # ROLTER_TEST_UPDATE_SNAPSHOT_SHAPE is set (ADR-0038); a regeneration that had
 # to be followed by a prettier run would fail the docs gate every time

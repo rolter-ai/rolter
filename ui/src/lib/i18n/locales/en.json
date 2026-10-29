@@ -173,7 +173,14 @@
       "last7d": "Last 7 days",
       "last30d": "Last 30 days",
       "monthToDate": "Month to date",
-      "lastMonth": "Last month"
+      "lastMonth": "Last month",
+      "custom": "Custom range…",
+      "range": "Custom range",
+      "from": "From",
+      "to": "To",
+      "endBeforeStart": "The end day is before the start day. Pick an end on or after the start.",
+      "rangeLabel": "{{from}} – {{to}}",
+      "pickBothDays": "Pick a start day and an end day."
     },
     "sampledLog": {
       "title_one": "The request log keeps about {{numerator}} in {{denominator}} request.",
@@ -623,6 +630,8 @@
         "latencyValue": "{{p50}} / {{p95}} ms",
         "empty": "No variant served a request in the {{window}}. Traffic appears here once the route has been called with the variants saved.",
         "note": "Observed is each variant's share of the requests the variants served, counting failovers as well as first attempts, so a variant that others fail over to reads higher than its weight.",
+        "firstAttempt": "First attempt",
+        "noteWithFirstAttempt": "Observed is each variant's share of the requests it answered, counting failovers, so a variant that others fail over to reads higher than its weight. First attempt is the share of requests answered on the first attempt, with no failover. A request first sent to one variant that failed over is logged under the variant that answered, with a reason, so it counts for neither: a variant that often fails over reads below its weight there.",
         "unattributed_one": "{{requests}} request in this window was served without a variant.",
         "unattributed_other": "{{requests}} requests in this window were served without a variant.",
         "noAnalytics": {
@@ -2681,7 +2690,8 @@
         "last7d": "Spend, last 7 days",
         "last30d": "Spend, last 30 days",
         "monthToDate": "Spend, month to date",
-        "lastMonth": "Spend, last month"
+        "lastMonth": "Spend, last month",
+        "custom": "Spend, custom range"
       },
       "spendRange": "{{from}} – {{to}}",
       "spendAttributed": "Attributed",
@@ -6309,7 +6319,14 @@
     "export": {
       "csv": "Export CSV",
       "pending": "Exporting…",
-      "downloaded": "Export downloaded. Its name gives the window and currency; a row marked partial holds unpriced requests."
+      "downloaded": "Export downloaded. Its name gives the window and currency; a row marked partial holds unpriced requests.",
+      "saved": "Export saved to the file you chose",
+      "cancelled": "Export cancelled. Nothing was saved.",
+      "received": "{{size}} MB received",
+      "cancel": "Cancel the {{what}}",
+      "busy": "Too many exports are running, or you already have one running. Wait for it to finish and try again.",
+      "busyRetry": "Too many exports are running, or you already have one running. Try again in about {{seconds}} seconds.",
+      "truncated": "The export stopped before its last row: it reached the row or time limit, or the connection dropped. Nothing was saved, because the file would be incomplete. Narrow the window or the filters and try again."
     },
     "withheld": "withheld",
     "withheldHint": "The provider answered and billed for this response, but an output guardrail or plugin refused to deliver it: the caller received a 403. The cost is real; the policy that refused is named in the error.",
