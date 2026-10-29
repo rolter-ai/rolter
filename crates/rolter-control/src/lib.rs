@@ -4262,6 +4262,53 @@ mod tests {
         assert_eq!(body["problems"], json!([]), "{body}");
     }
 
+    /// An org's route that the control plane's config file repeats with no
+    /// org is a warning on the problems endpoint, not a row left out (#3516).
+    #[tokio::test]
+    async fn an_org_route_a_bootstrap_route_shares_a_name_with_is_a_warning() {
+        let route = |tenancy: Option<rolter_core::Tenancy>| rolter_core::ModelRoute {
+            model: "gpt-4o".to_string(),
+            strategy: Default::default(),
+            targets: vec![],
+            params: Default::default(),
+            param_policy: Default::default(),
+            advanced: Default::default(),
+            cache: None,
+            variants: Default::default(),
+            tenancy,
+        };
+        let mut file = GatewayConfig::default();
+        file.routes.push(route(None));
+        let mut db = GatewayConfig::default();
+        db.routes.push(route(Some(rolter_core::Tenancy {
+            org_id: "org-a".to_string(),
+            project_id: None,
+        })));
+        let mut state = state_with_token(None);
+        state.store = Arc::new(rolter_store::MergedConfigStore::new(
+            file,
+            Arc::new(rolter_store::InMemoryConfigStore::new(db)),
+        ));
+        let addr = serve(build_app_with_internal(state)).await;
+        let body: Value = reqwest::Client::new()
+            .get(format!("http://{addr}/api/v1/config/problems"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let lines: Vec<&str> = body["problems"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(Value::as_str)
+            .filter(|line| line.contains("shadows the readonly route"))
+            .collect();
+        assert_eq!(lines.len(), 1, "{body}");
+        assert!(lines[0].starts_with("warning: organization org-a's route 'gpt-4o'"));
+    }
+
     /// A store that refuses to build a config, and can say why (#2943).
     struct RefusingConfigStore {
         explanation: Option<Vec<String>>,
