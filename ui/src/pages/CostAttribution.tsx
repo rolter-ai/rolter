@@ -7,6 +7,7 @@ import { Link } from "react-router";
 import { AnalyticsUnavailable } from "@/components/AnalyticsUnavailable";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { EditorSheet } from "@/components/EditorSheet";
+import { TimeWindowPicker } from "@/components/TimeWindowPicker";
 import { ExportCsvButton } from "@/components/ExportCsvButton";
 import { GatedButton } from "@/components/GatedButton";
 import { LoadError } from "@/components/LoadError";
@@ -46,12 +47,12 @@ import { useToast } from "@/lib/toast";
 import { useScope } from "@/lib/scope";
 import { slugify } from "@/lib/slug";
 import {
-  isTimeWindow,
+  isCustomWindow,
   useTimeWindow,
-  useTimeWindowOptions,
   windowBounds,
   windowSpan,
   type TimeWindow,
+  type WindowSelection,
 } from "@/lib/time-window";
 import { cn } from "@/lib/utils";
 import { useScreenReady } from "@/lib/ux-react";
@@ -69,7 +70,7 @@ interface WindowSpend {
 // (#2107). the span travels with the rows, so the caption names the range these
 // figures cover rather than one a later render would work out
 async function fetchWindowSpend(
-  window: TimeWindow,
+  window: WindowSelection,
   dimension: AttributionDimension,
 ): Promise<WindowSpend> {
   const at = new Date();
@@ -246,7 +247,7 @@ function SpendStrip({
   error,
   onRetry,
 }: {
-  window: TimeWindow;
+  window: WindowSelection;
   /** the range the figures were read over, once they have been */
   span?: { from: Date; to: Date };
   rows: AttributionSpendRow[];
@@ -304,7 +305,9 @@ function SpendStrip({
   return (
     <div className="flex flex-wrap items-start gap-x-10 gap-y-3 rounded-lg border border-[color:var(--border-default)] bg-card px-4 py-3">
       <SpendFigure
-        label={labels[window]}
+        label={
+          isCustomWindow(window) ? t("pages.costAttribution.spendWindows.custom") : labels[window]
+        }
         value={fmt.currency(total, currency)}
         // the dates, in the viewer's calendar, are what tells "last month"
         // apart from the last thirty days on a chargeback
@@ -496,8 +499,8 @@ function AttributionScreen<T extends BusinessUnitRow | CustomerRow>({
   mutationError?: Error;
   disabled: boolean;
   /** the window the strip and every card report over */
-  spendWindow: TimeWindow;
-  onSpendWindowChange: (next: TimeWindow) => void;
+  spendWindow: WindowSelection;
+  onSpendWindowChange: (next: WindowSelection) => void;
   spendSpan?: { from: Date; to: Date };
   /** window spend keyed by the dimension's own id; the empty id is the
    *  unattributed bucket, which has no card of its own */
@@ -508,7 +511,6 @@ function AttributionScreen<T extends BusinessUnitRow | CustomerRow>({
   onRetrySpend: () => void;
 }) {
   const { t } = useTranslation();
-  const windowOptions = useTimeWindowOptions();
   const [open, setOpen] = React.useState(false);
   const [form, setForm] = React.useState<EditorState>(blank);
   // what the form opened with, so closing it with a draft in it can ask first
@@ -628,21 +630,21 @@ function AttributionScreen<T extends BusinessUnitRow | CustomerRow>({
           </span>
         )}
         <div className="ml-auto flex flex-wrap items-center gap-2">
-          <Combobox
+          <TimeWindowPicker
             className="w-48"
             aria-label={t("common.timeWindow.label")}
             value={spendWindow}
-            onChange={(next) => isTimeWindow(next) && onSpendWindowChange(next)}
-            options={windowOptions}
+            onChange={onSpendWindowChange}
           />
           <ExportCsvButton
             what={t("errors.resources.attributionExport")}
             fallbackName="cost-attribution.csv"
             disabled={disabled}
-            run={() =>
+            run={(signal) =>
               exportAttributionCsv(
                 windowBounds(spendWindow),
                 kind === "unit" ? "business_unit" : "customer",
+                { signal },
               )
             }
           />

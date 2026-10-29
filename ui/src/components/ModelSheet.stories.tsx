@@ -1816,7 +1816,7 @@ export const EditsTheContextLength: Story = {
   play: async () => {
     const dialog = within(sheet());
     await seeded(dialog);
-    await userEvent.click(dialog.getByRole("button", { name: "Capabilities" }));
+    await userEvent.click(dialog.getByRole("button", { name: "Limits & network" }));
     const field = await dialog.findByLabelText("Context length (tokens)");
     await expect(field).toHaveValue(200000);
     await expect(field).toHaveAccessibleDescription(/served on GET \/v1\/models/);
@@ -1840,7 +1840,7 @@ export const ClearingTheContextLengthDropsIt: Story = {
   play: async () => {
     const dialog = within(sheet());
     await seeded(dialog);
-    await userEvent.click(dialog.getByRole("button", { name: "Capabilities" }));
+    await userEvent.click(dialog.getByRole("button", { name: "Limits & network" }));
     await userEvent.clear(await dialog.findByLabelText("Context length (tokens)"));
     await userEvent.click(dialog.getByRole("button", { name: "Save route" }));
     const body = (await calls.expectSentBody("PUT", "/routes/route-1/advanced")) as {
@@ -1855,12 +1855,47 @@ export const ContextLengthOfZeroIsRefused: Story = {
   play: async () => {
     const dialog = within(sheet());
     await seededBlank(dialog);
-    await userEvent.click(dialog.getByRole("button", { name: "Capabilities" }));
+    await userEvent.click(dialog.getByRole("button", { name: "Limits & network" }));
     const field = await dialog.findByLabelText("Context length (tokens)");
     await userEvent.type(field, "0");
     await userEvent.tab();
     await waitFor(() => expect(field).toHaveAttribute("aria-invalid", "true"));
     await expect(field).toHaveAccessibleDescription(/whole number of tokens, 1 or more/);
+  },
+};
+
+/**
+ * `GET /v1/models` serves a route's context length whatever its model type, and
+ * an embedding model's input limit is the one clients most need to size
+ * against (#3406). The row is in Limits & network, which every type shows, so an
+ * embedding route seeds it, edits it and saves it like a chat one, with no
+ * Capabilities section in the sheet at all.
+ */
+export const EditsTheContextLengthOfAnEmbeddingRoute: Story = {
+  render: () => (
+    <Stage
+      mode="edit"
+      route={{
+        ...LEGACY_ROUTE,
+        advanced: { ...LEGACY_ROUTE.advanced, model_type: "embedding", context_length: 8192 },
+      }}
+    />
+  ),
+  play: async () => {
+    const dialog = within(sheet());
+    await seeded(dialog);
+    await expect(dialog.queryByRole("button", { name: "Capabilities" })).toBeNull();
+    await userEvent.click(dialog.getByRole("button", { name: "Limits & network" }));
+    const field = await dialog.findByLabelText("Context length (tokens)");
+    await expect(field).toHaveValue(8192);
+    await userEvent.clear(field);
+    await userEvent.type(field, "32768");
+    await userEvent.click(dialog.getByRole("button", { name: "Save route" }));
+    const body = (await calls.expectSentBody("PUT", "/routes/route-1/advanced")) as {
+      advanced: Record<string, unknown>;
+    };
+    await expect(body.advanced.context_length).toBe(32768);
+    await expect(body.advanced.model_type).toBe("embedding");
   },
 };
 

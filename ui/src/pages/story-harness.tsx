@@ -1,6 +1,6 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import * as React from "react";
-import { createMemoryRouter, RouterProvider, useInRouterContext } from "react-router";
+import { createMemoryRouter, RouterProvider, useInRouterContext, useLocation } from "react-router";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import { Toaster } from "@/components/ui/toaster";
@@ -82,6 +82,19 @@ export const scopeResponse = (url: string): Response | null => {
   }
   return null;
 };
+
+/**
+ * Puts the router's query string where a story can read it: render it beside
+ * the screen and read the address back with {@link addressOf}.
+ */
+export function AddressProbe() {
+  const { search } = useLocation();
+  return <span data-testid="address" data-search={search} hidden />;
+}
+
+/** the address an {@link AddressProbe} in `canvasElement` holds, as parameters */
+export const addressOf = (canvasElement: HTMLElement) =>
+  new URLSearchParams(within(canvasElement).getByTestId("address").dataset.search ?? "");
 
 /** A stub that resolves the scope and then answers `handler`. */
 export function scoped(handler: FetchStub): FetchStub {
@@ -501,6 +514,81 @@ export function stubClipboard(writeText: (value: string) => Promise<void>): () =
       else Reflect.deleteProperty(navigator, "clipboard");
     };
   };
+}
+
+/** a file a stubbed save dialog handed out, as the page left it */
+export interface SavedFile {
+  suggestedName?: string;
+  /** what was written, in order */
+  chunks: Uint8Array[];
+  closed: boolean;
+  aborted: boolean;
+  /** the file was taken away again, as the page does for an export that wrote nothing */
+  removed: boolean;
+}
+
+/**
+ * Stand in for the browser's save dialog (`showSaveFilePicker`, #3434), which
+ * a story cannot answer. Each `files` entry is one file the page opened for
+ * writing. Pass `reject` to answer as a person who closed the dialog.
+ */
+export function stubSavePicker(options: { reject?: boolean } = {}) {
+  const files: SavedFile[] = [];
+  const picker = async (opts: { suggestedName?: string }) => {
+    if (options.reject) throw new DOMException("closed", "AbortError");
+    const file: SavedFile = {
+      suggestedName: opts.suggestedName,
+      chunks: [],
+      closed: false,
+      aborted: false,
+      removed: false,
+    };
+    files.push(file);
+    return {
+      // a file the picker just made: nothing in it yet
+      getFile: async () => ({ size: 0 }),
+      remove: async () => {
+        file.removed = true;
+      },
+      createWritable: async () => ({
+        write: async (chunk: Uint8Array) => {
+          file.chunks.push(chunk);
+        },
+        close: async () => {
+          file.closed = true;
+        },
+        abort: async () => {
+          file.aborted = true;
+        },
+      }),
+    };
+  };
+  return {
+    files,
+    /** run `body` with the dialog in the page, or without it when `picker` is `false` */
+    async within(body: () => Promise<void>, installed = true) {
+      const w = window as { showSaveFilePicker?: unknown };
+      const original = Object.getOwnPropertyDescriptor(w, "showSaveFilePicker");
+      // the browser's own sits on the prototype, so "absent" is an own property
+      // that hides it rather than a delete
+      Object.defineProperty(w, "showSaveFilePicker", {
+        value: installed ? picker : undefined,
+        configurable: true,
+      });
+      try {
+        await body();
+      } finally {
+        if (original) Object.defineProperty(w, "showSaveFilePicker", original);
+        else Reflect.deleteProperty(w, "showSaveFilePicker");
+      }
+    },
+  };
+}
+
+/** the text a stubbed file received */
+export function savedText(file: SavedFile): string {
+  const decoder = new TextDecoder();
+  return file.chunks.map((c) => decoder.decode(c, { stream: true })).join("");
 }
 
 /**
