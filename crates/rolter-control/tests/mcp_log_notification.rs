@@ -323,7 +323,8 @@ async fn the_summary_rates_leave_out_the_calls_no_reply_was_awaited_for() {
         // not delivered, so a failure like any other
         json!({"notification": true, "status": "transport_error"}),
         json!({"transport": "sse", "outcome": "accepted"}),
-        json!({"outcome": "unread"}),
+        // the one row of a body forwarded unread names no tool
+        json!({"outcome": "unread", "tool": ""}),
     ] {
         assert_eq!(stack.ingest(fields).await.1, 202);
     }

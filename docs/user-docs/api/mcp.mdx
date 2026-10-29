@@ -120,11 +120,10 @@ an `error`. Some calls have no reply for the proxy to read:
   that is not valid JSON, is forwarded without being read, so the calls in it
   are **not itemised**: the request is one row with no tool, recorded as
   **body not read, calls not itemised** (`outcome: unread`) once the server
-  answers `2xx`, or as the failure the server's HTTP response reports. Every
-  such body is counted in `rolter_mcp_unread_bodies_total{reason}`, `encoded`
-  or `unparseable`, whether or not the log is on. The proxy reads an ungoverned
-  body only when the MCP log is on and the body mentions `tools/call`, so
-  `unparseable` counts only those. Send such calls uncompressed, or govern the
+  answers `2xx`, or as the failure the server's HTTP response reports. Such a
+  body is counted in `rolter_mcp_unread_bodies_total{reason}`: `encoded` always,
+  and `unparseable` only while the MCP log is on, since only then does the proxy
+  read an ungoverned body (one that mentions `tools/call`). Send such calls uncompressed, or govern the
   server with a tool group, to have them itemised.
 - **A notification.** A `tools/call` sent without an `id` awaits no reply. Its
   row has the status the server's HTTP response gave and `notification: 1`, and

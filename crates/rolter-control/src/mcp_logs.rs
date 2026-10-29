@@ -139,11 +139,17 @@ fn validate_atom(value: &str, name: &str) -> Result<(), String> {
 }
 
 fn validate_event(event: &IngestEvent) -> Result<(), String> {
+    // an `unread` row stands for a whole body whose calls were not itemised,
+    // so it is the one row that names no tool (#3528)
+    let unread = event.outcome.as_deref() == Some("unread");
     for (value, name) in [
         (&event.event_id, "event_id"),
         (&event.server, "server"),
         (&event.tool, "tool"),
     ] {
+        if name == "tool" && unread && value.is_empty() {
+            continue;
+        }
         validate_atom(value, name)?;
     }
     if !MCP_TRANSPORTS.contains(&event.transport.as_str()) {
@@ -589,6 +595,19 @@ mod tests {
         assert!(validate_event(&event("error", "")).is_ok());
         assert!(validate_event(&event("success", "maybe")).is_err());
         assert!(validate_event(&event("error", "accepted")).is_err());
+        // only an `unread` row may name no tool
+        let toolless = |outcome: &str| IngestEvent {
+            tool: String::new(),
+            ..event("success", outcome)
+        };
+        assert!(validate_event(&toolless("unread")).is_ok());
+        assert!(validate_event(&toolless("accepted")).is_err());
+        assert!(validate_event(&toolless("")).is_err());
+        assert!(validate_event(&IngestEvent {
+            tool: " ".to_string(),
+            ..event("success", "unread")
+        })
+        .is_err());
     }
 
     /// #3526: the rates leave out every row no reply was awaited for, and a
@@ -613,6 +632,18 @@ mod tests {
         });
         assert!(notes_only
             .contains("countIf(((notification = 1 and status = 'success'))) as not_awaited"));
+        // `051` applied without `047`: only the outcome marks a call not awaited
+        let outcome_only = McpColumns {
+            outcome: true,
+            ..McpColumns::default()
+        };
+        let summary = summary_sql(outcome_only);
+        assert!(summary.contains("countIf((outcome != '')) as not_awaited"));
+        assert!(!summary.contains("notification"));
+        let list = list_events_sql(outcome_only);
+        assert!(list.contains("error, toUInt8(0) as notification, outcome"));
+        let detail = event_detail_sql(outcome_only);
+        assert!(detail.contains("toUInt8(0) as notification, outcome from"));
     }
 
     #[test]

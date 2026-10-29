@@ -760,7 +760,8 @@ The gateway records every proxied JSON-RPC `tools/call` in ClickHouse's
   list and the summary read the optional columns through the same
   `McpColumns` probe as the detail, so a table without `047` or `051` counts
   every call as awaited. `POST /api/v1/mcp/events` accepts an `outcome` from
-  `MCP_OUTCOMES` beside a `success` status.
+  `MCP_OUTCOMES` beside a `success` status, and an empty `tool` only on an
+  `unread` row.
 - **Write path.** `McpEventSink` (`crates/rolter-gateway/src/mcp_log.rs`) is a
   bounded channel and a batch writer, built like the request-log and
   health-event writers and sharing their `[logging]` `batch_max`, `flush_ms`
