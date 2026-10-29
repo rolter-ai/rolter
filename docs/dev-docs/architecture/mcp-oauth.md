@@ -208,10 +208,11 @@ after the caller is authenticated and before anything is forwarded.
   rather than refused), under the `mcp_tool_group_assignment` capability. The create body
   takes `assignments` too and writes them in the group's own transaction, so a
   group meant to be narrowed is never visible as organization-wide. The
-  dashboard's group dialog edits all three kinds (the key picker reads each
-  project's keys, #3380) and mounts its editor only once the stored assignments
+  dashboard's group dialog edits all three kinds (the key picker reads the
+  organization's keys in one request, `GET /api/v1/orgs/{org_id}/virtual-keys`,
+  and groups them by `project_id`, #3380, #3467) and mounts its editor only once the stored assignments
   are read, so it can never save an empty set over them; a stored key is dropped
-  only once every project's keys were read and it is not among them. Both snapshot fields added for assignments and the manifest default
+  only once the organization's keys were read and it is not among them. Both snapshot fields added for assignments and the manifest default
   restrict what the gateway serves, which ADR-0038 would call a format bump; they
   stay in format 1 because everything before the 1.0.0 tag does, and the shape
   fixture carries them.
@@ -221,6 +222,16 @@ after the caller is authenticated and before anything is forwarded.
   refused whole if any call in it is. A `tools/call` notification (no id) is
   refused too. A body that is not JSON is refused `400`
   `mcp_request_unreadable`; an empty body is not a call and is forwarded.
+- **Encoded bodies (#3475).** The relay does not decode a request body, and
+  `Content-Encoding` is end to end, so an upstream that honours it would run a tool
+  the policy never saw. A `POST` to a governed server whose `Content-Encoding` is
+  anything but `identity` (in any header line or comma-separated value) is refused
+  `415` `mcp_request_unreadable` before it is parsed, whatever `fail_open`
+  says: that setting covers a body the relay cannot read through no fault of the
+  client, not one the client chose to compress. There is deliberately no decoder:
+  MCP clients do not compress requests, and one on this path would be a
+  decompression-bomb surface for a shape nobody sends. A server no group or manifest
+  governs is not affected.
 - **Repeated keys (#3298).** `serde_json` keeps the last copy of a repeated key
   and another parser may keep the first, and a Go decoder (`encoding/json`, so
   mcp-go, go-sdk and the GitHub MCP server) matches keys case-insensitively and
@@ -281,7 +292,8 @@ trigger); an organization with no row is absent and gets the defaults.
   for an org with no row reports `allow_unlisted_tools` from the same marker.
   This sits beside the tool-group rule and both must pass.
 - **Failure policy.** `fail_open` / `fail_closed` governs a body the policy
-  cannot parse (the only failure of the policy check itself). It never lets a
+  cannot parse (the only failure of the policy check itself); a body with a
+  `Content-Encoding` is not that case and is refused regardless. It never lets a
   call to a refused tool through, and it has no say over an upstream that fails.
 - **Transport.** The server row is authoritative at request time; the org
   `default_transport` is applied by `create_server` when the request names none.
@@ -639,9 +651,29 @@ The gateway records every proxied JSON-RPC `tools/call` in ClickHouse's
   parse and the log takes its `PendingCall` from it, so both look keys up the
   way a Go decoder does (case-folded): a `tools/call` written `Method` or
   `Params` that the policy allows is recorded under the tool it was judged as.
-  Only a single request whose `method` is `tools/call` and that carries an `id`
-  is recorded when allowed; `initialize`, `tools/list`, notifications and
-  JSON-RPC batches are not (a refused call is recorded whatever its shape). The
+  Every allowed `tools/call` is recorded (#3466): a single request, each call of
+  a JSON-RPC batch and a notification; `initialize`, `tools/list` and the other
+  methods are not. The calls are moved out of the parsed body
+  (`Read::into_calls`) only once they are needed, by a refusal before the
+  request is forwarded or by the forward itself, so a request refused for
+  another reason pays nothing for the log. Nothing in the body is cloned: the
+  policy asks the tool a call names before it copies anything of it, so an
+  allowed call costs no clone, and only a refused call is copied into the
+  canonical request its row is made from. The reply is parsed once (`Replies`,
+  indexed by the id's JSON text) and each call takes the reply with its own
+  `id`, whatever order a batch's replies come in; two calls sharing an id get one
+  reply each.
+  A request is bounded only by `max_body_bytes`, and every pending row is held
+  through the wait on the upstream, so at most `MAX_CALLS_PER_REQUEST` (256)
+  calls of one request become rows, allowed or refused. The rest are still
+  judged and forwarded or refused, and are counted in
+  `rolter_mcp_events_dropped_total`.
+  A batch the policy refuses is refused whole and forwarded nowhere, so only its
+  refused calls are recorded (`auth_denied`); an allowed call beside them never
+  reached the server and has no row. A batch whose reply is rewritten (it holds a
+  `tools/list`, so the reply is narrowed) cannot be read for its calls, which are
+  recorded with the HTTP layer's status and no result. A refused call is recorded
+  whatever its shape. The
   body is not parsed at all unless a rule applies to the caller or the sink is
   enabled and the bytes hold `tools/call` or an escape that could spell it; with
   no `clickhouse_url` the sink is disabled and nothing is parsed for the log.
@@ -655,6 +687,19 @@ The gateway records every proxied JSON-RPC `tools/call` in ClickHouse's
   accepting rows. The control plane's detail read probes `system.columns` for
   the column (`McpColumnCache`, the lifetimes of the request-log probe) and
   selects an empty array in its place until the migration is applied.
+- **Notifications (#3466).** A `tools/call` without an `id` (or with a `null`
+  one, which cannot be matched to a reply) has no reply to read its outcome from. It
+  is recorded when the upstream's response arrives, with the status the HTTP
+  layer gave (`success` for a `2xx`, `auth_denied` for `401`/`403`, and so on) and
+  `notification = 1` (`clickhouse/047_mcp_log_notification.sql`, `UInt8`), which
+  says that status is not what the tool did. The field is left out of every other
+  row and the writer sends `input_format_skip_unknown_fields=1`, so an
+  un-migrated ClickHouse keeps accepting rows and records a notification as an
+  ordinary `success` row. A notification the policy refuses is a refusal like
+  any other and carries no flag. The control plane's detail read probes for the
+  column with the one that probes `error_scopes` (`McpColumns`) and selects
+  `0` in its place until the migration is applied; `POST /api/v1/mcp/events`
+  accepts `notification` and stores it only when true.
 - **Write path.** `McpEventSink` (`crates/rolter-gateway/src/mcp_log.rs`) is a
   bounded channel and a batch writer, built like the request-log and
   health-event writers and sharing their `[logging]` `batch_max`, `flush_ms`

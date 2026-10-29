@@ -1690,6 +1690,12 @@ fn operations() -> Vec<Op> {
                 "List a project's virtual keys",
             )
             .ok(Payload::List("VirtualKey")),
+            Op::get(
+                "/api/v1/orgs/{org_id}/virtual-keys",
+                "listOrgVirtualKeys",
+                "List the virtual keys of every project of an organization the caller may read",
+            )
+            .ok(Payload::List("OrgVirtualKey")),
             Op::post(
                 "/api/v1/projects/{project_id}/virtual-keys",
                 "createVirtualKey",
@@ -4295,6 +4301,26 @@ fn virtual_key_schemas(p: &Prim) -> Value {
                 "created_at": timestamp,
                 "previous_key_prefix": {"type": ["string", "null"], "description": "first characters of the secret an admin rotation replaced, while its overlap is open"},
                 "previous_expires_at": {"type": ["string", "null"], "format": "date-time", "description": "when the replaced secret stops authenticating; null when no overlap is running"}
+            }
+        },
+        "OrgVirtualKey": {
+            "type": "object",
+            "description": "a virtual key as the organization-wide listing returns it: no digest of any secret",
+            "required": ["id", "project_id", "key_prefix", "models", "providers", "disabled", "created_at"],
+            "properties": {
+                "id": uuid, "project_id": uuid,
+                "key_prefix": string,
+                "name": nullable_string,
+                "models": string_list,
+                "providers": string_list,
+                "disabled": {"type": "boolean"},
+                "expires_at": nullable_timestamp,
+                "cache_enabled": {"type": ["boolean", "null"]},
+                "created_by": nullable_uuid,
+                "business_unit_id": nullable_uuid,
+                "customer_id": nullable_uuid,
+                "purpose": {"type": ["string", "null"]},
+                "created_at": timestamp
             }
         },
         "CreatedVirtualKey": {

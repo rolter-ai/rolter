@@ -262,9 +262,12 @@ impl ClickHouseClient {
             .client
             .post(format!(
                 // best_effort so the row's own RFC 3339 `ts` is read into the
-                // DateTime64(3) column instead of being rejected (#1210)
+                // DateTime64(3) column instead of being rejected (#1210).
+                // unknown fields are skipped, as the gateway's writer does, so
+                // a row naming a column a hand-applied migration has not added
+                // yet (`notification`, 047) is still stored (#3466)
                 "{}/?query=INSERT%20INTO%20mcp_tool_call_logs%20FORMAT%20JSONEachRow\
-                 &date_time_input_format=best_effort",
+                 &date_time_input_format=best_effort&input_format_skip_unknown_fields=1",
                 self.base
             ))
             .body(serde_json::to_vec(event)?)

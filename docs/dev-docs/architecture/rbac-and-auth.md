@@ -570,6 +570,7 @@ for every list here except invitations, which take admin:
 | `GET /api/v1/orgs/{org_id}/teams`                 | every team            | the teams they hold a role in or inside                        |
 | `GET /api/v1/teams/{team_id}/projects`            | every project         | the projects they hold a role in                               |
 | `GET /api/v1/orgs/{org_id}/projects`              | every project         | the projects they read through a team or project role          |
+| `GET /api/v1/orgs/{org_id}/virtual-keys`          | every key             | the keys of the projects they read (judged per key, #3467)     |
 | `GET /api/v1/orgs/{org_id}/users`, `/memberships` | everyone              | the people and memberships in the teams and projects they read |
 | `GET /api/v1/orgs/{org_id}/invitations`           | every invitation      | the invitations into the teams and projects they administer    |
 

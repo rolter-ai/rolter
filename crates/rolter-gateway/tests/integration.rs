@@ -368,6 +368,129 @@ async fn mcp_proxy_records_an_allowed_call_written_with_other_key_cases() {
     assert_eq!(rows[0]["status"], "success");
 }
 
+/// An MCP upstream that answers each `tools/call` of a request by its own id: a
+/// batch gets an array of replies, a request with no id gets `202` and nothing.
+async fn mcp_echo_upstream() -> String {
+    let app = Router::new().route(
+        "/{*path}",
+        any(|body: String| async move {
+            let reply = |call: &Value| {
+                json!({"jsonrpc": "2.0", "id": call["id"], "result": {"content": []}})
+            };
+            match serde_json::from_str::<Value>(&body).unwrap_or_default() {
+                Value::Array(calls) => {
+                    Json(calls.iter().map(reply).collect::<Vec<_>>()).into_response()
+                }
+                call if call.get("id").is_none() => axum::http::StatusCode::ACCEPTED.into_response(),
+                call => Json(reply(&call)).into_response(),
+            }
+        }),
+    );
+    format!("http://{}/rpc", serve(app).await)
+}
+
+async fn mcp_post(gateway: SocketAddr, body: Value) -> reqwest::Response {
+    reqwest::Client::new()
+        .post(format!("http://{gateway}/mcp/docs"))
+        .header("x-api-key", "sk-mcp-log")
+        .json(&body)
+        .send()
+        .await
+        .unwrap()
+}
+
+/// #3466: each allowed call of a batch is a row of its own, and a notification
+/// is the only row that carries `notification`.
+#[tokio::test]
+async fn mcp_proxy_records_batch_calls_and_notifications_over_http() {
+    let (mut config, seen) = mcp_logging_config(json!({}), false, 20).await;
+    config.mcp_servers[0].url = mcp_echo_upstream().await;
+    let gateway = serve_gateway(&config).await;
+    let call = |id: u64, tool: &str| json!({"jsonrpc": "2.0", "id": id, "method": "tools/call", "params": {"name": tool}});
+
+    let response = mcp_post(gateway, json!([call(1, "search"), call(2, "fetch")])).await;
+    assert!(response.status().is_success());
+    let _ = response.bytes().await;
+    let rows = wait_for_mcp_rows(&seen, 2).await;
+    let mut tools: Vec<&str> = rows.iter().map(|r| r["tool"].as_str().unwrap()).collect();
+    tools.sort();
+    assert_eq!(tools, ["fetch", "search"]);
+    assert!(rows
+        .iter()
+        .all(|row| row["status"] == "success" && row.get("notification").is_none()));
+
+    let response = mcp_post(
+        gateway,
+        json!({"jsonrpc": "2.0", "method": "tools/call", "params": {"name": "ping"}}),
+    )
+    .await;
+    assert_eq!(response.status(), axum::http::StatusCode::ACCEPTED);
+    let rows = wait_for_mcp_rows(&seen, 3).await;
+    let note = rows.iter().find(|row| row["tool"] == "ping").unwrap();
+    assert_eq!(note["status"], "success");
+    assert_eq!(note["notification"], 1);
+    assert_eq!(
+        rows.iter()
+            .filter(|r| r.get("notification").is_some())
+            .count(),
+        1
+    );
+}
+
+/// #3475: a compressed body to a governed server is refused over real HTTP,
+/// whether `Content-Encoding` is one header line or a second one appended, and
+/// whatever the organization's failure mode says.
+#[tokio::test]
+async fn mcp_proxy_refuses_a_content_encoded_body_to_a_governed_server() {
+    let (mut config, _seen) = mcp_logging_config(json!({}), false, 20).await;
+    config.mcp_servers[0].url = mcp_echo_upstream().await;
+    config
+        .mcp_tool_groups
+        .push(rolter_core::McpToolGroupConfig {
+            id: "group-1".to_string(),
+            org_id: "org-1".to_string(),
+            slug: "readers".to_string(),
+            tools: vec![rolter_core::McpToolRefConfig {
+                server_id: "server-1".to_string(),
+                tool: "search".to_string(),
+            }],
+            ..Default::default()
+        });
+    config.mcp_settings = vec![rolter_core::McpOrgSettingsConfig {
+        org_id: "org-1".into(),
+        connect_timeout_ms: 5000,
+        request_timeout_ms: 30000,
+        max_retries: 0,
+        fail_open: true,
+        allow_unlisted_tools: true,
+    }];
+    let gateway = serve_gateway(&config).await;
+    let body = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"search"}}"#;
+    let send = |encodings: &[&str]| {
+        let mut request = reqwest::Client::new()
+            .post(format!("http://{gateway}/mcp/docs"))
+            .header("x-api-key", "sk-mcp-log")
+            .header("content-type", "application/json")
+            .body(body);
+        for encoding in encodings {
+            request = request.header("content-encoding", *encoding);
+        }
+        request.send()
+    };
+    for encodings in [&["gzip"][..], &["identity", "gzip"], &["br"]] {
+        let response = send(encodings).await.unwrap();
+        assert_eq!(
+            response.status(),
+            axum::http::StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            "{encodings:?}"
+        );
+        let refused: Value = response.json().await.unwrap();
+        assert_eq!(refused["error"]["code"], "mcp_request_unreadable");
+    }
+    assert!(send(&["identity"]).await.unwrap().status().is_success());
+    assert!(send(&[]).await.unwrap().status().is_success());
+}
+
 #[tokio::test]
 async fn mcp_proxy_records_a_tool_error_result_and_an_sse_reply() {
     for sse in [false, true] {
