@@ -403,7 +403,7 @@ export const RotatingAnInactiveTokenIsRefused: Story = {
           json(
             {
               error: {
-                message: "this token is revoked or expired; mint a new one",
+                message: "the control plane's own english, not shown once the code is known",
                 code: "api_token_inactive",
               },
             },
@@ -421,7 +421,9 @@ export const RotatingAnInactiveTokenIsRefused: Story = {
     await confirmDestructive(/Rotate token ci-deploy\?/, "Rotate token");
     const dialog = await confirmation();
     await waitFor(() =>
-      expect(within(dialog).getByRole("alert")).toHaveTextContent(/revoked or expired/),
+      expect(within(dialog).getByRole("alert")).toHaveTextContent(
+        /revoked or has expired, so there is nothing to rotate/,
+      ),
     );
   },
 };

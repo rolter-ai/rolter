@@ -280,6 +280,7 @@ pub async fn realtime(
         scope,
         model: query.model,
         price_model: entry.route.model.clone(),
+        route_namespace: Some(std::sync::Arc::clone(&entry.namespace)),
         provider: selected.provider.clone(),
         target: selected.target.clone(),
         variant: selected.variant.clone(),

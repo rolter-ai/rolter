@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Eraser, Loader2 } from "lucide-react";
 import * as React from "react";
+import type { TFunction } from "i18next";
 import { useTranslation } from "react-i18next";
 
 import { ConfirmDialog } from "@/components/ConfirmDialog";
@@ -15,6 +16,7 @@ import {
   type InvocationRow,
   type LogErasureRow,
   type LogErasureStatus,
+  type LogErasureStore,
 } from "@/lib/api";
 import { useFormat } from "@/lib/i18n/format";
 import { erasureRefetchInterval, erasureTimestamp } from "@/lib/log-erasure";
@@ -42,6 +44,18 @@ const STATUS_HINT_KEY: Record<LogErasureStatus, string> = {
   failed: "pages.logErasure.statusHint.failed",
   unverified: "pages.logErasure.statusHint.unverified",
 };
+
+/** a ClickHouse store in the dashboard's language; one it has no name for reads as itself */
+function storeName(store: string, t: TFunction): string {
+  return t(`pages.logErasure.storeName.${store}`, { defaultValue: store });
+}
+
+/** why a store was not searched: the translated code, else the server's own words */
+function skipReason(store: LogErasureStore, t: TFunction): string {
+  const fallback = store.reason ?? "";
+  if (!store.code) return fallback;
+  return t(`pages.logErasure.skipReason.${store.code}`, { defaultValue: fallback });
+}
 
 /**
  * Where an erasure stands (#3279).
@@ -79,6 +93,7 @@ export function ErasureStatus({
   });
   const current = record.data ?? row;
   const status = current.status;
+  const skipped = (current.stores ?? row.stores ?? []).filter((s) => !s.searched);
 
   const previous = React.useRef(status);
   React.useEffect(() => {
@@ -119,6 +134,14 @@ export function ErasureStatus({
       {detail && (
         <p className="text-xs leading-relaxed text-muted-foreground">
           {t(STATUS_HINT_KEY[status])}
+        </p>
+      )}
+      {skipped.length > 0 && (
+        <p className="text-xs text-[color:var(--status-warning-text)]">
+          {t("pages.logErasure.skipped", {
+            stores: skipped.map((s) => storeName(s.store, t)).join(", "),
+            reasons: [...new Set(skipped.map((s) => skipReason(s, t)).filter(Boolean))].join(" "),
+          })}
         </p>
       )}
       {status === "pending" && current.last_error && (

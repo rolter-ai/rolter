@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 
 import type { UptimeRow } from "@/lib/api";
-import { rollUpProviders } from "./provider-health";
+import { groupByProvider, rollUpProviders } from "./provider-health";
 
 const row = (provider: string, uptime: number, over: Partial<UptimeRow> = {}): UptimeRow => ({
   provider,
@@ -59,5 +59,22 @@ describe("rollUpProviders", () => {
 
   it("reports nothing for no rows", () => {
     expect(rollUpProviders([])).toEqual({ total: 0, up: 0, breaching: [], worst: undefined });
+  });
+});
+
+// two organizations may each have an `openai`, and the rollups answer a series
+// for each (#3441, #3460)
+describe("two organizations sharing a provider name", () => {
+  it("are two groups, each with its own rows", () => {
+    const groups = groupByProvider([
+      row("openai", 0.5, { org_id: "org-a", sla_breached: 1 }),
+      row("openai", 0.999, { org_id: "org-b" }),
+      row("openai", 0.98, { org_id: "org-b", grain: "target", target_id: "gpt-4o" }),
+    ]);
+    expect(groups.map((g) => [g.org_id, g.provider, g.targets.length])).toEqual([
+      ["org-a", "openai", 0],
+      ["org-b", "openai", 1],
+    ]);
+    expect(rollUpProviders(groups.flatMap((g) => (g.overall ? [g.overall] : []))).total).toBe(2);
   });
 });

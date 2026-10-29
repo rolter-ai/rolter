@@ -260,9 +260,16 @@ async fn create_route(
     require_not_config_owned(&state.config_owned.models, &body.model, "model")?;
     validate_strategy(&body.strategy)?;
     require_route_name_free(&state, org_id, &body.model).await?;
-    let row = RouteRepo(pool(&state))
+    // the check above is a read, so a concurrent create in another project of
+    // the org can still win the name; `routes_org_model_unique` (#3459) then
+    // refuses this insert, and the caller reads the same refusal
+    let row = match RouteRepo(pool(&state))
         .create(project_id, &body.model, &body.strategy)
-        .await?;
+        .await
+    {
+        Err(Error::AlreadyExists(_)) => return Err(taken_in_org("route name", &body.model)),
+        other => other?,
+    };
     publish_config_change(&state).await?;
     log_audit(
         &state,

@@ -79,6 +79,12 @@ export interface AdaptiveNodeTelemetryDto {
 }
 
 export interface AdaptiveRouteTelemetryDto {
+  /**
+   * the organization that owns the route; empty for a config-file route and
+   * absent from a control plane that predates the field. Two organizations may
+   * each have a route of one name, so a route is `org_id` and `model` (#3458)
+   */
+  org_id?: string;
   model: string;
   engaged: boolean;
   nodes: AdaptiveNodeTelemetryDto[];

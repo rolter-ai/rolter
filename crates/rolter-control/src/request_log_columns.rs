@@ -124,6 +124,12 @@ pub(crate) const OPTIONAL_COLUMNS: &[OptionalColumn] = &[
         name: "turns",
         default: "toUInt16(0)",
     },
+    // 037_request_log_provider_org.sql: the org that owns the provider, which
+    // tells two orgs' same-named providers apart (#1857, #3441)
+    OptionalColumn {
+        name: "provider_org_id",
+        default: "''",
+    },
 ];
 
 /// The probe: every column `request_logs` has in the database the client reads
@@ -395,6 +401,7 @@ mod tests {
             "has_audio_input",
             "has_response_schema",
             "turns",
+            "provider_org_id",
         ]))
         .expect("the table is visible");
         assert_eq!(columns.missing(), ["cache_write_1h_tokens"]);

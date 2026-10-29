@@ -8,8 +8,16 @@ export interface TargetDto {
   takes_over?: string[];
 }
 
+/** who owns a row of the effective config; absent on a config-file row */
+export interface TenancyDto {
+  org_id: string;
+  project_id?: string | null;
+}
+
 export interface RouteDto {
   model: string;
+  /** the organization (and project) the route belongs to; absent for a config-file route */
+  tenancy?: TenancyDto | null;
   strategy: string;
   targets: TargetDto[];
   /** A/B variants; a route with none serves from `targets` alone */
@@ -24,6 +32,8 @@ export interface VirtualKeyDto {
 
 export interface ProviderDto {
   name: string;
+  /** the organization the provider belongs to; absent for a config-file provider */
+  tenancy?: TenancyDto | null;
   kind: string;
   api_base: string;
 }

@@ -69,6 +69,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import {
   ApiError,
+  checkMailRelay,
   createInvitation,
   createMembership,
   deleteMembership,
@@ -341,6 +342,38 @@ export default function Users() {
   };
 
   const [inviteOpen, setInviteOpen] = React.useState(false);
+
+  // the relay is the deployment's, so the answer is a toast like a resend's:
+  // which stage failed with the reason the API returns, and a control plane
+  // with no relay (409) is stated as such and not as an error (#3377)
+  const mailCheck = useMutation({
+    mutationFn: () => checkMailRelay(orgId as string),
+    onSuccess: (result) =>
+      toast.push(
+        result.ok
+          ? { tone: "success", title: t("pages.users.mailCheck.ok") }
+          : {
+              tone: "error",
+              title: t("pages.users.mailCheck.failed", {
+                stage: t(`pages.users.mailCheck.stage.${result.stage ?? "connect"}`),
+              }),
+              detail: result.reason ?? t("pages.users.mailCheck.noReason"),
+            },
+      ),
+    onError: (error) => {
+      if (error instanceof ApiError && error.status === 409) {
+        toast.push({ tone: "info", title: t("pages.users.mailCheck.notConfigured") });
+      } else if (error instanceof ApiError && error.status === 429) {
+        toast.push({ tone: "info", title: t("pages.users.mailCheck.tooSoon") });
+      } else {
+        toast.push({
+          tone: "error",
+          title: t("pages.users.mailCheck.action"),
+          detail: errorText(error, t),
+        });
+      }
+    },
+  });
   const [editUser, setEditUser] = React.useState<UserRow | null>(null);
   const [deploymentRoleUser, setDeploymentRoleUser] = React.useState<UserRow | null>(null);
   const [roleUser, setRoleUser] = React.useState<UserRow | null>(null);
@@ -501,8 +534,24 @@ export default function Users() {
         />
         <GatedButton
           gate="invitation:create"
-          control="user-invite"
+          control="user-mail-check"
           className="ml-auto"
+          variant="outline"
+          onClick={() => mailCheck.mutate()}
+          disabled={!orgId || mailCheck.isPending}
+        >
+          {mailCheck.isPending ? (
+            <Loader2 className="h-4 w-4 motion-safe:animate-spin" aria-hidden />
+          ) : (
+            <Mail className="h-4 w-4" aria-hidden />
+          )}
+          {mailCheck.isPending
+            ? t("pages.users.mailCheck.checking")
+            : t("pages.users.mailCheck.action")}
+        </GatedButton>
+        <GatedButton
+          gate="invitation:create"
+          control="user-invite"
           onClick={() => setInviteOpen(true)}
           disabled={!orgId}
         >

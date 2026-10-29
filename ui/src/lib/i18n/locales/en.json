@@ -165,6 +165,8 @@
       "unlocked": "Unlocked — clients can override. Click to lock."
     },
     "noneAvailable": "none available",
+    "ownerOrg": "Org: {{name}}",
+    "ownerDeployment": "Deployment-wide",
     "timeWindow": {
       "label": "Time window",
       "last24h": "Last 24 hours",
@@ -250,6 +252,7 @@
       "mfaStatus": "the second-factor roster",
       "logErasure": "the erasure record",
       "logErasures": "recent erasures",
+      "logErasureSubjects": "the list of subjects to erase",
       "ldapDirectories": "LDAP directories",
       "apiTokens": "API tokens",
       "signInPolicy": "the sign-in policy",
@@ -359,6 +362,7 @@
       "codes": {
         "kek_unavailable": "The control plane cannot seal credentials. Ask an operator to configure ROLTER_KEK and restart it.",
         "analytics_query_timeout": "The analytics query took too long. Narrow the time range and try again.",
+        "api_token_inactive": "This token is revoked or has expired, so there is nothing to rotate. Create a new one.",
         "analytics_query_failed": "The analytics query failed.",
         "internal": "The control plane hit an internal error.",
         "invalid_body": "The request was not valid JSON for this action. Reload the page and try again.",
@@ -3102,6 +3106,7 @@
       "updated": "Updated {{time}}",
       "reportsExpire": "· reports expire after {{seconds}} s",
       "routeAria": "Adaptive route {{model}}",
+      "routeAriaOwned": "Adaptive route {{model}}, {{owner}}",
       "decisions_one": "{{value}} decision",
       "decisions_other": "{{value}} decisions",
       "reported": "Reported {{time}}",
@@ -4469,6 +4474,21 @@
         "toastResent": "Emailed the link to {{email}} again",
         "toastResendFailed": "The link to {{email}} could not be emailed"
       },
+      "mailCheck": {
+        "action": "Check mail relay",
+        "checking": "Checking mail relay",
+        "ok": "The mail relay accepted the connection and the credential",
+        "notConfigured": "Mail is not configured on this control plane, so invitations are not emailed. Share the link instead.",
+        "tooSoon": "The mail relay was checked a moment ago. Wait a few seconds and try again.",
+        "failed": "The mail relay check failed at {{stage}}",
+        "noReason": "The relay gave no reason.",
+        "stage": {
+          "connect": "connecting",
+          "tls": "setting up TLS",
+          "auth": "signing in",
+          "relay": "talking to the mail server"
+        }
+      },
       "confirm": {
         "revokeTitle": "Revoke {{role}} on {{scope}} from {{email}}?",
         "revokeNone": "{{email}} loses {{role}} on {{scope}} straight away, and no other grant of theirs reaches it.",
@@ -4713,9 +4733,13 @@
         "title": "Erase a subject's logs",
         "hint": "Deletes the request logs and captured prompt bodies of one virtual key, user or organization, and records that it did.",
         "scope": "Subject",
-        "subject": "Subject id",
-        "subjectPlaceholder": "00000000-0000-0000-0000-000000000000",
+        "subject": "Name, email or id",
+        "subjectPlaceholder": "Search by name or email",
+        "subjectLoading": "Loading\u2026",
+        "subjectNone": "Nothing here by that name. Paste the id to use one the list does not show.",
         "subjectInvalid": "This is not an id. Paste the full UUID.",
+        "subjectUnknown": "No {{noun}} has this id. Check it before erasing.",
+        "subjectTruncated": "Showing the first {{count}}. Type to narrow the list.",
         "includeLogs": "Delete the log rows too",
         "includeLogsOn": "Deletes the request metadata (model, tokens, cost, status) and the captured bodies, so the figures built from them go too.",
         "includeLogsOff": "Deletes the captured prompt and response bodies only and keeps the request metadata.",
@@ -4733,16 +4757,20 @@
         "org": "Every request of that organization."
       },
       "subjectHint": {
-        "virtual_key": "The virtual key's id, from Virtual Keys.",
-        "user": "The user's id, from Users. A key that was since deleted leaves nothing to resolve; erase by organization or key id for those.",
-        "org": "The organization's id."
+        "virtual_key": "Pick a virtual key by name, or paste its id if the list does not show it.",
+        "user": "Pick a user by name or email, or paste an id. A key that was since deleted leaves nothing to resolve; erase by organization or key id for those.",
+        "org": "Pick an organization by name, or paste its id."
       },
       "reason": "Reason",
       "reasonHint": "Stored and audited. Write the ticket or request reference, not the content.",
       "reasonPlaceholder": "erasure request DSR-1042",
       "confirm": {
-        "titleLogs": "Erase the logs of {{noun}} {{id}}?",
-        "titleBodies": "Erase the captured bodies of {{noun}} {{id}}?",
+        "titleLogs": "Erase the logs of {{noun}} {{name}}?",
+        "titleBodies": "Erase the captured bodies of {{noun}} {{name}}?",
+        "subjectLine": "{{name}} \u00b7 {{detail}} \u00b7 id {{id}}",
+        "subjectUnchecked": "This id could not be checked against the {{noun}} list, so there is no name to confirm it with. The id is {{id}}.",
+        "subjectLineBare": "{{name}} \u00b7 id {{id}}",
+        "subjectUnknown": "No {{noun}} with this id was found, so there is no name to check it against. The id is {{id}}.",
         "noun": {
           "virtual_key": "virtual key",
           "user": "user",
@@ -4780,6 +4808,16 @@
         "unverified": "No deletion was visible in ClickHouse an hour after submission, so completion cannot be confirmed. Check by querying."
       },
       "progress": "{{done}} of {{total}} deletions done",
+      "skipped": "Not searched: {{stores}}. {{reasons}}",
+      "storeName": {
+        "request_logs": "request logs",
+        "request_payloads": "captured bodies",
+        "mcp_tool_call_logs": "MCP tool calls"
+      },
+      "skipReason": {
+        "no_key": "The user holds no virtual keys, and request logs are found by key.",
+        "bodies_only": "Only captured bodies were asked for, so the log rows are kept."
+      },
       "action": {
         "erase": "Erase captured payload",
         "noOrg": "This request records no organization, so it cannot be addressed by request. Erase by virtual key instead.",

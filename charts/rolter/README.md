@@ -1,5 +1,7 @@
 # rolter Helm chart
 
+The full guide, with the values that matter, is in the [user docs](../../docs/user-docs/deployment/helm.mdx).
+
 The chart deploys the data-plane gateway and control plane as separate workloads. PostgreSQL, Redis, and ClickHouse are deliberately external dependencies so production operators can use managed services and their normal backup policies.
 
 ```bash

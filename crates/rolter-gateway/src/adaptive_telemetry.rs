@@ -40,6 +40,11 @@ const NODE_BUILD_HEADER: &str = "x-rolter-node-build";
 /// One adaptive route's state, as this node sees it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RouteTelemetry {
+    /// the org that owns the route, empty for a route from the gateway's own
+    /// config file. Two orgs may each have a route of one name (ADR-0040), so
+    /// the control plane keys a route by `(org_id, model)` (#3458)
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub org_id: String,
     /// public model name of the route
     pub model: String,
     #[serde(flatten)]
@@ -72,7 +77,7 @@ pub fn collect(state: &AppState) -> Vec<RouteTelemetry> {
     let mut routes: Vec<RouteTelemetry> = snapshot
         .routes
         .iter()
-        .filter_map(|(_, model, entry)| {
+        .filter_map(|(org, model, entry)| {
             // per-target state is keyed by the route's namespace (ADR-0040)
             let loads = state
                 .loads
@@ -88,6 +93,7 @@ pub fn collect(state: &AppState) -> Vec<RouteTelemetry> {
                 })
                 .collect();
             Some(RouteTelemetry {
+                org_id: org.to_string(),
                 model: model.to_string(),
                 state,
                 target_labels,
@@ -95,7 +101,7 @@ pub fn collect(state: &AppState) -> Vec<RouteTelemetry> {
         })
         .collect();
     // stable order so a diff between two reports is about the numbers
-    routes.sort_by(|a, b| a.model.cmp(&b.model));
+    routes.sort_by(|a, b| (&a.model, &a.org_id).cmp(&(&b.model, &b.org_id)));
     routes
 }
 
@@ -238,6 +244,32 @@ mod tests {
         assert_eq!(route.target_labels[0].provider, "openai");
         assert_eq!(route.target_labels[0].upstream_model, "gpt-4o");
         assert_eq!(route.target_labels[1].upstream_model, "gpt-4o-2024");
+    }
+
+    /// #3458: two orgs' adaptive `gpt-4o` are two routes in the report, each
+    /// with its org, rather than one name the control plane would collapse.
+    #[test]
+    fn two_orgs_same_named_routes_are_reported_by_org_and_name() {
+        let mut config = adaptive_config();
+        let mut second = config.routes[0].clone();
+        for (route, org) in [(&mut config.routes[0], "org-a"), (&mut second, "org-b")] {
+            route.tenancy = Some(rolter_core::Tenancy {
+                org_id: org.to_string(),
+                project_id: None,
+            });
+        }
+        config.routes.push(second);
+        let routes: Vec<_> = collect(&AppState::new(&config))
+            .into_iter()
+            .map(|r| (r.org_id, r.model))
+            .collect();
+        assert_eq!(
+            routes,
+            [
+                ("org-a".to_string(), "gpt-4o".to_string()),
+                ("org-b".to_string(), "gpt-4o".to_string()),
+            ]
+        );
     }
 
     #[test]

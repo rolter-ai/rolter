@@ -6,6 +6,7 @@ import { useTranslation } from "react-i18next";
 
 import { superadminOnly } from "@/components/ForbiddenScreen";
 import { LoadError } from "@/components/LoadError";
+import { OwnerOrgPill, sharedNames, useOwnerLabel } from "@/components/OwnerOrgPill";
 import { PanelSkeleton, StatGridSkeleton } from "@/components/LoadingState";
 import { PageBody } from "@/components/screen";
 import { Badge } from "@/components/ui/badge";
@@ -216,6 +217,13 @@ function AdaptiveDashboardScreen() {
   // UX stream (#805). the screen key comes from the enclosing UxScreenProvider;
   // `telemetry` is the query the user is actually waiting on for this screen
   useScreenReady(!telemetry.isLoading);
+  // two organizations' same-named routes are named apart (#3460); the hook sits
+  // above the early returns, which a hook may not follow
+  const owner = useOwnerLabel(
+    sharedNames(
+      (telemetry.data?.routes ?? []).map((r) => ({ name: r.model, orgId: r.org_id ?? "" })),
+    ).size > 0,
+  );
 
   if (telemetry.isLoading) {
     return (
@@ -248,6 +256,7 @@ function AdaptiveDashboardScreen() {
     0,
   );
   const engaged = routes.filter((route) => route.engaged).length;
+  const shared = sharedNames(routes.map((r) => ({ name: r.model, orgId: r.org_id ?? "" })));
   // the deployment-wide kill switch, and only when the answer is in: a policy
   // that failed or has not landed must not accuse a switch of being off
   const switchedOff = policy.data?.enabled === false;
@@ -345,15 +354,27 @@ function AdaptiveDashboardScreen() {
           <div className="flex flex-col gap-4">
             {routes.map((route) => (
               <section
-                key={route.model}
-                aria-label={t("pages.adaptiveDashboard.routeAria", { model: route.model })}
+                // two organizations may each have a route of one name (#3458)
+                key={`${route.org_id ?? ""}/${route.model}`}
+                data-org={route.org_id ?? ""}
+                aria-label={
+                  shared.has(route.model)
+                    ? t("pages.adaptiveDashboard.routeAriaOwned", {
+                        model: route.model,
+                        owner: owner(route.org_id ?? ""),
+                      })
+                    : t("pages.adaptiveDashboard.routeAria", { model: route.model })
+                }
                 className="overflow-hidden rounded-lg border border-[color:var(--border-subtle)]"
               >
                 <div className="flex flex-wrap items-center justify-between gap-3 bg-[color:var(--surface-subtle)] px-4 py-3">
                   <div className="min-w-0">
-                    <h2 className="break-words font-mono text-sm font-medium text-foreground">
-                      {route.model}
-                    </h2>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <h2 className="break-words font-mono text-sm font-medium text-foreground">
+                        {route.model}
+                      </h2>
+                      {shared.has(route.model) && <OwnerOrgPill orgId={route.org_id ?? ""} />}
+                    </div>
                     <p className="mt-1 text-xs text-muted-foreground">
                       {t("pages.adaptiveDashboard.reportingGateways", {
                         count: route.nodes.length,
