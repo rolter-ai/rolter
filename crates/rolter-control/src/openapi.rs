@@ -1616,6 +1616,12 @@ fn operations() -> Vec<Op> {
                 "List a project's virtual keys",
             )
             .ok(Payload::List("VirtualKey")),
+            Op::get(
+                "/api/v1/orgs/{org_id}/virtual-keys",
+                "listOrgVirtualKeys",
+                "List the virtual keys of every project of an organization the caller may read",
+            )
+            .ok(Payload::List("VirtualKey")),
             Op::post(
                 "/api/v1/projects/{project_id}/virtual-keys",
                 "createVirtualKey",
