@@ -39,7 +39,7 @@ use tokio_util::task::TaskTracker;
 
 use crate::handlers::{
     authenticate, authorize_model, authorize_route, budget_refusal, key_pool_key,
-    pick_untried_read_only, rate_limit_refusal, request_scope, unpriced_admission, variant_key,
+    rate_limit_refusal, request_scope, unpriced_admission, variant_key,
 };
 use crate::realtime_guard::{ClientVerdict, ContentPolicy, Frame};
 use crate::realtime_metering::{Closure, SessionEnd, SessionMeter, TurnTracker};
@@ -528,19 +528,18 @@ impl<'w, 'a> CandidateWalk<'w, 'a> {
         if !entry.route.has_variants() {
             // read-only: picking must not take a half-open probe slot; the
             // connect loop asks `allows` of the one target it dials (#3248)
-            let index = pick_untried_read_only(
+            let index = crate::handlers::TargetPool {
                 entry,
-                self.context,
-                &self.tried,
-                &self.loads,
-                &self.state.cooldowns,
-                &self.state.health,
-                &self.state.breaker,
-                self.model,
-                self.cooldowns,
-                self.key_meta,
-                failure,
-            )?;
+                ctx: self.context,
+                loads: &self.loads,
+                cooldowns: &self.state.cooldowns,
+                health: &self.state.health,
+                breaker: &self.state.breaker,
+                namespace: self.model,
+                cd_enabled: self.cooldowns,
+                key_meta: self.key_meta,
+            }
+            .pick_read_only(&self.tried, failure)?;
             entry.balancer.observe(index, self.context);
             self.tried.push(index);
             return Some(Candidate {

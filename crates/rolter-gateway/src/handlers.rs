@@ -2658,20 +2658,19 @@ async fn proxy(
         // `record_failed_attempt`, so the error row must not count it twice
         let mut last_attempt_recorded = false;
 
+        let pool = TargetPool {
+            entry,
+            ctx: &ctx,
+            loads: &loads,
+            cooldowns: &state.cooldowns,
+            health: &state.health,
+            breaker: &state.breaker,
+            namespace: &entry.namespace,
+            cd_enabled,
+            key_meta: vk.as_ref(),
+        };
         for attempt in 0..=max_retries {
-            let idx = match pick_untried(
-                entry,
-                &ctx,
-                &tried,
-                &loads,
-                &state.cooldowns,
-                &state.health,
-                &state.breaker,
-                &entry.namespace,
-                cd_enabled,
-                vk.as_ref(),
-                last_failure.as_ref(),
-            ) {
+            let idx = match pool.pick(&tried, last_failure.as_ref()) {
                 Some(i) => i,
                 None => break, // no untried target left to fail over to
             };
@@ -3808,20 +3807,19 @@ async fn proxy_multipart(
         // the failure the last attempt ended with, which decides which targets
         // may follow it and is what the row records as the fallback reason (#1584)
         let mut last_failure: Option<Failure> = None;
+        let pool = TargetPool {
+            entry,
+            ctx: &ctx,
+            loads: &loads,
+            cooldowns: &state.cooldowns,
+            health: &state.health,
+            breaker: &state.breaker,
+            namespace: &entry.namespace,
+            cd_enabled,
+            key_meta: vk.as_ref(),
+        };
         for attempt in 0..=max_retries {
-            let idx = match pick_untried(
-                entry,
-                &ctx,
-                &tried,
-                &loads,
-                &state.cooldowns,
-                &state.health,
-                &state.breaker,
-                &entry.namespace,
-                cd_enabled,
-                vk.as_ref(),
-                last_failure.as_ref(),
-            ) {
+            let idx = match pool.pick(&tried, last_failure.as_ref()) {
                 Some(i) => i,
                 None => break,
             };
@@ -4860,11 +4858,28 @@ async fn forward_variants(
     out
 }
 
-/// Pick a target the request has not tried yet, preferring one that is not on a
-/// cooldown. Honours the balancer's choice when it is fresh and healthy; else
-/// falls over to the first untried, un-parked target. When every remaining
-/// target is parked it fails open to the first untried one so requests still
-/// flow rather than 503-ing on a transient wobble.
+/// One classic target pool as an attempt picks from it: the route, what the
+/// balancer is told about the request, the live load per target, the
+/// registries that can rule a target out and who is asking.
+///
+/// Built once per forward loop from borrows, so a pick costs nothing to set
+/// up, and the loop asks [`TargetPool::pick`] once per attempt.
+pub(crate) struct TargetPool<'a> {
+    pub(crate) entry: &'a crate::state::RouteEntry,
+    pub(crate) ctx: &'a RouteContext<'a>,
+    pub(crate) loads: &'a [u64],
+    pub(crate) cooldowns: &'a crate::cooldowns::Cooldowns,
+    pub(crate) health: &'a crate::health::Health,
+    pub(crate) breaker: &'a crate::breaker::Breaker,
+    /// the registry key of the pool, the route's runtime namespace
+    pub(crate) namespace: &'a str,
+    pub(crate) cd_enabled: bool,
+    pub(crate) key_meta: Option<&'a KeyMeta>,
+}
+
+/// [`TargetPool::pick`] with every input spelled out, as the unit tests call
+/// it.
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn pick_untried(
     entry: &crate::state::RouteEntry,
@@ -4879,119 +4894,129 @@ pub(crate) fn pick_untried(
     key_meta: Option<&KeyMeta>,
     failure: Option<&Failure>,
 ) -> Option<usize> {
-    pick_untried_with(
-        entry, ctx, tried, loads, cooldowns, health, breaker, model, cd_enabled, key_meta, failure,
-        true,
-    )
-}
-
-/// [`pick_untried`] for a caller that picks a candidate before deciding to send
-/// to it, such as a realtime session walking its dial list: the breaker is
-/// only read (`Breaker::refuses`), so no half-open probe slot is taken for a
-/// target the caller may never dial. The caller asks `Breaker::allows` of the
-/// one it dials (#3248). `failure` is how the previous dial failed, as for
-/// [`pick_untried`] (#3322).
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn pick_untried_read_only(
-    entry: &crate::state::RouteEntry,
-    ctx: &RouteContext,
-    tried: &[usize],
-    loads: &[u64],
-    cooldowns: &crate::cooldowns::Cooldowns,
-    health: &crate::health::Health,
-    breaker: &crate::breaker::Breaker,
-    model: &str,
-    cd_enabled: bool,
-    key_meta: Option<&KeyMeta>,
-    failure: Option<&Failure>,
-) -> Option<usize> {
-    pick_untried_with(
-        entry, ctx, tried, loads, cooldowns, health, breaker, model, cd_enabled, key_meta, failure,
-        false,
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-fn pick_untried_with(
-    entry: &crate::state::RouteEntry,
-    ctx: &RouteContext,
-    tried: &[usize],
-    loads: &[u64],
-    cooldowns: &crate::cooldowns::Cooldowns,
-    health: &crate::health::Health,
-    breaker: &crate::breaker::Breaker,
-    model: &str,
-    cd_enabled: bool,
-    key_meta: Option<&KeyMeta>,
-    failure: Option<&Failure>,
-    take_probe: bool,
-) -> Option<usize> {
-    let n = entry.route.targets.len();
-    // the breaker's admission: `allows` takes the half-open probe slot, so
-    // only a caller about to send asks it
-    let breaker_admits = |i: usize| {
-        if take_probe {
-            breaker.allows(model, i)
-        } else {
-            !breaker.refuses(model, i)
-        }
-    };
-    // a target the key may use and, if it is a restricted fallback, one the
-    // failure being walked away from lets it take over (#1584)
-    let key_allows = |i: usize| admits(entry, i, key_meta, failure);
-    // a target is skippable when parked on a cooldown, when its provider is
-    // currently marked unhealthy by the active prober, or when its circuit
-    // breaker is open. this is the check for one target: the pick the balancer
-    // returns, which is all a strategy that ignores eligibility ever asks about
-    let skip = |i: usize| {
-        !key_allows(i)
-            || (cd_enabled && cooldowns.is_parked(model, i))
-            || !health.is_healthy(&entry.route.targets[i].provider)
-            || !breaker_admits(i)
-    };
-    // the same rules for every target at once, read from each registry in one
-    // lock acquisition and only if something asks. a strategy that weighs
-    // targets against each other asks about all of them, and per-target
-    // answers would take about three locks each (#1942)
-    let snapshot = std::cell::OnceCell::new();
-    let blocked = |i: usize| {
-        snapshot
-            .get_or_init(|| {
-                Blocked::read(
-                    cooldowns,
-                    health,
-                    breaker,
-                    model,
-                    cd_enabled,
-                    n,
-                    entry.route.targets.iter().map(|t| t.provider.as_str()),
-                )
-            })
-            .contains(i)
-    };
-    // the balancer weighs only the targets this attempt can use, so a dead
-    // replica's empty queue never reads as the least-loaded target (#1851)
-    let usable = |i: usize| i < n && !tried.contains(&i) && key_allows(i) && !blocked(i);
-    // a pick past the target list is treated as no pick rather than indexed:
-    // a balancer shared across per-request pools (#1655) can be sized from a
-    // different list than the one it is picking over, and `skip` indexes
-    // `targets` directly (#1714)
-    if let Some(i) = entry
-        .balancer
-        .pick_eligible(ctx, loads, &usable)
-        .filter(|&i| i < n)
-    {
-        if !tried.contains(&i) && !skip(i) {
-            return Some(i);
-        }
+    TargetPool {
+        entry,
+        ctx,
+        loads,
+        cooldowns,
+        health,
+        breaker,
+        namespace: model,
+        cd_enabled,
+        key_meta,
     }
-    // prefer an untried, non-skipped target; fail open to any untried one when
-    // every remaining sibling is parked or unhealthy. the snapshot above does
-    // not move an open breaker whose window has elapsed to half-open, so the
-    // target chosen here asks `allows`, which does
-    (0..n)
-        .find(|&i| usable(i) && breaker_admits(i))
-        .or_else(|| first_untried_allowed(entry, tried, key_meta, failure))
+    .pick(tried, failure)
+}
+
+impl TargetPool<'_> {
+    /// Pick a target the request has not tried yet, preferring one that is
+    /// not on a cooldown. Honours the balancer's choice when it is fresh and
+    /// healthy; else falls over to the first untried, un-parked target. When
+    /// every remaining target is parked it fails open to the first untried one
+    /// so requests still flow rather than 503-ing on a transient wobble.
+    /// `failure` is how the previous attempt ended (`None` for the first).
+    pub(crate) fn pick(&self, tried: &[usize], failure: Option<&Failure>) -> Option<usize> {
+        self.pick_with(tried, failure, true)
+    }
+
+    /// [`TargetPool::pick`] for a caller that picks a candidate before
+    /// deciding to send to it, such as a realtime session walking its dial
+    /// list: the breaker is only read (`Breaker::refuses`), so no half-open
+    /// probe slot is taken for a target the caller may never dial. The caller
+    /// asks `Breaker::allows` of the one it dials (#3248). `failure` is how
+    /// the previous dial failed, as for [`TargetPool::pick`] (#3322).
+    pub(crate) fn pick_read_only(
+        &self,
+        tried: &[usize],
+        failure: Option<&Failure>,
+    ) -> Option<usize> {
+        self.pick_with(tried, failure, false)
+    }
+
+    fn pick_with(
+        &self,
+        tried: &[usize],
+        failure: Option<&Failure>,
+        take_probe: bool,
+    ) -> Option<usize> {
+        let TargetPool {
+            entry,
+            ctx,
+            loads,
+            cooldowns,
+            health,
+            breaker,
+            namespace: model,
+            cd_enabled,
+            key_meta,
+        } = *self;
+        let n = entry.route.targets.len();
+        // the breaker's admission: `allows` takes the half-open probe slot, so
+        // only a caller about to send asks it
+        let breaker_admits = |i: usize| {
+            if take_probe {
+                breaker.allows(model, i)
+            } else {
+                !breaker.refuses(model, i)
+            }
+        };
+        // a target the key may use and, if it is a restricted fallback, one the
+        // failure being walked away from lets it take over (#1584)
+        let key_allows = |i: usize| admits(entry, i, key_meta, failure);
+        // a target is skippable when parked on a cooldown, when its provider is
+        // currently marked unhealthy by the active prober, or when its circuit
+        // breaker is open. this is the check for one target: the pick the balancer
+        // returns, which is all a strategy that ignores eligibility ever asks about
+        let skip = |i: usize| {
+            !key_allows(i)
+                || (cd_enabled && cooldowns.is_parked(model, i))
+                || !health.is_healthy(&entry.route.targets[i].provider)
+                || !breaker_admits(i)
+        };
+        // the same rules for every target at once, read from each registry in one
+        // lock acquisition and only if something asks. a strategy that weighs
+        // targets against each other asks about all of them, and per-target
+        // answers would take about three locks each (#1942)
+        let snapshot = std::cell::OnceCell::new();
+        let blocked = |i: usize| {
+            snapshot
+                .get_or_init(|| {
+                    Blocked::read(
+                        cooldowns,
+                        health,
+                        breaker,
+                        model,
+                        cd_enabled,
+                        n,
+                        entry.route.targets.iter().map(|t| t.provider.as_str()),
+                    )
+                })
+                .contains(i)
+        };
+        // the balancer weighs only the targets this attempt can use, so a dead
+        // replica's empty queue never reads as the least-loaded target (#1851)
+        let usable = |i: usize| i < n && !tried.contains(&i) && key_allows(i) && !blocked(i);
+        // a pick past the target list is treated as no pick rather than indexed:
+        // a balancer shared across per-request pools (#1655) can be sized from a
+        // different list than the one it is picking over, and `skip` indexes
+        // `targets` directly (#1714)
+        if let Some(i) = entry
+            .balancer
+            .pick_eligible(ctx, loads, &usable)
+            .filter(|&i| i < n)
+        {
+            if !tried.contains(&i) && !skip(i) {
+                return Some(i);
+            }
+        }
+        // prefer an untried, non-skipped target; fail open to any untried one when
+        // every remaining sibling is parked or unhealthy. the snapshot above does
+        // not move an open breaker whose window has elapsed to half-open, so the
+        // target chosen here asks `allows`, which does
+        (0..n)
+            .find(|&i| usable(i) && breaker_admits(i))
+            .or_else(|| first_untried_allowed(entry, tried, key_meta, failure))
+    }
 }
 
 /// Whether target `i` of the classic pool may be dialled by a request with
@@ -5012,7 +5037,7 @@ fn admits(
 /// The first target this request has not tried that its key may use,
 /// whatever its cooldown, health or breaker says.
 ///
-/// This is where [`pick_untried`] ends up when every sibling is skippable, and
+/// This is where [`TargetPool::pick`] ends up when every sibling is skippable, and
 /// the only way it returns `None`, so it answers "is there anything left to
 /// fail over to" without consulting the balancer. Asking the balancer instead
 /// would advance a round-robin cursor for a pick nobody uses.
