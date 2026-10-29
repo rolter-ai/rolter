@@ -136,7 +136,7 @@ pub(crate) const OPTIONAL_COLUMNS: &[OptionalColumn] = &[
         name: "cache_usage_reported",
         default: "toUInt8(0)",
     },
-    // 048_first_variant.sql: the variant the split assigned the request,
+    // 048_first_variant.sql: the variant the request was dialled to first,
     // read by by-variant's assigned count (#3505)
     OptionalColumn {
         name: "first_variant",

@@ -310,9 +310,13 @@ sets beside the configured weights:
   `fallback_reason`, the requests it answered on the first dial. A request that
   failed over from another variant counts for neither variant, so a flaky
   variant reads below its weight here.
-- `assigned_requests` (#3505): the requests the split assigned the variant,
+- `assigned_requests` (#3505): the requests each variant was dialled to first,
   grouped by `request_logs.first_variant`, which the gateway records once per
-  request. `forward_variants` names the candidate's variant in
+  request. It is not the sampled primary: `next_candidate` skips a candidate
+  whose target is parked, unhealthy or behind an open breaker, so a variant in
+  that state is dialled first by none of the requests sampled for it and reads
+  near 0 here. Recording the sampled primary beside it is #3547.
+  `forward_variants` names the candidate's variant in
   `ForwardOutcome::variant` before it dials, and `ForwardLoop::begin_attempt`
   copies it to `first_variant` while `attempts` is still `0`; the cancel guard's
   row keeps the first variant it is attributed (`CancelGuard::attribute`). The

@@ -1074,7 +1074,7 @@ async fn by_variant(
 pub(crate) const FIRST_ATTEMPT_REQUESTS: &str =
     "round(sumIf(sample_weight, request_logs.fallback_reason = ''))";
 
-/// The variant the weighted split assigned a row to (#3505): the one the
+/// The variant a row counts for in the assigned count (#3505): the one the
 /// gateway first dialled (`first_variant`, `clickhouse/048`), or, for a row
 /// that records none, the one that answered it. Which of those rows count at
 /// all is [`assigned_rows`]'s rule.
@@ -1111,9 +1111,8 @@ fn assigned_rows(columns: &Columns) -> &'static str {
 /// first attempt on a table that has it, the same default the invocation list
 /// gives such a row.
 ///
-/// `assigned_requests` (#3505) counts the requests the split assigned each
-/// variant, grouped by the variant first dialled rather than the one that
-/// answered, so a variant that only ever failed over still has a row (with no
+/// `assigned_requests` (#3505) counts the requests each variant was dialled to
+/// first, grouped by that variant rather than the one that answered, so a variant that only ever failed over still has a row (with no
 /// answered requests) and its assigned share. Two halves over the same window
 /// and filters, one grouped by the answering variant and one by the assigned
 /// one, are summed per `(model, variant)`: each half holds a key at most once,
@@ -1604,7 +1603,7 @@ pub(crate) fn invocations_sql(status_expr: &str, columns: &Columns) -> String {
     let provider_org_id = columns.select("provider_org_id");
     // whether the row's cache reads were stated at all (#3410)
     let cache_usage_reported = columns.select("cache_usage_reported");
-    // the variant the split assigned, beside the one that answered (#3505)
+    // the variant dialled first, beside the one that answered (#3505)
     let first_variant = columns.select("first_variant");
     format!(
         "select ts, request_id, trace_id, org_id, team_id, project_id, virtual_key_id, \

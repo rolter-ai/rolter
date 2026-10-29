@@ -80,7 +80,7 @@ impl CancelGuard {
             return;
         };
         // the first attribution is the first dial, which names the variant
-        // the split assigned (#3505); a failover keeps it
+        // dialled first (#3505); a failover keeps it
         if row.first_variant.is_empty() {
             row.first_variant.push_str(variant);
         }

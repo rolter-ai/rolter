@@ -62,11 +62,12 @@ const carries = (lines: TrafficLine[], field: "first_attempt_requests" | "assign
  * the log records the variant that answered, so a variant that is failed over
  * to reads higher than its weight; the note under the table says so. Beside
  * it, the first-attempt share counts only the requests a variant answered
- * with no failover (#3409). The assigned share (#3505) counts the requests the
- * split sent each variant first, failed over or not, which is the share its
- * weight configures: a variant that often fails over reads at its weight
- * there and below it in the other two, and a variant that answered nothing
- * still has a line. A ClickHouse that cannot tell a first attempt from a
+ * with no failover (#3409). The assigned share (#3505) counts the requests
+ * each variant was dialled to first, failed over or not, so a variant that
+ * often fails over keeps its assignments there, and a variant that answered
+ * nothing still has a line. It is not the sampled split: a variant the
+ * gateway skips while its breaker is open or its targets are parked is
+ * dialled first by none of the requests sampled for it. A ClickHouse that cannot tell a first attempt from a
  * failover, or that does not record the first variant, sends no count for
  * that column, and the column is left out rather than drawn as a guess.
  *
@@ -221,7 +222,8 @@ export function RouteVariantTraffic({
                     {requests > 0 ? fmt.percent(num(line.row?.errors) / requests, 1) : "—"}
                   </ListCell>
                   <ListCell className="text-right font-mono text-xs">
-                    {line.row
+                    {/* a variant that answered nothing has no latency, only its assignments */}
+                    {line.row && requests > 0
                       ? t("routeSheet.variants.observed.latencyValue", {
                           p50: fmt.number(Math.round(num(line.row.p50_latency_ms))),
                           p95: fmt.number(Math.round(num(line.row.p95_latency_ms))),

@@ -233,10 +233,11 @@ pub struct RequestLog {
     /// chosen variant name for A/B attribution; empty on the classic single-pool
     /// path (a route with no variants)
     pub variant: String,
-    /// The variant the request was first dialled to, which the weighted split
-    /// assigned it (#3505). It differs from `variant` exactly when the request
-    /// failed over to another variant's target, so by-variant can report the
-    /// share the router gave a variant beside the share it answered. Empty on
+    /// The variant the request was first dialled to (#3505). It differs from
+    /// `variant` exactly when the request failed over to another variant's
+    /// target, so by-variant can report the share of requests a variant was
+    /// sent first beside the share it answered. It is the sampled variant
+    /// unless the loop skipped that one (parked, unhealthy, breaker open). Empty on
     /// the classic pool, on a row that never dialled, and on every row older
     /// than `clickhouse/048_first_variant.sql`. Not serialized when empty, so
     /// a ClickHouse without that file keeps accepting those rows, and drops

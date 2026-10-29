@@ -2506,10 +2506,12 @@ fn operations() -> Vec<Op> {
                  `first_attempt_requests` counts those it served on the first attempt (no \
                  `fallback_reason`, `clickhouse/023`), the closer comparison with the configured \
                  weights; a request that failed over from another variant counts for neither. It is `null` on a ClickHouse that has not applied \
-                 `023`, which cannot tell the two apart. `assigned_requests` counts the requests the \
-                 weighted split assigned the variant, by the variant the gateway dialled first \
-                 (`first_variant`, `clickhouse/048`), so a request that failed over counts for the \
-                 variant it was assigned and a variant that answered nothing still has a row; requests \
+                 `023`, which cannot tell the two apart. `assigned_requests` counts the requests each \
+                 variant was dialled to first (`first_variant`, `clickhouse/048`), so a request that \
+                 failed over counts for the variant it was dialled to first and a variant that \
+                 answered nothing still has a row. It is not the sampled split: a variant skipped \
+                 while its breaker is open or its targets are parked is dialled first by none of the \
+                 requests sampled for it; requests \
                  served without a variant count under the empty string. A row written before `048` \
                  counts for the variant that answered it when it has no `fallback_reason`, and for no \
                  variant otherwise. It is `null` on a ClickHouse that has not applied `048`",

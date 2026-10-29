@@ -3618,8 +3618,8 @@ struct ForwardOutcome {
     inflight_guard: Option<crate::load::LoadGuard>,
     /// chosen variant name for attribution
     variant: String,
-    /// the variant the first attempt dialled, which the weighted split
-    /// assigned; empty on the classic pool and when nothing was dialled (#3505)
+    /// the variant the first attempt dialled; empty on the classic pool and
+    /// when nothing was dialled (#3505)
     first_variant: String,
     provider_key_fingerprint: Option<String>,
     /// upstream attempts made, the one that answered included. Saturates, so
@@ -4449,7 +4449,7 @@ impl<'f> ForwardLoop<'f> {
     ) -> Dial<'a> {
         self.out.last_attempt_recorded = false;
         // the variant loop names the variant before it dials, so the first
-        // attempt's is the one the split assigned (#3505); the classic pool
+        // attempt's is the one dialled first (#3505); the classic pool
         // has none and copies nothing
         if self.out.attempts == 0 {
             self.out.first_variant.clone_from(&self.out.variant);

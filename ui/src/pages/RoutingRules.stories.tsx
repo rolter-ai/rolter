@@ -1540,10 +1540,10 @@ export const NoFirstAttemptColumnWhenTheSplitIsUnknown: Story = {
 };
 
 /**
- * The assigned column counts the requests the split sent each variant first,
- * failed over or not (#3505), so it is the one that reads at the weights: here
- * 40 of the canary's 100 assigned requests failed over to stable, which reads
- * high in Observed and First attempt and at 90 / 10 in Assigned.
+ * The assigned column counts the requests each variant was dialled to first,
+ * failed over or not (#3505): here 40 of the canary's 100 requests failed over
+ * to stable, which reads high in Observed and First attempt and at 90 / 10 in
+ * Assigned.
  */
 const assigned = observing([
   {
@@ -1574,13 +1574,14 @@ export const AssignedSharesAreComparedWithTheConfiguredSplit: Story = {
       expect(cells("stable").slice(0, 5)).toEqual(["stable", "90%", "90%", "94%", "94%"]),
     );
     await expect(cells("canary").slice(0, 5)).toEqual(["canary", "10%", "10%", "6%", "6%"]);
-    await expect(dialog.getByText(/share of the requests the split sent it first/)).toBeVisible();
+    await expect(dialog.getByText(/share of the requests it was dialled to first/)).toBeVisible();
   },
 };
 
 /**
  * A variant whose every assigned request failed over answered nothing, and
- * still has its line: its assigned share is there, its error rate is not.
+ * still has its line: its assigned share is there, its error rate and
+ * latency are not.
  */
 const answeredNothing = observing([
   {
@@ -1605,7 +1606,8 @@ export const AVariantThatAnsweredNothingKeepsItsAssignedShare: Story = {
     const cells = (name: string) =>
       Array.from(row(name).querySelectorAll('[role="cell"]')).map((c) => c.textContent);
     await waitFor(() =>
-      expect(cells("canary").slice(0, 7)).toEqual(["canary", "10%", "10%", "0%", "0%", "0", "—"]),
+      // no latency either: the zeros the read carries for it are not a measurement
+      expect(cells("canary")).toEqual(["canary", "10%", "10%", "0%", "0%", "0", "—", "—"]),
     );
   },
 };
