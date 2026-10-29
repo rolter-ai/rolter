@@ -196,6 +196,36 @@ impl SavingsQuery {
 /// The org filter, which the dashboard's row filters do not carry.
 const ORG_FILTER: &str = "({org:String} = '' or org_id = {org:String})";
 
+/// Every reason the advisor can file a request under when it leaves it out of
+/// the re-pricing (#3423), in the order the dashboard lists them: the ones
+/// [`reason_expr`] gives a request in the query, then the two [`analyse`] adds
+/// once it has the route's pool.
+///
+/// The dashboard words each one (`pages.savings.reasons.<reason>` in every
+/// catalog) and has no way to learn a new one from the report, so this list is
+/// published as `savings-reasons.json` at the crate root and a dashboard test
+/// fails while a catalog lacks one of them. A test below keeps the list equal
+/// to what `reason_expr` and `analyse` can emit, so a reason added to either
+/// without it fails here, in the rust suite, before it reaches the screen.
+/// `eligible` is not one: it is a request that is re-priced, not left out.
+pub(crate) const EXCLUSION_REASONS: &[&str] = &[
+    "unpriced",
+    "failed",
+    "cache_hit",
+    "usage_unknown",
+    "uses_tools",
+    "image_input",
+    "audio_input",
+    "structured_output",
+    "multi_turn",
+    "not_a_model_call",
+    "no_token_usage",
+    "prompt_too_large",
+    "output_too_large",
+    "route_not_configured",
+    "no_cheaper_candidate",
+];
+
 /// Why a request is or is not counted as substitutable, first match wins. The
 /// order puts the money question first: an unpriced row is unpriced whatever
 /// else is true of it.
@@ -800,6 +830,73 @@ mod tests {
             .iter()
             .filter_map(Value::as_str)
             .any(|l| l.contains("does not evaluate") && l.contains("never a recommendation")));
+    }
+
+    /// The quoted words of `text`, each between a pair of single quotes.
+    fn quoted(text: &str) -> Vec<&str> {
+        text.split('\'').skip(1).step_by(2).collect()
+    }
+
+    /// #3423: the published list is exactly what the advisor can emit.
+    #[test]
+    fn the_published_reasons_are_every_reason_the_report_can_name() {
+        // the query's: every word `reason_expr` can return, whatever the table has
+        let mut emitted: BTreeSet<&str> = BTreeSet::new();
+        let sql = reason_expr(&Columns::default());
+        let sql_reasons: Vec<&str> = quoted(&sql)
+            .into_iter()
+            .filter(|word| !word.is_empty() && *word != "eligible")
+            .collect();
+        assert!(sql_reasons.len() > 5, "{sql}");
+        emitted.extend(sql_reasons);
+        // `analyse`'s own: the reasons it adds, read off its source so that a
+        // new `excluded.entry("...".into())` cannot be forgotten
+        let source = include_str!("savings.rs");
+        let code = &source[..source.find("#[cfg(test)]").expect("a test module")];
+        for part in code.split(".entry(\"").skip(1) {
+            let word = part.split('"').next().unwrap_or_default();
+            emitted.insert(word);
+        }
+        let published: BTreeSet<&str> = EXCLUSION_REASONS.iter().copied().collect();
+        assert_eq!(
+            published.len(),
+            EXCLUSION_REASONS.len(),
+            "a reason is listed twice"
+        );
+        assert_eq!(
+            published, emitted,
+            "EXCLUSION_REASONS (and savings-reasons.json, `just gen-savings-reasons`) \
+             must list every reason reason_expr and analyse can emit, and no other"
+        );
+    }
+
+    /// `savings-reasons.json` at the crate root: the published list, checked in
+    /// so the dashboard's catalog test can read it without a running control plane
+    const REASONS_ARTIFACT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/savings-reasons.json");
+
+    /// set to rewrite the artifact instead of comparing against it; `ROLTER_TEST_`
+    /// marks it test-only, like the capability matrix's
+    const UPDATE_REASONS: &str = "ROLTER_TEST_UPDATE_SAVINGS_REASONS";
+
+    #[test]
+    fn the_checked_in_reasons_are_the_published_list() {
+        let mut rendered = serde_json::to_string_pretty(&json!({
+            "$comment": "written by the rolter-control test suite from EXCLUSION_REASONS in \
+                         src/savings.rs (`just gen-savings-reasons`) - do not edit by hand",
+            "reasons": EXCLUSION_REASONS,
+        }))
+        .expect("the list serializes");
+        rendered.push('\n');
+        if std::env::var_os(UPDATE_REASONS).is_some() {
+            std::fs::write(REASONS_ARTIFACT, &rendered).expect("write savings-reasons.json");
+            return;
+        }
+        let checked_in = std::fs::read_to_string(REASONS_ARTIFACT).unwrap_or_default();
+        assert!(
+            checked_in == rendered,
+            "crates/rolter-control/savings-reasons.json is out of date with EXCLUSION_REASONS; \
+             run `just gen-savings-reasons` and commit it"
+        );
     }
 
     /// #3317: a request that needed tools, an image, audio, a schema or a

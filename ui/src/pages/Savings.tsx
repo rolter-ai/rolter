@@ -37,6 +37,7 @@ import {
 } from "@/lib/api";
 import { useCan } from "@/lib/can";
 import { useFormat } from "@/lib/i18n/format";
+import { EXCLUDED_REASONS } from "@/lib/savings-reasons";
 import { useScope } from "@/lib/scope";
 import {
   readWindowSelection,
@@ -54,25 +55,6 @@ const DEFAULT_WINDOW: TimeWindow = "7d";
 /** the address parameters the scope and thresholds travel in, under the control plane's names */
 const SCOPE_PARAMS = ["org", "project", "route", "key"] as const;
 const THRESHOLD_PARAMS = ["max_prompt_tokens", "max_completion_tokens", "output_margin"] as const;
-
-/** the reasons a request can be left out of the re-pricing, as the control plane names them */
-const EXCLUDED_REASONS = [
-  "unpriced",
-  "failed",
-  "cache_hit",
-  "usage_unknown",
-  "uses_tools",
-  "image_input",
-  "audio_input",
-  "structured_output",
-  "multi_turn",
-  "not_a_model_call",
-  "no_token_usage",
-  "prompt_too_large",
-  "output_too_large",
-  "route_not_configured",
-  "no_cheaper_candidate",
-] as const;
 
 // the largest margin the control plane honours; a larger one is clamped to it
 const MAX_OUTPUT_MARGIN = 4;
