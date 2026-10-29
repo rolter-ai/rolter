@@ -794,7 +794,7 @@ Not a `rolter.toml` table. Each entry is an enabled MCP tool group, which the co
 
 ### \[\[mcp_settings\]\]
 
-Not a `rolter.toml` table. Each entry is one organization's saved MCP settings, which the MCP proxy applies per request: `org_id`, `connect_timeout_ms`, `request_timeout_ms`, `max_retries`, `fail_open` and `allow_unlisted_tools`. An organization that never saved any has no entry and keeps the deployment defaults. They are managed on the dashboard or through the management API; see [MCP](/api/mcp#manage-the-registry).
+Not a `rolter.toml` table. Each entry is one organization's saved MCP settings, which the MCP proxy applies per request: `org_id`, `connect_timeout_ms`, `request_timeout_ms`, `max_retries`, `fail_open` (deprecated and ignored: a body the proxy cannot check is always refused) and `allow_unlisted_tools`. An organization that never saved any has no entry and keeps the deployment defaults. They are managed on the dashboard or through the management API; see [MCP](/api/mcp#manage-the-registry).
 
 ---
 
@@ -837,7 +837,7 @@ The MCP settings an organization saved on the MCP Settings screen ([MCP](/api/mc
 </ParamField>
 
 <ParamField path="default_failure_mode" type="string" required>
-  What to do when a request cannot be inspected for tool policy: `fail_closed` refuses it, `fail_open` forwards it unchecked.
+  **Deprecated, and ignored by the gateway.** `fail_closed` or `fail_open`; still accepted and exported so existing files keep loading, and removed in a later major release. A request body the MCP proxy cannot check for tool policy is refused whatever this says, since forwarding it unchecked could let a server with a more lenient parser run a refused tool. See [MCP](/api/mcp).
 </ParamField>
 
 <ParamField path="allow_unlisted_tools" type="boolean" required>

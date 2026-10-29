@@ -480,6 +480,14 @@ struct ConfigOwned {
     /// declares, which win over a registry row of the same name (#459)
     semantic_providers: std::collections::HashSet<String>,
     semantic_policies: std::collections::HashSet<String>,
+    /// the file's providers, routes and groups as `(org, name)`, a group by
+    /// its slug and a row with no tenancy under the global org. A stored row
+    /// is the file's only when its own org and name are here: an org's row
+    /// that shares a name with a global file row is the org's (#3516). The
+    /// bare-name sets above stay the write-time guard of ADR-0040 section 6
+    provider_rows: std::collections::HashSet<(String, String)>,
+    model_rows: std::collections::HashSet<(String, String)>,
+    group_rows: std::collections::HashSet<(String, String)>,
 }
 
 impl ConfigOwned {
@@ -526,7 +534,41 @@ impl ConfigOwned {
                         .unwrap_or_else(|| rolter_core::slug::slugify(&g.name))
                 })
                 .collect(),
+            provider_rows: config
+                .providers
+                .iter()
+                .map(|p| Self::row(p.tenancy.as_ref(), &p.name))
+                .collect(),
+            model_rows: config
+                .routes
+                .iter()
+                .map(|r| Self::row(r.tenancy.as_ref(), &r.model))
+                .collect(),
+            group_rows: config
+                .provider_groups
+                .iter()
+                .map(|g| {
+                    let slug = g
+                        .slug
+                        .clone()
+                        .unwrap_or_else(|| rolter_core::slug::slugify(&g.name));
+                    Self::row(g.tenancy.as_ref(), &slug)
+                })
+                .collect(),
         }
+    }
+
+    fn row(tenancy: Option<&rolter_core::Tenancy>, name: &str) -> (String, String) {
+        (
+            rolter_core::namespace::org_of(tenancy).to_string(),
+            name.to_string(),
+        )
+    }
+
+    /// Whether the route `model` owned by `tenancy` is the file's own row
+    #[cfg(feature = "postgres")]
+    fn owns_model(&self, tenancy: Option<&rolter_core::Tenancy>, model: &str) -> bool {
+        self.model_rows.contains(&Self::row(tenancy, model))
     }
 
     /// Whether a readonly provider or provider group answers `slug`. The
@@ -4260,6 +4302,53 @@ mod tests {
         // with it: the endpoint still answers, with what it could compute
         let body = problems(GuessingConfigStore { problems: None }).await;
         assert_eq!(body["problems"], json!([]), "{body}");
+    }
+
+    /// An org's route that the control plane's config file repeats with no
+    /// org is a warning on the problems endpoint, not a row left out (#3516).
+    #[tokio::test]
+    async fn an_org_route_a_bootstrap_route_shares_a_name_with_is_a_warning() {
+        let route = |tenancy: Option<rolter_core::Tenancy>| rolter_core::ModelRoute {
+            model: "gpt-4o".to_string(),
+            strategy: Default::default(),
+            targets: vec![],
+            params: Default::default(),
+            param_policy: Default::default(),
+            advanced: Default::default(),
+            cache: None,
+            variants: Default::default(),
+            tenancy,
+        };
+        let mut file = GatewayConfig::default();
+        file.routes.push(route(None));
+        let mut db = GatewayConfig::default();
+        db.routes.push(route(Some(rolter_core::Tenancy {
+            org_id: "org-a".to_string(),
+            project_id: None,
+        })));
+        let mut state = state_with_token(None);
+        state.store = Arc::new(rolter_store::MergedConfigStore::new(
+            file,
+            Arc::new(rolter_store::InMemoryConfigStore::new(db)),
+        ));
+        let addr = serve(build_app_with_internal(state)).await;
+        let body: Value = reqwest::Client::new()
+            .get(format!("http://{addr}/api/v1/config/problems"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let lines: Vec<&str> = body["problems"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(Value::as_str)
+            .filter(|line| line.contains("shadows the readonly route"))
+            .collect();
+        assert_eq!(lines.len(), 1, "{body}");
+        assert!(lines[0].starts_with("warning: organization org-a's route 'gpt-4o'"));
     }
 
     /// A store that refuses to build a config, and can say why (#2943).
