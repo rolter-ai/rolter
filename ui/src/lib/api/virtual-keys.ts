@@ -76,6 +76,14 @@ export function fetchVirtualKeys(projectId: string): Promise<VirtualKeyRow[]> {
   return getJson<VirtualKeyRow[]>(`/api/v1/projects/${projectId}/virtual-keys`);
 }
 
+/**
+ * Every key of every project of an organization the caller may read, each
+ * carrying its `project_id` (#3467): one request in place of one per project.
+ */
+export function fetchOrgVirtualKeys(orgId: string): Promise<VirtualKeyRow[]> {
+  return getJson<VirtualKeyRow[]>(`/api/v1/orgs/${orgId}/virtual-keys`);
+}
+
 export function createVirtualKey(
   projectId: string,
   input: CreateVirtualKeyInput,

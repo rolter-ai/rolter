@@ -208,8 +208,9 @@ after the caller is authenticated and before anything is forwarded.
   rather than refused), under the `mcp_tool_group_assignment` capability. The create body
   takes `assignments` too and writes them in the group's own transaction, so a
   group meant to be narrowed is never visible as organization-wide. The
-  dashboard's group dialog edits all three kinds (the key picker reads each
-  project's keys, #3380) and mounts its editor only once the stored assignments
+  dashboard's group dialog edits all three kinds (the key picker reads the
+  organization's keys in one request, `GET /api/v1/orgs/{org_id}/virtual-keys`,
+  and groups them by `project_id`, #3380, #3467) and mounts its editor only once the stored assignments
   are read, so it can never save an empty set over them; a stored key is dropped
   only once every project's keys were read and it is not among them. Both snapshot fields added for assignments and the manifest default
   restrict what the gateway serves, which ADR-0038 would call a format bump; they

@@ -767,6 +767,7 @@ export {
   fetchVirtualKeys,
   createVirtualKey,
   setVirtualKeyDisabled,
+  fetchOrgVirtualKeys,
   setVirtualKeyCache,
   setVirtualKeyProviders,
   setVirtualKeyAttribution,
