@@ -13,7 +13,11 @@ COPY ui/Cargo.toml ui/changelog.rs ./ui/
 # API and migrations, plus the launcher's `config export`, `mfa reset` and
 # `kek verify` (#2405). `--workspace --features postgres` enables the feature
 # on every member that declares it. pass --build-arg CARGO_FEATURES= to build
-# the in-memory-only variant
+# the in-memory-only variant. `onnx` (#3443) adds onnx/1 local guardrail
+# models; that build links nothing native, and the image then needs ONNX
+# Runtime's libonnxruntime.so copied in with ORT_DYLIB_PATH pointing at it,
+# which distroless/cc can load as is (see
+# docs/user-docs/security/semantic-guard-policies.mdx, "ONNX models")
 ARG CARGO_FEATURES="postgres"
 # cargo-auditable embeds the exact crate graph each binary links (a compressed
 # `.dep-v0` section) so the release sbom reads the shipped crates from the

@@ -44,6 +44,8 @@ pub mod health;
 mod health_events;
 mod load;
 mod local_classifier;
+#[cfg(feature = "onnx")]
+mod local_onnx;
 mod logging;
 mod mcp_list_filter;
 mod mcp_log;
