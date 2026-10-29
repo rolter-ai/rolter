@@ -363,9 +363,11 @@ async fn report(access: &AnalyticsAccess, state: &ControlState, q: &SavingsQuery
 /// one project's keys, so a key of any other project read as an id.
 ///
 /// The rows are already the caller's own traffic, so a name is only ever that
-/// of a key whose requests the caller can read. A key that is gone, an id that
-/// is not a uuid, a deployment without a store, or a store that cannot answer
-/// leaves `key_name` `null`, and the report is still served.
+/// of a key whose requests the caller can read. It is the name the key was
+/// given and never its prefix, which a role that reads the report but not the
+/// keys has no business seeing. A key with no name, one that is gone, an id
+/// that is not a uuid, a deployment without a store, or a store that cannot
+/// answer leaves `key_name` `null`, and the report is still served.
 #[cfg(feature = "postgres")]
 async fn name_callers(state: &ControlState, report: &mut Value) {
     let Some(rows) = report["spend"]["by_caller"].as_array_mut() else {
@@ -378,7 +380,7 @@ async fn name_callers(state: &ControlState, report: &mut Value) {
     let names = match state.pool.as_ref() {
         Some(pool) if !ids.is_empty() => {
             match rolter_store::postgres::repo::VirtualKeyRepo(pool)
-                .names(&ids)
+                .given_names(&ids)
                 .await
             {
                 Ok(names) => names,
@@ -1333,6 +1335,15 @@ mod tests {
             .unwrap();
             keys.push((project, id));
         }
+        // a key with no name: its prefix is never handed out in its place
+        let unnamed: uuid::Uuid = sqlx::query_scalar(
+            "insert into virtual_keys (project_id, key_hash, key_prefix) \
+             values ($1, 'hash-unnamed', 'pfx-secret') returning id",
+        )
+        .bind(keys[1].0)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
         let state = crate::test_state(pool, None, None);
         let gone = uuid::Uuid::new_v4();
         let mut report = json!({"spend": {"by_caller": [
@@ -1340,6 +1351,7 @@ mod tests {
             {"project_id": keys[1].0.to_string(), "virtual_key_id": keys[1].1.to_string()},
             {"project_id": keys[1].0.to_string(), "virtual_key_id": gone.to_string()},
             {"project_id": "", "virtual_key_id": "from-the-config-file"},
+            {"project_id": keys[1].0.to_string(), "virtual_key_id": unnamed.to_string()},
         ]}});
         name_callers(&state, &mut report).await;
         let names: Vec<Value> = report["spend"]["by_caller"]
@@ -1350,7 +1362,13 @@ mod tests {
             .collect();
         assert_eq!(
             names,
-            vec![json!("ci-deploy"), json!("batch"), Value::Null, Value::Null]
+            vec![
+                json!("ci-deploy"),
+                json!("batch"),
+                Value::Null,
+                Value::Null,
+                Value::Null
+            ]
         );
     }
 

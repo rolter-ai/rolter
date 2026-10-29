@@ -55,7 +55,7 @@ Totals for the window, then the slices worth a second look:
 - `multi_attempt`: requests that took more than one upstream attempt (retries and failovers together; the log does not tell the two apart) and what they cost.
 - `failed`: requests that ended in an error, and what was spent on them anyway.
 - `cache`: response-cache hits, and the misses on routes that have the response cache switched on.
-- `by_route`, `by_model` (the upstream model that served the request) and `by_caller` (project and virtual key, the 50 most expensive, each with the key's `key_name`: its name, or its prefix when it has none, and `null` for a key since deleted), costliest first.
+- `by_route`, `by_model` (the upstream model that served the request) and `by_caller` (project and virtual key, the 50 most expensive, each with `key_name`, the name given to the key, `null` for a key with no name or one since deleted; never the key's prefix), costliest first.
 
 `unpriced_requests` sits beside every cost: those requests ran against a model with no price, so their recorded cost is not a cost.
 

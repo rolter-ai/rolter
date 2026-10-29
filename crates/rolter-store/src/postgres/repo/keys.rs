@@ -217,6 +217,27 @@ impl VirtualKeyRepo<'_> {
         Ok(rows.into_iter().collect())
     }
 
+    /// The names given to each of `ids`, leaving out a key that has none and
+    /// one that no longer exists. Unlike [`Self::names`] it never falls back to
+    /// the key's prefix, for a reader that may name a key without being
+    /// allowed to see any part of its secret (#3499).
+    pub async fn given_names(
+        &self,
+        ids: &[Uuid],
+    ) -> Result<std::collections::HashMap<Uuid, String>> {
+        if ids.is_empty() {
+            return Ok(Default::default());
+        }
+        let rows: Vec<(Uuid, String)> = sqlx::query_as(
+            "select id, name from virtual_keys where id = any($1) and name is not null",
+        )
+        .bind(ids)
+        .fetch_all(self.0)
+        .await
+        .map_err(store_err)?;
+        Ok(rows.into_iter().collect())
+    }
+
     /// every key minted by `user_id` via the self-service panel, newest first,
     /// enriched with the owning project + org names. omits the key hash.
     pub async fn list_for_user(&self, user_id: Uuid) -> Result<Vec<OwnedVirtualKey>> {
