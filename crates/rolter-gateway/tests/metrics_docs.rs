@@ -8,8 +8,10 @@
 //! `the_docs_page_lists_exactly_these_subsystems` in `rolter-core`.
 //!
 //! The page also has a section on the control plane's OTLP-only series, whose
-//! instruments are named in `rolter-core`'s telemetry module, so that file is
-//! read beside the gateway's sources (#3542).
+//! instruments are built in `rolter-core`'s telemetry module. Only the names
+//! that module passes to an instrument builder are added to the gateway's
+//! sources, so a `rolter_*` word in one of its comments satisfies nothing
+//! (#3542).
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -34,12 +36,41 @@ fn gateway_source() -> String {
         &mut files,
     );
     files.sort();
-    // where the control plane's instruments are built
-    files.push(Path::new(env!("CARGO_MANIFEST_DIR")).join("../rolter-core/src/telemetry.rs"));
-    files
+    let mut source: String = files
         .iter()
         .map(|path| std::fs::read_to_string(path).expect("source file is utf-8"))
-        .collect()
+        .collect();
+    let telemetry = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join(TELEMETRY))
+        .expect("the telemetry module is readable");
+    for name in instrument_names(&telemetry) {
+        source.push_str(&format!("\n\"{name}\"\n"));
+    }
+    source
+}
+
+/// Where the control plane's instruments are built.
+const TELEMETRY: &str = "../rolter-core/src/telemetry.rs";
+
+/// The names `text` passes to an OpenTelemetry instrument builder, such as
+/// `meter.u64_observable_gauge("rolter_config_problems")`.
+fn instrument_names(text: &str) -> BTreeSet<String> {
+    const BUILDERS: [&str; 5] = [
+        "_histogram(\"",
+        "_counter(\"",
+        "_up_down_counter(\"",
+        "_gauge(\"",
+        "_observable_gauge(\"",
+    ];
+    let mut names = BTreeSet::new();
+    for builder in BUILDERS {
+        for (at, _) in text.match_indices(builder) {
+            let rest = &text[at + builder.len()..];
+            if let Some(end) = rest.find('"') {
+                names.insert(rest[..end].to_string());
+            }
+        }
+    }
+    names
 }
 
 /// Every `rolter_*` identifier in `text`. A pattern such as `rolter_*_total`
@@ -103,6 +134,23 @@ fn the_metrics_page_names_only_series_the_gateway_exports() {
          control-plane series, the one `crates/rolter-core/src/telemetry.rs` builds), or drop \
          the row"
     );
+}
+
+#[test]
+fn only_a_name_given_to_an_instrument_builder_counts_as_a_control_plane_series() {
+    let names = instrument_names(
+        "// rolter_mentioned_in_a_comment\n\
+         meter.u64_observable_gauge(\"rolter_config_problems\")\n\
+         meter.u64_histogram(\"rolter_snapshot_build_ms\")",
+    );
+    assert_eq!(
+        names.into_iter().collect::<Vec<_>>(),
+        ["rolter_config_problems", "rolter_snapshot_build_ms"]
+    );
+    // and the real module builds the gauge the page documents
+    let telemetry =
+        std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join(TELEMETRY)).unwrap();
+    assert!(instrument_names(&telemetry).contains("rolter_config_problems"));
 }
 
 #[test]
