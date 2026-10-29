@@ -349,15 +349,28 @@ it failed over, and a classic row counts under the empty variant. Without
 `048` the count is `null` and the sheet leaves its column out. The sampled
 count reads only rows that name their sample and classic rows: a variant row
 written before `050` could have been sampled for any variant, so it is left
-out, and without `050` the count is `null` and its half is not selected. Realtime turn
-rows do not record a first variant yet, so they count by the old-row rule.
+out, and without `050` the count is `null` and its half is not selected.
+
+Realtime turn rows carry the same fields (#3543). A session walks its dial list
+one connect at a time (`CandidateWalk` in `realtime.rs`) and can fail over
+across variants before it is pinned: `connect_selected` keeps the variant of
+the first dial, `CandidateWalk` the variant it led with, and both ride
+`SelectedSession` into `SessionMeter`, whose `base_row` writes them on every
+turn row of the session. A session assigned one variant and pinned to another
+therefore counts for the first in `assigned_requests` and for the second in
+`requests`, as an HTTP request that failed over does. The walk leads with
+`sample_variant(0.0)`, not a weighted draw, so a realtime session's sampled
+variant is the route's first variant with a non-zero weight (#3553 tracks
+sampling it by weight).
 Tests: `by_variant_*` in `analytics.rs`; the `by_variant_*048*`,
 `by_variant_*050*`, `by_variant_counts_the_sampled_primary_*`,
 `by_variant_counts_a_failover_*` and `by_variant_lists_a_variant_*` cases of
 `crates/rolter-control/tests/invocations_optional_columns.rs` (real
 ClickHouse); `a_variant_failover_records_the_variant_first_dialled` and
 `a_request_sampled_for_an_open_breaker_records_the_sampled_variant` in
-`crates/rolter-gateway/tests/upstream_failure_log.rs`.
+`crates/rolter-gateway/tests/upstream_failure_log.rs`;
+`a_session_that_fails_over_to_another_variant_records_the_first_dialled` in
+`crates/rolter-gateway/tests/realtime_metering.rs`.
 
 ## Selecting a strategy from the dashboard
 
