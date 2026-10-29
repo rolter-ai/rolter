@@ -2914,6 +2914,126 @@ async fn param_adjustments_are_recorded_on_the_request_log() {
     assert!(row("untouched").get("param_adjustments").is_none());
 }
 
+/// #3462: two orgs each have a `router` route with a complexity tier onto a
+/// `capable` route split into variants. Every per-route series (latency,
+/// variant split, complexity decision) is labelled by the route's runtime
+/// namespace, `name@org` once the name is shared, so each org's numbers are
+/// a series of their own rather than one merged with the other org's.
+#[tokio::test]
+async fn two_orgs_same_named_routes_report_their_own_metric_series() {
+    async fn openai_response() -> Json<Value> {
+        Json(json!({"choices":[{"message":{"role":"assistant","content":"pong"}}]}))
+    }
+    let upstream = serve(Router::new().route("/v1/chat/completions", post(openai_response))).await;
+    let mut config = GatewayConfig::default();
+    for org in ["org-a", "org-b"] {
+        let tenancy = Some(rolter_core::Tenancy {
+            org_id: org.to_string(),
+            project_id: None,
+        });
+        let mut one = config_for("router", vec![("up", upstream)]);
+        one.providers[0].tenancy = tenancy.clone();
+        one.routes[0].tenancy = tenancy.clone();
+        one.routes[0].params.insert(
+            "_rolter_complexity".to_string(),
+            json!({"tiers": [{"name": "complex", "route": "capable"}]}),
+        );
+        let mut capable = one.routes[0].clone();
+        capable.model = "capable".to_string();
+        capable.params.clear();
+        capable.variants = vec![rolter_core::Variant {
+            name: "control".to_string(),
+            weight: 1,
+            targets: std::mem::take(&mut capable.targets),
+            params: Default::default(),
+        }];
+        one.routes.push(capable);
+        config.providers.append(&mut one.providers);
+        config.routes.append(&mut one.routes);
+        config.db_virtual_keys.push(VirtualKeyRecord {
+            previous: None,
+            access_policy: None,
+            key_hash: rolter_auth::hash_key(
+                &config.server.resolve_key_pepper(),
+                &format!("sk-{org}"),
+            ),
+            id: format!("key-{org}"),
+            org_id: org.to_string(),
+            team_id: String::new(),
+            project_id: String::new(),
+            user_id: String::new(),
+            models: Vec::new(),
+            providers: Vec::new(),
+            disabled: false,
+            expires_at: None,
+            cache: None,
+            business_unit_id: String::new(),
+            customer_id: String::new(),
+        });
+    }
+    let state = rolter_gateway::AppState::with_logging(&config, None);
+    let gw = serve(rolter_gateway::build_router(
+        state.clone(),
+        "/metrics",
+        32 * 1024 * 1024,
+    ))
+    .await;
+    let client = reqwest::Client::new();
+    // org-a sends twice, org-b once, so a merged series would read three
+    for org in ["org-a", "org-a", "org-b"] {
+        let resp = client
+            .post(format!("http://{gw}/v1/chat/completions"))
+            .bearer_auth(format!("sk-{org}"))
+            .json(&json!({"model": "router", "messages": [{"role": "user", "content": "hi"}]}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        resp.bytes().await.unwrap();
+    }
+    let expected = |org: &str, n: u32| {
+        [
+            format!("rolter_request_latency_ms_count{{model=\"router@{org}\"}} {n}"),
+            format!(
+                "rolter_variant_requests_total{{model=\"router@{org}\",variant=\"control\"}} {n}"
+            ),
+            format!(
+                "rolter_complexity_route_requests_total{{model=\"router@{org}\",tier=\"complex\",\
+                 route=\"capable@{org}\",outcome=\"selected\"}} {n}"
+            ),
+        ]
+    };
+    let mut body = String::new();
+    // the row that feeds the histograms is written as the answer finishes
+    for _ in 0..50 {
+        body = client
+            .get(format!("http://{gw}/metrics"))
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+        if expected("org-b", 1)
+            .iter()
+            .all(|line| body.contains(line.as_str()))
+        {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    for line in expected("org-a", 2)
+        .iter()
+        .chain(expected("org-b", 1).iter())
+    {
+        assert!(body.contains(line.as_str()), "missing {line} in:\n{body}");
+    }
+    assert!(
+        !body.contains("model=\"router\""),
+        "no bare series merges the two orgs:\n{body}"
+    );
+}
+
 #[tokio::test]
 async fn complexity_policy_selects_routes_for_openai_and_anthropic_requests() {
     async fn openai_response() -> Json<Value> {

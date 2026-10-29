@@ -1811,6 +1811,9 @@ async fn proxy(
             )
         }
     };
+    // what the requested route's metric series are labelled by: its runtime
+    // namespace, which tells two orgs' same-named routes apart (#3462)
+    let route_namespace = entry.namespace.clone();
     // The policy consumes only the request's already-bounded byte count. Its
     // ordered tier selection never retains prompt text. If an operator removes
     // a tier route or a key cannot access it, preserve the requested route and
@@ -1834,7 +1837,7 @@ async fn proxy(
         }
         state
             .metrics
-            .observe_complexity(&model, &tier, &entry.route.model, fallback);
+            .observe_complexity(&route_namespace, &tier, &entry.namespace, fallback);
     }
     if entry.route.targets.is_empty() && !entry.route.has_variants() {
         return refuse.log(error_json(
@@ -3177,6 +3180,7 @@ async fn proxy(
                 business_unit_id,
                 customer_id,
                 model,
+                route_namespace: route_namespace.clone(),
                 // the org that owns the provider in the snapshot that served
                 // the request; the row keeps the runtime id until it is queued
                 provider_org_id: snap.provider_label(&last_provider).1.to_string(),
@@ -3402,6 +3406,7 @@ async fn proxy(
                 business_unit_id,
                 customer_id,
                 model,
+                route_namespace: route_namespace.clone(),
                 provider_org_id: if no_target {
                     String::new()
                 } else {
@@ -3557,6 +3562,8 @@ async fn proxy_multipart(
             )
         }
     };
+    // the series label of the route, as on the JSON pipeline (#3462)
+    let route_namespace = entry.namespace.clone();
     if entry.route.targets.is_empty() {
         return refuse.log(error_json(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -4013,6 +4020,7 @@ async fn proxy_multipart(
                 business_unit_id,
                 customer_id,
                 model,
+                route_namespace: route_namespace.clone(),
                 // the org that owns the provider in the snapshot that served
                 // the request; the row keeps the runtime id until it is queued
                 provider_org_id: snap.provider_label(&last_provider).1.to_string(),
@@ -4106,6 +4114,7 @@ async fn proxy_multipart(
                 business_unit_id,
                 customer_id,
                 model,
+                route_namespace: route_namespace.clone(),
                 provider_org_id: if no_target {
                     String::new()
                 } else {
