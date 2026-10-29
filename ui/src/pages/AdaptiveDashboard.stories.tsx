@@ -345,3 +345,49 @@ export const RefusedToAViewer: Story = {
     await expectForbidden(canvasElement);
   },
 };
+
+/**
+ * #3458, #3460: two organizations each balance a `gpt-4o` route adaptively.
+ * They are two cards, each with its own gateways and decisions, and each says
+ * whose route it is; a name only one organization uses carries no badge.
+ */
+export const TwoOrgsShareARouteName: Story = {
+  render: () => (
+    <Harness
+      fetchStub={async (input, init) => {
+        const path = new URL(String(input), "http://localhost").pathname;
+        if (path === "/api/v1/orgs")
+          return json([
+            { id: "org-1", name: "Rolter", slug: "rolter", created_at: "2026-01-01T00:00:00Z" },
+            { id: "org-2", name: "Acme", slug: "acme", created_at: "2026-01-01T00:00:00Z" },
+          ]);
+        return stub({
+          ...TELEMETRY,
+          routes: [
+            { ...TELEMETRY.routes[0], org_id: "org-1" },
+            {
+              ...TELEMETRY.routes[0],
+              org_id: "org-2",
+              engaged: false,
+              nodes: [TELEMETRY.routes[0].nodes[1]],
+            },
+            { ...TELEMETRY.routes[1], org_id: "org-1" },
+          ],
+        })(input, init);
+      }}
+    />
+  ),
+  play: async ({ canvas, canvasElement }) => {
+    const card = (org: string) =>
+      canvasElement.querySelector<HTMLElement>(`section[data-org="${org}"][aria-label*="gpt-4o"]`);
+    await waitFor(() => expect(card("org-1")).not.toBeNull());
+    await expect(card("org-2")).not.toBeNull();
+    await waitFor(() => expect(card("org-1")).toHaveTextContent("Org: Rolter"));
+    await expect(card("org-2")).toHaveTextContent("Org: Acme");
+    // each card counts its own gateways
+    await expect(card("org-1")).toHaveTextContent("2 reporting gateways");
+    await expect(card("org-2")).toHaveTextContent("1 reporting gateway");
+    // a name no other organization shares needs no badge
+    await expect(canvas.getAllByText(/^Org: /)).toHaveLength(2);
+  },
+};

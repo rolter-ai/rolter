@@ -20,6 +20,13 @@ export interface BreakerNodeDto {
  * gateway. A `closed` row is a target that is failing but has not tripped yet.
  */
 export interface BreakerTargetDto {
+  /**
+   * the organization that owns the route; empty for a route from the
+   * gateway's own config file, and absent from a control plane that predates
+   * the field. Two organizations may each have a route of one name, so a route
+   * is `org_id` and `model` together (#3458)
+   */
+  org_id?: string;
   model: string;
   /** position in the route's target list */
   target_index: number;
@@ -69,14 +76,24 @@ export function useBreakerState() {
 
 /**
  * The breaker of one target of a route, or undefined when none is listed (the
- * target is closed on every live gateway).
+ * target is closed on every live gateway). `org` is the organization that owns
+ * the route, `""` for a config-file route: another organization's route of the
+ * same name has a breaker of its own (#3460). A row from a control plane that
+ * predates `org_id`, or a caller that does not know the route's organization,
+ * matches on the name alone, as before.
  */
 export function breakerFor(
   state: Pick<BreakerStateDto, "targets"> | undefined,
   model: string,
   targetIndex: number,
+  org?: string,
 ): BreakerTargetDto | undefined {
-  return state?.targets.find((tg) => tg.model === model && tg.target_index === targetIndex);
+  return state?.targets.find(
+    (tg) =>
+      tg.model === model &&
+      tg.target_index === targetIndex &&
+      (org === undefined || tg.org_id === undefined || tg.org_id === org),
+  );
 }
 
 /** true for a breaker that is stopping or probing traffic on at least one gateway */

@@ -984,6 +984,74 @@ export const BreakerOpenAndProbing: Story = {
   },
 };
 
+/**
+ * #3460: two organizations each serve a `llama-70b` through a provider called
+ * `vllm-a`. Each row reads its own route's breaker and its own provider's
+ * health: one organization's open breaker and failing provider never appear
+ * on the other's row.
+ */
+export const SameNameInTwoOrganizationsKeepsItsOwnHealth: Story = {
+  render: () => {
+    const model = (org: string): EffectiveModelDto => ({
+      ...FLEET_MODEL,
+      org_id: org,
+      targets: 1,
+      route_targets: [FLEET_MODEL.route_targets![0]],
+    });
+    return (
+      <Harness
+        fetchStub={scoped(async (input, init) => {
+          if (String(input).includes("/breaker-state"))
+            return json(breakerState([breakerTarget({ org_id: "org-2" })]));
+          return routes([
+            ["/model-prices", () => []],
+            ["/currency", () => ({ base: "USD", rates: {} })],
+            [
+              "/health/uptime",
+              () => ({
+                data: [
+                  uptimeRow({ org_id: "org-1" }),
+                  uptimeRow({
+                    org_id: "org-2",
+                    ok: 1000,
+                    errors: 1000,
+                    uptime: 0.5,
+                    sla_breached: 1,
+                  }),
+                ],
+              }),
+            ],
+            ["/models", () => [model("org-1"), model("org-2")]],
+            ["/providers", () => []],
+            ["/routes", () => []],
+          ])(input, init);
+        })}
+      >
+        <Models />
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() =>
+      expect(canvas.getAllByRole("button", { name: "1 target for llama-70b" })).toHaveLength(2),
+    );
+    // the row-level badge is on one row only
+    await waitFor(() => expect(canvas.getAllByText("Breaker open on 2 gateways")).toHaveLength(1));
+    for (const toggle of canvas.getAllByRole("button", { name: "1 target for llama-70b" })) {
+      await userEvent.click(toggle);
+    }
+    const lists = await canvas.findAllByRole("list", { name: "Targets of llama-70b" });
+    await expect(lists).toHaveLength(2);
+    const texts = lists.map((list) => list.textContent ?? "");
+    const healthy = texts.filter((t) => t.includes("99.95% uptime") && !/Breaker/.test(t));
+    const failing = texts.filter(
+      (t) => t.includes("50.00% uptime, below SLA") && t.includes("Breaker open on 2 gateways"),
+    );
+    await expect([healthy.length, failing.length]).toEqual([1, 1]);
+  },
+};
+
 /** a closed breaker row (failing, not yet tripped) and an empty answer add nothing */
 export const BreakerClosedShowsNothing: Story = {
   render: () => (

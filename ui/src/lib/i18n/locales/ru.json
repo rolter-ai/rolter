@@ -181,6 +181,8 @@
       "unlocked": "Разблокировано — клиенты могут переопределить. Нажмите, чтобы заблокировать."
     },
     "noneAvailable": "нет доступных",
+    "ownerOrg": "Организация: {{name}}",
+    "ownerDeployment": "Всё развёртывание",
     "timeWindow": {
       "label": "Период",
       "last24h": "Последние 24 часа",
@@ -3283,6 +3285,7 @@
       "updated": "Обновлено {{time}}",
       "reportsExpire": "· отчёты устаревают через {{seconds}} с",
       "routeAria": "Адаптивный маршрут {{model}}",
+      "routeAriaOwned": "Адаптивный маршрут {{model}}, {{owner}}",
       "decisions_one": "{{value}} решение",
       "decisions_few": "{{value}} решения",
       "decisions_many": "{{value}} решений",

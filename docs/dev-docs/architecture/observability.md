@@ -1042,6 +1042,20 @@ through exactly one of them — and labels the headline as a roll-up. Before
 #1257 the screen laid every row out as a peer card, so a single dead provider
 appeared several times over with contradictory failure counts.
 
+Two organizations' same-named providers are two cards (#3460): the screen
+groups rows by `(org_id, provider)` (`groupByProvider` in
+`ui/src/lib/provider-health.ts`), and a card whose name another organization's
+card also shows carries an `OwnerOrgPill` naming its owner. The screens that
+look a provider's health or a route's breaker up from a route (Models, Routing
+Rules) resolve the provider the way the gateway does, the route's own
+organization first and a config-file provider after it, never another
+organization's (`providerRows` in `ui/src/lib/route-targets.ts`), and match a
+breaker on the route's organization as well as its name (`breakerFor`). The
+breaker panel groups by the route's organization; a config-file provider's card
+takes the breakers of every route with no provider of that name in its own
+organization. Rows from a control plane that predates `org_id` match on the
+name alone, as before.
+
 #### SLA states on the dashboard
 
 The dashboard screen is labelled **Provider Health**. Its nav key is still
