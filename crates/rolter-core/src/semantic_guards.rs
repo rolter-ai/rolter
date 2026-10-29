@@ -34,6 +34,7 @@
 //! the HTTP calls and the request-path wiring are in the gateway.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
@@ -72,6 +73,13 @@ pub struct SemanticGuardsConfig {
     /// slot is the overload case and follows the provider's `failure_mode`
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub local_concurrency: Option<usize>,
+    /// the directory every `local` provider's `model_path` must resolve
+    /// under, symlinks and `..` resolved first (#3454); unset, a path may
+    /// point anywhere on the gateway host. Read from the gateway's own file
+    /// at start and never serialized, so it does not travel in
+    /// `/internal/snapshot`: each gateway confines its own file system
+    #[serde(default, skip_serializing)]
+    pub model_root: Option<String>,
 }
 
 /// What a policy is scoped to, from broadest to narrowest.
@@ -273,6 +281,11 @@ impl SemanticGuardsConfig {
                     "semantic_guards.local_concurrency must be between 1 and \
                      {MAX_LOCAL_CONCURRENCY}"
                 ));
+            }
+        }
+        if let Some(root) = &self.model_root {
+            if !Path::new(root.trim()).is_absolute() {
+                problems.push("semantic_guards.model_root must be an absolute path".to_string());
             }
         }
         let mut names: HashSet<&str> = HashSet::new();
@@ -660,6 +673,7 @@ mod tests {
                 provider("everywhere", WebhookStage::PreCall),
             ],
             local_concurrency: None,
+            model_root: None,
             policies: vec![
                 policy("all", PolicyScope::Deployment, None, &["injection"]),
                 policy(
@@ -779,6 +793,7 @@ mod tests {
             ],
             policies: Vec::new(),
             local_concurrency: None,
+            model_root: None,
         };
         let guards = CompiledSemanticGuards::from_config(&cfg, &legacy);
         let policy = guards.resolve(&PolicyRequest::default()).unwrap();
@@ -927,6 +942,25 @@ mod tests {
         assert_eq!(parsed.policies[0].streaming, StreamingStrategy::Buffer);
         assert_eq!(parsed.policies[0].on_violation, ViolationAction::Annotate);
         assert_eq!(parsed.policies[0].thresholds.get("*"), Some(&0.95));
+    }
+
+    #[test]
+    fn model_root_is_read_from_a_file_and_never_serialized() {
+        let parsed: SemanticGuardsConfig =
+            toml::from_str(r#"model_root = "/etc/rolter/models""#).unwrap();
+        assert_eq!(parsed.model_root.as_deref(), Some("/etc/rolter/models"));
+        assert!(parsed.validate(&Default::default()).is_empty());
+        // gateway-side: a control plane's root never reaches a gateway
+        let json = serde_json::to_value(&parsed).unwrap();
+        assert!(json.get("model_root").is_none(), "{json}");
+        let relative = SemanticGuardsConfig {
+            model_root: Some("models".to_string()),
+            ..SemanticGuardsConfig::default()
+        };
+        assert!(relative
+            .validate(&Default::default())
+            .join("")
+            .contains("model_root must be an absolute path"));
     }
 
     #[test]

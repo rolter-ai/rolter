@@ -1872,12 +1872,13 @@ tests = [
 kind = "gigachat"
 authority = "Sber"
 url = "https://developers.sber.ru/docs/ru/gigachat/api/overview"
+base = "https://api.giga.chat/v1"
 dialects = ["openai-chat-completions"]
 auth = "bearer"
 primary_path = "/v1/chat/completions"
-conformance = "transport-only"
+conformance = "provider-profile"
 reviewed_at = "2026-10-29"
-notes = "the vendor's reference page prints no host, auth scheme or chat example, so the profile is not checked against it and does not claim provider-profile (transport-only is a temporary placeholder, since its only fixture is Recalled; #3488 restores provider-profile); its overview names https://api.giga.chat/v1 as the base, which the fixture does not use (#3445). GigaChat issues short-lived access tokens from an OAuth endpoint; rolter sends the configured key as the bearer and does not mint one"
+notes = "base, path and auth from the OpenAPI file the reference pages are built from (https://developers.sber.ru/docs/files/openapi/gigachat/api.yml, read 2026-10-29): its servers entry is https://api.giga.chat/v1 and chat completions is POST /v1/chat/completions on https://api.giga.chat, the address the overview names for every user from 17 July 2026 (https://gigachat.devices.sberbank.ru/ is being phased out; #3488). The file's JavaScript SDK sample still writes https://api.giga.chat/api/v1, which disagrees with its own servers and path. GigaChat issues short-lived access tokens from an OAuth endpoint; rolter sends the configured key as the bearer and does not mint one"
 tests = [
   "crates/rolter-core/src/config.rs::every_kind_resolves_by_the_documented_rule",
   "crates/rolter-gateway/tests/provider_profiles.rs::gigachat_takes_an_oauth_access_token_as_a_bearer",

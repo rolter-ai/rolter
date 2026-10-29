@@ -2399,3 +2399,72 @@ export const EditsAVariantTargetsFallbackSet: Story = {
     ]);
   },
 };
+
+/**
+ * A route with variants dials only the variants' targets (#3487), so variants
+ * that hold only fallbacks strand the route even over an ordinary target list.
+ * The sheet says so under the variants, once, and sends nothing.
+ */
+let fallbackVariants: Recorder;
+export const RefusesFallbackOnlyVariantsOverAnOrdinaryList: Story = {
+  render: () => {
+    fallbackVariants = withVariants(SPLIT);
+    return (
+      <Harness fetchStub={fallbackVariants.stub} role="admin">
+        <RoutingRules />
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const dialog = await openRouteSheet(canvasElement);
+    await dialog.findByLabelText("Variant 2 target 2 provider");
+    for (const name of [
+      "Fallback classes of target 1 of variant 1",
+      "Fallback classes of target 1 of variant 2",
+      "Fallback classes of target 2 of variant 2",
+    ]) {
+      const set = fallbackOf(dialog, name);
+      await userEvent.click(set.getByRole("button", { name: "Ordinary target" }));
+      await userEvent.click(set.getByRole("button", { name: "throttled" }));
+    }
+    await userEvent.click(dialog.getByRole("button", { name: "Save route" }));
+    await waitFor(() => expect(dialog.getByText(/Every target is a fallback/)).toBeVisible());
+    await expect(dialog.getAllByText(/Every target is a fallback/)).toHaveLength(1);
+    fallbackVariants.expectNotSent("PUT", "/api/v1/routes/route-1/variants");
+    fallbackVariants.expectNotSent("PUT", "/api/v1/routes/route-1");
+  },
+};
+
+/**
+ * The converse: while a variant has an ordinary target, the route's own list
+ * is not dialled, so it may hold only fallbacks and the save goes out.
+ */
+let fallbackList: Recorder;
+export const AcceptsAFallbackOnlyListUnderOrdinaryVariants: Story = {
+  render: () => {
+    fallbackList = withVariants(SPLIT);
+    return (
+      <Harness fetchStub={fallbackList.stub} role="admin">
+        <Toasted>
+          <RoutingRules />
+        </Toasted>
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const dialog = await openRouteSheet(canvasElement);
+    await dialog.findByLabelText("Variant 2 target 2 provider");
+    for (const name of ["Fallback classes of target 1", "Fallback classes of target 2"]) {
+      const set = fallbackOf(dialog, name);
+      await userEvent.click(set.getByRole("button", { name: "Ordinary target" }));
+      await userEvent.click(set.getByRole("button", { name: "timeout" }));
+    }
+    await userEvent.click(dialog.getByRole("button", { name: "Save route" }));
+    const body = await fallbackList.expectSentBody<{ targets: { takes_over: string[] }[] }>(
+      "PUT",
+      "/api/v1/routes/route-1",
+    );
+    await expect(body.targets.map((tg) => tg.takes_over)).toEqual([["timeout"], ["timeout"]]);
+    await expect(dialog.queryByText(/Every target is a fallback/)).toBeNull();
+  },
+};

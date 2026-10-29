@@ -283,6 +283,9 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         tracing::info!("active upstream health probing disabled (enable via config hot-reload)");
     }
     health::spawn_prober(state.clone());
+    // a local guardrail model that failed to load is read again with backoff
+    // rather than only on the next config change (#3452)
+    state.local_classifiers.spawn_retries();
     // the model catalogue behind /v1/models is refreshed on its own slow loop,
     // so it does not depend on active health checks being enabled (#1729)
     model_catalog::spawn_refresher(state.clone());
