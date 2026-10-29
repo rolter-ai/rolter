@@ -4294,6 +4294,42 @@ export const TheSaveDialogSuggestsTheServersNameForACustomRange: Story = {
   },
 };
 
+/**
+ * Until the deployment's currency is known the dashboard cannot build the
+ * server's name, and a guessed currency would name the file wrongly, so the
+ * dialog suggests the plain name and leaves the rest to the server (#3498).
+ */
+export const WithNoCurrencyKnownTheSaveDialogSuggestsThePlainName: Story = {
+  render: () => {
+    const stub = recording(
+      scoped(async (input) => {
+        const path = new URL(String(input), "http://localhost").pathname;
+        if (path === "/api/v1/currency") return json({ error: { message: "down" } }, 503);
+        if (path.includes("/analytics/invocations/export")) {
+          return chunkedCsv([new TextEncoder().encode("ts\r\n")], "end");
+        }
+        return (await withLogs(ROWS)(input)) as Response;
+      }),
+    );
+    return (
+      <Harness fetchStub={stub.stub}>
+        <Toasted>
+          <Logs />
+        </Toasted>
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const dialog = stubSavePicker();
+    await dialog.within(async () => {
+      await userEvent.click(await canvas.findByRole("button", { name: "Export CSV" }));
+      await expectToast(canvasElement, /Export saved to the file you chose/, "success");
+    });
+    await expect(dialog.files[0]!.suggestedName).toBe("request-log.csv");
+  },
+};
+
 /** Closing the save dialog is a no: nothing is requested and nothing is said. */
 export const ClosingTheSaveDialogSendsNoExport: Story = {
   render: () => {
