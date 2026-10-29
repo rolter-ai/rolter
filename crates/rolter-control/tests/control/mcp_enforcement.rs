@@ -532,6 +532,20 @@ async fn saved_mcp_settings_reach_the_snapshot_and_set_a_new_servers_transport()
         .unwrap();
     assert!(saved.status().is_success());
     assert!(config_version(&pool).await > before, "saving must bump");
+    // the deprecated failure mode is kept and returned as saved (#3527) ...
+    let saved: Value = saved.json().await.unwrap();
+    assert_eq!(saved["default_failure_mode"], "fail_open", "{saved}");
+    let read: Value = client
+        .get(format!("{base}/api/v1/orgs/{org_id}/mcp/settings"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(read["default_failure_mode"], "fail_open", "{read}");
+    // ... but the snapshot always says fail closed, so a gateway that still
+    // honours the field refuses an unreadable body during a rolling upgrade
     let config = snapshot_config(&client, &base).await;
     assert_eq!(
         config["mcp_settings"],
@@ -540,7 +554,7 @@ async fn saved_mcp_settings_reach_the_snapshot_and_set_a_new_servers_transport()
             "connect_timeout_ms": 1500,
             "request_timeout_ms": 20000,
             "max_retries": 2,
-            "fail_open": true,
+            "fail_open": false,
             "allow_unlisted_tools": true,
         }])
     );

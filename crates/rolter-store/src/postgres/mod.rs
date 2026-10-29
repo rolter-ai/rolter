@@ -501,7 +501,6 @@ struct McpSettingsSnapshotRow {
     connect_timeout_ms: i32,
     request_timeout_ms: i32,
     max_retries: i32,
-    default_failure_mode: String,
     allow_unlisted_tools: bool,
 }
 
@@ -1517,7 +1516,7 @@ impl PostgresConfigStore {
     async fn load_mcp_settings(&self) -> Result<Vec<McpOrgSettingsConfig>> {
         let rows: Vec<McpSettingsSnapshotRow> = sqlx::query_as(
             "select org_id, connect_timeout_ms, request_timeout_ms, max_retries, \
-                    default_failure_mode, allow_unlisted_tools \
+                    allow_unlisted_tools \
              from mcp_gateway_settings order by org_id",
         )
         .fetch_all(&self.pool)
@@ -1531,7 +1530,11 @@ impl PostgresConfigStore {
                 connect_timeout_ms: row.connect_timeout_ms.max(0) as u64,
                 request_timeout_ms: row.request_timeout_ms.max(0) as u64,
                 max_retries: row.max_retries.max(0) as u32,
-                fail_open: row.default_failure_mode == "fail_open",
+                // deprecated (#3527): the stored `default_failure_mode` is
+                // still the API's and the export's, but the snapshot always
+                // says fail closed, so a gateway that predates the change
+                // refuses an unreadable body too during a rolling upgrade
+                fail_open: false,
                 allow_unlisted_tools: row.allow_unlisted_tools,
             })
             .collect())

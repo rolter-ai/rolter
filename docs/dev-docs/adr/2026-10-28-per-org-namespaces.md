@@ -249,3 +249,54 @@ tenants and leaks the existence of another org's names through the refusal.
 - logging and health events: display name plus `provider_org_id` / `org_id`.
 - `crates/rolter-control` and `crates/rolter-store`: the org-scoped write
   checks, the seed, and the fold for a silent gateway in `build_snapshot`.
+
+## Addendum (29 Oct 2026) — an org row the bootstrap file later repeats ([#3516](https://github.com/rolter-ai/rolter/issues/3516))
+
+Section 6's refusal is a **write-time guard only**: it stops an org row being
+created, or renamed, onto a name a readonly row of the control plane's bootstrap
+file holds. It does not make the file's row win in the effective config. Two
+states still reach the store with such a pair: an org row created before the
+operator added the same name to the file, and a row written around the API (by
+SQL, for example).
+
+`MergedConfigStore::load` used to drop every stored provider, route or provider
+group whose name (a group's slug) any file row used, whatever the row's tenancy.
+The org's keys then resolved the global row in silence: other credentials,
+another `api_base`, other targets. And the per-org config export (#3481) never
+saw the org's row, so it wrote the file's in its place, and re-importing that
+file overwrote the org's own row.
+
+Decided: the effective config follows section 1. A stored row is dropped only
+when a file row of the same kind has the same name **in the same namespace**
+(`(org, name)`, the org of a row with no tenancy being the global one). An
+org-owned row stays and shadows the file's for that org's keys only; global keys
+and every other org still resolve the file's row. A stored global row the file
+repeats is still dropped, as before.
+
+The overlap is reported, as a warning rather than an error, under
+`GET /api/v1/config/problems`: one line per org row, naming the org, the kind and
+the name, and saying that the org's row shadows the readonly file row for that
+org. `MergedConfigStore::load_problem_records` adds it, owned by the org's
+tenancy, so a caller who cannot see that org does not see the line. The per-org
+export writes the org's row, so a re-import leaves it as it was.
+
+No control-plane gauge of config problems exists yet, so the overlap is
+counted nowhere else: the `warning:` line is the whole report. A gauge by
+problem kind is #3542.
+
+The control plane's config-owned guards follow the same key. An org's row that
+shares a name with a global file row is the org's: its admin edits and deletes
+it, and `GET /api/v1/models` lists the org's route as stored (`source: "db"`)
+and only the file's as `config`. Creating such a row stays refused (section 6).
+
+One consequence is deliberate and left as it is. A key resolves a route or a
+pinned address by name in its own org first and only then checks the project
+(`Snapshot::named_route_for`, `resolve_pinned_in`). When the org's shadowing
+row is project-narrowed (a `project_only` route, or a project-scoped provider
+or group), a key of another project of that org gets the unknown-model answer
+rather than falling through to the file's row. That fails closed, never
+serving a row the key may not use, and is tracked as #3546.
+
+Keeping the drop and only reporting it was considered and rejected: the gateway
+would keep answering one org's traffic with another row's credentials and
+targets, and the warning would only say so after the fact.
