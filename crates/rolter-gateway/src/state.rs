@@ -1543,6 +1543,7 @@ impl AppState {
         let side_client = crate::egress_client::EgressClient::new(egress.clone());
         let local_classifiers = crate::local_classifier::LocalClassifiers::default();
         local_classifiers.configure(&config.semantic_guards, &config.guardrail_webhook);
+        metrics.watch_local_classifiers(local_classifiers.states());
         let cache_telemetry =
             crate::cache_telemetry::CacheTelemetry::new(metrics.clone(), side_client.clone());
         let snapshot = Snapshot::build_with_telemetry(config, &loads, Some(&cache_telemetry));
@@ -1809,8 +1810,7 @@ mod tests {
         Target {
             provider: provider.to_string(),
             model: model.map(str::to_string),
-            weight: 1,
-            takes_over: Vec::new(),
+            ..Default::default()
         }
     }
 

@@ -24,6 +24,7 @@ const LABELLED_PROVIDER_INFLIGHT: &str = "rolter_provider_inflight";
 const LABELLED_PROVIDER_QUEUE_DEPTH: &str = "rolter_provider_queue_depth";
 const LABELLED_REDIS_CONNECTED: &str = "rolter_redis_connected";
 const LABELLED_SNAPSHOT_UNKNOWN: &str = "rolter_snapshot_unknown_values";
+const LABELLED_LOCAL_MODELS: &str = "rolter_local_classifier_models";
 const LABELLED_GUARD_DECISIONS: &str = "rolter_guardrail_policy_decisions_total";
 const LABELLED_GUARD_VIOLATIONS: &str = "rolter_guardrail_policy_violations_total";
 const GUARD_PROVIDER_LATENCY: &str = "rolter_guardrail_provider_latency_ms";
@@ -91,6 +92,10 @@ pub const LABELLED_GAUGE_FAMILIES: &[rolter_core::telemetry::LabelledFamily] = &
     (
         LABELLED_SNAPSHOT_UNKNOWN,
         "values of the last applied snapshot this gateway does not know and read fail-closed, by the kind of enum or entity",
+    ),
+    (
+        LABELLED_LOCAL_MODELS,
+        "1 for the state each local semantic guard provider's model is in, loaded or failed, 0 for the other",
     ),
 ];
 
@@ -501,6 +506,10 @@ pub struct Metrics {
     /// (`rolter_core::UnknownValues::kinds`), never a value or an entity, so
     /// the label set is bounded by the build; a kind once seen stays at `0`
     snapshot_unknown: DashMap<&'static str, AtomicU64>,
+    /// whether each local semantic guard provider's model is loaded, shared
+    /// with the gateway's `LocalClassifiers` (#3452). Keyed by provider name,
+    /// which the configuration bounds; a path is never a label
+    local_models: std::sync::OnceLock<Arc<crate::local_classifier::ModelStates>>,
     /// semantic guardrail calls keyed by (policy, provider, stage, outcome)
     /// (#459). Policy and provider names come from the configuration; stage
     /// and outcome are fixed vocabularies
@@ -1263,7 +1272,51 @@ impl Metrics {
                 entry.value().load(Relaxed),
             ));
         }
+        for (provider, state, value) in self.local_model_series() {
+            out.push((
+                LABELLED_LOCAL_MODELS,
+                vec![("provider", provider), ("state", state.to_string())],
+                value,
+            ));
+        }
         out
+    }
+
+    /// Report the local classifiers' model states from now on (#3452).
+    pub(crate) fn watch_local_classifiers(
+        &self,
+        states: Arc<crate::local_classifier::ModelStates>,
+    ) {
+        let _ = self.local_models.set(states);
+    }
+
+    /// `(provider, state, value)` for every local provider and both states.
+    fn local_model_series(&self) -> Vec<(String, &'static str, u64)> {
+        let Some(states) = self.local_models.get() else {
+            return Vec::new();
+        };
+        let states = states.lock();
+        let mut series = Vec::with_capacity(states.len() * 2);
+        for (provider, loaded) in states.iter() {
+            series.push((provider.clone(), "loaded", u64::from(*loaded)));
+            series.push((provider.clone(), "failed", u64::from(!*loaded)));
+        }
+        series
+    }
+
+    /// Append `rolter_local_classifier_models{provider,state}` (#3452).
+    fn render_local_models(&self, out: &mut String) {
+        let name = LABELLED_LOCAL_MODELS;
+        let help = family_help(name);
+        let _ = writeln!(out, "# HELP {name} {help}");
+        let _ = writeln!(out, "# TYPE {name} gauge");
+        for (provider, state, value) in self.local_model_series() {
+            let provider = escape_label(&provider);
+            let _ = writeln!(
+                out,
+                "{name}{{provider=\"{provider}\",state=\"{state}\"}} {value}"
+            );
+        }
     }
 
     /// Hand the request path an OTLP histogram recorder.
@@ -1345,6 +1398,7 @@ impl Metrics {
         self.render_provider_load(&mut out);
         self.render_redis(&mut out);
         self.render_snapshot_unknown(&mut out);
+        self.render_local_models(&mut out);
         out
     }
 
@@ -1822,6 +1876,9 @@ mod tests {
         let _load = m.provider_load("vllm");
         watch_all_redis_consumers(&m);
         m.set_snapshot_unknown_values(&[("provider_kind", 1)].into_iter().collect());
+        let local_models = Arc::new(crate::local_classifier::ModelStates::default());
+        local_models.lock().insert("injection".to_string(), false);
+        m.watch_local_classifiers(local_models);
 
         let produced: Vec<&str> = m
             .labelled_for_export()

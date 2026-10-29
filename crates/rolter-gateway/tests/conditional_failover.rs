@@ -165,9 +165,8 @@ fn config(clickhouse: SocketAddr, targets: &[(&str, &Upstream, &[&str])]) -> Gat
             .iter()
             .map(|(name, _, takes_over)| Target {
                 provider: (*name).into(),
-                model: None,
-                weight: 1,
                 takes_over: takes_over.iter().map(|t| t.parse().unwrap()).collect(),
+                ..Default::default()
             })
             .collect(),
         params: Default::default(),
@@ -357,9 +356,8 @@ fn a_route_of_only_restricted_targets_is_refused_at_validation() {
         strategy: BalancingStrategy::RoundRobin,
         targets: vec![Target {
             provider: "premium".into(),
-            model: None,
-            weight: 1,
             takes_over: vec!["refusal".parse().unwrap()],
+            ..Default::default()
         }],
         params: Default::default(),
         param_policy: Default::default(),

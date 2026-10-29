@@ -1,4 +1,4 @@
-import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { TFunction } from "i18next";
 import {
   Boxes,
@@ -46,6 +46,7 @@ import { SettingsPanel } from "@/components/ui/settings-panel";
 import { SwitchRow } from "@/components/ui/switch-row";
 import { Textarea } from "@/components/ui/textarea";
 import {
+  ApiError,
   createMcpServer,
   createMcpToolGroup,
   deleteMcpServer,
@@ -60,7 +61,7 @@ import {
   fetchMcpToolGroupAssignments,
   fetchMcpToolGroups,
   fetchOrgProjects,
-  fetchVirtualKeys,
+  fetchOrgVirtualKeys,
   fetchTeams,
   replaceMcpToolGroupAssignments,
   MCP_AUTH_KINDS,
@@ -2137,22 +2138,25 @@ function AssignmentEditor({
     enabled: !!orgId,
     retry: false,
   });
-  // keys are listed per project, so the picker reads each project's (#3380)
-  const projectList = projects.data ?? [];
-  const keyReads = useQueries({
-    queries: projectList.map((project) => ({
-      queryKey: ["virtual-keys", project.id],
-      queryFn: () => fetchVirtualKeys(project.id),
-      retry: false,
-    })),
+  // one read for the organization's keys, each naming its project (#3467); the
+  // picker groups them under the project names it already has
+  const keys = useQuery({
+    // under the `virtual-keys` prefix, so the Keys page invalidating a
+    // project's keys refreshes this list too
+    queryKey: ["virtual-keys", "org", orgId],
+    queryFn: () => fetchOrgVirtualKeys(orgId as string),
+    enabled: !!orgId,
+    retry: false,
   });
-  const keysKnown = !!projects.data && keyReads.every((read) => read.isSuccess);
-  const keysReading = projects.isPending || keyReads.some((read) => read.isPending);
-  const keysUnread = projects.isError || keyReads.some((read) => read.isError);
+  const projectList = projects.data ?? [];
+  const keysKnown = !!projects.data && !!keys.data;
+  const keysReading = projects.isPending || keys.isPending;
+  const keysRefused = keys.error instanceof ApiError && keys.error.status === 403;
+  const keysUnread = projects.isError || (keys.isError && !keysRefused);
   const keyGroups = projectList
-    .map((project, i) => ({
+    .map((project) => ({
       project,
-      keys: keyReads[i]?.data ?? [],
+      keys: (keys.data ?? []).filter((key) => key.project_id === project.id),
     }))
     .filter((group) => group.keys.length > 0);
   const flip = (ids: string[], id: string) =>
@@ -2163,15 +2167,10 @@ function AssignmentEditor({
     options ? ids.filter((id) => options.some((option) => option.id === id)) : ids;
   const savedTeams = live(teamIds, teams.data);
   const savedProjects = live(projectIds, projects.data);
-  // a key that is gone (a deleted one) is dropped only once every project's
-  // keys have been read; until then, or when a read failed, the stored ones
+  // a key that is gone (a deleted one) is dropped only once the keys have been
+  // read; until then, or when the read failed or was refused, the stored ones
   // stay, as they would if the picker did not exist
-  const savedKeys = keysKnown
-    ? live(
-        keyIds,
-        keyGroups.flatMap((group) => group.keys),
-      )
-    : keyIds;
+  const savedKeys = keysKnown ? live(keyIds, keys.data) : keyIds;
   const same = (a: string[], b: string[]) =>
     a.length === b.length && a.every((id) => b.includes(id));
   const changed =
@@ -2224,6 +2223,11 @@ function AssignmentEditor({
       ))}
       {keysReading && (
         <p className="text-xs text-muted-foreground">{t("pages.tool-groups.assign.keysLoading")}</p>
+      )}
+      {keysRefused && (
+        <p role="alert" className="text-xs text-[color:var(--status-warning-text)]">
+          {t("pages.tool-groups.assign.keysRefused")}
+        </p>
       )}
       {keysUnread && (
         <p role="alert" className="text-xs text-[color:var(--status-warning-text)]">

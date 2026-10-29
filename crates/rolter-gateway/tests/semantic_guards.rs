@@ -282,8 +282,7 @@ fn config(upstream: SocketAddr, kind: ProviderKind) -> GatewayConfig {
         targets: vec![Target {
             provider: "up".into(),
             model: Some("test-model".into()),
-            weight: 1,
-            takes_over: Vec::new(),
+            ..Default::default()
         }],
         params: Default::default(),
         param_policy: Default::default(),
@@ -558,21 +557,10 @@ async fn the_most_specific_policy_replaces_the_broader_one() {
     let url = provider(Arc::default()).await;
     let mut config = config(up, ProviderKind::OpenaiCompatible);
     config.db_virtual_keys.push(VirtualKeyRecord {
-        access_policy: None,
         key_hash: rolter_auth::hash_key(&config.server.resolve_key_pepper(), KEY),
         id: "key-exempt".into(),
         org_id: "org-a".into(),
-        team_id: String::new(),
-        project_id: String::new(),
-        user_id: String::new(),
-        models: vec![],
-        providers: vec![],
-        disabled: false,
-        expires_at: None,
-        cache: None,
-        business_unit_id: String::new(),
-        customer_id: String::new(),
-        previous: None,
+        ..Default::default()
     });
     config.semantic_guards.providers = vec![guard(
         "inj",

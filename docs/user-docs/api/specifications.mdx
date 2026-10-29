@@ -352,7 +352,8 @@ response payload.
 - **Supported:** `method`, `result` and `error` are read from an MCP exchange to log tool calls
 - **Omitted:** an allowed message is forwarded unchanged: rolter validates no other part of it
 - **Deviations:** a body that cannot be read as JSON-RPC is refused with 400 `mcp_request_unreadable` unless the organization's failure policy lets it through
-- **Evidence:** `crates/rolter-gateway/src/mcp_policy.rs::an_escaped_method_name_does_not_get_around_the_policy`<br />`crates/rolter-gateway/src/mcp_policy.rs::a_batch_is_refused_as_a_whole_naming_every_refused_call`<br />`crates/rolter-gateway/tests/integration.rs::mcp_proxy_records_a_tool_call_with_key_and_session_owner_attribution`<br />`crates/rolter-gateway/tests/integration.rs::mcp_proxy_records_a_json_rpc_error_as_a_tool_error`
+- **Deviations:** a request with `"id": null` is treated as a notification: nothing can be matched to a reply, so it is logged with the HTTP status and no result
+- **Evidence:** `crates/rolter-gateway/src/mcp_policy.rs::an_escaped_method_name_does_not_get_around_the_policy`<br />`crates/rolter-gateway/src/mcp_policy.rs::a_batch_is_refused_as_a_whole_naming_every_refused_call`<br />`crates/rolter-gateway/tests/integration.rs::mcp_proxy_records_a_tool_call_with_key_and_session_owner_attribution`<br />`crates/rolter-gateway/tests/integration.rs::mcp_proxy_records_a_json_rpc_error_as_a_tool_error`<br />`crates/rolter-gateway/tests/integration.rs::mcp_proxy_records_batch_calls_and_notifications_over_http`
 
 ### Transport
 
@@ -378,7 +379,8 @@ response payload.
 - **Omitted:** no protocol-version negotiation: `MCP-Protocol-Version` is relayed, never read
 - **Omitted:** no validation of what an allowed message contains, and none of the server's replies
 - **Omitted:** the deprecated HTTP+SSE transport is relayed like any other request, not implemented
-- **Evidence:** `crates/rolter-gateway/src/mcp_proxy.rs::proxy_replaces_client_auth_and_preserves_path_query_and_body`<br />`crates/rolter-gateway/src/mcp_policy.rs::a_governed_server_serves_only_the_tools_its_groups_list`<br />`crates/rolter-gateway/src/mcp_proxy.rs::insufficient_scope_from_an_oauth_server_is_the_step_up_answer`<br />`crates/rolter-gateway/tests/integration.rs::mcp_proxy_binds_virtual_key_owner_to_server_scopes_and_bearer`
+- **Deviations:** a POST to a server the organization's tool groups or tool manifest govern, with a `Content-Encoding` other than `identity`, is refused with 415 `mcp_request_unreadable` whatever the failure policy says: the relay decodes no body, so it could not apply the rules to it
+- **Evidence:** `crates/rolter-gateway/src/mcp_proxy.rs::proxy_replaces_client_auth_and_preserves_path_query_and_body`<br />`crates/rolter-gateway/src/mcp_policy.rs::a_governed_server_serves_only_the_tools_its_groups_list`<br />`crates/rolter-gateway/src/mcp_proxy.rs::insufficient_scope_from_an_oauth_server_is_the_step_up_answer`<br />`crates/rolter-gateway/tests/integration.rs::mcp_proxy_binds_virtual_key_owner_to_server_scopes_and_bearer`<br />`crates/rolter-gateway/tests/integration.rs::mcp_proxy_refuses_a_content_encoded_body_to_a_governed_server`
 
 ### Identity
 

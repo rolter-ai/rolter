@@ -675,9 +675,7 @@ mod tests {
             targets: ["a", "b"]
                 .map(|provider| rolter_core::Target {
                     provider: provider.to_string(),
-                    model: None,
-                    weight: 1,
-                    takes_over: Vec::new(),
+                    ..Default::default()
                 })
                 .to_vec(),
             params: Default::default(),

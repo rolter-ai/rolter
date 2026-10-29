@@ -7,6 +7,7 @@ import {
   Harness,
   KEY,
   LIBRARY,
+  PROJECT,
   SERVERS,
   SETTINGS,
   Toasts,
@@ -413,6 +414,74 @@ export const ToolGroupWithoutKeys: Story = {
     );
     const none = await within(document.body).findByText("No virtual keys to assign yet.");
     await waitFor(() => expect(none).toBeVisible());
+  },
+};
+// #3467: the keys of every project arrive in one request, however many
+// projects there are, and sit under the project each names
+const SECOND_PROJECT = { ...PROJECT, id: "project-2", name: "Batch" };
+const SECOND_KEY = { ...KEY, id: "key-10", project_id: SECOND_PROJECT.id, name: "nightly" };
+const keysInOneRead = recording(async (input, init) => {
+  const url = String(input);
+  if (url.endsWith("/projects")) return json([PROJECT, SECOND_PROJECT]);
+  return routed({
+    assignments: async () => json([]),
+    keys: async () => json([KEY, SECOND_KEY]),
+  })(input, init);
+});
+export const ToolGroupReadsEveryKeyInOneRequest: Story = {
+  render: () => (
+    <Harness fetchStub={keysInOneRead.stub}>
+      <ToolGroups />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await userEvent.click(
+      await within(canvasElement).findByRole("button", { name: "Configure tool group Triage" }),
+    );
+    const body = within(document.body);
+    const first = await body.findByRole("group", { name: "Keys of Platform / Gateway" });
+    const second = await body.findByRole("group", { name: "Keys of Platform / Batch" });
+    await expect(within(first).getByRole("button", { name: "ci runner" })).toBeVisible();
+    await expect(within(second).getByRole("button", { name: "nightly" })).toBeVisible();
+    // one read of the organization's keys, not one per project
+    const reads = keysInOneRead.calls.filter((call) => call.url.includes("/virtual-keys"));
+    await expect(reads.map((call) => call.url)).toHaveLength(1);
+    await expect(reads[0].url).toMatch(/\/orgs\/[^/]+\/virtual-keys$/);
+  },
+};
+// a caller whose role refuses the key list is told so, and what is stored stays
+const keysRefused = recording(
+  routed({
+    groups: async (_input, init) => json(init?.method === "PUT" ? GROUPS[0] : GROUPS),
+    assignments: async (_input, init) =>
+      init?.method === "PUT" ? json([]) : json([keyAssignment(KEY.id)]),
+    keys: async () => json({ error: { message: "insufficient role" } }, 403),
+  }),
+);
+export const ToolGroupKeysRefusedKeepsStoredKeys: Story = {
+  render: () => (
+    <Harness fetchStub={keysRefused.stub}>
+      <ToolGroups />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await userEvent.click(
+      await within(canvasElement).findByRole("button", { name: "Configure tool group Triage" }),
+    );
+    const body = within(document.body);
+    const refused = await body.findByText(/does not let you list virtual keys/);
+    await waitFor(() => expect(refused).toBeVisible());
+    await expect(body.queryByText(/virtual keys could not be read/)).toBeNull();
+    await userEvent.click(await body.findByRole("button", { name: "Platform" }));
+    await userEvent.click(body.getByRole("button", { name: "Save group" }));
+    await expect(
+      await keysRefused.expectSentBody("PUT", "/tool-groups/group-1/assignments"),
+    ).toEqual({
+      assignments: [
+        { kind: "team", id: "team-1" },
+        { kind: "virtual_key", id: "key-9" },
+      ],
+    });
   },
 };
 // an unreadable assignment list must not turn into an editor that saves an

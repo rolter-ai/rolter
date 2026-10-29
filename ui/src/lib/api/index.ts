@@ -175,6 +175,7 @@ export {
   omittedRows,
   unservedModels,
   exportConfigToml,
+  CONFIG_EXPORT_NEEDS_ORG,
 } from "./config";
 export type {
   TargetDto,
@@ -185,6 +186,7 @@ export type {
   OmittedKind,
   OmittedEntry,
   ConfigProblems,
+  ConfigExportOptions,
 } from "./config";
 export {
   fetchConnectors,
@@ -767,6 +769,7 @@ export {
   fetchVirtualKeys,
   createVirtualKey,
   setVirtualKeyDisabled,
+  fetchOrgVirtualKeys,
   setVirtualKeyCache,
   setVirtualKeyProviders,
   setVirtualKeyAttribution,
@@ -774,4 +777,9 @@ export {
   rotateVirtualKey,
   revokeVirtualKeyPreviousSecret,
 } from "./virtual-keys";
-export type { VirtualKeyRow, CreatedVirtualKey, CreateVirtualKeyInput } from "./virtual-keys";
+export type {
+  VirtualKeyRow,
+  OrgVirtualKeyRow,
+  CreatedVirtualKey,
+  CreateVirtualKeyInput,
+} from "./virtual-keys";

@@ -150,8 +150,24 @@ export function unservedModels(
   return out;
 }
 
+/** What `GET /api/v1/config/export` can be narrowed by (#3440, #3396). */
+export interface ConfigExportOptions {
+  /** one organization's slug; absent exports the whole deployment */
+  org?: string;
+  /** leave caps on a person, which name an account by email, out of the file */
+  withoutPersonCaps?: boolean;
+}
+
 /**
- * The whole deployment's configuration as an importable `rolter.toml` (#1082).
+ * The stable `error.code` of the refusal to export the whole deployment while
+ * two organizations share a name: the caller exports one organization instead
+ * (`crates/rolter-control/src/config_export.rs`, #3480).
+ */
+export const CONFIG_EXPORT_NEEDS_ORG = "config_export_needs_org";
+
+/**
+ * The deployment's configuration as an importable `rolter.toml` (#1082), or
+ * one organization's with `org` (#3440).
  *
  * Text rather than a record: the endpoint renders a document
  * (`crates/rolter-control/src/config_export.rs`), and the dashboard hands it
@@ -159,6 +175,10 @@ export function unservedModels(
  * Superadmin-only — one document spans every org — so the caller gates on
  * `config_export:read` before it ever asks.
  */
-export function exportConfigToml(): Promise<string> {
-  return getText("/api/v1/config/export");
+export function exportConfigToml(options: ConfigExportOptions = {}): Promise<string> {
+  const query = new URLSearchParams();
+  if (options.org) query.set("org", options.org);
+  if (options.withoutPersonCaps) query.set("without_person_caps", "true");
+  const suffix = query.size > 0 ? `?${query}` : "";
+  return getText(`/api/v1/config/export${suffix}`);
 }

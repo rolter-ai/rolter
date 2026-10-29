@@ -806,8 +806,42 @@ Whether an organization that never saved MCP settings enforces its servers' tool
   The organization's slug.
 </ParamField>
 
-<ParamField path="enforce" type="bool" required>
+<ParamField path="enforce" type="boolean" required>
   `true` when the organization enforces its servers' tool manifests until it saves MCP settings, `false` when it allows tools a manifest leaves out.
+</ParamField>
+
+---
+
+### \[\[mcp_gateway_settings\]\]
+
+The MCP settings an organization saved on the MCP Settings screen ([MCP](/api/mcp#manage-the-registry)). `rolter config export` writes one entry for each organization that saved them, and `rolter-seed --import` applies them ([Config export](/configuration/config-export)). Unlike `[[mcp_manifest_enforcement]]` this is the desired state: the import sets the organization it targets (`--org-slug`) to exactly the values of its entry, stricter or laxer than it was, and logs what it changed. An entry for any other organization is skipped with a warning, and an entry that already matches writes nothing. The control plane does not ship this table in the snapshot, which carries the same values per organization.
+
+<ParamField path="org" type="string" required>
+  The organization's slug.
+</ParamField>
+
+<ParamField path="default_transport" type="string" required>
+  The transport a server registered without one gets: `sse`, `streamable_http` or `websocket`.
+</ParamField>
+
+<ParamField path="connect_timeout_ms" type="integer" required>
+  Milliseconds to wait for a connection to a server, from `100` to `60000`.
+</ParamField>
+
+<ParamField path="request_timeout_ms" type="integer" required>
+  Milliseconds to wait for a server's answer, from `1000` to `300000`.
+</ParamField>
+
+<ParamField path="max_retries" type="integer" required>
+  Times a call is repeated after a connection that was never made, from `0` to `5`.
+</ParamField>
+
+<ParamField path="default_failure_mode" type="string" required>
+  What to do when a request cannot be inspected for tool policy: `fail_closed` refuses it, `fail_open` forwards it unchecked.
+</ParamField>
+
+<ParamField path="allow_unlisted_tools" type="boolean" required>
+  `true` when a call may name a tool the server's manifest does not declare, `false` when the organization enforces its servers' manifests.
 </ParamField>
 
 ---
@@ -1822,7 +1856,7 @@ A vendor-neutral hook to a self-hosted semantic guardrail service, such as Guard
 </ParamField>
 
 <ParamField path="max_body_bytes" default="65536" type="integer">
-  The most content forwarded to the service, in bytes. Oversized content is sent as a truncated preview with `truncated: true`. It must be greater than zero.
+  The most content forwarded to the service, in bytes. Oversized content is sent as a truncated preview with `truncated: true`. It must be greater than zero. With `kind = "local"`, it is the most text the local classifier reads: the first quarter and the last three quarters of a longer one.
 </ParamField>
 
 <ParamField path="auth" type="table">
@@ -1851,6 +1885,10 @@ Several guardrail providers side by side, and the scoped policies that pick whic
 
 <ParamField path="local_concurrency" type="integer">
   How many [local classifier](/security/semantic-guard-policies#local-classifier) calls one gateway runs at once, across all its `local` providers, from 1 to 4096. Unset, it is half the CPUs the gateway process may use, at least one. Under a control plane the gateways take it from the control plane's file. A call that waits longer than its provider's `timeout_ms` for a slot follows that provider's `failure_mode`, counted as `overloaded`.
+</ParamField>
+
+<ParamField path="model_root" type="string">
+  An absolute directory every `local` provider's `model_path` must lie under. When it is set, the gateway resolves `model_path` in full (`..` and every symlink, in the file or in a directory on the way) and reads it only if the result is a regular file under the resolved root; anything else is not loaded, is logged with the reason, and its provider follows its `failure_mode`. Unset, a path may point anywhere on the gateway host. It is the gateway's own setting: read from the gateway's file at start (a change takes a restart), never sent by a control plane, so set it on each gateway. See [local classifier](/security/semantic-guard-policies#local-classifier).
 </ParamField>
 
 <ParamField path="policies" type="array of tables">
@@ -1902,7 +1940,7 @@ The same keys as [`[guardrail_webhook]`](#guardrail_webhook), one table per prov
 </ParamField>
 
 <ParamField path="max_body_bytes" default="65536" type="integer">
-  The most content forwarded, in bytes.
+  The most content forwarded, in bytes. A `local` provider reads at most this much text: the first quarter and the last three quarters of a longer one.
 </ParamField>
 
 <ParamField path="auth" type="table">

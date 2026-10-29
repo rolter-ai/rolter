@@ -61,21 +61,13 @@ fn unique(label: &str) -> String {
 
 fn key_record(config: &GatewayConfig, plaintext: &str, id: &str, user: &str) -> VirtualKeyRecord {
     VirtualKeyRecord {
-        previous: None,
         key_hash: rolter_auth::hash_key(&config.server.resolve_key_pepper(), plaintext),
         id: id.to_string(),
         org_id: "org-1".to_string(),
         team_id: "team-1".to_string(),
         project_id: "project-1".to_string(),
         user_id: user.to_string(),
-        models: Vec::new(),
-        providers: Vec::new(),
-        disabled: false,
-        expires_at: None,
-        cache: None,
-        business_unit_id: String::new(),
-        customer_id: String::new(),
-        access_policy: None,
+        ..Default::default()
     }
 }
 
@@ -92,9 +84,7 @@ fn base_config(upstream: SocketAddr) -> GatewayConfig {
         strategy: BalancingStrategy::RoundRobin,
         targets: vec![Target {
             provider: "up".to_string(),
-            model: None,
-            weight: 1,
-            takes_over: Vec::new(),
+            ..Default::default()
         }],
         params: Default::default(),
         param_policy: Default::default(),
