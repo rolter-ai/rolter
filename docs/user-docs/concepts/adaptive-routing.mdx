@@ -64,6 +64,7 @@ The scores live in the gateway, so each gateway pushes a sample to the control p
   "fresh_window_secs": 60,
   "routes": [
     {
+      "org_id": "3f2c9a1e-7b4d-4c55-9a0e-2d1f6b8c4e10",
       "model": "gpt-4o",
       "engaged": true,
       "nodes": [
@@ -102,6 +103,7 @@ Notes worth knowing before you build on it:
 - It is **current state, not history**. Each report overwrites the last; nothing accumulates. A sample older than `fresh_window_secs` is left out rather than served as if it were live.
 - `policy` is what _that node_ is running. It can lag the stored policy for a poll interval after a change, which is how you tell a node that has not converged from one that has.
 - A route missing from the response is a route no node is currently balancing adaptively.
+- A route is `(org_id, model)`: two organizations may each have a route of the same name, and each is its own entry. `org_id` is empty for a route from the gateway's own config file.
 - `score` is the weighted sum of the components below it; a signal with zero weight scores `0`, while its raw value (`latency_ms`, `cost_per_mtok`, `in_flight`) is still reported so you can judge whether to give it weight.
 - Prometheus users get the same blended score as `rolter_adaptive_routing_target_score{model,target}` on the gateway's `/metrics`.
 
