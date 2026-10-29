@@ -25,6 +25,21 @@ export const POLL_FAILURES_TOLERATED = 3;
 /** how long the status may stay the same before the page stops following */
 export const STALL_AFTER_MS = 5 * 60 * 1000;
 
+/**
+ * The mint of an older control plane refused the export as one it has no
+ * ticket for: one from before the audit log's exports could be downloaded this
+ * way (#3545). Its answer is a `400` naming the paths it does take, which a
+ * screen reads as "this export is not there" during a rolling upgrade, as it
+ * does a `404` from one with no tickets at all.
+ */
+export function isUnknownExport(error: unknown): boolean {
+  return (
+    error instanceof ApiError &&
+    error.status === 400 &&
+    error.message.startsWith("path must be one of")
+  );
+}
+
 /** the download was answered with an error rather than a file, other than a 429 */
 export class ExportRefusedError extends Error {
   readonly status: number;

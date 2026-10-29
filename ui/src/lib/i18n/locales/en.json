@@ -3719,8 +3719,8 @@
       "export": {
         "csv": "Export CSV",
         "json": "Export JSON",
-        "pending": "Exporting…",
         "downloaded": "Export downloaded",
+        "saved": "Audit log saved to the file you chose.",
         "done_one": "Exported {{count}} entry",
         "done_other": "Exported {{count}} entries",
         "truncated_one": "Exported the newest {{count}} entry. Narrow the filters to export the rest.",
@@ -6352,6 +6352,8 @@
       "rows_one": "{{rows}} row written",
       "rows_other": "{{rows}} rows written",
       "truncatedDownload": "The export stopped before its last row: it reached the row or time limit, or the connection dropped. The browser's download of it is incomplete, so delete it rather than use it. Narrow the window or the filters and try again.",
+      "truncatedUnbounded": "The export stopped before its last row: the connection dropped or the control plane failed part way. Nothing was saved, because the file would be incomplete. Try again.",
+      "truncatedDownloadUnbounded": "The export stopped before its last row: the connection dropped or the control plane failed part way. The browser's download of it is incomplete, so delete it rather than use it. Try again.",
       "refused": "The control plane refused the download (HTTP {{status}}). If you signed out or your session ended, sign in again; otherwise try again.",
       "notStarted": "The browser did not start the download before its link expired. Try again, and allow downloads from this page if the browser asks.",
       "stopWatching": "Stop watching",

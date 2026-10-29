@@ -113,7 +113,8 @@ export type ExportTicketState =
 
 export type ExportTicketStatus = ExportTicketState & {
   id: string;
-  export: "attribution" | "timeseries" | "invocations";
+  /** the audit log's two only on a control plane with a database (#3545) */
+  export: "attribution" | "timeseries" | "invocations" | "audit_log" | "org_audit_log";
   expires_at: string;
   /** the state can no longer change */
   done: boolean;

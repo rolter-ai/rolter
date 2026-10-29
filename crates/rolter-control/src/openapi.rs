@@ -2604,7 +2604,7 @@ fn operations() -> Vec<Op> {
             Op::post(
                 "/api/v1/analytics/exports/tickets",
                 "mintExportTicket",
-                "Mint a single-use download ticket for one CSV export, for a browser that cannot stream the file to disk itself (#3504). The body names `path` (one of the three `.../export` routes above; any other is a `400`) and `query`, the query string that export would be sent, which is checked as the export checks it. The export's own credential and scope checks run here, and the request log export is refused with `429` at once when its concurrency bound is full. Answers `id`, `download_url` (the secret is in it: hand it to the browser, never log it), `status_url` and `expires_at`, 60 seconds out",
+                "Mint a single-use download ticket for one export, for a browser that cannot stream the file to disk itself (#3504). The body names `path` (one of the three `.../export` routes above, or on a control plane with a database the audit log's `/api/v1/audit-log/export` or `/api/v1/orgs/{org_id}/audit-log/export` with the org's id, #3545; any other is a `400`) and `query`, the query string that export would be sent, which is checked as the export checks it. The export's own credential and scope checks run here (the audit log's `audit_log:read` or `deployment_audit_log:read` for its exports, again at redemption), and the request log export is refused with `429` at once when its concurrency bound is full. Answers `id`, `download_url` (the secret is in it: hand it to the browser, never log it), `status_url` and `expires_at`, 60 seconds out",
             )
             .body(Payload::Ref("ExportTicketRequest"))
             .ok(Payload::Ref("ExportTicket"))
@@ -2620,7 +2620,7 @@ fn operations() -> Vec<Op> {
             Op::get(
                 "/api/v1/analytics/exports/download/{ticket}",
                 "downloadExport",
-                "Redeem a download ticket and send its export as the bearer route would, under the principal that minted it, re-checked now. The ticket in the path is the credential, and it is spent by the first request whatever its outcome; an unknown, used or expired ticket is one uniform `410`, and any method but `GET` (a `HEAD` from a link checker included) is a `405` that leaves the ticket unspent. Answers `Cache-Control: no-store` and `Referrer-Policy: no-referrer`. The body is CSV, not JSON",
+                "Redeem a download ticket and send its export as the bearer route would, under the principal that minted it, re-checked now. The ticket in the path is the credential, and it is spent by the first request whatever its outcome; an unknown, used or expired ticket is one uniform `410`, and any method but `GET` (a `HEAD` from a link checker included) is a `405` that leaves the ticket unspent. Answers `Cache-Control: no-store` and `Referrer-Policy: no-referrer`. The body is CSV, or the audit log's CSV or JSON, not a JSON answer",
             )
             .public()
             .clickhouse_read(),
@@ -3446,12 +3446,7 @@ fn export_ticket_schemas(p: &Prim) -> Value {
             "properties": {
                 "path": {
                     "type": "string",
-                    "enum": [
-                        "/api/v1/analytics/by-attribution/export",
-                        "/api/v1/analytics/timeseries/export",
-                        "/api/v1/analytics/invocations/export"
-                    ],
-                    "description": "the export, by the exact path of its bearer route"
+                    "description": "the export, by the exact path of its bearer route: `/api/v1/analytics/by-attribution/export`, `/api/v1/analytics/timeseries/export`, `/api/v1/analytics/invocations/export`, and on a control plane with a database `/api/v1/audit-log/export` or `/api/v1/orgs/{org_id}/audit-log/export` with the org's hyphenated id"
                 },
                 "query": {
                     "type": "string",
@@ -3477,7 +3472,7 @@ fn export_ticket_schemas(p: &Prim) -> Value {
             "required": ["id", "export", "expires_at", "done", "state"],
             "properties": {
                 "id": uuid,
-                "export": {"type": "string", "enum": ["attribution", "timeseries", "invocations"]},
+                "export": {"type": "string", "enum": ["attribution", "timeseries", "invocations", "audit_log", "org_audit_log"]},
                 "expires_at": timestamp,
                 "done": {"type": "boolean", "description": "the state can no longer change"},
                 "state": {
