@@ -305,7 +305,7 @@ Both histograms are labelled `{model="..."}` so you can track latency per model 
   <Accordion title="rolter_local_classifier_models">
     **Type:** Gauge · **Labels:** `provider`, `state`
 
-    Whether each enabled [local classifier](/security/semantic-guard-policies#local-classifier) provider has its model loaded: `1` on the `state` it is in (`loaded` or `failed`) and `0` on the other. A model that failed to load is read again in the background, so a `failed` series turns into `loaded` once the file is in place, without a configuration change. The label is the provider's name, never the model's path, and a provider drops out once no configuration names it. Alert on `rolter_local_classifier_models{state="failed"} == 1`: that provider produces no verdict, so every request it judges follows its `failure_mode`, and a `fail_closed` one is refused.
+    Whether each enabled [local classifier](/security/semantic-guard-policies#local-classifier) provider has its model loaded: `1` on the `state` it is in (`loaded` or `failed`) and `0` on the other. A model whose file could not be read is read again in the background, so a `failed` series turns into `loaded` once the file is in place, without a configuration change; one refused for its content or location (a wrong digest, outside `model_root`, malformed) stays `failed` until the configuration changes. The label is the provider's name, never the model's path, and a provider drops out once no configuration names it. Alert on `rolter_local_classifier_models{state="failed"} == 1`: that provider produces no verdict, so every request it judges follows its `failure_mode`, and a `fail_closed` one is refused.
 
   </Accordion>
 
