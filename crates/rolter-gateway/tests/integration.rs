@@ -361,6 +361,31 @@ async fn mcp_proxy_records_a_tool_call_with_key_and_session_owner_attribution() 
     assert_eq!(row["result"], r#"{"content":[]}"#);
 }
 
+/// A body a Go decoder reads as a `tools/call` is recorded, not only forwarded
+/// (#3399): the log reads its keys the way the tool policy does.
+#[tokio::test]
+async fn mcp_proxy_records_an_allowed_call_written_with_other_key_cases() {
+    let (config, seen) = mcp_logging_config(
+        json!({"jsonrpc": "2.0", "result": {"content": []}}),
+        false,
+        20,
+    )
+    .await;
+    let gateway = serve_gateway(&config).await;
+    let response = reqwest::Client::new()
+        .post(format!("http://{gateway}/mcp/docs"))
+        .header("x-api-key", "sk-mcp-log")
+        .header("content-type", "application/json")
+        .body(r#"{"jsonrpc":"2.0","id":9,"Method":"tools/call","Params":{"Name":"search","Arguments":{"q":"rust"}}}"#)
+        .send()
+        .await
+        .unwrap();
+    assert!(response.status().is_success());
+    let rows = wait_for_mcp_rows(&seen, 1).await;
+    assert_eq!(rows[0]["tool"], "search", "{rows:?}");
+    assert_eq!(rows[0]["status"], "success");
+}
+
 #[tokio::test]
 async fn mcp_proxy_records_a_tool_error_result_and_an_sse_reply() {
     for sse in [false, true] {

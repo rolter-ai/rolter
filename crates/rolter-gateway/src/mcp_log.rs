@@ -61,6 +61,13 @@ pub struct McpEvent {
     pub arguments: String,
     pub result: String,
     pub error: String,
+    /// the scopes an upstream's `insufficient_scope` challenge asked for,
+    /// validated and bounded (#3375). Left out of the row when empty, so a
+    /// gateway writing to a ClickHouse that has not applied migration `042`
+    /// sends nothing it would have to drop, and `input_format_skip_unknown_fields`
+    /// covers the one that does
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub error_scopes: Vec<String>,
 }
 
 /// Handle the proxy uses to record tool calls. Cheap to clone.
@@ -261,7 +268,7 @@ impl BatchWriter {
 }
 
 /// Who made the call and how payloads are kept; everything but the JSON-RPC
-/// content itself, which [`PendingCall::parse`] reads from the request.
+/// content itself, which [`PendingCall::from_request`] takes from the request.
 pub(crate) struct CallContext<'a> {
     pub server: &'a str,
     pub transport: &'a str,
@@ -278,9 +285,16 @@ pub(crate) struct CallContext<'a> {
     pub redactor: &'a Arc<rolter_core::payload_redaction::PayloadRedactor>,
 }
 
+/// The `error` of a row refused for an insufficient OAuth scope, which tells it
+/// from the other `auth_denied` causes (no session, an expired one, a scope the
+/// server requires and the session lacks).
+pub(crate) const INSUFFICIENT_SCOPE_ERROR: &str = "insufficient scope";
+
 /// What a finished call amounts to, before it is rendered into a row.
 struct Outcome {
     status: &'static str,
+    /// a fixed category that replaces the one `status` implies
+    error: Option<&'static str>,
     /// the JSON-RPC `result` or `error` object, when one was seen
     payload: Option<Value>,
 }
@@ -299,35 +313,11 @@ pub(crate) struct PendingCall {
 }
 
 impl PendingCall {
-    /// Read a request body; `Some` only for a JSON-RPC `tools/call` request
-    /// (one with an id, since a notification has no response to record).
-    /// `initialize`, `tools/list`, notifications and batches are not recorded.
-    pub(crate) fn parse(
-        sink: &McpEventSink,
-        body: &[u8],
-        context: &CallContext<'_>,
-    ) -> Option<Self> {
-        const NEEDLE: &[u8] = b"tools/call";
-        // cheap reject before a full parse: most MCP traffic is not a call
-        if !sink.enabled() || !body.windows(NEEDLE.len()).any(|w| w == NEEDLE) {
-            return None;
-        }
-        let Value::Object(request) = serde_json::from_slice::<Value>(body).ok()? else {
-            return None;
-        };
-        if request.get("method")?.as_str()? != "tools/call" {
-            return None;
-        }
-        if request.get("id").is_none_or(Value::is_null) {
-            return None;
-        }
-        Self::from_request(sink, request, context)
-    }
-
     /// A pending call for one already-parsed `tools/call` request, whether or
-    /// not it has an id. The policy check uses it to record a call it refused
-    /// (#1403), including one inside a batch or sent as a notification, which
-    /// [`Self::parse`] leaves alone because there is no reply to wait for.
+    /// not it has an id. The proxy records an allowed single request with an id
+    /// from the body the policy read ([`crate::mcp_policy::Read`], #3399), and a
+    /// call the policy refused (#1403), including one inside a batch or sent as
+    /// a notification, which has no reply to wait for.
     pub(crate) fn from_request(
         sink: &McpEventSink,
         mut request: serde_json::Map<String, Value>,
@@ -361,6 +351,7 @@ impl PendingCall {
             arguments: String::new(),
             result: String::new(),
             error: String::new(),
+            error_scopes: Vec::new(),
         };
         let capturing = context.capture.enabled && context.capture.max_bytes > 0;
         Some(Self {
@@ -385,6 +376,19 @@ impl PendingCall {
     pub(crate) fn fail(self, status: &'static str) {
         self.finish(Outcome {
             status,
+            error: None,
+            payload: None,
+        });
+    }
+
+    /// Record a call the upstream refused for want of an OAuth scope (#3375): an
+    /// `auth_denied` row that says so, with the scopes the challenge named, so
+    /// the dashboard can offer the step-up for exactly those.
+    pub(crate) fn fail_insufficient_scope(mut self, scopes: Vec<String>) {
+        self.event.error_scopes = scopes;
+        self.finish(Outcome {
+            status: "auth_denied",
+            error: Some(INSUFFICIENT_SCOPE_ERROR),
             payload: None,
         });
     }
@@ -415,7 +419,11 @@ impl PendingCall {
     }
 
     fn finish(mut self, outcome: Outcome) {
-        let Outcome { status, payload } = outcome;
+        let Outcome {
+            status,
+            error,
+            payload,
+        } = outcome;
         self.event.ts = self.ts;
         self.event.status = status;
         self.event.latency_ms =
@@ -429,7 +437,7 @@ impl PendingCall {
             "transport_error" => Some("transport"),
             _ => Some("tool error"),
         };
-        self.event.error = safe_error(status, detail);
+        self.event.error = error.map_or_else(|| safe_error(status, detail), str::to_string);
         self.event.arguments = capture(
             self.arguments.take(),
             self.capture_enabled,
@@ -477,6 +485,7 @@ fn outcome(
 ) -> Outcome {
     let none = |status| Outcome {
         status,
+        error: None,
         payload: None,
     };
     if matches!(http_status, 401 | 403) {
@@ -487,6 +496,7 @@ fn outcome(
             if let Some(error) = reply.get_mut("error").map(Value::take) {
                 return Outcome {
                     status: "error",
+                    error: None,
                     payload: Some(error),
                 };
             }
@@ -498,6 +508,7 @@ fn outcome(
                 .unwrap_or(false);
             return Outcome {
                 status: if is_error { "error" } else { "success" },
+                error: None,
                 payload: result,
             };
         }
@@ -519,6 +530,7 @@ impl Outcome {
         if stream_failed && self.payload.is_none() && !matches!(self.status, "auth_denied") {
             Self {
                 status: "transport_error",
+                error: None,
                 payload: None,
             }
         } else {
@@ -640,6 +652,13 @@ mod tests {
         )
     }
 
+    /// a request body as the proxy hands it to the log: read once with the
+    /// policy's reader, then taken as a single call
+    fn parse(sink: &McpEventSink, body: &[u8], ctx: &CallContext<'_>) -> Option<PendingCall> {
+        let read = crate::mcp_policy::Read::of(body, false, sink.enabled());
+        PendingCall::from_request(sink, read.single_call(true)?, ctx)
+    }
+
     fn request(method: &str, id: Option<i64>) -> Vec<u8> {
         let mut value = json!({"jsonrpc": "2.0", "method": method,
             "params": {"name": "search", "arguments": {"q": "x", "token": "s3"}}});
@@ -650,19 +669,71 @@ mod tests {
     }
 
     #[test]
+    fn the_scopes_of_a_refusal_ride_in_the_row_only_when_there_are_some() {
+        let (sink, mut rx) = sink();
+        let capture = rolter_core::PayloadCaptureConfig::default();
+        let redactor = redactor(&capture);
+        let ctx = context(&capture, &redactor);
+        let call = parse(&sink, &request("tools/call", Some(1)), &ctx).unwrap();
+        call.fail_insufficient_scope(vec!["repo".into(), "read:org".into()]);
+        let denied = serde_json::to_value(rx.try_recv().unwrap()).unwrap();
+        assert_eq!(denied["status"], "auth_denied");
+        assert_eq!(denied["error"], INSUFFICIENT_SCOPE_ERROR);
+        assert_eq!(denied["error_scopes"], json!(["repo", "read:org"]));
+        // every other row omits the field, so an un-migrated table is not sent
+        // a column it would have to drop
+        let call = parse(&sink, &request("tools/call", Some(2)), &ctx).unwrap();
+        call.fail("auth_denied");
+        let plain = serde_json::to_value(rx.try_recv().unwrap()).unwrap();
+        assert!(plain.get("error_scopes").is_none(), "{plain}");
+        assert_eq!(plain["error"], "authentication denied");
+    }
+
+    #[test]
+    fn a_call_written_with_other_key_cases_or_escapes_is_recorded() {
+        let (sink, _rx) = sink();
+        let capture = rolter_core::PayloadCaptureConfig::default();
+        let redactor = redactor(&capture);
+        let ctx = context(&capture, &redactor);
+        // `encoding/json` reads these as `method`, `id`, `params`, `name`
+        let cased = br#"{"jsonrpc":"2.0","Method":"tools/call","ID":7,"Params":{"NAME":"search","Arguments":{"q":"x"}}}"#;
+        let call = parse(&sink, cased, &ctx).expect("a case-variant key is the same key");
+        assert_eq!(call.event.tool, "search");
+        assert_eq!(call.rpc_id, json!(7));
+        // an escape can spell the method without the bytes `tools/call`
+        let escaped =
+            br#"{"jsonrpc":"2.0","method":"tools\u002fcall","id":8,"params":{"name":"search"}}"#;
+        assert!(parse(&sink, escaped, &ctx).is_some());
+        // and a body that never mentions it is not even parsed
+        assert!(parse(&sink, br#"{"method":"ping","id":1}"#, &ctx).is_none());
+    }
+
+    #[test]
     fn only_a_tools_call_request_with_an_id_is_recorded() {
         let (sink, _rx) = sink();
         let capture = rolter_core::PayloadCaptureConfig::default();
         let redactor = redactor(&capture);
         let ctx = context(&capture, &redactor);
-        assert!(PendingCall::parse(&sink, &request("tools/call", Some(1)), &ctx).is_some());
-        assert!(PendingCall::parse(&sink, &request("tools/list", Some(1)), &ctx).is_none());
-        assert!(PendingCall::parse(&sink, &request("initialize", Some(1)), &ctx).is_none());
+        assert!(parse(&sink, &request("tools/call", Some(1)), &ctx).is_some());
+        assert!(parse(&sink, &request("tools/list", Some(1)), &ctx).is_none());
+        assert!(parse(&sink, &request("initialize", Some(1)), &ctx).is_none());
         // a notification has no response to record
-        assert!(PendingCall::parse(&sink, &request("tools/call", None), &ctx).is_none());
-        assert!(PendingCall::parse(&sink, b"not json tools/call", &ctx).is_none());
+        assert!(parse(&sink, &request("tools/call", None), &ctx).is_none());
+        assert!(parse(&sink, b"not json tools/call", &ctx).is_none());
+        // a batch is not followed, however it is spelled
+        assert!(parse(
+            &sink,
+            &serde_json::to_vec(&json!([serde_json::from_slice::<Value>(&request(
+                "tools/call",
+                Some(1)
+            ))
+            .unwrap()]))
+            .unwrap(),
+            &ctx
+        )
+        .is_none());
         let disabled = McpEventSink::disabled(Arc::new(Metrics::default()));
-        assert!(PendingCall::parse(&disabled, &request("tools/call", Some(1)), &ctx).is_none());
+        assert!(parse(&disabled, &request("tools/call", Some(1)), &ctx).is_none());
     }
 
     #[test]
@@ -753,7 +824,7 @@ mod tests {
             redact_fields: vec!["token".to_string()],
             ..Default::default()
         };
-        let call = PendingCall::parse(
+        let call = parse(
             &sink,
             &request("tools/call", Some(1)),
             &context(&capture, &redactor(&capture)),
@@ -796,8 +867,7 @@ mod tests {
             "params": {"name": "search", "arguments": {"query": format!("log in with {key}")}},
         }))
         .unwrap();
-        let call =
-            PendingCall::parse(&sink, &request, &context(&capture, &redactor(&capture))).unwrap();
+        let call = parse(&sink, &request, &context(&capture, &redactor(&capture))).unwrap();
         let reply = serde_json::to_vec(&json!({
             "jsonrpc": "2.0", "id": 1,
             "result": {"content": [{"type": "text", "text": format!("found {key}")}]},
@@ -817,7 +887,7 @@ mod tests {
     async fn capture_off_keeps_payloads_out_of_the_row() {
         let (sink, mut rx) = sink();
         let capture = rolter_core::PayloadCaptureConfig::default();
-        let call = PendingCall::parse(
+        let call = parse(
             &sink,
             &request("tools/call", Some(1)),
             &context(&capture, &redactor(&capture)),
@@ -841,7 +911,7 @@ mod tests {
         );
         let capture = rolter_core::PayloadCaptureConfig::default();
         for _ in 0..200 {
-            if let Some(call) = PendingCall::parse(
+            if let Some(call) = parse(
                 &sink,
                 &request("tools/call", Some(1)),
                 &context(&capture, &redactor(&capture)),

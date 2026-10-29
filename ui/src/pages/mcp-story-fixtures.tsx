@@ -23,6 +23,21 @@ export const PROJECT = {
   team_name: TEAM.name,
   created_at: ORG.created_at,
 };
+// a virtual key of PROJECT, as the per-project key listing returns it
+export const KEY = {
+  id: "key-9",
+  project_id: PROJECT.id,
+  key_hash: "hash",
+  key_prefix: "sk-rl-ab",
+  name: "ci runner",
+  models: [],
+  providers: [],
+  disabled: false,
+  created_by: null,
+  business_unit_id: null,
+  customer_id: null,
+  created_at: ORG.created_at,
+};
 // what every server row carries since #952: no credential, no overrides
 export const NO_AUTH = {
   auth_kind: "none",
@@ -248,6 +263,7 @@ export function routed(
       | "library"
       | "groups"
       | "assignments"
+      | "keys"
       | "settings"
       | "oauthClient"
       | "authorize"
@@ -280,6 +296,7 @@ export function routed(
         json({ ...SERVERS[0], ...JSON.parse(String(init?.body ?? "{}")) })
       );
     if (url.includes("/mcp-servers")) return over.servers?.(input, init) ?? json(SERVERS);
+    if (url.includes("/virtual-keys")) return over.keys?.(input, init) ?? json([KEY]);
     if (url.includes("/projects")) return json([PROJECT]);
     if (url.includes("/teams")) return json([TEAM]);
     if (url.includes("/orgs")) return json([ORG]);

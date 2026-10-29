@@ -1178,8 +1178,10 @@ async fn replace_tool_group_assignments(
     )
     .await?;
     let repo = McpToolGroupAssignmentRepo(pool(&state));
-    // a subject that has since been deleted and is already assigned is dropped
-    // rather than refused, so a stale row can never block saving the group
+    // a subject that is gone and still assigned is dropped rather than
+    // refused, so a stale row can never block saving the group. deleting a
+    // subject sweeps its rows (0200), so this is left to a row written
+    // concurrently with the delete and to one from before the sweep
     let stored = repo.list_for_group(id).await?;
     let subjects = validate_assignments(&state, group.org_id, &body.assignments, &stored).await?;
     repo.replace(id, &subjects).await?;
