@@ -3162,14 +3162,16 @@ async fn proxy(
                 return withhold_unrequested_stream(
                     response,
                     &translation,
-                    started,
-                    state.log.clone(),
-                    price,
-                    log,
-                    recorder,
-                    token_recorder,
-                    inflight_guard,
-                    genai_span.clone(),
+                    Accounting {
+                        started,
+                        sink: state.log.clone(),
+                        price,
+                        log,
+                        recorder,
+                        token_recorder,
+                        inflight_guard,
+                        genai_span: genai_span.clone(),
+                    },
                 )
                 .await;
             }
@@ -3265,33 +3267,39 @@ async fn proxy(
                                         reason,
                                         billed,
                                         is_sse,
-                                        started,
-                                        state.log.clone(),
-                                        price,
-                                        log,
-                                        recorder,
-                                        token_recorder,
-                                        inflight_guard,
-                                        genai_span.clone(),
+                                        Accounting {
+                                            started,
+                                            sink: state.log.clone(),
+                                            price,
+                                            log,
+                                            recorder,
+                                            token_recorder,
+                                            inflight_guard,
+                                            genai_span: genai_span.clone(),
+                                        },
                                     )
                                 }
                             };
                             return buffered_response(
-                                bytes,
-                                pre_restore,
-                                billed,
-                                status,
-                                content_type,
-                                is_sse,
-                                started,
-                                state.log.clone(),
-                                price,
-                                log,
-                                recorder,
-                                token_recorder,
-                                inflight_guard,
+                                Buffered {
+                                    bytes,
+                                    pre_restore,
+                                    billed,
+                                    status,
+                                    content_type,
+                                    is_sse,
+                                },
+                                Accounting {
+                                    started,
+                                    sink: state.log.clone(),
+                                    price,
+                                    log,
+                                    recorder,
+                                    token_recorder,
+                                    inflight_guard,
+                                    genai_span: genai_span.clone(),
+                                },
                                 response_observer,
-                                genai_span.clone(),
                                 pii_stream.take(),
                             );
                         }
@@ -3303,21 +3311,25 @@ async fn proxy(
                 response,
                 is_sse,
                 translation,
-                started,
-                state.log.clone(),
-                price,
-                log,
-                recorder,
-                token_recorder,
-                inflight_guard,
+                Accounting {
+                    started,
+                    sink: state.log.clone(),
+                    price,
+                    log,
+                    recorder,
+                    token_recorder,
+                    inflight_guard,
+                    genai_span: genai_span.clone(),
+                },
                 response_observer,
-                output_guard.as_ref(),
-                genai_span.clone(),
-                post_response_plugins.clone(),
-                pii_leg.as_ref(),
-                semantic_leg,
+                DeliveryPolicy {
+                    output: output_guard.as_ref(),
+                    semantic: semantic_leg,
+                    plugins: post_response_plugins.as_ref(),
+                    pii: pii_leg.as_ref(),
+                    transcript: false,
+                },
                 pii_stream.take(),
-                false,
             )
             .await
         }
@@ -4124,21 +4136,25 @@ async fn proxy_multipart(
                 response,
                 is_sse,
                 rolter_proxy::TranslationPlan::passthrough(),
-                started,
-                state.log.clone(),
-                price,
-                log,
-                recorder,
-                token_recorder,
-                inflight_guard,
+                Accounting {
+                    started,
+                    sink: state.log.clone(),
+                    price,
+                    log,
+                    recorder,
+                    token_recorder,
+                    inflight_guard,
+                    genai_span: None,
+                },
                 None,
-                output_guard.as_ref(),
+                DeliveryPolicy {
+                    output: output_guard.as_ref(),
+                    semantic: semantic_leg,
+                    plugins: post_response_plugins.as_ref(),
+                    pii: pii_leg.as_ref(),
+                    transcript: true,
+                },
                 None,
-                post_response_plugins,
-                pii_leg.as_ref(),
-                semantic_leg,
-                None,
-                true,
             )
             .await
         }
@@ -5146,26 +5162,17 @@ fn body_read_failed(
 /// Convert an upstream response into a streaming axum response, teeing the body
 /// through [`UsageLoggingStream`] so token usage and latency are logged once the
 /// response has been fully forwarded.
-#[allow(clippy::too_many_arguments)]
+///
+/// `policy` is the post-response policy the request was admitted under; its
+/// whole-body legs are set only for a request that did not ask for a stream.
 async fn stream_response(
     response: reqwest::Response,
     is_sse: bool,
     translation: rolter_proxy::TranslationPlan,
-    started: Instant,
-    sink: crate::logging::LogSink,
-    price: Option<rolter_core::ModelPriceConfig>,
-    log: RequestLog,
-    recorder: SpendRecorder,
-    token_recorder: TokenRecorder,
-    inflight_guard: Option<crate::load::LoadGuard>,
+    mut acct: Accounting,
     completion_observer: Option<crate::logging::CompletionObserver>,
-    output: Option<&crate::guardrails::OutputGuard<'_>>,
-    genai_span: Option<tracing::Span>,
-    post_response_plugins: Option<crate::plugin_dispatch::PostResponsePlugins<'_>>,
-    pii: Option<&PiiResponseLeg<'_>>,
-    semantic: Option<SemanticLeg<'_, '_>>,
+    policy: DeliveryPolicy<'_, '_>,
     pii_stream: Option<crate::pii_stream::StreamRestore>,
-    transcript: bool,
 ) -> Response {
     let status =
         StatusCode::from_u16(response.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
@@ -5179,7 +5186,7 @@ async fn stream_response(
     // stream wrapper: which provider/target/model/variant served the request and
     // whether it was a cache hit (ROL-58). this streamed path is always a live
     // upstream response (a miss); cache hits are served by `cached_response`
-    let decision = DecisionHeaders::from_log(&log);
+    let decision = DecisionHeaders::from_log(&acct.log);
     // the prompt-cache hit a provider states in a response header (Fireworks,
     // #2882), which the body parser cannot see
     let header_cache_read = response
@@ -5198,42 +5205,28 @@ async fn stream_response(
     // withheld, never delivered unchecked
     // the leg judges what actually came back: a request that asked for a
     // stream and got a JSON body is judged as one
-    let semantic = semantic.map(|leg| SemanticLeg {
+    let semantic = policy.semantic.map(|leg| SemanticLeg {
         stream: is_sse,
         ..leg
     });
     // a caller of this function hands over a whole-body leg only for a
     // request that did not ask for a stream, so an event stream here is one
     // the upstream sent unasked, which no such leg can read (#3471)
-    if is_sse
-        && status.is_success()
-        && (output.is_some() || post_response_plugins.is_some() || pii.is_some())
-    {
-        return withhold_unrequested_stream(
-            response,
-            &translation,
-            started,
-            sink,
-            price,
-            log,
-            recorder,
-            token_recorder,
-            inflight_guard,
-            genai_span,
-        )
-        .await;
+    if is_sse && status.is_success() && policy.has_whole_body_leg() {
+        return withhold_unrequested_stream(response, &translation, acct).await;
     }
     let buffer_stream = is_sse && semantic.is_some();
     if buffer_stream
         || (!is_sse
             && (translation.rewrites_response()
-                || output.is_some()
+                || policy.output.is_some()
                 || semantic.is_some()
-                || post_response_plugins.is_some()
-                || pii.is_some()))
+                || policy.plugins.is_some()
+                || policy.pii.is_some()))
     {
         if buffer_stream {
-            sink.metrics()
+            acct.sink
+                .metrics()
                 .guardrail_streams_buffered_total
                 .fetch_add(1, Relaxed);
         }
@@ -5248,14 +5241,7 @@ async fn stream_response(
                 guardrail_withheld_reason("stream_too_large"),
                 crate::logging::Usage::default(),
                 is_sse,
-                started,
-                sink,
-                price,
-                log,
-                recorder,
-                token_recorder,
-                inflight_guard,
-                genai_span,
+                acct,
             ),
             Ok(Some(bytes)) => {
                 let bytes = translation.translate_response(bytes, is_sse);
@@ -5268,63 +5254,42 @@ async fn stream_response(
                     header_cache_read.map(|n| u32::try_from(n).unwrap_or(u32::MAX)),
                 );
                 let policy = DeliveryPolicy {
-                    output,
                     semantic,
-                    plugins: post_response_plugins.as_ref(),
-                    pii,
                     // a streamed transcript is judged from its events, not
                     // wrapped whole as plain text (#3432)
-                    transcript: transcript && !is_sse,
+                    transcript: policy.transcript && !is_sse,
+                    ..policy
                 };
-                let mut log = log;
                 // read before the policy too: a transcript's audio duration is
                 // billed whether it is rewritten, withheld or delivered (#3331)
-                log.billed_units = log.unit_basis.units(&bytes);
+                acct.log.billed_units = acct.log.unit_basis.units(&bytes);
                 let mut post_events = PolicyEvents::default();
                 let applied = policy.apply(status, &mut post_events, bytes).await;
-                post_events.record(&mut log);
+                post_events.record(&mut acct.log);
                 let (bytes, pre_restore) = match applied {
                     Delivery::Send { body, pre_restore } => (body, pre_restore),
                     Delivery::Refuse { response, reason } => {
-                        return withheld_response(
-                            response,
-                            reason,
-                            billed,
-                            is_sse,
-                            started,
-                            sink,
-                            price,
-                            log,
-                            recorder,
-                            token_recorder,
-                            inflight_guard,
-                            genai_span,
-                        )
+                        return withheld_response(response, reason, billed, is_sse, acct)
                     }
                 };
                 buffered_response(
-                    bytes,
-                    pre_restore,
-                    billed,
-                    status.as_u16(),
-                    content_type,
-                    is_sse,
-                    started,
-                    sink,
-                    price,
-                    log,
-                    recorder,
-                    token_recorder,
-                    inflight_guard,
+                    Buffered {
+                        bytes,
+                        pre_restore,
+                        billed,
+                        status: status.as_u16(),
+                        content_type,
+                        is_sse,
+                    },
+                    acct,
                     completion_observer,
-                    genai_span,
                     // a buffered stream is replayed through the restore like a
                     // live one, so the guard judged the placeholders and only
                     // the caller sees plaintext (ADR-0036, ADR-0037)
                     pii_stream,
                 )
             }
-            Err(err) => body_read_failed(&sink, log, started, &err),
+            Err(err) => body_read_failed(&acct.sink, acct.log, acct.started, &err),
         };
     }
     let upstream: std::pin::Pin<
@@ -5337,21 +5302,11 @@ async fn stream_response(
     } else {
         upstream
     };
-    let body = crate::logging::UsageLoggingStream::new(
-        translated,
-        is_sse,
-        started,
-        sink,
-        price,
-        log,
-        Some(recorder),
-        Some(token_recorder),
-        inflight_guard,
-    )
-    .with_completion_observer(completion_observer)
-    .with_genai_span(genai_span)
-    .with_thinking_count(translation.thinking_count())
-    .with_header_cache_read(header_cache_read);
+    let body = acct
+        .into_stream(translated, is_sse)
+        .with_completion_observer(completion_observer)
+        .with_thinking_count(translation.thinking_count())
+        .with_header_cache_read(header_cache_read);
     let body = restore_stream_body(body, is_sse, status, pii_stream);
     let mut builder = Response::builder()
         .status(status)
@@ -5483,48 +5438,34 @@ async fn pii_response_leg_apply(leg: &PiiResponseLeg<'_>, bytes: Bytes) -> (Byte
 /// it's handed on as a single-chunk stream rather than re-fetched. `is_sse`
 /// carries the upstream content type through so a buffered SSE completion is
 /// still parsed frame-by-frame for its final usage chunk.
-#[allow(clippy::too_many_arguments)]
 fn buffered_response(
-    bytes: Bytes,
-    pre_restore: Option<Bytes>,
-    billed: crate::logging::Usage,
-    status: u16,
-    content_type: String,
-    is_sse: bool,
-    started: Instant,
-    sink: crate::logging::LogSink,
-    price: Option<rolter_core::ModelPriceConfig>,
-    log: RequestLog,
-    recorder: SpendRecorder,
-    token_recorder: TokenRecorder,
-    inflight_guard: Option<crate::load::LoadGuard>,
+    buffered: Buffered,
+    acct: Accounting,
     completion_observer: Option<crate::logging::CompletionObserver>,
-    genai_span: Option<tracing::Span>,
     pii_stream: Option<crate::pii_stream::StreamRestore>,
 ) -> Response {
+    let Buffered {
+        bytes,
+        pre_restore,
+        billed,
+        status,
+        content_type,
+        is_sse,
+    } = buffered;
     let status = StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY);
-    let decision = DecisionHeaders::from_log(&log);
+    let log = &acct.log;
+    let decision = DecisionHeaders::from_log(log);
     // redacted and cut to `payload_max_bytes` now, so the stream holds no more
     // than the row will store (#3240)
     let captured = pre_restore.filter(|_| log.capture_payloads).map(|body| {
         crate::logging::capture_payload(&body, log.payload_max_bytes, &log.payload_redactor)
     });
     let stream = futures_util::stream::iter(vec![Ok::<Bytes, reqwest::Error>(bytes)]);
-    let body = crate::logging::UsageLoggingStream::new(
-        Box::pin(stream),
-        is_sse,
-        started,
-        sink,
-        price,
-        log,
-        Some(recorder),
-        Some(token_recorder),
-        inflight_guard,
-    )
-    .with_completion_observer(completion_observer)
-    .with_genai_span(genai_span)
-    .with_billed_usage(billed)
-    .with_captured_payload(captured);
+    let body = acct
+        .into_stream(Box::pin(stream), is_sse)
+        .with_completion_observer(completion_observer)
+        .with_billed_usage(billed)
+        .with_captured_payload(captured);
     let body = restore_stream_body(body, is_sse, status, pii_stream);
     let mut builder = Response::builder()
         .status(status)
@@ -5579,12 +5520,25 @@ where
 /// the real tokens and cost, marked `withheld` with `reason` as its error. The
 /// rejected body is never handed to the accounting stream, so it cannot reach
 /// payload capture. `refusal` is returned to the caller unchanged.
-#[allow(clippy::too_many_arguments)]
 fn withheld_response(
     refusal: Response,
     reason: String,
     billed: crate::logging::Usage,
     is_sse: bool,
+    acct: Accounting,
+) -> Response {
+    acct.into_stream(Box::pin(futures_util::stream::empty()), is_sse)
+        .with_billed_usage(billed)
+        .withhold(refusal.status().as_u16(), reason);
+    refusal
+}
+
+/// What bills, logs and holds the in-flight slot of one forwarded response,
+/// handed whole to the [`crate::logging::UsageLoggingStream`] that delivers
+/// it. Every response tail ([`stream_response`], [`buffered_response`],
+/// [`withheld_response`], [`withhold_unrequested_stream`]) takes it by value,
+/// so it is moved down the tail and never cloned.
+struct Accounting {
     started: Instant,
     sink: crate::logging::LogSink,
     price: Option<rolter_core::ModelPriceConfig>,
@@ -5592,23 +5546,44 @@ fn withheld_response(
     recorder: SpendRecorder,
     token_recorder: TokenRecorder,
     inflight_guard: Option<crate::load::LoadGuard>,
+    /// the successful attempt's span, which token usage is recorded on once
+    /// the body has been consumed (#808)
     genai_span: Option<tracing::Span>,
-) -> Response {
-    crate::logging::UsageLoggingStream::new(
-        Box::pin(futures_util::stream::empty()),
-        is_sse,
-        started,
-        sink,
-        price,
-        log,
-        Some(recorder),
-        Some(token_recorder),
-        inflight_guard,
-    )
-    .with_genai_span(genai_span)
-    .with_billed_usage(billed)
-    .withhold(refusal.status().as_u16(), reason);
-    refusal
+}
+
+impl Accounting {
+    /// The accounting stream over `inner`, carrying the upstream span.
+    fn into_stream(
+        self,
+        inner: std::pin::Pin<Box<dyn futures_util::Stream<Item = reqwest::Result<Bytes>> + Send>>,
+        is_sse: bool,
+    ) -> crate::logging::UsageLoggingStream {
+        crate::logging::UsageLoggingStream::new(
+            inner,
+            is_sse,
+            self.started,
+            self.sink,
+            self.price,
+            self.log,
+            Some(self.recorder),
+            Some(self.token_recorder),
+            self.inflight_guard,
+        )
+        .with_genai_span(self.genai_span)
+    }
+}
+
+/// A fully received body on its way to [`buffered_response`], with what the
+/// provider billed for it read before any policy rewrote it (#1478).
+struct Buffered {
+    bytes: Bytes,
+    /// the placeholder-bearing body a restore replaced, kept for payload
+    /// capture (#3240)
+    pre_restore: Option<Bytes>,
+    billed: crate::logging::Usage,
+    status: u16,
+    content_type: String,
+    is_sse: bool,
 }
 
 /// Who asked for what, captured once a request is authenticated: enough to
@@ -6078,6 +6053,13 @@ struct DeliveryPolicy<'p, 'a> {
 }
 
 impl DeliveryPolicy<'_, '_> {
+    /// Whether a leg that must read the whole body is set: the built-in
+    /// output rules, the `post_response` plugins or the sanitizer's response
+    /// leg. None of them can read an event stream (#3471).
+    fn has_whole_body_leg(&self) -> bool {
+        self.output.is_some() || self.plugins.is_some() || self.pii.is_some()
+    }
+
     /// Finalise a buffered body with `status`. Only a successful body is
     /// examined; an error body passes through untouched.
     async fn apply(&self, status: StatusCode, events: &mut PolicyEvents, bytes: Bytes) -> Delivery {
@@ -6417,24 +6399,16 @@ const UNREQUESTED_STREAM: &str = "unrequested_stream";
 /// read as a stream (#3471). The body is read up to the buffered-stream cap
 /// for what the provider billed, so the withheld row is charged like any
 /// other; a longer body is withheld with its usage unknown.
-#[allow(clippy::too_many_arguments)]
 async fn withhold_unrequested_stream(
     response: reqwest::Response,
     translation: &rolter_proxy::TranslationPlan,
-    started: Instant,
-    sink: crate::logging::LogSink,
-    price: Option<rolter_core::ModelPriceConfig>,
-    mut log: RequestLog,
-    recorder: SpendRecorder,
-    token_recorder: TokenRecorder,
-    inflight_guard: Option<crate::load::LoadGuard>,
-    genai_span: Option<tracing::Span>,
+    mut acct: Accounting,
 ) -> Response {
     let cap = crate::semantic_guards::MAX_BUFFERED_STREAM_BYTES;
     let billed = match read_bounded(response, cap).await {
         Ok(Some(bytes)) => {
             let bytes = translation.translate_response(bytes, true);
-            log.billed_units = log.unit_basis.units(&bytes);
+            acct.log.billed_units = acct.log.unit_basis.units(&bytes);
             crate::logging::parse_usage_with(true, &bytes, translation.thinking_count())
         }
         Ok(None) | Err(_) => crate::logging::Usage::default(),
@@ -6444,14 +6418,7 @@ async fn withhold_unrequested_stream(
         guardrail_withheld_reason(UNREQUESTED_STREAM),
         billed,
         true,
-        started,
-        sink,
-        price,
-        log,
-        recorder,
-        token_recorder,
-        inflight_guard,
-        genai_span,
+        acct,
     )
 }
 
