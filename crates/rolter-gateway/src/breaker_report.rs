@@ -224,8 +224,7 @@ mod tests {
         Target {
             provider: provider.to_string(),
             model: model.map(str::to_string),
-            weight: 1,
-            takes_over: Vec::new(),
+            ..Default::default()
         }
     }
 

@@ -186,8 +186,7 @@ fn target(provider: &str) -> Target {
     Target {
         provider: provider.into(),
         model: Some("whisper-1".into()),
-        weight: 1,
-        takes_over: Vec::new(),
+        ..Default::default()
     }
 }
 
@@ -233,21 +232,12 @@ fn config(clickhouse: SocketAddr) -> GatewayConfig {
     config.retry.base_backoff_ms = 0;
     config.retry.max_backoff_ms = 0;
     config.db_virtual_keys.push(VirtualKeyRecord {
-        previous: None,
-        access_policy: None,
         key_hash: rolter_auth::hash_key(&config.server.resolve_key_pepper(), KEY),
         id: "key-multipart".into(),
         org_id: "org-multipart".into(),
         team_id: "team-multipart".into(),
         project_id: "project-multipart".into(),
-        user_id: String::new(),
-        models: vec![],
-        providers: vec![],
-        disabled: false,
-        expires_at: None,
-        cache: None,
-        business_unit_id: String::new(),
-        customer_id: String::new(),
+        ..Default::default()
     });
     config
 }

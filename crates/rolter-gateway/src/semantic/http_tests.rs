@@ -133,9 +133,7 @@ impl Harness {
                 strategy: BalancingStrategy::RoundRobin,
                 targets: vec![Target {
                     provider: provider.to_string(),
-                    model: None,
-                    weight: 1,
-                    takes_over: Vec::new(),
+                    ..Default::default()
                 }],
                 params: Default::default(),
                 param_policy: Default::default(),

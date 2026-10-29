@@ -812,16 +812,8 @@ mod tests {
                 project_id: project.into(),
                 team_id: team.into(),
                 key_hash: format!("hash-{id}"),
-                previous: None,
-                access_policy: None,
                 user_id: "user-1".into(),
-                models: Vec::new(),
-                providers: Vec::new(),
-                disabled: false,
-                expires_at: None,
-                cache: None,
-                business_unit_id: String::new(),
-                customer_id: String::new(),
+                ..Default::default()
             }),
         );
         (
@@ -1239,16 +1231,8 @@ mod tests {
             project_id: "project-a".into(),
             team_id: "team-a".into(),
             key_hash: "hash-a".into(),
-            previous: None,
-            access_policy: None,
             user_id: "user-1".into(),
-            models: Vec::new(),
-            providers: Vec::new(),
-            disabled: false,
-            expires_at: None,
-            cache: None,
-            business_unit_id: String::new(),
-            customer_id: String::new(),
+            ..Default::default()
         });
         let snapshot = Snapshot::build(&config, &crate::load::LoadTracker::default());
         let entry = &snapshot.mcp_caller_tools["key-a"];

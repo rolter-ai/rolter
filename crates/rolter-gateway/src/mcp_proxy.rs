@@ -650,21 +650,13 @@ mod tests {
     fn config(session_user: &str, session_scopes: &[&str]) -> GatewayConfig {
         let mut config = GatewayConfig::default();
         config.db_virtual_keys.push(VirtualKeyRecord {
-            previous: None,
-            access_policy: None,
             key_hash: rolter_auth::hash_key(&config.server.resolve_key_pepper(), "sk-mcp-user"),
             id: "key-1".to_string(),
             org_id: "org-1".to_string(),
             team_id: "team-1".to_string(),
             project_id: "project-1".to_string(),
             user_id: "user-1".to_string(),
-            models: Vec::new(),
-            providers: Vec::new(),
-            disabled: false,
-            expires_at: None,
-            cache: None,
-            business_unit_id: String::new(),
-            customer_id: String::new(),
+            ..Default::default()
         });
         config.mcp_servers.push(McpServerConfig {
             id: "server-1".to_string(),

@@ -75,9 +75,7 @@ fn config_for(model: &str, providers: Vec<(&str, SocketAddr)>) -> GatewayConfig 
         .iter()
         .map(|(name, _)| Target {
             provider: name.to_string(),
-            model: None,
-            weight: 1,
-            takes_over: Vec::new(),
+            ..Default::default()
         })
         .collect();
     for (name, addr) in providers {
@@ -129,21 +127,13 @@ async fn mcp_proxy_binds_virtual_key_owner_to_server_scopes_and_bearer() {
     let upstream = serve(Router::new().route("/{*path}", any(mcp_upstream))).await;
     let mut config = GatewayConfig::default();
     config.db_virtual_keys.push(VirtualKeyRecord {
-        previous: None,
-        access_policy: None,
         key_hash: rolter_auth::hash_key(&config.server.resolve_key_pepper(), "sk-user-owned"),
         id: "key-1".to_string(),
         org_id: "org-1".to_string(),
         team_id: "team-1".to_string(),
         project_id: "project-1".to_string(),
         user_id: "user-1".to_string(),
-        models: Vec::new(),
-        providers: Vec::new(),
-        disabled: false,
-        expires_at: None,
-        cache: None,
-        business_unit_id: String::new(),
-        customer_id: String::new(),
+        ..Default::default()
     });
     config.mcp_servers.push(McpServerConfig {
         id: "server-1".to_string(),
@@ -272,21 +262,13 @@ async fn mcp_logging_config(
     config.logging.flush_ms = flush_ms;
     config.logging.payload_capture.enabled = true;
     config.db_virtual_keys.push(VirtualKeyRecord {
-        previous: None,
-        access_policy: None,
         key_hash: rolter_auth::hash_key(&config.server.resolve_key_pepper(), "sk-mcp-log"),
         id: "key-1".to_string(),
         org_id: "org-1".to_string(),
         team_id: "team-1".to_string(),
         project_id: "project-1".to_string(),
         user_id: "user-1".to_string(),
-        models: Vec::new(),
-        providers: Vec::new(),
-        disabled: false,
-        expires_at: None,
-        cache: None,
-        business_unit_id: String::new(),
-        customer_id: String::new(),
+        ..Default::default()
     });
     config.mcp_servers.push(McpServerConfig {
         id: "server-1".to_string(),
@@ -472,21 +454,13 @@ async fn mcp_proxy_presents_a_stored_static_credential_without_an_oauth_session(
     let upstream = serve(Router::new().route("/{*path}", any(echo))).await;
     let mut config = GatewayConfig::default();
     config.db_virtual_keys.push(VirtualKeyRecord {
-        previous: None,
-        access_policy: None,
         key_hash: rolter_auth::hash_key(&config.server.resolve_key_pepper(), "sk-user-owned"),
         id: "key-1".to_string(),
         org_id: "org-1".to_string(),
         team_id: "team-1".to_string(),
         project_id: "project-1".to_string(),
         user_id: "user-1".to_string(),
-        models: Vec::new(),
-        providers: Vec::new(),
-        disabled: false,
-        expires_at: None,
-        cache: None,
-        business_unit_id: String::new(),
-        customer_id: String::new(),
+        ..Default::default()
     });
     config.mcp_servers.push(McpServerConfig {
         id: "server-bearer".to_string(),
@@ -552,21 +526,13 @@ async fn mcp_proxy_presents_a_stored_static_credential_without_an_oauth_session(
 async fn mcp_proxy_refuses_a_credentialled_server_whose_secret_did_not_arrive() {
     let mut config = GatewayConfig::default();
     config.db_virtual_keys.push(VirtualKeyRecord {
-        previous: None,
-        access_policy: None,
         key_hash: rolter_auth::hash_key(&config.server.resolve_key_pepper(), "sk-user-owned"),
         id: "key-1".to_string(),
         org_id: "org-1".to_string(),
         team_id: "team-1".to_string(),
         project_id: "project-1".to_string(),
         user_id: "user-1".to_string(),
-        models: Vec::new(),
-        providers: Vec::new(),
-        disabled: false,
-        expires_at: None,
-        cache: None,
-        business_unit_id: String::new(),
-        customer_id: String::new(),
+        ..Default::default()
     });
     config.mcp_servers.push(McpServerConfig {
         id: "server-1".to_string(),
@@ -604,21 +570,13 @@ async fn mcp_proxy_applies_the_per_server_request_timeout() {
     let upstream = serve(Router::new().route("/{*path}", any(slow))).await;
     let mut config = GatewayConfig::default();
     config.db_virtual_keys.push(VirtualKeyRecord {
-        previous: None,
-        access_policy: None,
         key_hash: rolter_auth::hash_key(&config.server.resolve_key_pepper(), "sk-user-owned"),
         id: "key-1".to_string(),
         org_id: "org-1".to_string(),
         team_id: "team-1".to_string(),
         project_id: "project-1".to_string(),
         user_id: "user-1".to_string(),
-        models: Vec::new(),
-        providers: Vec::new(),
-        disabled: false,
-        expires_at: None,
-        cache: None,
-        business_unit_id: String::new(),
-        customer_id: String::new(),
+        ..Default::default()
     });
     config.mcp_servers.push(McpServerConfig {
         id: "server-1".to_string(),
@@ -776,8 +734,7 @@ async fn models_endpoint_lists_route_ids_and_provider_slug_model_ids() {
         targets: vec![Target {
             provider: "vLLM SPB".to_string(),
             model: Some("qwen3".to_string()),
-            weight: 1,
-            takes_over: Vec::new(),
+            ..Default::default()
         }],
         params: Default::default(),
         param_policy: Default::default(),
@@ -836,8 +793,7 @@ async fn a_key_neither_lists_nor_calls_another_orgs_routes_or_providers() {
         targets: vec![Target {
             provider: provider.to_string(),
             model: Some("m".to_string()),
-            weight: 1,
-            takes_over: Vec::new(),
+            ..Default::default()
         }],
         params: Default::default(),
         param_policy: Default::default(),
@@ -972,8 +928,7 @@ async fn a_project_scoped_provider_is_reached_only_from_its_own_project() {
             .map(|provider| Target {
                 provider: provider.to_string(),
                 model: Some("m".to_string()),
-                weight: 1,
-                takes_over: Vec::new(),
+                ..Default::default()
             })
             .collect(),
         params: Default::default(),
@@ -1143,8 +1098,7 @@ async fn another_orgs_route_shadows_no_address_or_builtin_on_any_path() {
             targets: vec![Target {
                 provider: "their-upstream".to_string(),
                 model: Some("m".to_string()),
-                weight: 1,
-                takes_over: Vec::new(),
+                ..Default::default()
             }],
             params: Default::default(),
             param_policy: Default::default(),
@@ -1301,8 +1255,7 @@ async fn models_endpoint_lists_the_whole_probed_provider_catalogue() {
         targets: vec![Target {
             provider: "openai-edge".to_string(),
             model: Some("gpt-4o".to_string()),
-            weight: 1,
-            takes_over: Vec::new(),
+            ..Default::default()
         }],
         params: Default::default(),
         param_policy: Default::default(),
@@ -1386,8 +1339,7 @@ async fn models_endpoint_serves_route_catalog_metadata_but_not_the_description()
         targets: vec![Target {
             provider: "openai-edge".to_string(),
             model: Some("gpt-4o".to_string()),
-            weight: 1,
-            takes_over: Vec::new(),
+            ..Default::default()
         }],
         params: Default::default(),
         param_policy: Default::default(),
@@ -2132,21 +2084,11 @@ async fn a_stored_response_survives_its_provider_name_becoming_shared() {
         config.routes.append(&mut one.routes);
         let key = format!("sk-{org}");
         config.db_virtual_keys.push(VirtualKeyRecord {
-            previous: None,
-            access_policy: None,
             key_hash: rolter_auth::hash_key(&config.server.resolve_key_pepper(), &key),
             id: format!("key-{org}"),
             org_id: org.to_string(),
-            team_id: String::new(),
-            project_id: String::new(),
-            user_id: String::new(),
-            models: Vec::new(),
             providers: vec!["openai".to_string()],
-            disabled: false,
-            expires_at: None,
-            cache: None,
-            business_unit_id: String::new(),
-            customer_id: String::new(),
+            ..Default::default()
         });
     };
     let upstream_a = upstream("a").await;
@@ -2976,24 +2918,13 @@ async fn two_orgs_same_named_routes_report_their_own_metric_series() {
         config.providers.append(&mut one.providers);
         config.routes.append(&mut one.routes);
         config.db_virtual_keys.push(VirtualKeyRecord {
-            previous: None,
-            access_policy: None,
             key_hash: rolter_auth::hash_key(
                 &config.server.resolve_key_pepper(),
                 &format!("sk-{org}"),
             ),
             id: format!("key-{org}"),
             org_id: org.to_string(),
-            team_id: String::new(),
-            project_id: String::new(),
-            user_id: String::new(),
-            models: Vec::new(),
-            providers: Vec::new(),
-            disabled: false,
-            expires_at: None,
-            cache: None,
-            business_unit_id: String::new(),
-            customer_id: String::new(),
+            ..Default::default()
         });
     }
     let state = rolter_gateway::AppState::with_logging(&config, None);
@@ -3094,9 +3025,7 @@ async fn complexity_policy_selects_routes_for_openai_and_anthropic_requests() {
             strategy: BalancingStrategy::RoundRobin,
             targets: vec![Target {
                 provider: provider.to_string(),
-                model: None,
-                weight: 1,
-                takes_over: Vec::new(),
+                ..Default::default()
             }],
             params: Default::default(),
             param_policy: Default::default(),
@@ -3955,9 +3884,7 @@ async fn variant_routing_fails_over_to_next_variant() {
         weight,
         targets: vec![Target {
             provider: provider.to_string(),
-            model: None,
-            weight: 1,
-            takes_over: Vec::new(),
+            ..Default::default()
         }],
         params: Default::default(),
     };
@@ -6318,21 +6245,14 @@ fn scoped_key(
     providers: Vec<String>,
 ) -> VirtualKeyRecord {
     VirtualKeyRecord {
-        previous: None,
         key_hash: rolter_auth::hash_key(&config.server.resolve_key_pepper(), plaintext),
         id: id.to_string(),
         org_id: "org-1".to_string(),
         team_id: team_id.to_string(),
         project_id: "project-1".to_string(),
-        user_id: String::new(),
-        models: Vec::new(),
         providers,
-        disabled: false,
-        expires_at: None,
-        cache: None,
-        business_unit_id: String::new(),
-        customer_id: String::new(),
         access_policy: policy,
+        ..Default::default()
     }
 }
 
@@ -6692,9 +6612,7 @@ async fn response_lifecycle_rechecks_route_authorization_after_revocation() {
     });
     provider_narrowed.routes[0].targets.push(Target {
         provider: "other".to_string(),
-        model: None,
-        weight: 1,
-        takes_over: Vec::new(),
+        ..Default::default()
     });
     provider_narrowed.db_virtual_keys[0].providers = vec!["other".to_string()];
 
