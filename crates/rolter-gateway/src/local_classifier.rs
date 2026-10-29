@@ -37,14 +37,20 @@
 //! exponential backoff until it loads or no configuration names it (#3452),
 //! and [`ModelStates`] reports every local provider's model as loaded or
 //! failed for the `rolter_local_classifier_models` gauge.
+//!
+//! The gateway's own `[semantic_guards] model_root`, when set, confines every
+//! model to one directory (#3454): the path is canonicalised, symlinks
+//! included, and a file that resolves outside the root is refused like any
+//! other model that cannot be loaded.
 
 use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap};
 use std::io::Read;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use arc_swap::ArcSwap;
+use arc_swap::{ArcSwap, ArcSwapOption};
 use rolter_core::guardrail_webhook::{GuardProviderKind, GuardrailWebhookConfig, WebhookDecision};
 use rolter_core::semantic_guards::MAX_CATEGORY_LEN;
 use rolter_core::{ScoredDecision, SemanticGuardsConfig};
@@ -112,8 +118,21 @@ const STRUCTURAL_KEYS: &[&str] = &[
 pub enum ModelError {
     Read(std::io::Error),
     TooLarge,
-    Digest { pinned: String, actual: String },
+    Digest {
+        pinned: String,
+        actual: String,
+    },
     Malformed(String),
+    /// `model_root` itself cannot be resolved
+    Root {
+        root: String,
+        error: std::io::Error,
+    },
+    /// the canonical path of the model is not under the canonical root
+    OutsideRoot {
+        resolved: String,
+        root: String,
+    },
 }
 
 impl std::fmt::Display for ModelError {
@@ -133,6 +152,13 @@ impl std::fmt::Display for ModelError {
             Self::Malformed(why) => {
                 write!(f, "the model file is not a {MODEL_FORMAT} model: {why}")
             }
+            Self::Root { root, error } => {
+                write!(f, "model_root {root} cannot be resolved: {error}")
+            }
+            Self::OutsideRoot { resolved, root } => write!(
+                f,
+                "the model file resolves to {resolved}, outside model_root {root}; it is not read"
+            ),
         }
     }
 }
@@ -233,15 +259,27 @@ impl LinearModel {
     }
 
     /// Read `path`, check it against `sha256` and parse it.
+    #[cfg(test)]
     pub fn load(path: &str, sha256: &str) -> Result<Self, ModelError> {
+        Self::load_confined(path, sha256, None)
+    }
+
+    /// [`load`](Self::load), refusing a `path` that does not resolve to a
+    /// file under `root` when one is set (#3454).
+    pub fn load_confined(
+        path: &str,
+        sha256: &str,
+        root: Option<&Path>,
+    ) -> Result<Self, ModelError> {
+        let path = confine(path, root)?;
         // a FIFO or a device would block the read for as long as nothing
         // writes to it, and the loader with it
-        if !std::fs::metadata(path)?.is_file() {
+        if !std::fs::metadata(&path)?.is_file() {
             return Err(ModelError::Malformed(
                 "the path is not a regular file".into(),
             ));
         }
-        let file = std::fs::File::open(path)?;
+        let file = open(&path, root.is_some())?;
         if file.metadata()?.len() > MAX_MODEL_FILE_BYTES {
             return Err(ModelError::TooLarge);
         }
@@ -281,6 +319,40 @@ impl LinearModel {
             .map(|(name, sum)| (name.clone(), sigmoid(sum)))
             .collect()
     }
+}
+
+/// The path to open for `path`: itself without a root, else its canonical
+/// form, which must lie under the canonical `root`. Every `..` and every
+/// symlink, in the last component or any directory before it, is resolved
+/// before the check, so neither can lead out of the root.
+fn confine(path: &str, root: Option<&Path>) -> Result<PathBuf, ModelError> {
+    let Some(root) = root else {
+        return Ok(PathBuf::from(path));
+    };
+    let root_real = std::fs::canonicalize(root).map_err(|error| ModelError::Root {
+        root: root.display().to_string(),
+        error,
+    })?;
+    let resolved = std::fs::canonicalize(path)?;
+    if !resolved.starts_with(&root_real) {
+        return Err(ModelError::OutsideRoot {
+            resolved: resolved.display().to_string(),
+            root: root_real.display().to_string(),
+        });
+    }
+    Ok(resolved)
+}
+
+/// Open `path` for reading. Under a root the path is canonical, so its last
+/// component is no symlink; one swapped in after the check is refused rather
+/// than followed out of the root. (The pin still covers whatever is read.)
+fn open(path: &Path, confined: bool) -> Result<std::fs::File, ModelError> {
+    if confined && std::fs::symlink_metadata(path)?.file_type().is_symlink() {
+        return Err(ModelError::Malformed(
+            "the path became a symlink while it was read".into(),
+        ));
+    }
+    Ok(std::fs::File::open(path)?)
 }
 
 fn sigmoid(x: f64) -> f64 {
@@ -514,6 +586,10 @@ pub struct LocalClassifiers {
     /// woken when an install leaves a wanted model missing
     retry: Arc<Notify>,
     states: Arc<ModelStates>,
+    /// the gateway's own `model_root`, set once by
+    /// [`configure`](Self::configure) from its bootstrap file; a snapshot
+    /// never carries one
+    root: Arc<ArcSwapOption<PathBuf>>,
 }
 
 impl Default for LocalClassifiers {
@@ -531,6 +607,7 @@ impl Default for LocalClassifiers {
             writing: Default::default(),
             retry: Default::default(),
             states: Default::default(),
+            root: Default::default(),
         }
     }
 }
@@ -547,12 +624,24 @@ fn default_cap() -> usize {
 impl LocalClassifiers {
     /// Load and install in one step, reading files on the calling thread. For
     /// startup, before the gateway serves; a reload goes through
-    /// [`preload`](Self::preload) and [`apply`](Self::apply) instead.
+    /// [`preload`](Self::preload) and [`apply`](Self::apply) instead. Takes
+    /// `model_root` from `semantic_guards`, which is the gateway's own file:
+    /// it holds for the life of the process.
     pub fn configure(
         &self,
         semantic_guards: &SemanticGuardsConfig,
         legacy: &GuardrailWebhookConfig,
     ) {
+        let root = semantic_guards
+            .model_root
+            .as_deref()
+            .map(str::trim)
+            .filter(|root| !root.is_empty())
+            .map(|root| Arc::new(PathBuf::from(root)));
+        if let Some(root) = &root {
+            tracing::info!(model_root = %root.display(), "local guardrail models confined to model_root");
+        }
+        self.root.store(root);
         self.load_missing(&wanted(semantic_guards, legacy));
         self.apply(semantic_guards, legacy);
     }
@@ -590,7 +679,12 @@ impl LocalClassifiers {
             if self.loaded(&want.digest).is_some() {
                 continue;
             }
-            match LinearModel::load(&want.path, &want.digest) {
+            let root = self.root.load_full();
+            match LinearModel::load_confined(
+                &want.path,
+                &want.digest,
+                root.as_deref().map(PathBuf::as_path),
+            ) {
                 Ok(model) => {
                     tracing::info!(
                         provider = want.provider,
@@ -698,10 +792,12 @@ impl LocalClassifiers {
         if missing.is_empty() {
             return;
         }
+        let root = self.root.load_full();
         let read = tokio::task::spawn_blocking(move || {
+            let root = root.as_deref().map(PathBuf::as_path);
             let mut read = Vec::new();
             for want in missing {
-                match LinearModel::load(&want.path, &want.digest) {
+                match LinearModel::load_confined(&want.path, &want.digest, root) {
                     Ok(model) => {
                         tracing::info!(
                             provider = want.provider,
@@ -1339,6 +1435,150 @@ pub(crate) mod tests {
         }
         assert!(classifiers.classify(&provider, &json!("x")).await.is_ok());
         retries.abort();
+    }
+
+    /// A root with the fixture inside, and a copy of it outside the root.
+    struct Confined {
+        dir: TempDir,
+        root: PathBuf,
+    }
+
+    impl Confined {
+        fn new(name: &str) -> Self {
+            let dir = TempDir::new(name);
+            let root = dir.0.join("models");
+            std::fs::create_dir_all(root.join("nested")).unwrap();
+            std::fs::create_dir_all(dir.0.join("outside")).unwrap();
+            std::fs::write(root.join("model.json"), fixture_bytes()).unwrap();
+            std::fs::write(dir.0.join("outside/model.json"), fixture_bytes()).unwrap();
+            Self { dir, root }
+        }
+
+        fn inside(&self, file: &str) -> String {
+            self.root.join(file).to_string_lossy().into_owned()
+        }
+
+        fn load(&self, path: &str) -> Result<LinearModel, ModelError> {
+            LinearModel::load_confined(path, &fixture_sha256(), Some(&self.root))
+        }
+
+        fn refused_outside(&self, path: &str) {
+            let error = self.load(path).unwrap_err();
+            assert!(
+                matches!(error, ModelError::OutsideRoot { .. }),
+                "{path}: {error}"
+            );
+            assert!(error.to_string().contains("outside model_root"), "{error}");
+            // the same file loads when no root is set
+            assert!(LinearModel::load(path, &fixture_sha256()).is_ok(), "{path}");
+        }
+    }
+
+    #[test]
+    fn a_model_under_the_root_loads_and_a_link_within_it_is_followed() {
+        let confined = Confined::new("root-ok");
+        assert!(confined.load(&confined.inside("model.json")).is_ok());
+        assert!(confined
+            .load(&confined.inside("nested/../model.json"))
+            .is_ok());
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink("../model.json", confined.root.join("nested/link.json"))
+                .unwrap();
+            assert!(confined.load(&confined.inside("nested/link.json")).is_ok());
+        }
+    }
+
+    #[test]
+    fn model_root_refuses_a_dot_dot_escape() {
+        let confined = Confined::new("root-dotdot");
+        confined.refused_outside(&confined.inside("../outside/model.json"));
+        confined.refused_outside(&confined.inside("nested/../../outside/model.json"));
+    }
+
+    #[test]
+    fn model_root_refuses_an_absolute_path_outside_it() {
+        let confined = Confined::new("root-absolute");
+        confined.refused_outside(&confined.dir.path("outside/model.json"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn model_root_refuses_a_symlink_that_resolves_outside_it() {
+        let confined = Confined::new("root-link");
+        std::os::unix::fs::symlink(
+            confined.dir.0.join("outside/model.json"),
+            confined.root.join("escape.json"),
+        )
+        .unwrap();
+        confined.refused_outside(&confined.inside("escape.json"));
+        // a linked directory leads out as surely as a linked file
+        std::os::unix::fs::symlink(confined.dir.0.join("outside"), confined.root.join("linked"))
+            .unwrap();
+        confined.refused_outside(&confined.inside("linked/model.json"));
+    }
+
+    #[test]
+    fn model_root_refuses_what_is_not_a_regular_file_under_it() {
+        let confined = Confined::new("root-dir");
+        let error = confined.load(&confined.inside("nested")).unwrap_err();
+        assert!(error.to_string().contains("not a regular file"), "{error}");
+        let error = confined.load(&confined.inside("missing.json")).unwrap_err();
+        assert!(matches!(error, ModelError::Read(_)), "{error}");
+    }
+
+    #[test]
+    fn a_model_root_that_does_not_resolve_refuses_every_model() {
+        let confined = Confined::new("root-missing");
+        let error = LinearModel::load_confined(
+            &confined.inside("model.json"),
+            &fixture_sha256(),
+            Some(&confined.dir.0.join("absent")),
+        )
+        .unwrap_err();
+        assert!(matches!(error, ModelError::Root { .. }), "{error}");
+    }
+
+    #[tokio::test]
+    async fn a_provider_outside_the_root_follows_its_failure_mode() {
+        let confined = Confined::new("root-provider");
+        let guards = |provider: &GuardrailWebhookConfig| SemanticGuardsConfig {
+            providers: vec![provider.clone()],
+            model_root: Some(confined.root.to_string_lossy().into_owned()),
+            ..SemanticGuardsConfig::default()
+        };
+        let mut outside = local_provider(&fixture_sha256(), 2_000);
+        outside.model_path = confined.dir.path("outside/model.json");
+        let classifiers = LocalClassifiers::default();
+        classifiers.configure(&guards(&outside), &GuardrailWebhookConfig::default());
+        assert_eq!(
+            classifiers.classify(&outside, &json!("x")).await,
+            Err(CallFailure::Model)
+        );
+        assert_eq!(states(&classifiers), [("local".to_string(), false)]);
+        // and the retry keeps refusing it
+        classifiers.retry_missing(Duration::ZERO).await;
+        assert_eq!(states(&classifiers), [("local".to_string(), false)]);
+
+        // a snapshot carries no root, and the one from the file still holds
+        let mut inside = outside.clone();
+        inside.model_path = confined.inside("model.json");
+        classifiers
+            .preload(
+                &guards_with(Some(&inside)),
+                &GuardrailWebhookConfig::default(),
+            )
+            .await;
+        classifiers.apply(
+            &guards_with(Some(&inside)),
+            &GuardrailWebhookConfig::default(),
+        );
+        assert!(classifiers.classify(&inside, &json!("x")).await.is_ok());
+        assert_eq!(
+            classifiers.root.load().as_deref(),
+            Some(&confined.root),
+            "the root is the gateway's own"
+        );
     }
 
     #[test]
