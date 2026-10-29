@@ -806,7 +806,7 @@ Whether an organization that never saved MCP settings enforces its servers' tool
   The organization's slug.
 </ParamField>
 
-<ParamField path="enforce" type="bool" required>
+<ParamField path="enforce" type="boolean" required>
   `true` when the organization enforces its servers' tool manifests until it saves MCP settings, `false` when it allows tools a manifest leaves out.
 </ParamField>
 
@@ -840,7 +840,7 @@ The MCP settings an organization saved on the MCP Settings screen ([MCP](/api/mc
   What to do when a request cannot be inspected for tool policy: `fail_closed` refuses it, `fail_open` forwards it unchecked.
 </ParamField>
 
-<ParamField path="allow_unlisted_tools" type="bool" required>
+<ParamField path="allow_unlisted_tools" type="boolean" required>
   `true` when a call may name a tool the server's manifest does not declare, `false` when the organization enforces its servers' manifests.
 </ParamField>
 

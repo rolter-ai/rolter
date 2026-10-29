@@ -512,7 +512,7 @@ function ExportButton() {
       <ConfigExportDialog
         open={open}
         onOpenChange={setOpen}
-        onExported={(toml) => {
+        onExported={(toml, org) => {
           // an object URL rather than a data URI: the document is the whole
           // deployment's config and can run to hundreds of kilobytes, which some
           // browsers refuse to navigate to as a URI
@@ -521,7 +521,7 @@ function ExportButton() {
           a.href = url;
           // dated, because the reason to keep one of these is to diff it against
           // the next; `rolter.toml` alone would overwrite the last export
-          a.download = `rolter-config-${new Date().toISOString().slice(0, 10)}.toml`;
+          a.download = `rolter-config-${org ? `${org}-` : ""}${new Date().toISOString().slice(0, 10)}.toml`;
           a.click();
           URL.revokeObjectURL(url);
         }}

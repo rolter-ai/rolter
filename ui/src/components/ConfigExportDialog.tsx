@@ -8,6 +8,7 @@ import { LoadError } from "@/components/LoadError";
 import { ControlSkeleton } from "@/components/LoadingState";
 import { Button } from "@/components/ui/button";
 import { Combobox, type ComboboxOption } from "@/components/ui/combobox";
+import { EmptyState } from "@/components/ui/empty-state";
 import {
   Dialog,
   DialogBody,
@@ -18,7 +19,13 @@ import {
 } from "@/components/ui/dialog";
 import { Field } from "@/components/ui/field";
 import { SwitchRow } from "@/components/ui/switch-row";
-import { ApiError, CONFIG_EXPORT_NEEDS_ORG, exportConfigToml, fetchOrgs } from "@/lib/api";
+import {
+  ApiError,
+  CONFIG_EXPORT_NEEDS_ORG,
+  exportConfigToml,
+  fetchOrgs,
+  type ConfigExportOptions,
+} from "@/lib/api";
 import { useFormTelemetry } from "@/lib/ux-react";
 
 // the picker's "every organization" entry. a slug is lowercase letters, digits
@@ -45,8 +52,8 @@ export function ConfigExportDialog({
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  /** the document the control plane rendered, to be saved by the caller */
-  onExported: (toml: string) => void;
+  /** the document the control plane rendered, to be saved by the caller, and the slug it was narrowed to */
+  onExported: (toml: string, org: string | undefined) => void;
   /** a failure other than the refusal this dialog answers itself */
   onFailed: (error: unknown) => void;
 }) {
@@ -56,6 +63,9 @@ export function ConfigExportDialog({
   // the refusal outlives the dialog: once the control plane has said the whole
   // deployment is not one file, offering it again on the next open is a trap
   const [needsOrg, setNeedsOrg] = React.useState(false);
+  // counts the refusals, so the picker takes focus each time one lands
+  const [refusals, setRefusals] = React.useState(0);
+  const picker = React.useRef<HTMLInputElement>(null);
 
   const orgs = useQuery({
     queryKey: ["scope", "orgs"],
@@ -64,15 +74,16 @@ export function ConfigExportDialog({
   });
 
   const run = useMutation({
-    mutationFn: exportConfigToml,
-    onSuccess: (toml) => {
-      onExported(toml);
+    mutationFn: (options: ConfigExportOptions) => exportConfigToml(options),
+    onSuccess: (toml, options) => {
+      onExported(toml, options.org);
       onOpenChange(false);
     },
     onError: (error) => {
       if (error instanceof ApiError && error.code === CONFIG_EXPORT_NEEDS_ORG) {
         setNeedsOrg(true);
         setOrg("");
+        setRefusals((n) => n + 1);
         return;
       }
       onFailed(error);
@@ -83,7 +94,14 @@ export function ConfigExportDialog({
     if (open) reset();
   }, [open, reset]);
 
-  const ux = useFormTelemetry("config-export", open, { dirty: false });
+  const ux = useFormTelemetry("config-export", open, {
+    dirty: org !== ALL || withoutPersonCaps,
+  });
+
+  // the sentence says what to do, so put the cursor where it is done
+  React.useEffect(() => {
+    if (refusals > 0) picker.current?.focus();
+  }, [refusals]);
 
   const options: ComboboxOption[] = [
     ...(needsOrg ? [] : [{ value: ALL, label: t("pages.config.export.allOrgs") }]),
@@ -95,7 +113,7 @@ export function ConfigExportDialog({
   ];
   const noOrgs = orgs.isSuccess && orgs.data.length === 0;
   // said under the picker it is about, and gone once an organization is picked
-  const refusal = needsOrg && !noOrgs && org === "" ? t("pages.config.export.needsOrg") : undefined;
+  const refusal = needsOrg && org === "" ? t("pages.config.export.needsOrg") : undefined;
 
   const submit = () => {
     ux.submitted();
@@ -128,34 +146,42 @@ export function ConfigExportDialog({
           <Field label={t("pages.config.export.org")}>
             <ControlSkeleton width="100%" />
           </Field>
-        ) : orgs.isError ? (
-          <LoadError
-            error={orgs.error}
-            resource={t("errors.resources.organizations")}
-            onRetry={() => orgs.refetch()}
-            target="config-export-orgs"
-          />
-        ) : noOrgs ? (
-          <p
-            role="note"
-            className="rounded-md border border-[color:var(--border-subtle)] bg-[color:var(--surface-subtle)] px-3 py-2 text-xs text-muted-foreground"
-          >
-            {t("pages.config.export.noOrgs")}
-          </p>
         ) : (
-          <Field
-            label={t("pages.config.export.org")}
-            hint={t("pages.config.export.orgHint")}
-            error={refusal}
-            required={needsOrg}
-          >
-            <Combobox
-              options={options}
-              value={org}
-              onChange={setOrg}
-              placeholder={t("pages.config.export.orgPlaceholder")}
-            />
-          </Field>
+          <>
+            {orgs.isError && (
+              <LoadError
+                error={orgs.error}
+                resource={t("errors.resources.organizations")}
+                onRetry={() => orgs.refetch()}
+                target="config-export-orgs"
+              />
+            )}
+            {noOrgs && (
+              <EmptyState
+                inline
+                uxTarget="config-export-orgs"
+                description={t("pages.config.export.noOrgs")}
+              />
+            )}
+            {/* the list is the organizations the caller holds a role in, so it can
+                be short or empty for a caller who may still export any of them:
+                the field takes a slug typed in */}
+            <Field
+              label={t("pages.config.export.org")}
+              hint={t("pages.config.export.orgHint")}
+              error={refusal}
+              required={needsOrg}
+            >
+              <Combobox
+                ref={picker}
+                options={options}
+                value={org}
+                onChange={setOrg}
+                allowCustom
+                placeholder={t("pages.config.export.orgPlaceholder")}
+              />
+            </Field>
+          </>
         )}
         <SwitchRow
           title={t("pages.config.export.withoutPersonCaps")}

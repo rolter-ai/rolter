@@ -3,6 +3,7 @@ import { MemoryRouter } from "react-router";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import Config from "./Config";
+import { ConfigExportDialog } from "@/components/ConfigExportDialog";
 import {
   Harness,
   Toasted,
@@ -589,9 +590,22 @@ export const ExportsOneOrganizationWithoutPersonCaps: Story = {
   play: async ({ canvasElement }) => {
     const names: string[] = [];
     const dialog = await openExport(canvasElement);
-    await userEvent.click(await orgPicker(dialog));
-    await userEvent.click(await within(document.body).findByRole("option", { name: /Globex/ }));
-    await userEvent.click(within(dialog).getByRole("switch", { name: /per-person caps/ }));
+    // by keyboard alone: arrow down to open the list, on to Globex, Enter to take it
+    const picker = await orgPicker(dialog);
+    picker.focus();
+    await userEvent.keyboard("{ArrowDown}");
+    await expect(picker).toHaveAttribute("aria-expanded", "true");
+    await userEvent.keyboard("{ArrowDown}{ArrowDown}");
+    await waitFor(() =>
+      expect(
+        document.getElementById(picker.getAttribute("aria-activedescendant") ?? ""),
+      ).toHaveTextContent("Globex"),
+    );
+    await userEvent.keyboard("{Enter}");
+    await waitFor(() => expect(picker).toHaveValue("Globex"));
+    await userEvent.tab();
+    await userEvent.keyboard(" ");
+    await expect(within(dialog).getByRole("switch", { name: /per-person caps/ })).toBeChecked();
     await captureDownload(names, async () => {
       await userEvent.click(within(dialog).getByRole("button", { name: "Export" }));
       await scopedExport.expectSent("GET", `${EXPORT_PATH}?org=globex&without_person_caps=true`);
@@ -627,6 +641,8 @@ export const ExportRefusedWithoutAnOrganization: Story = {
     const picker = await orgPicker(dialog);
     // the dashboard's sentence, not the control plane's, tied to the picker
     await waitFor(() => expect(picker).toBeInvalid());
+    // the sentence says what to do, so the cursor is already there
+    await waitFor(() => expect(picker).toHaveFocus());
     await expect(within(dialog).getByText(en.pages.config.export.needsOrg)).toBeVisible();
     await expect(within(dialog).queryByText(NEEDS_ORG.error.message)).toBeNull();
     await expect(picker).toHaveValue("");
@@ -676,6 +692,8 @@ export const OrganizationsLoading: Story = {
     const dialog = await openExport(canvasElement);
     await expectSkeleton(dialog);
     await expect(within(dialog).queryByRole("combobox")).toBeNull();
+    // a list still on its way is not an empty one
+    await expectNoFalseEmpty(dialog, /No organizations/);
   },
 };
 
@@ -694,6 +712,8 @@ export const OrganizationsFailToLoad: Story = {
     const dialog = await openExport(canvasElement);
     await expectLoadError(dialog, /organizations/i);
     await expect(within(dialog).getByRole("button", { name: "Try again" })).toBeVisible();
+    // and a failed one is not an empty one
+    await expectNoFalseEmpty(dialog, /No organizations/);
     await captureDownload(names, async () => {
       await userEvent.click(within(dialog).getByRole("button", { name: "Export" }));
       await orgsFail.expectSent("GET", EXPORT_PATH);
@@ -702,8 +722,10 @@ export const OrganizationsFailToLoad: Story = {
   },
 };
 
-// a deployment with no organization has nothing to pick, and says so
-export const NoOrganizations: Story = {
+// the picker lists the organizations the caller holds a role in, so it can be
+// empty for a caller who may still export (a security auditor holds none): the
+// dialog says none are listed for them, and the field still takes a slug
+export const NoOrganizationsListed: Story = {
   render: () => (
     <Stage
       fetchStub={withCapabilities("superadmin", api({ orgs: () => json([]) }))}
@@ -712,11 +734,61 @@ export const NoOrganizations: Story = {
   ),
   play: async ({ canvasElement }) => {
     const dialog = await openExport(canvasElement);
-    await expect(await within(dialog).findByRole("note")).toHaveTextContent(
-      en.pages.config.export.noOrgs,
-    );
-    await expect(within(dialog).queryByRole("combobox")).toBeNull();
+    await expectEmptyState(dialog, /No organizations are listed for you/);
+    await expect(await orgPicker(dialog)).toHaveValue("All organizations");
     await expectAllowed(dialog, "Export");
+  },
+};
+
+// the security auditor of a deployment whose organizations share a name: no
+// organization is listed, the control plane refuses the whole deployment, and
+// the dialog must say so and take the slug typed in, not swallow the click
+const auditing = recording(async (input, init) => {
+  const url = new URL(String(input), "http://localhost");
+  if (url.pathname === "/api/v1/orgs") return json([]);
+  if (url.pathname === "/api/v1/config/export") {
+    return url.searchParams.has("org") ? toml() : json(NEEDS_ORG, 400);
+  }
+  return whole(input, init);
+});
+
+export const AuditorWithNoListedOrganizationsIsRefused: Story = {
+  render: () => (
+    <Stage
+      fetchStub={withCapabilities("security_auditor", auditing.stub)}
+      role="security_auditor"
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const names: string[] = [];
+    const dialog = await openExport(canvasElement);
+    await expectEmptyState(dialog, /No organizations are listed for you/);
+    await userEvent.click(within(dialog).getByRole("button", { name: "Export" }));
+    // the refusal is not suppressed because the list is empty
+    await within(dialog).findByText(en.pages.config.export.needsOrg);
+    const picker = await orgPicker(dialog);
+    await waitFor(() => expect(picker).toHaveFocus());
+    await userEvent.keyboard("acme");
+    await userEvent.click(await within(document.body).findByRole("option", { name: /acme/ }));
+    await captureDownload(names, async () => {
+      await userEvent.click(within(dialog).getByRole("button", { name: "Export" }));
+      await auditing.expectSent("GET", `${EXPORT_PATH}?org=acme`);
+      await waitFor(() => expect(names).toHaveLength(1));
+    });
+    await expect(names[0]).toMatch(/^rolter-config-acme-\d{4}-\d{2}-\d{2}\.toml$/);
+  },
+};
+
+// the gate on the dialog's own button, which the screen's button also holds: a
+// viewer cannot reach it through the screen, so the dialog is rendered open
+export const ExportRunIsGated: Story = {
+  render: () => (
+    <Harness fetchStub={withCapabilities("viewer", api())} role="viewer">
+      <ConfigExportDialog open onOpenChange={() => {}} onExported={() => {}} onFailed={() => {}} />
+    </Harness>
+  ),
+  play: async () => {
+    await expectRefused(document.body, "Export", NEEDS_SUPERADMIN);
   },
 };
 

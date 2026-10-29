@@ -73,11 +73,11 @@ owns (the gateway's own config file) of the same name. A flat file cannot hold
 both, so `scope_to_org` drops the deployment-wide row whenever the org has one
 of that name and returns the dropped names in `OrgScope::shadowed`;
 `render_shadowed` writes them as a comment, so a reader sees what the file
-leaves out. There is no flag. Rows shadowed by _slug_ only (different names) are
-not dropped, and the clash check still refuses them. The import turns the
+leaves out. There is no flag. A provider shadowed by _slug_ only (a different name) is
+not dropped, and the clash check still refuses them. Groups are keyed by slug, as `clashing_names` and the importer do. A kept no-org route or group that uses a shadowed provider is refused (`ExportError::ShadowedBinding`, code `config_export_binding_shadowed`), since the import's org-owned copy would bind to the org's provider. The unscoped refusal is `ExportError::NeedsOrganization` (code `config_export_needs_org`) whenever `an_org_settles_every_clash`. The import turns the
 deployment-wide rows that stay in the file into the org's own, which then shadow
 the originals, so a second export of the same database drops them too; the
-round-trip test therefore re-adds only the shadowed rows. Test:
+round-trip test therefore re-adds only the shadowed rows, and also asserts the real case where the originals are all still served. Test:
 `config_export::tests::round_trip::an_org_shadowing_deployment_wide_rows_exports_without_them`.
 
 ## Leaving person caps out (#3396)

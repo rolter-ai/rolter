@@ -720,6 +720,7 @@ async fn import_config(
     config: &GatewayConfig,
 ) -> anyhow::Result<()> {
     refuse_reserved_env_names(config)?;
+    validate_mcp_gateway_settings(config)?;
     let providers = ProviderRepo(pool);
     let routes = RouteRepo(pool);
     let targets = RouteTargetRepo(pool);
@@ -1342,6 +1343,51 @@ async fn import_mcp_manifest_enforcement(
     Ok(())
 }
 
+/// Refuse a `[[mcp_gateway_settings]]` table the MCP Settings screen would
+/// not save: a transport, failure mode or number out of range, or two entries
+/// for one organization. Runs before anything is written, as
+/// [`refuse_reserved_env_names`] does, so a bad file imports nothing (#3482).
+/// Every entry is checked, the ones for organizations this import does not
+/// target included.
+fn validate_mcp_gateway_settings(config: &GatewayConfig) -> anyhow::Result<()> {
+    let mut seen = std::collections::HashSet::new();
+    for entry in &config.mcp_gateway_settings {
+        let slug = &entry.org;
+        if !seen.insert(slug.as_str()) {
+            anyhow::bail!("mcp_gateway_settings: more than one entry for organization '{slug}'");
+        }
+        if !rolter_core::MCP_TRANSPORTS.contains(&entry.default_transport.as_str()) {
+            anyhow::bail!(
+                "mcp_gateway_settings '{slug}': default_transport must be one of {}",
+                rolter_core::MCP_TRANSPORTS.join(", ")
+            );
+        }
+        if !matches!(
+            entry.default_failure_mode.as_str(),
+            "fail_open" | "fail_closed"
+        ) {
+            anyhow::bail!(
+                "mcp_gateway_settings '{slug}': default_failure_mode must be fail_open or fail_closed"
+            );
+        }
+        for (name, value, low, high) in [
+            ("connect_timeout_ms", entry.connect_timeout_ms, 100, 60_000),
+            (
+                "request_timeout_ms",
+                entry.request_timeout_ms,
+                1_000,
+                300_000,
+            ),
+            ("max_retries", entry.max_retries, 0, 5),
+        ] {
+            if !(low..=high).contains(&value) {
+                anyhow::bail!("mcp_gateway_settings '{slug}': {name} must be from {low} to {high}");
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Apply the `[[mcp_gateway_settings]]` entry of the file (#3482).
 ///
 /// The file is the desired state here: the organization the import targets
@@ -1371,41 +1417,9 @@ async fn import_mcp_gateway_settings(
             "skipping an mcp_gateway_settings entry for an organization this import does not target"
         );
     }
-    let mut ours = entries.iter().filter(|entry| entry.org == slug);
-    let Some(entry) = ours.next() else {
+    let Some(entry) = entries.iter().find(|entry| entry.org == slug) else {
         return Ok(());
     };
-    if ours.next().is_some() {
-        anyhow::bail!("mcp_gateway_settings: more than one entry for organization '{slug}'");
-    }
-    if !rolter_core::MCP_TRANSPORTS.contains(&entry.default_transport.as_str()) {
-        anyhow::bail!(
-            "mcp_gateway_settings '{slug}': default_transport must be one of {}",
-            rolter_core::MCP_TRANSPORTS.join(", ")
-        );
-    }
-    if !matches!(
-        entry.default_failure_mode.as_str(),
-        "fail_open" | "fail_closed"
-    ) {
-        anyhow::bail!(
-            "mcp_gateway_settings '{slug}': default_failure_mode must be fail_open or fail_closed"
-        );
-    }
-    for (name, value, low, high) in [
-        ("connect_timeout_ms", entry.connect_timeout_ms, 100, 60_000),
-        (
-            "request_timeout_ms",
-            entry.request_timeout_ms,
-            1_000,
-            300_000,
-        ),
-        ("max_retries", entry.max_retries, 0, 5),
-    ] {
-        if !(low..=high).contains(&value) {
-            anyhow::bail!("mcp_gateway_settings '{slug}': {name} must be from {low} to {high}");
-        }
-    }
     let stored: Option<(String, i32, i32, i32, String, bool)> = sqlx::query_as(
         "select default_transport, connect_timeout_ms, request_timeout_ms, max_retries,
                 default_failure_mode, allow_unlisted_tools
