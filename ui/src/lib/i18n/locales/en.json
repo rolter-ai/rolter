@@ -637,7 +637,7 @@
       "overridesTargets": "While this route has variants, its targets above are not used. Remove every variant to route through them again.",
       "previewLabel": "Traffic split",
       "previewPending": "Enter a whole-number weight for every variant to see the split.",
-      "zeroWeight": "A weight of 0, which an import from rolter.toml can store, gets no first attempts while another variant has a weight above 0, and is only tried after the others fail. If every weight is 0, the variants share traffic equally. Set 1 or more to save.",
+      "zeroWeightNote": "A variant with a weight of 0 gets no first attempts while another variant has a weight above 0, and is only tried after the others fail. If every weight is 0, the variants share traffic equally.",
       "unnamed": "Variant {{n}}",
       "nameAria": "Variant {{n}} name",
       "namePlaceholder": "canary",
@@ -661,7 +661,7 @@
       "errors": {
         "nameRequired": "Give the variant a name.",
         "nameTaken": "Another variant of this route has this name. Names must be unique.",
-        "weight": "A variant weight is a whole number, 1 or more.",
+        "weight": "A variant weight is a whole number, 0 or more.",
         "targetsRequired": "A variant needs at least one target.",
         "targetsAllZero": "At least one target of the variant needs a weight above 0.",
         "provider": "Pick a provider for every target.",
@@ -5277,6 +5277,10 @@
     "rawOutput": "Show raw text"
   },
   "providerSheet": {
+    "unverified": {
+      "note": "Unverified: no public API reference for this provider was found, so whether it speaks an OpenAI-compatible API at a stable base URL is not established. Check its documentation before relying on it.",
+      "option": "Unverified"
+    },
     "apiBase": {
       "doubled": "This base ends in /v1 and rolter appends /v1 itself, so requests would 404. Remove the trailing /v1.",
       "excludesV1": "Leave off the version prefix — rolter appends /v1 itself for {{kind}}",

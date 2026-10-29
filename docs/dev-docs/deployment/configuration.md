@@ -81,6 +81,7 @@ kind:
 | `request`          | `chat` or `embeddings`, the request the preview is for                      |
 | `request_path`     | the upstream path above; `{model}` stands for the upstream model name       |
 | `auth_header`      | the lowercase header the key travels in (`authorization` is a bearer token) |
+| `unverified`       | the specification registry records no located API reference for the kind    |
 
 The kind's display name and one-line description are dashboard copy, not
 served: `providerSheet.kinds.<kind>.name` and `.description` in every catalog.
@@ -171,7 +172,7 @@ api_key_env = "AZURE_OPENAI_API_KEY"
 [[providers]]
 name = "bedrock"
 kind = "bedrock"
-api_base = "https://bedrock-runtime.us-east-1.amazonaws.com/v1"
+api_base = "https://bedrock-runtime.us-east-1.amazonaws.com/openai/v1"
 api_key_env = "AWS_BEARER_TOKEN_BEDROCK"
 
 [[providers]]

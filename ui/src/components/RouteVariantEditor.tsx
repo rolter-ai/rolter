@@ -61,8 +61,8 @@ export interface RouteVariantEditorProps {
  * and the order of a variant's targets is the order they are tried, so both
  * lists move a line up or down rather than sorting. The preview above the list
  * is the split the gateway applies to first attempts, computed the way it
- * samples: a weight of 0, which the sheet refuses but an import can store,
- * takes no first attempts while another variant has a positive weight (#3341).
+ * samples: a weight of 0 takes no first attempts while another variant has a
+ * positive weight (#3341), and a set of only zeroes is shared equally.
  */
 export function RouteVariantEditor({
   variants,
@@ -182,7 +182,7 @@ export function RouteVariantEditor({
 /**
  * The share of first attempts each variant gets: one stacked bar, and the
  * figures under it. Nothing is drawn while a weight is not a whole number yet;
- * a 0 is drawn the way the gateway samples it, as a 1.
+ * a 0 is drawn the way the gateway applies it (`trafficSplit`).
  */
 function SplitPreview({ variants }: { variants: DraftVariant[] }) {
   const { t } = useTranslation();
@@ -230,7 +230,7 @@ function SplitPreview({ variants }: { variants: DraftVariant[] }) {
       </ul>
       {zeroes && (
         <p className="text-xs leading-snug text-muted-foreground">
-          {t("routeSheet.variants.zeroWeight")}
+          {t("routeSheet.variants.zeroWeightNote")}
         </p>
       )}
     </div>
@@ -321,7 +321,7 @@ function VariantCard({
           <Input
             aria-label={t("routeSheet.variants.weightAria", { n })}
             type="number"
-            min={1}
+            min={0}
             step={1}
             className="font-mono"
             value={variant.weight}
