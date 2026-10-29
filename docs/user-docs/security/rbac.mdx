@@ -230,6 +230,8 @@ In the dashboard, a superadmin or a security auditor sees a scope switch on **Go
 
 **Export CSV** and **Export JSON** on **Governance → Audit Logs** download the log under the filters in force (actor, action, target type and time window) rather than the 25 rows on screen. The control plane builds the file and streams it, so there is no row cap: a year of changes arrives whole, newest first, and the control plane holds one page of it at a time however long the log is.
 
+The browser never holds the file either. In a browser that can write to a file you pick (Chromium-based ones), the button asks where to save, suggesting `audit-log-<org>-<from>_to_<to>.<csv|json>`, and writes the log there as it arrives. Other browsers (Firefox, Safari, or a dashboard served over plain `http`) hand it to their own download manager through a single-use download link the control plane mints for that one export, and the page shows the rows written until the download ends; cancel it from the browser's download list. The link is checked as the export is: it needs `audit_log:read` in the organization, or `deployment_audit_log:read` for the whole deployment, when it is minted and again when the browser follows it, so someone who lost the role in between is refused. See [a download link for a browser](/api/dashboard-analytics) for the ticket routes, which an API client can use too.
+
 The same file is available to an API client:
 
 - `GET /api/v1/orgs/{org_id}/audit-log/export?format=csv|json` for an organization's log, gated and scoped exactly like `GET /api/v1/orgs/{org_id}/audit-log`. It needs `audit_log:read` in that organization, and it returns the same rows, account events of the organization's own people included, and never more.

@@ -3726,6 +3726,7 @@
         "json": "Export JSON",
         "pending": "Exporting…",
         "downloaded": "Export downloaded",
+        "saved": "Audit log saved to the file you chose.",
         "done_one": "Exported {{count}} entry",
         "done_other": "Exported {{count}} entries",
         "truncated_one": "Exported the newest {{count}} entry. Narrow the filters to export the rest.",

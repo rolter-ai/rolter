@@ -1,4 +1,5 @@
-//! Single-use download tickets for the analytics CSV exports (#3504).
+//! Single-use download tickets for the analytics CSV exports (#3504) and the
+//! audit log's CSV and JSON exports (#3545).
 //!
 //! Every dashboard call authenticates with a bearer header, and a link the
 //! browser's download manager follows cannot carry one. Where the File System
@@ -10,12 +11,14 @@
 //! (`docs/dev-docs/adr/2026-10-29-export-download-tickets.md`).
 //!
 //! * **Mint** (`POST /api/v1/analytics/exports/tickets`) takes the caller's
-//!   bearer, one of the three export paths and the query string the button
-//!   would send. The export's own extractors run first, so a caller who could
-//!   not run the export cannot mint for it; the query is parsed as the export
-//!   parses it; and for the request log the [`ExportGate`] is asked, without
-//!   taking a place, whether it would let the export in now, so a full gate is
-//!   the usual `429` straight away.
+//!   bearer, one of the export paths and the query string the button would
+//!   send. The export's own checks run first, so a caller who could not run the
+//!   export cannot mint for it: the request log's reach for the analytics
+//!   exports, and the audit log's own capability for its two (`audit_log:read`
+//!   on the org, `deployment_audit_log:read` for the whole deployment). The
+//!   query is parsed as the export parses it; and for the request log the
+//!   [`ExportGate`] is asked, without taking a place, whether it would let the
+//!   export in now, so a full gate is the usual `429` straight away.
 //! * **The secret** is 32 bytes from the OS-seeded CSPRNG, base64url, returned
 //!   once and stored only as its SHA-256. The bearer it was minted with is never
 //!   stored: the [`Minter`] keeps what can be checked again at redemption.
@@ -25,7 +28,8 @@
 //!   secrets get one uniform `410`. The minter is re-resolved (a revoked
 //!   session, a deactivated account or a deleted or revoked API token is
 //!   refused), and the export runs through [`analytics_export::run_redeemed`]:
-//!   the bearer route's handler, with every check it runs for a bearer request.
+//!   the bearer route's handler, with every check it runs for a bearer request,
+//!   the audit log's capability check included.
 //! * **Status** (`GET /api/v1/analytics/exports/tickets/{id}`) is read by the
 //!   ticket's non-secret id, by the principal that minted it only. The page
 //!   cannot read a response the download manager receives, so this is how it
@@ -48,7 +52,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use axum::body::Body;
-use axum::extract::{Path, State};
+use axum::extract::{FromRequestParts, Path, State};
+use axum::http::request::Parts;
 use axum::http::{header, HeaderMap, HeaderValue, Method, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -101,6 +106,10 @@ pub(crate) const DOWNLOAD_PREFIX: &str = "/api/v1/analytics/exports/download/";
 /// What a minted secret starts with, so one found in a log can be told for
 /// what it is.
 const SECRET_PREFIX: &str = "rolter_dl_";
+
+/// The largest mint body read: a path and a query of at most
+/// [`MAX_QUERY_LEN`], with room for the JSON around them.
+const MAX_MINT_BODY: usize = 16 * 1024;
 
 pub(crate) fn router() -> Router<ControlState> {
     Router::new()
@@ -501,7 +510,7 @@ impl TicketStore for PgTickets<'_> {
         .bind(token)
         .bind(digest)
         .bind(&ticket.owner)
-        .bind(ticket.export.as_str())
+        .bind(ticket.export.stored())
         .bind(&ticket.query)
         .bind(lifetime.as_secs_f64())
         .fetch_one(self.0)
@@ -863,36 +872,109 @@ async fn reach_of(_: &ControlState, _: &Caller) -> Result<AnalyticsAccess, Respo
     Ok(AnalyticsAccess::unrestricted())
 }
 
+/// Whether the control plane has a database, which the audit log and the
+/// account credentials live in.
+fn has_store(state: &ControlState) -> bool {
+    #[cfg(feature = "postgres")]
+    return state.pool.is_some();
+    #[cfg(not(feature = "postgres"))]
+    {
+        let _ = state;
+        false
+    }
+}
+
+/// Who is asking, by the credential checks every export runs first. Without
+/// a database the request log's reach is what refuses a wrong bearer, and
+/// `Principal` would reach for the pool that is not there, so it goes first.
+#[allow(clippy::result_large_err)]
+async fn caller_of(state: &ControlState, parts: &mut Parts) -> Result<Caller, Response> {
+    if !has_store(state) {
+        AnalyticsAccess::from_request_parts(parts, state).await?;
+    }
+    Caller::from_request_parts(parts, state)
+        .await
+        .map_err(IntoResponse::into_response)
+}
+
+/// The caller, if the export `kind` would run for it: the checks its bearer
+/// route runs before it reads anything.
+#[allow(clippy::result_large_err)]
+// without postgres every kind is an analytics export, and `kind` picks nothing
+#[cfg_attr(not(feature = "postgres"), allow(unused_variables))]
+async fn may_export(
+    state: &ControlState,
+    parts: &mut Parts,
+    kind: ExportKind,
+) -> Result<Caller, Response> {
+    // the audit log exists only with a database, so only there is a kind one
+    #[cfg(feature = "postgres")]
+    if kind.is_audit() {
+        let principal = caller_of(state, parts).await?;
+        crate::audit_export::authorize_export(state, &principal, kind)
+            .await
+            .map_err(IntoResponse::into_response)?;
+        return Ok(principal);
+    }
+    AnalyticsAccess::from_request_parts(parts, state).await?;
+    Caller::from_request_parts(parts, state)
+        .await
+        .map_err(IntoResponse::into_response)
+}
+
+/// The paths a ticket may name, for the refusal of any other.
+fn known_paths(audit: bool) -> String {
+    let mut paths: Vec<String> = ExportKind::ANALYTICS
+        .iter()
+        .map(|kind| kind.path().into_owned())
+        .collect();
+    if audit {
+        paths.push("/api/v1/audit-log/export".to_string());
+        paths.push("/api/v1/orgs/{org_id}/audit-log/export".to_string());
+    }
+    format!("path must be one of {}", paths.join(", "))
+}
+
 /// `POST /api/v1/analytics/exports/tickets`: mint a download ticket for one
-/// export. `principal` and `access` are the extractors the export itself takes,
-/// so a caller the export would refuse is refused here.
-async fn mint(
-    // the access first: without a database it is what refuses a wrong bearer,
-    // and `Principal` would reach for the pool that is not there
-    _access: AnalyticsAccess,
-    principal: Caller,
-    State(state): State<ControlState>,
-    headers: HeaderMap,
-    body: axum::body::Bytes,
-) -> Response {
+/// export. The caller is checked as the export itself checks it, so a caller
+/// the export would refuse is refused here.
+async fn mint(State(state): State<ControlState>, request: axum::extract::Request) -> Response {
+    let (mut parts, body) = request.into_parts();
+    // which export decides which checks run, so the body is read first; a
+    // body that names none is refused only once the bearer has been, as the
+    // analytics exports always did
+    let body = axum::body::to_bytes(body, MAX_MINT_BODY).await;
     // read by hand rather than through the CRUD API's `SafeJson`, which only a
-    // postgres build has. the path is matched against three constants and the
+    // postgres build has. the path is matched against the export paths and the
     // query is parsed as a URI below, so neither can carry a control character
-    let body: MintRequest = match serde_json::from_slice(&body) {
-        Ok(body) => body,
-        Err(failure) => {
-            return error(
-                StatusCode::BAD_REQUEST,
-                &format!("invalid request body: {failure}"),
-            )
-        }
+    let body: Result<MintRequest, String> = match body {
+        Ok(bytes) => serde_json::from_slice(&bytes)
+            .map_err(|failure| format!("invalid request body: {failure}")),
+        Err(_) => Err("the request body is too large".to_string()),
     };
-    let Some(export) = ExportKind::from_path(&body.path) else {
-        return error(
-            StatusCode::BAD_REQUEST,
-            "path must be one of /api/v1/analytics/by-attribution/export, \
-             /api/v1/analytics/timeseries/export or /api/v1/analytics/invocations/export",
-        );
+    // the audit log is there only on a control plane with a database
+    let audit = has_store(&state);
+    let named = body
+        .as_ref()
+        .ok()
+        .and_then(|body| ExportKind::from_path(&body.path, audit));
+    let principal = match named {
+        Some(kind) => may_export(&state, &mut parts, kind).await,
+        None => caller_of(&state, &mut parts).await,
+    };
+    // without postgres the principal is `()`, which is all the export takes there
+    #[allow(clippy::let_unit_value)]
+    let principal = match principal {
+        Ok(principal) => principal,
+        Err(refused) => return refused,
+    };
+    let headers = parts.headers;
+    let body = match body {
+        Ok(body) => body,
+        Err(message) => return error(StatusCode::BAD_REQUEST, &message),
+    };
+    let Some(export) = named else {
+        return error(StatusCode::BAD_REQUEST, &known_paths(audit));
     };
     let query = body.query.strip_prefix('?').unwrap_or(&body.query);
     if query.len() > MAX_QUERY_LEN {
@@ -958,11 +1040,19 @@ struct TicketStatus {
 /// going, for the principal that minted it. Anyone else, and an id that is not
 /// a ticket, gets the same `404`.
 async fn status(
-    _access: AnalyticsAccess,
-    principal: Caller,
     State(state): State<ControlState>,
     Path(id): Path<String>,
+    request: axum::extract::Request,
 ) -> Response {
+    let (mut parts, _) = request.into_parts();
+    // the minter's own credential is enough: the ticket was only minted once
+    // the export's checks had passed, and the status says nothing but how it
+    // went. an audit log reader who cannot read the request log reads it too
+    #[allow(clippy::let_unit_value)]
+    let principal = match caller_of(&state, &mut parts).await {
+        Ok(principal) => principal,
+        Err(refused) => return refused,
+    };
     let not_found = || error(StatusCode::NOT_FOUND, "no such export download");
     let Ok(id) = id.parse::<Uuid>() else {
         return not_found();
@@ -1090,9 +1180,15 @@ async fn redeem(
             return store_failed(&failure);
         }
     };
-    let access = match reach_of(&state, &principal).await {
-        Ok(access) => access,
-        Err(refused) => return refused_with_status(&state, id, refused).await,
+    // the reach over the request log is what the analytics exports read; the
+    // audit log's handler checks its own capability instead
+    let access = if redeemed.export.is_audit() {
+        None
+    } else {
+        match reach_of(&state, &principal).await {
+            Ok(access) => Some(access),
+            Err(refused) => return refused_with_status(&state, id, refused).await,
+        }
     };
     report(&state, id, &TicketState::Streaming { rows: 0 }).await;
     let progress = Arc::new(ExportProgress::default());
@@ -2127,6 +2223,239 @@ mod tests {
                 send(&app, get(&url, None)).await.status(),
                 StatusCode::UNAUTHORIZED
             );
+        }
+
+        // ------------------------------------------- audit log exports (#3545)
+
+        /// A live session for `user`, as its bearer.
+        async fn session_for(pool: &sqlx::PgPool, user: Uuid) -> String {
+            let bearer = format!("rolter_sess_{}", Uuid::new_v4().simple());
+            sqlx::query(
+                "insert into sessions (user_id, token_hash, expires_at) \
+                 values ($1, $2, now() + interval '1 hour')",
+            )
+            .bind(user)
+            .bind(rolter_auth::hash_key(
+                &crate::auth::session_pepper(),
+                &bearer,
+            ))
+            .execute(pool)
+            .await
+            .unwrap();
+            bearer
+        }
+
+        /// A signed-in member of a fresh org with `role`, as `(user, org, bearer)`.
+        async fn org_member(pool: &sqlx::PgPool, role: &str) -> (Uuid, Uuid, String) {
+            let org: Uuid =
+                sqlx::query_scalar("insert into orgs (name, slug) values ($1, $1) returning id")
+                    .bind(format!("audit-{}", Uuid::new_v4().simple()))
+                    .fetch_one(pool)
+                    .await
+                    .unwrap();
+            let user: Uuid =
+                sqlx::query_scalar("insert into users (email) values ($1) returning id")
+                    .bind(format!("{role}-{}@example.test", Uuid::new_v4().simple()))
+                    .fetch_one(pool)
+                    .await
+                    .unwrap();
+            sqlx::query("insert into memberships (user_id, org_id, role) values ($1, $2, $3)")
+                .bind(user)
+                .bind(org)
+                .bind(role)
+                .execute(pool)
+                .await
+                .unwrap();
+            (user, org, session_for(pool, user).await)
+        }
+
+        /// `count` audit rows on `org` (or org-less), under one action the
+        /// exports below filter on, so their own `audit_log.export` rows stay
+        /// out of the files they compare.
+        async fn audit_rows(pool: &sqlx::PgPool, org: Option<Uuid>, count: i32) {
+            sqlx::query(
+                "insert into audit_log (org_id, action, target_type) \
+                 select $1, 'route.update', 'route' from generate_series(1, $2)",
+            )
+            .bind(org)
+            .bind(count)
+            .execute(pool)
+            .await
+            .unwrap();
+        }
+
+        /// The whole control plane, so a bearer audit export can be compared.
+        fn full_app(db: &TestSchema, admin: &str) -> Router {
+            let mut state = crate::test_state(db.pool().clone(), Some(admin.to_string()), None);
+            state.export_tickets = Arc::new(Tickets::with_lifetime(TICKET_LIFETIME));
+            crate::build_app_with(state, true)
+        }
+
+        /// Mint for `path` and answer `(id, download url)`.
+        async fn minted_for(
+            app: &Router,
+            bearer: &str,
+            path: &str,
+            query: &str,
+        ) -> (String, String) {
+            let response = mint_for(app, bearer, path, query).await;
+            assert_eq!(response.status(), StatusCode::OK, "{path}?{query}");
+            let body = json_of(response).await;
+            (
+                body["id"].as_str().unwrap().to_string(),
+                body["download_url"].as_str().unwrap().to_string(),
+            )
+        }
+
+        #[tokio::test]
+        async fn an_audit_log_ticket_downloads_the_bearer_file_once() {
+            let Some(db) = scratch().await else { return };
+            let app = full_app(&db, &admin_token());
+            let (_, org, admin) = org_member(db.pool(), "admin").await;
+            audit_rows(db.pool(), Some(org), 3).await;
+            let path = format!("/api/v1/orgs/{org}/audit-log/export");
+            for (format, extension) in [("csv", "csv"), ("json", "json")] {
+                let query = format!("format={format}&action=route.update");
+                let bearer = send(&app, get(&format!("{path}?{query}"), Some(&admin))).await;
+                assert_eq!(bearer.status(), StatusCode::OK);
+                let expected = text_of(bearer).await;
+
+                let (id, url) = minted_for(&app, &admin, &path, &query).await;
+                assert_eq!(status_of(&app, &admin, &id).await["state"], "pending");
+                let response = send(&app, get(&url, None)).await;
+                assert_eq!(response.status(), StatusCode::OK, "{format}");
+                let disposition = response.headers()[header::CONTENT_DISPOSITION]
+                    .to_str()
+                    .unwrap()
+                    .to_string();
+                assert!(disposition.starts_with("attachment; filename=\"audit-log-audit-"));
+                assert!(
+                    disposition.ends_with(&format!(".{extension}\"")),
+                    "{disposition}"
+                );
+                assert_eq!(text_of(response).await, expected, "{format}");
+                let status = settled(&app, &admin, &id).await;
+                assert_eq!(status["state"], "complete", "{status}");
+                assert_eq!(status["rows"], 3);
+                assert_eq!(status["export"], "org_audit_log");
+                // stored with the org it reads, so the redemption reads that org
+                let stored: String =
+                    sqlx::query_scalar("select export from export_tickets where id = $1")
+                        .bind(id.parse::<Uuid>().unwrap())
+                        .fetch_one(db.pool())
+                        .await
+                        .unwrap();
+                assert_eq!(stored, format!("org_audit_log:{org}"));
+                // a second GET of the same link is refused
+                assert_eq!(send(&app, get(&url, None)).await.status(), StatusCode::GONE);
+            }
+        }
+
+        #[tokio::test]
+        async fn the_deployment_audit_log_redeems_for_an_auditor_without_analytics() {
+            let Some(db) = scratch().await else { return };
+            let app = full_app(&db, &admin_token());
+            audit_rows(db.pool(), None, 2).await;
+            // a security auditor reads the deployment's audit log and not the
+            // request log, so the ticket and its status must not ask for that
+            let user: Uuid = sqlx::query_scalar(
+                "insert into users (email, deployment_role) \
+                 values ($1, 'security_auditor') returning id",
+            )
+            .bind(format!("auditor-{}@example.test", Uuid::new_v4().simple()))
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+            let auditor = session_for(db.pool(), user).await;
+            let query = "format=json&action=route.update";
+            let path = "/api/v1/audit-log/export";
+            let bearer = send(&app, get(&format!("{path}?{query}"), Some(&auditor))).await;
+            assert_eq!(bearer.status(), StatusCode::OK);
+            let expected = text_of(bearer).await;
+            let (id, url) = minted_for(&app, &auditor, path, query).await;
+            let response = send(&app, get(&url, None)).await;
+            assert_eq!(response.status(), StatusCode::OK);
+            assert_eq!(text_of(response).await, expected);
+            let status = settled(&app, &auditor, &id).await;
+            assert_eq!(status["state"], "complete", "{status}");
+            assert_eq!(status["export"], "audit_log");
+            assert_eq!(send(&app, get(&url, None)).await.status(), StatusCode::GONE);
+        }
+
+        #[tokio::test]
+        async fn an_audit_log_ticket_is_minted_only_where_the_export_would_run() {
+            let Some(db) = scratch().await else { return };
+            let app = full_app(&db, &admin_token());
+            let (_, org, admin) = org_member(db.pool(), "admin").await;
+            let (_, viewer_org, viewer) = org_member(db.pool(), "viewer").await;
+            let (_, other, _) = org_member(db.pool(), "admin").await;
+            let own = format!("/api/v1/orgs/{org}/audit-log/export");
+            // a viewer cannot read the audit log, so cannot mint for it
+            let theirs = format!("/api/v1/orgs/{viewer_org}/audit-log/export");
+            for (bearer, path, status) in [
+                (&viewer, theirs.as_str(), StatusCode::FORBIDDEN),
+                // another org's log
+                (
+                    &admin,
+                    &*format!("/api/v1/orgs/{other}/audit-log/export"),
+                    StatusCode::FORBIDDEN,
+                ),
+                // the deployment's log is not an org admin's
+                (&admin, "/api/v1/audit-log/export", StatusCode::FORBIDDEN),
+            ] {
+                let response = mint_for(&app, bearer, path, "format=csv").await;
+                assert_eq!(response.status(), status, "{path}");
+            }
+            // a query the export would refuse is refused at mint
+            for query in [
+                "format=xml",
+                "",
+                "format=csv&start_at=2026-02-01T00:00:00Z&end_at=2026-01-01T00:00:00Z",
+            ] {
+                let response = mint_for(&app, &admin, &own, query).await;
+                assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{query}");
+            }
+            // an org id spelled any way but one is no export path
+            let unhyphenated = format!("/api/v1/orgs/{}/audit-log/export", org.simple());
+            let response = mint_for(&app, &admin, &unhyphenated, "format=csv").await;
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+            // nothing was stored for any of them
+            let stored: i64 = sqlx::query_scalar("select count(*) from export_tickets")
+                .fetch_one(db.pool())
+                .await
+                .unwrap();
+            assert_eq!(stored, 0);
+        }
+
+        #[tokio::test]
+        async fn an_audit_log_ticket_checks_the_capability_again_at_redemption() {
+            let Some(db) = scratch().await else { return };
+            let app = full_app(&db, &admin_token());
+            let (user, org, admin) = org_member(db.pool(), "admin").await;
+            let path = format!("/api/v1/orgs/{org}/audit-log/export");
+            let (id, url) = minted_for(&app, &admin, &path, "format=csv").await;
+            // demoted between the mint and the download
+            sqlx::query("update memberships set role = 'viewer' where user_id = $1")
+                .bind(user)
+                .execute(db.pool())
+                .await
+                .unwrap();
+            let response = send(&app, get(&url, None)).await;
+            assert_eq!(response.status(), StatusCode::FORBIDDEN);
+            let status = settled(&app, &admin, &id).await;
+            assert_eq!(
+                (status["state"].clone(), status["status"].clone()),
+                (json!("refused"), json!(403))
+            );
+            // and the refused export recorded nothing as started
+            let recorded: i64 = sqlx::query_scalar(
+                "select count(*) from audit_log where action = 'audit_log.export' and org_id = $1",
+            )
+            .bind(org)
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+            assert_eq!(recorded, 0);
         }
 
         #[tokio::test]

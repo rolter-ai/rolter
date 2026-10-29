@@ -1,4 +1,5 @@
-import { getJson, requestResponse } from "./request";
+import type { ExportRequest } from "./analytics-export";
+import { getJson } from "./request";
 
 export interface AuditLogEntry {
   id: string;
@@ -53,30 +54,26 @@ export function fetchDeploymentAuditLogPage(query: AuditLogQuery = {}): Promise<
   return getJson<AuditLogPage>(`/api/v1/audit-log${auditLogQueryString(query)}`);
 }
 
-/** the filtered audit log as a file the control plane streamed (#3051) */
-export interface AuditLogExportFile {
-  blob: Blob;
-  /** the name the server gave it; absent when it sent no usable one */
-  name?: string;
-}
-
 /**
- * Asks the control plane for the whole filtered audit log as CSV or JSON, with
- * no row cap: `GET /api/v1/orgs/{org}/audit-log/export` (or the deployment-wide
- * `/api/v1/audit-log/export`). The paging fields of `query` are ignored there.
- * A control plane that predates the endpoint answers `404`, which
- * `isEndpointNotMounted` recognises so the caller can read the pages itself.
+ * The whole filtered audit log as CSV or JSON, with no row cap, as an export
+ * the control plane streams (#3051): `GET /api/v1/orgs/{org}/audit-log/export`,
+ * or the deployment-wide `/api/v1/audit-log/export`. The paging fields of
+ * `query` are not sent. Handed to `ExportCsvButton`, which streams it to a
+ * picked file or downloads it through a single-use ticket, so the tab never
+ * holds the file (#3545). A control plane that predates the endpoint answers
+ * `404`, which `isEndpointNotMounted` recognises so the caller can read the
+ * pages itself.
  */
-export async function fetchAuditLogExport(
+export function auditLogExport(
   scope: string | "deployment",
   format: "csv" | "json",
   query: Pick<AuditLogQuery, "actor" | "action" | "target_type" | "from" | "to"> = {},
-): Promise<AuditLogExportFile> {
+): ExportRequest {
   const base = scope === "deployment" ? "/api/v1/audit-log" : `/api/v1/orgs/${scope}/audit-log`;
-  const url = `${base}/export${auditLogQueryString({ ...query, format })}`;
-  const res = await requestResponse(url);
-  const name = /filename="([^"]+)"/.exec(res.headers.get("content-disposition") ?? "")?.[1];
-  return { blob: await res.blob(), name };
+  return {
+    path: `${base}/export`,
+    query: auditLogQueryString({ ...query, format }).replace(/^\?/, ""),
+  };
 }
 
 // ---------------------------------------------------------------------------

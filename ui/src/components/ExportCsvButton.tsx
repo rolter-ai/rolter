@@ -5,7 +5,7 @@ import type { TFunction } from "i18next";
 import { useTranslation } from "react-i18next";
 
 import { Button } from "@/components/ui/button";
-import { ApiError, streamExport, type ExportRequest } from "@/lib/api";
+import { ApiError, isEndpointNotMounted, streamExport, type ExportRequest } from "@/lib/api";
 import { errorText } from "@/lib/error-copy";
 import { useFormat } from "@/lib/i18n/format";
 import {
@@ -14,6 +14,7 @@ import {
   ExportTruncatedError,
   pump,
   type DownloadSink,
+  type ExportFileType,
 } from "@/lib/stream-download";
 import {
   DownloadTruncatedError,
@@ -32,7 +33,20 @@ import { useToast } from "@/lib/toast";
  * has, and `stopped` the browser's download ending early, most likely because
  * the person cancelled it there.
  */
-type Outcome = "saved" | "downloaded" | "cancelled" | "dismissed" | "unwatched" | "stopped";
+type Outcome =
+  | "saved"
+  | "downloaded"
+  | "cancelled"
+  | "dismissed"
+  | "unwatched"
+  | "stopped"
+  | { fallback: FallbackDone };
+
+/** how a screen's own way of exporting ended, for its toast */
+export interface FallbackDone {
+  title: string;
+  tone: "success" | "info";
+}
 
 /** how often the byte count under an export is redrawn */
 const PROGRESS_EVERY_MS = 1000;
@@ -60,6 +74,11 @@ const PROGRESS_EVERY_MS = 1000;
  * is where a `429` or a body cut short is learned. The browser's own download
  * list is where that download is cancelled; the button's Cancel there only
  * stops following it, and says so.
+ *
+ * The Audit Log's CSV and JSON exports use it too (#3545): `label`, `fileType`
+ * and `done` give the button its own words and the save dialog its own type,
+ * and `fallback` is what a screen does when an older control plane has no such
+ * export at all.
  */
 export function ExportCsvButton({
   request,
@@ -67,6 +86,10 @@ export function ExportCsvButton({
   what,
   disabled,
   toDisk = false,
+  label,
+  fileType = "csv",
+  done,
+  fallback,
 }: {
   /** the export to run, read when the button is pressed */
   request: () => ExportRequest;
@@ -81,6 +104,17 @@ export function ExportCsvButton({
   disabled?: boolean;
   /** stream to a file the person picks where the browser allows it */
   toDisk?: boolean;
+  /** the button's text, "Export CSV" when absent */
+  label?: string;
+  /** what the save dialog offers to save as */
+  fileType?: ExportFileType;
+  /** the success toast's title for each way of saving, the analytics wording when absent */
+  done?: { saved: string; downloaded: string };
+  /**
+   * what to do instead when the control plane answers that the export, or the
+   * ticket for it, is not there (an older one): resolves with the toast to show
+   */
+  fallback?: () => Promise<FallbackDone>;
 }) {
   const { t } = useTranslation();
   const fmt = useFormat();
@@ -116,6 +150,7 @@ export function ExportCsvButton({
       if (toDisk && diskSaveSupported()) {
         disk = await chooseDiskSink(
           typeof fallbackName === "function" ? fallbackName() : fallbackName,
+          fileType,
         );
         // the dialog was closed: nothing was asked of the server
         if (!disk) return "dismissed";
@@ -146,6 +181,7 @@ export function ExportCsvButton({
         // failed before any byte came (a 429, a refusal) has not
         await disk?.abort();
         if (abort.signal.aborted) return "cancelled";
+        if (fallback && isEndpointNotMounted(error)) return { fallback: await fallback() };
         throw error;
       } finally {
         controller.current = null;
@@ -153,7 +189,9 @@ export function ExportCsvButton({
     },
     onSuccess: (outcome) => {
       if (outcome === "dismissed" || !mounted.current) return;
-      if (outcome === "cancelled") {
+      if (typeof outcome === "object") {
+        toast.push(outcome.fallback);
+      } else if (outcome === "cancelled") {
         toast.push({ tone: "info", title: t("analytics.export.cancelled") });
       } else if (outcome === "unwatched" || outcome === "stopped") {
         toast.push({ tone: "info", title: t(`analytics.export.${outcome}`) });
@@ -163,7 +201,9 @@ export function ExportCsvButton({
         // person may have typed another
         toast.push({
           tone: "success",
-          title: t(outcome === "saved" ? "analytics.export.saved" : "analytics.export.downloaded"),
+          title: done
+            ? done[outcome]
+            : t(outcome === "saved" ? "analytics.export.saved" : "analytics.export.downloaded"),
         });
       }
     },
@@ -184,7 +224,7 @@ export function ExportCsvButton({
         onClick={() => exportFile.mutate()}
       >
         <Download className="h-3.5 w-3.5" />
-        {pending ? t("analytics.export.pending") : t("analytics.export.csv")}
+        {pending ? t("analytics.export.pending") : (label ?? t("analytics.export.csv"))}
       </Button>
       {pending && rows !== null && (
         <>

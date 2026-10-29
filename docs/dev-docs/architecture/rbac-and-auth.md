@@ -644,6 +644,16 @@ rather than a clean close. The export is recorded as `audit_log.export` before
 the first byte, with the format and filters in `detail`; it adds no capability,
 since "can read the log" already means "can read all of it".
 
+A browser without the File System Access API downloads it through a single-use
+ticket (#3545, the audit addendum of
+[ADR-0041](../adr/2026-10-29-export-download-tickets.md)): `ExportKind` names
+both exports (`DeploymentAudit`, and `OrgAudit` with the org's id, stored as
+`org_audit_log:<id>`), the mint runs `audit_export::authorize_export` instead of
+the request log's reach, and the redemption hands the ticket to
+`audit_export::run_redeemed`, which runs the same check again for the
+re-resolved principal before it records the export and walks the log. The walk
+reports its rows to the ticket's status.
+
 ### Who an audit row names as the actor (#2844)
 
 `audit_log.actor_user_id` and the other "who did this" columns (`scim_tokens.created_by`, `invitations.invited_by`, `mcp_oauth_grants.revoked_by`) are filled from `Principal::account_id()`, never by matching the variant. `Principal::for_user` turns a superadmin account into `Principal::Superadmin { account: Some(id) }` (#2813), and that account holds no membership anywhere when it is the operator `rolter-seed` creates, so a `match` that keeps `Principal::User` and sends `Superadmin` to `None` drops exactly the actor an audit trail matters most for. Until #2844 about sixteen handlers carried that `match`.

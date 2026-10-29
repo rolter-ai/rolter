@@ -162,3 +162,30 @@ so no copy of the body is held in the tab.
   request carries none and behaves as before.
 - The progress reported for the two rollups is coarse: they are built in one
   query, so they go from `streaming` to `complete`.
+
+## Addendum: the audit log export (#3545)
+
+The Audit Log's CSV and JSON exports, deployment-wide and per org, read the
+whole file into the tab the way the analytics exports did before this decision,
+and now take the same two paths through the same `ExportCsvButton`.
+
+- `ExportKind` gains `DeploymentAudit` (`/api/v1/audit-log/export`) and
+  `OrgAudit(org_id)` (`/api/v1/orgs/{org_id}/audit-log/export`, the org id in
+  its canonical hyphenated form only). Both exist only on a control plane with a
+  database, where the audit log does; a store-less one refuses them as unknown
+  paths. The `export` column stores `audit_log` or `org_audit_log:<org id>`, so
+  the table needed no migration, and the status reports `audit_log` or
+  `org_audit_log`.
+- The audit log is governed by its own capability, not the request log's reach.
+  The mint runs `audit_log:read` on the org, or `deployment_audit_log:read`, in
+  place of the analytics extractors; the redemption skips the request log's
+  reach and hands the ticket to the audit handler, which checks the capability
+  again for the re-resolved principal before it writes its `audit_log.export`
+  row. A security auditor, who reads the deployment's audit log and not the
+  request log, can therefore mint, download and read the status, which now asks
+  only for the minter's own credential.
+- The audit export is paged from Postgres a page at a time, so it is not
+  behind the `ExportGate`, and its walk reports rows to the status as it goes.
+- The dashboard's fallback for a control plane that predates the export (a
+  `404` there or at the mint) still reads the log a page at a time, capped as
+  before.

@@ -369,7 +369,7 @@ impl ExportProgress {
         self.rows.load(std::sync::atomic::Ordering::Relaxed)
     }
 
-    fn set_rows(&self, rows: u64) {
+    pub(crate) fn set_rows(&self, rows: u64) {
         self.rows.store(rows, std::sync::atomic::Ordering::Relaxed);
     }
 
@@ -461,54 +461,136 @@ pub(crate) fn router() -> Router<ControlState> {
 }
 
 /// The exports a download ticket may name (#3504), by the path of the bearer
-/// route each one is.
+/// route each one is. The audit log's two (#3545) exist only where the audit
+/// log does, a control plane with a database.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ExportKind {
     Attribution,
     Timeseries,
     Invocations,
+    /// `GET /api/v1/audit-log/export`, the deployment-wide audit log
+    #[cfg(feature = "postgres")]
+    DeploymentAudit,
+    /// `GET /api/v1/orgs/{org_id}/audit-log/export`, one org's audit log
+    #[cfg(feature = "postgres")]
+    OrgAudit(uuid::Uuid),
 }
 
+/// The audit log export of one org lives under the org's own path.
+#[cfg(feature = "postgres")]
+const ORG_AUDIT_PREFIX: &str = "/api/v1/orgs/";
+#[cfg(feature = "postgres")]
+const ORG_AUDIT_SUFFIX: &str = "/audit-log/export";
+#[cfg(feature = "postgres")]
+const DEPLOYMENT_AUDIT_PATH: &str = "/api/v1/audit-log/export";
+/// The stored name of an org's audit export starts with this, the org id after.
+#[cfg(feature = "postgres")]
+const ORG_AUDIT_NAME: &str = "org_audit_log";
+
 impl ExportKind {
-    pub(crate) const ALL: [ExportKind; 3] = [
+    /// The analytics exports, whose bearer routes have fixed paths.
+    pub(crate) const ANALYTICS: [ExportKind; 3] = [
         ExportKind::Attribution,
         ExportKind::Timeseries,
         ExportKind::Invocations,
     ];
 
     /// The bearer route of this export.
-    pub(crate) fn path(self) -> &'static str {
+    pub(crate) fn path(self) -> std::borrow::Cow<'static, str> {
         match self {
-            ExportKind::Attribution => "/api/v1/analytics/by-attribution/export",
-            ExportKind::Timeseries => "/api/v1/analytics/timeseries/export",
-            ExportKind::Invocations => "/api/v1/analytics/invocations/export",
+            ExportKind::Attribution => "/api/v1/analytics/by-attribution/export".into(),
+            ExportKind::Timeseries => "/api/v1/analytics/timeseries/export".into(),
+            ExportKind::Invocations => "/api/v1/analytics/invocations/export".into(),
+            #[cfg(feature = "postgres")]
+            ExportKind::DeploymentAudit => DEPLOYMENT_AUDIT_PATH.into(),
+            #[cfg(feature = "postgres")]
+            ExportKind::OrgAudit(org) => {
+                format!("{ORG_AUDIT_PREFIX}{org}{ORG_AUDIT_SUFFIX}").into()
+            }
         }
     }
 
     /// The export whose bearer route is exactly `path`; any other path is none.
-    pub(crate) fn from_path(path: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|kind| kind.path() == path)
+    /// An audit export is one only where `audit` is set, on a control plane
+    /// with a database: without one its route is not mounted.
+    pub(crate) fn from_path(path: &str, audit: bool) -> Option<Self> {
+        if let Some(kind) = Self::ANALYTICS.into_iter().find(|kind| kind.path() == path) {
+            return Some(kind);
+        }
+        Self::audit_from_path(path).filter(|_| audit)
     }
 
-    /// The name stored with a ticket and reported in its status.
+    #[cfg(feature = "postgres")]
+    fn audit_from_path(path: &str) -> Option<Self> {
+        if path == DEPLOYMENT_AUDIT_PATH {
+            return Some(ExportKind::DeploymentAudit);
+        }
+        let org = path
+            .strip_prefix(ORG_AUDIT_PREFIX)?
+            .strip_suffix(ORG_AUDIT_SUFFIX)?;
+        // only the canonical hyphenated spelling, so a path names one org one way
+        let id = org.parse::<uuid::Uuid>().ok()?;
+        (id.hyphenated().to_string() == org).then_some(ExportKind::OrgAudit(id))
+    }
+
+    #[cfg(not(feature = "postgres"))]
+    fn audit_from_path(_: &str) -> Option<Self> {
+        None
+    }
+
+    /// The name reported in a ticket's status.
     pub(crate) fn as_str(self) -> &'static str {
         match self {
             ExportKind::Attribution => "attribution",
             ExportKind::Timeseries => "timeseries",
             ExportKind::Invocations => "invocations",
+            #[cfg(feature = "postgres")]
+            ExportKind::DeploymentAudit => "audit_log",
+            #[cfg(feature = "postgres")]
+            ExportKind::OrgAudit(_) => ORG_AUDIT_NAME,
+        }
+    }
+
+    /// The name stored with a ticket: the status name, and for an org's audit
+    /// export the org it reads, so the redemption reads the same org.
+    #[cfg(feature = "postgres")]
+    pub(crate) fn stored(self) -> String {
+        match self {
+            ExportKind::OrgAudit(org) => format!("{ORG_AUDIT_NAME}:{org}"),
+            kind => kind.as_str().to_string(),
         }
     }
 
     /// The export a stored name names: only the Postgres store reads it back.
     #[cfg(feature = "postgres")]
     pub(crate) fn parse(name: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|kind| kind.as_str() == name)
+        if let Some(org) = name
+            .strip_prefix(ORG_AUDIT_NAME)
+            .and_then(|rest| rest.strip_prefix(':'))
+        {
+            return org.parse().ok().map(ExportKind::OrgAudit);
+        }
+        Self::ANALYTICS
+            .into_iter()
+            .chain([ExportKind::DeploymentAudit])
+            .find(|kind| kind.as_str() == name)
     }
 
     /// Whether the [`ExportGate`] bounds this export: only the request log is
-    /// streamed, the two rollups are one query each.
+    /// streamed from ClickHouse, the two rollups are one query each, and the
+    /// audit log is paged from Postgres a page at a time.
     pub(crate) fn is_gated(self) -> bool {
         self == ExportKind::Invocations
+    }
+
+    /// Whether this is an audit log export, which the audit log's own
+    /// capability governs rather than the request log's.
+    pub(crate) fn is_audit(self) -> bool {
+        match self {
+            ExportKind::Attribution | ExportKind::Timeseries | ExportKind::Invocations => false,
+            #[cfg(feature = "postgres")]
+            ExportKind::DeploymentAudit | ExportKind::OrgAudit(_) => true,
+        }
     }
 }
 
@@ -517,7 +599,7 @@ impl ExportKind {
 #[allow(clippy::result_large_err)]
 fn stored_parts(kind: ExportKind, query: &str) -> Result<axum::http::request::Parts, Response> {
     let uri = if query.is_empty() {
-        kind.path().to_string()
+        kind.path().into_owned()
     } else {
         format!("{}?{query}", kind.path())
     };
@@ -547,6 +629,10 @@ pub(crate) async fn check_query(
         ExportKind::Invocations => Query::<InvocationsQuery>::from_request_parts(&mut parts, state)
             .await
             .map(drop),
+        #[cfg(feature = "postgres")]
+        ExportKind::DeploymentAudit | ExportKind::OrgAudit(_) => {
+            return crate::audit_export::check_query(&mut parts, state).await;
+        }
     };
     parsed.map_err(IntoResponse::into_response)
 }
@@ -554,15 +640,17 @@ pub(crate) async fn check_query(
 /// Run the export `kind` for a redeemed download ticket: the bearer route's
 /// own handler, given the caller the ticket's principal re-resolved to instead
 /// of one read from a bearer header. The handler runs every check it runs for
-/// a bearer request (the query's, the row scope's and the gate's), and reports
-/// to `progress` as it goes.
+/// a bearer request (the query's, the row scope's and the gate's, and for the
+/// audit log its own capability check, #3545), and reports to `progress` as it
+/// goes. `access` is the principal's reach over the request log, which only
+/// the analytics exports read; the caller works it out for those alone.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_redeemed(
     state: ControlState,
     kind: ExportKind,
     query: &str,
     principal: Caller,
-    access: AnalyticsAccess,
+    access: Option<AnalyticsAccess>,
     version: RequestVersion,
     connection: Option<Extension<ConnectionHandle>>,
     progress: Arc<ExportProgress>,
@@ -571,6 +659,17 @@ pub(crate) async fn run_redeemed(
     let mut parts = match stored_parts(kind, query) {
         Ok(parts) => parts,
         Err(response) => return response,
+    };
+    #[cfg(feature = "postgres")]
+    if kind.is_audit() {
+        return crate::audit_export::run_redeemed(state, kind, parts, principal, progress).await;
+    }
+    let Some(access) = access else {
+        tracing::error!(
+            export = kind.as_str(),
+            "an analytics export redeemed without its reach"
+        );
+        return internal_error();
     };
     let progress = Some(Extension(progress));
     match kind {
@@ -603,6 +702,9 @@ pub(crate) async fn run_redeemed(
                 Err(refused) => refused.into_response(),
             }
         }
+        // handed to the audit log's own handler above
+        #[cfg(feature = "postgres")]
+        ExportKind::DeploymentAudit | ExportKind::OrgAudit(_) => internal_error(),
     }
 }
 
@@ -715,6 +817,14 @@ fn csv_response(body: Body, name: &str) -> Response {
         HeaderValue::from_static("nosniff"),
     );
     response
+}
+
+fn internal_error() -> Response {
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        axum::Json(serde_json::json!({"error": {"message": "an internal server error occurred"}})),
+    )
+        .into_response()
 }
 
 fn bad_request(message: &str) -> Response {
