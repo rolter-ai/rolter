@@ -68,7 +68,7 @@ import { errorText } from "@/lib/error-copy";
 import { readEffectivePolicy } from "@/lib/guardrail-policy";
 import { keptRatePatches, type KeptRates } from "@/lib/cache-write-rate";
 import { useErrorVisibility } from "@/lib/error-visibility";
-import { ALL_TARGETS_RESTRICTED, allRestricted, isRestricted } from "@/lib/failure-classes";
+import { ALL_TARGETS_RESTRICTED, isRestricted, onlyRestrictedDialled } from "@/lib/failure-classes";
 import { providersUsableFrom } from "@/lib/provider-scope";
 import type { RouteTargetView } from "@/lib/route-targets";
 import { usesWeights } from "@/lib/strategies";
@@ -1418,15 +1418,17 @@ export function ModelSheet({
   // a refusal from the control plane marks the same fields until the list is edited
   // a list of nothing but fallbacks could never dial anything, which the
   // control plane refuses as `all_targets_restricted` (#1584)
-  // the stored variants' targets count too, as the control plane counts them
-  // (#3373); while they are unread the list alone is judged, and the save's
-  // own refusal still says so
-  const variantTargetSets = (Array.isArray(variants.data) ? variants.data : []).flatMap((v) =>
+  // a route with stored variants dials only them, so the list does not count
+  // then, as the control plane counts it (#3487); while they are unread the
+  // list alone is judged, and the save's own refusal still says so
+  const variantTargetSets = (Array.isArray(variants.data) ? variants.data : []).map((v) =>
     (v.targets ?? []).map((tg) => tg.takes_over ?? []),
   );
   const onlyFallbacks =
-    allRestricted([...draft.targets.map((tg) => tg.takesOver), ...variantTargetSets]) ||
-    !!refusal?.allRestricted;
+    onlyRestrictedDialled(
+      draft.targets.map((tg) => tg.takesOver),
+      variantTargetSets,
+    ) || !!refusal?.allRestricted;
   const errTargets = readonly
     ? ""
     : onlyFallbacks

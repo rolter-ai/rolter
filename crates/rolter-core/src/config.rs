@@ -1956,8 +1956,38 @@ pub fn dialled_targets<'a>(
 
 /// Whether there are targets to dial and every one is restricted.
 pub fn only_restricted_targets_dialled(pool: &[Target], variants: &[Variant]) -> bool {
-    let mut dialled = dialled_targets(pool, variants).peekable();
-    dialled.peek().is_some() && dialled.all(Target::is_restricted)
+    only_restricted_dialled(
+        pool.iter().map(Target::is_restricted),
+        variants
+            .iter()
+            .map(|variant| variant.targets.iter().map(Target::is_restricted)),
+    )
+}
+
+/// [`only_restricted_targets_dialled`] over any representation of a route's
+/// targets, given whether each one is restricted: `pool` holds one flag per
+/// pool target and `variants` one set of flags per variant. The variants'
+/// targets count when there are variants, the pool otherwise, as
+/// [`dialled_targets`] picks them. The control plane's write checks apply the
+/// rule to stored rows and request bodies through this (#3487).
+pub fn only_restricted_dialled<V>(
+    pool: impl IntoIterator<Item = bool>,
+    variants: impl IntoIterator<Item = V>,
+) -> bool
+where
+    V: IntoIterator<Item = bool>,
+{
+    fn all_restricted(mut restricted: impl Iterator<Item = bool>) -> bool {
+        restricted
+            .next()
+            .is_some_and(|first| first && restricted.all(|r| r))
+    }
+    let mut variants = variants.into_iter().peekable();
+    if variants.peek().is_none() {
+        all_restricted(pool.into_iter())
+    } else {
+        all_restricted(variants.flatten())
+    }
 }
 
 /// A weighted routing variant: a named, weighted bundle of ordered targets plus
@@ -9920,6 +9950,19 @@ mod tests {
             "",
         );
         assert!(pool_only.validate().is_err());
+    }
+
+    #[test]
+    fn the_flag_form_of_the_dialled_rule_counts_variants_over_the_pool() {
+        let none: [[bool; 0]; 0] = [];
+        // without variants the pool is dialled
+        assert!(only_restricted_dialled([true, true], none));
+        assert!(!only_restricted_dialled([true, false], none));
+        // nothing to dial is not "only restricted"
+        assert!(!only_restricted_dialled([], none));
+        // with variants the pool does not count, whatever it holds
+        assert!(only_restricted_dialled([false], [vec![true], vec![true]]));
+        assert!(!only_restricted_dialled([true], [vec![true], vec![false]]));
     }
 
     #[test]
