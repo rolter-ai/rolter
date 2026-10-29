@@ -4464,6 +4464,21 @@
         "toastResent": "Emailed the link to {{email}} again",
         "toastResendFailed": "The link to {{email}} could not be emailed"
       },
+      "mailCheck": {
+        "action": "Check mail relay",
+        "checking": "Checking mail relay",
+        "ok": "The mail relay accepted the connection and the credential",
+        "notConfigured": "Mail is not configured on this control plane, so invitations are not emailed. Share the link instead.",
+        "tooSoon": "The mail relay was checked a moment ago. Wait a few seconds and try again.",
+        "failed": "The mail relay check failed at {{stage}}",
+        "noReason": "The relay gave no reason.",
+        "stage": {
+          "connect": "connecting",
+          "tls": "setting up TLS",
+          "auth": "signing in",
+          "relay": "talking to the mail server"
+        }
+      },
       "confirm": {
         "revokeTitle": "Revoke {{role}} on {{scope}} from {{email}}?",
         "revokeNone": "{{email}} loses {{role}} on {{scope}} straight away, and no other grant of theirs reaches it.",

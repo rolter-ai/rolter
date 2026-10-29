@@ -68,6 +68,22 @@ export function resendInvitation(id: string): Promise<Invitation> {
   return sendJson<Invitation>("POST", `/api/v1/invitations/${id}/resend`);
 }
 
+/**
+ * What a relay check answers (#3304): `ok`, or the `stage` that failed and a
+ * `reason` that names no address or credential. `409` is a control plane with
+ * no mail relay, and `429` a check run again within a few seconds (#3394).
+ */
+export interface MailRelayCheck {
+  ok: boolean;
+  stage?: "connect" | "tls" | "auth" | "relay";
+  reason?: string;
+}
+
+/** connect to the relay, negotiate TLS and authenticate, sending nothing */
+export function checkMailRelay(orgId: string): Promise<MailRelayCheck> {
+  return sendJson<MailRelayCheck>("POST", `/api/v1/orgs/${orgId}/invitations/mail-check`);
+}
+
 export interface InvitationPreview {
   org_name: string;
   email: string;

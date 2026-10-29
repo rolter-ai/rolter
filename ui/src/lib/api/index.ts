@@ -255,6 +255,7 @@ export {
   listInvitations,
   createInvitation,
   resendInvitation,
+  checkMailRelay,
   revokeInvitation,
   isInvitationSignInRequired,
   previewInvitation,
@@ -263,6 +264,7 @@ export {
 export type {
   Invitation,
   CreatedInvitation,
+  MailRelayCheck,
   InvitationPreview,
   InvitationSignInRequired,
   AcceptInvitationOutcome,
