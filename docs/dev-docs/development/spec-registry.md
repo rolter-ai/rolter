@@ -65,7 +65,12 @@ Mistral, DeepSeek) means the base, path, credential header and request were read
 from the documentation page (`doc`) on that date (#3445); `Recalled` (GigaChat,
 whose reference page prints no host, auth scheme or example) means they were
 written from memory and not checked against the page, and a kind whose fixture
-is only recalled does not claim `provider-profile` in its record. The
+is only recalled does not claim `provider-profile` in its record:
+`no_provider_profile_rests_on_a_recalled_fixture_only` in
+`crates/rolter-core/src/spec_registry.rs` reads the cases' `source` from
+`provider_profiles.rs` and fails, naming the record, for a `provider-profile`
+record whose cited fixtures include no `Fetched` one or name a case the file
+does not have (#3495). The
 response bodies are illustrative in every case. A recalled case is a regression
 guard for the profile rolter sends, not evidence about the vendor. It checks the
 path the upstream receives, the header the credential travels in, and that the
