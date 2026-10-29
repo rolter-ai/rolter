@@ -140,6 +140,7 @@
             "group": "Deployment",
             "pages": [
               "deployment/docker",
+              "deployment/helm",
               "deployment/verify-images",
               "deployment/production",
               "deployment/cluster",
