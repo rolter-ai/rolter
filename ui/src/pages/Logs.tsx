@@ -63,6 +63,7 @@ import {
   windowFilters,
   windowFromFilters,
   type WindowSelection,
+  useWindowQueryKey,
 } from "@/lib/time-window";
 import { useDrawerA11y } from "@/lib/use-drawer-a11y";
 import { BELOW_MD, BELOW_XL, useMediaQuery } from "@/lib/use-media-query";
@@ -496,11 +497,15 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
   React.useEffect(() => setCursors([]), [filters.key]);
   // the drawer belongs to the lookup it was opened by
   React.useEffect(() => setSelected(null), [lookupKey]);
+  // the window's days are the chart zone's, so a zone change reads it again (#3519)
+  const logWindowKey = useWindowQueryKey(logWindow);
+  // a cursor walks the window it was read over, which a zone change moves
+  React.useEffect(() => setCursors([]), [logWindowKey[1]]);
 
   const query = useQuery({
     queryKey: [
       "invocations",
-      lookup ? "lookup" : logWindow,
+      ...(lookup ? (["lookup", null] as const) : logWindowKey),
       status,
       keyId,
       model,
@@ -544,7 +549,11 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
     // answers the same question: rows from the feed are not a lookup's rows,
     // and a lookup holds nothing back while it is out
     placeholderData: (prev, prevQuery) =>
-      !lookup && prevQuery?.queryKey[1] === logWindow ? prev : undefined,
+      !lookup &&
+      prevQuery?.queryKey[1] === logWindowKey[0] &&
+      prevQuery?.queryKey[2] === logWindowKey[1]
+        ? prev
+        : undefined,
     // a lookup reads every retained row, so it is asked again on request
     // (Find) rather than on a timer or on every return to the tab
     refetchOnWindowFocus: !lookup,

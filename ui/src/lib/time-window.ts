@@ -2,7 +2,13 @@ import * as React from "react";
 import { useTranslation } from "react-i18next";
 import { useSearchParams } from "react-router";
 
-import { chartTimeZone, useFormat, wallClock, type WallClock } from "@/lib/i18n/format";
+import {
+  chartTimeZone,
+  useChartTimeZone,
+  useFormat,
+  wallClock,
+  type WallClock,
+} from "@/lib/i18n/format";
 
 /**
  * The reporting windows a spend screen can be read over (#2107).
@@ -321,6 +327,37 @@ export function windowBounds(
       // `readWindowSelection`) reads as the default rather than as no bounds
       return windowBounds(DEFAULT_TIME_WINDOW, now, zone);
   }
+}
+
+/**
+ * Whether `window` is counted in calendar days (the month so far, last month,
+ * a custom range), whose bounds are the chart zone's midnights and so move
+ * when the zone does. A rolling window is the same hours in every zone.
+ */
+export function countsCalendarDays(window: WindowSelection): boolean {
+  return window === "mtd" || window === "last-month" || customRange(window) !== null;
+}
+
+/**
+ * What a read over `window` is keyed on (#3519): the window's name and, for a
+ * window of calendar days, the chart zone its days are counted in (`""` for
+ * the browser's own). Spread it into a query key where the window's name went,
+ * so a change of **Time zone** in Preferences is a new read over the new
+ * zone's midnights rather than a cached answer over the old one's. A rolling
+ * window carries `null`, so a zone change does not read it again.
+ */
+export function windowQueryKey(
+  window: WindowSelection,
+  zone: string | undefined = chartTimeZone(),
+): readonly [WindowSelection, string | null] {
+  return [window, countsCalendarDays(window) ? (zone ?? "") : null];
+}
+
+/** {@link windowQueryKey} for a component, which re-renders when the chart zone changes */
+export function useWindowQueryKey(
+  window: WindowSelection,
+): readonly [WindowSelection, string | null] {
+  return windowQueryKey(window, useChartTimeZone());
 }
 
 /** the longest custom range, in days, that is still drawn an hour at a time */

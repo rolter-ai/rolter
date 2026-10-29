@@ -84,6 +84,11 @@ function subscribeTimeZone(listener: () => void): () => void {
   };
 }
 
+/** the chart time zone, re-rendering the caller whenever it changes */
+export function useChartTimeZone(): string | undefined {
+  return React.useSyncExternalStore(subscribeTimeZone, chartTimeZone, chartTimeZone);
+}
+
 // first paint: the cached preference, before the fetch has answered
 activeTimeZone = validTimeZone(readCachedPreferences()?.chart_time_zone);
 
