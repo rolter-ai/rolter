@@ -3040,6 +3040,17 @@ async fn model_labels_name_the_organization_whose_model_they_are_on() {
         let own: Value = own.json().await.unwrap();
         assert_eq!(own["org_id"], org.to_string());
     }
+    // each org's label is in that org's own audit log, the deployment's in none
+    let audited: Vec<Option<uuid::Uuid>> = sqlx::query_scalar(
+        "select org_id from audit_log where action = 'model_label.create' order by org_id nulls first",
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    let mut expected = vec![Some(acme), Some(globex)];
+    expected.sort();
+    expected.insert(0, None);
+    assert_eq!(audited, expected);
     // the same key twice for one org is the 409 it always was
     let again = create(json!({"model": "gpt-4o", "org_id": acme, "key": "tier"})).await;
     assert_eq!(again.status(), 409);

@@ -407,10 +407,11 @@ async fn create_model_label(
         .await?;
     if let Some(ref row) = row {
         publish_config_change(&state).await?;
+        // an organization's label is in its own audit log (#3476)
         log_audit(
             &state,
             &principal,
-            None,
+            row.org_id,
             "model_label.create",
             "label",
             row.id,
@@ -454,7 +455,7 @@ async fn update_model_label(
     log_audit(
         &state,
         &principal,
-        None,
+        row.org_id,
         "model_label.update",
         "label",
         id,
@@ -476,13 +477,13 @@ async fn delete_model_label(
         cap!("model_label", Delete),
     )
     .await?;
-    model_label(&state, id).await?;
+    let label = model_label(&state, id).await?;
     LabelRepo(pool(&state)).delete_custom(id).await?;
     publish_config_change(&state).await?;
     log_audit(
         &state,
         &principal,
-        None,
+        label.org_id,
         "model_label.delete",
         "label",
         id,

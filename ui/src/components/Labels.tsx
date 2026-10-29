@@ -218,7 +218,11 @@ export function LabelSheet({
       }),
   });
 
-  const rows = labels.data ?? [];
+  // a model with no organization (one from the config file) reads the
+  // deployment-wide labels alone: asked without `org_id`, the control plane
+  // lists every organization's labels on that name too, which are theirs to
+  // edit, never this row's
+  const rows = (labels.data ?? []).filter((l) => subjectType !== "model" || !!orgId || !l.org_id);
   // on an organization's model, a deployment-wide label applies until the
   // organization sets its own of that key (#3476). it is every organization's,
   // so it is shown apart and cannot be edited from one organization's sheet
@@ -406,15 +410,13 @@ export interface SubjectLabels {
  */
 export function useSubjectLabels(
   orgId: string | undefined,
-  subjectType: LabelSubject,
+  // a model's labels are keyed by its organization too: `useModelLabels`
+  subjectType: Exclude<LabelSubject, "model">,
 ): SubjectLabels {
   const labels = useQuery({
     queryKey: [...LABELS_QUERY_KEY, orgId, subjectType],
-    queryFn: () =>
-      subjectType === "model"
-        ? fetchModelLabels()
-        : fetchLabels(orgId as string, { subject_type: subjectType }),
-    enabled: subjectType === "model" || !!orgId,
+    queryFn: () => fetchLabels(orgId as string, { subject_type: subjectType }),
+    enabled: !!orgId,
     retry: false,
   });
   const map = React.useMemo(() => {

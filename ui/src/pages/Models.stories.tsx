@@ -996,6 +996,8 @@ const TWO_ORGS_MODELS: EffectiveModelDto[] = [
     targets: 1,
     route_targets: [{ provider: "other-edge", model: null, weight: 1 }],
   },
+  // and the gateway's config file serves one too, which no organization owns
+  { ...MODELS[1], model: "gpt-4o" },
 ];
 
 const TWO_ORGS_LABELS: LabelRow[] = [
@@ -1033,7 +1035,10 @@ export const TwoOrganizationsSameNamedModelsCarryTheirOwnLabels: Story = {
     await expect(within(gold).getByLabelText("family=gpt, your label")).toBeVisible();
     await expect(within(bronze).getByLabelText("family=gpt, your label")).toBeVisible();
     // and the config-file model, which no organization owns, reads only it
-    await expect(canvas.getAllByLabelText("family=gpt, your label")).toHaveLength(2);
+    await expect(canvas.getAllByText("gpt-4o")).toHaveLength(3);
+    await expect(canvas.getAllByLabelText("family=gpt, your label")).toHaveLength(3);
+    await expect(canvas.getAllByLabelText("tier=gold, your label")).toHaveLength(1);
+    await expect(canvas.getAllByLabelText("tier=bronze, your label")).toHaveLength(1);
 
     await userEvent.click(canvas.getByRole("combobox", { name: /Filter by label/i }));
     await userEvent.click(await within(document.body).findByRole("option", { name: "tier=gold" }));
@@ -1092,6 +1097,44 @@ export const AnOrganizationsModelLabelsAreItsOwn: Story = {
       "/model-labels",
     );
     await expect(sent).toEqual({ model: "gpt-4o", org_id: "org-2", key: "owner", value: "ml" });
+  },
+};
+
+/**
+ * #3476: the config-file `gpt-4o` belongs to no organization, so its sheet
+ * holds the deployment-wide labels alone. Asked without an organization, the
+ * control plane lists every organization's labels on the name too; none of
+ * them is this row's to edit or remove, and none trips the duplicate check.
+ */
+export const AConfigFileModelsLabelsAreTheDeploymentsOnly: Story = {
+  render: () => (
+    <Harness fetchStub={withLabels(TWO_ORGS_LABELS, TWO_ORGS_MODELS)} role="superadmin">
+      <Models />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getAllByText("gpt-4o")).toHaveLength(3));
+    // the row with the family label and no tier is the config file's
+    const rows = canvas
+      .getAllByText("gpt-4o")
+      .map((name) => name.closest("[role='row']") as HTMLElement);
+    await waitFor(() =>
+      expect(rows.filter((row) => within(row).queryByLabelText(/^tier=/) === null)).toHaveLength(1),
+    );
+    const config = rows.find((row) => within(row).queryByLabelText(/^tier=/) === null)!;
+    await userEvent.click(within(config).getByRole("button", { name: "Labels on gpt-4o" }));
+    const dialog = await within(document.body).findByRole("dialog");
+    const panel = within(dialog);
+    await expectAllowed(dialog, "Remove family=gpt");
+    await expect(panel.queryByRole("button", { name: "Remove tier=gold" })).toBeNull();
+    await expect(panel.queryByRole("button", { name: "Remove tier=bronze" })).toBeNull();
+    await expect(panel.queryByLabelText("tier=gold, your label")).toBeNull();
+    // its labels are its own, not inherited from anywhere
+    await expect(panel.queryByTestId("labels-inherited")).toBeNull();
+    // another organization's `tier` is not a key this row already holds
+    await userEvent.type(panel.getByRole("textbox", { name: en.labels.keyLabel }), "tier");
+    await expect(panel.queryByText(/is already set here/)).toBeNull();
   },
 };
 
