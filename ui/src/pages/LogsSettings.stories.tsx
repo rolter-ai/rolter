@@ -289,10 +289,7 @@ export const CaptureOffIgnoresAnOutOfRangeMaxBytes: Story = {
     await waitFor(() => expect(maxBytes()).toBeDisabled());
     await expect(maxBytes()).not.toHaveAttribute("aria-invalid", "true");
     await expect(canvas.queryByText(/Max payload bytes must be/)).toBeNull();
-    await expect(canvas.getByRole("button", { name: "Save changes" })).not.toHaveAttribute(
-      "aria-disabled",
-      "true",
-    );
+    await expect(canvas.queryByText(/attention/)).toBeNull();
     // re-enabling capture re-validates the value
     await userEvent.click(canvas.getByRole("switch", { name: /capture/i }));
     await waitFor(() => expect(maxBytes()).toHaveAttribute("aria-invalid", "true"));
@@ -610,7 +607,7 @@ export const SaveWaitsForAnEdit: Story = {
     const canvas = within(canvasElement);
     const save = await canvas.findByRole("button", { name: "Save changes" });
     await expect(canvas.getByText(/Last saved/)).toBeVisible();
-    await expect(save).toBeDisabled();
+    await expect(save).toHaveAttribute("aria-disabled", "true");
     await userEvent.type(canvas.getByLabelText("Sample rate percent"), "5");
     await waitFor(() => expect(save).toBeEnabled());
   },

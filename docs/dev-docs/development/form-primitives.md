@@ -274,7 +274,12 @@ const fields = useFieldErrors<FieldKey>({
   and does not run; otherwise it runs the save. Save therefore stays pressable on an invalid form and
   is `aria-disabled`, not `disabled`.
 - `SaveBar` (`ui/src/components/ui/save-bar.tsx`) is the footer: the "N fields need attention" status,
-  the `aria-disabled` Save, a `leading` slot and secondary buttons as children.
+  the `aria-disabled` Save, a `leading` slot and secondary buttons as children. A pristine form
+  (`disabled`) is `aria-disabled` too, with the press ignored: a real `disabled` button has
+  `pointer-events: none`, so the press that blurs a `commitOnBlur` field would never reach it. That
+  press commits the field, the bar re-renders dirty, and the click then submits (#3449). Only a save
+  in flight (`pending`) is really `disabled`. Assert a pristine Save with
+  `toHaveAttribute("aria-disabled", "true")`, never `toBeDisabled()`.
 - Both error renderers announce the same way: `Field`'s built-in `error` and `FieldError` are
   `role="alert"`, and the control's `aria-describedby` points at it. The footer count is a
   `role="status"`, which is polite. A story that needs one specific message picks it by its text, not

@@ -328,7 +328,7 @@ export const KillSwitchWaitsForSave: Story = {
     const kill = await canvas.findByRole("switch");
     const save = canvas.getByRole("button", { name: "Save changes" });
     // untouched: nothing to save, nothing to discard, and the screen says when it was last saved
-    await expect(save).toBeDisabled();
+    await expect(save).toHaveAttribute("aria-disabled", "true");
     await expect(canvas.getByRole("button", { name: "Discard changes" })).toBeDisabled();
     await expect(canvas.getByText(/^Last saved /)).toBeVisible();
     await expect(canvas.queryByText("Not saved")).toBeNull();
@@ -342,7 +342,7 @@ export const KillSwitchWaitsForSave: Story = {
     await userEvent.click(canvas.getByRole("button", { name: "Discard changes" }));
     await expect(kill).toHaveAttribute("aria-checked", "true");
     await expect(canvas.queryByText("Not saved")).toBeNull();
-    await expect(save).toBeDisabled();
+    await expect(save).toHaveAttribute("aria-disabled", "true");
   },
 };
 

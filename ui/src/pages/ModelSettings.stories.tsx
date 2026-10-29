@@ -309,16 +309,9 @@ export const DefaultsOffIgnoresAnOutOfRangeTemperature: Story = {
     await waitFor(() => expect(canvas.getByLabelText("Temperature")).toBeDisabled());
     await expect(canvas.getByLabelText("Temperature")).toHaveValue("3");
     await expect(canvas.queryByText("Temperature must be between 0 and 2.")).toBeNull();
-    await expect(canvas.getByRole("button", { name: "Save changes" })).not.toHaveAttribute(
-      "aria-disabled",
-    );
+    await expect(canvas.queryByText(/attention/)).toBeNull();
     await userEvent.click(canvas.getByRole("switch", { name: "Apply defaults" }));
-    await waitFor(() =>
-      expect(canvas.getByRole("button", { name: "Save changes" })).toHaveAttribute(
-        "aria-disabled",
-        "true",
-      ),
-    );
+    await waitFor(() => expect(canvas.getByText(/attention/)).toBeVisible());
     await expect(canvas.getByLabelText("Temperature")).toHaveAccessibleDescription(
       "Temperature must be between 0 and 2.",
     );
@@ -470,10 +463,15 @@ export const SwitchWaitsForSave: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     const apply = await canvas.findByRole("switch", { name: "Apply defaults" });
-    await expect(canvas.getByRole("button", { name: "Save changes" })).toBeDisabled();
+    await expect(canvas.getByRole("button", { name: "Save changes" })).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
     await userEvent.click(apply);
     await expect(canvas.getByText("Not saved")).toBeVisible();
-    await expect(canvas.getByRole("button", { name: "Save changes" })).toBeEnabled();
+    await expect(canvas.getByRole("button", { name: "Save changes" })).not.toHaveAttribute(
+      "aria-disabled",
+    );
     await userEvent.click(canvas.getByRole("button", { name: "Discard changes" }));
     await expect(apply).toHaveAttribute("aria-checked", "false");
     await expect(canvas.queryByText("Not saved")).toBeNull();
