@@ -45,8 +45,10 @@ an organization with nothing in it.
 
 Reading labels takes the `viewer` role and writing them takes `admin`, so a
 caller who may not read them simply sees the screen without them rather than an
-error. Labelling a model is a superadmin's act, the way its price is, so an
-admin sees the panel and what it holds with the write controls disabled rather
+error. A deployment-wide model label is a superadmin's act, the way a model's
+price is. A label on an organization's own model takes that organization's
+`admin`, as its provider and route labels do. A caller who may not write a row's
+labels sees the panel and what it holds with the write controls disabled, rather
 than a form that would be refused.
 
 ---
