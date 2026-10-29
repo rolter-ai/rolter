@@ -948,13 +948,55 @@ async fn by_variant(
         Ok(ch) => ch,
         Err(resp) => return resp,
     };
+    // `fallback_reason` (`023`) is applied by hand, so whether the table has it
+    // decides what the first-attempt count reads
+    let columns = match ch.request_log_columns().await {
+        Ok(columns) => columns,
+        Err(error) => return query_failed("analytics query failed", &error),
+    };
+    let sql = by_variant_sql(&columns);
+    match ch.query(&sql, &with_access(q.params(), &access)).await {
+        Ok(data) => Json(json!({"data": data})).into_response(),
+        Err(error) => {
+            // the table may have changed under the cached answer: look again next time
+            ch.forget_request_log_columns();
+            query_failed("analytics query failed", &error)
+        }
+    }
+}
+
+/// The requests a variant served on the first attempt (#3409): those the log
+/// records with no `fallback_reason`, which is empty when the first dial
+/// answered. Counted beside `requests`, which is every request the variant
+/// answered, so the share a variant took in by-variant can be told apart from
+/// the share the router gave it: a variant others fail over to reads higher
+/// than its weight in `requests` and at its weight here. Weighted by
+/// `sample_weight` like every count. The column is qualified with the table.
+pub(crate) const FIRST_ATTEMPT_REQUESTS: &str =
+    "round(sumIf(sample_weight, request_logs.fallback_reason = ''))";
+
+/// The by-variant rollup's select, for a table that has (or lacks) the
+/// `fallback_reason` column.
+///
+/// A table without it cannot say which requests failed over, and reading every
+/// row as a first attempt would claim they all were, so `first_attempt_requests`
+/// is `null` there and the dashboard states that the split is unknown. A row
+/// logged before the column was applied reads as a first attempt on a table
+/// that has it, the same default the invocation list gives such a row.
+pub(crate) fn by_variant_sql(columns: &Columns) -> String {
+    let first_attempt = if columns.has("fallback_reason") {
+        FIRST_ATTEMPT_REQUESTS
+    } else {
+        "CAST(NULL AS Nullable(Float64))"
+    };
     // `model` and `variant` are selected under their own names, so both are
     // qualified with the table: ClickHouse resolves a bare name to the alias
     // before the column. the sums alias other names, which carry their own
     // qualifiers where they need them
-    let sql = format!(
+    format!(
         "select request_logs.model as model, request_logs.variant as variant, \
                 {REQUESTS} as requests, \
+                {first_attempt} as first_attempt_requests, \
                 {TOKENS} as tokens, \
                 {COST} as cost_usd, \
                 {UNPRICED} as unpriced_requests, \
@@ -964,8 +1006,7 @@ async fn by_variant(
          from request_logs where {WHERE_WINDOW} and {ROW_VISIBLE} and {ROW_FILTERS} \
          group by request_logs.model, request_logs.variant \
          order by requests desc, model, variant format JSON"
-    );
-    run(ch.query(&sql, &with_access(q.params(), &access)).await)
+    )
 }
 
 /// Query params for the cost-attribution rollup: the shared time window plus
@@ -1834,6 +1875,41 @@ mod tests {
             // the timing variant clamps at 30 000 ms, below a slow completion
             assert!(!expr.contains("Timing"), "{expr}");
         }
+    }
+
+    #[test]
+    fn by_variant_counts_first_attempts_beside_the_requests_that_answered() {
+        // #3409: `requests` is every request the variant answered; the first
+        // attempt count leaves out those another target failed over to it
+        let sql = by_variant_sql(&Columns::default());
+        assert!(
+            sql.contains("round(sumIf(sample_weight, request_logs.fallback_reason = ''))"),
+            "{sql}"
+        );
+        assert!(sql.contains("as first_attempt_requests"), "{sql}");
+        // the column is qualified, and no count reads a row once
+        assert!(!sql.contains("count()"), "{sql}");
+        // the counts and the grouping are still the by-model ones
+        assert!(
+            sql.contains("group by request_logs.model, request_logs.variant"),
+            "{sql}"
+        );
+        assert!(sql.contains(&format!("{REQUESTS} as requests")), "{sql}");
+    }
+
+    #[test]
+    fn by_variant_does_not_claim_a_first_attempt_split_a_table_without_the_column_cannot_make() {
+        // 023 is applied by hand: without it every row would read as a first
+        // attempt, which is a claim, so the count is null and the select does
+        // not name the column
+        let sql = by_variant_sql(&Columns::lacking(&["fallback_reason"]));
+        assert!(
+            sql.contains("CAST(NULL AS Nullable(Float64)) as first_attempt_requests"),
+            "{sql}"
+        );
+        assert!(!sql.contains("fallback_reason"), "{sql}");
+        // and the rest of the select is unchanged
+        assert!(sql.contains(&format!("{REQUESTS} as requests")), "{sql}");
     }
 
     #[test]

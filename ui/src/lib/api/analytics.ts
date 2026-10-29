@@ -176,7 +176,15 @@ export interface AnalyticsByVariantRow {
   /** the route's public name */
   model: string;
   variant: string;
+  /** every request the variant answered, failovers included */
   requests: number | string;
+  /**
+   * The part of `requests` served on the first attempt (#3409): those with no
+   * `fallback_reason`. `null` from a ClickHouse that has not applied
+   * `clickhouse/023`, which cannot tell the two apart; absent from a control
+   * plane older than the field.
+   */
+  first_attempt_requests?: number | string | null;
   tokens: number | string;
   cost_usd: number | string;
   /** requests recorded with no price for their model; see AnalyticsSummary */

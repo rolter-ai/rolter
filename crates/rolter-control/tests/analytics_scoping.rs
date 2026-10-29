@@ -1856,6 +1856,10 @@ async fn by_variant_groups_one_route_inside_the_callers_scope() {
             "sample_weight": weight,
         })
     };
+    let failed_over = |mut row: Value, reason: &str| {
+        row["fallback_reason"] = json!(reason);
+        row
+    };
     insert_rows(
         &http,
         &ch,
@@ -1864,9 +1868,17 @@ async fn by_variant_groups_one_route_inside_the_callers_scope() {
             // acme project a: variant "canary" is sampled one in two, one of its two
             // kept rows failed; "stable" and the classic path ("") are unsampled
             row(&acme, acme.project_a, &route, "stable", 200, 100, 1.0, 1.0),
-            row(&acme, acme.project_a, &route, "stable", 200, 300, 1.0, 1.0),
+            // answered after another target failed over to it (#3409): counted in
+            // `requests` and left out of the first attempts
+            failed_over(
+                row(&acme, acme.project_a, &route, "stable", 200, 300, 1.0, 1.0),
+                "timeout",
+            ),
             row(&acme, acme.project_a, &route, "canary", 200, 200, 0.5, 2.0),
-            row(&acme, acme.project_a, &route, "canary", 500, 200, 0.0, 2.0),
+            failed_over(
+                row(&acme, acme.project_a, &route, "canary", 500, 200, 0.0, 2.0),
+                "refusal:content_filter",
+            ),
             row(&acme, acme.project_a, &route, "", 200, 100, 2.0, 1.0),
             // another project of the same org, and another org, call the route too
             row(&acme, acme.project_b, &route, "stable", 200, 100, 4.0, 1.0),
@@ -1937,6 +1949,32 @@ async fn by_variant_groups_one_route_inside_the_callers_scope() {
             ("stable".to_string(), 4.0, 0.0, 14.0),
         ]
     );
+    // the first attempts leave out the requests another target failed over to
+    // the variant, weighted like every count (#3409): canary's failed row stands
+    // for 2 of its 4, and one of stable's four rows is a failover
+    let first_attempts = |body: &Value| -> Vec<(String, f64)> {
+        let mut out: Vec<_> = body["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| {
+                (
+                    r["variant"].as_str().unwrap().to_string(),
+                    number(&r["first_attempt_requests"]),
+                )
+            })
+            .collect();
+        out.sort_by(|a, b| a.0.cmp(&b.0));
+        out
+    };
+    assert_eq!(
+        first_attempts(&body),
+        vec![
+            ("".to_string(), 1.0),
+            ("canary".to_string(), 2.0),
+            ("stable".to_string(), 3.0),
+        ]
+    );
     // the percentiles are read off the kept rows, not scaled
     let stable = body["data"]
         .as_array()
@@ -1961,6 +1999,15 @@ async fn by_variant_groups_one_route_inside_the_callers_scope() {
             ("".to_string(), 1.0, 0.0, 2.0),
             ("canary".to_string(), 4.0, 2.0, 1.0),
             ("stable".to_string(), 2.0, 0.0, 2.0),
+        ]
+    );
+    // the member's first attempts are their own project's, not the route's
+    assert_eq!(
+        first_attempts(&body),
+        vec![
+            ("".to_string(), 1.0),
+            ("canary".to_string(), 2.0),
+            ("stable".to_string(), 1.0),
         ]
     );
     // and a project filter cannot reach past what the member already reads
