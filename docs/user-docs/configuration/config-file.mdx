@@ -1888,7 +1888,7 @@ The same keys as [`[guardrail_webhook]`](#guardrail_webhook), one table per prov
 </ParamField>
 
 <ParamField path="max_body_bytes" default="65536" type="integer">
-  The most content forwarded, in bytes.
+  The most content forwarded, in bytes. A `local` provider reads at most this much text: the first quarter and the last three quarters of a longer one.
 </ParamField>
 
 <ParamField path="auth" type="table">
