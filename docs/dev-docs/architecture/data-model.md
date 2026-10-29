@@ -121,6 +121,10 @@ A login abandoned at the identity provider never comes back to delete its state,
 
 `password_resets` (`0089_password_resets.sql`, #2240) holds the one-time links an administrator issues so a member can choose a new password. It is read only by the control plane, so it carries no `bump_config_version()` trigger. `token_hash` is the peppered digest (the token is shown once), at most one row per account is live (`password_resets_live_user_idx`, `used_at` and `revoked_at` both null), rows cascade with the account and `created_by` is nulled when the issuer is deleted. See [password-reset.md](password-reset.md).
 
+## Export download tickets
+
+`export_tickets` (`0229_export_tickets.sql`, #3504) holds the single-use tickets a browser without the File System Access API downloads an analytics CSV export with ([ADR-0041](../adr/2026-10-29-export-download-tickets.md)). It is read only by the control plane, so it carries no `bump_config_version()` trigger. `secret_hash` is the SHA-256 of the secret, which is returned once; the minter is a `session_id` or `api_token_id` (each cascading, so a signed-out session or deleted token takes its tickets with it), an `admin_digest`, or open mode, and never the bearer. `used_at` is set by the one statement that redeems a ticket, `status` is the JSON progress the serving replica writes, and `owner` (`caller_key`) is who may read it. Rows are deleted a day after `expires_at` by the next mint. Without a database the same records live in an in-memory map.
+
 ## Data written _by_ the data plane
 
 Most tables flow control plane → gateway. Two flow the other way, written from the channel the gateway already holds and never read back by it:

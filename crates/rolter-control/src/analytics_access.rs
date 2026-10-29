@@ -351,19 +351,7 @@ async fn resolve(
     if state.pool.is_some() {
         use crate::rbac::Principal;
         return match Principal::from_request_parts(parts, state).await {
-            Ok(Principal::Superadmin { .. }) => Ok(AnalyticsAccess::unrestricted()),
-            Ok(Principal::User(user)) => scoped::for_user(state, &user, reads)
-                .await
-                .map_err(IntoResponse::into_response),
-            // a token holds its one role at one chain, so it reads the rows of
-            // that chain by the rules of a person with that role, the
-            // `request_payload` floor included (#3291). It has no account, so
-            // the rows of an MCP session "of its own" do not exist for it
-            Ok(Principal::Token(held)) => {
-                scoped::for_roles(state, &held.memberships, &held.grants, None, reads)
-                    .await
-                    .map_err(IntoResponse::into_response)
-            }
+            Ok(principal) => reach_of(state, &principal, reads).await,
             Err(error) => Err(error.into_response()),
         };
     }
@@ -376,6 +364,44 @@ async fn resolve(
         Ok(AnalyticsAccess::unrestricted())
     } else {
         Err(admin_token_required())
+    }
+}
+
+/// What a resolved principal may read of the request log: the reduction a
+/// bearer request goes through, for a principal that was resolved another way.
+/// A download ticket re-resolves the principal it was minted by and runs the
+/// export under this (#3504), so the ticket adds no second, weaker path.
+#[cfg(feature = "postgres")]
+#[allow(clippy::result_large_err)]
+pub(crate) async fn analytics_reach(
+    state: &ControlState,
+    principal: &crate::rbac::Principal,
+) -> Result<AnalyticsAccess, Response> {
+    reach_of(state, principal, Reads::Analytics).await
+}
+
+#[cfg(feature = "postgres")]
+#[allow(clippy::result_large_err)]
+async fn reach_of(
+    state: &ControlState,
+    principal: &crate::rbac::Principal,
+    reads: Reads,
+) -> Result<AnalyticsAccess, Response> {
+    use crate::rbac::Principal;
+    match principal {
+        Principal::Superadmin { .. } => Ok(AnalyticsAccess::unrestricted()),
+        Principal::User(user) => scoped::for_user(state, user, reads)
+            .await
+            .map_err(IntoResponse::into_response),
+        // a token holds its one role at one chain, so it reads the rows of
+        // that chain by the rules of a person with that role, the
+        // `request_payload` floor included (#3291). It has no account, so
+        // the rows of an MCP session "of its own" do not exist for it
+        Principal::Token(held) => {
+            scoped::for_roles(state, &held.memberships, &held.grants, None, reads)
+                .await
+                .map_err(IntoResponse::into_response)
+        }
     }
 }
 

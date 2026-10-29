@@ -2386,6 +2386,7 @@ mod tests {
         ("egress_client.rs", include_str!("egress_client.rs")),
         ("feature_flags.rs", include_str!("feature_flags.rs")),
         ("expiry_sweep.rs", include_str!("expiry_sweep.rs")),
+        ("export_tickets.rs", include_str!("export_tickets.rs")),
         (
             "guardrail_policies.rs",
             include_str!("guardrail_policies.rs"),

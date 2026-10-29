@@ -2572,6 +2572,26 @@ fn operations() -> Vec<Op> {
             )
             .clickhouse_read()
             .query(INVOCATIONS_QUERY),
+            Op::post(
+                "/api/v1/analytics/exports/tickets",
+                "mintExportTicket",
+                "Mint a single-use download ticket for one CSV export, for a browser that cannot stream the file to disk itself (#3504). The body names `path` (one of the three `.../export` routes above; any other is a `400`) and `query`, the query string that export would be sent, which is checked as the export checks it. The export's own credential and scope checks run here, and the request log export is refused with `429` at once when its concurrency bound is full. Answers `id`, `download_url` (the secret is in it: hand it to the browser, never log it), `status_url` and `expires_at`, 60 seconds out",
+            )
+            .too_many_requests(
+                "the request log export's concurrency bound is already full, in this process or for this caller; wait for `Retry-After` seconds",
+            ),
+            Op::get(
+                "/api/v1/analytics/exports/tickets/{id}",
+                "getExportTicket",
+                "How a ticket's export is going, for the principal that minted it only (anyone else gets `404`). `state` is `pending`, `streaming` (with `rows` so far), `complete` (`rows`), `truncated` (`rows` and a `reason`: `row_limit`, `time_limit`, `read_error` or `client_closed`), `refused` (the download's HTTP `status`, and `retry_after` for a `429`) or `expired` (never redeemed); `done` is `true` once it can no longer change",
+            ),
+            Op::get(
+                "/api/v1/analytics/exports/download/{ticket}",
+                "downloadExport",
+                "Redeem a download ticket and send its export as the bearer route would, under the principal that minted it, re-checked now. The ticket in the path is the credential, and it is spent by the first request whatever its outcome; an unknown, used or expired ticket is one uniform `410`. Answers `Cache-Control: no-store` and `Referrer-Policy: no-referrer`. The body is CSV, not JSON",
+            )
+            .public()
+            .clickhouse_read(),
             Op::get(
                 "/api/v1/analytics/guardrails",
                 "getAnalyticsGuardrails",
