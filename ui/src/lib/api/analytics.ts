@@ -218,6 +218,15 @@ export interface AnalyticsByVariantRow {
    * control plane older than the field.
    */
   assigned_requests?: number | string | null;
+  /**
+   * The requests the weighted split sampled the variant for (#3547), before the
+   * gateway skipped a variant whose breaker is open or whose targets are
+   * parked or unhealthy: the share to compare with the configured weights. A
+   * variant row from before `clickhouse/050` counts for none. `null` from a
+   * ClickHouse without that file; absent from a control plane older than the
+   * field.
+   */
+  sampled_requests?: number | string | null;
   tokens: number | string;
   cost_usd: number | string;
   /** requests recorded with no price for their model; see AnalyticsSummary */

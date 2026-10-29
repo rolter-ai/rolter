@@ -335,6 +335,8 @@ async fn a_request_abandoned_on_a_variant_route_names_its_variant_and_target() {
     assert_eq!(row["target"], "slow-chat");
     assert_eq!(row["variant"], "canary");
     assert_eq!(row["first_variant"], "canary");
+    // the cancel row carries the split's sample too (#3547)
+    assert_eq!(row["sampled_variant"], "canary");
 }
 
 #[tokio::test]

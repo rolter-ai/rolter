@@ -1104,8 +1104,19 @@ fn assigned_rows(columns: &Columns) -> &'static str {
     }
 }
 
+/// The variant a row counts for in the sampled count (#3547): the one the
+/// weighted split sampled as its primary (`sampled_variant`, `clickhouse/050`).
+/// A row served without a variant (the classic pool) counts under the empty
+/// string; a variant row that records no sampled variant was written before
+/// `050` (or by an older gateway), and the sample it was given is not known,
+/// so it is left out rather than guessed.
+const SAMPLED_ROWS: &str = "(request_logs.sampled_variant != '' or request_logs.variant = '')";
+
+/// The null a count reads as on a table that cannot make it.
+const UNKNOWN_COUNT: &str = "CAST(NULL AS Nullable(Float64))";
+
 /// The by-variant rollup's select, for a table that has (or lacks) the
-/// `fallback_reason` and `first_variant` columns.
+/// `fallback_reason`, `first_variant` and `sampled_variant` columns.
 ///
 /// A table without `fallback_reason` cannot say which requests failed over,
 /// and reading every row as a first attempt would claim they all were, so
@@ -1115,36 +1126,42 @@ fn assigned_rows(columns: &Columns) -> &'static str {
 /// gives such a row.
 ///
 /// `assigned_requests` (#3505) counts the requests each variant was dialled to
-/// first, grouped by that variant rather than the one that answered, so a variant that only ever failed over still has a row (with no
-/// answered requests) and its assigned share. Two halves over the same window
-/// and filters, one grouped by the answering variant and one by the assigned
-/// one, are summed per `(org_id, model, variant)`: each half holds a key at most once,
+/// first, grouped by that variant rather than the one that answered, so a
+/// variant that only ever failed over still has a row (with no answered
+/// requests) and its assigned share. `sampled_requests` (#3547) counts the
+/// requests the weighted split sampled each variant for, before the gateway
+/// skipped a parked, unhealthy or open-breaker one, so a variant the gateway
+/// routes around keeps its sampled share while its assigned share falls. Each
+/// is a half over the same window and filters, grouped by its own variant,
+/// beside the answered half grouped by the answering one; the halves are
+/// summed per `(org_id, model, variant)`. Each half holds a key at most once,
 /// so a sum (and a `max` for the percentiles) adds a figure to zero and is
-/// exact. It is `null` on a table without `first_variant`.
+/// exact. A count is `null` on a table without its column, and its half is
+/// left out.
 pub(crate) fn by_variant_sql(columns: &Columns) -> String {
-    let first_attempt = if columns.has("fallback_reason") {
+    let has_first_attempt = columns.has("fallback_reason");
+    let has_assigned = columns.has("first_variant");
+    let has_sampled = columns.has("sampled_variant");
+    let first_attempt = if has_first_attempt {
         FIRST_ATTEMPT_REQUESTS
     } else {
-        "CAST(NULL AS Nullable(Float64))"
+        UNKNOWN_COUNT
     };
-    let has_assigned = columns.has("first_variant");
-    // without the column no row says where it was assigned, so the count is
-    // not claimed; with it the answered half contributes nothing to it
-    let assigned = if has_assigned {
-        "toFloat64(0)"
-    } else {
-        "CAST(NULL AS Nullable(Float64))"
-    };
+    // without its column a count is not claimed; with it, every half but its
+    // own contributes nothing to it
+    let zero_unless = |known: bool| if known { "toFloat64(0)" } else { UNKNOWN_COUNT };
+    let (assigned_zero, sampled_zero) = (zero_unless(has_assigned), zero_unless(has_sampled));
     // `org_id`, `model` and `variant` are selected under their own names, so
-    // all three are qualified with the table: ClickHouse resolves a bare name to the alias
-    // before the column. the sums alias other names, which carry their own
-    // qualifiers where they need them
+    // all three are qualified with the table: ClickHouse resolves a bare name
+    // to the alias before the column. the sums alias other names, which carry
+    // their own qualifiers where they need them
     let answered = format!(
         "select request_logs.org_id as org_id, request_logs.model as model, \
                 request_logs.variant as variant, \
                 {REQUESTS} as requests, \
                 {first_attempt} as first_attempt_requests, \
-                {assigned} as assigned_requests, \
+                {assigned_zero} as assigned_requests, \
+                {sampled_zero} as sampled_requests, \
                 {TOKENS} as tokens, \
                 {COST} as cost_usd, \
                 {UNPRICED} as unpriced_requests, \
@@ -1154,19 +1171,47 @@ pub(crate) fn by_variant_sql(columns: &Columns) -> String {
          from request_logs where {WHERE_WINDOW} and {ROW_VISIBLE} and {ROW_FILTERS} \
          group by request_logs.org_id, request_logs.model, request_logs.variant"
     );
-    if !has_assigned {
-        return format!("{answered} order by requests desc, org_id, model, variant format JSON");
-    }
-    let assigned_rows = assigned_rows(columns);
     // a union matches its halves by position and takes the first one's names,
-    // so the assigned half's columns carry names no column of `request_logs`
+    // so the other halves' columns carry names no column of `request_logs`
     // has (an alias such as `cost_usd` would shadow the column). typed as the
     // answered half's figures, or as their common supertype
-    let first_attempt_zero = if columns.has("fallback_reason") {
-        "toFloat64(0)"
-    } else {
-        "CAST(NULL AS Nullable(Float64))"
+    let first_attempt_zero = zero_unless(has_first_attempt);
+    let half = |variant: &str, rows: &str, assigned: &str, sampled: &str| {
+        format!(
+            " union all \
+             select request_logs.org_id as org_id, request_logs.model as model, \
+                    {variant} as counted_variant, \
+                    toFloat64(0) as zero_requests, {first_attempt_zero} as zero_first_attempts, \
+                    {assigned} as counted_assigned, {sampled} as counted_sampled, \
+                    toFloat64(0) as zero_tokens, \
+                    toFloat64(0) as zero_cost, toFloat64(0) as zero_unpriced, \
+                    toFloat64(0) as zero_errors, toFloat64(0) as zero_p50, \
+                    toFloat64(0) as zero_p95 \
+             from request_logs \
+             where {WHERE_WINDOW} and {ROW_VISIBLE} and {ROW_FILTERS} and {rows} \
+             group by request_logs.org_id, request_logs.model, {variant}"
+        )
     };
+    let mut halves = String::new();
+    if has_assigned {
+        halves.push_str(&half(
+            ASSIGNED_VARIANT,
+            assigned_rows(columns),
+            REQUESTS,
+            sampled_zero,
+        ));
+    }
+    if has_sampled {
+        halves.push_str(&half(
+            "request_logs.sampled_variant",
+            SAMPLED_ROWS,
+            assigned_zero,
+            REQUESTS,
+        ));
+    }
+    if halves.is_empty() {
+        return format!("{answered} order by requests desc, org_id, model, variant format JSON");
+    }
     // the outer sums read the union through its alias, since a bare
     // `requests` inside `sum(...) as requests` would name the sum itself
     format!(
@@ -1175,26 +1220,14 @@ pub(crate) fn by_variant_sql(columns: &Columns) -> String {
                 sum(by_role.requests) as requests, \
                 sum(by_role.first_attempt_requests) as first_attempt_requests, \
                 sum(by_role.assigned_requests) as assigned_requests, \
+                sum(by_role.sampled_requests) as sampled_requests, \
                 sum(by_role.tokens) as tokens, \
                 sum(by_role.cost_usd) as cost_usd, \
                 sum(by_role.unpriced_requests) as unpriced_requests, \
                 sum(by_role.errors) as errors, \
                 max(by_role.p50_latency_ms) as p50_latency_ms, \
                 max(by_role.p95_latency_ms) as p95_latency_ms \
-         from ( \
-             {answered} \
-             union all \
-             select request_logs.org_id as org_id, request_logs.model as model, \
-                    {ASSIGNED_VARIANT} as assigned_variant, \
-                    toFloat64(0) as zero_requests, {first_attempt_zero} as zero_first_attempts, \
-                    {REQUESTS} as assigned, toFloat64(0) as zero_tokens, \
-                    toFloat64(0) as zero_cost, toFloat64(0) as zero_unpriced, \
-                    toFloat64(0) as zero_errors, toFloat64(0) as zero_p50, \
-                    toFloat64(0) as zero_p95 \
-             from request_logs \
-             where {WHERE_WINDOW} and {ROW_VISIBLE} and {ROW_FILTERS} and {assigned_rows} \
-             group by request_logs.org_id, request_logs.model, {ASSIGNED_VARIANT} \
-         ) as by_role \
+         from ({answered}{halves}) as by_role \
          group by by_role.org_id, by_role.model, by_role.variant \
          order by requests desc, org_id, model, variant format JSON"
     )
@@ -1611,10 +1644,12 @@ pub(crate) fn invocations_sql(status_expr: &str, columns: &Columns) -> String {
     let cache_usage_reported = columns.select("cache_usage_reported");
     // the variant dialled first, beside the one that answered (#3505)
     let first_variant = columns.select("first_variant");
+    // and the one the weighted split sampled (#3547)
+    let sampled_variant = columns.select("sampled_variant");
     format!(
         "select ts, request_id, trace_id, org_id, team_id, project_id, virtual_key_id, \
                 business_unit_id, customer_id, \
-                model, provider, {provider_org_id}, target, variant, {first_variant}, status, stream, cache_hit, cache_read_tokens, cache_write_tokens, \
+                model, provider, {provider_org_id}, target, variant, {first_variant}, {sampled_variant}, status, stream, cache_hit, cache_read_tokens, cache_write_tokens, \
                 {cache_write_1h_tokens}, \
                 prompt_tokens, completion_tokens, total_tokens, cost_usd, unpriced, withheld, usage_unknown, latency_ms, ttft_ms, error, \
                 {upstream_status}, {attempts}, {lifecycle_operation}, {guardrail_events}, {plugin_events}, {seq}, \
@@ -2155,8 +2190,8 @@ mod tests {
                 "{WHERE_WINDOW} and {ROW_VISIBLE} and {ROW_FILTERS}"
             ))
             .count(),
-            2,
-            "both halves read the same window and filters: {sql}"
+            3,
+            "every half reads the same window and filters: {sql}"
         );
         // the figures are summed per key, so the answered half is unchanged
         assert!(sql.contains("sum(by_role.requests) as requests"), "{sql}");
@@ -2168,7 +2203,10 @@ mod tests {
     fn by_variant_keeps_two_orgs_same_named_routes_apart() {
         // #3548: as by-model since #3486, every half is keyed on the org too,
         // with or without the assigned half
-        for columns in [Columns::default(), Columns::lacking(&["first_variant"])] {
+        for columns in [
+            Columns::default(),
+            Columns::lacking(&["first_variant", "sampled_variant"]),
+        ] {
             let sql = by_variant_sql(&columns);
             assert!(sql.starts_with("select "), "{sql}");
             assert!(sql.contains("as org_id"), "{sql}");
@@ -2185,15 +2223,59 @@ mod tests {
 
     #[test]
     fn by_variant_does_not_claim_an_assignment_a_table_without_first_variant_cannot_make() {
-        let sql = by_variant_sql(&Columns::lacking(&["first_variant"]));
+        let sql = by_variant_sql(&Columns::lacking(&["first_variant", "sampled_variant"]));
         assert!(
             sql.contains("CAST(NULL AS Nullable(Float64)) as assigned_requests"),
             "{sql}"
         );
         assert!(!sql.contains("first_variant"), "{sql}");
         assert!(!sql.contains("union all"), "{sql}");
+        // with `050` but not `048` the sampled half still reads, and the
+        // assigned count is null in every half
+        let sql = by_variant_sql(&Columns::lacking(&["first_variant"]));
+        assert!(!sql.contains("first_variant"), "{sql}");
+        assert_eq!(sql.matches("union all").count(), 1, "{sql}");
+        assert!(
+            sql.contains("CAST(NULL AS Nullable(Float64)) as counted_assigned"),
+            "{sql}"
+        );
         // the first-attempt count is still read
         assert!(sql.contains(FIRST_ATTEMPT_REQUESTS), "{sql}");
+    }
+
+    #[test]
+    fn by_variant_counts_the_requests_the_split_sampled_each_variant() {
+        // #3547: grouped by the variant the split sampled, before skipping;
+        // a classic row counts under the empty string and an old variant row
+        // that records no sample is left out
+        let sql = by_variant_sql(&Columns::default());
+        assert!(
+            sql.contains("sum(by_role.sampled_requests) as sampled_requests"),
+            "{sql}"
+        );
+        assert!(
+            sql.contains(
+                "group by request_logs.org_id, request_logs.model, request_logs.sampled_variant"
+            ),
+            "{sql}"
+        );
+        assert!(sql.contains(SAMPLED_ROWS), "{sql}");
+        // the answered and assigned halves contribute nothing to it
+        assert!(sql.contains("toFloat64(0) as sampled_requests"), "{sql}");
+        assert!(sql.contains("toFloat64(0) as counted_sampled"), "{sql}");
+    }
+
+    #[test]
+    fn by_variant_does_not_claim_a_sample_a_table_without_sampled_variant_cannot_make() {
+        let sql = by_variant_sql(&Columns::lacking(&["sampled_variant"]));
+        assert!(
+            sql.contains("CAST(NULL AS Nullable(Float64)) as sampled_requests"),
+            "{sql}"
+        );
+        assert!(!sql.contains("sampled_variant"), "{sql}");
+        // the assigned half is still read
+        assert_eq!(sql.matches("union all").count(), 1, "{sql}");
+        assert!(sql.contains(ASSIGNED_VARIANT), "{sql}");
     }
 
     #[test]

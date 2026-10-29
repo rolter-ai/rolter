@@ -26,12 +26,13 @@ import { useFormat } from "@/lib/i18n/format";
 import { trafficSplit } from "@/lib/route-variants";
 import { useTimeWindowOptions, windowBounds, type TimeWindow } from "@/lib/time-window";
 
-// the assigned and first-attempt shares each add a column when the read
-// carries them
-const grid = (assigned: boolean, first: boolean) =>
+// the sampled, assigned and first-attempt shares each add a column when the
+// read carries them
+const grid = (sampled: boolean, assigned: boolean, first: boolean) =>
   [
     primaryColumn(1.4),
     "84px",
+    ...(sampled ? ["84px"] : []),
     ...(assigned ? ["84px"] : []),
     "84px",
     ...(first ? ["84px"] : []),
@@ -52,8 +53,10 @@ const num = (v: number | string | null | undefined) => Number(v ?? 0);
 const rowKey = (orgId: string, variant: string) => `${orgId}\u0000${variant}`;
 
 /** whether some line carries a figure for `field`: a null or absent one is unknown */
-const carries = (lines: TrafficLine[], field: "first_attempt_requests" | "assigned_requests") =>
-  lines.some((line) => line.row?.[field] !== undefined && line.row[field] !== null);
+const carries = (
+  lines: TrafficLine[],
+  field: "first_attempt_requests" | "assigned_requests" | "sampled_requests",
+) => lines.some((line) => line.row?.[field] !== undefined && line.row[field] !== null);
 
 /**
  * What each saved variant of a route actually served (#3342), beside the split
@@ -70,7 +73,11 @@ const carries = (lines: TrafficLine[], field: "first_attempt_requests" | "assign
  * often fails over keeps its assignments there, and a variant that answered
  * nothing still has a line. It is not the sampled split: a variant the
  * gateway skips while its breaker is open or its targets are parked is
- * dialled first by none of the requests sampled for it. A ClickHouse that cannot tell a first attempt from a
+ * dialled first by none of the requests sampled for it. The sampled share
+ * (#3547) is the split itself, the requests the weights picked each variant
+ * for before any skipping, so it sits next to the configured share, and a
+ * variant the gateway routes around reads above its assigned share there. A
+ * ClickHouse that cannot tell a first attempt from a
  * failover, or that does not record the first variant, sends no count for
  * that column, and the column is left out rather than drawn as a guess.
  *
@@ -129,7 +136,9 @@ export function RouteVariantTraffic({
   const splitKnown = carries(lines, "first_attempt_requests");
   const assignedKnown = carries(lines, "assigned_requests");
   const assignedTotal = lines.reduce((sum, line) => sum + num(line.row?.assigned_requests), 0);
-  const gridColumns = grid(assignedKnown, splitKnown);
+  const sampledKnown = carries(lines, "sampled_requests");
+  const sampledTotal = lines.reduce((sum, line) => sum + num(line.row?.sampled_requests), 0);
+  const gridColumns = grid(sampledKnown, assignedKnown, splitKnown);
   const firstServed = lines.reduce((sum, line) => sum + num(line.row?.first_attempt_requests), 0);
   const unattributed = num(byKey.get(rowKey(orgId, ""))?.requests);
   const unavailable = read.error instanceof AnalyticsUnavailableError ? read.error : null;
@@ -160,7 +169,7 @@ export function RouteVariantTraffic({
           onRetry={() => void read.refetch()}
           target="route-variant-traffic"
         />
-      ) : served === 0 && assignedTotal === 0 ? (
+      ) : served === 0 && assignedTotal === 0 && sampledTotal === 0 ? (
         <EmptyState
           inline
           uxTarget="route-variant-traffic"
@@ -176,6 +185,11 @@ export function RouteVariantTraffic({
               <ListHeaderCell className="text-right">
                 {t("routeSheet.variants.observed.configured")}
               </ListHeaderCell>
+              {sampledKnown && (
+                <ListHeaderCell className="text-right">
+                  {t("routeSheet.variants.observed.sampled")}
+                </ListHeaderCell>
+              )}
               {assignedKnown && (
                 <ListHeaderCell className="text-right">
                   {t("routeSheet.variants.observed.assigned")}
@@ -207,6 +221,13 @@ export function RouteVariantTraffic({
                   <ListCell className="text-right font-mono text-xs">
                     {line.configured === null ? "—" : fmt.percent(line.configured, 0)}
                   </ListCell>
+                  {sampledKnown && (
+                    <ListCell className="text-right font-mono text-xs">
+                      {sampledTotal > 0
+                        ? fmt.percent(num(line.row?.sampled_requests) / sampledTotal, 0)
+                        : "—"}
+                    </ListCell>
+                  )}
                   {assignedKnown && (
                     <ListCell className="text-right font-mono text-xs">
                       {assignedTotal > 0
@@ -251,6 +272,7 @@ export function RouteVariantTraffic({
                   ? "routeSheet.variants.observed.noteWithFirstAttempt"
                   : "routeSheet.variants.observed.note",
             )}
+            {sampledKnown && <> {t("routeSheet.variants.observed.noteSampled")}</>}
             {unattributed > 0 && (
               <>
                 {" "}

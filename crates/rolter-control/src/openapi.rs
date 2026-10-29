@@ -2516,7 +2516,13 @@ fn operations() -> Vec<Op> {
                  requests sampled for it; requests \
                  served without a variant count under the empty string. A row written before `048` \
                  counts for the variant that answered it when it has no `fallback_reason`, and for no \
-                 variant otherwise. It is `null` on a ClickHouse that has not applied `048`",
+                 variant otherwise. It is `null` on a ClickHouse that has not applied `048`. \
+                 `sampled_requests` counts the requests the weighted split sampled each variant for \
+                 (`sampled_variant`, `clickhouse/050`), before the gateway skips a variant whose \
+                 breaker is open or whose targets are parked or unhealthy, so it is the comparison \
+                 with the configured weights; a variant row written before `050` counts for no \
+                 variant, requests served without a variant count under the empty string, and it is \
+                 `null` on a ClickHouse that has not applied `050`",
             )
             .clickhouse_read()
             .query(DASHBOARD_QUERY),

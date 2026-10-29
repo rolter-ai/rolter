@@ -403,6 +403,8 @@ async fn a_transcription_falls_over_to_the_next_variant() {
     assert_eq!(row["variant"], "spare", "{row}");
     // the variant the split assigned it, which failed (#3505)
     assert_eq!(row["first_variant"], "primary", "{row}");
+    // and the variant it sampled, on the upload path as on chat (#3547)
+    assert_eq!(row["sampled_variant"], "primary", "{row}");
     assert_eq!(row["provider"], "spare", "{row}");
     assert_eq!(row["attempts"], 2, "{row}");
     assert_eq!(down.calls.load(Ordering::SeqCst), 1);
