@@ -61,10 +61,11 @@ Each distinct auth/path profile also has a conformance fixture in
 response shaped after the vendor's documentation, replayed through the gateway
 against a mock upstream mounted at the documented base. Each case records its
 `source`: `Fetched(date)` (Azure, Bedrock, Vertex, the Gemini OpenAI shim, Groq,
-Mistral, DeepSeek) means the base, path, credential header and request were read
-from the documentation page (`doc`) on that date (#3445); `Recalled` (GigaChat,
-whose reference page prints no host, auth scheme or example) means they were
-written from memory and not checked against the page, and a kind whose fixture
+Mistral, DeepSeek, and GigaChat from the OpenAPI file its reference pages are
+built from, #3488) means the base, path, credential header and request were read
+from the documentation page (`doc`) on that date (#3445); `Recalled` (no case
+today) means they were written from memory and not checked against the page,
+and a kind whose fixture
 is only recalled does not claim `provider-profile` in its record:
 `no_provider_profile_rests_on_a_recalled_fixture_only` in
 `crates/rolter-core/src/spec_registry.rs` reads the cases' `source` from

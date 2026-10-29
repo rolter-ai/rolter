@@ -48,7 +48,11 @@ enum Source {
     /// response example leaves the response the OpenAI chat completion shape
     /// its client examples read
     Fetched(&'static str),
-    /// written from memory of the documentation; not checked against the page
+    /// written from memory of the documentation; not checked against the page.
+    /// No case is recalled today; a kind whose page cannot be read records its
+    /// case honestly here, and the registry test in `rolter_core` refuses such a
+    /// case as the only evidence of `provider-profile` (#3495)
+    #[allow(dead_code)]
     Recalled,
 }
 
@@ -298,26 +302,39 @@ async fn vertex_takes_an_oauth_access_token_as_a_bearer_under_the_project_endpoi
 async fn gigachat_takes_an_oauth_access_token_as_a_bearer() {
     replay(&Profile {
         kind: ProviderKind::Gigachat,
-        // not checked: the reference page prints no host, auth scheme or example, and
-        // the overview now names `https://api.giga.chat/v1` as the base, not `/api/v1`
-        source: Source::Recalled,
-        doc: "https://developers.sber.ru/docs/ru/gigachat/api/reference/rest/post-chat",
-        base: "/api/v1",
+        // the OpenAPI file the reference pages are built from: `servers` is
+        // `https://api.giga.chat/v1`, chat completions is `POST /v1/chat/completions`
+        // on `https://api.giga.chat`, and every request but the token's carries the
+        // access token as a bearer (#3488)
+        source: Source::Fetched("2026-10-29"),
+        doc: "https://developers.sber.ru/docs/files/openapi/gigachat/api.yml",
+        base: "/v1",
         path: "/chat/completions",
         // the 30-minute access token from the OAuth endpoint is the key
         auth: ("authorization", "Bearer "),
         model: "GigaChat",
-        request: json!({"model": "GigaChat", "messages": messages()}),
+        request: json!({
+            "model": "GigaChat",
+            "messages": [
+                {"role": "system", "content": "Ты — профессиональный переводчик на английский язык. Переведи точно сообщение пользователя."},
+                {"role": "user", "content": "GigaChat — это сервис, который умеет взаимодействовать с пользователем в формате диалога, писать код, создавать тексты и картинки по запросу пользователя."}
+            ],
+            "stream": false,
+            "update_interval": 0
+        }),
         response: json!({
             "choices": [{
-                "message": {"content": "Здравствуйте! Чем могу помочь?", "role": "assistant"},
+                "message": {
+                    "content": "GigaChat is a service capable of interacting with the user in a dialogue format, writing code, and creating texts and images upon user's request.",
+                    "role": "assistant"
+                },
                 "index": 0,
                 "finish_reason": "stop"
             }],
-            "created": 1757000000,
+            "created": 1760434636,
             "model": "GigaChat:2.0.28.2",
             "object": "chat.completion",
-            "usage": {"prompt_tokens": 18, "completion_tokens": 9, "total_tokens": 27, "precached_prompt_tokens": 0}
+            "usage": {"prompt_tokens": 55, "completion_tokens": 30, "total_tokens": 85, "precached_prompt_tokens": 4}
         }),
     })
     .await;
