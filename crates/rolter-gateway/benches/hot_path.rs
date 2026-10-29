@@ -8,7 +8,7 @@
 //!
 //! - `admission` — breaker `allows`, cooldown `is_parked` and provider health
 //!   on a route with every target healthy, the steady state
-//! - `eligible_pick` — one balancer pick the way `pick_untried` makes it: the
+//! - `eligible_pick` — one balancer pick the way `TargetPool::pick` makes it: the
 //!   eligibility closure asks the three registries about each target, with a
 //!   parked and an unhealthy target in the pool
 //! - `snapshot_read` — the config read every request starts with: an
@@ -238,7 +238,7 @@ fn pick_per_target(
     picked.is_some_and(|i| fleet.eligible(i))
 }
 
-/// A pick the way `pick_untried` makes it now: the registries are read once, and
+/// A pick the way `TargetPool::pick` makes it now: the registries are read once, and
 /// only if the balancer asks, then the pick is judged on its own.
 fn pick_snapshot(lb: &dyn LoadBalancer, ctx: &RouteContext, loads: &[u64], fleet: &Fleet) -> bool {
     let seen = std::cell::OnceCell::new();

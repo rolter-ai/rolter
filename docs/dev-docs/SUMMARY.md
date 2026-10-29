@@ -5,6 +5,7 @@
 # Architecture
 
 - [Overview](architecture/overview.md)
+- [Request pipeline](architecture/request-pipeline.md)
 - [Load balancing](architecture/load-balancing.md)
 - [Caching](architecture/caching.md)
 - [Config & hot reload](architecture/config-and-hot-reload.md)
