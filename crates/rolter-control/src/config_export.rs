@@ -242,12 +242,19 @@ impl ScopeRefs {
 
 /// [`render`], with the names the caps' scopes go by (#1312).
 pub fn render_with(config: &GatewayConfig, refs: &ScopeRefs) -> String {
-    render_document(config, refs, false)
+    render_document(config, refs, false, &[])
 }
 
 /// [`render_with`], optionally leaving the payload-capture table out because it
-/// is limited to keys and so cannot be split per org (#3440).
-fn render_document(config: &GatewayConfig, refs: &ScopeRefs, omit_capture: bool) -> String {
+/// is limited to keys and so cannot be split per org (#3440). `shadowed` names
+/// the deployment-wide rows a per-org file leaves out because the org has a row
+/// of the same name (#3481).
+fn render_document(
+    config: &GatewayConfig,
+    refs: &ScopeRefs,
+    omit_capture: bool,
+    shadowed: &[String],
+) -> String {
     let mut out = String::from(HEADER);
     // the stamp goes before any table header, and is sourced from the constant
     // rather than written as a literal so it cannot drift from the chain. it is
@@ -258,6 +265,7 @@ fn render_document(config: &GatewayConfig, refs: &ScopeRefs, omit_capture: bool)
         "\nschema_version = {}\n",
         rolter_core::config_migrate::CURRENT_SCHEMA_VERSION
     ));
+    render_shadowed(&mut out, shadowed);
     render_providers(&mut out, config);
     render_provider_groups(&mut out, config);
     render_routes(&mut out, config);
@@ -267,6 +275,22 @@ fn render_document(config: &GatewayConfig, refs: &ScopeRefs, omit_capture: bool)
     render_prompt_templates(&mut out, config);
     render_logging(&mut out, config, omit_capture);
     out
+}
+
+/// The comment naming the deployment-wide rows a per-org file leaves out
+/// because the org shadows them (#3481). Nothing is written when none were.
+fn render_shadowed(out: &mut String, shadowed: &[String]) {
+    if shadowed.is_empty() {
+        return;
+    }
+    out.push_str(
+        "\n# left out because this organization has a row of the same name, which \
+         shadows it (ADR-0040), so importing this file reproduces the organization's \
+         view:\n",
+    );
+    for name in shadowed {
+        out.push_str(&format!("#   {name}\n"));
+    }
 }
 
 /// Effective slug for a provider: the stored one, else derived from the name —
@@ -881,10 +905,10 @@ pub async fn export_document(
 ) -> rolter_core::Result<String> {
     let mut config = config.clone();
     let refs = load_scope_refs(pool, !options.without_person_caps).await?;
-    let mut omit_capture = false;
+    let mut scope = OrgScope::default();
     if let Some(slug) = &options.org {
         let view = load_org_view(pool, slug, &config).await?;
-        omit_capture = scope_to_org(&mut config, &view, &refs);
+        scope = scope_to_org(&mut config, &view, &refs);
     }
     let clashes = clashing_names(&config);
     if !clashes.is_empty() {
@@ -918,7 +942,12 @@ pub async fn export_document(
     }
     with_stored_variants(pool, &mut config).await?;
     config.mcp_manifest_enforcement = load_mcp_manifest_enforcement(pool, options).await?;
-    Ok(render_document(&config, &refs, omit_capture))
+    Ok(render_document(
+        &config,
+        &refs,
+        scope.omit_capture,
+        &scope.shadowed,
+    ))
 }
 
 /// The marker of each org that has not saved MCP settings, which is the only
@@ -996,18 +1025,75 @@ async fn load_org_view(
     })
 }
 
+/// What [`scope_to_org`] decided about the parts of the file that are not just
+/// a filter on rows.
+#[cfg(feature = "postgres")]
+#[derive(Debug, Default)]
+struct OrgScope {
+    /// the payload-capture policy is limited to keys, so the file omits it
+    omit_capture: bool,
+    /// deployment-wide rows left out because the org has one of the same name,
+    /// such as `route 'gpt-4o'`, sorted
+    shadowed: Vec<String>,
+}
+
 /// Leave in `config` what belongs in the file of `org` (#3440): its providers,
 /// groups, routes, prompt templates and caps, and the rows no org owns. Prices,
-/// currency and logging are deployment-wide and stay. Returns whether the
-/// payload-capture policy is limited to keys, in which case the file omits it.
+/// currency and logging are deployment-wide and stay. A row no org owns is left
+/// out when the org has a row of the same name, since the org's row shadows it
+/// (#3481).
 #[cfg(feature = "postgres")]
-fn scope_to_org(config: &mut GatewayConfig, org: &OrgView, refs: &ScopeRefs) -> bool {
+fn scope_to_org(config: &mut GatewayConfig, org: &OrgView, refs: &ScopeRefs) -> OrgScope {
+    use std::collections::{BTreeSet, HashSet};
     let owned = |tenancy: &Option<rolter_core::Tenancy>| {
         tenancy.as_ref().is_none_or(|owner| owner.org_id == org.id)
+    };
+    let own = |tenancy: &Option<rolter_core::Tenancy>| {
+        tenancy.as_ref().is_some_and(|owner| owner.org_id == org.id)
     };
     config.providers.retain(|p| owned(&p.tenancy));
     config.provider_groups.retain(|g| owned(&g.tenancy));
     config.routes.retain(|r| owned(&r.tenancy));
+    let mut shadowed = BTreeSet::new();
+    let routes: HashSet<String> = config
+        .routes
+        .iter()
+        .filter(|r| own(&r.tenancy))
+        .map(|r| r.model.clone())
+        .collect();
+    config.routes.retain(|r| {
+        let keep = own(&r.tenancy) || !routes.contains(&r.model);
+        if !keep {
+            shadowed.insert(format!("route '{}'", r.model));
+        }
+        keep
+    });
+    let providers: HashSet<String> = config
+        .providers
+        .iter()
+        .filter(|p| own(&p.tenancy))
+        .map(|p| p.name.clone())
+        .collect();
+    config.providers.retain(|p| {
+        let keep = own(&p.tenancy) || !providers.contains(&p.name);
+        if !keep {
+            shadowed.insert(format!("provider '{}'", p.name));
+        }
+        keep
+    });
+    let groups: HashSet<String> = config
+        .provider_groups
+        .iter()
+        .filter(|g| own(&g.tenancy))
+        .map(|g| g.name.clone())
+        .collect();
+    config.provider_groups.retain(|g| {
+        let keep = own(&g.tenancy) || !groups.contains(&g.name);
+        if !keep {
+            shadowed.insert(format!("provider group '{}'", g.name));
+        }
+        keep
+    });
     // a stored template's id is `{org_id}:{slug}`; one from a file has no org
     config.prompt_templates.templates.retain(|t| {
         t.id.rsplit_once(':')
@@ -1021,7 +1107,10 @@ fn scope_to_org(config: &mut GatewayConfig, org: &OrgView, refs: &ScopeRefs) -> 
         .retain(|l| refs.in_org(org, l.scope, &l.id, l.within.as_ref()));
     // capture is one deployment-wide policy, which the importer applies whole.
     // one limited to keys spans orgs, so a per-org file leaves it out
-    !config.logging.payload_capture.virtual_key_ids.is_empty()
+    OrgScope {
+        omit_capture: !config.logging.payload_capture.virtual_key_ids.is_empty(),
+        shadowed: shadowed.into_iter().collect(),
+    }
 }
 
 /// The names two rows share in `config`, which a flat file cannot carry.
@@ -1281,9 +1370,9 @@ mod tests {
         let mut config = GatewayConfig::default();
         config.logging.payload_capture.enabled = true;
         let refs = ScopeRefs::default();
-        let whole = render_document(&config, &refs, false);
+        let whole = render_document(&config, &refs, false, &[]);
         assert!(whole.contains("\n[logging.payload_capture]\n"), "{whole}");
-        let omitted = render_document(&config, &refs, true);
+        let omitted = render_document(&config, &refs, true, &[]);
         assert!(
             !omitted.contains("\n[logging.payload_capture]"),
             "{omitted}"
@@ -2437,6 +2526,113 @@ period = "daily"
                 .unwrap_err()
                 .to_string();
             assert!(err.contains("'nobody'"), "{err}");
+        }
+
+        /// An org that shadows a deployment-wide route and provider (#3481): the
+        /// per-org file leaves the shadowed rows out and names them, keeps the
+        /// deployment-wide rows it does not shadow, and imports back into the
+        /// org byte-for-byte.
+        #[tokio::test]
+        async fn an_org_shadowing_deployment_wide_rows_exports_without_them() {
+            use super::ExportOptions;
+
+            let Some(db) = scratch_db().await else {
+                return;
+            };
+            let pool = db.pool().clone();
+            let dir = tempdir("shadow");
+            let store = PostgresConfigStore::new(pool.clone());
+            let (org_id, project_id) = bootstrap_named_org(&pool, "shadower").await;
+            let path = dir.join("shadower.toml");
+            std::fs::write(
+                &path,
+                r#"
+[[providers]]
+name = "openai"
+slug = "openai"
+kind = "openai"
+api_base = "https://org.example.com"
+api_key_env = "OPENAI_API_KEY"
+
+[[routes]]
+model = "gpt-4o"
+[[routes.targets]]
+provider = "openai"
+model = "gpt-4o"
+"#,
+            )
+            .unwrap();
+            crate::seed::import_bootstrap_toml(&pool, org_id, project_id, &path)
+                .await
+                .unwrap();
+
+            // the rows a `--config` file would add: the same names with no org,
+            // and one pair the org does not shadow
+            let mut served = store.load().await.unwrap();
+            let mut global_provider = served.providers[0].clone();
+            global_provider.tenancy = None;
+            global_provider.api_base = "https://global.example.com".to_string();
+            let mut global_route = served.routes[0].clone();
+            global_route.tenancy = None;
+            let mut kept_provider = global_provider.clone();
+            kept_provider.name = "mistral".to_string();
+            kept_provider.slug = Some("mistral".to_string());
+            let mut kept_route = global_route.clone();
+            kept_route.model = "mistral-large".to_string();
+            served.providers.extend([global_provider, kept_provider]);
+            served.routes.extend([global_route, kept_route]);
+
+            let refused = super::export_document(&pool, &served, &ExportOptions::default())
+                .await
+                .unwrap_err()
+                .to_string();
+            assert!(refused.contains("route 'gpt-4o'"), "{refused}");
+
+            let options = ExportOptions {
+                org: Some("shadower".to_string()),
+                ..Default::default()
+            };
+            let first = super::export_document(&pool, &served, &options)
+                .await
+                .unwrap();
+            assert!(!first.contains("global.example.com\"\n\nkind"), "{first}");
+            assert_eq!(first.matches("[[routes]]").count(), 2, "{first}");
+            assert!(first.contains("model = \"mistral-large\""), "{first}");
+            assert!(first.contains("https://org.example.com"), "{first}");
+            assert!(first.contains("#   provider 'openai'\n"), "{first}");
+            assert!(first.contains("#   route 'gpt-4o'\n"), "{first}");
+            assert!(!first.contains("#   route 'mistral-large'"), "{first}");
+            rolter_core::GatewayConfig::from_toml_str(&first)
+                .unwrap()
+                .validate()
+                .unwrap();
+
+            let file = dir.join("export.toml");
+            std::fs::write(&file, &first).unwrap();
+            crate::seed::import_bootstrap_toml(&pool, org_id, project_id, &file)
+                .await
+                .unwrap();
+            // the import made the org own the unshadowed rows the file carried,
+            // so only the shadowed deployment-wide rows come back from the file
+            let mut reloaded = store.load().await.unwrap();
+            reloaded.providers.extend(
+                served
+                    .providers
+                    .iter()
+                    .filter(|p| p.tenancy.is_none() && p.name == "openai")
+                    .cloned(),
+            );
+            reloaded.routes.extend(
+                served
+                    .routes
+                    .iter()
+                    .filter(|r| r.tenancy.is_none() && r.model == "gpt-4o")
+                    .cloned(),
+            );
+            let second = super::export_document(&pool, &reloaded, &options)
+                .await
+                .unwrap();
+            assert_eq!(first, second, "re-importing the export changed it");
         }
 
         /// With person caps left out the file names no account, and the trailing
