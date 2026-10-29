@@ -133,7 +133,7 @@ curl -s -X PUT "https://control.example.com/api/v1/routes/$ROUTE_ID/variants" \
 | field                      | meaning                                                                                                                 |
 | -------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
 | `name`                     | unique in the route, not blank; request logs and metrics carry it in their `variant` field                              |
-| `weight`                   | the variant's share of traffic, `1` or more (default `1`)                                                               |
+| `weight`                   | the variant's share of traffic, `0` or more (default `1`)                                                               |
 | `params`                   | default inference params for this variant, layered over the route's own; omitted is none                                |
 | `targets`                  | 1 to 32 targets in the order they are tried                                                                             |
 | `targets[].provider_id`    | a provider of the route's organization that the route's project may use                                                 |
@@ -141,12 +141,12 @@ curl -s -X PUT "https://control.example.com/api/v1/routes/$ROUTE_ID/variants" \
 | `targets[].weight`         | `0` or more (default `1`); at least one target of each variant needs a weight above `0`                                 |
 | `targets[].takes_over`     | the failures the target is a [fallback](/reliability/fallback-targets) for; omitted or `[]` makes it an ordinary target |
 
-A route takes at most 32 variants. The API writes a variant weight of `1` or more.
-A weight of `0`, which a `rolter.toml` variant can carry, gives the variant no
-first attempts while any other variant has a positive weight; it is still tried,
-in the listed order, when the variants before it fail. If every weight is `0`,
-the variants share first attempts equally. The dashboard's split preview shows
-that share, and asks for `1` or more before it saves the route's variants.
+A route takes at most 32 variants. A variant weight is `0` or more. A weight of
+`0` gives the variant no first attempts while any other variant has a positive
+weight; it is still tried, in the listed order, when the variants before it
+fail. If every weight is `0`, the variants share first attempts equally, and the
+API accepts such a set. The dashboard's split preview shows the share the
+gateway applies.
 
 The response is the stored list. A set equal to the stored one changes nothing
 and is not audited; any other is recorded as `route.set_variants` with each
@@ -194,15 +194,15 @@ Changing a route takes the **admin** role on its project (or on the project's
 team or organization), the same as creating one or adding a target. Each target
 entry is checked the way adding a single target is checked.
 
-| status | when                                                                                                                                                                                                                                               |
-| ------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `200`  | saved                                                                                                                                                                                                                                              |
-| `400`  | an unknown `strategy`, an empty `targets` list, a `weight` below 1, an unknown or repeated `takes_over` class, a list whose every entry sets `takes_over` (`all_targets_restricted`), or a field the endpoint does not take                        |
-| `400`  | for variants: a variant weight below 1, a negative target weight, a blank or repeated name, no target, an unknown or repeated `takes_over` class, or a set that leaves the route only restricted targets (`all_targets_restricted`, on `variants`) |
-| `401`  | no valid session or admin token                                                                                                                                                                                                                    |
-| `403`  | the caller is not an admin of the route's project                                                                                                                                                                                                  |
-| `404`  | no such route, or a `provider_id` that is not a provider of the route's organization                                                                                                                                                               |
-| `409`  | `scope_mismatch`: a provider scoped to a different project                                                                                                                                                                                         |
+| status | when                                                                                                                                                                                                                                                |
+| ------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `200`  | saved                                                                                                                                                                                                                                               |
+| `400`  | an unknown `strategy`, an empty `targets` list, a `weight` below 1, an unknown or repeated `takes_over` class, a list whose every entry sets `takes_over` (`all_targets_restricted`), or a field the endpoint does not take                         |
+| `400`  | for variants: a negative variant weight, a negative target weight, a blank or repeated name, no target, an unknown or repeated `takes_over` class, or a set that leaves the route only restricted targets (`all_targets_restricted`, on `variants`) |
+| `401`  | no valid session or admin token                                                                                                                                                                                                                     |
+| `403`  | the caller is not an admin of the route's project                                                                                                                                                                                                   |
+| `404`  | no such route, or a `provider_id` that is not a provider of the route's organization                                                                                                                                                                |
+| `409`  | `scope_mismatch`: a provider scoped to a different project                                                                                                                                                                                          |
 
 A refused weight or an empty list answers with the `invalid_field` code and the
 field's path, such as `targets[1].weight` or `variants[0].targets[1].weight`, so

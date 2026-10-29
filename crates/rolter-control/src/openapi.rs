@@ -4084,7 +4084,7 @@ fn routing_schemas(p: &Prim) -> Value {
                 "variants": {
                     "type": "array",
                     "maxItems": 32,
-                    "description": "the route's whole variant set in fallback order. A variant's weight is at least 1; names are unique and not blank; each variant names 1 to 32 targets, each a provider of the route's org its project may use",
+                    "description": "the route's whole variant set in fallback order. A variant's weight is 0 or more (0 takes no first attempts while another variant has a positive weight and is still tried in fallback order; a set of only zeroes is sampled uniformly); names are unique and not blank; each variant names 1 to 32 targets, each a provider of the route's org its project may use",
                     "items": {
                         "type": "object",
                         "required": ["name", "targets"],

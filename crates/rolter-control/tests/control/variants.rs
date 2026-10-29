@@ -239,7 +239,7 @@ async fn a_variant_edit_reaches_the_snapshot() {
 }
 
 /// The write refuses what the gateway could not route as written: a negative
-/// weight, a weight of 0 (the API writes 1 or more), a variant with no target, and a target on
+/// weight, a variant with no target, and a target on
 /// a provider that is not the route's org's. Each refusal names its field, and
 /// none of them writes anything.
 #[tokio::test]
@@ -266,10 +266,6 @@ async fn a_variant_set_the_gateway_cannot_route_is_refused() {
     let one = |name: &str, weight: i64| json!({"name": name, "weight": weight, "targets": [{"provider_id": primary}]});
     for (body, field) in [
         (json!({"variants": [one("a", -1)]}), "variants[0].weight"),
-        (
-            json!({"variants": [one("a", 2), one("b", 0)]}),
-            "variants[1].weight",
-        ),
         (
             json!({"variants": [{"name": "a", "targets": []}]}),
             "variants[0].targets",
@@ -307,6 +303,45 @@ async fn a_variant_set_the_gateway_cannot_route_is_refused() {
     );
     let read: Value = client.get(&url).send().await.unwrap().json().await.unwrap();
     assert_eq!(read, json!([]));
+}
+
+/// A variant weight of 0 is a fallback-only variant, and a set of only zeroes
+/// is stored too: the gateway samples it uniformly (#3341, #3427).
+#[tokio::test]
+async fn a_variant_weight_of_zero_is_stored_and_reaches_the_snapshot() {
+    skip_without_db!();
+    let (app, db) = fresh_app().await;
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+    let (_, project_id, [primary, _]) = tenant(&client, &base, "acme").await;
+    let route = post(
+        &client,
+        format!("{base}/api/v1/projects/{project_id}/routes"),
+        json!({"model": "split"}),
+    )
+    .await;
+    let url = format!(
+        "{base}/api/v1/routes/{}/variants",
+        route["id"].as_str().unwrap()
+    );
+    let one = |name: &str, weight: i64| json!({"name": name, "weight": weight, "targets": [{"provider_id": primary}]});
+
+    for weights in [[3, 0], [0, 0]] {
+        let before = config_version(db.pool()).await;
+        let (status, stored) = put(
+            &client,
+            url.clone(),
+            json!({"variants": [one("a", weights[0]), one("b", weights[1])]}),
+        )
+        .await;
+        assert_eq!(status, 200, "{weights:?}: {stored}");
+        assert_eq!(stored[1]["weight"], weights[1], "{stored}");
+        assert!(config_version(db.pool()).await > before);
+        let snapped = snapshot_route(&client, &base, "split").await;
+        assert_eq!(snapped["variants"][0]["weight"], weights[0], "{snapped}");
+        assert_eq!(snapped["variants"][1]["weight"], weights[1], "{snapped}");
+    }
 }
 
 /// Variants are part of the route, so they take its permissions: a viewer of
