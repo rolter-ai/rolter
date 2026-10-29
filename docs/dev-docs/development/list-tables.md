@@ -133,6 +133,17 @@ the header and the rows. It tells the header apart by type, which means the
   anything other than `text-overflow: ellipsis` has to give the full text some
   other way. The data-driven `Table` in `ui/src/components/ui/table.tsx` does
   not clip: its cells size to their content.
+- **A dense, selectable table is still the data-driven `Table`.** LLM Logs
+  draws its table with it (#3448) instead of a hand-written `<table>`. `bare`
+  drops the frame so the screen's own scroll area carries the table, `compact`
+  gives the dense padding, `stickyHeader` pins the header to that scroll area,
+  `stacked` restacks each row into a grid below 480px of the table's own width
+  (the header stays for assistive technology), `rowProps` carries
+  `aria-selected`, `onClick` and the row's state class, and a column's
+  `colClassName` / `className` / `stackedClassName` / `cellProps` size it, hide
+  it by the table's width and place its cell in the stacked grid. The classes are
+  written out whole, since tailwind cannot see one built from parts. The table
+  sits in an `@container` for the width-driven ones.
 - **Hand the state rows the query, not a condition.** Write the skeleton as
   `<ListLoadingRow read={query}>` and the empty state as
   `<ListEmptyRow read={query} rows={rows.length}>`, where `query` is the

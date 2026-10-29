@@ -32,6 +32,8 @@ import {
   expectToast,
   uxEvents,
   type Recorder,
+  AddressProbe,
+  addressOf,
 } from "./story-harness";
 import type { CurrencySettings, ModelPriceRow, PriceCatalogue } from "@/lib/api";
 import ru from "@/lib/i18n/locales/ru.json";
@@ -503,6 +505,103 @@ export const AddsAPrice: Story = {
     await expect(hour).not.toBe(write);
     await expect(hour).toHaveValue(null);
     await expect(hour).toHaveAttribute("placeholder", "defaults to 5 minute price");
+  },
+};
+
+/**
+ * The Savings advisor flags a model with no known price and sends the operator
+ * here with `?model=` (#3422). A model with no price row opens the price form
+ * already named for it, for a role that can write prices; the link is then
+ * taken out of the address so closing the form does not bring it back.
+ */
+export const AnUnpricedModelLinkOpensThePriceFormNamedForIt: Story = {
+  render: () => (
+    <Harness
+      role="superadmin"
+      route="/pricing-overrides?model=mystery-1"
+      fetchStub={withCurrency(CONFIGURED)}
+    >
+      <Pricing />
+      <AddressProbe />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const form = within(await within(document.body).findByRole("dialog"));
+    await expect(await form.findByLabelText("Model name")).toHaveValue("mystery-1");
+    // a new price: no rate is filled in for it
+    await expect(form.getByLabelText("Input price per Mtok")).toHaveValue(null);
+    await waitFor(() => expect(addressOf(canvasElement).has("model")).toBe(false));
+  },
+};
+
+/**
+ * A model that already has a price row narrows the list to it, and opens
+ * nothing: the row's own Edit is one click away.
+ */
+export const APricedModelLinkNarrowsTheListToItsRow: Story = {
+  render: () => (
+    <Harness
+      role="superadmin"
+      route="/pricing-overrides?model=gpt-4o"
+      fetchStub={withCurrency(CONFIGURED)}
+    >
+      <Pricing />
+      <AddressProbe />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    // the link is read once the list has loaded, a step after the first paint
+    await waitFor(() => expect(canvas.getByRole("searchbox")).toHaveValue("gpt-4o"));
+    await waitFor(() => expect(modelOrder(canvasElement)).toEqual(["gpt-4o"]));
+    await expect(canvas.queryByText("mistral-large")).toBeNull();
+    await expect(document.querySelector('[role="dialog"]')).toBeNull();
+    await expectAllowed(canvasElement, /Edit the price for gpt-4o/i);
+    await waitFor(() => expect(addressOf(canvasElement).has("model")).toBe(false));
+  },
+};
+
+/**
+ * A role that cannot write prices follows the same link to the read-only list:
+ * a priced model narrows it to its row, whose Edit is refused and names the
+ * role it needs, and a model with no price opens no form at all.
+ */
+export const ALinkForARoleWithoutPriceEditingShowsTheReadOnlyRow: Story = {
+  render: () => (
+    <Harness
+      role="admin"
+      route="/pricing-overrides?model=gpt-4o"
+      fetchStub={withCurrency(CONFIGURED)}
+    >
+      <Pricing />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(modelOrder(canvasElement)).toEqual(["gpt-4o"]));
+    await expect(canvas.getByRole("searchbox")).toHaveValue("gpt-4o");
+    await expectRefused(canvasElement, /Edit the price for gpt-4o/i, NEEDS_SUPERADMIN);
+    await expect(document.querySelector('[role="dialog"]')).toBeNull();
+  },
+};
+
+export const AnUnpricedModelLinkOpensNoFormForARoleWithoutPriceEditing: Story = {
+  render: () => (
+    <Harness
+      role="admin"
+      route="/pricing-overrides?model=mystery-1"
+      fetchStub={withCurrency(CONFIGURED)}
+    >
+      <Pricing />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    // no price to read and none to write: the list says nothing matched
+    await expect(await canvas.findByText(en.pages.pricing.noMatchTitle)).toBeVisible();
+    await expect(canvas.getByRole("searchbox")).toHaveValue("mystery-1");
+    await expect(document.querySelector('[role="dialog"]')).toBeNull();
+    await expectRefused(canvasElement, /add price/i, NEEDS_SUPERADMIN);
   },
 };
 

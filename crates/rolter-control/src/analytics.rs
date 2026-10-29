@@ -812,7 +812,7 @@ async fn summary(
                 {USAGE_UNKNOWN} as usage_unknown_requests, \
                 {CACHE_HITS} as cache_hit_requests, \
                 {ERRORS} as errors, \
-                round(avg(latency_ms), 1) as avg_latency_ms, \
+                {AVG_LATENCY} as avg_latency_ms, \
                 {P95_LATENCY} as p95_latency_ms \
          from request_logs where {WHERE_WINDOW} and {ROW_VISIBLE} and {ROW_FILTERS} \
          format JSON"
@@ -868,6 +868,14 @@ fn cache_measured_terms(columns: &Columns) -> String {
 /// rounded like the other latency figures, and is `0` for no rows.
 pub(crate) const P95_LATENCY: &str =
     "round(quantileExactWeighted(0.95)(latency_ms, toUInt64(round(sample_weight * 1000))), 1)";
+/// The mean latency, weighted by `sample_weight` like the percentiles (#3420):
+/// `sum(latency * weight) / sum(weight)`, so a kept row counts as the requests
+/// it stands for and unequal weights (a sample rate that changed inside the
+/// window, a route sampled apart from the rest) do not skew it. With every
+/// weight equal it is the plain mean. `0` for no rows, where the quotient has
+/// no denominator, the way the percentiles read.
+pub(crate) const AVG_LATENCY: &str = "if(sum(sample_weight) > 0, \
+     round(sum(latency_ms * sample_weight) / sum(sample_weight), 1), 0)";
 /// The median counterpart of [`P95_LATENCY`].
 pub(crate) const P50_LATENCY: &str =
     "round(quantileExactWeighted(0.5)(latency_ms, toUInt64(round(sample_weight * 1000))), 1)";
@@ -875,9 +883,8 @@ pub(crate) const P50_LATENCY: &str =
 // Request-log sampling keeps 1 row in `1 / sample_rate`, and each stored row
 // carries `sample_weight` (clickhouse/014) = how many real requests it stands
 // for. Counts and sums are scaled by it so a sampled log does not under-report
-// traffic or spend (#2239). Averages are left alone, since a uniform sample
-// already estimates them; percentiles are weighted (#3355), see
-// `P95_LATENCY`. Rows written unsampled, or before the column existed,
+// traffic or spend (#2239). The mean and the percentiles are weighted too
+// (#3420, #3355), see `AVG_LATENCY` and `P95_LATENCY`. Rows written unsampled, or before the column existed,
 // weigh 1.
 pub(crate) const REQUESTS: &str = "round(sum(sample_weight))";
 pub(crate) const TOKENS: &str = "round(sum(total_tokens * sample_weight))";
@@ -1000,13 +1007,55 @@ async fn by_variant(
         Ok(ch) => ch,
         Err(resp) => return resp,
     };
+    // `fallback_reason` (`023`) is applied by hand, so whether the table has it
+    // decides what the first-attempt count reads
+    let columns = match ch.request_log_columns().await {
+        Ok(columns) => columns,
+        Err(error) => return query_failed("analytics query failed", &error),
+    };
+    let sql = by_variant_sql(&columns);
+    match ch.query(&sql, &with_access(q.params(), &access)).await {
+        Ok(data) => Json(json!({"data": data})).into_response(),
+        Err(error) => {
+            // the table may have changed under the cached answer: look again next time
+            ch.forget_request_log_columns();
+            query_failed("analytics query failed", &error)
+        }
+    }
+}
+
+/// The requests a variant served on the first attempt (#3409): those the log
+/// records with no `fallback_reason`, which is empty when the first dial
+/// answered. Counted beside `requests`, which is every request the variant
+/// answered, so the share a variant took in by-variant can be told apart from
+/// the share the router gave it: a variant others fail over to reads higher
+/// than its weight in `requests` and at its weight here. Weighted by
+/// `sample_weight` like every count. The column is qualified with the table.
+pub(crate) const FIRST_ATTEMPT_REQUESTS: &str =
+    "round(sumIf(sample_weight, request_logs.fallback_reason = ''))";
+
+/// The by-variant rollup's select, for a table that has (or lacks) the
+/// `fallback_reason` column.
+///
+/// A table without it cannot say which requests failed over, and reading every
+/// row as a first attempt would claim they all were, so `first_attempt_requests`
+/// is `null` there and the dashboard states that the split is unknown. A row
+/// logged before the column was applied reads as a first attempt on a table
+/// that has it, the same default the invocation list gives such a row.
+pub(crate) fn by_variant_sql(columns: &Columns) -> String {
+    let first_attempt = if columns.has("fallback_reason") {
+        FIRST_ATTEMPT_REQUESTS
+    } else {
+        "CAST(NULL AS Nullable(Float64))"
+    };
     // `model` and `variant` are selected under their own names, so both are
     // qualified with the table: ClickHouse resolves a bare name to the alias
     // before the column. the sums alias other names, which carry their own
     // qualifiers where they need them
-    let sql = format!(
+    format!(
         "select request_logs.model as model, request_logs.variant as variant, \
                 {REQUESTS} as requests, \
+                {first_attempt} as first_attempt_requests, \
                 {TOKENS} as tokens, \
                 {COST} as cost_usd, \
                 {UNPRICED} as unpriced_requests, \
@@ -1016,8 +1065,7 @@ async fn by_variant(
          from request_logs where {WHERE_WINDOW} and {ROW_VISIBLE} and {ROW_FILTERS} \
          group by request_logs.model, request_logs.variant \
          order by requests desc, model, variant format JSON"
-    );
-    run(ch.query(&sql, &with_access(q.params(), &access)).await)
+    )
 }
 
 /// Query params for the cost-attribution rollup: the shared time window plus
@@ -1883,7 +1931,7 @@ mod tests {
     #[test]
     fn counts_and_sums_scale_by_the_row_sample_weight() {
         // at a 50 % rate each kept row weighs 2, so no count()/sum() may read
-        // a row once; averages and percentiles stay unweighted
+        // a row once, and the mean and the percentiles are weighted too
         for expr in [
             REQUESTS,
             TOKENS,
@@ -1901,7 +1949,18 @@ mod tests {
             ..src.find("pub struct InvocationsQuery").unwrap()];
         assert!(!handlers.contains("count()"), "an unweighted count()");
         assert!(!handlers.contains("countIf("), "an unweighted countIf()");
-        assert!(handlers.contains("avg(latency_ms)"));
+        // the mean is weighted too (#3420), not a plain avg()
+        assert!(handlers.contains("{AVG_LATENCY}"));
+        assert!(!handlers.contains("avg(latency_ms)"), "an unweighted mean");
+        assert!(
+            AVG_LATENCY.contains("sum(latency_ms * sample_weight) / sum(sample_weight)"),
+            "{AVG_LATENCY}"
+        );
+        // and the divisor is guarded, so an empty window is 0 and not nan
+        assert!(
+            AVG_LATENCY.contains("sum(sample_weight) > 0"),
+            "{AVG_LATENCY}"
+        );
         // the percentiles are weighted too (#3355), by an integer weight
         assert!(handlers.contains("{P95_LATENCY}"));
         assert!(!handlers.contains("quantile(0.95)(latency_ms)"));
@@ -1914,6 +1973,41 @@ mod tests {
             // the timing variant clamps at 30 000 ms, below a slow completion
             assert!(!expr.contains("Timing"), "{expr}");
         }
+    }
+
+    #[test]
+    fn by_variant_counts_first_attempts_beside_the_requests_that_answered() {
+        // #3409: `requests` is every request the variant answered; the first
+        // attempt count leaves out those another target failed over to it
+        let sql = by_variant_sql(&Columns::default());
+        assert!(
+            sql.contains("round(sumIf(sample_weight, request_logs.fallback_reason = ''))"),
+            "{sql}"
+        );
+        assert!(sql.contains("as first_attempt_requests"), "{sql}");
+        // the column is qualified, and no count reads a row once
+        assert!(!sql.contains("count()"), "{sql}");
+        // the counts and the grouping are still the by-model ones
+        assert!(
+            sql.contains("group by request_logs.model, request_logs.variant"),
+            "{sql}"
+        );
+        assert!(sql.contains(&format!("{REQUESTS} as requests")), "{sql}");
+    }
+
+    #[test]
+    fn by_variant_does_not_claim_a_first_attempt_split_a_table_without_the_column_cannot_make() {
+        // 023 is applied by hand: without it every row would read as a first
+        // attempt, which is a claim, so the count is null and the select does
+        // not name the column
+        let sql = by_variant_sql(&Columns::lacking(&["fallback_reason"]));
+        assert!(
+            sql.contains("CAST(NULL AS Nullable(Float64)) as first_attempt_requests"),
+            "{sql}"
+        );
+        assert!(!sql.contains("fallback_reason"), "{sql}");
+        // and the rest of the select is unchanged
+        assert!(sql.contains(&format!("{REQUESTS} as requests")), "{sql}");
     }
 
     #[test]

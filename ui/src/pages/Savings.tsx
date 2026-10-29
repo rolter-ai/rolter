@@ -19,6 +19,7 @@ import {
 } from "@/components/screen";
 import { SampledLogNotice } from "@/components/SampledLogNotice";
 import { Button } from "@/components/ui/button";
+import { TimeWindowPicker } from "@/components/TimeWindowPicker";
 import { Combobox } from "@/components/ui/combobox";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Field } from "@/components/ui/field";
@@ -36,11 +37,11 @@ import {
 } from "@/lib/api";
 import { useCan } from "@/lib/can";
 import { useFormat } from "@/lib/i18n/format";
+import { EXCLUDED_REASONS } from "@/lib/savings-reasons";
 import { useScope } from "@/lib/scope";
 import {
-  readTimeWindow,
-  TIME_WINDOW_PARAM,
-  useTimeWindowOptions,
+  readWindowSelection,
+  windowAddress,
   windowBounds,
   type TimeWindow,
 } from "@/lib/time-window";
@@ -54,25 +55,6 @@ const DEFAULT_WINDOW: TimeWindow = "7d";
 /** the address parameters the scope and thresholds travel in, under the control plane's names */
 const SCOPE_PARAMS = ["org", "project", "route", "key"] as const;
 const THRESHOLD_PARAMS = ["max_prompt_tokens", "max_completion_tokens", "output_margin"] as const;
-
-/** the reasons a request can be left out of the re-pricing, as the control plane names them */
-const EXCLUDED_REASONS = [
-  "unpriced",
-  "failed",
-  "cache_hit",
-  "usage_unknown",
-  "uses_tools",
-  "image_input",
-  "audio_input",
-  "structured_output",
-  "multi_turn",
-  "not_a_model_call",
-  "no_token_usage",
-  "prompt_too_large",
-  "output_too_large",
-  "route_not_configured",
-  "no_cheaper_candidate",
-] as const;
 
 // the largest margin the control plane honours; a larger one is clamped to it
 const MAX_OUTPUT_MARGIN = 4;
@@ -98,10 +80,8 @@ export default function Savings() {
   const scope = useScope();
   const orgScope = useOrgScope(scope.orgId);
   const can = useCan();
-  const windowOptions = useTimeWindowOptions();
 
-  const rawWindow = params.get(TIME_WINDOW_PARAM);
-  const timeWindow = rawWindow === null ? DEFAULT_WINDOW : readTimeWindow(rawWindow);
+  const timeWindow = readWindowSelection(params, DEFAULT_WINDOW);
   const value = (name: string) => params.get(name) ?? "";
   const filters = {
     org: value("org"),
@@ -183,6 +163,11 @@ export default function Savings() {
     return all.map((name) => ({ value: name, label: name }));
   };
   const projects = orgScope.byTeam.flatMap((entry) => entry.projects);
+  // the lists the pickers above are drawn from also name the callers in the
+  // spend table. a caller outside them (a project or key the account cannot
+  // read, or one since deleted) stays an id there (#3408)
+  const projectNames = new Map(projects.map((project) => [project.id, project.name]));
+  const keyNames = new Map((keys.data ?? []).map((k) => [k.id, keyLabel(k)]));
   const unavailable = report.error instanceof AnalyticsUnavailableError ? report.error : null;
 
   return (
@@ -192,10 +177,9 @@ export default function Savings() {
 
       <div className="flex flex-wrap items-end gap-3">
         <Field label={t("common.timeWindow.label")} className="w-48">
-          <Combobox
+          <TimeWindowPicker
             value={timeWindow}
-            onChange={(next) => write({ [TIME_WINDOW_PARAM]: readTimeWindow(next) })}
-            options={windowOptions}
+            onChange={(next) => write(windowAddress(next, DEFAULT_WINDOW))}
           />
         </Field>
         <Field label={t("pages.savings.org")} className="w-48">
@@ -254,7 +238,7 @@ export default function Savings() {
               { value: "", label: t("pages.savings.allKeys") },
               ...(keys.data ?? []).map((k) => ({
                 value: k.id,
-                label: k.name ? `${k.name} (${k.key_prefix}…)` : `${k.key_prefix}…`,
+                label: keyLabel(k),
               })),
               ...(filters.key && !(keys.data ?? []).some((k) => k.id === filters.key)
                 ? [{ value: filters.key, label: filters.key }]
@@ -298,14 +282,14 @@ export default function Savings() {
                 {t("common.clearFilters")}
               </Button>
             ) : timeWindow !== "30d" ? (
-              <Button variant="outline" onClick={() => write({ [TIME_WINDOW_PARAM]: "30d" })}>
+              <Button variant="outline" onClick={() => write(windowAddress("30d", DEFAULT_WINDOW))}>
                 {t("pages.savings.widen")}
               </Button>
             ) : undefined
           }
         />
       ) : report.data ? (
-        <Report report={report.data} />
+        <Report report={report.data} projectNames={projectNames} keyNames={keyNames} />
       ) : null}
     </PageBody>
   );
@@ -441,7 +425,36 @@ function ThresholdsForm({
   );
 }
 
-function Report({ report }: { report: SavingsReport }) {
+/** a key as the picker and the spend table name it: its name with the prefix, or the prefix alone */
+function keyLabel(k: { name?: string | null; key_prefix: string }): string {
+  return k.name ? `${k.name} (${k.key_prefix}…)` : `${k.key_prefix}…`;
+}
+
+/**
+ * A caller's project or key: its name when the screen's lists hold it, else
+ * the id as it came, in the id's own mono type. The id stays in the title of a
+ * named cell, so the row can still be matched to the log.
+ */
+function CallerCell({ id, names }: { id: string; names: ReadonlyMap<string, string> }) {
+  const name = names.get(id);
+  return name ? (
+    <ListCell className="truncate text-sm" title={id}>
+      {name}
+    </ListCell>
+  ) : (
+    <ListCell className="truncate font-mono text-xs">{id || "—"}</ListCell>
+  );
+}
+
+function Report({
+  report,
+  projectNames,
+  keyNames,
+}: {
+  report: SavingsReport;
+  projectNames: ReadonlyMap<string, string>;
+  keyNames: ReadonlyMap<string, string>;
+}) {
   const { t } = useTranslation();
   const fmt = useFormat();
   const money = (v: number) => fmt.currency(v, report.currency);
@@ -509,8 +522,8 @@ function Report({ report }: { report: SavingsReport }) {
             </ListHeader>
             {spend.by_caller.map((row) => (
               <ListRow key={`${row.project_id}/${row.virtual_key_id}`} grid={CALLER_GRID}>
-                <ListCell className="truncate font-mono text-xs">{row.project_id}</ListCell>
-                <ListCell className="truncate font-mono text-xs">{row.virtual_key_id}</ListCell>
+                <CallerCell id={row.project_id} names={projectNames} />
+                <CallerCell id={row.virtual_key_id} names={keyNames} />
                 <ListCell className="text-right font-mono text-xs">{count(row.requests)}</ListCell>
                 <ListCell className="text-right font-mono text-xs">{money(row.cost_usd)}</ListCell>
                 <ListCell className="text-right font-mono text-xs">
@@ -709,7 +722,8 @@ function ExcludedSection({
             {unknown.map((model) => (
               <li key={model}>
                 <Link
-                  to="/pricing-overrides"
+                  // the editor opens on this model (#3422)
+                  to={`/pricing-overrides?${new URLSearchParams({ model })}`}
                   className="font-mono text-xs underline underline-offset-2"
                 >
                   {model}

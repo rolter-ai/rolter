@@ -874,6 +874,40 @@ export const TheWindowComesFromTheAddress: Story = {
   },
 };
 
+const ranged = recording(loaded);
+
+/**
+ * A custom range of days comes from the address and reads the tiles and the
+ * list over those days (#3407): the start of the first day up to the start of
+ * the day after the last, and the picker shows the two days.
+ */
+export const ACustomRangeComesFromTheAddress: Story = {
+  render: () => (
+    <Harness
+      fetchStub={ranged.stub}
+      route="/mcp-logs?window=custom&since=2026-10-01&until=2026-10-07"
+    >
+      <McpLogs />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByRole("combobox", { name: "Time window" })).toHaveValue(
+      "Custom range…",
+    );
+    await expect(canvas.getByLabelText("From")).toHaveValue("2026-10-01");
+    await expect(canvas.getByLabelText("To")).toHaveValue("2026-10-07");
+    await waitFor(() => {
+      for (const path of ["/mcp/logs/summary", "/mcp/logs?"]) {
+        const call = ranged.calls.find((c) => c.url.includes(path));
+        const q = new URL(call?.url ?? "", "http://x").searchParams;
+        expect(q.get("since")).toBe(new Date(2026, 9, 1).toISOString());
+        expect(q.get("until")).toBe(new Date(2026, 9, 8).toISOString());
+      }
+    });
+  },
+};
+
 const picking = recording(loaded);
 
 /** #3300: picking another window writes the address and reads it again, from the first page. */

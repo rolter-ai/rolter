@@ -142,7 +142,7 @@ export const Populated: Story = {
     const unknown = canvas.getByTestId("savings-unknown-prices");
     await expect(within(unknown).getByRole("link", { name: "mystery-1" })).toHaveAttribute(
       "href",
-      "/pricing-overrides",
+      "/pricing-overrides?model=mystery-1",
     );
   },
 };
@@ -356,6 +356,120 @@ export const PickingAWindowReadsItAgain: Story = {
         }),
       ).toBe(true),
     );
+  },
+};
+
+const ranged = recording(withReport(REPORT));
+
+/**
+ * The advisor reads a custom range of days from the address (#3407): the read
+ * is sent the start of the first day and the start of the day after the last,
+ * and the picker shows the days.
+ */
+export const ACustomRangeInTheAddressIsRead: Story = {
+  render: () => (
+    <Harness
+      fetchStub={ranged.stub}
+      route="/savings?window=custom&since=2026-10-01&until=2026-10-07"
+    >
+      <Savings />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByTestId("savings-limits");
+    await expect(canvas.getByRole("combobox", { name: "Time window" })).toHaveValue(
+      "Custom range…",
+    );
+    await expect(canvas.getByLabelText("From")).toHaveValue("2026-10-01");
+    await expect(canvas.getByLabelText("To")).toHaveValue("2026-10-07");
+    await waitFor(() =>
+      expect(
+        ranged.calls.some((c) => {
+          const q = new URL(c.url, "http://x").searchParams;
+          return (
+            c.url.includes("/analytics/savings") &&
+            q.get("since") === new Date(2026, 9, 1).toISOString() &&
+            q.get("until") === new Date(2026, 9, 8).toISOString()
+          );
+        }),
+      ).toBe(true),
+    );
+  },
+};
+
+const NAMED_CALLERS: SavingsReport = {
+  ...REPORT,
+  spend: {
+    ...REPORT.spend,
+    by_caller: [
+      {
+        project_id: "project-1",
+        virtual_key_id: "vk-1",
+        requests: 9000,
+        cost_usd: 400,
+        unpriced_requests: 0,
+      },
+      // a project and a key the account's lists do not hold: deleted, or not readable
+      {
+        project_id: "project-gone",
+        virtual_key_id: "vk-gone",
+        requests: 3000,
+        cost_usd: 80.25,
+        unpriced_requests: 300,
+      },
+    ],
+  },
+};
+
+/**
+ * The spend-by-caller table names the project and the key from the lists the
+ * pickers already load (#3408), and a caller those lists do not hold stays an
+ * id, so a deleted key or a project the account cannot read is still shown.
+ */
+export const SpendByCallerNamesTheProjectAndKey: Story = {
+  render: () => (
+    <Harness
+      fetchStub={routes([
+        ["/analytics/savings", () => NAMED_CALLERS],
+        [
+          "/virtual-keys",
+          () => [
+            {
+              id: "vk-1",
+              project_id: "project-1",
+              name: "ci-runner",
+              key_prefix: "rk_live_ab12",
+              models: [],
+              providers: [],
+              disabled: false,
+            },
+          ],
+        ],
+        ["/models", () => [{ model: "chat", strategy: "weighted", targets: 1 }]],
+      ])}
+    >
+      <Savings />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByTestId("savings-limits");
+    await expectListTable(canvasElement, "Spend by caller (50 costliest)");
+    const table = canvas.getByRole("table", { name: "Spend by caller (50 costliest)" });
+    const rows = within(table).getAllByRole("row");
+    // header, then one row per caller
+    const [named, unnamed] = [rows[1]!, rows[2]!];
+    // the names arrive with the pickers' lists, a step after the report
+    await expect(await within(named).findByRole("cell", { name: "Gateway" })).toBeVisible();
+    await expect(
+      await within(named).findByRole("cell", { name: "ci-runner (rk_live_ab12…)" }),
+    ).toBeVisible();
+    await expect(within(named).queryByText("project-1")).toBeNull();
+    await expect(within(named).queryByText("vk-1")).toBeNull();
+    // the fallback is the id as the report sent it
+    await expect(within(unnamed).getByRole("cell", { name: "project-gone" })).toBeVisible();
+    await expect(within(unnamed).getByRole("cell", { name: "vk-gone" })).toBeVisible();
   },
 };
 

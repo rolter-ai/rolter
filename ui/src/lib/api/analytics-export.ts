@@ -4,19 +4,32 @@ import { requestResponse } from "./request";
 import { setRowFilterParams, type AnalyticsRowFilters, type AnalyticsWindow } from "./analytics";
 import type { AttributionDimension } from "./analytics";
 
-/** a finished export: the file and the name the control plane gave it */
-export interface AnalyticsExportFile {
-  blob: Blob;
+/**
+ * An export the control plane has started to send: the body is a stream, not
+ * a Blob, so the caller decides where it goes (#3434) and nothing here holds the
+ * whole file.
+ */
+export interface AnalyticsExportStream {
+  stream: ReadableStream<Uint8Array> | null;
   /** names the window and currency; absent only if the server sent no name */
   name?: string;
 }
 
-async function download(path: string, params: URLSearchParams): Promise<AnalyticsExportFile> {
+/** Options every export takes: `signal` abandons it, the body included. */
+export interface AnalyticsExportOptions {
+  signal?: AbortSignal;
+}
+
+async function download(
+  path: string,
+  params: URLSearchParams,
+  options: AnalyticsExportOptions,
+): Promise<AnalyticsExportStream> {
   const qs = params.toString();
   // a session-token 401 signs the session out like its JSON twin (#3226)
-  const res = await requestResponse(`${path}${qs ? `?${qs}` : ""}`);
+  const res = await requestResponse(`${path}${qs ? `?${qs}` : ""}`, { signal: options.signal });
   const name = /filename="([^"]+)"/.exec(res.headers.get("content-disposition") ?? "")?.[1];
-  return { blob: await res.blob(), name };
+  return { stream: res.body, name };
 }
 
 function windowParams(window: AnalyticsWindow): URLSearchParams {
@@ -30,11 +43,12 @@ function windowParams(window: AnalyticsWindow): URLSearchParams {
 export function exportAttributionCsv(
   window: AnalyticsWindow,
   dimension: AttributionDimension,
-): Promise<AnalyticsExportFile> {
+  options: AnalyticsExportOptions = {},
+): Promise<AnalyticsExportStream> {
   const params = windowParams(window);
   params.set("dimension", dimension);
   params.set("include_unattributed", "true");
-  return download("/api/v1/analytics/by-attribution/export", params);
+  return download("/api/v1/analytics/by-attribution/export", params, options);
 }
 
 /** The request log under the LLM Logs filters, metadata only, streamed by the server. */
@@ -49,7 +63,8 @@ export function exportInvocationsCsv(
       plugin?: string;
       outcome?: string;
     },
-): Promise<AnalyticsExportFile> {
+  options: AnalyticsExportOptions = {},
+): Promise<AnalyticsExportStream> {
   const params = windowParams(query);
   setRowFilterParams(params, query);
   if (query.status) params.set("status", query.status);
@@ -59,5 +74,5 @@ export function exportInvocationsCsv(
   if (query.guardrail) params.set("guardrail", query.guardrail);
   if (query.plugin) params.set("plugin", query.plugin);
   if (query.outcome) params.set("outcome", query.outcome);
-  return download("/api/v1/analytics/invocations/export", params);
+  return download("/api/v1/analytics/invocations/export", params, options);
 }
