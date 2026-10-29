@@ -2604,18 +2604,9 @@ async fn proxy(
     // above; a stream that got here keeps streaming without them
     let post_response_plugins =
         proceed!(req.post_response_plugins(entry, stream, !stream, &trace_id));
-    // scope identity for log attribution (empty for config-defined keys)
-    let (vk_id, org_id, team_id, project_id) = (
-        scope.key.clone(),
-        scope.org.clone(),
-        scope.team.clone(),
-        scope.project.clone(),
-    );
     // the trace backend needs the same tenant identity the request log carries,
     // so a collector can route this org's spans to this org's destination (#836)
-    crate::trace::record_tenant(&org_id, &team_id, &project_id);
-    // governance dimensions the key's spend rolls up to (#539)
-    let (business_unit_id, customer_id) = key_attribution(vk.as_ref());
+    crate::trace::record_tenant(&scope.org, &scope.team, &scope.project);
     // records this request's tokens against its rate limits once usage is known
     let token_recorder = TokenRecorder::new(
         state.rate_limiter.clone(),
@@ -2627,8 +2618,28 @@ async fn proxy(
     // refuse before the upstream call when the operator will not serve traffic
     // they cannot account for (#974)
     proceed!(req.admit_unpriced(&effective_model, price.is_some()));
+    // who asked for what, which every row the request leaves from here starts
+    // from: the scope identity (empty for config-defined keys) and the
+    // governance dimensions the key's spend rolls up to (#539)
+    let ident = RequestLogCtx {
+        request_id,
+        trace_id,
+        vk_id: scope.key.clone(),
+        org_id: scope.org.clone(),
+        team_id: scope.team.clone(),
+        project_id: scope.project.clone(),
+        business_unit_id: scope.business_unit.clone(),
+        customer_id: scope.customer.clone(),
+        model,
+        route_namespace: Some(route_namespace),
+        sample_rate: snap.logging.sample_rate,
+        started,
+        guardrail_events,
+        plugin_events,
+    };
     // records this request's cost against its budgets once cost_usd is known
     let recorder = SpendRecorder::new(state.budgets.clone(), snap.budgets.clone(), scope);
+    let model = ident.model.as_str();
 
     let session_key = headers.get("x-session-id").and_then(|v| v.to_str().ok());
     // prefix affinity reads the conversation, not the JSON envelope every
@@ -2652,7 +2663,7 @@ async fn proxy(
         // weights. On a single-model route the two are equal and this stays
         // None, which keeps adapter scoring inert: treating one model as an
         // adapter would pin the whole route to whichever target served first
-        (model != effective_model).then_some(model.as_str()),
+        (model != effective_model).then_some(model),
     );
     // trace context plus any client headers the operator allowlisted (#564).
     //
@@ -2660,168 +2671,53 @@ async fn proxy(
     // copies the caller's trace headers verbatim, as before #805. With a
     // pipeline installed the trace context is re-injected per attempt from
     // inside that attempt's `upstream.request` span, so the provider call
-    // parents to the gateway rather than to the caller (see `forwarded_names`
-    // below and its use in the retry loop)
+    // parents to the gateway rather than to the caller (see
+    // `attempt_trace_context`)
     let forwarded_names = state.forwarder.forwarded_header_names();
     let trace_ctx = crate::trace::outbound_headers(&headers, &forwarded_names);
     let trace_headers: Vec<(&str, &str)> = trace_ctx
         .iter()
         .map(|(k, v)| (k.as_str(), v.as_str()))
         .collect();
-
-    // exact-match response cache (ROL-56, streaming added in ROL-235): eligible
-    // for routes that opted in, when the global switch is on and Redis is wired.
-    // both non-streaming JSON and streaming SSE responses are cacheable — a
-    // streaming miss is buffered in full, stored, and replayed instantly on a
-    // later hit. the key hashes the post-injection forward body so admin param
-    // defaults are part of the identity; per-key routes also mix in the vk id.
-    // a virtual key may override its route's cache decision (ROL-235 part 2):
-    // Some(false) opts the key out, Some(true) opts it in even on a route that
-    // didn't; None inherits the route flag. the global switch still gates all
-    // exact and semantic lookups are one stage: a cache that is slow to answer
-    // is as interesting as one that misses, and both delay the same request
-    let cache_stage = crate::trace::stage_span!(
-        "cache.lookup",
-        hit = tracing::field::Empty,
-        kind = tracing::field::Empty
-    );
-    let cache_ttl = entry.route.cache_ttl_secs(snap.cache.default_ttl_secs);
-    let cache_eligible = path != "/v1/responses"
-        && vk
-            .as_ref()
-            .and_then(|k| k.cache_override)
-            .unwrap_or_else(|| entry.route.cache_enabled());
-    let cache_key = if snap.cache.enabled && state.response_cache.is_enabled() && cache_eligible {
-        let scope_seg = cache_scope(entry, &vk_id);
-        Some(ResponseCache::make_key(
-            &snap.cache.namespace,
-            path,
-            scope_seg,
-            &forward_body,
-        ))
-    } else {
-        None
+    let fwd = Forward {
+        state: &state,
+        snap: &snap,
+        entry,
+        model,
+        ctx: &ctx,
+        payload: ForwardPayload::Json {
+            parsed: &parsed,
+            body: &body,
+            forward_body: &forward_body,
+            inbound: (&headers, &forwarded_names),
+        },
+        path,
+        started,
+        trace_headers: &trace_headers,
+        key_meta: vk.as_ref(),
     };
-    if let Some(key) = &cache_key {
-        if let Some(hit) = state.response_cache.get(key).await {
-            state.metrics.cache_hits_total.fetch_add(1, Relaxed);
-            cache_stage.record("hit", true);
-            cache_stage.record("kind", "exact");
-            return cached_response(
-                hit,
-                &state.log,
-                RequestLogCtx {
-                    request_id: request_id.clone(),
-                    trace_id: trace_id.clone(),
-                    vk_id: vk_id.clone(),
-                    org_id: org_id.clone(),
-                    team_id: team_id.clone(),
-                    project_id: project_id.clone(),
-                    business_unit_id: business_unit_id.clone(),
-                    customer_id: customer_id.clone(),
-                    model: model.clone(),
-                    route_namespace: Some(route_namespace.clone()),
-                    sample_rate: snap.logging.sample_rate,
-                    guardrail_events: guardrail_events.clone(),
-                    plugin_events: plugin_events.clone(),
-                    started,
-                },
-                DeliveryPolicy {
-                    output: output_guard.as_ref(),
-                    semantic: semantic_leg,
-                    plugins: post_response_plugins.as_ref(),
-                    pii: pii_leg.as_ref(),
-                    transcript: false,
-                },
-                pii_stream.take(),
-            )
-            .await;
-        }
-        state.metrics.cache_misses_total.fetch_add(1, Relaxed);
-    }
-    let mut semantic_store = None;
-    if let (Some(exact_key), Some(semantic)) = (
-        cache_key.as_ref(),
-        entry.route.cache.as_ref().and_then(|c| c.semantic.as_ref()),
-    ) {
-        // only shapes whose whole meaning is in their text are looked up, and
-        // only against candidates that agree on every other field (#1476)
-        if let Some(request) = crate::semantic::classify(path, &forward_body) {
-            if let Some(embedding) =
-                semantic_embedding(&state, &snap, semantic, &request.text).await
-            {
-                let scope_seg = cache_scope(entry, &vk_id);
-                let index_key = ResponseCache::semantic_index_key(
-                    &snap.cache.namespace,
-                    path,
-                    &entry.route.model,
-                    scope_seg,
-                    &request.partition,
-                );
-                if let Some(hit) = state
-                    .response_cache
-                    .semantic_get(
-                        &index_key,
-                        &embedding,
-                        semantic.threshold,
-                        semantic.max_candidates,
-                    )
-                    .await
-                    .filter(|hit| crate::semantic::replay_matches_mode(stream, &hit.content_type))
-                {
-                    state
-                        .metrics
-                        .semantic_cache_hits_total
-                        .fetch_add(1, Relaxed);
-                    cache_stage.record("hit", true);
-                    cache_stage.record("kind", "semantic");
-                    return cached_response(
-                        hit,
-                        &state.log,
-                        RequestLogCtx {
-                            request_id: request_id.clone(),
-                            trace_id: trace_id.clone(),
-                            vk_id: vk_id.clone(),
-                            org_id: org_id.clone(),
-                            team_id: team_id.clone(),
-                            project_id: project_id.clone(),
-                            business_unit_id: business_unit_id.clone(),
-                            customer_id: customer_id.clone(),
-                            model: model.clone(),
-                            route_namespace: Some(route_namespace.clone()),
-                            sample_rate: snap.logging.sample_rate,
-                            guardrail_events: guardrail_events.clone(),
-                            plugin_events: plugin_events.clone(),
-                            started,
-                        },
-                        DeliveryPolicy {
-                            output: output_guard.as_ref(),
-                            semantic: semantic_leg,
-                            plugins: post_response_plugins.as_ref(),
-                            pii: pii_leg.as_ref(),
-                            transcript: false,
-                        },
-                        pii_stream.take(),
-                    )
-                    .await;
-                }
-                state
-                    .metrics
-                    .semantic_cache_misses_total
-                    .fetch_add(1, Relaxed);
-                semantic_store = Some((
-                    index_key,
-                    exact_key.clone(),
-                    embedding,
-                    semantic.max_candidates,
-                ));
-            }
-        }
-    }
 
-    // every lookup that could answer this request has missed
-    cache_stage.record("hit", false);
-    drop(cache_stage);
+    // every delivery of this request runs the same post-response policy,
+    // whether the answer is live, a cacheable miss or a hit (#1477)
+    let policy = DeliveryPolicy {
+        output: output_guard.as_ref(),
+        semantic: semantic_leg,
+        plugins: post_response_plugins.as_ref(),
+        pii: pii_leg.as_ref(),
+        transcript: false,
+    };
+    let cache = proceed!(
+        cache_lookup(
+            &state,
+            &fwd,
+            &forward_body,
+            stream,
+            &ident,
+            policy,
+            &mut pii_stream
+        )
+        .await
+    );
 
     // from here the handler is waiting on an upstream that may take minutes. if
     // the caller hangs up in that window axum drops this future and the request
@@ -2831,487 +2727,545 @@ async fn proxy(
         state.log.clone(),
         started,
         RequestLog {
-            ts: crate::logging::started_at(started),
-            seq: crate::logging::start_seq(started),
-            request_id: request_id.clone(),
-            trace_id: trace_id.clone(),
-            virtual_key_id: vk_id.clone(),
-            org_id: org_id.clone(),
-            team_id: team_id.clone(),
-            project_id: project_id.clone(),
-            business_unit_id: business_unit_id.clone(),
-            customer_id: customer_id.clone(),
-            model: model.clone(),
-            route_namespace: Some(route_namespace.clone()),
             stream: stream as u8,
-            sample_rate: snap.logging.sample_rate,
-            guardrail_events: guardrail_events.clone(),
-            plugin_events: plugin_events.clone(),
-            ..Default::default()
+            ..ident.clone().row()
         },
     );
-    // pick a target and forward, retrying transient failures on a fresh target
-    // (exponential backoff + jitter). retries happen before any body bytes reach
-    // the client, so a partial response is never duplicated. a route with
-    // variants routes through the weighted-variant fallback chain instead of the
-    // classic single-pool balancer.
+    let mut out = forward(&fwd, &mut cancel).await;
+    // the slot rides on the guard, so a streamed response keeps it until its
+    // last byte; without a guard no response outlives this function
+    if let Some(guard) = out.inflight_guard.as_mut() {
+        guard.hold_route_permit(route_permit.take());
+    }
+
+    let capture_payloads =
+        payload_capture_enabled(&snap.logging.payload_capture, model, &ident.vk_id);
+    // from here every arm answers the caller and logs its row: the streamed
+    // path hands it to `UsageLoggingStream` (which marks it if the client then
+    // leaves), and each failure arm below writes its own
+    cancel.disarm();
+    // token counts, latency and ttft are filled by the stream wrapper once
+    // the body has been fully forwarded to the client
+    let Some((mut response, status, is_sse)) = out.outcome.take() else {
+        return unanswered(&state, &snap, ident, out, stream);
+    };
+    // what translation did to the caller's parameters, decided before
+    // the upstream was called, so it heads a stream too (#1586)
+    let param_adjustments = response
+        .extensions_mut()
+        .remove::<rolter_proxy::ParamAdjustments>()
+        .unwrap_or_default();
+    let translation = if status < 400 {
+        translation_plan(&snap, path, &out.last_provider, &out.last_target)
+    } else {
+        rolter_proxy::TranslationPlan::passthrough()
+    };
+    let response_observer = if path == "/v1/responses" && status < 400 {
+        response_observer(&state, &snap, entry, vk.as_ref(), &mut out, model, is_sse)
+    } else {
+        None
+    };
     let ForwardOutcome {
-        outcome,
+        last_provider,
+        last_target,
+        variant,
+        attempts,
+        fallback_reason,
+        inflight_guard,
+        genai_span,
+        ..
+    } = out;
+    let log = RequestLog {
+        // the org that owns the provider in the snapshot that served
+        // the request; the row keeps the runtime id until it is queued
+        provider_org_id: snap.provider_label(&last_provider).1.to_string(),
+        provider: last_provider,
+        target: last_target,
+        variant,
+        status,
+        upstream_status: status,
+        attempts,
+        fallback_reason,
+        stream: stream as u8,
+        unit_basis: crate::unit_billing::UnitBasis::for_json(path, &parsed),
+        request_shape: crate::request_shape::RequestShape::of(path, &parsed),
+        capture_payloads,
+        payload_max_bytes: snap.logging.payload_capture.max_bytes,
+        payload_redactor: snap.payload_redactor.clone(),
+        request_payload: if capture_payloads {
+            crate::logging::capture_payload(
+                &forward_body,
+                snap.logging.payload_capture.max_bytes,
+                &snap.payload_redactor,
+            )
+        } else {
+            String::new()
+        },
+        param_adjustments,
+        ..ident.row()
+    };
+    let acct = Accounting {
+        started,
+        sink: state.log.clone(),
+        price,
+        log,
+        recorder,
+        token_recorder,
+        inflight_guard,
+        genai_span,
+    };
+    // a request that did not ask for a stream keeps the legs that judge
+    // a whole body: the built-in output rules, the post_response
+    // plugins and the sanitizer's response leg. none of them can read
+    // an event stream (a non-JSON body is delivered untouched), so an
+    // upstream that streams anyway would get its answer past them on
+    // both the live and the cacheable path. it is withheld instead,
+    // still billed from the body it sent, rather than buffered and
+    // shown to legs that would pass it unread (#3471)
+    if is_sse && !stream && status < 400 && policy.has_whole_body_leg() {
+        return withhold_unrequested_stream(response, &translation, acct).await;
+    }
+    let answered = (response, status, is_sse);
+    // on a cache-eligible route, buffer a successful response (JSON or a
+    // full SSE stream) so it can be stored in Redis, then replay the
+    // buffered bytes through the same accounting stream (byte-for-byte
+    // identical token/cost/log handling to the uncached path)
+    if let Some(store) = cache.store.filter(|_| status < 400) {
+        return store_and_deliver(
+            answered,
+            &translation,
+            acct,
+            response_observer,
+            policy,
+            store,
+            pii_stream,
+        )
+        .await;
+    }
+    let (response, _, is_sse) = answered;
+    stream_response(
+        response,
+        is_sse,
+        translation,
+        acct,
+        response_observer,
+        policy,
+        pii_stream.take(),
+    )
+    .await
+}
+
+/// Forward through the route's variant chain when it has variants, else
+/// through its classic pool.
+async fn forward(fwd: &Forward<'_>, cancel: &mut crate::cancel::CancelGuard) -> ForwardOutcome {
+    if fwd.entry.route.has_variants() {
+        forward_variants(fwd, cancel).await
+    } else {
+        forward_classic(fwd, cancel).await
+    }
+}
+
+/// How a successful answer from `provider` is translated back to the
+/// dialect the caller spoke on `path`.
+fn translation_plan(
+    snap: &Snapshot,
+    path: &str,
+    provider: &str,
+    target: &str,
+) -> rolter_proxy::TranslationPlan {
+    snap.providers
+        .get(provider)
+        .map(|provider| {
+            rolter_proxy::TranslationPlan::resolve(
+                path,
+                provider.kind,
+                provider.role_profile_for(Some(target)),
+            )
+        })
+        .unwrap_or_else(rolter_proxy::TranslationPlan::passthrough)
+}
+
+/// What records a successful `/v1/responses` answer in the response
+/// registry, so a later lifecycle call can find its provider, target and
+/// key (#2836). Takes the attempt's key fingerprint out of `out`.
+fn response_observer(
+    state: &AppState,
+    snap: &Snapshot,
+    entry: &crate::state::RouteEntry,
+    vk: Option<&KeyMeta>,
+    out: &mut ForwardOutcome,
+    model: &str,
+    is_sse: bool,
+) -> Option<crate::logging::CompletionObserver> {
+    let capabilities = snap
+        .providers
+        .get(&out.last_provider)
+        .map(|provider| provider.kind == rolter_core::ProviderKind::Openai)
+        .unwrap_or(false);
+    let template = state.response_registry.template(
+        tenant_scope(vk),
+        out.last_provider.clone(),
+        out.last_target.clone(),
+        model.to_string(),
+        out.provider_key_fingerprint.take(),
+        if capabilities {
+            crate::response_registry::LifecycleCapabilities::NATIVE_OPENAI
+        } else {
+            crate::response_registry::LifecycleCapabilities::UNSUPPORTED
+        },
+    )?;
+    // the provider's stable identity, not its runtime id, which changes once
+    // another org shares the name (#3461)
+    let (name, org) = snap.provider_label(&out.last_provider);
+    let template = template
+        .with_route(entry.route.model.clone())
+        .with_provider_identity(name.to_string(), org.to_string());
+    let registry = state.response_registry.clone();
+    Some(Box::new(move |body: &[u8]| {
+        registry.record_body(template, is_sse, body);
+    }) as crate::logging::CompletionObserver)
+}
+
+/// What the cache lookup leaves for the response stage: where to store a
+/// successful answer, when the route caches.
+struct CacheMiss<'a> {
+    store: Option<CacheStore<'a>>,
+}
+
+/// Where a cacheable miss is stored once it has been buffered.
+struct CacheStore<'a> {
+    /// what holds the cache and counts what it stores
+    state: &'a AppState,
+    key: String,
+    ttl_secs: u64,
+    max_entry_bytes: u64,
+    /// the semantic index the answer joins, when the route's semantic cache
+    /// embedded the request (#1476)
+    semantic: Option<SemanticStore>,
+}
+
+struct SemanticStore {
+    index_key: String,
+    entry_id: String,
+    embedding: Vec<f32>,
+    max_candidates: usize,
+}
+
+/// The exact-match and semantic response cache (ROL-56; streaming added in
+/// ROL-235), one `cache.lookup` stage: a cache that is slow to answer is as
+/// interesting as one that misses, and both delay the same request.
+///
+/// Eligible for routes that opted in, when the global switch is on and Redis
+/// is wired. Both non-streaming JSON and streaming SSE responses are
+/// cacheable: a streaming miss is buffered in full, stored, and replayed
+/// instantly on a later hit. The key hashes the post-injection forward body,
+/// so admin param defaults are part of the identity; per-key routes also mix
+/// in the key id. A virtual key may override its route's cache decision
+/// (ROL-235 part 2): `Some(false)` opts the key out, `Some(true)` opts it in
+/// even on a route that did not; `None` inherits the route flag. The global
+/// switch still gates all of it. A hit is answered under `policy`, as a live
+/// answer would be, and takes `pii_stream`. `state` is `fwd`'s, apart so
+/// the store it passes on outlives the request's own borrows.
+async fn cache_lookup<'a>(
+    state: &'a AppState,
+    fwd: &Forward<'_>,
+    forward_body: &Bytes,
+    stream: bool,
+    ident: &RequestLogCtx,
+    policy: DeliveryPolicy<'_, '_>,
+    pii_stream: &mut Option<crate::pii_stream::StreamRestore>,
+) -> Stage<CacheMiss<'a>> {
+    let Forward {
+        snap,
+        entry,
+        path,
+        key_meta,
+        ..
+    } = *fwd;
+    let cache_stage = crate::trace::stage_span!(
+        "cache.lookup",
+        hit = tracing::field::Empty,
+        kind = tracing::field::Empty
+    );
+    let cache_ttl = entry.route.cache_ttl_secs(snap.cache.default_ttl_secs);
+    let cache_eligible = path != "/v1/responses"
+        && key_meta
+            .and_then(|k| k.cache_override)
+            .unwrap_or_else(|| entry.route.cache_enabled());
+    if !(snap.cache.enabled && state.response_cache.is_enabled() && cache_eligible) {
+        // every lookup that could answer this request has missed
+        cache_stage.record("hit", false);
+        return Stage::Next(CacheMiss { store: None });
+    }
+    let scope_seg = cache_scope(entry, &ident.vk_id);
+    let key = ResponseCache::make_key(&snap.cache.namespace, path, scope_seg, forward_body);
+    if let Some(hit) = state.response_cache.get(&key).await {
+        state.metrics.cache_hits_total.fetch_add(1, Relaxed);
+        cache_stage.record("hit", true);
+        cache_stage.record("kind", "exact");
+        return Stage::Answer(
+            cached_response(hit, &state.log, ident.clone(), policy, pii_stream.take()).await,
+        );
+    }
+    state.metrics.cache_misses_total.fetch_add(1, Relaxed);
+    let mut semantic_store = None;
+    if let Some(semantic) = entry.route.cache.as_ref().and_then(|c| c.semantic.as_ref()) {
+        // only shapes whose whole meaning is in their text are looked up, and
+        // only against candidates that agree on every other field (#1476)
+        let embedded = match crate::semantic::classify(path, forward_body) {
+            Some(request) => semantic_embedding(state, snap, semantic, &request.text)
+                .await
+                .map(|embedding| (request, embedding)),
+            None => None,
+        };
+        if let Some((request, embedding)) = embedded {
+            let index_key = ResponseCache::semantic_index_key(
+                &snap.cache.namespace,
+                path,
+                &entry.route.model,
+                scope_seg,
+                &request.partition,
+            );
+            if let Some(hit) = state
+                .response_cache
+                .semantic_get(
+                    &index_key,
+                    &embedding,
+                    semantic.threshold,
+                    semantic.max_candidates,
+                )
+                .await
+                .filter(|hit| crate::semantic::replay_matches_mode(stream, &hit.content_type))
+            {
+                state
+                    .metrics
+                    .semantic_cache_hits_total
+                    .fetch_add(1, Relaxed);
+                cache_stage.record("hit", true);
+                cache_stage.record("kind", "semantic");
+                return Stage::Answer(
+                    cached_response(hit, &state.log, ident.clone(), policy, pii_stream.take())
+                        .await,
+                );
+            }
+            state
+                .metrics
+                .semantic_cache_misses_total
+                .fetch_add(1, Relaxed);
+            semantic_store = Some(SemanticStore {
+                index_key,
+                entry_id: key.clone(),
+                embedding,
+                max_candidates: semantic.max_candidates,
+            });
+        }
+    }
+    // every lookup that could answer this request has missed
+    cache_stage.record("hit", false);
+    Stage::Next(CacheMiss {
+        store: Some(CacheStore {
+            state,
+            key,
+            ttl_secs: cache_ttl,
+            max_entry_bytes: snap.cache.max_entry_bytes,
+            semantic: semantic_store,
+        }),
+    })
+}
+
+/// Buffer a successful, cacheable answer, store what the upstream said, then
+/// deliver it under the request's policy through the same accounting stream
+/// as a live answer (byte-for-byte identical token/cost/log handling).
+/// Streaming hits later replay these frames instantly; the final-chunk usage
+/// is still parsed because the frames are handed on with `is_sse` preserved.
+async fn store_and_deliver(
+    (response, status, is_sse): (reqwest::Response, u16, bool),
+    translation: &rolter_proxy::TranslationPlan,
+    mut acct: Accounting,
+    observer: Option<crate::logging::CompletionObserver>,
+    policy: DeliveryPolicy<'_, '_>,
+    store: CacheStore<'_>,
+    mut pii_stream: Option<crate::pii_stream::StreamRestore>,
+) -> Response {
+    let content_type = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("application/json")
+        .to_string();
+    let bytes = match response.bytes().await {
+        Ok(bytes) => bytes,
+        Err(err) => return body_read_failed(&acct.sink, acct.log, acct.started, &err),
+    };
+    let bytes = translation.translate_response(bytes, is_sse);
+    // what the provider charged, read before any policy below can rewrite or
+    // withhold the body (#1478)
+    let billed = crate::logging::parse_usage_with(is_sse, &bytes, translation.thinking_count());
+    // skip storing bodies over the configured ceiling (0 = no limit); they're
+    // still served normally
+    let metrics = &store.state.metrics;
+    let limit = store.max_entry_bytes;
+    if limit == 0 || bytes.len() as u64 <= limit {
+        let cached = CachedResponse {
+            status,
+            content_type: content_type.clone(),
+            body: bytes.to_vec(),
+            param_adjustments: acct.log.param_adjustments.log_entries(),
+        };
+        let cache = &store.state.response_cache;
+        cache.put(&store.key, &cached, store.ttl_secs).await;
+        if let Some(semantic) = store.semantic {
+            cache
+                .semantic_put(
+                    &semantic.index_key,
+                    &semantic.entry_id,
+                    semantic.embedding,
+                    &cached,
+                    store.ttl_secs,
+                    semantic.max_candidates,
+                )
+                .await;
+            metrics.semantic_cache_stores_total.fetch_add(1, Relaxed);
+        }
+        metrics.cache_stores_total.fetch_add(1, Relaxed);
+    } else {
+        metrics.cache_too_large_total.fetch_add(1, Relaxed);
+    }
+    // the whole post-response policy runs on the way out, never on the way
+    // in: the entry stored above is what the upstream said, so a restore is
+    // never persisted, and every later delivery of it runs its own request's
+    // policy (see `cached_response`, #848, #1477)
+    let status_code = StatusCode::from_u16(status).unwrap_or(StatusCode::OK);
+    // the units a unit-priced endpoint is billed by (an image count) come from
+    // the upstream body too, before a plugin rewrites or a guard withholds it
+    // (#3404)
+    acct.log.billed_units = acct.log.unit_basis.units(&bytes);
+    let mut post_events = PolicyEvents::default();
+    let applied = policy.apply(status_code, &mut post_events, bytes).await;
+    post_events.record(&mut acct.log);
+    let (bytes, pre_restore) = match applied {
+        Delivery::Send { body, pre_restore } => (body, pre_restore),
+        // the upstream call happened and is billed on a refusal as on a
+        // delivery (#1478)
+        Delivery::Refuse { response, reason } => {
+            return withheld_response(response, reason, billed, is_sse, acct)
+        }
+    };
+    buffered_response(
+        Buffered {
+            bytes,
+            pre_restore,
+            billed,
+            status,
+            content_type,
+            is_sse,
+        },
+        acct,
+        observer,
+        pii_stream.take(),
+    )
+}
+
+/// The answer and its one row when no upstream answered (#2807): the last
+/// attempt never got a response, every target it was left with answered a
+/// retryable status, or the balancer had nothing to pick. Shared by both
+/// pipelines.
+fn unanswered(
+    state: &AppState,
+    snap: &Snapshot,
+    ident: RequestLogCtx,
+    out: ForwardOutcome,
+    stream: bool,
+) -> Response {
+    let ForwardOutcome {
         last_provider,
         last_target,
         last_attempt_recorded,
         last_error,
         last_status,
-        mut inflight_guard,
-        variant: chosen_variant,
-        provider_key_fingerprint: last_key_fingerprint,
+        variant,
         attempts,
         fallback_reason,
-        genai_span,
-    } = if entry.route.has_variants() {
-        forward_variants(
-            &Forward {
-                state: &state,
-                snap: &snap,
-                entry,
-                model: &model,
-                ctx: &ctx,
-                payload: ForwardPayload::Json {
-                    parsed: &parsed,
-                    body: &body,
-                    forward_body: &forward_body,
-                    inbound: (&headers, &forwarded_names),
-                },
-                path,
-                started,
-                trace_headers: &trace_headers,
-                key_meta: vk.as_ref(),
-            },
-            &mut cancel,
-        )
-        .await
-    } else {
-        forward_classic(
-            &Forward {
-                state: &state,
-                snap: &snap,
-                entry,
-                model: &model,
-                ctx: &ctx,
-                payload: ForwardPayload::Json {
-                    parsed: &parsed,
-                    body: &body,
-                    forward_body: &forward_body,
-                    inbound: (&headers, &forwarded_names),
-                },
-                path,
-                started,
-                trace_headers: &trace_headers,
-                key_meta: vk.as_ref(),
-            },
-            &mut cancel,
-        )
-        .await
-    };
-
-    // the slot rides on the guard, so a streamed response keeps it until its
-    // last byte; without a guard no response outlives this function
-    if let Some(guard) = inflight_guard.as_mut() {
-        guard.hold_route_permit(route_permit.take());
-    }
-
-    let capture_payloads = payload_capture_enabled(&snap.logging.payload_capture, &model, &vk_id);
-    // from here every arm answers the caller and logs its row: the streamed
-    // path hands it to `UsageLoggingStream` (which marks it if the client then
-    // leaves), and each failure arm below writes its own
-    cancel.disarm();
-    match outcome {
-        // token counts, latency and ttft are filled by the stream wrapper once
-        // the body has been fully forwarded to the client
-        Some((mut response, status, is_sse)) => {
-            // what translation did to the caller's parameters, decided before
-            // the upstream was called, so it heads a stream too (#1586)
-            let param_adjustments = response
-                .extensions_mut()
-                .remove::<rolter_proxy::ParamAdjustments>()
-                .unwrap_or_default();
-            let translation = if status < 400 {
-                snap.providers
-                    .get(&last_provider)
-                    .map(|provider| {
-                        rolter_proxy::TranslationPlan::resolve(
-                            path,
-                            provider.kind,
-                            provider.role_profile_for(Some(&last_target)),
-                        )
-                    })
-                    .unwrap_or_else(rolter_proxy::TranslationPlan::passthrough)
-            } else {
-                rolter_proxy::TranslationPlan::passthrough()
-            };
-            let response_observer: Option<crate::logging::CompletionObserver> =
-                if path == "/v1/responses" && status < 400 {
-                    let capabilities = snap
-                        .providers
-                        .get(&last_provider)
-                        .map(|provider| provider.kind == rolter_core::ProviderKind::Openai)
-                        .unwrap_or(false);
-                    state
-                        .response_registry
-                        .template(
-                            tenant_scope(vk.as_ref()),
-                            last_provider.clone(),
-                            last_target.clone(),
-                            model.clone(),
-                            last_key_fingerprint,
-                            if capabilities {
-                                crate::response_registry::LifecycleCapabilities::NATIVE_OPENAI
-                            } else {
-                                crate::response_registry::LifecycleCapabilities::UNSUPPORTED
-                            },
-                        )
-                        .map(|template| {
-                            // the provider's stable identity, not its runtime
-                            // id, which changes once another org shares the
-                            // name (#3461)
-                            let (name, org) = snap.provider_label(&last_provider);
-                            let template = template
-                                .with_route(entry.route.model.clone())
-                                .with_provider_identity(name.to_string(), org.to_string());
-                            let registry = state.response_registry.clone();
-                            Box::new(move |body: &[u8]| {
-                                registry.record_body(template, is_sse, body);
-                            }) as crate::logging::CompletionObserver
-                        })
-                } else {
-                    None
-                };
-            let mut log = RequestLog {
-                ts: crate::logging::started_at(started),
-                seq: crate::logging::start_seq(started),
-                request_id,
-                trace_id,
-                virtual_key_id: vk_id,
-                org_id,
-                team_id,
-                project_id,
-                business_unit_id,
-                customer_id,
-                model,
-                route_namespace: Some(route_namespace.clone()),
-                // the org that owns the provider in the snapshot that served
-                // the request; the row keeps the runtime id until it is queued
-                provider_org_id: snap.provider_label(&last_provider).1.to_string(),
-                provider: last_provider,
-                target: last_target,
-                variant: chosen_variant,
-                status,
-                upstream_status: status,
-                attempts,
-                fallback_reason,
-                stream: stream as u8,
-                unit_basis: crate::unit_billing::UnitBasis::for_json(path, &parsed),
-                request_shape: crate::request_shape::RequestShape::of(path, &parsed),
-                capture_payloads,
-                payload_max_bytes: snap.logging.payload_capture.max_bytes,
-                payload_redactor: snap.payload_redactor.clone(),
-                request_payload: if capture_payloads {
-                    crate::logging::capture_payload(
-                        &forward_body,
-                        snap.logging.payload_capture.max_bytes,
-                        &snap.payload_redactor,
-                    )
-                } else {
-                    String::new()
-                },
-                sample_rate: snap.logging.sample_rate,
-                guardrail_events,
-                plugin_events,
-                param_adjustments,
-                ..Default::default()
-            };
-            // a request that did not ask for a stream keeps the legs that judge
-            // a whole body: the built-in output rules, the post_response
-            // plugins and the sanitizer's response leg. none of them can read
-            // an event stream (a non-JSON body is delivered untouched), so an
-            // upstream that streams anyway would get its answer past them on
-            // both the live and the cacheable path. it is withheld instead,
-            // still billed from the body it sent, rather than buffered and
-            // shown to legs that would pass it unread (#3471)
-            if is_sse
-                && !stream
-                && status < 400
-                && (output_guard.is_some() || post_response_plugins.is_some() || pii_leg.is_some())
-            {
-                return withhold_unrequested_stream(
-                    response,
-                    &translation,
-                    Accounting {
-                        started,
-                        sink: state.log.clone(),
-                        price,
-                        log,
-                        recorder,
-                        token_recorder,
-                        inflight_guard,
-                        genai_span: genai_span.clone(),
-                    },
-                )
-                .await;
-            }
-            // on a cache-eligible route, buffer a successful response (JSON or a
-            // full SSE stream) so it can be stored in Redis, then replay the
-            // buffered bytes through the same accounting stream (byte-for-byte
-            // identical token/cost/log handling to the uncached path). streaming
-            // hits later replay these frames instantly; the final-chunk usage is
-            // still parsed because the frames are handed on with is_sse preserved
-            if let Some(key) = cache_key {
-                if status < 400 {
-                    let content_type = response
-                        .headers()
-                        .get(reqwest::header::CONTENT_TYPE)
-                        .and_then(|v| v.to_str().ok())
-                        .unwrap_or("application/json")
-                        .to_string();
-                    match response.bytes().await {
-                        Ok(bytes) => {
-                            let bytes = translation.translate_response(bytes, is_sse);
-                            // what the provider charged, read before any
-                            // policy below can rewrite or withhold the body
-                            // (#1478)
-                            let billed = crate::logging::parse_usage_with(
-                                is_sse,
-                                &bytes,
-                                translation.thinking_count(),
-                            );
-                            // skip storing bodies over the configured ceiling
-                            // (0 = no limit); they're still served normally
-                            let limit = snap.cache.max_entry_bytes;
-                            if limit == 0 || bytes.len() as u64 <= limit {
-                                let cached = CachedResponse {
-                                    status,
-                                    content_type: content_type.clone(),
-                                    body: bytes.to_vec(),
-                                    param_adjustments: log.param_adjustments.log_entries(),
-                                };
-                                state.response_cache.put(&key, &cached, cache_ttl).await;
-                                if let Some((index, entry_id, embedding, max_candidates)) =
-                                    semantic_store
-                                {
-                                    state
-                                        .response_cache
-                                        .semantic_put(
-                                            &index,
-                                            &entry_id,
-                                            embedding,
-                                            &cached,
-                                            cache_ttl,
-                                            max_candidates,
-                                        )
-                                        .await;
-                                    state
-                                        .metrics
-                                        .semantic_cache_stores_total
-                                        .fetch_add(1, Relaxed);
-                                }
-                                state.metrics.cache_stores_total.fetch_add(1, Relaxed);
-                            } else {
-                                state.metrics.cache_too_large_total.fetch_add(1, Relaxed);
-                            }
-                            // the whole post-response policy runs on the way
-                            // out, never on the way in: the entry stored above
-                            // is what the upstream said, so a restore is never
-                            // persisted, and every later delivery of it runs
-                            // its own request's policy (see `cached_response`,
-                            // #848, #1477)
-                            let policy = DeliveryPolicy {
-                                output: output_guard.as_ref(),
-                                semantic: semantic_leg,
-                                plugins: post_response_plugins.as_ref(),
-                                pii: pii_leg.as_ref(),
-                                transcript: false,
-                            };
-                            let status_code =
-                                StatusCode::from_u16(status).unwrap_or(StatusCode::OK);
-                            // the units a unit-priced endpoint is billed by
-                            // (an image count) come from the upstream body
-                            // too, before a plugin rewrites or a guard
-                            // withholds it (#3404)
-                            log.billed_units = log.unit_basis.units(&bytes);
-                            let mut post_events = PolicyEvents::default();
-                            let applied = policy.apply(status_code, &mut post_events, bytes).await;
-                            post_events.record(&mut log);
-                            let (bytes, pre_restore) = match applied {
-                                Delivery::Send { body, pre_restore } => (body, pre_restore),
-                                // the upstream call happened and is billed on
-                                // a refusal as on a delivery (#1478)
-                                Delivery::Refuse { response, reason } => {
-                                    return withheld_response(
-                                        response,
-                                        reason,
-                                        billed,
-                                        is_sse,
-                                        Accounting {
-                                            started,
-                                            sink: state.log.clone(),
-                                            price,
-                                            log,
-                                            recorder,
-                                            token_recorder,
-                                            inflight_guard,
-                                            genai_span: genai_span.clone(),
-                                        },
-                                    )
-                                }
-                            };
-                            return buffered_response(
-                                Buffered {
-                                    bytes,
-                                    pre_restore,
-                                    billed,
-                                    status,
-                                    content_type,
-                                    is_sse,
-                                },
-                                Accounting {
-                                    started,
-                                    sink: state.log.clone(),
-                                    price,
-                                    log,
-                                    recorder,
-                                    token_recorder,
-                                    inflight_guard,
-                                    genai_span: genai_span.clone(),
-                                },
-                                response_observer,
-                                pii_stream.take(),
-                            );
-                        }
-                        Err(err) => return body_read_failed(&state.log, log, started, &err),
-                    }
-                }
-            }
-            stream_response(
+        ..
+    } = out;
+    // which of the three ends this is decides the answer and what the row
+    // says; all three log exactly one row
+    let no_target = last_error.is_none() && last_status.is_none();
+    let (response, status, error, upstream_status) = match (last_error, last_status) {
+        // the last attempt never got a response
+        (Some(message), _) => {
+            let response = upstream_error_response(&message);
+            // what the caller was given, which is not always a 502: a
+            // full provider queue answers 429 or 503
+            let status = response.status().as_u16();
+            (
                 response,
-                is_sse,
-                translation,
-                Accounting {
-                    started,
-                    sink: state.log.clone(),
-                    price,
-                    log,
-                    recorder,
-                    token_recorder,
-                    inflight_guard,
-                    genai_span: genai_span.clone(),
-                },
-                response_observer,
-                DeliveryPolicy {
-                    output: output_guard.as_ref(),
-                    semantic: semantic_leg,
-                    plugins: post_response_plugins.as_ref(),
-                    pii: pii_leg.as_ref(),
-                    transcript: false,
-                },
-                pii_stream.take(),
-            )
-            .await
-        }
-        None => {
-            // which of the three ends this is decides the answer and what the row
-            // says; all three log exactly one row (#2807)
-            let no_target = last_error.is_none() && last_status.is_none();
-            let (response, status, error, upstream_status) = match (last_error, last_status) {
-                // the last attempt never got a response
-                (Some(message), _) => {
-                    let response = upstream_error_response(&message);
-                    // what the caller was given, which is not always a 502: a
-                    // full provider queue answers 429 or 503
-                    let status = response.status().as_u16();
-                    (
-                        response,
-                        status,
-                        rolter_core::redact::redact_urls_in_text(&message),
-                        0,
-                    )
-                }
-                // the last attempt was answered with a retryable status and no
-                // target was left. the response was dropped by the loop, so
-                // this is where its status survives: a 429 stays a rate limit
-                // for the caller instead of becoming "no target selected"
-                (None, Some(failed)) => {
-                    let answer = upstream_failure::exhausted(
-                        &model,
-                        &failed,
-                        attempts,
-                        snap.cooldown.enabled(),
-                    );
-                    (answer.response, answer.status, answer.error, failed.status)
-                }
-                // the balancer had nothing to pick, so no upstream was tried
-                (None, None) => (
-                    error_json(StatusCode::SERVICE_UNAVAILABLE, "no target selected"),
-                    StatusCode::SERVICE_UNAVAILABLE.as_u16(),
-                    "no target selected".to_string(),
-                    0,
-                ),
-            };
-            let row = RequestLog {
-                ts: crate::logging::started_at(started),
-                seq: crate::logging::start_seq(started),
-                request_id,
-                trace_id,
-                virtual_key_id: vk_id,
-                org_id,
-                team_id,
-                project_id,
-                business_unit_id,
-                customer_id,
-                model,
-                route_namespace: Some(route_namespace.clone()),
-                provider_org_id: if no_target {
-                    String::new()
-                } else {
-                    snap.provider_label(&last_provider).1.to_string()
-                },
-                provider: if no_target {
-                    String::new()
-                } else {
-                    last_provider
-                },
-                target: if no_target {
-                    String::new()
-                } else {
-                    last_target
-                },
-                variant: chosen_variant,
                 status,
-                upstream_status,
-                attempts,
-                fallback_reason,
-                stream: stream as u8,
-                latency_ms: started.elapsed().as_millis() as u32,
-                error,
-                sample_rate: snap.logging.sample_rate,
-                guardrail_events,
-                plugin_events,
-                ..Default::default()
-            };
-            if no_target {
-                // nothing was tried, so there is no target to charge
-                state.log.log_refusal(row);
-            } else if last_attempt_recorded {
-                // the loop ran out of targets after a superseded attempt: that
-                // attempt is already counted against its target, so this row
-                // carries the request only (#1646)
-                state.log.log_recorded_attempt(row);
-            } else {
-                state.metrics.upstream_errors_total.fetch_add(1, Relaxed);
-                state.log.log(row);
-            }
-            response
+                rolter_core::redact::redact_urls_in_text(&message),
+                0,
+            )
         }
+        // the last attempt was answered with a retryable status and no
+        // target was left. the response was dropped by the loop, so
+        // this is where its status survives: a 429 stays a rate limit
+        // for the caller instead of becoming "no target selected"
+        (None, Some(failed)) => {
+            let answer = upstream_failure::exhausted(
+                &ident.model,
+                &failed,
+                attempts,
+                snap.cooldown.enabled(),
+            );
+            (answer.response, answer.status, answer.error, failed.status)
+        }
+        // the balancer had nothing to pick, so no upstream was tried
+        (None, None) => (
+            error_json(StatusCode::SERVICE_UNAVAILABLE, "no target selected"),
+            StatusCode::SERVICE_UNAVAILABLE.as_u16(),
+            "no target selected".to_string(),
+            0,
+        ),
+    };
+    let latency_ms = ident.started.elapsed().as_millis() as u32;
+    let row = RequestLog {
+        provider_org_id: if no_target {
+            String::new()
+        } else {
+            snap.provider_label(&last_provider).1.to_string()
+        },
+        provider: if no_target {
+            String::new()
+        } else {
+            last_provider
+        },
+        target: if no_target {
+            String::new()
+        } else {
+            last_target
+        },
+        variant,
+        status,
+        upstream_status,
+        attempts,
+        fallback_reason,
+        stream: stream as u8,
+        latency_ms,
+        error,
+        ..ident.row()
+    };
+    if no_target {
+        // nothing was tried, so there is no target to charge
+        state.log.log_refusal(row);
+    } else if last_attempt_recorded {
+        // the loop ran out of targets after a superseded attempt: that
+        // attempt is already counted against its target, so this row
+        // carries the request only (#1646)
+        state.log.log_recorded_attempt(row);
+    } else {
+        state.metrics.upstream_errors_total.fetch_add(1, Relaxed);
+        state.log.log(row);
     }
+    response
 }
 
 /// Multipart sibling of [`proxy`] for the audio upload endpoints
@@ -5575,7 +5529,9 @@ struct Buffered {
 /// A response served from cache and the built-in `fake-llm` model both answer
 /// that way, and start from the same row ([`RequestLogCtx::into_log`]) so the
 /// attribution they stamp cannot drift apart. A path that refuses a request
-/// before it reaches a provider can start from it too.
+/// before it reaches a provider can start from it too, and so does every row
+/// of a forwarded request ([`RequestLogCtx::row`]).
+#[derive(Clone)]
 struct RequestLogCtx {
     request_id: String,
     trace_id: String,
@@ -5636,6 +5592,16 @@ impl RequestLogCtx {
     fn into_log(self) -> RequestLog {
         let latency_ms = self.started.elapsed().as_millis() as u32;
         RequestLog {
+            latency_ms,
+            ttft_ms: latency_ms,
+            ..self.row()
+        }
+    }
+
+    /// The row a forwarded request starts from: its start time and
+    /// attribution, with the latency left to whoever finishes it.
+    fn row(self) -> RequestLog {
+        RequestLog {
             ts: crate::logging::started_at(self.started),
             seq: crate::logging::start_seq(self.started),
             request_id: self.request_id,
@@ -5648,8 +5614,6 @@ impl RequestLogCtx {
             customer_id: self.customer_id,
             model: self.model,
             route_namespace: self.route_namespace,
-            latency_ms,
-            ttft_ms: latency_ms,
             sample_rate: self.sample_rate,
             guardrail_events: self.guardrail_events,
             plugin_events: self.plugin_events,
