@@ -132,7 +132,10 @@ the global namespace. A key resolves a name in its own org first, then
 globally; a key with no org gets the global row, or the one org row when only
 one org has the name, and a name two orgs share is unknown to it. A route's
 targets, a variant's and a group's members resolve the same way from the row's
-own org, so a row never names another org's provider. Per-target state is kept
+own org, so a row never names another org's provider. An org's own row the key
+may not use (a `project_only` route, or a provider or group scoped to another
+project) is no match for it either: the name goes on to the global row, under
+that row's own tenancy check (#3546, ADR-0040 addendum). Per-target state is kept
 apart too: providers are keyed by a runtime id and routes by a namespace, each
 the bare name unless another org shares it, then `name@org`.
 

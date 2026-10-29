@@ -110,6 +110,26 @@ impl<T> Scoped<T> {
         self.global.as_ref().map(|value| (GLOBAL, value))
     }
 
+    /// [`resolve`](Self::resolve) for a caller that may not use every row.
+    ///
+    /// A row of the caller's own org that `admits` refuses (one narrowed to
+    /// another project) is no match for that caller, so the lookup goes on to
+    /// the global row, which `admits` must pass in its own right (#3546). A
+    /// refused global row is a miss.
+    pub fn resolve_admitted(&self, org: &str, admits: impl Fn(&T) -> bool) -> Option<(&str, &T)> {
+        let (owner, value) = self.resolve(org)?;
+        if admits(value) {
+            return Some((owner, value));
+        }
+        if owner == GLOBAL {
+            return None;
+        }
+        self.global
+            .as_ref()
+            .filter(|value| admits(value))
+            .map(|value| (GLOBAL, value))
+    }
+
     /// The row owned by exactly `org`, with no fallback.
     pub fn owned_by(&self, org: &str) -> Option<&T> {
         if org.is_empty() {
@@ -186,6 +206,17 @@ impl<T> Namespaced<T> {
     /// [`get`](Self::get), with the org that owns the row.
     pub fn resolve(&self, org: &str, name: &str) -> Option<(&str, &T)> {
         self.names.get(name)?.resolve(org)
+    }
+
+    /// [`resolve`](Self::resolve) for a caller that may not use every row:
+    /// see [`Scoped::resolve_admitted`].
+    pub fn resolve_admitted(
+        &self,
+        org: &str,
+        name: &str,
+        admits: impl Fn(&T) -> bool,
+    ) -> Option<(&str, &T)> {
+        self.names.get(name)?.resolve_admitted(org, admits)
     }
 
     /// The row a row of `org` names `name` by: see [`Scoped::resolve_ref`].
@@ -357,6 +388,27 @@ mod tests {
         assert_eq!(table.resolve("org-a", "gpt-4o"), Some(("org-a", &"a")));
         assert_eq!(table.len(), 3);
         assert!(table.is_shared("gpt-4o"));
+    }
+
+    #[test]
+    fn a_refused_org_row_falls_through_to_the_global_row() {
+        let mut table = Namespaced::new();
+        table.insert("", "gpt-4o", "global").unwrap();
+        table.insert("org-a", "gpt-4o", "a").unwrap();
+        let only = |allowed: &'static str| move |value: &&str| *value == allowed;
+        // the org's own row while it is usable, the global one once it is not
+        assert_eq!(
+            table.resolve_admitted("org-a", "gpt-4o", only("a")),
+            Some(("org-a", &"a"))
+        );
+        assert_eq!(
+            table.resolve_admitted("org-a", "gpt-4o", only("global")),
+            Some(("", &"global"))
+        );
+        // a refused global row is a miss, and so is a name with no global row
+        assert_eq!(table.resolve_admitted("org-b", "gpt-4o", only("a")), None);
+        table.insert("org-b", "embed", "b").unwrap();
+        assert_eq!(table.resolve_admitted("org-b", "embed", |_| false), None);
     }
 
     #[test]

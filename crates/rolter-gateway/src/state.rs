@@ -1038,10 +1038,13 @@ impl Snapshot {
     /// Another org's route, or a project-only route of another project, is a
     /// miss here rather than a refusal (see [`RouteEntry::in_tenancy_of`]), so
     /// the builtin and the pinned addresses behind it still answer the caller.
+    /// An org's own route the key may not use is no match for it either: the
+    /// name goes on to the deployment-wide route, under that route's own
+    /// tenancy check (#3546).
     pub fn named_route_for(&self, model: &str, key: Option<&KeyMeta>) -> Option<&RouteEntry> {
         self.routes
-            .get(key_org(key), model)
-            .filter(|entry| entry.in_tenancy_of(key))
+            .resolve_admitted(key_org(key), model, |entry| entry.in_tenancy_of(key))
+            .map(|(_, entry)| entry)
     }
 
     /// Resolve `model` for a caller the way every request path does: a
@@ -1050,11 +1053,26 @@ impl Snapshot {
     /// addressing, which answers only for a provider or group the caller's org
     /// may use. `None` is the unknown-model answer, whether nothing by that
     /// name exists or it belongs to someone else.
+    ///
+    /// A slug the key's org owns but the key may not use (a provider or group
+    /// scoped to another project) resolves as if the org had no row of that
+    /// slug, so the deployment-wide provider or group answers, under its own
+    /// tenancy check (#3546).
     pub fn resolve_for(&self, model: &str, key: Option<&KeyMeta>) -> Option<ResolvedRoute<'_>> {
         if let Some(entry) = self.named_route_for(model, key) {
             return Some(ResolvedRoute::Named(entry));
         }
-        self.resolve_pinned_in(model, key_org(key))
+        let org = key_org(key);
+        if let Some(entry) = self
+            .resolve_pinned_in(model, org)
+            .filter(|entry| entry.in_tenancy_of(key))
+        {
+            return Some(ResolvedRoute::Pinned(entry));
+        }
+        if org == rolter_core::namespace::GLOBAL {
+            return None;
+        }
+        self.pinned(model, org, Rows::GlobalOnly)
             .filter(|entry| entry.in_tenancy_of(key))
             .map(ResolvedRoute::Pinned)
     }
@@ -1083,6 +1101,12 @@ impl Snapshot {
     /// through the same classic-pool machinery, and the right segment becomes
     /// the target's upstream model rewrite.
     pub fn resolve_pinned_in(&self, model: &str, org: &str) -> Option<RouteEntry> {
+        self.pinned(model, org, Rows::Resolved)
+    }
+
+    /// [`resolve_pinned_in`](Self::resolve_pinned_in), looking the slug up
+    /// among `rows`.
+    fn pinned(&self, model: &str, org: &str, rows: Rows) -> Option<RouteEntry> {
         let (slug, upstream) = model.split_once('/')?;
         if upstream.is_empty() {
             return None;
@@ -1090,8 +1114,23 @@ impl Snapshot {
         // a provider slug pins a single provider; a group slug fans out across
         // the group's members. the two share each org's namespace, so at most
         // one of them is the caller's own
-        let provider = self.providers_by_slug.resolve(org, slug);
-        let group = self.groups_by_slug.resolve(org, slug);
+        let (provider, group) = match rows {
+            Rows::Resolved => (
+                self.providers_by_slug.resolve(org, slug),
+                self.groups_by_slug.resolve(org, slug),
+            ),
+            Rows::GlobalOnly => {
+                let global = rolter_core::namespace::GLOBAL;
+                (
+                    self.providers_by_slug
+                        .owned_by(global, slug)
+                        .map(|id| (global, id)),
+                    self.groups_by_slug
+                        .owned_by(global, slug)
+                        .map(|entry| (global, entry)),
+                )
+            }
+        };
         let group_first = matches!(
             (provider, group),
             (Some((p_owner, _)), Some((g_owner, _))) if p_owner != org && g_owner == org && !org.is_empty()
@@ -1266,6 +1305,15 @@ impl Snapshot {
             guardrails: Default::default(),
         }
     }
+}
+
+/// Which rows of a slug [`Snapshot::pinned`] looks among.
+#[derive(Clone, Copy)]
+enum Rows {
+    /// the row the caller's org resolves: its own, then the global one
+    Resolved,
+    /// the global row alone, for a caller its own org's row refused (#3546)
+    GlobalOnly,
 }
 
 /// The org of the key making a request, [`GLOBAL`](rolter_core::namespace::GLOBAL)
