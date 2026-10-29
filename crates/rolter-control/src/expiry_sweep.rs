@@ -1,4 +1,5 @@
-//! Periodic removal of rows an abandoned flow leaves behind (#2414, #2616).
+//! Periodic cleanup of what an abandoned flow leaves behind (#2414, #2616):
+//! mostly rows, and the sealed token of an invitation that expired (#3397).
 //!
 //! A login abandoned at the identity provider, a consent never finished at an
 //! MCP authorization server, or a second-factor prompt never answered leaves a

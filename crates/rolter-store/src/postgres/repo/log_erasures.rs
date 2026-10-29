@@ -24,7 +24,7 @@ pub struct NewLogErasure<'a> {
     pub include_logs: bool,
     pub reason: &'a str,
     pub requested_by: Option<Uuid>,
-    /// the stores searched and skipped, as `[{store, searched, reason?}]`
+    /// the stores searched and skipped, as `[{store, searched, code?, reason?}]`
     pub stores: serde_json::Value,
 }
 
@@ -37,8 +37,8 @@ pub struct ErasureSubject {
     pub detail: String,
 }
 
-/// Most subjects one lookup returns: the form lists them and filters in the
-/// browser, and a deployment with more narrows with `q`.
+/// Most subjects one lookup returns. `find_subjects` reads one more, so a
+/// caller can tell a list that was cut from one that was exactly this long.
 pub const SUBJECT_LOOKUP_LIMIT: i64 = 500;
 
 /// Erasure requests. Rows are never deleted: the record of an erasure has to
@@ -184,7 +184,7 @@ impl LogErasureRepo<'_> {
         sqlx::query_as(sqlx::AssertSqlSafe(sql))
             .bind(escaped)
             .bind(id)
-            .bind(SUBJECT_LOOKUP_LIMIT)
+            .bind(SUBJECT_LOOKUP_LIMIT + 1)
             .fetch_all(self.0)
             .await
             .map_err(store_err)

@@ -1099,8 +1099,21 @@ mod tests {
         );
         assert!(held.is_held());
         assert_eq!(gate.try_acquire("b").err(), Some(Busy::Process));
+        let timer = held
+            .timer
+            .as_ref()
+            .expect("a limit starts a timer")
+            .abort_handle();
         drop(held);
         assert!(gate.try_acquire("b").is_ok());
+        // and the ten minute timer does not outlive the export it was for
+        for _ in 0..50 {
+            if timer.is_finished() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(timer.is_finished(), "the timer was left running");
     }
 
     #[test]
@@ -1225,6 +1238,36 @@ mod tests {
             "{rows}"
         );
         assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    /// The handler's wiring of the timer (#3433): a body that is never polled,
+    /// as when a client stops reading, still gives its caller's place back.
+    #[tokio::test]
+    async fn an_export_whose_body_is_never_read_gives_its_place_back_at_the_deadline() {
+        let url = fake_log(5000, Duration::ZERO).await;
+        let limits = ExportLimits {
+            max_duration: Some(Duration::from_millis(300)),
+            ..ExportLimits::new(0, 0, 0, 1)
+        };
+        let app = export_app(&url, limits);
+        // the headers arrive; the body is held and never polled
+        let stalled = export(&app).await;
+        assert_eq!(stalled.status(), StatusCode::OK);
+        assert_eq!(
+            export(&app).await.status(),
+            StatusCode::TOO_MANY_REQUESTS,
+            "the caller's place is held while the export runs"
+        );
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        assert_eq!(
+            export(&app).await.status(),
+            StatusCode::OK,
+            "the place came back with nothing polling the body"
+        );
+        // and the stalled body, if it is read after all, ends in the error
+        // rather than passing for a complete file
+        let (_, complete) = drain(stalled).await;
+        assert!(!complete);
     }
 
     #[tokio::test]

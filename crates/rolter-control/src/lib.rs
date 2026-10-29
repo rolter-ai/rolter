@@ -1655,9 +1655,10 @@ pub async fn test_app_with_mailer(
     state.mailer = Some(mailer);
     // a short gap between relay checks, so a test can run two without waiting
     // the production five seconds (#3394)
-    state.mail_check_gap = Arc::new(call_gap::CallGap::new(std::time::Duration::from_millis(
-        400,
-    )));
+    state.mail_check_gap = Arc::new(call_gap::CallGap::new(
+        std::time::Duration::from_millis(400),
+        std::time::Duration::from_millis(50),
+    ));
     Ok(build_app_with(state, true))
 }
 

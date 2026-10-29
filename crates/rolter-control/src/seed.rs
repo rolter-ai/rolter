@@ -144,7 +144,7 @@ fn resolve_admin_password(
 }
 
 /// `resolve_admin_password` over the three sources themselves, so a command
-/// that is not `rolter seed` (`rolter up`, #3395) resolves a password exactly
+/// that is not `rolter seed` (`rolter easy-up`, #3395) resolves a password exactly
 /// as it does rather than copying the rules.
 pub fn read_admin_password(
     password: Option<&str>,

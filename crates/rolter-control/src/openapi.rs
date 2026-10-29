@@ -526,9 +526,7 @@ const MCP_LOGS_QUERY: &[QueryParam] = &[
     ),
 ];
 
-/// The audit log's query string. Keyset-paged like the two logs above — it was
-/// equally undiscoverable — and it pages in both directions, which is the part
-/// a caller cannot guess at all.
+/// The subject lookup behind the Log erasure picker (#3385).
 const LOG_ERASURE_SUBJECT_QUERY: &[QueryParam] = &[
     QueryParam::required("kind", "string", "virtual_key, user or org"),
     QueryParam::new(
@@ -543,6 +541,9 @@ const LOG_ERASURE_SUBJECT_QUERY: &[QueryParam] = &[
     ),
 ];
 
+/// The audit log's query string. Keyset-paged like the two logs above — it was
+/// equally undiscoverable — and it pages in both directions, which is the part
+/// a caller cannot guess at all.
 const AUDIT_LOG_QUERY: &[QueryParam] = &[
     QueryParam::new(
         "actor",
@@ -2784,10 +2785,13 @@ fn operations() -> Vec<Op> {
             Op::post(
                 "/api/v1/orgs/{org_id}/invitations/mail-check",
                 "checkInvitationMailRelay",
-                "Check the mail relay without sending an invitation (one run per caller every few seconds; `429` with `Retry-After` otherwise)",
+                "Check the mail relay without sending an invitation",
             )
             .body(Payload::Empty)
             .ok(Payload::Open)
+            .too_many_requests(
+                "the relay was checked a moment ago, by this caller (every five seconds) or by anyone (every two); `Retry-After` says how long to wait",
+            )
             .conflict("mail is not configured on this control plane"),
             Op::get(
                 "/api/v1/invitations/accept/{token}",

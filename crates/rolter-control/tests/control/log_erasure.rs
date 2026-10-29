@@ -420,9 +420,31 @@ async fn the_subject_picker_finds_named_keys_users_and_orgs_for_a_superadmin() {
     let (_, body) = find("kind=org&q=%25".to_string()).await;
     assert_eq!(body["data"].as_array().unwrap().len(), 0);
 
-    // an unknown kind is refused
+    // an unknown kind is refused, and so is a query that does not parse, in
+    // the coded envelope rather than axum's plain text
     let (status, _) = find("kind=request".to_string()).await;
     assert_eq!(status, 400);
+    for bad in ["kind=user&id=not-a-uuid", "q=acme"] {
+        let (status, body) = find(bad.to_string()).await;
+        assert_eq!(status, 400, "{bad}");
+        assert_eq!(body["error"]["code"], "invalid_query", "{bad}: {body}");
+    }
+
+    // a list past the cap says it was cut, and `q` still reaches the rest
+    assert_eq!(body_truncated(&find("kind=org".to_string()).await.1), false);
+    sqlx::query(
+        "insert into orgs (name, slug) select 'bulk ' || g, 'bulk-' || g \
+         from generate_series(1, 520) g",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let (_, body) = find("kind=org".to_string()).await;
+    assert_eq!(body["data"].as_array().unwrap().len(), 500);
+    assert!(body_truncated(&body));
+    let (_, body) = find("kind=org&q=bulk 520".to_string()).await;
+    assert_eq!(body["data"][0]["name"], "bulk 520");
+    assert!(!body_truncated(&body));
 
     // and a caller who may not erase may not look
     let member = seed_user(&pool, "member@example.test", false).await;
@@ -434,4 +456,8 @@ async fn the_subject_picker_finds_named_keys_users_and_orgs_for_a_superadmin() {
         .await
         .unwrap();
     assert_eq!(response.status(), 403);
+}
+
+fn body_truncated(body: &Value) -> bool {
+    body["truncated"].as_bool().unwrap_or(false)
 }

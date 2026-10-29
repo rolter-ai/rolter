@@ -26,7 +26,9 @@ use serde_json::{json, Value};
 use uuid::Uuid;
 
 use rolter_store::postgres::models::LogErasure;
-use rolter_store::postgres::repo::{AuditLogRepo, LogErasureRepo, NewLogErasure};
+use rolter_store::postgres::repo::{
+    AuditLogRepo, LogErasureRepo, NewLogErasure, SUBJECT_LOOKUP_LIMIT,
+};
 
 use crate::analytics::{client_or_503, query_failed, ClickHouseClient};
 use crate::crud::{invalid_field, pool, ApiError, ApiResult, SafeJson};
@@ -64,7 +66,7 @@ struct SubjectQuery {
 async fn find_subjects(
     principal: Principal,
     State(state): State<ControlState>,
-    axum::extract::Query(query): axum::extract::Query<SubjectQuery>,
+    crate::crud::Query(query): crate::crud::Query<SubjectQuery>,
 ) -> ApiResult<Json<Value>> {
     authorize_superadmin(&principal, superadmin_cap!("log_erasure", Create))?;
     if !matches!(query.kind.as_str(), "virtual_key" | "user" | "org") {
@@ -73,10 +75,13 @@ async fn find_subjects(
             "kind must be one of virtual_key|user|org",
         ));
     }
-    let subjects = LogErasureRepo(pool(&state))
+    let mut subjects = LogErasureRepo(pool(&state))
         .find_subjects(&query.kind, query.q.trim(), query.id)
         .await?;
-    Ok(Json(json!({ "data": subjects })))
+    // the store reads one past the cap, which is how a cut list is told apart
+    let truncated = subjects.len() as i64 > SUBJECT_LOOKUP_LIMIT;
+    subjects.truncate(SUBJECT_LOOKUP_LIMIT as usize);
+    Ok(Json(json!({ "data": subjects, "truncated": truncated })))
 }
 
 /// The most payload rows from before the `virtual_key_id` column that one
@@ -236,7 +241,7 @@ fn predicates(scope: &ScopeBody, user_keys: &[Uuid]) -> Predicates {
 }
 
 /// Which stores an erasure searched and which it skipped, as the list stored on
-/// the record: `{store, searched, reason?}` (#3436). Request logs are found by
+/// the record: `{store, searched, code?, reason?}` (#3436). Request logs are found by
 /// virtual key, so a user who holds none leaves them unsearched while their MCP
 /// tool calls, which carry `user_id`, are still erased; a payloads-only erasure
 /// keeps the log rows. Saying so is what stops the record reading as complete
@@ -244,21 +249,23 @@ fn predicates(scope: &ScopeBody, user_keys: &[Uuid]) -> Predicates {
 fn coverage(scope: &ScopeBody, user_keys: &[Uuid], include_logs: bool) -> Value {
     let keyless = matches!(scope, ScopeBody::User { .. }) && user_keys.is_empty();
     let found = |store: &str| json!({"store": store, "searched": true});
-    let skipped =
-        |store: &str, reason: &str| json!({"store": store, "searched": false, "reason": reason});
+    // `code` is the stable name a client translates; `reason` is the English
+    // sentence for one that does not know the code
+    let skipped = |store: &str, code: &str, reason: &str| json!({"store": store, "searched": false, "code": code, "reason": reason});
     const NO_KEYS: &str = "the user holds no virtual keys, and request logs are found by key";
     let logs = if keyless {
-        skipped("request_logs", NO_KEYS)
+        skipped("request_logs", "no_key", NO_KEYS)
     } else if include_logs {
         found("request_logs")
     } else {
         skipped(
             "request_logs",
+            "bodies_only",
             "only captured payloads were asked for; the log rows are kept",
         )
     };
     let payloads = if keyless {
-        skipped("request_payloads", NO_KEYS)
+        skipped("request_payloads", "no_key", NO_KEYS)
     } else {
         found("request_payloads")
     };
@@ -780,6 +787,7 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("no virtual keys"));
+        assert_eq!(stores[0]["code"], "no_key");
         assert_eq!(stores[1]["searched"], false);
         assert_eq!(
             stores[2],
@@ -796,6 +804,7 @@ mod tests {
         let stores = coverage(&user, &[uuid(1)], false);
         assert_eq!(stores[0]["searched"], false);
         assert!(stores[0]["reason"].as_str().unwrap().contains("payloads"));
+        assert_eq!(stores[0]["code"], "bodies_only");
         assert_eq!(stores[1]["searched"], true);
     }
 

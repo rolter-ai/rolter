@@ -4730,6 +4730,7 @@
         "subjectNone": "Nothing here by that name. Paste the id to use one the list does not show.",
         "subjectInvalid": "This is not an id. Paste the full UUID.",
         "subjectUnknown": "No {{noun}} has this id. Check it before erasing.",
+        "subjectTruncated": "Showing the first {{count}}. Type to narrow the list.",
         "includeLogs": "Delete the log rows too",
         "includeLogsOn": "Deletes the request metadata (model, tokens, cost, status) and the captured bodies, so the figures built from them go too.",
         "includeLogsOff": "Deletes the captured prompt and response bodies only and keeps the request metadata.",
@@ -4758,6 +4759,7 @@
         "titleLogs": "Erase the logs of {{noun}} {{name}}?",
         "titleBodies": "Erase the captured bodies of {{noun}} {{name}}?",
         "subjectLine": "{{name}} \u00b7 {{detail}} \u00b7 id {{id}}",
+        "subjectUnchecked": "This id could not be checked against the {{noun}} list, so there is no name to confirm it with. The id is {{id}}.",
         "subjectLineBare": "{{name}} \u00b7 id {{id}}",
         "subjectUnknown": "No {{noun}} with this id was found, so there is no name to check it against. The id is {{id}}.",
         "noun": {
@@ -4798,6 +4800,15 @@
       },
       "progress": "{{done}} of {{total}} deletions done",
       "skipped": "Not searched: {{stores}}. {{reasons}}",
+      "storeName": {
+        "request_logs": "request logs",
+        "request_payloads": "captured bodies",
+        "mcp_tool_call_logs": "MCP tool calls"
+      },
+      "skipReason": {
+        "no_key": "The user holds no virtual keys, and request logs are found by key.",
+        "bodies_only": "Only captured bodies were asked for, so the log rows are kept."
+      },
       "action": {
         "erase": "Erase captured payload",
         "noOrg": "This request records no organization, so it cannot be addressed by request. Erase by virtual key instead.",

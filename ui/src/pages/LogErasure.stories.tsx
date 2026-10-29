@@ -92,13 +92,14 @@ const SUBJECTS: Record<string, { id: string; name: string; detail: string }[]> =
 
 function api({
   list = () => json({ data: RECENT }),
-  subjects = (kind, id) => json({ data: (SUBJECTS[kind] ?? []).filter((s) => !id || s.id === id) }),
+  subjects = (kind, id) =>
+    json({ data: (SUBJECTS[kind] ?? []).filter((s) => !id || s.id === id), truncated: false }),
   create,
   read,
 }: {
   list?: () => Response | Promise<Response>;
   /** answers the picker's lookup of `kind`, narrowed to `id` when one is asked for */
-  subjects?: (kind: string, id: string | null) => Response | Promise<Response>;
+  subjects?: (kind: string, id: string | null, q: string) => Response | Promise<Response>;
   create?: (body: Record<string, unknown>) => Response | Promise<Response>;
   read?: (id: string) => Response | Promise<Response>;
 } = {}): FetchStub {
@@ -106,7 +107,11 @@ function api({
     const url = new URL(String(input), "http://localhost");
     const method = (init?.method ?? "GET").toUpperCase();
     if (url.pathname.endsWith("/log-erasures/subjects")) {
-      return subjects(url.searchParams.get("kind") ?? "", url.searchParams.get("id"));
+      return subjects(
+        url.searchParams.get("kind") ?? "",
+        url.searchParams.get("id"),
+        url.searchParams.get("q") ?? "",
+      );
     }
     const one = url.pathname.match(/\/log-erasures\/([^/]+)$/);
     if (one) return read ? read(one[1]) : json(erasure({ id: one[1] }));
@@ -170,9 +175,10 @@ export const KeylessUserErasure: Story = {
                   {
                     store: "request_logs",
                     searched: false,
+                    code: "no_key",
                     reason: "the user holds no virtual keys, and request logs are found by key",
                   },
-                  { store: "request_payloads", searched: false, reason: "same" },
+                  { store: "request_payloads", searched: false, code: "no_key", reason: "same" },
                   { store: "mcp_tool_call_logs", searched: true },
                 ],
               }),
@@ -185,11 +191,13 @@ export const KeylessUserErasure: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    const note = await canvas.findByText(/Not searched: request_logs, request_payloads/);
+    // the stores and the reason are the dashboard's words, not the API's ids
+    const note = await canvas.findByText(/Not searched: request logs, captured bodies/);
     await expect(note).toBeVisible();
-    await expect(note).toHaveTextContent(/no virtual keys/);
+    await expect(note).toHaveTextContent(/holds no virtual keys/);
+    await expect(note).not.toHaveTextContent(/request_logs/);
     // the store that was searched is not listed as skipped
-    await expect(note).not.toHaveTextContent(/mcp_tool_call_logs/);
+    await expect(note).not.toHaveTextContent(/MCP tool calls/);
   },
 };
 
@@ -474,6 +482,59 @@ export const TheSubjectListFailsAndAPastedIdStillWorks: Story = {
     await pasteSubject(canvas, KEY_ID);
     await userEvent.type(canvas.getByLabelText("Reason"), "ticket 11");
     await expectAllowed(canvasElement, "Erase…");
+  },
+};
+
+/** The list was cut: it says so, and typing asks the server for the rest. */
+export const ATruncatedListIsSearchedOnTheServer: Story = {
+  render: () => (
+    <Harness
+      fetchStub={api({
+        subjects: (_kind, _id, q) =>
+          json(
+            q
+              ? { data: [{ id: ORG_UUID, name: "Zeta Corp", detail: "zeta" }], truncated: false }
+              : { data: [{ id: KEY_ID, name: "Alpha", detail: "a" }], truncated: true },
+          ),
+      })}
+      role="superadmin"
+    >
+      <LogErasure />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await pickOption(await canvas.findByLabelText("Subject"), /^Organization/);
+    await expect(
+      await canvas.findByText("Showing the first 1. Type to narrow the list."),
+    ).toBeVisible();
+    // a name past the cap is not in the first page; typing finds it
+    await userEvent.type(canvas.getByLabelText(SUBJECT_LABEL), "zeta");
+    await userEvent.click(await canvas.findByRole("option", { name: /Zeta Corp/ }));
+    await waitFor(() => expect(canvas.queryByText(/Showing the first/)).toBeNull());
+  },
+};
+
+/** No answer is not "no such subject": the confirmation says it could not check. */
+export const AnIdThatCouldNotBeCheckedIsNotCalledUnknown: Story = {
+  render: () => (
+    <Harness
+      fetchStub={api({ subjects: () => json({ error: { message: "lookup is down" } }, 500) })}
+      role="superadmin"
+    >
+      <LogErasure />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await pasteSubject(canvas, KEY_ID);
+    await userEvent.type(canvas.getByLabelText("Reason"), "ticket 12");
+    await expectAllowed(canvasElement, "Erase…");
+    await userEvent.click(canvas.getByRole("button", { name: "Erase…" }));
+    const dialog = within(await confirmation());
+    const text = await dialog.findByText(/could not be checked against the virtual key list/);
+    await waitFor(() => expect(text).toBeVisible());
+    await expect(dialog.queryByText(/was found/)).toBeNull();
   },
 };
 

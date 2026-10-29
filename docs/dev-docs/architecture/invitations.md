@@ -233,7 +233,7 @@ fails an invitation.
   `auth`, `relay`) with a fixed sentence; the relay's reply, its address and the
   credential never leave the process. Every run dials the relay, so `CallGap`
   (`call_gap.rs`, held in `ControlState::mail_check_gap`) lets a caller (the
-  `caller_key` the CSV export counts against) run one every five seconds and
+  `caller_key` the CSV export counts against) run one every five seconds (and anyone one every two, the relay being one shared resource) and
   answers `ApiError::TooManyAttempts` (`429` with `Retry-After`, #3394) in
   between. It is process-local; the integration suite's app shortens the gap.
 - The send is awaited, bounded by a 15 second timeout, so the response says what

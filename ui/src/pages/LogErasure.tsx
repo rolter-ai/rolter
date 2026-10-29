@@ -67,20 +67,26 @@ const GRID = `${primaryColumn(1)} 1.2fr 1.4fr 1fr 1.3fr`;
  * confirmation. An id pasted instead still works: it is looked up and named
  * when the control plane knows it, and stays usable when it does not.
  */
-function useSubjects(scope: Scope, id: string) {
+function useSubjects(scope: Scope, id: string, search: string) {
+  // the control plane lists the first few hundred; what is typed narrows that
+  // list on the server, so a name past the cap is still found
   const list = useQuery({
-    queryKey: ["log-erasure-subjects", scope],
-    queryFn: () => findLogErasureSubjects(scope),
+    queryKey: ["log-erasure-subjects", scope, search],
+    queryFn: () => findLogErasureSubjects(scope, { q: search }),
+    // the list being typed into stays up while its narrower answer loads, but
+    // never the list of another kind
+    placeholderData: (previous, previousQuery) =>
+      previousQuery?.queryKey[1] === scope ? previous : undefined,
     retry: false,
   });
   const listed = list.data?.data ?? [];
   const known = listed.find((subject) => subject.id === id);
   // an id the list does not show (more subjects than it carries, or one typed
-  // from a ticket) is asked for by itself
+  // from a ticket) is asked for by itself, whether or not the list loaded
   const lookup = useQuery({
     queryKey: ["log-erasure-subject", scope, id],
     queryFn: () => findLogErasureSubjects(scope, { id }),
-    enabled: UUID.test(id) && !known && list.isSuccess,
+    enabled: UUID.test(id) && !known,
     retry: false,
   });
   const found: LogErasureSubject | undefined = known ?? lookup.data?.data[0];
@@ -100,9 +106,17 @@ function EraseForm({ onErased }: { onErased: (row: LogErasureRow) => void }) {
 
   const id = subject.trim();
   const idInvalid = id !== "" && !UUID.test(id);
-  const { list, listed, found, lookup } = useSubjects(scope, id);
+  const [search, setSearch] = React.useState("");
+  const [debounced, setDebounced] = React.useState("");
+  React.useEffect(() => {
+    const timer = window.setTimeout(() => setDebounced(search.trim()), 250);
+    return () => window.clearTimeout(timer);
+  }, [search]);
+  const { list, listed, found, lookup } = useSubjects(scope, id, debounced);
   const ready = UUID.test(id) && reason.trim() !== "" && !lookup.isFetching;
   const unknownId = UUID.test(id) && !found && lookup.isSuccess;
+  // no answer is not "no such subject": the confirmation must not say it
+  const unchecked = UUID.test(id) && !found && lookup.isError;
   const subjectOptions: ComboboxOption[] = [
     ...listed,
     ...(found && !listed.some((s) => s.id === found.id) ? [found] : []),
@@ -134,6 +148,7 @@ function EraseForm({ onErased }: { onErased: (row: LogErasureRow) => void }) {
             onChange={(next) => {
               setScope(next as Scope);
               setSubject("");
+              setSearch("");
             }}
             options={SCOPES.map((s) => ({
               value: s,
@@ -146,7 +161,11 @@ function EraseForm({ onErased }: { onErased: (row: LogErasureRow) => void }) {
           <Combobox
             id="log-erasure-subject"
             value={id}
-            onChange={setSubject}
+            onChange={(next) => {
+              setSubject(next);
+              setSearch("");
+            }}
+            onQueryChange={setSearch}
             options={subjectOptions}
             allowCustom
             clearable
@@ -177,6 +196,11 @@ function EraseForm({ onErased }: { onErased: (row: LogErasureRow) => void }) {
                   : undefined
             }
           />
+          {list.data?.truncated && (
+            <p className="text-xs text-muted-foreground">
+              {t("pages.logErasure.form.subjectTruncated", { count: listed.length })}
+            </p>
+          )}
           {list.error && (
             // load-error-allow: the list only decorates the form; a pasted id still works
             <LoadError
@@ -253,7 +277,9 @@ function EraseForm({ onErased }: { onErased: (row: LogErasureRow) => void }) {
                   : "pages.logErasure.confirm.subjectLineBare",
                 { name: found.name, detail: found.detail, id },
               )
-            : t("pages.logErasure.confirm.subjectUnknown", { noun: t(NOUN_KEY[scope]), id })}
+            : unchecked
+              ? t("pages.logErasure.confirm.subjectUnchecked", { noun: t(NOUN_KEY[scope]), id })
+              : t("pages.logErasure.confirm.subjectUnknown", { noun: t(NOUN_KEY[scope]), id })}
         </p>
         <p className="text-xs text-muted-foreground">{t("pages.logErasure.confirm.notInstant")}</p>
       </ConfirmDialog>

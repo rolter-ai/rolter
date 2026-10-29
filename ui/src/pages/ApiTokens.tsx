@@ -285,6 +285,16 @@ export default function ApiTokens() {
       setMinted({ token, rotated: true });
     },
   });
+  // the token went inactive since the list was read: the sentence in the
+  // dashboard's language, not the control plane's English (#3374). memoised so
+  // the dialog is not handed a new error object on every render
+  const rotateError = React.useMemo(
+    () =>
+      rotate.error instanceof ApiError && rotate.error.code === "api_token_inactive"
+        ? new Error(t("errors.api.codes.api_token_inactive"))
+        : rotate.error,
+    [rotate.error, t],
+  );
   const revoke = useMutation({
     mutationFn: (token: ApiTokenRow) => revokeApiToken(token.id),
     onSuccess: (_row, token) => {
@@ -472,13 +482,7 @@ export default function ApiTokens() {
         description={t("pages.apiTokens.confirm.rotateBody")}
         confirmLabel={t("pages.apiTokens.confirm.rotate")}
         pending={rotate.isPending}
-        error={
-          // the token went inactive since the list was read: the sentence in
-          // the dashboard's language, not the control plane's English (#3374)
-          rotate.error instanceof ApiError && rotate.error.code === "api_token_inactive"
-            ? new Error(t("errors.api.codes.api_token_inactive"))
-            : rotate.error
-        }
+        error={rotateError}
         onConfirm={() => rotateTarget && rotate.mutate(rotateTarget)}
       />
 

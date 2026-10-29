@@ -22,6 +22,9 @@ export type LogErasureStatus = "pending" | "completed" | "failed" | "unverified"
 export interface LogErasureStore {
   store: string;
   searched: boolean;
+  /** the stable name of why it was skipped, which the dashboard translates */
+  code?: string;
+  /** the same in English, for a code the dashboard does not know */
   reason?: string;
 }
 
@@ -55,6 +58,12 @@ export interface LogErasureSubject {
   detail: string;
 }
 
+/** `truncated`: the list was cut at the control plane's cap; `q` narrows it */
+export interface LogErasureSubjectList {
+  data: LogErasureSubject[];
+  truncated: boolean;
+}
+
 export type LogErasureSubjectKind = "virtual_key" | "user" | "org";
 
 /**
@@ -65,11 +74,11 @@ export type LogErasureSubjectKind = "virtual_key" | "user" | "org";
 export function findLogErasureSubjects(
   kind: LogErasureSubjectKind,
   { q, id }: { q?: string; id?: string } = {},
-): Promise<{ data: LogErasureSubject[] }> {
+): Promise<LogErasureSubjectList> {
   const query = new URLSearchParams({ kind });
   if (q) query.set("q", q);
   if (id) query.set("id", id);
-  return getJson<{ data: LogErasureSubject[] }>(`/api/v1/log-erasures/subjects?${query}`);
+  return getJson<LogErasureSubjectList>(`/api/v1/log-erasures/subjects?${query}`);
 }
 
 export interface CreateLogErasureInput {

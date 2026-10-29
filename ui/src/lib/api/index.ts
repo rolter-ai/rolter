@@ -694,6 +694,7 @@ export type {
   LogErasureStatus,
   LogErasureStore,
   LogErasureSubject,
+  LogErasureSubjectList,
   LogErasureSubjectKind,
 } from "./log-erasure";
 export { fetchVersion, fetchStability, fetchPublicUrl } from "./system";
