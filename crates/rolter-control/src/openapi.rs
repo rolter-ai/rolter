@@ -4396,7 +4396,6 @@ fn virtual_key_schemas(p: &Prim) -> Value {
             "required": ["id", "project_id", "key_prefix", "models", "providers", "disabled", "created_at"],
             "properties": {
                 "id": uuid, "project_id": uuid,
-                "key_hash": {"type": "string", "description": "peppered digest; never the plaintext"},
                 "key_prefix": string,
                 "name": nullable_string,
                 "models": string_list,

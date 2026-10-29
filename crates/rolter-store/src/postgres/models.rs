@@ -371,6 +371,9 @@ pub struct ProviderCacheProbe {
 pub struct VirtualKey {
     pub id: Uuid,
     pub project_id: Uuid,
+    /// peppered digest of the secret. the gateway learns it through the
+    /// snapshot; no API response carries it (#3525)
+    #[serde(default, skip_serializing)]
     pub key_hash: String,
     pub key_prefix: String,
     pub name: Option<String>,

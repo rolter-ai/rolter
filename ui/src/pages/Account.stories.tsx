@@ -145,7 +145,6 @@ const USAGE: MyUsageRow[] = [
 const MINTED: MintedKey = {
   id: "vk-3",
   project_id: "project-1",
-  key_hash: "hash-3",
   key_prefix: "sk-rolter-ci-runner",
   name: "ci runner",
   models: [],
