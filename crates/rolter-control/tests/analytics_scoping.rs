@@ -2038,6 +2038,77 @@ async fn by_variant_groups_one_route_inside_the_callers_scope() {
     assert_eq!(anonymous.status(), 401);
 }
 
+/// The summary's mean latency is weighted by the row's sample weight like its
+/// percentiles (#3420): a kept row counts as the requests it stands for, so a
+/// slow request that was sampled one in four pulls the mean four times as hard
+/// as an unsampled one, and a window with no rows reads 0 and not nan.
+#[tokio::test]
+async fn summary_mean_latency_is_weighted_by_the_row_weight() {
+    let ch = skip_without_stack!();
+    let http = reqwest::Client::new();
+    ensure_schema(&http, &ch).await;
+
+    let db = TestSchema::create(&test_database::url().await.unwrap()).await;
+    let app = rolter_control::test_app_with_clickhouse_and_admin_token(
+        db.pool().clone(),
+        &ch,
+        Some(ADMIN_TOKEN.to_string()),
+    )
+    .await
+    .unwrap();
+    let addr = serve(app).await;
+
+    let model = format!("mean-latency-{}", Uuid::new_v4().simple());
+    let ts = chrono::Utc::now()
+        .format("%Y-%m-%d %H:%M:%S%.3f")
+        .to_string();
+    let row = |latency: u32, weight: f64| {
+        json!({
+            "ts": ts, "request_id": format!("mean-{}", Uuid::new_v4().simple()),
+            "org_id": Uuid::new_v4().to_string(),
+            "model": model, "status": 200, "latency_ms": latency,
+            "total_tokens": 10, "cost_usd": 0.0, "sample_weight": weight,
+        })
+    };
+    // 100 ms once and 400 ms three times over: the weighted mean is
+    // (100 + 3 * 400) / 4 = 325, where the mean of the two kept rows is 250
+    insert_rows(&http, &ch, "request_logs", &[row(100, 1.0), row(400, 3.0)]).await;
+
+    let read = |model: String| {
+        let http = http.clone();
+        async move {
+            let response = http
+                .get(format!(
+                    "http://{addr}/api/v1/analytics/summary?model={model}"
+                ))
+                .bearer_auth(ADMIN_TOKEN)
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), 200);
+            let body: Value = response.json().await.unwrap();
+            body["data"][0].clone()
+        }
+    };
+    let summary = read(model.clone()).await;
+    assert_eq!(number(&summary["requests"]), 4.0, "{summary}");
+    assert_eq!(number(&summary["avg_latency_ms"]), 325.0, "{summary}");
+
+    // equal weights are the plain mean
+    let even = format!("mean-even-{}", Uuid::new_v4().simple());
+    let even_row = |latency: u32| {
+        let mut r = row(latency, 2.0);
+        r["model"] = json!(even);
+        r
+    };
+    insert_rows(&http, &ch, "request_logs", &[even_row(100), even_row(300)]).await;
+    assert_eq!(number(&read(even).await["avg_latency_ms"]), 200.0);
+
+    // no rows at all: a zero, not nan
+    let none = read(format!("mean-none-{}", Uuid::new_v4().simple())).await;
+    assert_eq!(number(&none["avg_latency_ms"]), 0.0, "{none}");
+}
+
 /// The summary carries the weighted prompt-cache read tokens beside the prompt
 /// tokens (#3356), so a read share is one division, and a row logged before the
 /// provider reported any reads as zero.

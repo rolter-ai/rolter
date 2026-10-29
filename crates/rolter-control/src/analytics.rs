@@ -802,7 +802,7 @@ async fn summary(
                 {USAGE_UNKNOWN} as usage_unknown_requests, \
                 {CACHE_HITS} as cache_hit_requests, \
                 {ERRORS} as errors, \
-                round(avg(latency_ms), 1) as avg_latency_ms, \
+                {AVG_LATENCY} as avg_latency_ms, \
                 {P95_LATENCY} as p95_latency_ms \
          from request_logs where {WHERE_WINDOW} and {ROW_VISIBLE} and {ROW_FILTERS} \
          format JSON"
@@ -826,6 +826,14 @@ async fn summary(
 /// rounded like the other latency figures, and is `0` for no rows.
 pub(crate) const P95_LATENCY: &str =
     "round(quantileExactWeighted(0.95)(latency_ms, toUInt64(round(sample_weight * 1000))), 1)";
+/// The mean latency, weighted by `sample_weight` like the percentiles (#3420):
+/// `sum(latency * weight) / sum(weight)`, so a kept row counts as the requests
+/// it stands for and unequal weights (a sample rate that changed inside the
+/// window, a route sampled apart from the rest) do not skew it. With every
+/// weight equal it is the plain mean. `0` for no rows, where the quotient has
+/// no denominator, the way the percentiles read.
+pub(crate) const AVG_LATENCY: &str = "if(sum(sample_weight) > 0, \
+     round(sum(latency_ms * sample_weight) / sum(sample_weight), 1), 0)";
 /// The median counterpart of [`P95_LATENCY`].
 pub(crate) const P50_LATENCY: &str =
     "round(quantileExactWeighted(0.5)(latency_ms, toUInt64(round(sample_weight * 1000))), 1)";
@@ -1844,7 +1852,7 @@ mod tests {
     #[test]
     fn counts_and_sums_scale_by_the_row_sample_weight() {
         // at a 50 % rate each kept row weighs 2, so no count()/sum() may read
-        // a row once; averages and percentiles stay unweighted
+        // a row once, and the mean and the percentiles are weighted too
         for expr in [
             REQUESTS,
             TOKENS,
@@ -1862,7 +1870,18 @@ mod tests {
             ..src.find("pub struct InvocationsQuery").unwrap()];
         assert!(!handlers.contains("count()"), "an unweighted count()");
         assert!(!handlers.contains("countIf("), "an unweighted countIf()");
-        assert!(handlers.contains("avg(latency_ms)"));
+        // the mean is weighted too (#3420), not a plain avg()
+        assert!(handlers.contains("{AVG_LATENCY}"));
+        assert!(!handlers.contains("avg(latency_ms)"), "an unweighted mean");
+        assert!(
+            AVG_LATENCY.contains("sum(latency_ms * sample_weight) / sum(sample_weight)"),
+            "{AVG_LATENCY}"
+        );
+        // and the divisor is guarded, so an empty window is 0 and not nan
+        assert!(
+            AVG_LATENCY.contains("sum(sample_weight) > 0"),
+            "{AVG_LATENCY}"
+        );
         // the percentiles are weighted too (#3355), by an integer weight
         assert!(handlers.contains("{P95_LATENCY}"));
         assert!(!handlers.contains("quantile(0.95)(latency_ms)"));
