@@ -38,6 +38,7 @@ import type {
   TimelineRow,
   UptimeRow,
 } from "@/lib/api";
+import en from "@/lib/i18n/locales/en.json";
 import { UxScreenProvider } from "@/lib/ux-react";
 
 // each entry carries its own targets (#2210): provider names, not row ids
@@ -823,6 +824,8 @@ const MODEL_LABELS: LabelRow[] = [
     id: "ml-1",
     subject_type: "model",
     subject_id: "gpt-4o",
+    // the label of org-1's `gpt-4o`, the organization that serves it here (#3476)
+    org_id: "org-1",
     key: "tier",
     value: "flagship",
     source: "custom",
@@ -843,14 +846,31 @@ const MODEL_LABELS: LabelRow[] = [
   },
 ];
 
-const withLabels = (labels = MODEL_LABELS) =>
+/**
+ * The model-label reads, answered from `labels` the way the control plane
+ * answers them: `?org_id=` lists that organization's labels and the
+ * deployment-wide ones it has not set a key of its own over (#3476).
+ */
+const answerModelLabels = (url: URL, labels: LabelRow[]): Response => {
+  const subject = url.searchParams.get("subject_id");
+  const org = url.searchParams.get("org_id");
+  let rows = subject ? labels.filter((l) => l.subject_id === subject) : labels;
+  if (org) {
+    const own = rows.filter((l) => l.org_id === org);
+    const set = new Set(own.map((l) => `${l.subject_id}:${l.source}:${l.key}`));
+    rows = [
+      ...own,
+      ...rows.filter((l) => !l.org_id && !set.has(`${l.subject_id}:${l.source}:${l.key}`)),
+    ];
+  }
+  return json(rows);
+};
+
+const withLabels = (labels = MODEL_LABELS, models: EffectiveModelDto[] = MODELS) =>
   scoped(async (input) => {
     const url = new URL(String(input), "http://localhost");
-    if (url.pathname.endsWith("/model-labels")) {
-      const subject = url.searchParams.get("subject_id");
-      return json(subject ? labels.filter((l) => l.subject_id === subject) : labels);
-    }
-    if (url.pathname.endsWith("/models")) return json(MODELS);
+    if (url.pathname.endsWith("/model-labels")) return answerModelLabels(url, labels);
+    if (url.pathname.endsWith("/models")) return json(models);
     if (url.pathname.endsWith("/currency")) return json({ base: "USD", rates: {} });
     return json([]);
   });
@@ -962,6 +982,116 @@ export const SuperadminCanWriteAModelLabel: Story = {
     // still no way to touch the observation, asked once the list is on screen —
     // before that the absence would be the skeleton's, not the rule's
     await expect(panel.queryByRole("button", { name: "Remove tier=priced" })).toBeNull();
+  },
+};
+
+// two organizations each serve a `gpt-4o` (#1857), and each labelled its own;
+// the deployment's label applies to both (#3476)
+const TWO_ORGS_MODELS: EffectiveModelDto[] = [
+  { ...MODELS[0], org_id: "org-1" },
+  {
+    ...MODELS[0],
+    org_id: "org-2",
+    project_id: "project-2",
+    targets: 1,
+    route_targets: [{ provider: "other-edge", model: null, weight: 1 }],
+  },
+];
+
+const TWO_ORGS_LABELS: LabelRow[] = [
+  { ...MODEL_LABELS[0], id: "ml-gold", org_id: "org-1", value: "gold" },
+  { ...MODEL_LABELS[0], id: "ml-bronze", org_id: "org-2", value: "bronze" },
+  { ...MODEL_LABELS[0], id: "ml-family", org_id: null, key: "family", value: "gpt" },
+];
+
+/** the catalog row a `gpt-4o` chip sits in */
+const rowOfChip = (canvas: ReturnType<typeof within>, label: string) =>
+  canvas.getByLabelText(`${label}, your label`).closest("[role='row']") as HTMLElement;
+
+/**
+ * #3476: two organizations' `gpt-4o` carry different labels. Each row shows its
+ * own organization's `tier` and never the other's, both show the label set for
+ * the whole deployment, and the label filter matches one of them only.
+ */
+export const TwoOrganizationsSameNamedModelsCarryTheirOwnLabels: Story = {
+  render: () => (
+    <Harness fetchStub={withLabels(TWO_ORGS_LABELS, TWO_ORGS_MODELS)}>
+      <Models />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getByLabelText("tier=gold, your label")).toBeVisible());
+    const gold = rowOfChip(canvas, "tier=gold");
+    const bronze = rowOfChip(canvas, "tier=bronze");
+    await expect(gold).not.toBe(bronze);
+    await expect(within(gold).getByText("gpt-4o")).toBeVisible();
+    await expect(within(bronze).getByText("gpt-4o")).toBeVisible();
+    await expect(within(gold).queryByLabelText("tier=bronze, your label")).toBeNull();
+    await expect(within(bronze).queryByLabelText("tier=gold, your label")).toBeNull();
+    // the deployment's own label is on both
+    await expect(within(gold).getByLabelText("family=gpt, your label")).toBeVisible();
+    await expect(within(bronze).getByLabelText("family=gpt, your label")).toBeVisible();
+    // and the config-file model, which no organization owns, reads only it
+    await expect(canvas.getAllByLabelText("family=gpt, your label")).toHaveLength(2);
+
+    await userEvent.click(canvas.getByRole("combobox", { name: /Filter by label/i }));
+    await userEvent.click(await within(document.body).findByRole("option", { name: "tier=gold" }));
+    await waitFor(() => expect(canvas.getAllByText("gpt-4o")).toHaveLength(1));
+    await expect(canvas.getByLabelText("tier=gold, your label")).toBeVisible();
+  },
+};
+
+let orgLabelWrites: Recorder;
+/**
+ * #3476: one organization's label sheet lists that organization's labels as
+ * its own, and the deployment-wide ones apart, read-only, since they are every
+ * organization's. A label added there is that organization's.
+ */
+export const AnOrganizationsModelLabelsAreItsOwn: Story = {
+  render: () => {
+    const reads = withLabels(TWO_ORGS_LABELS, TWO_ORGS_MODELS);
+    orgLabelWrites = recording(async (input, init) => {
+      if ((init?.method ?? "GET").toUpperCase() === "POST") {
+        return json({ ...TWO_ORGS_LABELS[1], id: "ml-new", key: "owner", value: "ml" }, 201);
+      }
+      return reads(input, init);
+    });
+    return (
+      <Harness fetchStub={orgLabelWrites.stub} role="superadmin">
+        <Models />
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getByLabelText("tier=bronze, your label")).toBeVisible());
+    const bronze = rowOfChip(canvas, "tier=bronze");
+    await userEvent.click(within(bronze).getByRole("button", { name: "Labels on gpt-4o" }));
+    const dialog = await within(document.body).findByRole("dialog");
+    const panel = within(dialog);
+    // the sheet asks for what applies to org-2's model
+    await orgLabelWrites.expectSent(
+      "GET",
+      "/model-labels?subject_type=model&subject_id=gpt-4o&org_id=org-2",
+    );
+    await expectAllowed(dialog, "Remove tier=bronze");
+    await expect(panel.queryByRole("button", { name: "Remove tier=gold" })).toBeNull();
+    // the deployment's label is shown apart, with nothing to edit it by
+    const inherited = await panel.findByTestId("labels-inherited");
+    await expect(within(inherited).getByText(en.labels.inheritedHeading)).toBeVisible();
+    await expect(within(inherited).getByLabelText("family=gpt, your label")).toBeVisible();
+    await expect(panel.queryByRole("button", { name: "Remove family=gpt" })).toBeNull();
+    await expect(panel.queryByRole("textbox", { name: "Value of family" })).toBeNull();
+
+    await userEvent.type(panel.getByRole("textbox", { name: en.labels.keyLabel }), "owner");
+    await userEvent.type(panel.getByRole("textbox", { name: en.labels.valueLabel }), "ml");
+    await userEvent.click(panel.getByRole("button", { name: en.labels.add }));
+    const sent = await orgLabelWrites.expectSentBody<Record<string, unknown>>(
+      "POST",
+      "/model-labels",
+    );
+    await expect(sent).toEqual({ model: "gpt-4o", org_id: "org-2", key: "owner", value: "ml" });
   },
 };
 

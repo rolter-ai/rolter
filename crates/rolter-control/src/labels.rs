@@ -6,6 +6,15 @@
 //! pricing catalog and not to any org. Both refuse to write anything but a
 //! `custom` label — an auto label is an observation, and the only way to
 //! change one is for the subsystem that made it to observe again.
+//!
+//! A model label may name the organization whose model it is (`org_id`,
+//! #3476): since #1857 two organizations may each serve a `gpt-4o`, and a
+//! label on one must not show on the other. One without is deployment-wide,
+//! which is every label on a model from the gateway's config file. Reading
+//! `?org_id=` lists what applies to that organization's models: its own
+//! labels, and the deployment-wide ones it has not set a label of the same key
+//! over. A caller sees an organization's model labels only where they reach
+//! that organization, the rule `GET /api/v1/models` applies to the models.
 
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
@@ -14,7 +23,7 @@ use axum::{Json, Router};
 use serde::Deserialize;
 use uuid::Uuid;
 
-use rolter_core::Error;
+use rolter_core::{Error, Tenancy};
 use rolter_store::postgres::models::Label;
 use rolter_store::postgres::repo::{CustomLabelInput, LabelFilter, LabelRepo};
 
@@ -23,6 +32,7 @@ use crate::crud::{
 };
 use crate::rbac::{authorize, Principal, ScopeChain};
 use crate::rbac_matrix::cap;
+use crate::tenant_view::TenantView;
 use crate::ControlState;
 
 pub(crate) fn router() -> Router<ControlState> {
@@ -54,6 +64,9 @@ struct LabelQuery {
     key: Option<String>,
     value: Option<String>,
     source: Option<String>,
+    /// model labels only: what applies to this organization's models, its own
+    /// labels before the deployment-wide ones (#3476)
+    org_id: Option<Uuid>,
 }
 
 impl LabelQuery {
@@ -93,6 +106,9 @@ struct CreateOrgLabel {
 struct CreateModelLabel {
     /// the model's name, which is how the pricing catalog addresses it
     model: String,
+    /// the organization whose model this is (#3476), which must have a route
+    /// of that name; omitted for a deployment-wide label
+    org_id: Option<Uuid>,
     key: String,
     value: Option<String>,
 }
@@ -211,6 +227,7 @@ async fn create_org_label(
         .create_custom(CustomLabelInput {
             subject_type: &body.subject_type,
             subject_id: &body.subject_id.to_string(),
+            org_id: None,
             key: &body.key,
             value: body.value.as_deref(),
         })
@@ -330,7 +347,25 @@ async fn list_model_labels(
         subject_type: Some("model"),
         ..query.as_filter()
     };
-    Ok(Json(LabelRepo(pool(&state)).list(filter).await?))
+    let repo = LabelRepo(pool(&state));
+    let rows = match query.org_id {
+        Some(org_id) => repo.list_models_for_org(org_id, filter).await?,
+        None => repo.list(filter).await?,
+    };
+    // a deployment-wide label names no tenant; an organization's names its
+    // model, which only a caller reaching that organization may read
+    let mut view = TenantView::load(&state, Some(&principal)).await?;
+    let mut visible = Vec::with_capacity(rows.len());
+    for row in rows {
+        let owner = row.org_id.map(|org| Tenancy {
+            org_id: org.to_string(),
+            project_id: None,
+        });
+        if view.sees(&state, owner.as_ref()).await {
+            visible.push(row);
+        }
+    }
+    Ok(Json(visible))
 }
 
 async fn create_model_label(
@@ -350,10 +385,22 @@ async fn create_model_label(
     }
     validate_key(&body.key)?;
     validate_value(body.value.as_deref())?;
-    let row = LabelRepo(pool(&state))
+    let repo = LabelRepo(pool(&state));
+    // an organization's label is on a model that organization serves, or it
+    // would sit unseen until someone created a route of that name
+    if let Some(org_id) = body.org_id {
+        if !repo.org_has_model(org_id, &body.model).await? {
+            return Err(ApiError::Core(Error::NotFound(format!(
+                "model {} in org {org_id}",
+                body.model
+            ))));
+        }
+    }
+    let row = repo
         .create_custom(CustomLabelInput {
             subject_type: "model",
             subject_id: &body.model,
+            org_id: body.org_id,
             key: &body.key,
             value: body.value.as_deref(),
         })
@@ -367,7 +414,7 @@ async fn create_model_label(
             "model_label.create",
             "label",
             row.id,
-            serde_json::json!({"model": row.subject_id, "key": row.key}),
+            serde_json::json!({"model": row.subject_id, "org_id": row.org_id, "key": row.key}),
         )
         .await;
     }

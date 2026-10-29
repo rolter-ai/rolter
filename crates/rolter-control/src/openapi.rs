@@ -842,6 +842,35 @@ const LABEL_QUERY: &[QueryParam] = &[
     ),
 ];
 
+/// The model-label listing: [`LABEL_QUERY`] plus the organization whose models
+/// to list the labels of (#3476).
+const MODEL_LABEL_QUERY: &[QueryParam] = &[
+    QueryParam::new(
+        "subject_type",
+        "string",
+        "what the label is attached to; omit for every kind",
+    ),
+    QueryParam::new(
+        "subject_id",
+        "string",
+        "exact subject id; omit for every subject",
+    ),
+    QueryParam::new("key", "string", "exact label key; omit for every key"),
+    QueryParam::new("value", "string", "exact label value; omit for every value"),
+    QueryParam::new(
+        "source",
+        "string",
+        "how the label was set; omit for every source",
+    ),
+    QueryParam::new(
+        "org_id",
+        "string",
+        "the labels that apply to this organization's models: its own, and each \
+         deployment-wide one whose model, source and key it has not set itself; omit for \
+         every model label",
+    ),
+];
+
 /// The RBAC matrix's optional org filter.
 const MATRIX_QUERY: &[QueryParam] = &[QueryParam::new(
     "org_id",
@@ -2133,13 +2162,18 @@ fn operations() -> Vec<Op> {
             Op::get(
                 "/api/v1/model-labels",
                 "listModelLabels",
-                "List model labels",
+                "List model labels. A label carries `org_id`, the organization whose model it is \
+                 on, or `null` for a deployment-wide one; an organization's labels are listed \
+                 only to a caller who reaches that organization",
             )
-            .query(LABEL_QUERY),
+            .query(MODEL_LABEL_QUERY),
             Op::post(
                 "/api/v1/model-labels",
                 "createModelLabel",
-                "Attach a custom label to a model",
+                "Attach a custom label to a model: `model`, `key`, an optional `value`, and an \
+                 optional `org_id` naming the organization whose model it is (a 404 when that \
+                 organization serves no route of that name); without `org_id` the label is \
+                 deployment-wide",
             ),
             Op::put(
                 "/api/v1/model-labels/{id}",

@@ -5584,6 +5584,8 @@
   },
   "labels": {
     "labelsOf": "Labels on {{name}}",
+    "inheritedHeading": "Deployment-wide labels",
+    "inheritedExplainer": "These apply to every organization's {{name}} that has not set a label of the same key. Adding one here overrides it for this organization only.",
     "filter": "Filter by label",
     "sheetTitle": "Labels",
     "customHeading": "Your labels",

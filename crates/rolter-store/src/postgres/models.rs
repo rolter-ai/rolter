@@ -1519,6 +1519,10 @@ pub struct Label {
     pub id: Uuid,
     pub subject_type: String,
     pub subject_id: String,
+    /// the organization whose model a model label is on (#3476); `None` for a
+    /// deployment-wide label, and always for a provider, group or route, which
+    /// belong to an organization through their own row
+    pub org_id: Option<Uuid>,
     pub key: String,
     pub value: Option<String>,
     pub source: String,

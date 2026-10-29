@@ -2199,3 +2199,140 @@ async fn deleting_a_team_project_or_key_drops_its_mcp_tool_group_assignments() {
     projects.delete(key_project.id).await.unwrap();
     assert!(subjects().await.is_empty());
 }
+
+/// #3476: two organizations' `gpt-4o` carry their own labels. A label naming
+/// an organization shadows the deployment-wide one of the same key for that
+/// organization's model only, and uniqueness holds per organization with the
+/// deployment-wide labels counted as one owner.
+#[tokio::test]
+async fn model_labels_are_keyed_by_organization_and_fall_back_to_the_deployment() {
+    if !super::super::test_database::is_configured() {
+        eprintln!("skipping: {} not set", super::super::test_database::URL_ENV);
+        return;
+    }
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let orgs = OrgRepo(&pool);
+    let acme = orgs.create("acme", "acme").await.unwrap();
+    let globex = orgs.create("globex", "globex").await.unwrap();
+    for org in [acme.id, globex.id] {
+        let team = TeamRepo(&pool).create(org, "core").await.unwrap();
+        let project = ProjectRepo(&pool).create(team.id, "default").await.unwrap();
+        RouteRepo(&pool)
+            .create(project.id, "gpt-4o", "power_of_two")
+            .await
+            .unwrap();
+    }
+
+    let labels = LabelRepo(&pool);
+    let label = |org_id: Option<Uuid>, key: &'static str, value: &'static str| CustomLabelInput {
+        subject_type: "model",
+        subject_id: "gpt-4o",
+        org_id,
+        key,
+        value: Some(value),
+    };
+    // deployment-wide, then each org's own `tier`
+    labels
+        .create_custom(label(None, "tier", "standard"))
+        .await
+        .unwrap()
+        .expect("the deployment's label");
+    labels
+        .create_custom(label(None, "family", "gpt"))
+        .await
+        .unwrap()
+        .expect("a second deployment label");
+    let acme_tier = labels
+        .create_custom(label(Some(acme.id), "tier", "gold"))
+        .await
+        .unwrap()
+        .expect("acme's own tier beside the deployment's");
+    assert_eq!(acme_tier.org_id, Some(acme.id));
+    labels
+        .create_custom(label(Some(globex.id), "tier", "bronze"))
+        .await
+        .unwrap()
+        .expect("globex's own tier beside acme's");
+
+    // one key per owner: a second deployment-wide `tier` collides, null
+    // counted as one value, and so does a second of acme's
+    assert!(labels
+        .create_custom(label(None, "tier", "again"))
+        .await
+        .unwrap()
+        .is_none());
+    assert!(labels
+        .create_custom(label(Some(acme.id), "tier", "again"))
+        .await
+        .unwrap()
+        .is_none());
+
+    let applying = |org: Uuid| {
+        let labels = &labels;
+        async move {
+            let mut rows: Vec<(String, String, Option<Uuid>)> = labels
+                .list_models_for_org(org, LabelFilter::default())
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|l| (l.key, l.value.unwrap_or_default(), l.org_id))
+                .collect();
+            rows.sort();
+            rows
+        }
+    };
+    // each org reads its own tier, never the other's, and the deployment's
+    // family it has not overridden
+    assert_eq!(
+        applying(acme.id).await,
+        vec![
+            ("family".into(), "gpt".into(), None),
+            ("tier".into(), "gold".into(), Some(acme.id)),
+        ]
+    );
+    assert_eq!(
+        applying(globex.id).await,
+        vec![
+            ("family".into(), "gpt".into(), None),
+            ("tier".into(), "bronze".into(), Some(globex.id)),
+        ]
+    );
+    // a filter applies to what the org reads, not to the rows it shadows
+    let gold = labels
+        .list_models_for_org(
+            globex.id,
+            LabelFilter {
+                value: Some("gold"),
+                ..LabelFilter::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert!(gold.is_empty(), "{gold:?}");
+
+    assert!(labels.org_has_model(acme.id, "gpt-4o").await.unwrap());
+    assert!(!labels.org_has_model(acme.id, "claude").await.unwrap());
+
+    // only a model label names an organization
+    let route_label = labels
+        .create_custom(CustomLabelInput {
+            subject_type: "route",
+            subject_id: &Uuid::new_v4().to_string(),
+            org_id: Some(acme.id),
+            key: "tier",
+            value: None,
+        })
+        .await;
+    assert!(route_label.is_err(), "{route_label:?}");
+
+    // deleting an org takes its labels with it and leaves the rest
+    sqlx::query("delete from orgs where id = $1")
+        .bind(acme.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let left = labels.list(LabelFilter::default()).await.unwrap();
+    assert_eq!(left.len(), 3, "{left:?}");
+    assert!(left.iter().all(|l| l.org_id != Some(acme.id)));
+}
