@@ -46,7 +46,7 @@ A variant target on a provider that is left out of the gateway snapshot is still
 
 An organization created after manifests were enforced (#3334) refuses a tool its server's manifest leaves out until it saves MCP settings, and one that existed before allows it. That marker (`orgs.mcp_enforce_manifests`) is not part of any saved setting, so the export writes it for each organization with no saved MCP settings, as `[[mcp_manifest_enforcement]]` with the organization's `org` slug and `enforce`. An organization that saved its settings follows them and has no entry.
 
-The import never makes an existing organization stricter. An entry with `enforce = false` relaxes the organization it names, which is how an import that creates the organization anew keeps one that was grandfathered; `enforce = true` is what a new organization already has and changes nothing on one that exists. An entry for an organization the database lacks is skipped.
+The import never makes an existing organization stricter. The import is the desired state, with this one exception. An entry with `enforce = false` relaxes the organization the import targets (`--org-slug`), which is how an import that creates the organization anew keeps one that was grandfathered, and the import logs it. `enforce = true` is what a new organization already has and changes nothing on one that exists. An entry for any other organization is skipped with a warning, so a staging file cannot loosen the same-named organization of a database it was not aimed at.
 
 ### Import warnings
 
@@ -124,9 +124,17 @@ rolter config export --org acme --output acme.toml
 rolter seed --org-slug acme --import acme.toml
 ```
 
-`--org <slug>` (`?org=<slug>` on the endpoint) writes that organization's providers, groups, routes, prompt templates and caps, and nothing of any other organization. Rows owned by no organization (those of the gateway's own config file) and the deployment-wide sections (model prices, currency, logging) are written as the whole-deployment export writes them. Importing the file into the same organization and exporting again gives the same bytes. A slug no organization has is a `400`.
+`--org <slug>` (`?org=<slug>` on the endpoint) writes these rows of that organization:
 
-Without the option the export keeps refusing while two organizations (or an organization and a readonly row) share a route name, a provider name or a provider or group slug. It answers `400` (`rolter config export` exits with an error), names each shared name and names the option, rather than writing a file that would not load.
+- its providers, provider groups, routes (with their variants) and published prompt templates;
+- the caps on the organization, its teams, projects, business units and customers, and on the keys minted in it (counted in the trailing comment, as keys are never exported);
+- a cap on a person when its `within` names the organization or one of its projects, or, with no `within`, when the person is a member of the organization (directly or through a team or project). With `--without-person-caps` none is written;
+- the keys of `[logging.payload_capture]` `virtual_key_ids` that were minted in it. A capture limited to other organizations' keys is written with `enabled = false`, since an empty list would capture every key;
+- its `[[mcp_manifest_enforcement]]` entry.
+
+Rows owned by no organization (those of the gateway's own config file) and the deployment-wide sections (model prices, currency, the rest of logging) are written as the whole-deployment export writes them. Logging and the capture policy are deployment-wide settings, so importing an organization's file applies them to the deployment. Importing the file into the same organization and exporting again gives the same bytes. A slug no organization has is a `400`.
+
+Without the option the export keeps refusing while two organizations (or an organization and a readonly row) share a route name, a provider name, a provider or group slug or a prompt template slug. `--org` cannot separate an organization from a readonly row, which lands in every organization's file: rename one of the two. It answers `400` (`rolter config export` exits with an error), names each shared name and names the option, rather than writing a file that would not load.
 
 ### Credentials never leave
 
@@ -203,6 +211,6 @@ curl -H "Authorization: Bearer $ROLTER_ADMIN_TOKEN" \
   http://localhost:4001/api/v1/config/export -o rolter.toml
 ```
 
-The response is `application/toml` with a `rolter.toml` download filename. The endpoint is whole-deployment and read-only for a superadmin or a security auditor ([deployment role](/security/rbac#deployment-roles)): one document spans every org's providers, groups and routes, so there is no tenancy scope narrow enough to delegate it.
+The response is `application/toml` with a `rolter.toml` download filename. The endpoint needs the `config_export:read` capability, which a superadmin and a security auditor ([deployment role](/security/rbac#deployment-roles)) hold. It is a deployment-level capability, not an organization one: even with `?org=` the document is one an organization admin cannot fetch.
 
 The CLI does not call this endpoint — it reads the store directly, the same way `rolter-seed` writes to it directly, so an export works during a bootstrap or an incident when the control plane is not serving. Both paths render through the same code, so they cannot drift.

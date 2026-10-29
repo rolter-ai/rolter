@@ -52,9 +52,14 @@ was one org per file rather than an `org` key on every row, which would need an
 importer spanning orgs that nothing asks for. `ExportOptions::org` (`rolter
 config export --org <slug>`, `?org=<slug>`) runs `scope_to_org` over the loaded
 config before the clash check: providers, groups and routes owned by that org
-or by none, the org's prompt templates (the `{org_id}:` half of their ids) and
-the caps `ScopeRefs::in_org` places under its slug. Prices, currency and
-logging are deployment-wide and stay. The clash check then runs on what is
+or by none, the org's prompt templates (the `{org_id}:` half of their ids), the
+caps `ScopeRefs::in_org` places in it (owner slugs are recorded for every
+entity by `insert_owned`; a person with no `within` by `OrgView::members`; a key
+by `OrgView::key_orgs`; an unknown scope in no file) and the payload-capture
+key ids of its own keys. Prices, currency and the rest of logging are
+deployment-wide and stay. Anything read by name must be keyed by the org too:
+`with_stored_variants` keys by (project, model), because a model name alone
+hands one org the other's variants. The clash check then runs on what is
 left, so an unscoped export of such a deployment still refuses and names the
 option. Test: `config_export::tests::round_trip::two_orgs_sharing_names_export_one_file_each`.
 
@@ -77,8 +82,11 @@ straight from `orgs` (`load_mcp_manifest_enforcement`) into
 `[[mcp_manifest_enforcement]]` (`org` slug, `enforce`). The field is bootstrap
 only: the store never fills it, so the snapshot does not carry it, and the
 representative snapshot fixture holds one entry only so the shape guard sees it.
-`import_mcp_manifest_enforcement` writes only `enforce = false` and only to a
-row that is still strict, because an import never makes an org stricter. It
+`import_mcp_manifest_enforcement` writes only `enforce = false`, only to the org
+the import targets and only when it is still strict, because an import never
+makes an org stricter; entries naming another org are skipped with a warning.
+`MergedConfigStore::load` clears the field, so a control plane started with an
+exported file does not ship it. It
 looks before it writes, since the `0153` trigger is a statement trigger that
 bumps `config_version` even for an update that matches no row. Tests:
 `config_export::tests::round_trip::the_mcp_manifest_marker_is_exported_for_an_org_without_settings`
