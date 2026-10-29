@@ -50,7 +50,7 @@ gets (see [One org never reaches another](#one-org-never-reaches-another-1844-18
    any variant) is a provider the key may use (`key_allows_route`); refused as
    `provider_not_allowed`.
 
-The per-target provider filter in `pick_untried` still runs during balancing;
+The per-target provider filter in `TargetPool::pick` still runs during balancing;
 the route gate only guarantees that at least one target is reachable, so the
 caller gets an explicit `403` rather than a failed target selection.
 
