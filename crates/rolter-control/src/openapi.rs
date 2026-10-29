@@ -4055,7 +4055,7 @@ fn routing_schemas(p: &Prim) -> Value {
             "properties": {
                 "id": uuid, "route_id": uuid,
                 "name": {"type": "string", "description": "the variant's name, unique in its route; request logs and metrics carry it"},
-                "weight": {"type": "integer", "minimum": 0, "description": "relative share of the requests that sample this variant as their primary. The API writes 1 or more; a 0 imported from rolter.toml takes no first attempts while another variant has a positive weight"},
+                "weight": {"type": "integer", "minimum": 0, "description": "relative share of the requests that sample this variant as their primary. A weight of 0 is accepted: the variant stays and takes no first attempts while another variant has a positive weight, and is still tried in fallback order (a set of only zeroes is sampled uniformly)"},
                 "position": {"type": "integer", "description": "the declared order, which is the fallback chain after the sampled primary"},
                 "params": {"type": "object", "description": "variant-scoped default inference params, layered over the route's"},
                 "targets": {
@@ -4090,7 +4090,7 @@ fn routing_schemas(p: &Prim) -> Value {
                         "required": ["name", "targets"],
                         "properties": {
                             "name": string,
-                            "weight": {"type": "integer", "default": 1, "minimum": 1},
+                            "weight": {"type": "integer", "default": 1, "minimum": 0, "description": "relative share of first attempts; 0 is accepted and takes none while another variant has a positive weight (the variant stays and is still tried in fallback order), and a set of only zeroes is sampled uniformly"},
                             "params": {"type": ["object", "null"], "description": "variant-scoped default inference params; omitted or null is none"},
                             "targets": {
                                 "type": "array",
@@ -4789,6 +4789,23 @@ mod tests {
             "these operations are documented but no router mounts them; \
              drop them from `operations()` in src/openapi.rs:\n{}",
             stale.join("\n")
+        );
+    }
+
+    // #3427: a variant weight of 0 is accepted, so the published schema must not
+    // refuse it to a client that validates against it
+    #[test]
+    fn a_variant_weight_of_zero_is_within_the_published_schema() {
+        let doc = document();
+        let schemas = &doc["components"]["schemas"];
+        assert_eq!(
+            schemas["SetRouteVariants"]["properties"]["variants"]["items"]["properties"]["weight"]
+                ["minimum"],
+            0
+        );
+        assert_eq!(
+            schemas["RouteVariant"]["properties"]["weight"]["minimum"],
+            0
         );
     }
 

@@ -213,7 +213,9 @@ fn bedrock_models_url(api_base: &str) -> String {
         let host = control.split('/').next().unwrap_or(control);
         return format!("https://bedrock.{host}/foundation-models");
     }
-    format!("{}/foundation-models", base.trim_end_matches("/v1"))
+    // a proxy in front of the documented `/openai/v1` base, or a bare `/v1`
+    let root = base.strip_suffix("/openai/v1").unwrap_or(base);
+    format!("{}/foundation-models", root.trim_end_matches("/v1"))
 }
 
 fn vertex_models_url(api_base: &str) -> String {
@@ -325,6 +327,14 @@ mod tests {
             "/",
         );
         assert_eq!(legacy, url);
+        // a proxy host is not rewritten onto AWS: only the version prefix goes
+        for base in [
+            "https://proxy.example/openai/v1",
+            "https://proxy.example/v1",
+        ] {
+            let (proxied, _) = probe_request(ProviderKind::Bedrock, base, "/");
+            assert_eq!(proxied, "https://proxy.example/foundation-models", "{base}");
+        }
 
         let (url, _) = probe_request(
             ProviderKind::Vertex,

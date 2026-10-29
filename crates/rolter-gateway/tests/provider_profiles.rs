@@ -204,7 +204,7 @@ fn messages() -> Value {
 async fn azure_openai_v1_authenticates_with_the_api_key_header() {
     replay(&Profile {
         kind: ProviderKind::AzureOpenai,
-        source: Source::Fetched("2026-10-27"),
+        source: Source::Fetched("2026-10-29"),
         doc: "https://learn.microsoft.com/en-us/azure/ai-foundry/openai/api-version-lifecycle",
         base: "/openai/v1",
         path: "/chat/completions",
@@ -243,7 +243,7 @@ async fn azure_openai_v1_authenticates_with_the_api_key_header() {
 async fn bedrock_runtime_authenticates_with_a_bearer_api_key_under_openai_v1() {
     replay(&Profile {
         kind: ProviderKind::Bedrock,
-        source: Source::Fetched("2026-10-27"),
+        source: Source::Fetched("2026-10-29"),
         doc: "https://docs.aws.amazon.com/bedrock/latest/userguide/inference-chat-completions.html",
         base: "/openai/v1",
         path: "/chat/completions",
@@ -276,8 +276,8 @@ async fn vertex_takes_an_oauth_access_token_as_a_bearer_under_the_project_endpoi
         path: "/chat/completions",
         // the access token (`gcloud auth print-access-token`) is the key
         auth: ("authorization", "Bearer "),
-        model: "google/gemini-2.0-flash",
-        request: json!({"model": "google/gemini-2.0-flash", "messages": messages()}),
+        model: "google/gemini-3.8-flash",
+        request: json!({"model": "google/gemini-3.8-flash", "messages": messages()}),
         response: json!({
             "choices": [{
                 "finish_reason": "stop",
@@ -286,7 +286,7 @@ async fn vertex_takes_an_oauth_access_token_as_a_bearer_under_the_project_endpoi
             }],
             "created": 1757000000,
             "id": "VertexExampleId",
-            "model": "google/gemini-2.0-flash",
+            "model": "google/gemini-3.8-flash",
             "object": "chat.completion",
             "usage": {"completion_tokens": 8, "prompt_tokens": 2, "total_tokens": 10}
         }),
@@ -332,9 +332,9 @@ async fn gemini_openai_shim_lives_under_v1beta_openai() {
         base: "/v1beta/openai",
         path: "/chat/completions",
         auth: ("authorization", "Bearer "),
-        model: "gemini-2.0-flash",
+        model: "gemini-3.8-flash",
         request: json!({
-            "model": "gemini-2.0-flash",
+            "model": "gemini-3.8-flash",
             "messages": [
                 {"role": "system", "content": "You are a helpful assistant."},
                 {"role": "user", "content": "Explain to me how AI works"}
@@ -347,7 +347,7 @@ async fn gemini_openai_shim_lives_under_v1beta_openai() {
                 "message": {"content": "AI works by...", "role": "assistant"}
             }],
             "created": 1757000000,
-            "model": "gemini-2.0-flash",
+            "model": "gemini-3.8-flash",
             "object": "chat.completion",
             "usage": {"completion_tokens": 12, "prompt_tokens": 14, "total_tokens": 26}
         }),

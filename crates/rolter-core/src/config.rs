@@ -1849,18 +1849,13 @@ impl ModelRoute {
     /// route has variants, because `forward_variants` never consults the
     /// classic pool then, and the pool otherwise (#3430).
     pub fn dialled_targets(&self) -> Box<dyn Iterator<Item = &Target> + '_> {
-        if self.variants.is_empty() {
-            Box::new(self.targets.iter())
-        } else {
-            Box::new(self.variants.iter().flat_map(|v| v.targets.iter()))
-        }
+        dialled_targets(&self.targets, &self.variants)
     }
 
     /// Whether this route has targets to dial and every one of them is
     /// restricted, so it could never serve a first dial.
     pub fn only_restricted_targets_dialled(&self) -> bool {
-        let mut dialled = self.dialled_targets().peekable();
-        dialled.peek().is_some() && dialled.all(Target::is_restricted)
+        only_restricted_targets_dialled(&self.targets, &self.variants)
     }
 
     /// Every problem with the `takes_over` sets of this route's targets, the
@@ -1870,17 +1865,15 @@ impl ModelRoute {
     /// ([`crate::failover::ALL_TARGETS_RESTRICTED`]) because it could never
     /// dial anything.
     pub fn takes_over_problems(&self) -> Vec<String> {
-        let mut problems = crate::failover::takes_over_problems(
+        // a class listed twice is judged over every target, but a route with
+        // variants dials only them, so "nothing to dial" is judged apart
+        let mut problems = crate::failover::duplicate_class_problems(
             &self.model,
             self.every_target()
                 .map(|t| (t.provider.as_str(), t.takes_over.as_slice())),
         );
-        // the shared helper judges the pool and the variants together; a
-        // route with variants dials only the variants, so it is re-judged here
-        let stranded = crate::failover::all_targets_restricted(&self.model);
-        problems.retain(|p| *p != stranded);
         if self.only_restricted_targets_dialled() {
-            problems.push(stranded);
+            problems.push(crate::failover::all_targets_restricted(&self.model));
         }
         problems
     }
@@ -1933,6 +1926,27 @@ impl ModelRoute {
         order.extend((0..n).filter(|&i| i != primary));
         order
     }
+}
+
+/// The targets the data plane dials first for a route with this pool and
+/// these variants: the variants' targets when there are any, the pool
+/// otherwise (#3430). The store's snapshot assembly applies the same rule
+/// before the route is built.
+pub fn dialled_targets<'a>(
+    pool: &'a [Target],
+    variants: &'a [Variant],
+) -> Box<dyn Iterator<Item = &'a Target> + 'a> {
+    if variants.is_empty() {
+        Box::new(pool.iter())
+    } else {
+        Box::new(variants.iter().flat_map(|v| v.targets.iter()))
+    }
+}
+
+/// Whether there are targets to dial and every one is restricted.
+pub fn only_restricted_targets_dialled(pool: &[Target], variants: &[Variant]) -> bool {
+    let mut dialled = dialled_targets(pool, variants).peekable();
+    dialled.peek().is_some() && dialled.all(Target::is_restricted)
 }
 
 /// A weighted routing variant: a named, weighted bundle of ordered targets plus
@@ -9939,6 +9953,42 @@ mod tests {
             "{:?}",
             cfg.validate_snapshot()
         );
+    }
+
+    /// #3431: pruning the omitted provider's ordinary target can leave a pool of
+    /// only fallbacks, which `validate_snapshot` would refuse for every tenant
+    #[test]
+    fn sanitize_drops_a_route_whose_ordinary_target_was_pruned_with_its_provider() {
+        let mut cfg = fleet_with_an_omitted_provider(
+            r#"
+            [[routes]]
+            model = "m"
+            [[routes.targets]]
+            provider = "bad"
+            [[routes.targets]]
+            provider = "openai"
+            takes_over = ["throttled"]
+
+            [[routes]]
+            model = "ok"
+            [[routes.targets]]
+            provider = "openai"
+            "#,
+        );
+        assert!(cfg.validate_snapshot().is_err(), "precondition");
+
+        let warnings = cfg.sanitize_for_snapshot();
+
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains("route 'm'") && w.contains("all_targets_restricted")),
+            "{warnings:?}"
+        );
+        let models: Vec<_> = cfg.routes.iter().map(|r| r.model.as_str()).collect();
+        assert_eq!(models, ["ok"]);
+        assert_eq!(cfg.validate_snapshot(), Ok(()));
+        assert!(cfg.validate().is_ok(), "{:?}", cfg.validate());
     }
 
     /// #2950: the loader left the provider out before the sanitizer ever saw

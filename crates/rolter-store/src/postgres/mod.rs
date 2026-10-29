@@ -993,12 +993,8 @@ impl PostgresConfigStore {
             // anything, and one such route would fail validation of the whole
             // snapshot, so it is left out instead (#1584). a route with
             // variants dials only them, so its pool does not count (#3430)
-            let dialled: Vec<&Target> = if variants.is_empty() {
-                targets.iter().collect()
-            } else {
-                variants.iter().flat_map(|v| v.targets.iter()).collect()
-            };
-            let stranded = !dialled.is_empty() && dialled.iter().all(|t| t.is_restricted());
+            let stranded =
+                rolter_core::config::only_restricted_targets_dialled(&targets, &variants);
             if stranded {
                 let problem = format!(
                     "route '{}' omitted from the snapshot: {}",
