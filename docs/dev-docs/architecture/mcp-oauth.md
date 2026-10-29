@@ -236,7 +236,7 @@ after the caller is authenticated and before anything is forwarded.
   mcp-go, go-sdk and the GitHub MCP server) matches keys case-insensitively and
   keeps the last. A message, or its `params`, that repeats a key once ASCII case
   is folded (plus U+017F to `s` and U+212A to `k`) is refused `403`
-  `mcp_tool_denied` whatever the failure policy says, and the refused
+  `mcp_tool_denied`, and the refused
   `tools/call` requests are logged like any other refusal (#3381). For the same
   reason the policy reads `method`, `params`, `name` and `id` the way such a
   decoder would, whatever their case, so a lone `Method` is judged rather than
@@ -308,7 +308,10 @@ trigger); an organization with no row is absent and gets the defaults.
   own promise never to let a refused tool through. It is **deprecated, not
   removed**: the API and the config file accept and return it, the snapshot
   still carries `McpOrgSettingsConfig::fail_open` at format 1, and the gateway
-  ignores it; the dashboard shows it as having no effect. Removal is tracked for
+  ignores it; the dashboard shows it as having no effect. The snapshot always
+  carries `fail_open = false` (`load_mcp_settings` no longer reads the column),
+  so a gateway that predates the change refuses an unreadable body too during
+  a rolling upgrade, while the API and the export keep the stored value. Removal is tracked for
   2.0.0. It never had a say over an upstream that fails. The guardrail-provider
   and plugin `failure_mode` (an unreachable engine) is a different setting and is
   unchanged.
