@@ -20,6 +20,13 @@ use super::support::{fetch_optional_or_not_found, require_affected, store_err};
 const LABEL_COLUMNS: &str = "id, subject_type, subject_id, org_id, key, value, source, \
     observed_at, observation, created_at, updated_at";
 
+/// The expression list of `labels_subject_org_key_idx` (`0228_labels_org_id.sql`,
+/// #3476): one label of a key per subject, source and organization, a null
+/// organization counted as one owner. An `on conflict` target must name this
+/// list exactly for Postgres to infer the index.
+const LABEL_UNIQUE_KEY: &str = "subject_type, \
+    coalesce(org_id, '00000000-0000-0000-0000-000000000000'::uuid), subject_id, source, key";
+
 /// the kinds of thing a label can be attached to, as stored in `subject_type`
 pub const LABEL_SUBJECT_TYPES: [&str; 4] = ["provider", "provider_group", "route", "model"];
 
@@ -238,7 +245,7 @@ impl LabelRepo<'_> {
         sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "insert into labels (subject_type, subject_id, key, value, source, org_id)
              values ($1, $2, $3, $4, 'custom', $5)
-             on conflict (subject_type, org_id, subject_id, source, key) do nothing
+             on conflict ({LABEL_UNIQUE_KEY}) do nothing
              returning {LABEL_COLUMNS}"
         )))
         .bind(input.subject_type)
@@ -290,7 +297,7 @@ impl LabelRepo<'_> {
         sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "insert into labels (subject_type, subject_id, key, value, source, observation, observed_at)
              values ($1, $2, $3, $4, 'auto', $5, $6)
-             on conflict (subject_type, org_id, subject_id, source, key) do update
+             on conflict ({LABEL_UNIQUE_KEY}) do update
                 set value = excluded.value,
                     observation = excluded.observation,
                     observed_at = excluded.observed_at,

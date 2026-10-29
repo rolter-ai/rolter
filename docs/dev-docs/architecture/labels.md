@@ -70,9 +70,12 @@ serve a `gpt-4o` (#1857). `labels.org_id` (`0228_labels_org_id.sql`, #3476)
 names the org whose model a model label is on, and is null for a
 deployment-wide label: every row from before the column, and every label on a
 config-file model. A check constraint keeps it null on the other subject types.
-Uniqueness is `unique nulls not distinct (subject_type, org_id, subject_id,
-source, key)`, so the deployment-wide labels count as one owner (Postgres 15 or
-later). `LabelRepo::list_models_for_org` is the lookup: the org's own rows and
+Uniqueness is the unique index `labels_subject_org_key_idx` on
+`(subject_type, coalesce(org_id, <nil uuid>), subject_id, source, key)`, so the
+deployment-wide labels count as one owner on every Postgres version (`unique
+nulls not distinct` would need 15). Every `on conflict` on the table names that
+same expression list (`LABEL_UNIQUE_KEY` in `repo/labels.rs`), or Postgres
+cannot infer the index and the write fails. `LabelRepo::list_models_for_org` is the lookup: the org's own rows and
 each deployment-wide row whose `(subject_id, source, key)` it has not set,
 through `distinct on ... order by org_id nulls last`. `POST
 /api/v1/model-labels` takes `org_id` and refuses one that serves no route of

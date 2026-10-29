@@ -23,11 +23,15 @@ alter table labels
 
 -- the uniqueness gains the organization, with null as one value: two
 -- deployment-wide labels of one key on one model still collide, while org A's
--- and org B's `gpt-4o` may each carry their own
+-- and org B's `gpt-4o` may each carry their own. an index on an expression
+-- rather than `unique nulls not distinct`, which needs Postgres 15: the nil
+-- uuid stands in for "no organization", and no organization is issued it.
+-- every `on conflict` on the table names this same expression list
+-- (`LabelRepo::create_custom`, `LabelRepo::upsert_auto`)
 alter table labels drop constraint if exists labels_unique_per_subject;
-alter table labels
-    add constraint labels_unique_per_subject
-        unique nulls not distinct (subject_type, org_id, subject_id, source, key);
+create unique index if not exists labels_subject_org_key_idx on labels
+    (subject_type, coalesce(org_id, '00000000-0000-0000-0000-000000000000'::uuid),
+     subject_id, source, key);
 
 create index if not exists labels_org_subject_idx
     on labels (org_id, subject_type, subject_id)
