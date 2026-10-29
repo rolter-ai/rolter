@@ -132,6 +132,13 @@ export interface AnalyticsTimeseriesPoint {
 }
 
 export interface AnalyticsByModelRow {
+  /**
+   * the organization whose traffic the row counts, `""` for a request no
+   * organization owns. A row is one organization's model (#3486): two
+   * organizations may each have a route of one name (#1857). Absent from a
+   * control plane that predates the split, which merged them
+   */
+  org_id?: string;
   model: string;
   requests: number | string;
   tokens: number | string;

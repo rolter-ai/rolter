@@ -180,6 +180,7 @@
       "to": "To",
       "endBeforeStart": "The end day is before the start day. Pick an end on or after the start.",
       "rangeLabel": "{{from}} – {{to}}",
+      "countedIn": "Days are counted in {{zone}}, the zone the charts use.",
       "pickBothDays": "Pick a start day and an end day."
     },
     "sampledLog": {
@@ -382,6 +383,8 @@
         "invalid_field": "One of the values is not accepted. Correct it and try again.",
         "invalid_query": "The filter is not valid.",
         "invalid_time_bound": "The time range is not valid.",
+        "time_bound_out_of_range": "The time range must fall between the year 2000 and tomorrow.",
+        "too_many_buckets": "The time range is too long to chart at this detail. Pick a shorter range.",
         "last_org_admin": "This is the organization's last admin, so the grant cannot be revoked. Make someone else an admin first, or ask a superadmin.",
         "last_superadmin": "This is the last superadmin, so it cannot be removed or demoted.",
         "mfa_enrolment_required": "Your organization requires a second factor, and this control plane cannot enrol one. Ask an operator.",
@@ -5597,6 +5600,8 @@
   },
   "labels": {
     "labelsOf": "Labels on {{name}}",
+    "inheritedHeading": "Deployment-wide labels",
+    "inheritedExplainer": "These apply to every organization's {{name}} that has not set a label of the same key. Adding one here overrides it for this organization only.",
     "filter": "Filter by label",
     "sheetTitle": "Labels",
     "customHeading": "Your labels",
@@ -6335,7 +6340,7 @@
       "csv": "Export CSV",
       "pending": "Exporting…",
       "downloaded": "Export downloaded. Its name gives the window and currency; a row marked partial holds unpriced requests.",
-      "saved": "Export saved to the file you chose",
+      "saved": "Export saved to the file you chose. Its suggested name gives the window and currency; a row marked partial holds unpriced requests.",
       "cancelled": "Export cancelled. Nothing was saved.",
       "received": "{{size}} MB received",
       "cancel": "Cancel the {{what}}",

@@ -4198,13 +4198,135 @@ export const ExportStreamsToTheFileThePersonChose: Story = {
     );
     await expect(dialog.files).toHaveLength(1);
     const [file] = dialog.files;
-    await expect(file!.suggestedName).toBe("request-log.csv");
+    // the name the server gives, built before the request left (#3498)
+    await expect(file!.suggestedName).toMatch(/^request-log_\d{4}-\d{2}-\d{2}_to_now_USD\.csv$/);
     await expect(savedText(file!)).toBe("ts,model\r\n1,a\r\n");
     await expect(file!.chunks).toHaveLength(2);
     await expect(file!.closed).toBe(true);
     await expect(file!.aborted).toBe(false);
     // written to the file, not offered as a download
     await expect(names).toHaveLength(0);
+  },
+};
+
+/**
+ * The name the server gives an export from the bounds it was sent, as
+ * `analytics_export.rs` builds it: each bound's date, `now` for an open end,
+ * and the currency.
+ */
+const serverName = (url: string, currency: string) => {
+  const params = new URL(url, "http://localhost").searchParams;
+  const day = (bound: string | null, unset: string) => (bound ? bound.slice(0, 10) : unset);
+  return `request-log_${day(params.get("since"), "7-days-ago")}_to_${day(params.get("until"), "now")}_${currency}.csv`;
+};
+
+/** the suggestion the save dialog was given, and the name the server would give the same export */
+async function suggestedAndServerName(canvasElement: HTMLElement, stub: Recorder) {
+  const canvas = within(canvasElement);
+  const dialog = stubSavePicker();
+  await dialog.within(async () => {
+    await userEvent.click(await canvas.findByRole("button", { name: "Export CSV" }));
+    await expectToast(canvasElement, /Its suggested name gives the window and currency/, "success");
+  });
+  const call = stub.calls.find((c) => c.url.includes("/invocations/export"))!;
+  return { suggested: dialog.files[0]!.suggestedName, server: serverName(call.url, "EUR") };
+}
+
+let namedWindowExport: Recorder;
+/**
+ * #3498: the save dialog opens before the request leaves, so it cannot wait for
+ * the server's name. It suggests the same name, built from the bounds the
+ * export sends: for last month, its first day and the first of this month, in
+ * the deployment's currency.
+ */
+export const TheSaveDialogSuggestsTheServersNameForANamedWindow: Story = {
+  parameters: { address: "/logs?window=last-month" },
+  render: () => {
+    namedWindowExport = recording(
+      scoped(async (input) =>
+        String(input).includes("/analytics/invocations/export")
+          ? chunkedCsv([new TextEncoder().encode("ts\r\n")], "end")
+          : ((await withLogs(ROWS, "EUR")(input)) as Response),
+      ),
+    );
+    return (
+      <Harness fetchStub={namedWindowExport.stub}>
+        <Toasted>
+          <Logs />
+        </Toasted>
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const { suggested, server } = await suggestedAndServerName(canvasElement, namedWindowExport);
+    await expect(suggested).toBe(server);
+    await expect(suggested).toMatch(
+      /^request-log_\d{4}-\d{2}-\d{2}_to_\d{4}-\d{2}-\d{2}_EUR\.csv$/,
+    );
+  },
+};
+
+let customRangeExport: Recorder;
+/** and for a custom range, its first day and the day after its last, which `until` names */
+export const TheSaveDialogSuggestsTheServersNameForACustomRange: Story = {
+  parameters: { address: "/logs?window=custom&since=2026-10-01&until=2026-10-07" },
+  render: () => {
+    customRangeExport = recording(
+      scoped(async (input) =>
+        String(input).includes("/analytics/invocations/export")
+          ? chunkedCsv([new TextEncoder().encode("ts\r\n")], "end")
+          : ((await withLogs(ROWS, "EUR")(input)) as Response),
+      ),
+    );
+    return (
+      <Harness fetchStub={customRangeExport.stub}>
+        <Toasted>
+          <Logs />
+        </Toasted>
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const { suggested, server } = await suggestedAndServerName(canvasElement, customRangeExport);
+    await expect(suggested).toBe(server);
+    // midnight on the 1st and on the 8th in the chart zone, dated as sent
+    await expect(suggested).toMatch(/^request-log_2026-(09-30|10-01)_to_2026-10-0[78]_EUR\.csv$/);
+  },
+};
+
+/**
+ * Until the deployment's currency is known the dashboard cannot build the
+ * server's name, and a guessed currency would name the file wrongly, so the
+ * dialog suggests the plain name and leaves the rest to the server (#3498).
+ */
+export const WithNoCurrencyKnownTheSaveDialogSuggestsThePlainName: Story = {
+  render: () => {
+    const stub = recording(
+      scoped(async (input) => {
+        const path = new URL(String(input), "http://localhost").pathname;
+        if (path === "/api/v1/currency") return json({ error: { message: "down" } }, 503);
+        if (path.includes("/analytics/invocations/export")) {
+          return chunkedCsv([new TextEncoder().encode("ts\r\n")], "end");
+        }
+        return (await withLogs(ROWS)(input)) as Response;
+      }),
+    );
+    return (
+      <Harness fetchStub={stub.stub}>
+        <Toasted>
+          <Logs />
+        </Toasted>
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const dialog = stubSavePicker();
+    await dialog.within(async () => {
+      await userEvent.click(await canvas.findByRole("button", { name: "Export CSV" }));
+      await expectToast(canvasElement, /Export saved to the file you chose/, "success");
+    });
+    await expect(dialog.files[0]!.suggestedName).toBe("request-log.csv");
   },
 };
 

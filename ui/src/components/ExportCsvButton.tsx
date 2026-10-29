@@ -40,9 +40,12 @@ const PROGRESS_EVERY_MS = 1000;
  * Access API) streams the body there as it arrives, so a request log of a
  * million rows is never held in the tab (#3434); it asks where to save first,
  * under `fallbackName`, since the dialog needs the click and the server's own
- * name is only known once the request has answered. Any other browser gathers
- * the body and downloads it under the server's name, as before. Either way the
- * button shows the bytes received and a Cancel that stops the request.
+ * name is only known once the request has answered. A screen passes the name
+ * the server will give as a function, built with `exportFileName` from the
+ * bounds it sends and read at the click, so both ways of saving offer one name
+ * (#3498). Any other browser gathers the body and downloads it under the
+ * server's name, as before. Either way the button shows the bytes received and
+ * a Cancel that stops the request.
  */
 export function ExportCsvButton({
   run,
@@ -52,8 +55,12 @@ export function ExportCsvButton({
   toDisk = false,
 }: {
   run: (signal: AbortSignal) => Promise<AnalyticsExportStream>;
-  /** used only if the server sent no file name, and as the suggestion when saving to disk */
-  fallbackName: string;
+  /**
+   * used only if the server sent no file name, and as the suggestion when
+   * saving to disk; a function is read when the button is pressed, so a rolling
+   * window is named for the moment the export leaves
+   */
+  fallbackName: string | (() => string);
   /** the translated noun a failure names, such as "request log export" */
   what: string;
   disabled?: boolean;
@@ -87,9 +94,10 @@ export function ExportCsvButton({
   }, []);
   const exportFile = useMutation<Outcome>({
     mutationFn: async () => {
+      const suggested = typeof fallbackName === "function" ? fallbackName() : fallbackName;
       let disk: DownloadSink | null = null;
       if (toDisk && diskSaveSupported()) {
-        disk = await chooseDiskSink(fallbackName);
+        disk = await chooseDiskSink(suggested);
         // the dialog was closed: nothing was asked of the server
         if (!disk) return "dismissed";
       }
@@ -107,7 +115,7 @@ export function ExportCsvButton({
           signal: abort.signal,
           onProgress: progress,
         });
-        downloadBlob(file.name ?? fallbackName, blob);
+        downloadBlob(file.name ?? suggested, blob);
         return "downloaded";
       } catch (error) {
         // pump has dropped the file already when it failed; a request that
@@ -124,8 +132,9 @@ export function ExportCsvButton({
       if (outcome === "cancelled") {
         toast.push({ tone: "info", title: t("analytics.export.cancelled") });
       } else {
-        // the disk path saves under the name the person picked, so the sentence
-        // about the server's file name is only for the download
+        // both paths offer the name the server gives (#3498), so both say what
+        // it carries; the disk path's says it was the suggestion, since the
+        // person may have typed another
         toast.push({
           tone: "success",
           title: t(outcome === "saved" ? "analytics.export.saved" : "analytics.export.downloaded"),

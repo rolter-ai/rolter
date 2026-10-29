@@ -105,7 +105,8 @@ const NARROWED: CurrencySettings = {
 };
 
 /** a by-model rollup row; the traffic a price is picked from, and what is unpriced */
-const traffic = (model: string, unpriced = 0) => ({
+const traffic = (model: string, unpriced = 0, org_id = "") => ({
+  org_id,
   model,
   requests: 40,
   unpriced_requests: unpriced,
@@ -287,6 +288,38 @@ export const ListsModelsWithUnpricedTraffic: Story = {
       expect(form.getByRole("combobox", { name: "Model name" })).toHaveValue("qwen-max"),
     );
     await expect(form.getByLabelText("Input price per Mtok")).toHaveValue(null);
+  },
+};
+
+/**
+ * #3486: the traffic read answers one row per organization's model. A price is
+ * per name, so two organizations' unpriced `gpt-4o` is one model to price, with
+ * their requests added up.
+ */
+export const TwoOrganizationsUnpricedModelIsOneRow: Story = {
+  render: () => (
+    <Harness
+      fetchStub={withCurrency(
+        CONFIGURED,
+        [],
+        [
+          traffic("gpt-4o", 30, "org-1"),
+          traffic("gpt-4o", 12, "org-2"),
+          traffic("qwen-max", 5, "org-1"),
+        ],
+      )}
+    >
+      <Pricing />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const list = within(await canvas.findByRole("table", { name: "Models with unpriced traffic" }));
+    await expect(list.getAllByText("gpt-4o")).toHaveLength(1);
+    await expect(list.getByText("42")).toBeInTheDocument();
+    await expect(
+      canvas.getByRole("heading", { name: "2 models have traffic and no price" }),
+    ).toBeVisible();
   },
 };
 
