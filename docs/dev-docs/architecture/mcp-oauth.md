@@ -226,9 +226,8 @@ after the caller is authenticated and before anything is forwarded.
   `Content-Encoding` is end to end, so an upstream that honours it would run a tool
   the policy never saw. A `POST` to a governed server whose `Content-Encoding` is
   anything but `identity` (in any header line or comma-separated value) is refused
-  `415` `mcp_request_unreadable` before it is parsed, whatever `fail_open`
-  says: that setting covers a body the relay cannot read through no fault of the
-  client, not one the client chose to compress. There is deliberately no decoder:
+  `415` `mcp_request_unreadable` before it is parsed, like any other body the
+  relay cannot judge (see the failure policy below). There is deliberately no decoder:
   MCP clients do not compress requests, and one on this path would be a
   decompression-bomb surface for a shape nobody sends. A server no group or manifest
   governs is not affected.
@@ -237,7 +236,7 @@ after the caller is authenticated and before anything is forwarded.
   mcp-go, go-sdk and the GitHub MCP server) matches keys case-insensitively and
   keeps the last. A message, or its `params`, that repeats a key once ASCII case
   is folded (plus U+017F to `s` and U+212A to `k`) is refused `403`
-  `mcp_tool_denied` whatever the failure policy says, and the refused
+  `mcp_tool_denied`, and the refused
   `tools/call` requests are logged like any other refusal (#3381). For the same
   reason the policy reads `method`, `params`, `name` and `id` the way such a
   decoder would, whatever their case, so a lone `Method` is judged rather than
@@ -291,10 +290,31 @@ trigger); an organization with no row is absent and gets the defaults.
   still decides for itself, which is how an admin opts out. The settings read
   for an org with no row reports `allow_unlisted_tools` from the same marker.
   This sits beside the tool-group rule and both must pass.
-- **Failure policy.** `fail_open` / `fail_closed` governs a body the policy
-  cannot parse (the only failure of the policy check itself); a body with a
-  `Content-Encoding` is not that case and is refused regardless. It never lets a
-  call to a refused tool through, and it has no say over an upstream that fails.
+- **Failure policy (#3527).** The relay forwards only a body it has judged. On a
+  governed server (`Rules::any`), `mcp_proxy` strips a leading UTF-8 byte-order
+  mark (`mcp_policy::without_bom`; RFC 8259 lets a parser ignore one), judges the
+  rest and forwards the stripped bytes, so the upstream receives exactly what was
+  judged. Any other body `serde_json` rejects is `Read::Unreadable`, and
+  `evaluate_read` answers it `Verdict::Unreadable`, `400`
+  `mcp_request_unreadable`: UTF-16 and UTF-32 (RFC 8259 requires UTF-8 between
+  systems), `NaN` and `Infinity`, trailing commas and comments, nesting past
+  `serde_json`'s recursion limit. Each is a parser differential: Python's
+  `json.loads` takes `NaN` and, on bytes, auto-detects UTF-16/32, and the Python
+  `mcp` SDK 2.3.0 ran a `tools/call` carrying `NaN` for a tool the organization
+  refused when the relay forwarded it under `fail_open`. MCP clients send strict
+  JSON, so an honest client loses nothing. The organization setting
+  `fail_open` (`default_failure_mode` in the API, the config file and
+  `mcp_gateway_settings`) used to forward such a body unchecked, which broke its
+  own promise never to let a refused tool through. It is **deprecated, not
+  removed**: the API and the config file accept and return it, the snapshot
+  still carries `McpOrgSettingsConfig::fail_open` at format 1, and the gateway
+  ignores it; the dashboard shows it as having no effect. The snapshot always
+  carries `fail_open = false` (`load_mcp_settings` no longer reads the column),
+  so a gateway that predates the change refuses an unreadable body too during
+  a rolling upgrade, while the API and the export keep the stored value. Removal is tracked for
+  2.0.0. It never had a say over an upstream that fails. The guardrail-provider
+  and plugin `failure_mode` (an unreachable engine) is a different setting and is
+  unchanged.
 - **Transport.** The server row is authoritative at request time; the org
   `default_transport` is applied by `create_server` when the request names none.
 

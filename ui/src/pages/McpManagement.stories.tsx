@@ -652,6 +652,37 @@ export const SettingsSavesChanges: Story = {
   },
 };
 
+// the deprecated failure policy (#3527) is shown as having no effect and
+// offered as no choice, and a save sends the stored value back untouched
+const failingOpenSaves = recording(async () =>
+  json({ ...SETTINGS, default_failure_mode: "fail_open" }),
+);
+export const SettingsFailurePolicyHasNoEffect: Story = {
+  render: () => (
+    <Harness fetchStub={routed({ settings: failingOpenSaves.stub })}>
+      <Toasts>
+        <McpSettings />
+      </Toasts>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const policy = await canvas.findByRole("group", { name: "Default failure policy" });
+    await expect(within(policy).getByText("No effect")).toBeVisible();
+    await expect(within(policy).getByText(/refuses every request it cannot inspect/)).toBeVisible();
+    await expect(canvas.queryByRole("combobox", { name: "Default failure policy" })).toBeNull();
+    await expect(canvas.queryByText("Fail open")).toBeNull();
+    await userEvent.click(canvas.getByRole("button", { name: "Save MCP settings" }));
+    const sent = await failingOpenSaves.expectSentBody<{ default_failure_mode: string }>(
+      "PUT",
+      "/mcp/settings",
+    );
+    await expect(sent.default_failure_mode).toBe("fail_open");
+    await waitFor(() =>
+      expect(within(document.body).getByText("MCP settings saved")).toBeVisible(),
+    );
+  },
+};
 // a tool group is its own resource, so the catalog's gates say nothing about it
 export const ToolGroupsGatedForMember: Story = {
   render: () => (

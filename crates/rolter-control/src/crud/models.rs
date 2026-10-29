@@ -81,7 +81,9 @@ async fn list_models(
             route_targets: r.targets.clone(),
             org_id: r.tenancy.as_ref().map(|t| t.org_id.clone()),
             project_id: r.tenancy.as_ref().and_then(|t| t.project_id.clone()),
-            source: if state.config_owned.models.contains(&r.model) {
+            // an org's route that shares a name with a file route is the
+            // org's, stored and editable (#3516)
+            source: if state.config_owned.owns_model(r.tenancy.as_ref(), &r.model) {
                 "config"
             } else {
                 "db"
@@ -113,9 +115,23 @@ async fn delete_model(
     super::Query(query): super::Query<DeleteModelQuery>,
 ) -> ApiResult<StatusCode> {
     authorize_superadmin(&principal, superadmin_cap!("model", Delete))?;
-    require_not_config_owned(&state.config_owned.models, &model, "model")?;
     let routes = RouteRepo(pool(&state));
-    if query.org_id.is_none() && routes.orgs_holding_model(&model).await? > 1 {
+    let holders = routes.orgs_holding_model(&model).await?;
+    // only the file's own row is the file's: an org's stored route that shares
+    // the name with a file route is the org's to delete (#3516)
+    match query.org_id {
+        Some(org) => super::require_row_not_config_owned(
+            &state.config_owned.model_rows,
+            org,
+            &model,
+            "model",
+        )?,
+        None if holders == 0 => {
+            require_not_config_owned(&state.config_owned.models, &model, "model")?
+        }
+        None => {}
+    }
+    if query.org_id.is_none() && holders > 1 {
         return Err(super::ApiError::InvalidQuery(format!(
             "more than one organization has a model named '{model}'; name the one to delete \
              with org_id"

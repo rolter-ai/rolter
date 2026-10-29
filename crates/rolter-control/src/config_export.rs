@@ -3057,6 +3057,115 @@ model = "gpt-4o"
             assert_eq!(first, second, "re-importing the export changed it");
         }
 
+        /// An org's route and provider that a control plane's config file later
+        /// repeats with no org (#3516): the merged store serves both, the org's
+        /// rows for its keys, lists the overlap, and the per-org export writes
+        /// the org's rows, so re-importing it leaves them as they were.
+        #[tokio::test]
+        async fn an_org_row_a_bootstrap_file_repeats_is_served_and_exported() {
+            use super::ExportOptions;
+            use rolter_core::GatewayConfig;
+
+            let Some(db) = scratch_db().await else {
+                return;
+            };
+            let pool = db.pool().clone();
+            let dir = tempdir("bootstrap-shadow");
+            let (org_id, project_id) = bootstrap_named_org(&pool, "shadower").await;
+            let org_file = dir.join("org.toml");
+            let org_rows = |base: &str| {
+                format!(
+                    r#"
+[[providers]]
+name = "openai"
+slug = "openai"
+kind = "openai"
+api_base = "{base}"
+api_key_env = "OPENAI_API_KEY"
+
+[[routes]]
+model = "gpt-4o"
+[[routes.targets]]
+provider = "openai"
+model = "gpt-4o"
+"#
+                )
+            };
+            std::fs::write(&org_file, org_rows("https://org.example.com")).unwrap();
+            crate::seed::import_bootstrap_toml(&pool, org_id, project_id, &org_file)
+                .await
+                .unwrap();
+
+            // the bootstrap file gains the same names afterwards, with no org
+            let bootstrap =
+                GatewayConfig::from_toml_str(&org_rows("https://file.example.com")).unwrap();
+            let store = rolter_store::MergedConfigStore::new(
+                bootstrap,
+                std::sync::Arc::new(PostgresConfigStore::new(pool.clone())),
+            );
+            let served = store.load().await.unwrap();
+            let org = org_id.to_string();
+            let mut providers = rolter_core::namespace::Namespaced::new();
+            for p in &served.providers {
+                let owner = rolter_core::namespace::org_of(p.tenancy.as_ref());
+                providers
+                    .insert(owner, &p.name, p.api_base.as_str())
+                    .unwrap();
+            }
+            assert_eq!(
+                providers.get(&org, "openai"),
+                Some(&"https://org.example.com")
+            );
+            assert_eq!(
+                providers.get("", "openai"),
+                Some(&"https://file.example.com")
+            );
+            let mut routes = rolter_core::namespace::Namespaced::new();
+            for r in &served.routes {
+                let owner = rolter_core::namespace::org_of(r.tenancy.as_ref());
+                routes.insert(owner, &r.model, owner.to_string()).unwrap();
+            }
+            assert_eq!(routes.get(&org, "gpt-4o"), Some(&org));
+            assert_eq!(routes.get("", "gpt-4o"), Some(&String::new()));
+
+            let problems = store.load_problems().await.unwrap();
+            let shadows: Vec<_> = problems
+                .iter()
+                .filter(|line| line.contains("shadows the readonly"))
+                .collect();
+            assert_eq!(shadows.len(), 2, "{problems:?}");
+            assert!(
+                shadows
+                    .iter()
+                    .any(|line| line.contains(&format!("organization {org}'s route 'gpt-4o'"))),
+                "{shadows:?}"
+            );
+
+            let options = ExportOptions {
+                org: Some("shadower".to_string()),
+                ..Default::default()
+            };
+            let document = super::export_document(&pool, &served, &options)
+                .await
+                .unwrap();
+            assert!(document.contains("https://org.example.com"), "{document}");
+            assert!(!document.contains("https://file.example.com"), "{document}");
+
+            // re-importing the export leaves the org's own row as it was
+            let exported = dir.join("export.toml");
+            std::fs::write(&exported, &document).unwrap();
+            crate::seed::import_bootstrap_toml(&pool, org_id, project_id, &exported)
+                .await
+                .unwrap();
+            let reloaded = store.load().await.unwrap();
+            let org_provider = reloaded
+                .providers
+                .iter()
+                .find(|p| p.tenancy.is_some() && p.name == "openai")
+                .unwrap();
+            assert_eq!(org_provider.api_base, "https://org.example.com");
+        }
+
         /// With person caps left out the file names no account, and the trailing
         /// comment counts them (#3396). The default still writes them (#3305).
         #[tokio::test]
