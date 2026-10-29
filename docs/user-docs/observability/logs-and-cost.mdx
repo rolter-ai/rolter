@@ -385,7 +385,7 @@ currency).
 
 ### Cache hits and overall p95
 
-`GET /api/v1/analytics/summary` also reports `cache_hit_requests`, the requests answered from rolter's response cache (a provider's prompt cache is not counted here; it shows in each row's `cache_read_tokens`), `cache_read_tokens`, the prompt tokens the provider served from its own prompt cache, beside `prompt_tokens` (a read share is the first over the second, and both are scaled by the sampling weight), and `p95_latency_ms`, the 95th percentile of latency over the whole window. The hit count is scaled by the log's sampling weight like every other count, so the response-cache hit rate is `cache_hit_requests / requests`; the percentile is weighted by the same sample weight (each kept row counts as the requests it stands for), so a log whose sample rate changed inside the window, or a route sampled at another rate, does not over-represent its lightly sampled traffic. The by-model `p50_latency_ms` and `p95_latency_ms` are weighted the same way; `avg_latency_ms` is weighted the same way, the sum of latency times weight over the sum of the weights, and is `0` for a window with no rows. The dashboard home shows both.
+`GET /api/v1/analytics/summary` also reports `cache_hit_requests`, the requests answered from rolter's response cache (a provider's prompt cache is not counted here; it shows in each row's `cache_read_tokens`), `cache_read_tokens`, the prompt tokens the provider served from its own prompt cache, beside `prompt_tokens` and `cache_reported_prompt_tokens`, the prompt tokens of the requests whose provider stated its cache reads at all, zero included (a read share is the cache reads over that, so a provider that does not report them does not dilute it; all three are scaled by the sampling weight), `cache_unmeasured_requests`, the requests with a prompt whose provider did not state them (#3410; both are left out while `request_logs` lacks `cache_usage_reported`), and `p95_latency_ms`, the 95th percentile of latency over the whole window. The hit count is scaled by the log's sampling weight like every other count, so the response-cache hit rate is `cache_hit_requests / requests`; the percentile is weighted by the same sample weight (each kept row counts as the requests it stands for), so a log whose sample rate changed inside the window, or a route sampled at another rate, does not over-represent its lightly sampled traffic. The by-model `p50_latency_ms` and `p95_latency_ms` are weighted the same way; `avg_latency_ms` is weighted the same way, the sum of latency times weight over the sum of the weights, and is `0` for a window with no rows. The dashboard home shows both.
 
 ### Withheld and unknown-usage traffic
 
@@ -566,22 +566,23 @@ The **LLM Logs** screen pages the same way. **Next page** follows the cursor the
 
 These fields of a row come from ClickHouse files that an existing deployment applies by hand (see [Upgrading](/deployment/upgrading)). Every row from `GET /api/v1/analytics/invocations` carries all of them, whether or not the file has been applied:
 
-| Field                   | Type   | Added by                      | Read as when the table lacks it |
-| ----------------------- | ------ | ----------------------------- | ------------------------------- |
-| `upstream_status`       | number | `015_upstream_attempts.sql`   | `0`                             |
-| `attempts`              | number | `015_upstream_attempts.sql`   | `0`                             |
-| `lifecycle_operation`   | string | `016_lifecycle_operation.sql` | `""` (empty string)             |
-| `cache_write_1h_tokens` | number | `017_cache_write_1h.sql`      | `0`                             |
-| `guardrail_events`      | array  | `018_guardrail_events.sql`    | `[]`                            |
-| `plugin_events`         | array  | `019_plugin_events.sql`       | `[]`                            |
-| `fallback_reason`       | string | `023_fallback_reason.sql`     | `""` (empty string)             |
-| `param_adjustments`     | array  | `022_param_adjustments.sql`   | `[]`                            |
-| `outcome`               | string | `030_request_outcome.sql`     | `"unknown"`                     |
-| `has_tools`             | number | `031_request_shape.sql`       | `0`                             |
-| `has_image_input`       | number | `031_request_shape.sql`       | `0`                             |
-| `has_audio_input`       | number | `031_request_shape.sql`       | `0`                             |
-| `has_response_schema`   | number | `031_request_shape.sql`       | `0`                             |
-| `turns`                 | number | `031_request_shape.sql`       | `0`                             |
+| Field                   | Type   | Added by                       | Read as when the table lacks it |
+| ----------------------- | ------ | ------------------------------ | ------------------------------- |
+| `upstream_status`       | number | `015_upstream_attempts.sql`    | `0`                             |
+| `attempts`              | number | `015_upstream_attempts.sql`    | `0`                             |
+| `lifecycle_operation`   | string | `016_lifecycle_operation.sql`  | `""` (empty string)             |
+| `cache_write_1h_tokens` | number | `017_cache_write_1h.sql`       | `0`                             |
+| `guardrail_events`      | array  | `018_guardrail_events.sql`     | `[]`                            |
+| `plugin_events`         | array  | `019_plugin_events.sql`        | `[]`                            |
+| `fallback_reason`       | string | `023_fallback_reason.sql`      | `""` (empty string)             |
+| `param_adjustments`     | array  | `022_param_adjustments.sql`    | `[]`                            |
+| `outcome`               | string | `030_request_outcome.sql`      | `"unknown"`                     |
+| `has_tools`             | number | `031_request_shape.sql`        | `0`                             |
+| `has_image_input`       | number | `031_request_shape.sql`        | `0`                             |
+| `has_audio_input`       | number | `031_request_shape.sql`        | `0`                             |
+| `has_response_schema`   | number | `031_request_shape.sql`        | `0`                             |
+| `turns`                 | number | `031_request_shape.sql`        | `0`                             |
+| `cache_usage_reported`  | number | `045_cache_usage_reported.sql` | `0`                             |
 
 `guardrail_events` lists what each guardrail did to the request, as `<action>:<rule name>` entries (`blocked:`, `redacted:` or `annotated:`) and `provider_blocked:<provider name>` / `provider_transformed:<provider name>` for the guardrail provider (the bare `provider_blocked` / `provider_transformed` on rows that predate the name, or for a provider with none); it is empty for a request no guardrail touched. See [What each rule did](/security/guardrails#what-each-rule-did).
 

@@ -290,15 +290,23 @@ export const SaveWaitsForAChange: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     const complexity = await canvas.findByRole("switch", { name: "Complexity Routing" });
-    await expect(canvas.getByRole("button", { name: "Save changes" })).toBeDisabled();
+    await expect(canvas.getByRole("button", { name: "Save changes" })).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
     await expect(canvas.getByText(/last saved/i)).toBeVisible();
     await userEvent.click(complexity);
     await expect(canvas.getByText("Not saved")).toBeVisible();
-    await expect(canvas.getByRole("button", { name: "Save changes" })).toBeEnabled();
+    await expect(canvas.getByRole("button", { name: "Save changes" })).not.toHaveAttribute(
+      "aria-disabled",
+    );
     // flipped back to the stored value, it is no longer a change
     await userEvent.click(complexity);
     await expect(canvas.queryByText("Not saved")).toBeNull();
-    await expect(canvas.getByRole("button", { name: "Save changes" })).toBeDisabled();
+    await expect(canvas.getByRole("button", { name: "Save changes" })).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
   },
 };
 
@@ -336,7 +344,9 @@ export const CancelLeavesStateUnchanged: Story = {
     await userEvent.click(d.getByRole("button", { name: "Cancel" }));
     await waitFor(() => expect(within(document.body).queryByRole("dialog")).toBeNull());
     await expect(guardrails).toHaveAttribute("aria-checked", "false");
-    await expect(canvas.getByRole("button", { name: "Save changes" })).toBeEnabled();
+    await expect(canvas.getByRole("button", { name: "Save changes" })).not.toHaveAttribute(
+      "aria-disabled",
+    );
   },
 };
 

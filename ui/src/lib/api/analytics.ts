@@ -108,6 +108,16 @@ export interface AnalyticsSummary {
    * window reports it; absent from an older control plane
    */
   cache_read_tokens?: number | string;
+  /**
+   * the prompt tokens of the requests whose provider stated its prompt-cache
+   * reads, zero included, weighted like the other sums: the read share's
+   * denominator, so a provider that does not report them does not dilute it
+   * (#3410). Absent from an older control plane, or one over a ClickHouse
+   * without the column, where the share is over `prompt_tokens`
+   */
+  cache_reported_prompt_tokens?: number | string;
+  /** requests with a prompt whose provider did not state its cache reads, so the share leaves them out (#3410) */
+  cache_unmeasured_requests?: number | string;
   errors: number | string;
   avg_latency_ms: number | string;
   /** the 95th percentile over the whole window; absent from an older control plane */

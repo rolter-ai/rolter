@@ -386,12 +386,12 @@ async fn poll_once_reading(
     // a value from a newer release decoded as `Unknown` instead of failing the
     // whole snapshot; read it fail-closed for its entity alone, so the rest of
     // the config, revocations included, still applies (#3347)
-    let unknown = body.config.fail_closed_unknown_values();
-    if !unknown.is_empty() {
+    let unknown = body.config.fail_closed_unknown_report();
+    if !unknown.lines.is_empty() {
         tracing::warn!(
             version = body.version,
-            count = unknown.len(),
-            problems = ?unknown,
+            count = unknown.lines.len(),
+            problems = ?unknown.lines,
             "this snapshot carries values this gateway does not know; each is read \
              fail-closed (the entity is left out, or takes its most restrictive \
              known value). Upgrade this gateway to serve them as configured"
@@ -408,6 +408,10 @@ async fn poll_once_reading(
         .preload(&body.config.semantic_guards, &body.config.guardrail_webhook)
         .await;
     state.reload(&body.config, body.version);
+    // one gauge per kind for the snapshot now serving, back to 0 for a kind
+    // this one no longer carries, so a mixed-release fleet can be alerted on
+    // (#3424)
+    state.metrics.set_snapshot_unknown_values(&unknown.kinds);
     state.record_snapshot_format(format);
     tracing::info!(
         version = body.version,
@@ -1027,6 +1031,35 @@ mod tests {
         assert_eq!(routes, ["kept"]);
         assert_eq!(held.budgets[0].period, rolter_core::BudgetPeriod::Unknown);
         assert!(holds_gate(&state));
+
+        // the gauge names each kind once, and never the value (#3424)
+        let metrics = state.metrics.render();
+        for series in [
+            "rolter_snapshot_unknown_values{kind=\"provider_kind\"} 1",
+            "rolter_snapshot_unknown_values{kind=\"route_strategy\"} 1",
+            "rolter_snapshot_unknown_values{kind=\"budget_period\"} 1",
+        ] {
+            assert!(metrics.contains(series), "{series} missing:\n{metrics}");
+        }
+        for value in ["quantum", "mind_reading", "fortnightly"] {
+            assert!(!metrics.contains(value), "{value} leaked into the metrics");
+        }
+
+        // a later snapshot with nothing unknown drops every kind back to 0
+        *stub.answer.lock() = StubAnswer::Ok(serde_json::json!({
+            "format": 1,
+            "version": 8,
+            "config": {"security": {"required_headers": {"x-mesh-id": "edge"}}}
+        }));
+        assert_eq!(
+            poll_once(&client, &state, &stub.url, None).await.unwrap(),
+            Some(8)
+        );
+        let metrics = state.metrics.render();
+        for kind in ["provider_kind", "route_strategy", "budget_period"] {
+            let series = format!("rolter_snapshot_unknown_values{{kind=\"{kind}\"}} 0");
+            assert!(metrics.contains(&series), "{series} missing:\n{metrics}");
+        }
     }
 
     /// A stub standing in for a control plane of another build. It records

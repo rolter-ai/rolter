@@ -349,9 +349,8 @@ text was below the detector's `undersized-ui-text` line on most of them. The alt
 number, so it must stay legible as one. The old `--text-3xs` step is gone with it; a label or
 glyph that was set in it uses `text-2xs`. Labels inside a chart's SVG are held to the same floor at
 the size the chart is drawn: `LineChart` measures its frame and sets its labels in pixels, so they
-are 11px at every width, and the vertical `BarChart` and `ScatterPlot` set theirs at 11 units of a
-fixed 640-wide viewBox, so they read at 11px at 640px and scale down with the card below that (#3284).
-Those two are the exception, named rather than waived for every chart. One thing sits outside the scale: the `aria-hidden` provider monogram,
+are 11px at every width. `BarChart` (vertical) and `ScatterPlot` share its measuring hook
+(`useMeasuredWidth`), so no chart is an exception (#3450, #3457). One thing sits outside the scale: the `aria-hidden` provider monogram,
 which is a mark rather than text.
 
 ### Named Rules

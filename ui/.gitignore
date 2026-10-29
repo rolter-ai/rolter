@@ -12,3 +12,6 @@ storybook-static
 /e2e/.output
 /playwright-report
 /test-results
+
+# tsc -b leaves its incremental cache behind
+*.tsbuildinfo

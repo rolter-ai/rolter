@@ -1,4 +1,5 @@
 import { useFormat } from "@/lib/i18n/format";
+import { useMeasuredWidth } from "@/lib/use-measured-width";
 import { cn } from "@/lib/utils";
 
 // vertical bars (doubles as a histogram) with an optional horizontal ranked
@@ -43,6 +44,8 @@ export function BarChart({
   // axis labels are read by a person, so they follow the dashboard locale: the
   // hand-rolled `1.2k` printed a dot as the decimal mark in every language
   const fmt = useFormat();
+  // drawn at the width it is given, so its 11 unit labels are 11px at every width (#3450)
+  const { ref: frame, width: W } = useMeasuredWidth<HTMLDivElement>(!horizontal);
   if (horizontal) {
     return (
       <RankedBars
@@ -59,7 +62,6 @@ export function BarChart({
       />
     );
   }
-  const W = 640;
   const padL = 44;
   const padR = 12;
   const padT = 12;
@@ -75,7 +77,7 @@ export function BarChart({
   const ticks = 4;
 
   return (
-    <div className={className} {...props}>
+    <div ref={frame} className={className} {...props}>
       <svg
         viewBox={`0 0 ${W} ${H}`}
         width="100%"

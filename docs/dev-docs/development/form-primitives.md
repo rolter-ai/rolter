@@ -149,6 +149,7 @@ drops one fails the story rather than shipping.
 - The primary button is never natively `disabled` for a validation error. While `canSave` is false it is `aria-disabled` and still pressable, because pressing it, or Enter in a field, is how the form is asked why. Only `saving` really disables it.
 - A required field is `<Field required>`: the control gets the native `required` and `aria-required`, the label a marker. After a refused submit a still-empty required control says "Required" under itself (`role="alert"`, wired through `aria-describedby`), focus moves to the first field at fault, and `SubmitFormStatus` in the footer counts them (`N fields need attention`, a polite `role="status"`). Typing into the field clears its message. A value of spaces counts as empty, since every save trims it.
 - A `Combobox` takes `required` and `aria-required` on its text input, so `<Field required>` works on a picker the same way (an empty pick refuses the submit and names the field). Where either of two inputs will do (a rate limit needs a requests or a tokens cap), neither is `required`: pass the sheet's `blockedMessage` for the refused submit instead. A dialog that already owns a `<form>` (the two-factor enrol step) cannot take `Dialog onSubmit`, since forms do not nest; say so in a comment there.
+- A screen whose own validation already names the field (`useFieldErrors`: Pricing, Plugins) uses `<Field markRequired>`: the label's marker and `aria-required`, so a screen reader announces it before the first refused save, but no native `required`, which would make the empty control `:invalid` from the first paint and add the generic "Required" beside the screen's own message (#3451). Stories assert the marker and `aria-required`, and that the pristine form is still not flagged.
 - Only `required` is read from the attributes. A range, a charset or a clash with another field stays with the screen's own check (`useFieldErrors`, `FieldError`), which says more than a browser message can, in the dashboard's language. The browser's own bubble is off (`noValidate`).
 - A refusal that comes from the caller's rule rather than a field (a pick that is not an input) passes `blockedMessage` to `EditorSheet`, which the status line shows when no field is at fault.
 - A native `<button>` written by hand inside an editor carries `type="button"`, or it submits the form. `filter-panel.tsx` was the one that did not.
@@ -274,7 +275,12 @@ const fields = useFieldErrors<FieldKey>({
   and does not run; otherwise it runs the save. Save therefore stays pressable on an invalid form and
   is `aria-disabled`, not `disabled`.
 - `SaveBar` (`ui/src/components/ui/save-bar.tsx`) is the footer: the "N fields need attention" status,
-  the `aria-disabled` Save, a `leading` slot and secondary buttons as children.
+  the `aria-disabled` Save, a `leading` slot and secondary buttons as children. A pristine form
+  (`disabled`) is `aria-disabled` too, with the press ignored: a real `disabled` button has
+  `pointer-events: none`, so the press that blurs a `commitOnBlur` field would never reach it. That
+  press commits the field, the bar re-renders dirty, and the click then submits (#3449). Only a save
+  in flight (`pending`) is really `disabled`. Assert a pristine Save with
+  `toHaveAttribute("aria-disabled", "true")`, never `toBeDisabled()`.
 - Both error renderers announce the same way: `Field`'s built-in `error` and `FieldError` are
   `role="alert"`, and the control's `aria-describedby` points at it. The footer count is a
   `role="status"`, which is polite. A story that needs one specific message picks it by its text, not
@@ -458,7 +464,7 @@ const { draft: form, fields, changed, set } = sf;
 - `set(patch)` also answers the control plane's complaint about the fields it touches. `commit` adopts
   the answer as both the form and the baseline, clears the complaints and stamps `savedAt`; `discard`
   restores the baseline.
-- **Dirty, reset, leave.** Save is disabled until a field differs from what the server holds (a value
+- **Dirty, reset, leave.** Save is `aria-disabled` (and its press ignored) until a field differs from what the server holds (a value
   typed back to the stored one is no edit), Discard is the way back, and leaving with an edit asks first
   (`form.leavePrompt`, rendered by the footer).
 - **Errors.** A wrong field is a `FieldError` with `aria-invalid` and `aria-describedby` through

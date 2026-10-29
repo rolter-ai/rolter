@@ -781,3 +781,51 @@ async fn lifecycle_calls_do_not_charge_the_budget() {
         .unwrap_or(0.0);
     assert_eq!(after, spent, "a lifecycle call must not move the counter");
 }
+
+/// A lifecycle answer relays the provider's headers without the hop-by-hop
+/// ones: `Connection`, every field it nominates and `Trailer` stay with the
+/// upstream connection (#3393).
+#[tokio::test]
+async fn a_lifecycle_answer_drops_connection_nominated_headers() {
+    use axum::http::header;
+    use axum::response::IntoResponse;
+    async fn create() -> Json<Value> {
+        Json(json!({
+            "id": RESPONSE_ID,
+            "object": "response",
+            "status": "completed",
+            "usage": {"input_tokens": 3, "output_tokens": 4, "total_tokens": 7}
+        }))
+    }
+    async fn retrieve() -> axum::response::Response {
+        (
+            [
+                (header::CONNECTION, "x-internal"),
+                (header::HeaderName::from_static("x-internal"), "secret"),
+                (header::TRAILER, "x-checksum"),
+                (header::HeaderName::from_static("x-kept"), "kept"),
+            ],
+            Json(json!({"id": RESPONSE_ID, "object": "response"})),
+        )
+            .into_response()
+    }
+    let up = serve(
+        Router::new()
+            .route("/v1/responses", post(create))
+            .route("/v1/responses/{id}", get(retrieve)),
+    )
+    .await;
+    let rows = Rows::default();
+    let config = config_over(rows.serve().await, ProviderKind::Openai, up);
+    let gw = gateway(&config).await;
+    create_response(&gw, &rows).await;
+
+    let response = call(&gw, "retrieve", RESPONSE_ID, "life-hop-by-hop").await;
+    assert_eq!(response.status(), 200);
+    let headers = response.headers().clone();
+    let _ = response.bytes().await.unwrap();
+    assert!(headers.get("x-internal").is_none(), "{headers:?}");
+    assert!(headers.get(header::TRAILER).is_none(), "{headers:?}");
+    assert_eq!(headers.get("x-kept").unwrap(), "kept", "{headers:?}");
+    assert_eq!(headers.get("x-rolter-provider").unwrap(), "native");
+}

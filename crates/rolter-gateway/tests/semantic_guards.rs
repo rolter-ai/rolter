@@ -151,6 +151,31 @@ impl Upstream {
                 async move {
                     upstream.calls.fetch_add(1, SeqCst);
                     let transcript = form_field(&body, "prompt");
+                    // `stream=true` answers as gpt-4o-transcribe does: the text
+                    // in two deltas, then the whole of it once more (#3432)
+                    // `ignores_stream` stands in for a model such as whisper-1,
+                    // which answers JSON whatever `stream` says
+                    // and `forces_stream` for one that streams unasked
+                    if (form_field(&body, "stream") == "true"
+                        && form_field(&body, "ignores_stream") != "true")
+                        || form_field(&body, "forces_stream") == "true"
+                    {
+                        let (head, tail) = transcript.split_at(transcript.len() / 2);
+                        return sse(vec![
+                            format!(
+                                "data: {}\n\n",
+                                json!({"type": "transcript.text.delta", "delta": head})
+                            ),
+                            format!(
+                                "data: {}\n\n",
+                                json!({"type": "transcript.text.delta", "delta": tail})
+                            ),
+                            format!(
+                                "data: {}\n\n",
+                                json!({"type": "transcript.text.done", "text": transcript})
+                            ),
+                        ]);
+                    }
                     if form_field(&body, "response_format") == "text" {
                         return ([(header::CONTENT_TYPE, "text/plain")], transcript)
                             .into_response();
@@ -570,6 +595,16 @@ async fn the_most_specific_policy_replaces_the_broader_one() {
 
 /// A transcription of `spoken` to `path`, as `response_format` (#3331).
 async fn transcribe(config: &GatewayConfig, path: &str, spoken: &str, format: &str) -> Run {
+    transcribe_with(config, path, spoken, &[("response_format", format)]).await
+}
+
+/// A transcription of `spoken` to `path` with `fields` as extra form fields.
+async fn transcribe_with(
+    config: &GatewayConfig,
+    path: &str,
+    spoken: &str,
+    fields: &[(&str, &str)],
+) -> Run {
     let state = rolter_gateway::AppState::with_logging(config, None);
     let gw = serve(rolter_gateway::build_router(
         state,
@@ -578,10 +613,18 @@ async fn transcribe(config: &GatewayConfig, path: &str, spoken: &str, format: &s
     ))
     .await;
     let boundary = "GUARDBOUND";
+    let extra: String = fields
+        .iter()
+        .map(|(name, value)| {
+            format!(
+                "--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"\r\n\r\n{value}\r\n"
+            )
+        })
+        .collect();
     let body = format!(
         "--{b}\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\ntest-model\r\n\
          --{b}\r\nContent-Disposition: form-data; name=\"prompt\"\r\n\r\n{spoken}\r\n\
-         --{b}\r\nContent-Disposition: form-data; name=\"response_format\"\r\n\r\n{format}\r\n\
+         {extra}\
          --{b}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"a.wav\"\r\n\
          Content-Type: audio/wav\r\n\r\nRIFFxxxxWAVE\r\n--{b}--\r\n",
         b = boundary
@@ -648,6 +691,110 @@ async fn a_transcript_is_judged_by_the_response_stage_in_every_format() {
             .all(|e| e["policy"] == "all" && e["direction"] == "response"),
         "only the response stage judges a transcript: {seen:?}"
     );
+}
+
+/// A streamed transcription with no response stage streams as it came (#3432).
+#[tokio::test]
+async fn a_streamed_transcription_streams_through() {
+    let upstream = Upstream::default();
+    let up = upstream.serve_audio().await;
+    let config = config(up, ProviderKind::OpenaiCompatible);
+    let streamed = transcribe_with(
+        &config,
+        "/v1/audio/transcriptions",
+        "a calm answer",
+        &[("stream", "true")],
+    )
+    .await;
+    assert_eq!(streamed.status, 200, "{}", streamed.body);
+    assert!(
+        streamed.body.contains("data:") && streamed.body.contains("transcript.text.delta"),
+        "{}",
+        streamed.body
+    );
+}
+
+/// A streamed transcription on a route whose policy checks responses gets the
+/// policy's `streaming` setting, as a streamed chat completion does (#3432):
+/// `reject` refuses before dialling, `buffer` judges the joined transcript
+/// text, then replays the stream or withholds it.
+#[tokio::test]
+async fn a_streamed_transcription_follows_the_policy_streaming_setting() {
+    let upstream = Upstream::default();
+    let up = upstream.serve_audio().await;
+    let envelopes = Arc::default();
+    let url = provider(Arc::clone(&envelopes)).await;
+    let mut config = config(up, ProviderKind::OpenaiCompatible);
+    config.semantic_guards.providers = vec![guard(
+        "tox",
+        &url,
+        WebhookStage::PostCall,
+        FailureMode::FailOpen,
+    )];
+    config.semantic_guards.policies = vec![policy("all", PolicyScope::Deployment, None, &["tox"])];
+    let path = "/v1/audio/transcriptions";
+    let stream = [("stream", "true")];
+
+    let refused = transcribe_with(&config, path, "a calm answer", &stream).await;
+    assert_eq!(refused.status, 400, "{}", refused.body);
+    assert_eq!(refused.code(), "guardrail_streaming_unsupported");
+    assert_eq!(upstream.calls.load(SeqCst), 0, "refused before dialling");
+
+    config.semantic_guards.policies[0].streaming = StreamingStrategy::Buffer;
+    let replayed = transcribe_with(&config, path, "a calm answer", &stream).await;
+    assert_eq!(replayed.status, 200, "{}", replayed.body);
+    assert!(
+        replayed.body.contains("transcript.text.delta"),
+        "still an event stream: {}",
+        replayed.body
+    );
+    // the joined transcript, not the frames it arrived in
+    let shown = envelopes.lock().last().cloned().unwrap();
+    assert_eq!(shown["streamed"], true, "{shown}");
+    assert_eq!(shown["content"]["text"], "a calm answer", "{shown}");
+
+    let withheld = transcribe_with(&config, path, "something violent", &stream).await;
+    assert_eq!(withheld.status, 403, "{}", withheld.body);
+    assert_eq!(withheld.code(), "guardrail_blocked");
+    assert!(
+        !withheld.body.contains("violent"),
+        "the transcript must not leak: {}",
+        withheld.body
+    );
+}
+
+/// The built-in output rules cannot mask a stream, so a streamed transcription
+/// on a route that has them is refused under the default
+/// `streaming_post_call = "reject"`, as a streamed chat completion is (#3432).
+#[tokio::test]
+async fn a_streamed_transcription_under_output_rules_is_refused() {
+    use rolter_core::{BuiltinRule, GuardAction, GuardStage, GuardrailRule, GuardrailsConfig};
+    let upstream = Upstream::default();
+    let up = upstream.serve_audio().await;
+    let mut config = config(up, ProviderKind::OpenaiCompatible);
+    config.guardrails = GuardrailsConfig {
+        enabled: true,
+        rules: vec![GuardrailRule {
+            name: "card".to_string(),
+            builtin: Some(BuiltinRule::PaymentCard),
+            pattern: None,
+            stage: GuardStage::PostCall,
+            action: GuardAction::Block,
+            replacement: None,
+            include_system: false,
+        }],
+        ..Default::default()
+    };
+    let refused = transcribe_with(
+        &config,
+        "/v1/audio/transcriptions",
+        "a calm answer",
+        &[("stream", "true")],
+    )
+    .await;
+    assert_eq!(refused.status, 400, "{}", refused.body);
+    assert_eq!(refused.code(), "guardrail_streaming_unsupported");
+    assert_eq!(upstream.calls.load(SeqCst), 0);
 }
 
 #[tokio::test]
@@ -987,4 +1134,147 @@ async fn a_provider_of_a_kind_from_a_newer_release_applies_and_blocks() {
         run.body
     );
     assert_eq!(upstream.calls.load(SeqCst), 0);
+}
+
+/// A `post_response` plugin that answers every call with `action`.
+async fn plugin(action: &'static str) -> String {
+    let app = Router::new().route(
+        "/hook",
+        post(move || async move { Json(json!({ "action": action })) }),
+    );
+    format!("http://{}/hook", serve(app).await)
+}
+
+/// A PII sanitizer that replaces `secret` with `[pii]` in what it is shown.
+async fn sanitizer() -> SocketAddr {
+    serve(Router::new().route(
+        "/sanitize",
+        post(|Json(body): Json<Value>| async move {
+            let content: Value =
+                serde_json::from_str(&body["content"].to_string().replace("secret", "[pii]"))
+                    .unwrap();
+            Json(json!({"content": content, "findings": []}))
+        }),
+    ))
+    .await
+}
+
+fn post_response_plugin(endpoint: String, mode: FailureMode) -> rolter_core::PluginsConfig {
+    rolter_core::PluginsConfig {
+        instances: vec![rolter_core::PluginInstanceConfig {
+            slug: "veto".to_string(),
+            org_id: String::new(),
+            project_id: None,
+            stage: rolter_core::PluginStage::PostResponse,
+            position: 0,
+            failure_mode: mode,
+            endpoint,
+            auth: None,
+        }],
+    }
+}
+
+/// The legs a stream cannot be shown to are set aside only once the upstream
+/// answers with one (#3432 review): a `stream=true` transcription that comes
+/// back as JSON, as whisper-1 answers, is judged under the settings that let
+/// a stream pass, so the caller cannot switch a leg off by asking for one.
+#[tokio::test]
+async fn a_streamed_transcription_answered_as_json_is_still_judged() {
+    use rolter_core::{
+        GuardAction, GuardStage, GuardrailRule, GuardrailsConfig, StreamingPostCall,
+    };
+    let upstream = Upstream::default();
+    let up = upstream.serve_audio().await;
+    let path = "/v1/audio/transcriptions";
+    let json_answer = [("stream", "true"), ("ignores_stream", "true")];
+    let sse_answer = [("stream", "true")];
+
+    // built-in output rules under `streaming_post_call = "passthrough"`
+    let mut rules = config(up, ProviderKind::OpenaiCompatible);
+    rules.guardrails = GuardrailsConfig {
+        enabled: true,
+        streaming_post_call: StreamingPostCall::Passthrough,
+        rules: vec![GuardrailRule {
+            name: "violence".to_string(),
+            builtin: None,
+            pattern: Some("violent".to_string()),
+            stage: GuardStage::PostCall,
+            action: GuardAction::Block,
+            replacement: None,
+            include_system: false,
+        }],
+        ..Default::default()
+    };
+    let judged = transcribe_with(&rules, path, "something violent", &json_answer).await;
+    assert_eq!(judged.status, 403, "{}", judged.body);
+    // a stream the request did not ask for reaches the rules, which cannot
+    // read one, so it is withheld rather than relayed (#3471)
+    let unasked =
+        transcribe_with(&rules, path, "a calm answer", &[("forces_stream", "true")]).await;
+    assert_eq!(unasked.status, 403, "{}", unasked.body);
+    assert!(
+        unasked.body.contains("unrequested_stream"),
+        "{}",
+        unasked.body
+    );
+    let streamed = transcribe_with(&rules, path, "something violent", &sse_answer).await;
+    assert_eq!(
+        streamed.status, 200,
+        "passthrough streams: {}",
+        streamed.body
+    );
+
+    // a fail-open post_response plugin
+    let mut plugins = config(up, ProviderKind::OpenaiCompatible);
+    plugins.plugins = post_response_plugin(plugin("block").await, FailureMode::FailOpen);
+    let judged = transcribe_with(&plugins, path, "a calm answer", &json_answer).await;
+    assert_eq!(judged.status, 403, "{}", judged.body);
+    let streamed = transcribe_with(&plugins, path, "a calm answer", &sse_answer).await;
+    assert_eq!(
+        streamed.status, 200,
+        "a fail-open plugin lets a stream pass"
+    );
+
+    // the PII sanitizer's response leg under `streaming = "passthrough"`
+    let mut pii = config(up, ProviderKind::OpenaiCompatible);
+    pii.pii_sanitizer = rolter_core::PiiSanitizerConfig {
+        enabled: true,
+        url: format!("http://{}/sanitize", sanitizer().await),
+        direction: rolter_core::SanitizeDirection::Response,
+        streaming: rolter_core::StreamingResponse::Passthrough,
+        ..Default::default()
+    };
+    let judged = transcribe_with(&pii, path, "a secret answer", &json_answer).await;
+    assert_eq!(judged.status, 200, "{}", judged.body);
+    assert!(judged.body.contains("[pii]"), "{}", judged.body);
+    assert!(!judged.body.contains("secret"), "{}", judged.body);
+}
+
+/// A fail-closed `post_response` plugin and a sanitizer whose `streaming`
+/// rejects refuse a `stream=true` transcription before dialling, as they
+/// refuse a streamed chat request (#3432).
+#[tokio::test]
+async fn a_streamed_transcription_is_refused_by_a_fail_closed_plugin_and_the_pii_reject() {
+    let upstream = Upstream::default();
+    let up = upstream.serve_audio().await;
+    let path = "/v1/audio/transcriptions";
+    let stream = [("stream", "true")];
+
+    let mut plugins = config(up, ProviderKind::OpenaiCompatible);
+    plugins.plugins = post_response_plugin(plugin("allow").await, FailureMode::FailClosed);
+    let refused = transcribe_with(&plugins, path, "a calm answer", &stream).await;
+    assert_eq!(refused.status, 400, "{}", refused.body);
+    assert_eq!(refused.code(), "plugin_streaming_unsupported");
+
+    let mut pii = config(up, ProviderKind::OpenaiCompatible);
+    pii.pii_sanitizer = rolter_core::PiiSanitizerConfig {
+        enabled: true,
+        url: format!("http://{}/sanitize", sanitizer().await),
+        direction: rolter_core::SanitizeDirection::Response,
+        ..Default::default()
+    };
+    let refused = transcribe_with(&pii, path, "a calm answer", &stream).await;
+    assert_eq!(refused.status, 400, "{}", refused.body);
+    assert_eq!(refused.code(), "pii_streaming_unsupported");
+    assert_eq!(upstream.calls.load(SeqCst), 0, "refused before dialling");
 }

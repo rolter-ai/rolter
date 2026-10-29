@@ -280,10 +280,15 @@ export const SaveWaitsForAnEditAndEnterSaves: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     const tokens = await canvas.findByLabelText("Default max tokens");
-    await expect(canvas.getByRole("button", { name: "Save changes" })).toBeDisabled();
+    await expect(canvas.getByRole("button", { name: "Save changes" })).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
     await userEvent.clear(tokens);
     await userEvent.type(tokens, "8192");
-    await expect(canvas.getByRole("button", { name: "Save changes" })).toBeEnabled();
+    await expect(canvas.getByRole("button", { name: "Save changes" })).not.toHaveAttribute(
+      "aria-disabled",
+    );
     await userEvent.type(tokens, "{Enter}");
     await expectToast(canvasElement, /compatibility settings updated/i);
     await expect(canvas.getByText(/^Saved at /)).toBeVisible();

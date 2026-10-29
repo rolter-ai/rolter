@@ -1,6 +1,8 @@
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 
+import { useMeasuredWidth } from "@/lib/use-measured-width";
+
 export interface LineChartSeries {
   name: string;
   values: number[];
@@ -35,9 +37,6 @@ interface LineChartProps {
 // the first three of the shared categorical sequence (#1245)
 const DEFAULT_COLORS = ["var(--chart-1)", "var(--chart-2)", "var(--chart-3)"];
 
-// the width drawn before the frame has been measured, and wherever it cannot be
-// (no layout, no ResizeObserver)
-const FALLBACK_WIDTH = 640;
 // axis text, in the pixels it is read at: the `--text-2xs` size. the viewBox is
 // as wide as the frame, so a unit is a pixel at every width
 const FONT = 11;
@@ -66,19 +65,7 @@ export function LineChart({
   // the chart is drawn at the width it is given. a fixed 640-wide viewBox
   // scaled down to a phone shrank the axis text to a third of its size, and the
   // plot to a sliver, along with it (#1994)
-  const frame = React.useRef<HTMLDivElement>(null);
-  const [measured, setMeasured] = React.useState(0);
-  React.useLayoutEffect(() => {
-    const el = frame.current;
-    if (!el) return;
-    const read = () => setMeasured(el.clientWidth);
-    read();
-    if (typeof ResizeObserver === "undefined") return;
-    const observer = new ResizeObserver(read);
-    observer.observe(el);
-    return () => observer.disconnect();
-  }, [hasData]);
-  const width = measured > 0 ? measured : FALLBACK_WIDTH;
+  const { ref: frame, width } = useMeasuredWidth<HTMLDivElement>(hasData);
 
   const max = Math.max(1, ...allValues);
   const min = Math.min(0, ...allValues);
