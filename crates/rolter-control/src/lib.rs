@@ -33,6 +33,7 @@ mod auth;
 mod auth_policy;
 #[cfg(feature = "postgres")]
 mod breaker_state;
+mod call_gap;
 #[cfg(feature = "postgres")]
 mod client_settings;
 #[cfg(feature = "postgres")]
@@ -644,6 +645,9 @@ struct ControlState {
     /// (#3360). Process-local on purpose: it protects this process's
     /// connections and ClickHouse queries, so replicas each hold their own
     export_gate: Arc<analytics_export::ExportGate>,
+    /// the least time between two SMTP relay checks by one caller (#3394)
+    #[cfg_attr(not(feature = "postgres"), allow(dead_code))]
+    mail_check_gap: Arc<call_gap::CallGap>,
     /// failed-login counters guarding the password endpoints (#1079). Shared
     /// across replicas through redis when one is configured, process-local
     /// otherwise; a default value counts nothing
@@ -886,6 +890,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         cors: Arc::default(),
         metrics: metrics.clone(),
         export_gate: export_gate.clone(),
+        mail_check_gap: Arc::default(),
         login_throttle: login_throttle.clone(),
         trust_forwarded_for: args.login_trust_forwarded_for,
         update_check: update_check.clone(),
@@ -911,6 +916,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         cors: Arc::default(),
         metrics: metrics.clone(),
         export_gate: export_gate.clone(),
+        mail_check_gap: Arc::default(),
         login_throttle: login_throttle.clone(),
         trust_forwarded_for: args.login_trust_forwarded_for,
         update_check: update_check.clone(),
@@ -1647,6 +1653,12 @@ pub async fn test_app_with_mailer(
         Some("https://rolter.example.com".to_string()),
     );
     state.mailer = Some(mailer);
+    // a short gap between relay checks, so a test can run two without waiting
+    // the production five seconds (#3394)
+    state.mail_check_gap = Arc::new(call_gap::CallGap::new(
+        std::time::Duration::from_millis(400),
+        std::time::Duration::from_millis(50),
+    ));
     Ok(build_app_with(state, true))
 }
 
@@ -1683,6 +1695,7 @@ fn test_state(
         // real, with production defaults: the wiring is part of what these
         // tests cover, and no test signs in wrongly five times by accident
         export_gate: Default::default(),
+        mail_check_gap: Default::default(),
         login_throttle: login_throttle::LoginThrottle::new(Default::default(), String::new(), None),
         trust_forwarded_for: false,
         // never on the network from a test; the endpoint's disabled shape is
@@ -3727,6 +3740,7 @@ mod tests {
             cors: Arc::default(),
             metrics: Default::default(),
             export_gate: Default::default(),
+            mail_check_gap: Default::default(),
             login_throttle: Default::default(),
             trust_forwarded_for: false,
             update_check: update_check::UpdateChecker::disabled(),

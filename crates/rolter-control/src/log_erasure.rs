@@ -26,7 +26,9 @@ use serde_json::{json, Value};
 use uuid::Uuid;
 
 use rolter_store::postgres::models::LogErasure;
-use rolter_store::postgres::repo::{AuditLogRepo, LogErasureRepo, NewLogErasure};
+use rolter_store::postgres::repo::{
+    AuditLogRepo, LogErasureRepo, NewLogErasure, SUBJECT_LOOKUP_LIMIT,
+};
 
 use crate::analytics::{client_or_503, query_failed, ClickHouseClient};
 use crate::crud::{invalid_field, pool, ApiError, ApiResult, SafeJson};
@@ -40,7 +42,46 @@ pub(crate) fn router() -> Router<ControlState> {
             "/api/v1/log-erasures",
             get(list_erasures).post(create_erasure),
         )
+        .route("/api/v1/log-erasures/subjects", get(find_subjects))
         .route("/api/v1/log-erasures/{id}", get(get_erasure))
+}
+
+#[derive(Deserialize)]
+struct SubjectQuery {
+    /// `virtual_key`, `user` or `org`
+    kind: String,
+    /// part of a name or email; empty lists the first few
+    #[serde(default)]
+    q: String,
+    /// one subject by id, to name an id someone pasted
+    id: Option<Uuid>,
+}
+
+/// `GET /api/v1/log-erasures/subjects`: the named virtual keys, users or
+/// organizations the erasure form offers, found by part of a name or email
+/// (#3385). An id typed by hand is a mistake waiting to erase another tenant's
+/// logs, and an id says nothing of whose data it is; this puts a name beside
+/// it. Gated as the erasure itself is, so it reads nothing a caller who could
+/// not erase could use.
+async fn find_subjects(
+    principal: Principal,
+    State(state): State<ControlState>,
+    crate::crud::Query(query): crate::crud::Query<SubjectQuery>,
+) -> ApiResult<Json<Value>> {
+    authorize_superadmin(&principal, superadmin_cap!("log_erasure", Create))?;
+    if !matches!(query.kind.as_str(), "virtual_key" | "user" | "org") {
+        return Err(invalid_field(
+            "kind",
+            "kind must be one of virtual_key|user|org",
+        ));
+    }
+    let mut subjects = LogErasureRepo(pool(&state))
+        .find_subjects(&query.kind, query.q.trim(), query.id)
+        .await?;
+    // the store reads one past the cap, which is how a cut list is told apart
+    let truncated = subjects.len() as i64 > SUBJECT_LOOKUP_LIMIT;
+    subjects.truncate(SUBJECT_LOOKUP_LIMIT as usize);
+    Ok(Json(json!({ "data": subjects, "truncated": truncated })))
 }
 
 /// The most payload rows from before the `virtual_key_id` column that one
@@ -199,6 +240,38 @@ fn predicates(scope: &ScopeBody, user_keys: &[Uuid]) -> Predicates {
     }
 }
 
+/// Which stores an erasure searched and which it skipped, as the list stored on
+/// the record: `{store, searched, code?, reason?}` (#3436). Request logs are found by
+/// virtual key, so a user who holds none leaves them unsearched while their MCP
+/// tool calls, which carry `user_id`, are still erased; a payloads-only erasure
+/// keeps the log rows. Saying so is what stops the record reading as complete
+/// over every store.
+fn coverage(scope: &ScopeBody, user_keys: &[Uuid], include_logs: bool) -> Value {
+    let keyless = matches!(scope, ScopeBody::User { .. }) && user_keys.is_empty();
+    let found = |store: &str| json!({"store": store, "searched": true});
+    // `code` is the stable name a client translates; `reason` is the English
+    // sentence for one that does not know the code
+    let skipped = |store: &str, code: &str, reason: &str| json!({"store": store, "searched": false, "code": code, "reason": reason});
+    const NO_KEYS: &str = "the user holds no virtual keys, and request logs are found by key";
+    let logs = if keyless {
+        skipped("request_logs", "no_key", NO_KEYS)
+    } else if include_logs {
+        found("request_logs")
+    } else {
+        skipped(
+            "request_logs",
+            "bodies_only",
+            "only captured payloads were asked for; the log rows are kept",
+        )
+    };
+    let payloads = if keyless {
+        skipped("request_payloads", "no_key", NO_KEYS)
+    } else {
+        found("request_payloads")
+    };
+    json!([logs, payloads, found("mcp_tool_call_logs")])
+}
+
 /// The statements that carry out one erasure. `marker` is the erasure's id: it
 /// rides in each `where` as a constant-true clause so the mutation can be found
 /// again in `system.mutations`, whose `command` keeps the statement's text.
@@ -346,6 +419,7 @@ async fn create_erasure(
         include_logs: body.include_logs,
         reason: body.reason.trim(),
         requested_by: principal.account_id(),
+        stores: coverage(&body.scope, &user_keys, body.include_logs),
     })
     .await?;
 
@@ -372,6 +446,7 @@ async fn create_erasure(
                 "include_logs": body.include_logs,
                 "reason": record.reason,
                 "statements": record.statements,
+                "stores": record.stores,
                 "outcome": record.status,
             })),
         )
@@ -700,6 +775,37 @@ mod tests {
         assert!(p.mcp.contains(
             "ts between toDateTime64('2026-10-27 12:30:45.123', 3, 'UTC') - interval 300 second"
         ));
+    }
+
+    #[test]
+    fn the_record_says_which_stores_a_keyless_user_erasure_skipped() {
+        let user = ScopeBody::User { id: uuid(5) };
+        let stores = coverage(&user, &[], true);
+        assert_eq!(stores[0]["store"], "request_logs");
+        assert_eq!(stores[0]["searched"], false);
+        assert!(stores[0]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("no virtual keys"));
+        assert_eq!(stores[0]["code"], "no_key");
+        assert_eq!(stores[1]["searched"], false);
+        assert_eq!(
+            stores[2],
+            json!({"store": "mcp_tool_call_logs", "searched": true})
+        );
+        // with a key, every store is searched
+        let stores = coverage(&user, &[uuid(1)], true);
+        assert!(stores
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|s| s["searched"] == true));
+        // payloads only keeps the log rows, and says why
+        let stores = coverage(&user, &[uuid(1)], false);
+        assert_eq!(stores[0]["searched"], false);
+        assert!(stores[0]["reason"].as_str().unwrap().contains("payloads"));
+        assert_eq!(stores[0]["code"], "bodies_only");
+        assert_eq!(stores[1]["searched"], true);
     }
 
     #[test]

@@ -2347,6 +2347,7 @@ mod tests {
         ("auth.rs", include_str!("auth.rs")),
         ("auth_policy.rs", include_str!("auth_policy.rs")),
         ("breaker_state.rs", include_str!("breaker_state.rs")),
+        ("call_gap.rs", include_str!("call_gap.rs")),
         ("cluster.rs", include_str!("cluster.rs")),
         ("client_settings.rs", include_str!("client_settings.rs")),
         ("collector_config.rs", include_str!("collector_config.rs")),

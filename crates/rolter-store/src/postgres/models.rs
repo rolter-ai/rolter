@@ -1317,6 +1317,9 @@ pub struct LogErasure {
     pub status: String,
     pub statements: i32,
     pub error: Option<String>,
+    /// which stores the erasure searched and which it skipped, as a list of
+    /// `{store, searched, code?, reason?}`; `[]` on a record from before it was kept
+    pub stores: serde_json::Value,
     pub created_at: DateTime<Utc>,
     pub completed_at: Option<DateTime<Utc>>,
 }
