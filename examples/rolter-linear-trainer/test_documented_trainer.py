@@ -8,7 +8,7 @@ first python block after "Training one.") over the golden vectors in
 which a Rust test in `local_classifier.rs` checks against the gateway. A change
 to the page or to the gateway that moves a bucket fails one of the two.
 
-To change a vector, run this file with ROLTER_REGENERATE_GOLDEN=1 and confirm the
+To change a vector, run this file with ROLTER_TEST_REGENERATE_GOLDEN=1 and confirm the
 Rust test still passes: both sides must agree.
 """
 
@@ -81,7 +81,7 @@ def compute() -> list[dict]:
     return out
 
 
-if os.environ.get("ROLTER_REGENERATE_GOLDEN") == "1":
+if os.environ.get("ROLTER_TEST_REGENERATE_GOLDEN") == "1":
     GOLDEN.write_text(json.dumps(compute(), ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
