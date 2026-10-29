@@ -284,6 +284,97 @@ fn merge_plugins(
     rolter_core::PluginsConfig { instances }
 }
 
+/// The effective slug of a provider group: its own, else its slugified name.
+fn group_slug(group: &rolter_core::ProviderGroupConfig) -> String {
+    group
+        .slug
+        .clone()
+        .unwrap_or_else(|| rolter_core::slug::slugify(&group.name))
+}
+
+/// The `(org, name)` pairs the bootstrap file holds per kind, which a store
+/// row must not repeat to be served.
+struct FileNames {
+    providers: std::collections::HashSet<(String, String)>,
+    routes: std::collections::HashSet<(String, String)>,
+    provider_groups: std::collections::HashSet<(String, String)>,
+}
+
+impl FileNames {
+    fn of(file: &GatewayConfig) -> Self {
+        Self {
+            providers: file
+                .providers
+                .iter()
+                .map(|p| Self::key(&p.tenancy, &p.name))
+                .collect(),
+            routes: file
+                .routes
+                .iter()
+                .map(|r| Self::key(&r.tenancy, &r.model))
+                .collect(),
+            provider_groups: file
+                .provider_groups
+                .iter()
+                .map(|g| Self::key(&g.tenancy, &group_slug(g)))
+                .collect(),
+        }
+    }
+
+    fn key(tenancy: &Option<rolter_core::Tenancy>, name: &str) -> (String, String) {
+        (
+            rolter_core::namespace::org_of(tenancy.as_ref()).to_string(),
+            name.to_string(),
+        )
+    }
+}
+
+/// One warning per store row owned by an org that shares its kind and name
+/// with a deployment-wide row of the bootstrap file (#3516).
+///
+/// [`MergedConfigStore::load`] serves both: the org's row for that org's keys,
+/// the file's for every other key. ADR-0040 section 6 refuses such a row when
+/// it is created, so one exists only when the file gained the name later or
+/// the row was written around the API, and an operator should hear of it.
+fn bootstrap_shadows(file: &GatewayConfig, db: &GatewayConfig) -> Vec<ConfigProblem> {
+    let global = |names: &std::collections::HashSet<(String, String)>, name: &str| {
+        names.contains(&(rolter_core::namespace::GLOBAL.to_string(), name.to_string()))
+    };
+    let names = FileNames::of(file);
+    let mut shadows = Vec::new();
+    let mut push = |kind: &str, tenancy: &Option<rolter_core::Tenancy>, name: &str| {
+        let Some(owner) = tenancy.as_ref().filter(|t| !t.org_id.is_empty()) else {
+            return;
+        };
+        shadows.push(ConfigProblem {
+            message: format!(
+                "warning: organization {}'s {kind} '{name}' shadows the readonly {kind} of the \
+                 same name in the control plane's config file for that organization's keys; \
+                 every other key is served the file's {kind} (#3516)",
+                owner.org_id
+            ),
+            owner: ProblemOwner::Tenant(owner.clone()),
+        });
+    };
+    for provider in &db.providers {
+        if global(&names.providers, &provider.name) {
+            push("provider", &provider.tenancy, &provider.name);
+        }
+    }
+    for route in &db.routes {
+        if global(&names.routes, &route.model) {
+            push("route", &route.tenancy, &route.model);
+        }
+    }
+    for group in &db.provider_groups {
+        let slug = group_slug(group);
+        if global(&names.provider_groups, &slug) {
+            push("provider group", &group.tenancy, &slug);
+        }
+    }
+    shadows
+}
+
 #[async_trait]
 impl ConfigStore for MergedConfigStore {
     fn file_guardrail_rules(&self) -> usize {
@@ -293,11 +384,17 @@ impl ConfigStore for MergedConfigStore {
     async fn load(&self) -> Result<GatewayConfig> {
         let db = self.inner.load().await?;
         let mut merged = self.bootstrap.clone();
-        merged.providers.extend(
-            db.providers
-                .into_iter()
-                .filter(|p| !self.bootstrap.providers.iter().any(|c| c.name == p.name)),
-        );
+        // a store row is dropped only for a file row of the same kind and name
+        // in the same namespace (#3516): an org's own row shadows the file's
+        // for that org's keys, as ADR-0040 section 1 names rows by `(org, name)`
+        let file = FileNames::of(&self.bootstrap);
+        merged
+            .providers
+            .extend(db.providers.into_iter().filter(|p| {
+                !file
+                    .providers
+                    .contains(&FileNames::key(&p.tenancy, &p.name))
+            }));
         // a provider the store left out stays out for the file's references too
         merged
             .left_out_providers
@@ -305,26 +402,17 @@ impl ConfigStore for MergedConfigStore {
         merged.routes.extend(
             db.routes
                 .into_iter()
-                .filter(|r| !self.bootstrap.routes.iter().any(|c| c.model == r.model)),
+                .filter(|r| !file.routes.contains(&FileNames::key(&r.tenancy, &r.model))),
         );
         // provider groups: readonly config groups win a slug collision, db groups
         // extend the effective set (ADR-0022). compare on the effective slug
-        let group_slug = |g: &rolter_core::ProviderGroupConfig| {
-            g.slug
-                .clone()
-                .unwrap_or_else(|| rolter_core::slug::slugify(&g.name))
-        };
-        let bootstrap_group_slugs: std::collections::HashSet<String> = self
-            .bootstrap
+        merged
             .provider_groups
-            .iter()
-            .map(group_slug)
-            .collect();
-        merged.provider_groups.extend(
-            db.provider_groups
-                .into_iter()
-                .filter(|g| !bootstrap_group_slugs.contains(&group_slug(g))),
-        );
+            .extend(db.provider_groups.into_iter().filter(|g| {
+                !file
+                    .provider_groups
+                    .contains(&FileNames::key(&g.tenancy, &group_slug(g)))
+            }));
         merged.virtual_keys.extend(
             db.virtual_keys
                 .into_iter()
@@ -440,11 +528,22 @@ impl ConfigStore for MergedConfigStore {
     }
 
     async fn load_problems(&self) -> Result<Vec<String>> {
-        self.inner.load_problems().await
+        Ok(self
+            .load_problem_records()
+            .await?
+            .into_iter()
+            .map(|problem| problem.message)
+            .collect())
     }
 
     async fn load_problem_records(&self) -> Result<Vec<ConfigProblem>> {
-        self.inner.load_problem_records().await
+        let mut problems = self.inner.load_problem_records().await?;
+        // a store that cannot load says why in its own records; the overlap
+        // is then moot, since nothing is being served
+        if let Ok(db) = self.inner.load().await {
+            problems.extend(bootstrap_shadows(&self.bootstrap, &db));
+        }
+        Ok(problems)
     }
 }
 
@@ -558,6 +657,102 @@ mod tests {
         store.save(updated).await.unwrap();
         assert_eq!(store.load().await.unwrap().routes.len(), 3);
         assert_eq!(store.current_version().await.unwrap(), 2);
+    }
+
+    fn owned_by_org_a() -> Option<rolter_core::Tenancy> {
+        Some(rolter_core::Tenancy {
+            org_id: "org-a".to_string(),
+            project_id: None,
+        })
+    }
+
+    /// An org's row that shares a kind and name with a file row is served
+    /// beside it and named as a warning; only a same-namespace row is dropped
+    /// (#3516).
+    #[tokio::test(flavor = "current_thread")]
+    async fn merged_store_keeps_an_org_row_a_file_row_shares_a_name_with() {
+        let mut bootstrap = GatewayConfig::default();
+        bootstrap.providers.push(provider("openai"));
+        bootstrap.routes.push(route("gpt-4o"));
+        bootstrap.provider_groups.push(group("pool"));
+
+        let mut db = GatewayConfig::default();
+        let mut org_provider = provider("openai");
+        org_provider.tenancy = owned_by_org_a();
+        org_provider.api_base = "https://org-a.example.com".to_string();
+        let mut org_route = route("gpt-4o");
+        org_route.tenancy = owned_by_org_a();
+        let mut org_group = group("pool");
+        org_group.tenancy = owned_by_org_a();
+        db.providers.push(org_provider);
+        db.routes.push(org_route);
+        db.provider_groups.push(org_group);
+        // a global store row the file repeats is still dropped
+        db.routes.push(route("gpt-4o"));
+
+        let store = MergedConfigStore::new(bootstrap, Arc::new(InMemoryConfigStore::new(db)));
+        let merged = store.load().await.unwrap();
+        let orgs = |tenancies: Vec<Option<&rolter_core::Tenancy>>| -> Vec<String> {
+            tenancies
+                .into_iter()
+                .map(|t| rolter_core::namespace::org_of(t).to_string())
+                .collect()
+        };
+        assert_eq!(
+            orgs(merged.routes.iter().map(|r| r.tenancy.as_ref()).collect()),
+            ["", "org-a"]
+        );
+        assert_eq!(
+            orgs(
+                merged
+                    .providers
+                    .iter()
+                    .map(|p| p.tenancy.as_ref())
+                    .collect()
+            ),
+            ["", "org-a"]
+        );
+        assert_eq!(
+            orgs(
+                merged
+                    .provider_groups
+                    .iter()
+                    .map(|g| g.tenancy.as_ref())
+                    .collect()
+            ),
+            ["", "org-a"]
+        );
+
+        // the org's key reaches the org's row, any other key the file's
+        let mut providers = rolter_core::namespace::Namespaced::new();
+        for p in &merged.providers {
+            let org = rolter_core::namespace::org_of(p.tenancy.as_ref());
+            providers.insert(org, &p.name, p.api_base.as_str()).unwrap();
+        }
+        assert_eq!(
+            providers.get("org-a", "openai"),
+            Some(&"https://org-a.example.com")
+        );
+        assert_eq!(
+            providers.get("org-b", "openai"),
+            Some(&"https://example.com")
+        );
+        assert_eq!(providers.get("", "openai"), Some(&"https://example.com"));
+
+        let problems = store.load_problem_records().await.unwrap();
+        assert_eq!(problems.len(), 3, "{problems:?}");
+        for (problem, kind) in problems.iter().zip(["provider", "route", "provider group"]) {
+            assert!(problem.message.starts_with("warning: "), "{problem:?}");
+            assert!(
+                problem.message.contains(&format!("org-a's {kind} '")),
+                "{problem:?}"
+            );
+            assert_eq!(
+                problem.owner,
+                ProblemOwner::Tenant(owned_by_org_a().unwrap())
+            );
+        }
+        assert_eq!(store.load_problems().await.unwrap().len(), 3);
     }
 
     fn group(slug: &str) -> rolter_core::ProviderGroupConfig {
