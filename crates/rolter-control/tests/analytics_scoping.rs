@@ -2417,8 +2417,7 @@ async fn by_model_keeps_two_orgs_same_named_routes_as_two_rows() {
 
     let db = TestSchema::create(&test_database::url().await.unwrap()).await;
     let pool = db.pool().clone();
-    let acme = seed_tenant(&pool, "acme").await;
-    let umbrella = seed_tenant(&pool, "umbrella").await;
+    // the app builder migrates the schema, so it comes before the seeding
     let app = rolter_control::test_app_with_clickhouse_and_admin_token(
         pool.clone(),
         &ch,
@@ -2427,6 +2426,8 @@ async fn by_model_keeps_two_orgs_same_named_routes_as_two_rows() {
     .await
     .unwrap();
     let addr = serve(app).await;
+    let acme = seed_tenant(&pool, "acme").await;
+    let umbrella = seed_tenant(&pool, "umbrella").await;
 
     // one name, unique to this run, served in both orgs: twice in acme, three
     // times in umbrella
