@@ -156,6 +156,11 @@ impl ExportGate {
         Ok(held)
     }
 
+    /// The longest an export may run, `None` when unbounded.
+    pub(crate) fn max_duration(&self) -> Option<Duration> {
+        self.limits.max_duration
+    }
+
     /// Whether an export by `caller` would be let in now, without taking a
     /// place: a download ticket is refused at mint when the gate is already
     /// full (#3504). The export itself still takes its place when it starts,
@@ -221,11 +226,14 @@ struct TimedPermit {
 
 impl TimedPermit {
     /// Hold `permit` until the guard drops or `limit` passes, and close
-    /// `connection` then. No limit leaves the permit to the drop alone.
+    /// `connection` then, recording the time limit as the cut on `progress`
+    /// so a download ticket reads `time_limit` rather than a closed client.
+    /// No limit leaves the permit to the drop alone.
     fn new(
         permit: ExportPermit,
         limit: Option<Duration>,
         connection: Option<Arc<CloseSwitch>>,
+        progress: Option<Arc<ExportProgress>>,
     ) -> Self {
         let slot = Arc::new(parking_lot::Mutex::new(Some(permit)));
         let finished = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -240,6 +248,9 @@ impl TimedPermit {
                 // export that already delivered its last page
                 let mut held = slot.lock();
                 if held.take().is_some() {
+                    if let Some(progress) = &progress {
+                        progress.set_cut(Cut::TimeLimit);
+                    }
                     let close = !finished.load(std::sync::atomic::Ordering::Acquire);
                     tracing::warn!(
                         closing = close && connection.is_some(),
@@ -1217,7 +1228,8 @@ async fn export_invocations(
     // carries other requests, which a trip would reset, so there the timer
     // gives the place back and h2's per-stream flow control bounds the buffer
     let connection = closable(version, connection);
-    let permit = TimedPermit::new(permit, limits.max_duration, connection);
+    let progress = progress.map(|Extension(progress)| progress);
+    let permit = TimedPermit::new(permit, limits.max_duration, connection, progress.clone());
     // which optional columns the table has, so the file still builds before an
     // operator applies the sequence column (see `request_log_columns`)
     let columns = match ch.request_log_columns().await {
@@ -1237,7 +1249,7 @@ async fn export_invocations(
         written: 0,
         over_rows: false,
         permit: Some(permit),
-        progress: progress.map(|Extension(progress)| progress),
+        progress,
     };
     // the first page is read before the response starts, so a ClickHouse
     // failure is an error the client can read and not a download that ends
@@ -1393,7 +1405,12 @@ mod tests {
         let mut limits = ExportLimits::new(0, 0, 1, 1);
         limits.max_duration = Some(Duration::from_millis(60));
         let gate = Arc::new(ExportGate::new(limits));
-        let permit = TimedPermit::new(gate.try_acquire("a").unwrap(), limits.max_duration, None);
+        let permit = TimedPermit::new(
+            gate.try_acquire("a").unwrap(),
+            limits.max_duration,
+            None,
+            None,
+        );
         // the body of a stalled download: held, and never polled again
         let stalled = stream::unfold(permit, |permit| async move {
             Some((Ok::<_, io::Error>(Bytes::new()), permit))
@@ -1421,6 +1438,7 @@ mod tests {
         let held = TimedPermit::new(
             gate.try_acquire("a").unwrap(),
             Some(Duration::from_secs(600)),
+            None,
             None,
         );
         assert!(held.is_held());

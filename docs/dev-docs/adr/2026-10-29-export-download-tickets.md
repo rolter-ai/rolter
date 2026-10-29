@@ -50,8 +50,11 @@ whether it would let the export in, and answers the gate's coded `429` with
 **Bound to.** The minting principal, the export and its query. It is accepted
 on its own download route only and is never a credential anywhere else. What is
 stored of the principal is what can be checked again later, never the bearer: a
-session's row id, an API token's row id, a domain-separated digest of the admin
-token, or "open mode".
+session's row id, an API token's row id, a digest of the admin token keyed with
+the ticket's own secret, or "open mode". Keying the admin digest with the secret
+means a dump of the table, which holds only the secret's hash, gives nothing to
+test guesses at the admin token against, while the secret presented at
+redemption still recomputes it and so tells a token rotated since.
 
 **Lifetime.** 60 seconds. The browser follows the link within a second of the
 mint, so the window only has to cover a slow click.
@@ -67,9 +70,15 @@ tickets all get one uniform `410 Gone`.
 
 - The principal is re-resolved from what was stored. A session that is revoked
   or expired, an account deactivated since, an API token revoked, expired or
-  deleted since, an admin token rotated since, and an open-mode ticket on a
+  deleted since, an API token rotated after the ticket was minted (rotation
+  keeps the row, so its `rotated_at` is compared with the ticket's
+  `created_at`), an admin token rotated since, and an open-mode ticket on a
   control plane that has since been given a token are all refused (`401`). A
-  deleted session or token takes its tickets with it (`on delete cascade`).
+  deleted session or token takes its tickets with it (`on delete cascade`), so
+  a signed-out session's link answers `410`.
+- Only `GET` redeems. axum answers `HEAD` with the `GET` handler, so the route
+  refuses any other method with `405` before it looks the ticket up: a link
+  checker or proxy that probes the URL spends nothing.
 - The export then runs through the bearer route's own handler, given the
   re-resolved principal and the `AnalyticsAccess` that the same reduction a
   bearer request goes through produces (`analytics_access::analytics_reach`).
@@ -78,8 +87,13 @@ tickets all get one uniform `410 Gone`.
 
 **Storage.** A Postgres table (`0229_export_tickets.sql`) when the control
 plane has a store, so any replica can redeem a ticket another minted. An
-in-memory map behind `parking_lot` in the store-less mode, which runs as one
-replica, and in a build without postgres. Both sit behind one small trait.
+in-memory map behind `parking_lot` in the store-less mode and in a build without
+postgres. Both sit behind one small trait. A store-less control plane can still
+be scaled out, and then a ticket only redeems on the replica that minted it:
+the docs say to run one replica in that mode or to keep each client on one
+replica (sticky sessions) at the ingress. The memory map lets a ticket go five
+minutes after it can change no more (expired unused, or its download ended),
+so its size follows the exports in flight rather than a day of mints.
 Rows are purged opportunistically, a day after expiry, by the next mint; there
 is no background task for it. The table is read by the control plane only, so
 it has no `bump_config_version()` trigger.
@@ -103,22 +117,34 @@ not exist. The status is one of:
 - `pending`: not yet redeemed;
 - `streaming`, with `rows` written so far, which drives the progress display;
 - `complete`, with `rows`;
-- `truncated`, with `rows` and a `reason`: `row_limit`, `time_limit`,
-  `read_error`, or `client_closed` when the browser stopped reading;
+- `truncated`, with `rows` and a `reason`: `row_limit`, `time_limit` (the
+  deadline timer that closes a stalled connection records it too),
+  `read_error`, `client_closed` when the browser stopped reading, or
+  `interrupted` when a `streaming` ticket has gone unwritten for longer than a
+  live export can (the export time limit plus two progress intervals), which is
+  how a replica that died mid-export reads;
 - `refused`, with the HTTP `status` the download was answered with and, for a
   `429`, `retry_after`;
 - `expired`: never redeemed and past its lifetime.
 
 The replica serving the download writes these: once when the export starts, at
 most every two seconds while rows flow, and once at the end, never once per
-row. Minting pre-checks the gate, but the status read stays the authoritative
+row. Progress writes are spawned so a slow store never stalls the body, and the
+end is written after the last chunk has been handed on, and written again from
+the body's `Drop` if that write did not complete. Writes only move forward
+(`pending` → `streaming` with rising rows → one end, enforced in the `update`'s
+`where`), so a late progress write cannot overwrite the end. Minting pre-checks the gate, but the status read stays the authoritative
 answer for a refusal at download time, since the gate can fill between the two.
 
 **Dashboard.** Where `showSaveFilePicker` exists, the stream-to-file path from
 #3434 stays. Elsewhere the Export button mints a ticket, follows it with a
 hidden same-origin `<a download>`, and polls the status about once a second
 until a terminal state, showing the rows written and reusing the translated
-`429` and truncated-export messages. The `Response.blob()` fallback is removed,
+`429` and truncated-export messages. It tolerates a few failed reads in a row,
+gives up with its own message after five minutes without progress, and offers a
+Cancel that only stops watching (the browser's download is unaffected). A
+`client_closed` end is most likely the person cancelling in the browser, so it
+gets a neutral "download stopped" line rather than a failure. The `Response.blob()` fallback is removed,
 so no copy of the body is held in the tab.
 
 ## Consequences

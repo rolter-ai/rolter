@@ -49,7 +49,7 @@ use std::time::{Duration, Instant};
 
 use axum::body::Body;
 use axum::extract::{Path, State};
-use axum::http::{header, HeaderMap, HeaderValue, StatusCode, Uri};
+use axum::http::{header, HeaderMap, HeaderValue, Method, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Extension, Json, Router};
@@ -76,10 +76,20 @@ const PROGRESS_EVERY: Duration = Duration::from_secs(2);
 /// after a long export, before the next mint purges it.
 const RETAIN_PAST_EXPIRY: Duration = Duration::from_secs(24 * 60 * 60);
 
-/// The most tickets the in-memory store holds. One replica, and each ticket is
-/// minted by an authenticated caller, so this only stops a loop from growing
-/// the map without bound.
+/// How long the in-memory store keeps a ticket once it can change no more (it
+/// expired unused, or its download ended), so the page's last status reads
+/// still find it.
+const MEMORY_KEEP_AFTER_END: Duration = Duration::from_secs(5 * 60);
+
+/// The most tickets the in-memory store holds at once. Finished tickets leave
+/// within [`MEMORY_KEEP_AFTER_END`], so only a loop of mints reaches it.
 const MEMORY_CAPACITY: usize = 10_000;
+
+/// How long a streaming ticket may go without a progress write before its
+/// status reads as interrupted, when exports have no time limit. With one, the
+/// limit plus two progress intervals is used instead: a live export writes at
+/// least that often, or the limit ends it.
+const UNBOUNDED_STALE_AFTER: Duration = Duration::from_secs(60 * 60);
 
 /// The longest query string a ticket stores. The export URLs the dashboard
 /// builds are a few hundred bytes.
@@ -142,16 +152,18 @@ impl Minter {
     }
 }
 
-/// The digest of the admin token a ticket stores: a domain-separated SHA-256,
-/// so it matches no other digest this control plane keeps of the token.
-fn admin_digest(token: &str) -> String {
-    rolter_auth::hash_key("rolter-export-ticket", token)
+/// The digest of the admin token a ticket stores, keyed with the ticket's own
+/// secret. The store holds only the secret's hash, so a dump of it cannot be
+/// used to test guesses at the admin token offline; at redemption the presented
+/// secret recomputes the digest, which tells a token rotated since.
+fn admin_digest(secret: &str, token: &str) -> String {
+    rolter_auth::hash_key(secret, token)
 }
 
 /// Whether `admin`, the admin token configured now, is the one a ticket's
-/// `digest` was taken of.
-fn same_admin(admin: &str, digest: &str) -> bool {
-    subtle::ConstantTimeEq::ct_eq(admin_digest(admin).as_bytes(), digest.as_bytes()).into()
+/// `digest` was taken of under `secret`.
+fn same_admin(secret: &str, admin: &str, digest: &str) -> bool {
+    subtle::ConstantTimeEq::ct_eq(admin_digest(secret, admin).as_bytes(), digest.as_bytes()).into()
 }
 
 /// The SHA-256 a secret is stored and looked up as.
@@ -184,6 +196,8 @@ pub(crate) enum TruncatedReason {
     ReadError,
     /// the browser stopped the download, or the connection dropped
     ClientClosed,
+    /// the replica serving it stopped reporting: it went away mid-export
+    Interrupted,
 }
 
 impl From<Cut> for TruncatedReason {
@@ -223,6 +237,31 @@ impl TicketState {
     fn is_terminal(&self) -> bool {
         !matches!(self, TicketState::Pending | TicketState::Streaming { .. })
     }
+
+    /// Whether `next` may replace this state. Writes only move forward: nothing
+    /// replaces an end, and a progress write never lowers the rows, so a late
+    /// or reordered progress write cannot undo the end it raced.
+    fn may_become(&self, next: &TicketState) -> bool {
+        match (self, next) {
+            (TicketState::Pending, next) => *next != TicketState::Pending,
+            (TicketState::Streaming { rows }, TicketState::Streaming { rows: next }) => {
+                next >= rows
+            }
+            (TicketState::Streaming { .. }, next) => next.is_terminal(),
+            _ => false,
+        }
+    }
+
+    /// The rows a progress write carries, for the store's forward-only check.
+    #[cfg(feature = "postgres")]
+    fn rows(&self) -> u64 {
+        match self {
+            TicketState::Streaming { rows }
+            | TicketState::Complete { rows }
+            | TicketState::Truncated { rows, .. } => *rows,
+            _ => 0,
+        }
+    }
 }
 
 /// What a mint stores.
@@ -242,6 +281,9 @@ struct Redeemed {
     minter: Minter,
     export: ExportKind,
     query: String,
+    /// when the ticket was minted: a token rotated after it no longer redeems
+    #[cfg_attr(not(feature = "postgres"), allow(dead_code))]
+    minted_at: DateTime<Utc>,
 }
 
 /// A ticket as its status read sees it.
@@ -251,6 +293,8 @@ struct TicketRecord {
     export: ExportKind,
     expires_at: DateTime<Utc>,
     state: TicketState,
+    /// how long since its state was last written
+    idle: Duration,
 }
 
 /// Where tickets live: Postgres with a store, memory without.
@@ -264,8 +308,9 @@ trait TicketStore: Send + Sync {
     async fn redeem(&self, hash: &str) -> anyhow::Result<Option<Redeemed>>;
     /// The ticket with the non-secret `id`, expiry applied.
     async fn read(&self, id: Uuid) -> anyhow::Result<Option<TicketRecord>>;
-    /// Record where the ticket's export has got to.
-    async fn report(&self, id: Uuid, state: &TicketState) -> anyhow::Result<()>;
+    /// Record where the ticket's export has got to, if the stored state may
+    /// become it ([`TicketState::may_become`]); answers whether it was written.
+    async fn report(&self, id: Uuid, state: &TicketState) -> anyhow::Result<bool>;
 }
 
 /// The in-memory store, for the store-less mode and builds without postgres.
@@ -286,9 +331,26 @@ struct MemoryTicket {
     owner: String,
     export: ExportKind,
     query: String,
+    created_at: DateTime<Utc>,
     expires_at: DateTime<Utc>,
+    updated_at: DateTime<Utc>,
     used: bool,
     state: TicketState,
+}
+
+impl MemoryTicket {
+    /// Whether the store still needs this ticket at `now`: one that can change
+    /// no more is kept only for the page's last few status reads.
+    fn wanted(&self, now: DateTime<Utc>) -> bool {
+        let keep = chrono_span(MEMORY_KEEP_AFTER_END);
+        if !self.used {
+            self.expires_at > now - keep
+        } else if self.state.is_terminal() {
+            self.updated_at > now - keep
+        } else {
+            self.updated_at > now - chrono_span(RETAIN_PAST_EXPIRY)
+        }
+    }
 }
 
 fn chrono_span(duration: Duration) -> chrono::Duration {
@@ -300,9 +362,8 @@ impl TicketStore for MemoryTickets {
     async fn insert(&self, ticket: NewTicket, lifetime: Duration) -> anyhow::Result<DateTime<Utc>> {
         let now = Utc::now();
         let mut map = self.tickets.lock();
-        let horizon = now - chrono_span(RETAIN_PAST_EXPIRY);
         let MemoryMap { by_id, by_hash } = &mut *map;
-        by_id.retain(|_, held| held.expires_at > horizon);
+        by_id.retain(|_, held| held.wanted(now));
         by_hash.retain(|_, id| by_id.contains_key(id));
         if by_id.len() >= MEMORY_CAPACITY {
             anyhow::bail!("the in-memory ticket store is full");
@@ -317,7 +378,9 @@ impl TicketStore for MemoryTickets {
                 owner: ticket.owner,
                 export: ticket.export,
                 query: ticket.query,
+                created_at: now,
                 expires_at,
+                updated_at: now,
                 used: false,
                 state: TicketState::Pending,
             },
@@ -338,11 +401,13 @@ impl TicketStore for MemoryTickets {
             return Ok(None);
         }
         held.used = true;
+        held.updated_at = now;
         Ok(Some(Redeemed {
             id,
             minter: held.minter.clone(),
             export: held.export,
             query: held.query.clone(),
+            minted_at: held.created_at,
         }))
     }
 
@@ -359,14 +424,21 @@ impl TicketStore for MemoryTickets {
                 }
                 state => state.clone(),
             },
+            idle: (now - held.updated_at).to_std().unwrap_or_default(),
         }))
     }
 
-    async fn report(&self, id: Uuid, state: &TicketState) -> anyhow::Result<()> {
-        if let Some(held) = self.tickets.lock().by_id.get_mut(&id) {
-            held.state = state.clone();
+    async fn report(&self, id: Uuid, state: &TicketState) -> anyhow::Result<bool> {
+        let mut map = self.tickets.lock();
+        let Some(held) = map.by_id.get_mut(&id) else {
+            return Ok(false);
+        };
+        if !held.state.may_become(state) {
+            return Ok(false);
         }
-        Ok(())
+        held.state = state.clone();
+        held.updated_at = Utc::now();
+        Ok(true)
     }
 }
 
@@ -446,57 +518,76 @@ impl TicketStore for PgTickets<'_> {
             Option<String>,
             String,
             String,
+            DateTime<Utc>,
         );
         let row: Option<Row> = sqlx::query_as(
             "update export_tickets set used_at = now(), updated_at = now() \
              where secret_hash = $1 and used_at is null and expires_at > now() \
-             returning id, minter_kind, session_id, api_token_id, admin_digest, export, query",
+             returning id, minter_kind, session_id, api_token_id, admin_digest, export, query, \
+                       created_at",
         )
         .bind(hash)
         .fetch_optional(self.0)
         .await?;
-        Ok(
-            row.and_then(|(id, kind, session, token, digest, export, query)| {
+        Ok(row.and_then(
+            |(id, kind, session, token, digest, export, query, minted_at)| {
                 Some(Redeemed {
                     id,
                     minter: Self::minter_from(&kind, session, token, digest)?,
                     export: ExportKind::parse(&export)?,
                     query,
+                    minted_at,
                 })
-            }),
-        )
+            },
+        ))
     }
 
     async fn read(&self, id: Uuid) -> anyhow::Result<Option<TicketRecord>> {
-        let row: Option<(String, String, DateTime<Utc>, serde_json::Value, bool)> = sqlx::query_as(
+        type Row = (String, String, DateTime<Utc>, serde_json::Value, bool, f64);
+        let row: Option<Row> = sqlx::query_as(
             "select owner, export, expires_at, status, \
-                        (used_at is null and expires_at <= now()) as lapsed \
+                        (used_at is null and expires_at <= now()) as lapsed, \
+                        greatest(extract(epoch from now() - updated_at), 0)::double precision \
                  from export_tickets where id = $1",
         )
         .bind(id)
         .fetch_optional(self.0)
         .await?;
-        Ok(row.and_then(|(owner, export, expires_at, status, lapsed)| {
-            let state = match serde_json::from_value(status).ok()? {
-                TicketState::Pending if lapsed => TicketState::Expired,
-                state => state,
-            };
-            Some(TicketRecord {
-                owner,
-                export: ExportKind::parse(&export)?,
-                expires_at,
-                state,
-            })
-        }))
+        Ok(
+            row.and_then(|(owner, export, expires_at, status, lapsed, idle)| {
+                let state = match serde_json::from_value(status).ok()? {
+                    TicketState::Pending if lapsed => TicketState::Expired,
+                    state => state,
+                };
+                Some(TicketRecord {
+                    owner,
+                    export: ExportKind::parse(&export)?,
+                    expires_at,
+                    state,
+                    idle: Duration::try_from_secs_f64(idle).unwrap_or_default(),
+                })
+            }),
+        )
     }
 
-    async fn report(&self, id: Uuid, state: &TicketState) -> anyhow::Result<()> {
-        sqlx::query("update export_tickets set status = $2, updated_at = now() where id = $1")
-            .bind(id)
-            .bind(serde_json::to_value(state)?)
-            .execute(self.0)
-            .await?;
-        Ok(())
+    async fn report(&self, id: Uuid, state: &TicketState) -> anyhow::Result<bool> {
+        // the forward-only rule of `TicketState::may_become`, in the statement
+        // so two replicas' writes cannot interleave around a read
+        let written = sqlx::query(
+            "update export_tickets set status = $2, updated_at = now() \
+             where id = $1 and ( \
+                 status->>'state' = 'pending' \
+                 or (status->>'state' = 'streaming' \
+                     and ($3 or coalesce((status->>'rows')::bigint, 0) <= $4)))",
+        )
+        .bind(id)
+        .bind(serde_json::to_value(state)?)
+        .bind(state.is_terminal())
+        .bind(i64::try_from(state.rows()).unwrap_or(i64::MAX))
+        .execute(self.0)
+        .await?
+        .rows_affected();
+        Ok(written > 0)
     }
 }
 
@@ -546,18 +637,44 @@ impl TicketStore for MemoryRef<'_> {
     async fn read(&self, id: Uuid) -> anyhow::Result<Option<TicketRecord>> {
         self.0.read(id).await
     }
-    async fn report(&self, id: Uuid, state: &TicketState) -> anyhow::Result<()> {
+    async fn report(&self, id: Uuid, state: &TicketState) -> anyhow::Result<bool> {
         self.0.report(id, state).await
     }
 }
 
 /// Record `state` for ticket `id`, logging rather than failing: the export the
 /// status describes is already under way, and a lost write only leaves the page
-/// polling an older state.
-async fn report(state: &ControlState, id: Uuid, ticket_state: &TicketState) {
-    if let Err(error) = store(state).report(id, ticket_state).await {
-        tracing::warn!(%error, ticket = %id, "recording an export download's progress failed");
+/// polling an older state. Answers whether the store answered at all, refused
+/// or not, so a caller knows whether a resend could still help.
+async fn report(state: &ControlState, id: Uuid, ticket_state: &TicketState) -> bool {
+    match store(state).report(id, ticket_state).await {
+        Ok(_) => true,
+        Err(error) => {
+            tracing::warn!(%error, ticket = %id, "recording an export download's progress failed");
+            false
+        }
     }
+}
+
+/// [`report`] without waiting for it, for a write that must not hold up the
+/// body it describes.
+fn report_later(state: &ControlState, id: Uuid, ticket_state: TicketState) {
+    let state = state.clone();
+    if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+        runtime.spawn(async move {
+            report(&state, id, &ticket_state).await;
+        });
+    }
+}
+
+/// How long a streaming ticket may go unwritten before its status reads as
+/// interrupted: the export time limit plus two progress intervals, since a live
+/// export either writes that often or is ended by the limit.
+fn stale_after(state: &ControlState) -> Duration {
+    state
+        .export_gate
+        .max_duration()
+        .map_or(UNBOUNDED_STALE_AFTER, |limit| limit + 2 * PROGRESS_EVERY)
 }
 
 fn error(status: StatusCode, message: &str) -> Response {
@@ -616,6 +733,7 @@ async fn minter_of(
     state: &ControlState,
     headers: &HeaderMap,
     principal: &Caller,
+    secret: &str,
 ) -> Result<Minter, Response> {
     use crate::rbac::Principal;
     let Some(admin) = state.admin_token.as_deref() else {
@@ -624,7 +742,7 @@ async fn minter_of(
     match principal {
         Principal::Token(held) => Ok(Minter::ApiToken(held.token.id)),
         Principal::Superadmin { account: None } => Ok(Minter::Admin {
-            digest: admin_digest(admin),
+            digest: admin_digest(secret, admin),
         }),
         // a signed-in account: the session it signed in on is what can be
         // revoked, so that is what the ticket names
@@ -649,30 +767,40 @@ async fn minter_of(
 
 #[cfg(not(feature = "postgres"))]
 #[allow(clippy::result_large_err)]
-async fn minter_of(state: &ControlState, _: &HeaderMap, _: &Caller) -> Result<Minter, Response> {
+async fn minter_of(
+    state: &ControlState,
+    _: &HeaderMap,
+    _: &Caller,
+    secret: &str,
+) -> Result<Minter, Response> {
     // without a database the admin token is the only credential there is, and
     // the extractor that ran before has checked it
     Ok(match state.admin_token.as_deref() {
         None => Minter::Open,
         Some(admin) => Minter::Admin {
-            digest: admin_digest(admin),
+            digest: admin_digest(secret, admin),
         },
     })
 }
 
 /// The principal a ticket's minter is now, or `None` when that credential no
-/// longer holds: a revoked or expired session, a deactivated account, a revoked
-/// or deleted API token, a rotated admin token, or an open-mode ticket on a
-/// control plane that has since been given a token.
+/// longer holds: a revoked or expired session, a deactivated account, a revoked,
+/// expired, deleted or since-rotated API token, a rotated admin token, or an
+/// open-mode ticket on a control plane that has since been given a token.
+/// `secret` is the presented ticket, which an admin token's digest is keyed by.
 #[cfg(feature = "postgres")]
-async fn principal_of(state: &ControlState, minter: &Minter) -> anyhow::Result<Option<Caller>> {
+async fn principal_of(
+    state: &ControlState,
+    redeemed: &Redeemed,
+    secret: &str,
+) -> anyhow::Result<Option<Caller>> {
     use crate::rbac::Principal;
     use rolter_store::postgres::repo::{SessionRepo, UserRepo};
-    match (minter, state.admin_token.as_deref()) {
+    match (&redeemed.minter, state.admin_token.as_deref()) {
         (Minter::Open, None) => Ok(Some(Principal::Superadmin { account: None })),
-        (Minter::Admin { digest }, Some(admin)) => {
-            Ok(same_admin(admin, digest).then_some(Principal::Superadmin { account: None }))
-        }
+        (Minter::Admin { digest }, Some(admin)) => Ok(
+            same_admin(secret, admin, digest).then_some(Principal::Superadmin { account: None })
+        ),
         (Minter::Session(id), Some(_)) => {
             let Some(pool) = state.pool.as_ref() else {
                 return Ok(None);
@@ -690,9 +818,17 @@ async fn principal_of(state: &ControlState, minter: &Minter) -> anyhow::Result<O
             let Some(pool) = state.pool.as_ref() else {
                 return Ok(None);
             };
-            Ok(crate::api_tokens::resolve_id(pool, *id)
+            let held = crate::api_tokens::resolve_id(pool, *id)
                 .await
-                .map_err(|failure| anyhow::anyhow!("{failure:?}"))?
+                .map_err(|failure| anyhow::anyhow!("{failure:?}"))?;
+            // a rotation keeps the row and replaces the secret, so a ticket
+            // minted with the old one goes with it
+            Ok(held
+                .filter(|held| {
+                    held.token
+                        .rotated_at
+                        .is_none_or(|rotated| rotated <= redeemed.minted_at)
+                })
                 .map(Principal::Token))
         }
         _ => Ok(None),
@@ -700,10 +836,14 @@ async fn principal_of(state: &ControlState, minter: &Minter) -> anyhow::Result<O
 }
 
 #[cfg(not(feature = "postgres"))]
-async fn principal_of(state: &ControlState, minter: &Minter) -> anyhow::Result<Option<Caller>> {
-    Ok(match (minter, state.admin_token.as_deref()) {
+async fn principal_of(
+    state: &ControlState,
+    redeemed: &Redeemed,
+    secret: &str,
+) -> anyhow::Result<Option<Caller>> {
+    Ok(match (&redeemed.minter, state.admin_token.as_deref()) {
         (Minter::Open, None) => Some(()),
-        (Minter::Admin { digest }, Some(admin)) => same_admin(admin, digest).then_some(()),
+        (Minter::Admin { digest }, Some(admin)) => same_admin(secret, admin, digest).then_some(()),
         _ => None,
     })
 }
@@ -768,11 +908,11 @@ async fn mint(
             return too_many_exports(busy);
         }
     }
-    let minter = match minter_of(&state, &headers, &principal).await {
+    let secret = new_secret();
+    let minter = match minter_of(&state, &headers, &principal, &secret).await {
         Ok(minter) => minter,
         Err(refused) => return refused,
     };
-    let secret = new_secret();
     let id = Uuid::new_v4();
     let ticket = NewTicket {
         id,
@@ -839,12 +979,24 @@ async fn status(
     )) {
         return not_found();
     }
+    // a replica that went away mid-export leaves its ticket streaming with
+    // nobody to end it: past the time a live export writes within, it reads
+    // as cut short
+    let ticket_state = match record.state {
+        TicketState::Streaming { rows } if record.idle > stale_after(&state) => {
+            TicketState::Truncated {
+                rows,
+                reason: TruncatedReason::Interrupted,
+            }
+        }
+        ticket_state => ticket_state,
+    };
     let mut response = Json(TicketStatus {
         id,
         export: record.export.as_str(),
         expires_at: record.expires_at,
-        done: record.state.is_terminal(),
-        state: record.state,
+        done: ticket_state.is_terminal(),
+        state: ticket_state,
     })
     .into_response();
     response
@@ -856,14 +1008,30 @@ async fn status(
 /// `GET /api/v1/analytics/exports/download/{ticket}`: redeem a ticket and send
 /// its export. The secret is read off the URI rather than through a `Path`
 /// extractor, whose rejection could quote it.
+///
+/// axum answers `HEAD` with the `GET` handler, and a link checker or a proxy
+/// that sends one must not spend the ticket or take a place in the export
+/// gate, so anything but `GET` is a `405` before the ticket is looked at.
 async fn download(
     State(state): State<ControlState>,
+    method: Method,
     uri: Uri,
     version: RequestVersion,
     connection: Option<Extension<ConnectionHandle>>,
 ) -> Response {
-    let secret = uri.path().strip_prefix(DOWNLOAD_PREFIX).unwrap_or_default();
-    let mut response = redeem(state, secret, version, connection).await;
+    let mut response = if method == Method::GET {
+        let secret = uri.path().strip_prefix(DOWNLOAD_PREFIX).unwrap_or_default();
+        redeem(state, secret, version, connection).await
+    } else {
+        let mut refused = error(
+            StatusCode::METHOD_NOT_ALLOWED,
+            "a download link is followed with GET only",
+        );
+        refused
+            .headers_mut()
+            .insert(header::ALLOW, HeaderValue::from_static("GET"));
+        refused
+    };
     let headers = response.headers_mut();
     headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     headers.insert(
@@ -891,7 +1059,7 @@ async fn redeem(
     // the ticket is spent from here on, whatever happens next. without
     // postgres the principal is `()`, which is all the export takes there
     #[allow(clippy::let_unit_value)]
-    let principal = match principal_of(&state, &redeemed.minter).await {
+    let principal = match principal_of(&state, &redeemed, secret).await {
         Ok(Some(principal)) => principal,
         Ok(None) => {
             let refused = error(
@@ -967,27 +1135,44 @@ async fn refused_with_status(state: &ControlState, id: Uuid, response: Response)
 
 /// The end of a ticket's export, written when the body ends, fails or is
 /// dropped unfinished.
+///
+/// Progress writes are spawned, so a slow store never stalls the body. The end
+/// is kept here once it is known, and written once more from `Drop` if its
+/// write did not complete, which covers a body dropped while that write was
+/// still awaited. The store only moves a ticket forward, so a late progress
+/// write cannot overwrite the end.
 struct Tracker {
     state: ControlState,
     id: Uuid,
     progress: Arc<ExportProgress>,
     reported_at: Instant,
-    ended: bool,
+    /// the end this download reached, once it has one
+    end: Option<TicketState>,
+    /// the store has answered the end's write, or a spawned write carries it
+    end_sent: bool,
 }
 
 impl Tracker {
     /// A chunk went out: a progress write, if the last one is old enough.
-    async fn tick(&mut self) {
+    fn tick(&mut self) {
         if self.reported_at.elapsed() >= PROGRESS_EVERY {
             self.reported_at = Instant::now();
             let rows = self.progress.rows();
-            report(&self.state, self.id, &TicketState::Streaming { rows }).await;
+            report_later(&self.state, self.id, TicketState::Streaming { rows });
         }
     }
 
-    async fn end(&mut self, end: TicketState) {
-        self.ended = true;
-        report(&self.state, self.id, &end).await;
+    /// The last chunk has been handed on: write the end and wait for it.
+    async fn finish(&mut self, end: TicketState) {
+        self.end = Some(end.clone());
+        self.end_sent = report(&self.state, self.id, &end).await;
+    }
+
+    /// The body failed: write the end without holding up the failure.
+    fn fail(&mut self, end: TicketState) {
+        self.end = Some(end.clone());
+        self.end_sent = true;
+        report_later(&self.state, self.id, end);
     }
 
     fn truncated(&self, otherwise: TruncatedReason) -> TicketState {
@@ -1000,16 +1185,16 @@ impl Tracker {
 
 impl Drop for Tracker {
     fn drop(&mut self) {
-        if self.ended {
+        if self.end_sent {
             return;
         }
-        // the body was dropped before its end: the browser cancelled, or the
-        // connection went. the write is spawned, since a drop cannot wait
-        let end = self.truncated(TruncatedReason::ClientClosed);
-        let (state, id) = (self.state.clone(), self.id);
-        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
-            runtime.spawn(async move { report(&state, id, &end).await });
-        }
+        // the body was dropped before its end (the browser cancelled, or the
+        // connection went), or while the end's own write was under way
+        let end = self
+            .end
+            .take()
+            .unwrap_or_else(|| self.truncated(TruncatedReason::ClientClosed));
+        report_later(&self.state, self.id, end);
     }
 }
 
@@ -1026,27 +1211,28 @@ fn track(
         id,
         progress,
         reported_at: Instant::now(),
-        ended: false,
+        end: None,
+        end_sent: false,
     };
     let body = stream::unfold(
         (body.into_data_stream(), tracker),
         |(mut inner, mut tracker)| async move {
-            if tracker.ended {
+            if tracker.end.is_some() {
                 return None;
             }
             match inner.next().await {
                 Some(Ok(chunk)) => {
-                    tracker.tick().await;
+                    tracker.tick();
                     Some((Ok(chunk), (inner, tracker)))
                 }
                 Some(Err(failure)) => {
                     let end = tracker.truncated(TruncatedReason::ReadError);
-                    tracker.end(end).await;
+                    tracker.fail(end);
                     Some((Err(failure), (inner, tracker)))
                 }
                 None => {
                     let rows = tracker.progress.rows();
-                    tracker.end(TicketState::Complete { rows }).await;
+                    tracker.finish(TicketState::Complete { rows }).await;
                     None
                 }
             }
@@ -1146,6 +1332,20 @@ mod tests {
         json_of(response).await
     }
 
+    /// The status once it can change no more: the end of a download is
+    /// written after its last chunk, and a failure's without waiting for it.
+    async fn settled(app: &Router, bearer: &str, id: &str) -> serde_json::Value {
+        let mut status = json!(null);
+        for _ in 0..200 {
+            status = status_of(app, bearer, id).await;
+            if status["done"] == true {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        status
+    }
+
     const LOG: &str = "/api/v1/analytics/invocations/export";
 
     fn unbounded() -> ExportLimits {
@@ -1239,7 +1439,7 @@ mod tests {
             .unwrap()
             .starts_with("attachment; filename=\"request-log_2026-10-01"));
         assert_eq!(text_of(response).await, expected);
-        let status = status_of(&app, &token, &id).await;
+        let status = settled(&app, &token, &id).await;
         assert_eq!(status["state"], "complete", "{status}");
         assert_eq!(status["rows"], 2500);
         assert_eq!(status["done"], true);
@@ -1269,7 +1469,7 @@ mod tests {
             let download = send(&app, get(body["download_url"].as_str().unwrap(), None)).await;
             assert_eq!(download.status(), StatusCode::OK, "{path}");
             let _ = text_of(download).await;
-            let status = status_of(&app, &token, body["id"].as_str().unwrap()).await;
+            let status = settled(&app, &token, body["id"].as_str().unwrap()).await;
             assert_eq!(status["state"], "complete", "{path}: {status}");
         }
     }
@@ -1342,7 +1542,7 @@ mod tests {
         // which only the status can tell the page
         let download = send(&app, get(&url, None)).await;
         assert_eq!(download.status(), StatusCode::TOO_MANY_REQUESTS);
-        let status = status_of(&app, &token, &id).await;
+        let status = settled(&app, &token, &id).await;
         assert_eq!(
             (status["state"].clone(), status["status"].clone()),
             (json!("refused"), json!(429))
@@ -1360,7 +1560,7 @@ mod tests {
         let response = send(&app, get(&url, None)).await;
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(drain(response).await, (1500, false));
-        let status = status_of(&app, &token, &id).await;
+        let status = settled(&app, &token, &id).await;
         assert_eq!(status["state"], "truncated", "{status}");
         assert_eq!(status["rows"], 1500);
         assert_eq!(status["reason"], "row_limit");
@@ -1404,6 +1604,139 @@ mod tests {
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
         let secret = url.strip_prefix(DOWNLOAD_PREFIX).unwrap();
         assert!(!text_of(response).await.contains(secret));
+    }
+
+    #[tokio::test]
+    async fn a_head_request_is_refused_without_spending_the_ticket() {
+        let (app, token) = memory_app(10, unbounded(), TICKET_LIFETIME).await;
+        let (id, url) = minted(&app, &token, "").await;
+        let head = axum::http::Request::head(&url)
+            .body(Body::empty())
+            .expect("a valid request");
+        let refused = send(&app, head).await;
+        assert_eq!(refused.status(), StatusCode::METHOD_NOT_ALLOWED);
+        assert_eq!(refused.headers()[header::ALLOW], "GET");
+        assert_eq!(refused.headers()[header::REFERRER_POLICY], "no-referrer");
+        assert_eq!(status_of(&app, &token, &id).await["state"], "pending");
+        // the browser's GET still gets the file
+        let response = send(&app, get(&url, None)).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(drain(response).await, (10, true));
+    }
+
+    fn new_ticket(minter: Minter) -> NewTicket {
+        NewTicket {
+            id: Uuid::new_v4(),
+            secret_hash: secret_hash(&new_secret()),
+            minter,
+            owner: "admin".into(),
+            export: ExportKind::Invocations,
+            query: String::new(),
+        }
+    }
+
+    #[test]
+    fn a_state_only_moves_forward() {
+        use TicketState::*;
+        let complete = Complete { rows: 5 };
+        assert!(Pending.may_become(&Streaming { rows: 0 }));
+        assert!(Pending.may_become(&complete));
+        assert!(Streaming { rows: 1 }.may_become(&Streaming { rows: 2 }));
+        assert!(!Streaming { rows: 2 }.may_become(&Streaming { rows: 1 }));
+        assert!(Streaming { rows: 2 }.may_become(&complete));
+        assert!(!complete.may_become(&Streaming { rows: 9 }));
+        assert!(!complete.may_become(&Expired));
+        assert!(!Streaming { rows: 1 }.may_become(&Pending));
+    }
+
+    /// A progress write that lands after the end, as a spawned one can, does
+    /// not undo it.
+    #[tokio::test]
+    async fn a_late_progress_write_does_not_overwrite_the_end() {
+        let store = MemoryTickets::default();
+        let ticket = new_ticket(Minter::Open);
+        let id = ticket.id;
+        store.insert(ticket, TICKET_LIFETIME).await.unwrap();
+        assert!(store
+            .report(id, &TicketState::Streaming { rows: 10 })
+            .await
+            .unwrap());
+        let end = TicketState::Complete { rows: 20 };
+        assert!(store.report(id, &end).await.unwrap());
+        assert!(!store
+            .report(id, &TicketState::Streaming { rows: 15 })
+            .await
+            .unwrap());
+        assert_eq!(store.read(id).await.unwrap().unwrap().state, end);
+    }
+
+    #[tokio::test]
+    async fn the_memory_store_lets_finished_tickets_go_promptly() {
+        let store = MemoryTickets::default();
+        let ended = new_ticket(Minter::Open);
+        let ended_id = ended.id;
+        let lapsed = new_ticket(Minter::Open);
+        let lapsed_id = lapsed.id;
+        let live = new_ticket(Minter::Open);
+        let live_id = live.id;
+        for ticket in [ended, lapsed, live] {
+            store.insert(ticket, TICKET_LIFETIME).await.unwrap();
+        }
+        {
+            let mut map = store.tickets.lock();
+            let long_ago = Utc::now() - chrono_span(2 * MEMORY_KEEP_AFTER_END);
+            let ended = map.by_id.get_mut(&ended_id).unwrap();
+            ended.used = true;
+            ended.state = TicketState::Complete { rows: 1 };
+            ended.updated_at = long_ago;
+            map.by_id.get_mut(&lapsed_id).unwrap().expires_at = long_ago;
+        }
+        store
+            .insert(new_ticket(Minter::Open), TICKET_LIFETIME)
+            .await
+            .unwrap();
+        let map = store.tickets.lock();
+        assert!(!map.by_id.contains_key(&ended_id));
+        assert!(!map.by_id.contains_key(&lapsed_id));
+        assert!(map.by_id.contains_key(&live_id));
+        assert_eq!(map.by_hash.len(), map.by_id.len());
+    }
+
+    /// A replica that went away mid-export never writes the end: past the time
+    /// a live export writes within, the status reads as interrupted.
+    #[tokio::test]
+    async fn a_ticket_left_streaming_reads_as_interrupted() {
+        let token = admin_token();
+        let mut state = crate::tests::state_with_token(Some(&token));
+        state.export_gate = Arc::new(ExportGate::new(ExportLimits::new(0, 1, 0, 0)));
+        let app = app_with(state.clone());
+        let (id, _) = minted(&app, &token, "").await;
+        let id_uuid = id.parse::<Uuid>().unwrap();
+        {
+            let mut map = state.export_tickets.memory.tickets.lock();
+            let held = map.by_id.get_mut(&id_uuid).unwrap();
+            held.used = true;
+            held.state = TicketState::Streaming { rows: 7 };
+            held.updated_at = Utc::now() - chrono::Duration::seconds(30);
+        }
+        let status = status_of(&app, &token, &id).await;
+        assert_eq!(status["state"], "truncated", "{status}");
+        assert_eq!(status["reason"], "interrupted");
+        assert_eq!(status["rows"], 7);
+        assert_eq!(status["done"], true);
+    }
+
+    #[test]
+    fn an_admin_ticket_stores_no_unkeyed_digest_of_the_token() {
+        let admin = admin_token();
+        let (one, two) = (new_secret(), new_secret());
+        // keyed by the ticket: the same token leaves a different digest per
+        // ticket, so a dump holds nothing to test guesses against
+        assert_ne!(admin_digest(&one, &admin), admin_digest(&two, &admin));
+        let digest = admin_digest(&one, &admin);
+        assert!(same_admin(&one, &admin, &digest));
+        assert!(!same_admin(&two, &admin, &digest));
+        assert!(!same_admin(&one, &admin_token(), &digest));
     }
 
     /// The same flows against the Postgres store, where principals are people
@@ -1518,7 +1851,7 @@ mod tests {
             let response = send(&app, get(&url, None)).await;
             assert_eq!(response.status(), StatusCode::OK);
             assert_eq!(text_of(response).await, bearer);
-            let status = status_of(&app, &alice, &id).await;
+            let status = settled(&app, &alice, &id).await;
             assert_eq!(status["state"], "complete", "{status}");
             assert_eq!(status["rows"], 1200);
             assert_eq!(send(&app, get(&url, None)).await.status(), StatusCode::GONE);
@@ -1638,6 +1971,193 @@ mod tests {
                 .await
                 .unwrap();
             assert_eq!(left, 0);
+        }
+
+        /// A ClickHouse that answers three log rows to every page and keeps the
+        /// query parameters of each request, so a test can compare the row
+        /// scope a bearer export and a ticket download bound.
+        async fn recording_log() -> (String, Arc<parking_lot::Mutex<Vec<Vec<(String, String)>>>>) {
+            let seen = Arc::new(parking_lot::Mutex::new(Vec::new()));
+            let kept = Arc::clone(&seen);
+            let app = axum::Router::new().fallback(
+                move |axum::extract::Query(params): axum::extract::Query<Vec<(String, String)>>,
+                      body: String| {
+                    let kept = Arc::clone(&kept);
+                    async move {
+                        if body.contains("system.columns") {
+                            return axum::Json(json!({"data": []}));
+                        }
+                        kept.lock().push(params);
+                        let rows: Vec<serde_json::Value> = (1..=3)
+                            .map(|seq| {
+                                json!({"ts": "2026-10-01T00:00:00.000Z", "seq": seq.to_string(),
+                                       "request_id": format!("req-{seq}"), "status": 200})
+                            })
+                            .collect();
+                        axum::Json(json!({ "data": rows }))
+                    }
+                },
+            );
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let url = format!("http://{}", listener.local_addr().unwrap());
+            tokio::spawn(async move { axum::serve(listener, app).await });
+            (url, seen)
+        }
+
+        /// The row-scope bindings a request carried: everything `AnalyticsAccess` binds.
+        fn scope(params: &[(String, String)]) -> Vec<(String, String)> {
+            let mut scope: Vec<_> = params
+                .iter()
+                .filter(|(k, _)| {
+                    [
+                        "param_member_",
+                        "param_granted_",
+                        "param_unrestricted",
+                        "param_read_rank",
+                    ]
+                    .iter()
+                    .any(|prefix| k.starts_with(prefix))
+                })
+                .cloned()
+                .collect();
+            scope.sort();
+            scope
+        }
+
+        /// A viewer of one org, signed in, as `(user, org, bearer)`.
+        async fn org_viewer(pool: &sqlx::PgPool) -> (Uuid, Uuid, String) {
+            let org: Uuid =
+                sqlx::query_scalar("insert into orgs (name, slug) values ($1, $1) returning id")
+                    .bind(format!("tickets-{}", Uuid::new_v4().simple()))
+                    .fetch_one(pool)
+                    .await
+                    .unwrap();
+            let user: Uuid =
+                sqlx::query_scalar("insert into users (email) values ($1) returning id")
+                    .bind(format!("viewer-{}@example.test", Uuid::new_v4().simple()))
+                    .fetch_one(pool)
+                    .await
+                    .unwrap();
+            sqlx::query(
+                "insert into memberships (user_id, org_id, role) values ($1, $2, 'viewer')",
+            )
+            .bind(user)
+            .bind(org)
+            .execute(pool)
+            .await
+            .unwrap();
+            let bearer = format!("rolter_sess_{}", Uuid::new_v4().simple());
+            sqlx::query(
+                "insert into sessions (user_id, token_hash, expires_at) \
+                 values ($1, $2, now() + interval '1 hour')",
+            )
+            .bind(user)
+            .bind(rolter_auth::hash_key(
+                &crate::auth::session_pepper(),
+                &bearer,
+            ))
+            .execute(pool)
+            .await
+            .unwrap();
+            (user, org, bearer)
+        }
+
+        #[tokio::test]
+        async fn a_scoped_minter_downloads_exactly_its_bearer_scope() {
+            let Some(db) = scratch().await else { return };
+            let (url, seen) = recording_log().await;
+            let mut state = crate::test_state(db.pool().clone(), Some(admin_token()), None);
+            state.clickhouse = Some(ClickHouseClient::new(&url));
+            let app = app_with(state);
+            let (_, org, viewer) = org_viewer(db.pool()).await;
+
+            let bearer = text_of(send(&app, get(LOG, Some(&viewer))).await).await;
+            let bearer_scope = scope(&seen.lock().last().unwrap().clone());
+            // a viewer's scope: restricted, and naming their org
+            assert!(bearer_scope.contains(&("param_unrestricted".into(), "0".into())));
+            assert!(bearer_scope
+                .iter()
+                .any(|(k, v)| k == "param_member_org_ids" && v.contains(&org.to_string())));
+
+            let (_, link) = minted(&app, &viewer, "").await;
+            let ticket = text_of(send(&app, get(&link, None)).await).await;
+            assert_eq!(ticket, bearer);
+            assert_eq!(scope(&seen.lock().last().unwrap().clone()), bearer_scope);
+        }
+
+        #[tokio::test]
+        async fn a_minter_removed_from_the_org_since_downloads_under_the_narrower_scope() {
+            let Some(db) = scratch().await else { return };
+            let (url, seen) = recording_log().await;
+            let mut state = crate::test_state(db.pool().clone(), Some(admin_token()), None);
+            state.clickhouse = Some(ClickHouseClient::new(&url));
+            let app = app_with(state);
+            let (user, org, viewer) = org_viewer(db.pool()).await;
+            let (_, link) = minted(&app, &viewer, "").await;
+            // removed from the org between the mint and the download
+            sqlx::query("delete from memberships where user_id = $1")
+                .bind(user)
+                .execute(db.pool())
+                .await
+                .unwrap();
+            let response = send(&app, get(&link, None)).await;
+            let _ = text_of(response).await;
+            let bound = scope(&seen.lock().last().unwrap().clone());
+            assert!(bound.contains(&("param_unrestricted".into(), "0".into())));
+            assert!(
+                !bound.iter().any(|(_, v)| v.contains(&org.to_string())),
+                "the export still reached the org it was removed from: {bound:?}"
+            );
+        }
+
+        #[tokio::test]
+        async fn a_ticket_from_an_api_token_rotated_since_is_refused() {
+            let Some(db) = scratch().await else { return };
+            let app = pg_app(&db, &admin_token(), TICKET_LIFETIME).await;
+            let (token_id, bearer) = api_token(db.pool()).await;
+            let (_, url) = minted(&app, &bearer, "").await;
+            sqlx::query(
+                "update api_tokens set rotated_at = now() + interval '1 second' where id = $1",
+            )
+            .bind(token_id)
+            .execute(db.pool())
+            .await
+            .unwrap();
+            assert_eq!(
+                send(&app, get(&url, None)).await.status(),
+                StatusCode::UNAUTHORIZED
+            );
+        }
+
+        #[tokio::test]
+        async fn the_postgres_status_only_moves_forward() {
+            let Some(db) = scratch().await else { return };
+            let store = PgTickets(db.pool());
+            let ticket = new_ticket(Minter::Open);
+            let id = ticket.id;
+            store.insert(ticket, TICKET_LIFETIME).await.unwrap();
+            assert!(store
+                .report(id, &TicketState::Streaming { rows: 10 })
+                .await
+                .unwrap());
+            assert!(!store
+                .report(id, &TicketState::Streaming { rows: 5 })
+                .await
+                .unwrap());
+            let end = TicketState::Truncated {
+                rows: 12,
+                reason: TruncatedReason::RowLimit,
+            };
+            assert!(store.report(id, &end).await.unwrap());
+            assert!(!store
+                .report(id, &TicketState::Streaming { rows: 20 })
+                .await
+                .unwrap());
+            assert!(!store
+                .report(id, &TicketState::Complete { rows: 20 })
+                .await
+                .unwrap());
+            assert_eq!(store.read(id).await.unwrap().unwrap().state, end);
         }
     }
 }
