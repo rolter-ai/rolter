@@ -123,7 +123,7 @@ api_keys = [{ env = "OPENROUTER_API_KEY" }]
 # [[providers]]
 # name = "bedrock"
 # kind = "bedrock"
-# api_base = "https://bedrock-runtime.us-east-1.amazonaws.com/v1"
+# api_base = "https://bedrock-runtime.us-east-1.amazonaws.com/openai/v1"
 # api_keys = [{ env = "AWS_BEARER_TOKEN_BEDROCK" }]
 #
 # [[providers]]

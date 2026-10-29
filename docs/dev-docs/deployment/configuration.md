@@ -171,7 +171,7 @@ api_key_env = "AZURE_OPENAI_API_KEY"
 [[providers]]
 name = "bedrock"
 kind = "bedrock"
-api_base = "https://bedrock-runtime.us-east-1.amazonaws.com/v1"
+api_base = "https://bedrock-runtime.us-east-1.amazonaws.com/openai/v1"
 api_key_env = "AWS_BEARER_TOKEN_BEDROCK"
 
 [[providers]]

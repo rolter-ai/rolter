@@ -311,13 +311,20 @@ mod tests {
     fn bedrock_and_vertex_rewrite_onto_their_control_planes() {
         let (url, _) = probe_request(
             ProviderKind::Bedrock,
-            "https://bedrock-runtime.us-east-1.amazonaws.com/v1",
+            "https://bedrock-runtime.us-east-1.amazonaws.com/openai/v1",
             "/",
         );
         assert_eq!(
             url,
             "https://bedrock.us-east-1.amazonaws.com/foundation-models"
         );
+        // a base saved before the documented `/openai/v1` still reaches it
+        let (legacy, _) = probe_request(
+            ProviderKind::Bedrock,
+            "https://bedrock-runtime.us-east-1.amazonaws.com/v1",
+            "/",
+        );
+        assert_eq!(legacy, url);
 
         let (url, _) = probe_request(
             ProviderKind::Vertex,
