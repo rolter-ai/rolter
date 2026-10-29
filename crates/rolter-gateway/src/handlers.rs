@@ -2587,9 +2587,6 @@ async fn proxy(
     // the client, so a partial response is never duplicated. a route with
     // variants routes through the weighted-variant fallback chain instead of the
     // classic single-pool balancer.
-    // the successful attempt's span, held past the retry block so token usage
-    // can be recorded on it once the response body has been consumed (#808)
-    let mut genai_span: Option<tracing::Span> = None;
     let ForwardOutcome {
         outcome,
         last_provider,
@@ -2602,6 +2599,7 @@ async fn proxy(
         provider_key_fingerprint: last_key_fingerprint,
         attempts,
         fallback_reason,
+        genai_span,
     } = if entry.route.has_variants() {
         forward_variants(
             &Forward {
@@ -2613,6 +2611,8 @@ async fn proxy(
                 payload: ForwardPayload::Json {
                     parsed: &parsed,
                     body: &body,
+                    forward_body: &forward_body,
+                    inbound: (&headers, &forwarded_names),
                 },
                 path,
                 started,
@@ -2623,412 +2623,27 @@ async fn proxy(
         )
         .await
     } else {
-        let retry = &snap.retry;
-        // the route's own budget replaces the deployment's (#2924)
-        let max_retries = entry.route.advanced.limits.max_retries(retry.max_retries);
-        let cooldown = &snap.cooldown;
-        let cd_enabled = cooldown.enabled();
-        // live per-target in-flight counts steer load-aware strategies away from busy
-        // targets; the count for the chosen target is held for the whole request.
-        // scraped upstream queue depth (when enabled) is folded in so the balancer
-        // also sees pressure that hasn't reached this gateway's own counters
-        let mut loads = state
-            .loads
-            .snapshot(&entry.namespace, entry.route.targets.len());
-        for (i, target) in entry.route.targets.iter().enumerate() {
-            if let Some(l) = loads.get_mut(i) {
-                *l = l.saturating_add(state.upstream_metrics.queue_depth(&target.provider));
-            }
-        }
-        let mut tried: Vec<usize> = Vec::with_capacity(entry.route.targets.len());
-        // the failure the last attempt ended with, which decides which targets
-        // may follow it and is what the row records as the fallback reason (#1584)
-        let mut last_failure: Option<Failure> = None;
-        let mut fallback_reason = String::new();
-        let mut last_provider = String::new();
-        let mut last_target = model.clone();
-        let mut last_error: Option<String> = None;
-        // the last retryable status a target answered with, for when the loop
-        // runs out of targets with no response left to hand back (#2807)
-        let mut last_status: Option<StatusFailure> = None;
-        // upstream attempts made, successful one included
-        let mut attempts: u8 = 0;
-        let mut outcome: Option<(reqwest::Response, u16, bool)> = None;
-        let mut inflight_guard: Option<crate::load::LoadGuard> = None;
-        let mut last_key_fingerprint: Option<String> = None;
-        // whether the most recent attempt was already funnelled by
-        // `record_failed_attempt`, so the error row must not count it twice
-        let mut last_attempt_recorded = false;
-
-        let pool = TargetPool {
-            entry,
-            ctx: &ctx,
-            loads: &loads,
-            cooldowns: &state.cooldowns,
-            health: &state.health,
-            breaker: &state.breaker,
-            namespace: &entry.namespace,
-            cd_enabled,
-            key_meta: vk.as_ref(),
-        };
-        for attempt in 0..=max_retries {
-            let idx = match pool.pick(&tried, last_failure.as_ref()) {
-                Some(i) => i,
-                None => break, // no untried target left to fail over to
-            };
-            entry.balancer.observe(idx, &ctx);
-            tried.push(idx);
-            fallback_reason = last_failure
-                .as_ref()
-                .map(Failure::token)
-                .unwrap_or_default();
-            // count this attempt as in-flight; the guard falls out of scope (and
-            // decrements) on retry, or is moved into the stream wrapper on success
-            let mut guard = state.loads.begin(&entry.namespace, idx);
-            // the latency model learns cost as a function of prompt size, so it
-            // needs this request's size before the guard's drop folds in the
-            // sample (#853). inert on every other strategy
-            guard.set_prompt_tokens(rolter_balancer::predictor::prompt_tokens(&ctx));
-
-            let target = &entry.route.targets[idx];
-            let provider = match snap.providers.get(&target.provider) {
-                Some(provider) => provider,
-                None => {
-                    // nothing was sent, so the probe slot this target took goes back
-                    state.breaker.release(&entry.namespace, idx);
-                    last_error = Some("configured target provider not found".to_string());
-                    break;
-                }
-            };
-            last_provider = target.provider.clone();
-            last_target = target.model.clone().unwrap_or_else(|| model.clone());
-            // a caller who leaves from here on left this target, and the row
-            // says so (#1816)
-            cancel.attribute(&last_provider, &last_target, "");
-            // weighted pick across the provider's key pool, skipping keys
-            // parked on a cooldown (single-key providers yield their one key)
-            let multi_key = provider.api_keys.len() > 1;
-            let key_ns = key_pool_key(&target.provider);
-            let parked_keys = parked_keys(&state, provider, &key_ns);
-            let picked_key =
-                provider.pick_api_key_indexed(jitter(started), |i| parked_keys.contains(i));
-            let api_key = picked_key.as_ref().map(|(_, k)| k.as_str());
-            last_key_fingerprint = api_key.map(provider_key_fingerprint);
-            let upstream_model = target.model.as_deref();
-
-            // one span per attempt, following the OTel GenAI conventions so a
-            // conformant backend's built-in GenAI views work. the trace context
-            // handed to the provider is injected from *inside* this span, which
-            // is what makes the provider call a child of the gateway rather
-            // than a sibling parented to the caller (#805).
-            //
-            // `otel.name` carries the `{operation} {model}` name the spec asks
-            // for: `tracing` span names are compile-time constants, so the
-            // exported name has to be set as a field (#808). `otel.kind=client`
-            // marks this as the outbound leg
-            let genai_model = upstream_model.unwrap_or(model.as_str());
-            let upstream_stage = crate::trace::stage_span!(
-                "upstream.request",
-                attempt = attempt,
-                otel.name = tracing::field::Empty,
-                otel.kind = "client",
-                gen_ai.operation.name = tracing::field::Empty,
-                gen_ai.provider.name = %snap.provider_name(&target.provider),
-                gen_ai.system = %snap.provider_name(&target.provider),
-                gen_ai.request.model = %genai_model,
-                gen_ai.output.type = tracing::field::Empty,
-                gen_ai.response.model = tracing::field::Empty,
-                gen_ai.response.id = tracing::field::Empty,
-                gen_ai.response.finish_reasons = tracing::field::Empty,
-                gen_ai.request.encoding_formats = tracing::field::Empty,
-                gen_ai.embeddings.dimension.count = tracing::field::Empty,
-                gen_ai.usage.input_tokens = tracing::field::Empty,
-                gen_ai.usage.output_tokens = tracing::field::Empty,
-                error.type = tracing::field::Empty,
-                http.response.status_code = tracing::field::Empty
-            );
-            genai_span = Some(upstream_stage.clone());
-            if let Some(operation) = crate::genai::operation_for_path(path) {
-                upstream_stage.record(crate::genai::OPERATION_NAME, operation.name);
-                upstream_stage.record(
-                    "otel.name",
-                    crate::genai::span_name(&operation, genai_model).as_str(),
-                );
-                if let Some(output_type) = operation.output_type {
-                    upstream_stage.record(crate::genai::OUTPUT_TYPE, output_type);
-                }
-                // how the caller asked for the vectors — a request-side
-                // attribute, so it is known now rather than at finalize (#846)
-                if operation.name == crate::genai::OP_EMBEDDINGS {
-                    if let Some(formats) = crate::genai::encoding_formats(&parsed) {
-                        upstream_stage
-                            .record(crate::genai::REQUEST_ENCODING_FORMATS, formats.as_str());
-                    }
-                }
-            }
-            let injected_ctx;
-            let injected_refs;
-            let attempt_headers: &[(&str, &str)] = if rolter_core::telemetry::is_active() {
-                injected_ctx = upstream_stage
-                    .in_scope(|| crate::trace::outbound_headers(&headers, &forwarded_names));
-                injected_refs = injected_ctx
-                    .iter()
-                    .map(|(k, v)| (k.as_str(), v.as_str()))
-                    .collect::<Vec<_>>();
-                &injected_refs
-            } else {
-                &trace_headers
-            };
-
-            // per-attempt clock: `started` is the whole request, and a superseded
-            // attempt's own duration is what the health funnel records (#1646)
-            last_attempt_recorded = false;
-            attempts = attempts.saturating_add(1);
-            let attempt_started = Instant::now();
-            match state
-                .provider_queues
-                .forward_json(
-                    &snap.queue,
-                    snap.generation,
-                    provider,
-                    path,
-                    forward_body.clone(),
-                    api_key,
-                    upstream_model,
-                    attempt_headers,
-                    &entry.overrides,
-                )
-                .instrument(upstream_stage.clone())
-                .await
-            {
-                Ok(response) => {
-                    let status = response.status().as_u16();
-                    upstream_stage.record("http.response.status_code", status);
-                    // error.type is conditionally required on failure, and must
-                    // stay low-cardinality — the status class, never the
-                    // provider's free-text message (#808)
-                    if status >= 400 {
-                        upstream_stage.record(
-                            crate::genai::ERROR_TYPE,
-                            crate::genai::error_type_for_status(status),
-                        );
-                    }
-                    // a 429/401 on a multi-key provider is a key-level
-                    // failure: park the key, keep the target in rotation
-                    // and retry — a sibling key usually succeeds
-                    // a content-policy refusal is final unless the route has a target
-                    // that takes refusals over and one is left to try: then the body is
-                    // read to classify it, and an answer that is not taken over goes on
-                    // to the caller whole (#1584)
-                    let response = if attempt < max_retries
-                        && crate::failover::may_be_refusal(status)
-                        && entry.route.takes_over_refusals()
-                    {
-                        let peeked = crate::failover::peek_refusal(response).await;
-                        match peeked.refusal {
-                            Some(failure)
-                                if has_untried_target(
-                                    entry,
-                                    &tried,
-                                    vk.as_ref(),
-                                    Some(&failure),
-                                ) =>
-                            {
-                                // a refusal says nothing about the target's health, so it
-                                // neither parks it nor feeds its breaker
-                                cancel.record_failed_attempt(&crate::logging::FailedAttempt {
-                                    provider: &last_provider,
-                                    target: &last_target,
-                                    status,
-                                    latency_ms: attempt_started.elapsed().as_millis() as u32,
-                                    error: "",
-                                });
-                                last_attempt_recorded = true;
-                                count_retry(&state.metrics, true);
-                                last_status = Some(StatusFailure {
-                                    status,
-                                    reason: peeked.reason,
-                                    retry_after: None,
-                                });
-                                last_error = None;
-                                last_failure = Some(failure);
-                                state.breaker.release(&entry.namespace, idx);
-                                continue;
-                            }
-                            _ => peeked.response,
-                        }
-                    } else {
-                        response
-                    };
-                    let key_failure = multi_key && (status == 429 || status == 401);
-                    if key_failure {
-                        if let Some((ki, _)) = &picked_key {
-                            let secs = cooldown.duration_secs(retry_after_secs(&response));
-                            state.cooldowns.park(&key_ns, *ki, secs.max(1));
-                            state
-                                .metrics
-                                .key_cooldowns_tripped_total
-                                .fetch_add(1, Relaxed);
-                        }
-                        // let the same target be re-picked with a fresh key
-                        tried.pop();
-                        // a key-level failure says nothing about the target, so its probe
-                        // slot is given back rather than held for the lease
-                        state.breaker.release(&entry.namespace, idx);
-                        last_failure = Failure::from_status(status);
-                        if attempt < max_retries {
-                            // the caller will never see this failure, so record it against the
-                            // target that produced it before superseding the attempt (#1646).
-                            // through the guard, so a caller leaving during the backoff below
-                            // is not charged to the target a second time
-                            cancel.record_failed_attempt(&crate::logging::FailedAttempt {
-                                provider: &last_provider,
-                                target: &last_target,
-                                status,
-                                latency_ms: attempt_started.elapsed().as_millis() as u32,
-                                error: "",
-                            });
-                            last_attempt_recorded = true;
-                            let retrying = count_retry(
-                                &state.metrics,
-                                has_untried_target(
-                                    entry,
-                                    &tried,
-                                    vk.as_ref(),
-                                    last_failure.as_ref(),
-                                ),
-                            );
-                            // the response is read for its reason and dropped here, so the delay
-                            // is taken from it first; the reason is what the request ends with if
-                            // this was the last target (#2807)
-                            let delay = retry_delay_ms(retry, &response, attempt + 1, started);
-                            let retry_after = retry_after_secs(&response);
-                            last_status = Some(StatusFailure::read(response, retry_after).await);
-                            last_error = None;
-                            back_off(delay, retrying).await;
-                            continue;
-                        }
-                    } else if is_retryable_status(status) {
-                        last_failure = Failure::from_status(status);
-                        // park the failing target so siblings absorb the load
-                        if cd_enabled {
-                            let secs = cooldown.duration_secs(retry_after_secs(&response));
-                            state.cooldowns.park(&entry.namespace, idx, secs);
-                            state.metrics.cooldowns_tripped_total.fetch_add(1, Relaxed);
-                        }
-                        // feed the circuit breaker; a sustained run trips the target open
-                        if state.breaker.on_failure(&entry.namespace, idx) {
-                            state.metrics.breaker_opened_total.fetch_add(1, Relaxed);
-                        }
-                        if attempt < max_retries {
-                            // the caller will never see this failure, so record it against the
-                            // target that produced it before superseding the attempt (#1646).
-                            // through the guard, so a caller leaving during the backoff below
-                            // is not charged to the target a second time
-                            cancel.record_failed_attempt(&crate::logging::FailedAttempt {
-                                provider: &last_provider,
-                                target: &last_target,
-                                status,
-                                latency_ms: attempt_started.elapsed().as_millis() as u32,
-                                error: "",
-                            });
-                            last_attempt_recorded = true;
-                            let retrying = count_retry(
-                                &state.metrics,
-                                has_untried_target(
-                                    entry,
-                                    &tried,
-                                    vk.as_ref(),
-                                    last_failure.as_ref(),
-                                ),
-                            );
-                            // the response is read for its reason and dropped here, so the delay
-                            // is taken from it first; the reason is what the request ends with if
-                            // this was the last target (#2807)
-                            let delay = retry_delay_ms(retry, &response, attempt + 1, started);
-                            let retry_after = retry_after_secs(&response);
-                            last_status = Some(StatusFailure::read(response, retry_after).await);
-                            last_error = None;
-                            back_off(delay, retrying).await;
-                            continue;
-                        }
-                    } else if state.breaker.on_success(&entry.namespace, idx) {
-                        // a good response closes a breaker that was probing (half-open)
-                        state.metrics.breaker_closed_total.fetch_add(1, Relaxed);
-                    }
-                    let is_sse = response
-                        .headers()
-                        .get(reqwest::header::CONTENT_TYPE)
-                        .and_then(|v| v.to_str().ok())
-                        .map(|ct| ct.contains("event-stream"))
-                        .unwrap_or(false);
-                    if status < 400 {
-                        // successful attempt: fold its duration into the
-                        // target's latency EWMA once streaming finishes
-                        guard.mark_ok();
-                    }
-                    inflight_guard = Some(guard);
-                    outcome = Some((response, status, is_sse));
-                    break;
-                }
-                Err(err) => {
-                    let message = err.to_string();
-                    last_failure = Some(Failure::from_transport_error(&message));
-                    if is_queue_admission_error(&message) {
-                        // the queue turned the request away before the target saw it
-                        state.breaker.release(&entry.namespace, idx);
-                        last_error = Some(message);
-                        break;
-                    }
-                    last_error = Some(message);
-                    // a connection-level failure parks the target too
-                    if cd_enabled {
-                        state
-                            .cooldowns
-                            .park(&entry.namespace, idx, cooldown.duration_secs(None));
-                        state.metrics.cooldowns_tripped_total.fetch_add(1, Relaxed);
-                    }
-                    // and counts against the circuit breaker
-                    if state.breaker.on_failure(&entry.namespace, idx) {
-                        state.metrics.breaker_opened_total.fetch_add(1, Relaxed);
-                    }
-                    if attempt < max_retries {
-                        // the caller will never see this failure, so record it against the
-                        // target that produced it before superseding the attempt (#1646).
-                        // through the guard, so a caller leaving during the backoff below
-                        // is not charged to the target a second time
-                        cancel.record_failed_attempt(&crate::logging::FailedAttempt {
-                            provider: &last_provider,
-                            target: &last_target,
-                            status: 0,
-                            latency_ms: attempt_started.elapsed().as_millis() as u32,
-                            error: last_error.as_deref().unwrap_or_default(),
-                        });
-                        last_attempt_recorded = true;
-                        let retrying = count_retry(
-                            &state.metrics,
-                            has_untried_target(entry, &tried, vk.as_ref(), last_failure.as_ref()),
-                        );
-                        back_off(retry.backoff_ms(attempt + 1, jitter(started)), retrying).await;
-                        continue;
-                    }
-                    break;
-                }
-            }
-        }
-        ForwardOutcome {
-            outcome,
-            last_provider,
-            last_target,
-            last_attempt_recorded,
-            last_error,
-            last_status,
-            inflight_guard,
-            variant: String::new(),
-            provider_key_fingerprint: last_key_fingerprint,
-            attempts,
-            fallback_reason,
-        }
+        forward_classic(
+            &Forward {
+                state: &state,
+                snap: &snap,
+                entry,
+                model: &model,
+                ctx: &ctx,
+                payload: ForwardPayload::Json {
+                    parsed: &parsed,
+                    body: &body,
+                    forward_body: &forward_body,
+                    inbound: (&headers, &forwarded_names),
+                },
+                path,
+                started,
+                trace_headers: &trace_headers,
+                key_meta: vk.as_ref(),
+            },
+            &mut cancel,
+        )
+        .await
     };
 
     // the slot rides on the guard, so a streamed response keeps it until its
@@ -4268,6 +3883,9 @@ struct ForwardOutcome {
     /// the failure that sent the request on to the last target it tried, as
     /// its class token; empty when the first dial answered (#1584)
     fallback_reason: String,
+    /// the answering attempt's `upstream.request` span, which only a classic
+    /// JSON attempt opens (#808)
+    genai_span: Option<tracing::Span>,
 }
 
 /// The scope a route's cached answers, exact and semantic, are kept under: the
@@ -4440,8 +4058,16 @@ fn variant_candidates(
 /// What a forward loop forwards on each attempt.
 #[derive(Clone, Copy)]
 enum ForwardPayload<'a> {
-    /// a JSON body the variant's params are merged into
-    Json { parsed: &'a Value, body: &'a Bytes },
+    /// a JSON body: a variant merges its params into `parsed`, the classic
+    /// pool sends `forward_body`, which already carries the route's.
+    /// `inbound` is the caller's headers and the allowlisted names, which a
+    /// classic attempt re-injects its trace context from (#805)
+    Json {
+        parsed: &'a Value,
+        body: &'a Bytes,
+        forward_body: &'a Bytes,
+        inbound: (&'a HeaderMap, &'a [String]),
+    },
     /// a multipart upload, forwarded verbatim with its content type, as
     /// [`proxy_multipart`] forwards one to the classic pool (#3494)
     Multipart {
@@ -4534,6 +4160,7 @@ async fn forward_variants(
         provider_key_fingerprint: None,
         attempts: 0,
         fallback_reason: String::new(),
+        genai_span: None,
     };
     let mut tried: Vec<usize> = Vec::with_capacity(candidates.len());
     // the failure the last attempt ended with, which decides which targets
@@ -4618,7 +4245,7 @@ async fn forward_variants(
 
         // merge variant params over route params for this candidate's body
         let forward_body = match payload {
-            ForwardPayload::Json { parsed, body } => {
+            ForwardPayload::Json { parsed, body, .. } => {
                 let mut injected = parsed.clone();
                 route.apply_variant_params(v, &mut injected);
                 serde_json::to_vec(&injected)
@@ -4882,6 +4509,481 @@ async fn forward_variants(
         }
     }
     out
+}
+
+/// Forward through the route's classic target pool: pick a target, dial it,
+/// and on a transient failure retry on a fresh one (exponential backoff +
+/// jitter), parking failed keys and targets and feeding the circuit breaker.
+/// Retries happen before any body bytes reach the client, so a partial
+/// response is never duplicated. A JSON request opens one `upstream.request`
+/// span per attempt and injects its trace context from inside it (#805); an
+/// upload is forwarded as it came.
+async fn forward_classic(
+    fwd: &Forward<'_>,
+    cancel: &mut crate::cancel::CancelGuard,
+) -> ForwardOutcome {
+    let Forward {
+        state,
+        snap,
+        entry,
+        model,
+        ctx,
+        payload,
+        path,
+        started,
+        trace_headers,
+        key_meta,
+    } = *fwd;
+    // the successful attempt's span, held past the retry loop so token usage
+    // can be recorded on it once the response body has been consumed (#808)
+    let mut genai_span: Option<tracing::Span> = None;
+    let retry = &snap.retry;
+    // the route's own budget replaces the deployment's (#2924)
+    let max_retries = entry.route.advanced.limits.max_retries(retry.max_retries);
+    let cooldown = &snap.cooldown;
+    let cd_enabled = cooldown.enabled();
+    // live per-target in-flight counts steer load-aware strategies away from busy
+    // targets; the count for the chosen target is held for the whole request.
+    // scraped upstream queue depth (when enabled) is folded in so the balancer
+    // also sees pressure that hasn't reached this gateway's own counters
+    let mut loads = state
+        .loads
+        .snapshot(&entry.namespace, entry.route.targets.len());
+    for (i, target) in entry.route.targets.iter().enumerate() {
+        if let Some(l) = loads.get_mut(i) {
+            *l = l.saturating_add(state.upstream_metrics.queue_depth(&target.provider));
+        }
+    }
+    let mut tried: Vec<usize> = Vec::with_capacity(entry.route.targets.len());
+    // the failure the last attempt ended with, which decides which targets
+    // may follow it and is what the row records as the fallback reason (#1584)
+    let mut last_failure: Option<Failure> = None;
+    let mut fallback_reason = String::new();
+    let mut last_provider = String::new();
+    let mut last_target = model.to_string();
+    let mut last_error: Option<String> = None;
+    // the last retryable status a target answered with, for when the loop
+    // runs out of targets with no response left to hand back (#2807)
+    let mut last_status: Option<StatusFailure> = None;
+    // upstream attempts made, successful one included
+    let mut attempts: u8 = 0;
+    let mut outcome: Option<(reqwest::Response, u16, bool)> = None;
+    let mut inflight_guard: Option<crate::load::LoadGuard> = None;
+    let mut last_key_fingerprint: Option<String> = None;
+    // whether the most recent attempt was already funnelled by
+    // `record_failed_attempt`, so the error row must not count it twice
+    let mut last_attempt_recorded = false;
+
+    let pool = TargetPool {
+        entry,
+        ctx,
+        loads: &loads,
+        cooldowns: &state.cooldowns,
+        health: &state.health,
+        breaker: &state.breaker,
+        namespace: &entry.namespace,
+        cd_enabled,
+        key_meta,
+    };
+    for attempt in 0..=max_retries {
+        let idx = match pool.pick(&tried, last_failure.as_ref()) {
+            Some(i) => i,
+            None => break, // no untried target left to fail over to
+        };
+        entry.balancer.observe(idx, ctx);
+        tried.push(idx);
+        fallback_reason = last_failure
+            .as_ref()
+            .map(Failure::token)
+            .unwrap_or_default();
+        // count this attempt as in-flight; the guard falls out of scope (and
+        // decrements) on retry, or is moved into the stream wrapper on success
+        let mut guard = state.loads.begin(&entry.namespace, idx);
+        // the latency model learns cost as a function of prompt size, so it
+        // needs this request's size before the guard's drop folds in the
+        // sample (#853). inert on every other strategy
+        guard.set_prompt_tokens(rolter_balancer::predictor::prompt_tokens(ctx));
+
+        let target = &entry.route.targets[idx];
+        let provider = match snap.providers.get(&target.provider) {
+            Some(provider) => provider,
+            None => {
+                // nothing was sent, so the probe slot this target took goes back
+                state.breaker.release(&entry.namespace, idx);
+                last_error = Some("configured target provider not found".to_string());
+                break;
+            }
+        };
+        last_provider = target.provider.clone();
+        last_target = target.model.clone().unwrap_or_else(|| model.to_string());
+        // a caller who leaves from here on left this target, and the row
+        // says so (#1816)
+        cancel.attribute(&last_provider, &last_target, "");
+        // weighted pick across the provider's key pool, skipping keys
+        // parked on a cooldown (single-key providers yield their one key)
+        let multi_key = provider.api_keys.len() > 1;
+        let key_ns = key_pool_key(&target.provider);
+        let parked_keys = parked_keys(state, provider, &key_ns);
+        let picked_key =
+            provider.pick_api_key_indexed(jitter(started), |i| parked_keys.contains(i));
+        let api_key = picked_key.as_ref().map(|(_, k)| k.as_str());
+        // only a JSON request can be a `/v1/responses` call, the one reader
+        if matches!(payload, ForwardPayload::Json { .. }) {
+            last_key_fingerprint = api_key.map(provider_key_fingerprint);
+        }
+        let upstream_model = target.model.as_deref();
+
+        // a JSON attempt is traced (see `genai_attempt_span`); an upload never
+        // was, and is forwarded under the caller's trace headers as they came
+        let upstream_stage = match payload {
+            ForwardPayload::Json { parsed, .. } => {
+                Some(genai_attempt_span(fwd, target, attempt, parsed))
+            }
+            ForwardPayload::Multipart { .. } => None,
+        };
+        if let Some(stage) = &upstream_stage {
+            genai_span = Some(stage.clone());
+        }
+        let injected_ctx = match (payload, &upstream_stage) {
+            (
+                ForwardPayload::Json {
+                    inbound: (headers, forwarded_names),
+                    ..
+                },
+                Some(stage),
+            ) if rolter_core::telemetry::is_active() => {
+                Some(stage.in_scope(|| crate::trace::outbound_headers(headers, forwarded_names)))
+            }
+            _ => None,
+        };
+        let injected_refs;
+        let attempt_headers: &[(&str, &str)] = match &injected_ctx {
+            Some(injected) => {
+                injected_refs = injected
+                    .iter()
+                    .map(|(k, v)| (k.as_str(), v.as_str()))
+                    .collect::<Vec<_>>();
+                &injected_refs
+            }
+            None => trace_headers,
+        };
+
+        // per-attempt clock: `started` is the whole request, and a superseded
+        // attempt's own duration is what the health funnel records (#1646)
+        last_attempt_recorded = false;
+        attempts = attempts.saturating_add(1);
+        let attempt_started = Instant::now();
+        let forwarded = match payload {
+            ForwardPayload::Json { forward_body, .. } => {
+                state
+                    .provider_queues
+                    .forward_json(
+                        &snap.queue,
+                        snap.generation,
+                        provider,
+                        path,
+                        forward_body.clone(),
+                        api_key,
+                        upstream_model,
+                        attempt_headers,
+                        &entry.overrides,
+                    )
+                    // a JSON attempt always has its span
+                    .instrument(upstream_stage.clone().unwrap_or_else(tracing::Span::none))
+                    .await
+            }
+            ForwardPayload::Multipart { body, content_type } => {
+                state
+                    .provider_queues
+                    .forward_raw(
+                        &snap.queue,
+                        snap.generation,
+                        provider,
+                        path,
+                        body.clone(),
+                        content_type,
+                        api_key,
+                        attempt_headers,
+                        &entry.overrides,
+                    )
+                    .await
+            }
+        };
+        match forwarded {
+            Ok(response) => {
+                let status = response.status().as_u16();
+                if let Some(upstream_stage) = &upstream_stage {
+                    upstream_stage.record("http.response.status_code", status);
+                    // error.type is conditionally required on failure, and must
+                    // stay low-cardinality — the status class, never the
+                    // provider's free-text message (#808)
+                    if status >= 400 {
+                        upstream_stage.record(
+                            crate::genai::ERROR_TYPE,
+                            crate::genai::error_type_for_status(status),
+                        );
+                    }
+                }
+                // a 429/401 on a multi-key provider is a key-level
+                // failure: park the key, keep the target in rotation
+                // and retry — a sibling key usually succeeds
+                // a content-policy refusal is final unless the route has a target
+                // that takes refusals over and one is left to try: then the body is
+                // read to classify it, and an answer that is not taken over goes on
+                // to the caller whole (#1584)
+                let response = if attempt < max_retries
+                    && crate::failover::may_be_refusal(status)
+                    && entry.route.takes_over_refusals()
+                {
+                    let peeked = crate::failover::peek_refusal(response).await;
+                    match peeked.refusal {
+                        Some(failure)
+                            if has_untried_target(entry, &tried, key_meta, Some(&failure)) =>
+                        {
+                            // a refusal says nothing about the target's health, so it
+                            // neither parks it nor feeds its breaker
+                            cancel.record_failed_attempt(&crate::logging::FailedAttempt {
+                                provider: &last_provider,
+                                target: &last_target,
+                                status,
+                                latency_ms: attempt_started.elapsed().as_millis() as u32,
+                                error: "",
+                            });
+                            last_attempt_recorded = true;
+                            count_retry(&state.metrics, true);
+                            last_status = Some(StatusFailure {
+                                status,
+                                reason: peeked.reason,
+                                retry_after: None,
+                            });
+                            last_error = None;
+                            last_failure = Some(failure);
+                            state.breaker.release(&entry.namespace, idx);
+                            continue;
+                        }
+                        _ => peeked.response,
+                    }
+                } else {
+                    response
+                };
+                let key_failure = multi_key && (status == 429 || status == 401);
+                if key_failure {
+                    if let Some((ki, _)) = &picked_key {
+                        let secs = cooldown.duration_secs(retry_after_secs(&response));
+                        state.cooldowns.park(&key_ns, *ki, secs.max(1));
+                        state
+                            .metrics
+                            .key_cooldowns_tripped_total
+                            .fetch_add(1, Relaxed);
+                    }
+                    // let the same target be re-picked with a fresh key
+                    tried.pop();
+                    // a key-level failure says nothing about the target, so its probe
+                    // slot is given back rather than held for the lease
+                    state.breaker.release(&entry.namespace, idx);
+                    last_failure = Failure::from_status(status);
+                    if attempt < max_retries {
+                        // the caller will never see this failure, so record it against the
+                        // target that produced it before superseding the attempt (#1646).
+                        // through the guard, so a caller leaving during the backoff below
+                        // is not charged to the target a second time
+                        cancel.record_failed_attempt(&crate::logging::FailedAttempt {
+                            provider: &last_provider,
+                            target: &last_target,
+                            status,
+                            latency_ms: attempt_started.elapsed().as_millis() as u32,
+                            error: "",
+                        });
+                        last_attempt_recorded = true;
+                        let retrying = count_retry(
+                            &state.metrics,
+                            has_untried_target(entry, &tried, key_meta, last_failure.as_ref()),
+                        );
+                        // the response is read for its reason and dropped here, so the delay
+                        // is taken from it first; the reason is what the request ends with if
+                        // this was the last target (#2807)
+                        let delay = retry_delay_ms(retry, &response, attempt + 1, started);
+                        let retry_after = retry_after_secs(&response);
+                        last_status = Some(StatusFailure::read(response, retry_after).await);
+                        last_error = None;
+                        back_off(delay, retrying).await;
+                        continue;
+                    }
+                } else if is_retryable_status(status) {
+                    last_failure = Failure::from_status(status);
+                    // park the failing target so siblings absorb the load
+                    if cd_enabled {
+                        let secs = cooldown.duration_secs(retry_after_secs(&response));
+                        state.cooldowns.park(&entry.namespace, idx, secs);
+                        state.metrics.cooldowns_tripped_total.fetch_add(1, Relaxed);
+                    }
+                    // feed the circuit breaker; a sustained run trips the target open
+                    if state.breaker.on_failure(&entry.namespace, idx) {
+                        state.metrics.breaker_opened_total.fetch_add(1, Relaxed);
+                    }
+                    if attempt < max_retries {
+                        // the caller will never see this failure, so record it against the
+                        // target that produced it before superseding the attempt (#1646).
+                        // through the guard, so a caller leaving during the backoff below
+                        // is not charged to the target a second time
+                        cancel.record_failed_attempt(&crate::logging::FailedAttempt {
+                            provider: &last_provider,
+                            target: &last_target,
+                            status,
+                            latency_ms: attempt_started.elapsed().as_millis() as u32,
+                            error: "",
+                        });
+                        last_attempt_recorded = true;
+                        let retrying = count_retry(
+                            &state.metrics,
+                            has_untried_target(entry, &tried, key_meta, last_failure.as_ref()),
+                        );
+                        // the response is read for its reason and dropped here, so the delay
+                        // is taken from it first; the reason is what the request ends with if
+                        // this was the last target (#2807)
+                        let delay = retry_delay_ms(retry, &response, attempt + 1, started);
+                        let retry_after = retry_after_secs(&response);
+                        last_status = Some(StatusFailure::read(response, retry_after).await);
+                        last_error = None;
+                        back_off(delay, retrying).await;
+                        continue;
+                    }
+                } else if state.breaker.on_success(&entry.namespace, idx) {
+                    // a good response closes a breaker that was probing (half-open)
+                    state.metrics.breaker_closed_total.fetch_add(1, Relaxed);
+                }
+                let is_sse = response
+                    .headers()
+                    .get(reqwest::header::CONTENT_TYPE)
+                    .and_then(|v| v.to_str().ok())
+                    .map(|ct| ct.contains("event-stream"))
+                    .unwrap_or(false);
+                if status < 400 {
+                    // successful attempt: fold its duration into the
+                    // target's latency EWMA once streaming finishes
+                    guard.mark_ok();
+                }
+                inflight_guard = Some(guard);
+                outcome = Some((response, status, is_sse));
+                break;
+            }
+            Err(err) => {
+                let message = err.to_string();
+                last_failure = Some(Failure::from_transport_error(&message));
+                if is_queue_admission_error(&message) {
+                    // the queue turned the request away before the target saw it
+                    state.breaker.release(&entry.namespace, idx);
+                    last_error = Some(message);
+                    break;
+                }
+                last_error = Some(message);
+                // a connection-level failure parks the target too
+                if cd_enabled {
+                    state
+                        .cooldowns
+                        .park(&entry.namespace, idx, cooldown.duration_secs(None));
+                    state.metrics.cooldowns_tripped_total.fetch_add(1, Relaxed);
+                }
+                // and counts against the circuit breaker
+                if state.breaker.on_failure(&entry.namespace, idx) {
+                    state.metrics.breaker_opened_total.fetch_add(1, Relaxed);
+                }
+                if attempt < max_retries {
+                    // the caller will never see this failure, so record it against the
+                    // target that produced it before superseding the attempt (#1646).
+                    // through the guard, so a caller leaving during the backoff below
+                    // is not charged to the target a second time
+                    cancel.record_failed_attempt(&crate::logging::FailedAttempt {
+                        provider: &last_provider,
+                        target: &last_target,
+                        status: 0,
+                        latency_ms: attempt_started.elapsed().as_millis() as u32,
+                        error: last_error.as_deref().unwrap_or_default(),
+                    });
+                    last_attempt_recorded = true;
+                    let retrying = count_retry(
+                        &state.metrics,
+                        has_untried_target(entry, &tried, key_meta, last_failure.as_ref()),
+                    );
+                    back_off(retry.backoff_ms(attempt + 1, jitter(started)), retrying).await;
+                    continue;
+                }
+                break;
+            }
+        }
+    }
+    ForwardOutcome {
+        outcome,
+        last_provider,
+        last_target,
+        last_attempt_recorded,
+        last_error,
+        last_status,
+        inflight_guard,
+        variant: String::new(),
+        provider_key_fingerprint: last_key_fingerprint,
+        attempts,
+        fallback_reason,
+        genai_span,
+    }
+}
+
+/// The `upstream.request` span of one attempt, following the OTel GenAI
+/// conventions so a conformant backend's built-in GenAI views work. The trace
+/// context handed to the provider is injected from *inside* this span, which
+/// is what makes the provider call a child of the gateway rather than a
+/// sibling parented to the caller (#805).
+///
+/// `otel.name` carries the `{operation} {model}` name the spec asks for:
+/// `tracing` span names are compile-time constants, so the exported name has
+/// to be set as a field (#808). `otel.kind=client` marks this as the outbound
+/// leg.
+fn genai_attempt_span(
+    fwd: &Forward<'_>,
+    target: &rolter_core::Target,
+    attempt: u32,
+    parsed: &Value,
+) -> tracing::Span {
+    let snap = fwd.snap;
+    let genai_model = target.model.as_deref().unwrap_or(fwd.model);
+    let upstream_stage = crate::trace::stage_span!(
+        "upstream.request",
+        attempt = attempt,
+        otel.name = tracing::field::Empty,
+        otel.kind = "client",
+        gen_ai.operation.name = tracing::field::Empty,
+        gen_ai.provider.name = %snap.provider_name(&target.provider),
+        gen_ai.system = %snap.provider_name(&target.provider),
+        gen_ai.request.model = %genai_model,
+        gen_ai.output.type = tracing::field::Empty,
+        gen_ai.response.model = tracing::field::Empty,
+        gen_ai.response.id = tracing::field::Empty,
+        gen_ai.response.finish_reasons = tracing::field::Empty,
+        gen_ai.request.encoding_formats = tracing::field::Empty,
+        gen_ai.embeddings.dimension.count = tracing::field::Empty,
+        gen_ai.usage.input_tokens = tracing::field::Empty,
+        gen_ai.usage.output_tokens = tracing::field::Empty,
+        error.type = tracing::field::Empty,
+        http.response.status_code = tracing::field::Empty
+    );
+    if let Some(operation) = crate::genai::operation_for_path(fwd.path) {
+        upstream_stage.record(crate::genai::OPERATION_NAME, operation.name);
+        upstream_stage.record(
+            "otel.name",
+            crate::genai::span_name(&operation, genai_model).as_str(),
+        );
+        if let Some(output_type) = operation.output_type {
+            upstream_stage.record(crate::genai::OUTPUT_TYPE, output_type);
+        }
+        // how the caller asked for the vectors — a request-side
+        // attribute, so it is known now rather than at finalize (#846)
+        if operation.name == crate::genai::OP_EMBEDDINGS {
+            if let Some(formats) = crate::genai::encoding_formats(parsed) {
+                upstream_stage.record(crate::genai::REQUEST_ENCODING_FORMATS, formats.as_str());
+            }
+        }
+    }
+    upstream_stage
 }
 
 /// One classic target pool as an attempt picks from it: the route, what the
