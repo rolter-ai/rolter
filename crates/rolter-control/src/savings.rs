@@ -208,6 +208,8 @@ const ORG_FILTER: &str = "({org:String} = '' or org_id = {org:String})";
 /// to what `reason_expr` and `analyse` can emit, so a reason added to either
 /// without it fails here, in the rust suite, before it reaches the screen.
 /// `eligible` is not one: it is a request that is re-priced, not left out.
+/// Read by the tests that publish and check the list, so it exists only for them.
+#[cfg(test)]
 pub(crate) const EXCLUSION_REASONS: &[&str] = &[
     "unpriced",
     "failed",
@@ -852,7 +854,9 @@ mod tests {
         // `analyse`'s own: the reasons it adds, read off its source so that a
         // new `excluded.entry("...".into())` cannot be forgotten
         let source = include_str!("savings.rs");
-        let code = &source[..source.find("#[cfg(test)]").expect("a test module")];
+        let code = &source[..source
+            .find("#[cfg(test)]\nmod tests")
+            .expect("a test module")];
         for part in code.split(".entry(\"").skip(1) {
             let word = part.split('"').next().unwrap_or_default();
             emitted.insert(word);
