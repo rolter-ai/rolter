@@ -1,8 +1,11 @@
 -- Refines an `mcp_tool_call_logs` row's `status` for a call whose result
--- nothing judged (#3529): `accepted` for a legacy `sse` `POST` the server
--- answered `202 Accepted` with no JSON-RPC reply in its body, because the reply
--- comes on the stream the client holds open and the relay does not correlate
--- it. Empty for every other row, whose `status` is the outcome.
+-- nothing judged: `accepted` for a legacy `sse` `POST` the server answered
+-- `202 Accepted` with no JSON-RPC reply in its body, because the reply comes on
+-- the stream the client holds open and the relay does not correlate it
+-- (#3529); `unread` for a body the relay forwarded to an ungoverned server
+-- without reading it, encoded or not JSON, whose calls are not itemised and
+-- which is one row with an empty `tool` (#3528). Empty for every other row,
+-- whose `status` is the outcome.
 --
 -- A column of its own rather than a new value of the `status` enum: an insert
 -- naming an enum value the table does not have is refused whole, so a gateway
@@ -13,7 +16,7 @@
 -- Apply by hand on an existing deployment. The gateway sends its inserts with
 -- `input_format_skip_unknown_fields=1` and leaves the field out of a row that
 -- has none, and the control plane probes for the column, so neither side has to
--- wait for the other to be upgraded. Until it is applied an `accepted` call is
--- recorded as an ordinary `success` row.
+-- wait for the other to be upgraded. Until it is applied such a row is recorded
+-- as an ordinary `success` row.
 alter table mcp_tool_call_logs
     add column if not exists outcome LowCardinality(String) default '';

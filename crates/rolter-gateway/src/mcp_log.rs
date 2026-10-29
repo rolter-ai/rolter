@@ -363,6 +363,9 @@ pub(crate) struct PendingCall {
     ts: DateTime<Utc>,
     /// `Null` for a notification
     rpc_id: Value,
+    /// the row stands for a whole body the relay forwarded unread, not for one
+    /// call (#3528)
+    unread: bool,
     arguments: Option<Value>,
     event: McpEvent,
     capture_enabled: bool,
@@ -419,6 +422,7 @@ impl PendingCall {
             started: Instant::now(),
             ts,
             rpc_id,
+            unread: false,
             arguments: if capturing { arguments } else { None },
             event,
             capture_enabled: context.capture.enabled,
@@ -429,6 +433,19 @@ impl PendingCall {
                 Arc::default()
             },
         })
+    }
+
+    /// A pending row for a body the relay forwards to an ungoverned server
+    /// without reading it, because it is encoded or is not JSON (#3528). The
+    /// calls it holds cannot be itemised, so the one row has no tool, and once
+    /// the server has answered `2xx` it is `unread`: nothing says what any tool
+    /// did. A failure the HTTP layer reports is recorded as that failure.
+    pub(crate) fn unread(sink: &McpEventSink, context: &CallContext<'_>) -> Option<Self> {
+        let mut request = serde_json::Map::new();
+        request.insert("params".to_string(), serde_json::json!({ "name": "" }));
+        let mut call = Self::from_request(sink, request, context)?;
+        call.unread = true;
+        Some(call)
     }
 
     /// Record a call that never produced a response: a refusal before
@@ -472,12 +489,31 @@ impl PendingCall {
     /// the reply (a batch holding a `tools/list` is narrowed): the status is the
     /// HTTP layer's and no result is kept.
     pub(crate) fn finish_unobserved(self, http_status: u16) {
-        let outcome = by_http_status(http_status, true, self.notification());
+        let outcome = self.by_status_alone(http_status);
         self.finish(outcome);
     }
 
     fn notification(&self) -> bool {
-        self.rpc_id.is_null()
+        self.rpc_id.is_null() && !self.unread
+    }
+
+    /// The outcome of a call that has no reply to be read, by the HTTP status
+    /// alone: a notification, or a body forwarded unread
+    fn by_status_alone(&self, http_status: u16) -> Outcome {
+        let outcome = by_http_status(http_status, true, self.notification());
+        if self.unread && outcome.status == "success" {
+            Outcome {
+                refined: "unread",
+                ..outcome
+            }
+        } else {
+            outcome
+        }
+    }
+
+    /// No reply in the body answers this call
+    fn awaits_no_reply(&self) -> bool {
+        self.notification() || self.unread
     }
 
     fn finish(mut self, outcome: Outcome) {
@@ -670,7 +706,7 @@ pub(crate) fn observe<S>(
         inner,
         // a notification is answered by nothing, so a body that only they await
         // is not worth buffering
-        awaiting: calls.iter().any(|call| !call.notification()),
+        awaiting: calls.iter().any(|call| !call.awaits_no_reply()),
         calls,
         buf: Vec::new(),
         overflow: false,
@@ -706,10 +742,10 @@ impl<S> ObservedBody<S> {
             Replies::empty()
         };
         for call in calls {
-            let outcome = if call.notification() {
-                // headers came back, so the notification was delivered whatever
-                // happened to the body afterwards
-                by_http_status(self.http_status, true, true)
+            let outcome = if call.awaits_no_reply() {
+                // headers came back, so the notification (or the unread body)
+                // was delivered whatever happened to the body afterwards
+                call.by_status_alone(self.http_status)
             } else {
                 let reply = replies.take(&call.rpc_id);
                 let legacy_sse = call.event.transport == "sse";
@@ -1012,7 +1048,7 @@ mod tests {
         // any other status on the legacy transport is judged as before
         let refused = outcome(None, false, 502, false, true);
         assert_eq!((refused.status, refused.refined), ("transport_error", ""));
-        for refined in ["accepted"] {
+        for refined in ["accepted", "unread"] {
             assert!(rolter_core::mcp_log::MCP_OUTCOMES.contains(&refined));
         }
     }

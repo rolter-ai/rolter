@@ -303,8 +303,9 @@ async fn the_list_and_detail_carry_the_notification_flag_and_the_outcome() {
     }
 }
 
-/// #3526: a notification and an `accepted` call say nothing about the tool, so
-/// the summary counts them apart and leaves them out of both rates
+/// #3526: a notification, an `accepted` call and an `unread` body (#3528) say
+/// nothing about the tool, so the summary counts them apart and leaves them
+/// out of both rates
 #[tokio::test]
 async fn the_summary_rates_leave_out_the_calls_no_reply_was_awaited_for() {
     let _ = skip_without_stack!();
@@ -319,14 +320,15 @@ async fn the_summary_rates_leave_out_the_calls_no_reply_was_awaited_for() {
         json!({"notification": true}),
         json!({"notification": true}),
         json!({"transport": "sse", "outcome": "accepted"}),
+        json!({"outcome": "unread"}),
     ] {
         assert_eq!(stack.ingest(fields).await.1, 202);
     }
     let summary = stack.summary().await;
     // clickhouse writes a UInt64 as a JSON string
     let count = |name: &str| summary[name].to_string().trim_matches('"').to_string();
-    assert_eq!(count("calls"), "7", "{summary}");
-    assert_eq!(count("not_awaited"), "3", "{summary}");
+    assert_eq!(count("calls"), "8", "{summary}");
+    assert_eq!(count("not_awaited"), "4", "{summary}");
     assert_eq!(count("successes"), "2", "{summary}");
     assert_eq!(count("failures"), "2", "{summary}");
     assert_eq!(summary["success_rate"], json!(0.5), "{summary}");

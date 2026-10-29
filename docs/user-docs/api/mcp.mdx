@@ -115,12 +115,23 @@ an `error`. Some calls have no reply for the proxy to read:
   a JSON-RPC error, is judged by that reply. A `streamable_http` server owes the
   reply in its answer, so there a bare `202` is a `transport_error`.
 
+- **A body forwarded unread.** A server no tool group or manifest governs is
+  sent every request body as it came. A body with a `Content-Encoding`, or one
+  that is not valid JSON, is forwarded without being read, so the calls in it
+  are **not itemised**: the request is one row with no tool, recorded as
+  **body not read, calls not itemised** (`outcome: unread`) once the server
+  answers `2xx`, or as the failure the server's HTTP response reports. Every
+  such body is counted in `rolter_mcp_unread_bodies_total{reason}`, `encoded`
+  or `unparseable`, whether or not the log is on. The proxy reads an ungoverned
+  body only when the MCP log is on and the body mentions `tools/call`, so
+  `unparseable` counts only those. Send such calls uncompressed, or govern the
+  server with a tool group, to have them itemised.
 - **A notification.** A `tools/call` sent without an `id` awaits no reply. Its
   row has the status the server's HTTP response gave and `notification: 1`, and
   reads **notification, no reply awaited**.
 
 `GET /api/v1/mcp/logs` and the event detail return both `notification` and
-`outcome`. Neither kind of call says whether the tool succeeded, so
+`outcome`. None of these says whether a tool succeeded, so
 `GET /api/v1/mcp/logs/summary` counts them apart in `not_awaited` and leaves
 them out of `successes`, `failures`, `success_rate` and `failure_rate`: the
 rates are over `calls - not_awaited`, and `null` for a window with no awaited

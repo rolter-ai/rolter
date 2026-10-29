@@ -1010,3 +1010,47 @@ export const CallsNoReplyWasAwaitedForInRussian: Story = {
     await expect(canvas.getByText(copy.statuses.accepted)).toBeInTheDocument();
   },
 };
+
+/**
+ * A body forwarded unread to an ungoverned server is one row with no tool: it
+ * says its calls are not itemised, in the row and in the detail (#3528).
+ */
+export const ABodyForwardedUnreadIsOneRowWithNoTool: Story = {
+  render: () => (
+    <Harness
+      fetchStub={routes([
+        ["/mcp/logs/summary", () => ({ data: [{ ...SUMMARY, not_awaited: 1 }] })],
+        [
+          "/mcp/logs/evt-unread",
+          () => ({
+            ...call({ event_id: "evt-unread", tool: "", outcome: "unread" }),
+            arguments: null,
+            result: null,
+          }),
+        ],
+        [
+          "/mcp/logs",
+          () => ({
+            data: [call({ event_id: "evt-unread", tool: "", outcome: "unread" })],
+            next_cursor: null,
+          }),
+        ],
+      ])}
+    >
+      <McpLogs />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const copy = en.pages.mcpLogs;
+    await canvas.findByText(copy.notAwaited.unread);
+    await expect(canvas.getByText(copy.statuses.unread)).toBeInTheDocument();
+    await expect(canvas.getByText(copy.noTool)).toBeInTheDocument();
+    await expect(canvas.getByText("1 not awaited, left out of the rates")).toBeInTheDocument();
+    await userEvent.click(
+      await canvas.findByRole("button", { name: /Open call details for not itemised/ }),
+    );
+    const drawer = within(await canvas.findByRole("complementary", { name: "MCP call details" }));
+    await expect(await drawer.findByText(copy.notAwaitedDetail.unread)).toBeInTheDocument();
+  },
+};

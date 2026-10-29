@@ -72,11 +72,12 @@ const STATUS_TONE: Record<string, BadgeTone> = {
 const statusTone = (s: string): BadgeTone => STATUS_TONE[s] ?? "neutral";
 
 // a call no reply was awaited for, whose status says nothing about the tool
-// (#3526, #3529): the summary leaves it out of the rates, and a row says why
-type NotAwaited = "notification" | "accepted";
+// (#3526, #3529, #3528): the summary leaves it out of the rates, and a row says why
+type NotAwaited = "notification" | "accepted" | "unread";
 
 function notAwaited(row: Pick<McpLogRow, "notification" | "outcome">): NotAwaited | null {
   if (row.outcome === "accepted") return "accepted";
+  if (row.outcome === "unread") return "unread";
   if (Number(row.notification ?? 0) === 1) return "notification";
   return null;
 }
@@ -87,7 +88,9 @@ function notAwaited(row: Pick<McpLogRow, "notification" | "outcome">): NotAwaite
 function rowStatus(row: McpLogRow, t: ReturnType<typeof useTranslation>["t"]) {
   const note = notAwaited(row);
   const label =
-    note === "accepted" ? t("pages.mcpLogs.statuses.accepted") : mcpStatusLabel(row.status, t);
+    note === "accepted" || note === "unread"
+      ? t(`pages.mcpLogs.statuses.${note}`)
+      : mcpStatusLabel(row.status, t);
   const tone = note && row.status === "success" ? "neutral" : statusTone(row.status);
   return { note, label, tone };
 }
@@ -442,7 +445,7 @@ function McpRow({ row, onSelect }: { row: McpLogRow; onSelect: () => void }) {
       </ListCell>
       <ListCell className="truncate font-mono text-xs">{row.server}</ListCell>
       <ListCell className="truncate font-mono text-xs text-[color:var(--text-secondary)]">
-        {row.tool}
+        {row.tool || t("pages.mcpLogs.noTool")}
       </ListCell>
       <ListCell className="grid gap-0.5">
         <Pill tone={tone}>{label}</Pill>
@@ -465,7 +468,7 @@ function McpRow({ row, onSelect }: { row: McpLogRow; onSelect: () => void }) {
         <button
           type="button"
           aria-label={t("pages.mcpLogs.openDetails", {
-            tool: row.tool,
+            tool: row.tool || t("pages.mcpLogs.noTool"),
             server: row.server,
             time: fmt.dateTime(row.ts),
           })}
@@ -617,7 +620,7 @@ function DetailDrawer({ eventId, onClose }: { eventId: string; onClose: () => vo
       <Sheet open onOpenChange={(next) => !next && onClose()}>
         <SheetHeader
           title={t("analytics.mcpDetails")}
-          subtitle={d ? `${d.server} → ${d.tool}` : "…"}
+          subtitle={d ? `${d.server} → ${d.tool || t("pages.mcpLogs.noTool")}` : "…"}
           onClose={onClose}
         />
         <SheetBody>{body}</SheetBody>
@@ -633,7 +636,7 @@ function DetailDrawer({ eventId, onClose }: { eventId: string; onClose: () => vo
     >
       <div className="flex items-center gap-2">
         <span className="min-w-0 truncate font-mono text-sm font-semibold">
-          {d ? `${d.server} → ${d.tool}` : "…"}
+          {d ? `${d.server} → ${d.tool || t("pages.mcpLogs.noTool")}` : "…"}
         </span>
         <button
           type="button"

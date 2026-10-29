@@ -736,8 +736,19 @@ The gateway records every proxied JSON-RPC `tools/call` in ClickHouse's
   of the `status` enum, because ClickHouse refuses a whole insert that names an
   enum value the table lacks; it is left out of every other row, so an
   un-migrated ClickHouse records the call as an ordinary `success`.
-- **Calls not awaited (#3526).** A notification and an `accepted` call say
-  nothing about whether the tool succeeded. `GET /api/v1/mcp/logs` returns
+- **Bodies forwarded unread (#3528).** A server no rule governs is sent every
+  body verbatim (#3527). When the relay has not read one, because it carries a
+  `Content-Encoding` (it is then not parsed at all) or because the MCP log
+  parsed it and it is not JSON, the proxy counts it in
+  `rolter_mcp_unread_bodies_total{reason}` (`encoded`, `unparseable`;
+  `Metrics::observe_mcp_unread`, every reason rendered from the first scrape)
+  and, with the log on, adds one `PendingCall::unread` row: an empty `tool`,
+  `outcome = unread` once the upstream answers `2xx`, or the failure the HTTP
+  status reports. With the log off an ungoverned body is never parsed, so only
+  `encoded` can be counted then. Only a body actually forwarded is counted, so
+  a request refused for its session first is not.
+- **Calls not awaited (#3526).** A notification, an `unread` row and an
+  `accepted` call say nothing about whether the tool succeeded. `GET /api/v1/mcp/logs` returns
   `notification` and `outcome` beside `status`, and the dashboard marks such a
   row "notification, no reply awaited" or "accepted, reply on the stream". The
   summary (`summary_sql` in `crates/rolter-control/src/mcp_logs.rs`) counts

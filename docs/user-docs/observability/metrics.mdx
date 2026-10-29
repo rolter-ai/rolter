@@ -90,6 +90,13 @@ metrics_path = "/internal/metrics"
 
   </Accordion>
 
+  <Accordion title="rolter_mcp_unread_bodies_total">
+    **Type:** Counter, labelled `reason`
+
+    MCP request bodies the proxy forwarded to a server no tool group or manifest governs without reading them, so the tool calls in them are not itemised in the MCP log: `encoded` (a `Content-Encoding` other than `identity`) or `unparseable` (not valid JSON; the proxy reads an ungoverned body only while the MCP log is on and the body mentions `tools/call`). With the MCP log on, each is also one row whose outcome is `unread`. See [How a call's outcome is recorded](/api/mcp#how-a-calls-outcome-is-recorded).
+
+  </Accordion>
+
   <Accordion title="rolter_auth_failures_total">
     **Type:** Counter
 
