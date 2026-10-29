@@ -140,6 +140,16 @@ copy that drifts.
 - name: ROLTER_LOGIN_TRUST_FORWARDED_FOR
   value: {{ .trustForwardedFor | quote }}
 {{- end }}
+{{- with .Values.control.export }}
+- name: ROLTER_EXPORT_MAX_ROWS
+  value: {{ .maxRows | int64 | quote }}
+- name: ROLTER_EXPORT_MAX_SECS
+  value: {{ .maxSeconds | int64 | quote }}
+- name: ROLTER_EXPORT_MAX_CONCURRENT
+  value: {{ .maxConcurrent | int64 | quote }}
+- name: ROLTER_EXPORT_MAX_CONCURRENT_PER_CALLER
+  value: {{ .maxConcurrentPerCaller | int64 | quote }}
+{{- end }}
 - name: ROLTER_UPDATE_CHECK
   value: {{ .Values.control.updateCheck | quote }}
 {{- if .Values.env.redisUrl }}

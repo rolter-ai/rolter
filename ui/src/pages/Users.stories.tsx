@@ -1535,6 +1535,132 @@ export const ResendingAnInvitationMailsItAgain: Story = {
   },
 };
 
+/**
+ * Check mail relay (#3377): the action sits next to Invite user, sends the
+ * check for the org and says what came back in the dashboard's language.
+ */
+let mailCheck: Recorder;
+export const CheckingTheMailRelaySaysItIsFine: Story = {
+  render: () => {
+    mailCheck = recording(invitationsApi());
+    return (
+      <Harness fetchStub={mailCheck.stub}>
+        <Toasted>
+          <Users />
+        </Toasted>
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    await clickWhenEnabled(canvasElement, "Check mail relay");
+    await mailCheck.expectSent("POST", "/invitations/mail-check");
+    await expectToast(canvasElement, /mail relay accepted the connection and the credential/);
+  },
+};
+
+/** each stage that can fail is named, with the reason the API returns */
+const failedStage = (stage: "connect" | "tls" | "auth" | "relay", said: string): Story => ({
+  render: () => (
+    <Harness
+      fetchStub={invitationsApi({
+        onMailCheck: () => json({ ok: false, stage, reason: `reason for ${stage}` }),
+      })}
+    >
+      <Toasted>
+        <Users />
+      </Toasted>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await clickWhenEnabled(canvasElement, "Check mail relay");
+    await expectToast(canvasElement, new RegExp(`relay check failed at ${said}`), "error");
+    await expect(await within(canvasElement).findByText(`reason for ${stage}`)).toBeVisible();
+  },
+});
+
+export const MailRelayCheckFailsConnecting: Story = failedStage("connect", "connecting");
+export const MailRelayCheckFailsAtTls: Story = failedStage("tls", "setting up TLS");
+export const MailRelayCheckFailsSigningIn: Story = failedStage("auth", "signing in");
+export const MailRelayCheckFailsAtTheMailServer: Story = failedStage(
+  "relay",
+  "talking to the mail server",
+);
+
+/** a control plane with no relay is stated as such, not as an error */
+export const MailRelayCheckWithNoRelayIsNotAnError: Story = {
+  render: () => (
+    <Harness
+      fetchStub={invitationsApi({
+        onMailCheck: () =>
+          json({ error: { message: "invitation mail is not configured (ROLTER_SMTP_URL)" } }, 409),
+      })}
+    >
+      <Toasted>
+        <Users />
+      </Toasted>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await clickWhenEnabled(canvasElement, "Check mail relay");
+    await expectToast(canvasElement, /Mail is not configured on this control plane/);
+    // a status, not an alert: the alert region stays empty
+    const alerts = within(canvasElement).queryAllByRole("alert");
+    await expect(alerts.filter((node) => node.textContent)).toHaveLength(0);
+  },
+};
+
+/** a check run again within a few seconds is told to wait (#3394) */
+export const MailRelayCheckRunTooSoonSaysToWait: Story = {
+  render: () => (
+    <Harness
+      fetchStub={invitationsApi({
+        onMailCheck: () =>
+          new Response(
+            JSON.stringify({ error: { message: "too many", code: "too_many_attempts" } }),
+            {
+              status: 429,
+              headers: { "content-type": "application/json", "retry-after": "5" },
+            },
+          ),
+      })}
+    >
+      <Toasted>
+        <Users />
+      </Toasted>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await clickWhenEnabled(canvasElement, "Check mail relay");
+    await expectToast(canvasElement, /checked a moment ago/);
+  },
+};
+
+/** the check is in flight: the button says so and cannot be pressed again */
+export const MailRelayCheckInFlight: Story = {
+  render: () => (
+    <Harness fetchStub={invitationsApi({ onMailCheck: () => new Promise<Response>(() => {}) })}>
+      <Users />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await clickWhenEnabled(canvasElement, "Check mail relay");
+    const busy = await within(canvasElement).findByRole("button", { name: "Checking mail relay" });
+    await expect(busy).toBeDisabled();
+  },
+};
+
+/** the relay is the invitation bar's: a viewer is refused the check */
+export const MailRelayCheckRefusedToAViewer: Story = {
+  render: () => (
+    <Harness fetchStub={invitationsApi()} role="viewer">
+      <Users />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await expectRefused(canvasElement, "Check mail relay");
+  },
+};
+
 /** The relay still refuses: the toast says so, with the reason the row keeps. */
 export const ResendingAnInvitationThatFailsAgain: Story = {
   render: () => (
@@ -1961,6 +2087,8 @@ function invitationsApi(
     onRevoke?: (id: string, rows: Invitation[]) => Promise<Response | null> | Response | null;
     /** answers a resend of the invitation with this id; the default mails it */
     onResend?: (row: Invitation) => Response;
+    /** answers a relay check; the default says the relay is fine */
+    onMailCheck?: () => Response | Promise<Response>;
   } = {},
 ): FetchStub {
   const rows = (answers.rows ?? INVITATIONS).map((row) => ({ ...row }));
@@ -1975,6 +2103,9 @@ function invitationsApi(
       if (!row) return json({ error: { message: "not found" } }, 404);
       row.revoked_at = "2026-09-30T00:00:00Z";
       return json(row);
+    }
+    if (method === "POST" && url.includes("/invitations/mail-check")) {
+      return answers.onMailCheck ? answers.onMailCheck() : json({ ok: true });
     }
     const resent = url.match(/\/api\/v1\/invitations\/([^/?]+)\/resend$/);
     if (method === "POST" && resent) {

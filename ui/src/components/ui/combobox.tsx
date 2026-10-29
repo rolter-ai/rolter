@@ -72,6 +72,12 @@ export interface ComboboxProps {
    * for a list that is still loading or that the source had nothing for
    */
   emptyText?: string;
+  /**
+   * what is typed into the field, on every keystroke, for a list that is only
+   * part of what exists and asks its source for the rest (#3385). Filtering
+   * the options on screen stays the combobox's own
+   */
+  onQueryChange?: (query: string) => void;
   /** focus came into the control */
   onFocus?: () => void;
   /** focus left the control entirely, not for one of its own parts */
@@ -272,6 +278,7 @@ export const Combobox = React.forwardRef<HTMLInputElement, ComboboxProps>(functi
     emptyText,
     onFocus,
     onBlur,
+    onQueryChange,
     "aria-label": ariaLabel,
     "aria-describedby": describedBy,
     "aria-invalid": invalid,
@@ -603,6 +610,7 @@ export const Combobox = React.forwardRef<HTMLInputElement, ComboboxProps>(functi
         aria-activedescendant={open && filtered[active] ? optionId(active) : undefined}
         onChange={(event) => {
           setQuery(event.target.value);
+          onQueryChange?.(event.target.value);
           if (commitOnInput && allowCustom) {
             const typed = event.target.value.trim();
             const next = options.find((o) => fold(o.value) === fold(typed))?.value ?? typed;

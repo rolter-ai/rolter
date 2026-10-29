@@ -364,6 +364,24 @@ async fn the_relay_check_names_the_stage_that_failed_and_nothing_else() {
     assert_eq!(status, 200);
     assert_eq!(body, json!({"ok": true}));
 
+    // a second run straight away is refused, with a wait to honour (#3394)
+    let response = f
+        .client
+        .post(format!("{}{path}", f.base))
+        .bearer_auth(admin_token())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 429);
+    let wait: u64 = response
+        .headers()
+        .get("retry-after")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse().ok())
+        .expect("a refused check says when to retry");
+    assert!(wait >= 1);
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
     *mailer.relay.lock() = Some(RelayFailure {
         stage: RelayStage::Auth,
         reason: "the mail server refused the credential in the relay url".to_string(),
@@ -471,4 +489,44 @@ async fn a_viewer_cannot_resend_an_invitation() {
         assert_eq!(response.status(), 403, "{path}");
     }
     assert_eq!(mailer.sent.lock().len(), 1, "nothing was sent for a viewer");
+}
+
+#[tokio::test]
+async fn an_expired_invitation_loses_its_sealed_token() {
+    skip_without_db!();
+    let mailer = Arc::new(Recorder::default());
+    let f = fixture(Some(mailer), "Acme").await;
+    let live = f.invite("live@example.com").await;
+    let live_id: Uuid = live["invitation"]["id"].as_str().unwrap().parse().unwrap();
+    let old = f.invite("old@example.com").await;
+    let old_id: Uuid = old["invitation"]["id"].as_str().unwrap().parse().unwrap();
+    let sealed = |id: Uuid| {
+        let pool = f.pool.clone();
+        async move {
+            sqlx::query_scalar::<_, bool>(
+                "select token_ciphertext is not null and token_nonce is not null \
+                 from invitations where id = $1",
+            )
+            .bind(id)
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+        }
+    };
+    assert!(sealed(old_id).await && sealed(live_id).await);
+
+    // nothing has expired yet
+    let repo = rolter_store::postgres::repo::InvitationRepo(&f.pool);
+    assert_eq!(repo.sweep_expired_sealed_tokens(100).await.unwrap(), 0);
+
+    sqlx::query("update invitations set expires_at = now() - interval '1 minute' where id = $1")
+        .bind(old_id)
+        .execute(&f.pool)
+        .await
+        .unwrap();
+    assert_eq!(repo.sweep_expired_sealed_tokens(100).await.unwrap(), 1);
+    assert!(!sealed(old_id).await, "the expired copy is cleared");
+    assert!(sealed(live_id).await, "a live invitation keeps its copy");
+    // and it stays cleared: a second pass finds nothing
+    assert_eq!(repo.sweep_expired_sealed_tokens(100).await.unwrap(), 0);
 }

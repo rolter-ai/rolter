@@ -135,19 +135,36 @@ fn resolve_admin_password(
     args: &SeedArgs,
     stdin: &mut impl std::io::BufRead,
 ) -> anyhow::Result<Option<String>> {
-    let raw = if args.admin_password_stdin {
+    read_admin_password(
+        args.admin_password.as_deref(),
+        args.admin_password_stdin,
+        args.admin_password_file.as_deref(),
+        stdin,
+    )
+}
+
+/// `resolve_admin_password` over the three sources themselves, so a command
+/// that is not `rolter seed` (`rolter easy-up`, #3395) resolves a password exactly
+/// as it does rather than copying the rules.
+pub fn read_admin_password(
+    password: Option<&str>,
+    from_stdin: bool,
+    file: Option<&std::path::Path>,
+    stdin: &mut impl std::io::BufRead,
+) -> anyhow::Result<Option<String>> {
+    let raw = if from_stdin {
         let mut line = String::new();
         stdin
             .read_line(&mut line)
             .context("failed to read the admin password from stdin")?;
         line
-    } else if let Some(path) = &args.admin_password_file {
+    } else if let Some(path) = file {
         let text = std::fs::read_to_string(path).with_context(|| {
             format!("failed to read the admin password file {}", path.display())
         })?;
         text.lines().next().unwrap_or_default().to_string()
     } else {
-        return Ok(args.admin_password.clone());
+        return Ok(password.map(str::to_string));
     };
     let password = raw.trim_end_matches(['\r', '\n']).to_string();
     anyhow::ensure!(!password.is_empty(), "the admin password source is empty");
