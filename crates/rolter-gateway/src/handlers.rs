@@ -3629,8 +3629,8 @@ struct ForwardOutcome {
     /// its class token; empty when the first dial answered (#1584)
     fallback_reason: String,
     /// the answering attempt's `upstream.request` span, which every dialled
-    /// attempt opens (#808, #3535); a disabled span when no pipeline is
-    /// installed
+    /// attempt opens (#808, #3535); `None` when no pipeline is installed, so
+    /// the stream wrapper parses nothing to record onto a disabled span
     genai_span: Option<tracing::Span>,
 }
 
@@ -3961,7 +3961,9 @@ async fn forward_variants(
         // traced as a classic attempt is, under the target actually dialled
         // (#3535)
         let upstream_stage = genai_attempt_span(fwd, target, attempt);
-        run.out.genai_span = Some(upstream_stage.clone());
+        // handed on only when it records somewhere: the stream wrapper parses
+        // the answer's body for every span it holds (#3535)
+        run.out.genai_span = (!upstream_stage.is_disabled()).then(|| upstream_stage.clone());
         let injected_ctx = attempt_trace_context(fwd, &upstream_stage);
         let injected_refs;
         let attempt_headers: &[(&str, &str)] = match &injected_ctx {
@@ -4017,7 +4019,11 @@ async fn forward_variants(
                 record_attempt_status(&upstream_stage, response.status().as_u16());
                 run.settle_response(&dial, response, guard, cancel).await
             }
-            Err(err) => run.settle_error(&dial, err.to_string(), cancel).await,
+            Err(err) => {
+                let message = err.to_string();
+                record_attempt_error(&upstream_stage, &message);
+                run.settle_error(&dial, message, cancel).await
+            }
         };
         if next == Next::Stop {
             break;
@@ -4180,7 +4186,9 @@ async fn forward_classic(
         // every attempt is traced (see `genai_attempt_span`), an upload under
         // its audio operation (#3535)
         let upstream_stage = genai_attempt_span(fwd, target, attempt);
-        run.out.genai_span = Some(upstream_stage.clone());
+        // handed on only when it records somewhere: the stream wrapper parses
+        // the answer's body for every span it holds (#3535)
+        run.out.genai_span = (!upstream_stage.is_disabled()).then(|| upstream_stage.clone());
         let injected_ctx = attempt_trace_context(fwd, &upstream_stage);
         let injected_refs;
         let attempt_headers: &[(&str, &str)] = match &injected_ctx {
@@ -4236,7 +4244,11 @@ async fn forward_classic(
                 record_attempt_status(&upstream_stage, response.status().as_u16());
                 run.settle_response(&dial, response, guard, cancel).await
             }
-            Err(err) => run.settle_error(&dial, err.to_string(), cancel).await,
+            Err(err) => {
+                let message = err.to_string();
+                record_attempt_error(&upstream_stage, &message);
+                run.settle_error(&dial, message, cancel).await
+            }
         };
         if next == Next::Stop {
             break;
@@ -4272,6 +4284,16 @@ fn record_attempt_status(stage: &tracing::Span, status: u16) {
             crate::genai::error_type_for_status(status),
         );
     }
+}
+
+/// Record on an attempt's span that it got no response at all: `error.type`
+/// is the transport failure's kind, `timeout` or `transport`, never the
+/// message, which quotes addresses (#808, #3535).
+fn record_attempt_error(stage: &tracing::Span, message: &str) {
+    stage.record(
+        crate::genai::ERROR_TYPE,
+        crate::genai::error_type_for_transport(message),
+    );
 }
 
 /// The provider key an attempt sends with: a weighted pick across the
@@ -4685,6 +4707,11 @@ fn genai_attempt_span(
         error.type = tracing::field::Empty,
         http.response.status_code = tracing::field::Empty
     );
+    // with no pipeline installed there is nothing to record onto, and the
+    // span name below is a `format!` the untraced path must not pay for
+    if upstream_stage.is_disabled() {
+        return upstream_stage;
+    }
     if let Some(operation) = crate::genai::operation_for_path(fwd.path) {
         upstream_stage.record(crate::genai::OPERATION_NAME, operation.name);
         upstream_stage.record(
@@ -6408,6 +6435,116 @@ mod tests {
     };
 
     use super::*;
+
+    /// #3535 review: with no pipeline installed an attempt hands on no span,
+    /// so the stream wrapper parses nothing to record onto a disabled one. A
+    /// variant attempt and an upload on the classic pool, the two kinds of
+    /// attempt #3535 started tracing.
+    #[tokio::test]
+    async fn an_untraced_attempt_hands_on_no_span() {
+        assert!(!rolter_core::telemetry::is_active());
+        let app = axum::Router::new()
+            .route(
+                "/v1/chat/completions",
+                axum::routing::post(|| async {
+                    Json(json!({"id": "x", "choices": [], "usage": {"prompt_tokens": 1}}))
+                }),
+            )
+            .route(
+                "/v1/audio/transcriptions",
+                axum::routing::post(|| async { Json(json!({"text": "hello"})) }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let up = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let target = || Target {
+            provider: "up".into(),
+            model: Some("m".into()),
+            ..Default::default()
+        };
+        let route = |model: &str, targets, variants| ModelRoute {
+            model: model.into(),
+            strategy: BalancingStrategy::RoundRobin,
+            targets,
+            params: Default::default(),
+            param_policy: Default::default(),
+            advanced: Default::default(),
+            cache: None,
+            variants,
+            tenancy: None,
+        };
+        let mut config = GatewayConfig::default();
+        config.providers.push(rolter_core::ProviderConfig {
+            name: "up".into(),
+            api_base: format!("http://{up}"),
+            ..Default::default()
+        });
+        config.routes.push(route("classic", vec![target()], vec![]));
+        config.routes.push(route(
+            "variants",
+            vec![],
+            vec![rolter_core::Variant {
+                name: "only".into(),
+                weight: 1,
+                targets: vec![target()],
+                params: Default::default(),
+            }],
+        ));
+        let state = AppState::with_logging(&config, None);
+        let snap = state.snapshot.load();
+
+        let parsed = json!({"model": "variants", "messages": []});
+        let body = Bytes::from(parsed.to_string());
+        let upload = Bytes::from_static(b"--b\r\n\r\n--b--\r\n");
+        let headers = HeaderMap::new();
+        let ctx = RouteContext::new();
+        let cases = [
+            (
+                "variants",
+                "/v1/chat/completions",
+                ForwardPayload::Json {
+                    parsed: &parsed,
+                    body: &body,
+                    forward_body: &body,
+                },
+            ),
+            (
+                "classic",
+                "/v1/audio/transcriptions",
+                ForwardPayload::Multipart {
+                    body: &upload,
+                    content_type: "multipart/form-data; boundary=b",
+                },
+            ),
+        ];
+        for (model, path, payload) in cases {
+            let resolved = snap.resolve_for(model, None).expect("the route resolves");
+            let fwd = Forward {
+                state: &state,
+                snap: &snap,
+                entry: &resolved,
+                model,
+                ctx: &ctx,
+                payload,
+                path,
+                started: Instant::now(),
+                trace_headers: &[],
+                inbound: (&headers, &[]),
+                key_meta: None,
+            };
+            let mut cancel = crate::cancel::CancelGuard::new(
+                state.log.clone(),
+                Instant::now(),
+                RequestLog::default(),
+            );
+            let out = forward(&fwd, &mut cancel).await;
+            cancel.disarm();
+            assert_eq!(out.attempts, 1, "{model}");
+            assert!(out.outcome.is_some(), "{model}: the upstream answered");
+            assert!(out.genai_span.is_none(), "{model}: no span is handed on");
+        }
+    }
 
     #[test]
     fn queue_admission_errors_are_actionable() {

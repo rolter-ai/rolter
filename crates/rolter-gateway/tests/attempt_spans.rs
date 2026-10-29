@@ -292,3 +292,118 @@ async fn an_upload_through_a_variant_opens_it_too() {
         Some("generate_content")
     );
 }
+
+/// A failover leaves one span per attempt (#3535 review): the superseded
+/// attempts' spans say how each failed, a refused connection by
+/// `error.type=transport` and a `503` by its status, and the answering attempt
+/// has a span of its own.
+#[tokio::test]
+async fn each_attempt_of_a_failover_has_its_own_span() {
+    let seen = Seen::default();
+    let ok = seen.serve().await;
+    let busy = serve(Router::new().route(
+        "/v1/chat/completions",
+        post(|| async {
+            (
+                axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({"error": {"message": "busy"}})),
+            )
+        }),
+    ))
+    .await;
+    // a port nothing listens on any more
+    let refused = {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.local_addr().unwrap()
+    };
+    let mut config = config(ok, "model-ok");
+    config.retry.max_retries = 3;
+    config.retry.base_backoff_ms = 0;
+    config.retry.max_backoff_ms = 0;
+    for (name, addr) in [("refused", refused), ("busy", busy)] {
+        config.providers.push(ProviderConfig {
+            name: name.into(),
+            kind: ProviderKind::OpenaiCompatible,
+            api_base: format!("http://{addr}"),
+            ..Default::default()
+        });
+    }
+    let on = |provider: &str, model: &str| Target {
+        provider: provider.into(),
+        model: Some(model.into()),
+        ..Default::default()
+    };
+    let variant = |name: &str, weight: u32, target: Target| Variant {
+        name: name.into(),
+        weight,
+        targets: vec![target],
+        params: Default::default(),
+    };
+    // only `first` has a weight, so it leads; the rest follow in order
+    config.routes.push(route(
+        "failover",
+        vec![],
+        vec![
+            variant("first", 1, on("refused", "model-refused")),
+            variant("second", 0, on("busy", "model-busy")),
+            variant("third", 0, target("model-ok")),
+        ],
+    ));
+    let gw = gateway(&config).await;
+    let trace = trace_id(5);
+    chat(gw, "failover", &trace).await;
+
+    let pipeline = test_pipeline::install();
+    let mut attempts = Vec::new();
+    for _ in 0..200 {
+        attempts = pipeline
+            .spans()
+            .into_iter()
+            .filter(|span| span.trace_id == trace && span.attribute("attempt").is_some())
+            .collect();
+        if attempts.len() == 3 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert_eq!(attempts.len(), 3, "one span per attempt: {attempts:#?}");
+    attempts.sort_by_key(|span| span.attribute("attempt").map(str::to_string));
+    let field = |i: usize, key: &str| attempts[i].attribute(key).map(str::to_string);
+
+    assert_eq!(
+        field(0, "gen_ai.request.model").as_deref(),
+        Some("model-refused")
+    );
+    assert_eq!(field(0, "error.type").as_deref(), Some("transport"));
+    assert_eq!(field(0, "http.response.status_code"), None);
+
+    assert_eq!(
+        field(1, "gen_ai.request.model").as_deref(),
+        Some("model-busy")
+    );
+    assert_eq!(
+        field(1, "http.response.status_code").as_deref(),
+        Some("503")
+    );
+    assert_eq!(field(1, "error.type").as_deref(), Some("503"));
+
+    assert_eq!(
+        field(2, "gen_ai.request.model").as_deref(),
+        Some("model-ok")
+    );
+    assert_eq!(
+        field(2, "http.response.status_code").as_deref(),
+        Some("200")
+    );
+    assert_eq!(field(2, "error.type"), None);
+    // the answering provider's call is the answering attempt's child
+    let (traceparent, _) = seen.only();
+    assert_eq!(
+        traceparent.split('-').nth(2),
+        Some(attempts[2].span_id.as_str())
+    );
+    // and every attempt hangs off the same gateway span
+    assert!(attempts
+        .iter()
+        .all(|span| span.parent_span_id == attempts[0].parent_span_id));
+}

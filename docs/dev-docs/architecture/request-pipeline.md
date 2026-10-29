@@ -80,8 +80,9 @@ Every attempt either loop dials opens an `upstream.request` span
 a JSON body and an upload, under the target the attempt dialled and the
 endpoint's GenAI operation. The answering attempt's span leaves the loop as
 `ForwardOutcome::genai_span`. Until #3535 only a JSON attempt on the classic
-pool was traced. With no pipeline installed the span is disabled and nothing
-is injected, so the untraced path builds nothing.
+pool was traced. With no pipeline installed `genai_attempt_span` returns the
+disabled span before naming it, nothing is injected, and `genai_span` stays
+`None`, so the stream wrapper parses no response body to record onto it.
 
 ## The response
 

@@ -100,10 +100,17 @@ endpoint is configured:
   transcription or translation is `generate_content` with
   `gen_ai.output.type=text`. The answering attempt's span is handed on as
   `ForwardOutcome::genai_span`, which is where `UsageLoggingStream` records the
-  usage and the response attributes. Until #3535 only a JSON attempt on the
+  usage and the response attributes. A superseded attempt keeps its own span,
+  which records how it ended: `http.response.status_code` and `error.type` (the
+  status) for an answer, `error.type` alone (`timeout` or `transport`,
+  `genai::error_type_for_transport`) for a call that got no response. With no
+  pipeline installed the span is disabled, returned before it is named, and not
+  handed on, so `UsageLoggingStream` parses nothing for it. Until #3535 only a
+  JSON attempt on the
   classic pool did this: a route with variants and every upload exported no
   `upstream.request` span and forwarded the caller's trace headers as they came.
-  Tests: `crates/rolter-gateway/tests/attempt_spans.rs`, against an in-memory
+  Tests: `crates/rolter-gateway/tests/attempt_spans.rs` (a failover case
+  included), against an in-memory
   pipeline (`rolter_core::telemetry::test_pipeline`, behind the dev-only
   `test-pipeline` feature).
 
