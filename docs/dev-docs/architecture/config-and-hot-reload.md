@@ -151,7 +151,12 @@ for the enum or entity (`provider_kind`, `route_strategy`, `provider_group_strat
 `streaming_strategy`, `guard_provider_kind`, `pii_direction`, `pii_restoration`,
 `pii_streaming`), never the value or the entity's name, so the label set is bounded
 by the build and leaks no tenant data. A budget or rate limit whose scope or period
-stays `Unknown` is counted and logged there too. The
+stays `Unknown` is counted and logged there too. On the control plane,
+`ConfigStore::load_problem_records` lists each stored row whose value reads this
+way in `GET /api/v1/config/problems` (#3446, `unknown_value_problems` in the
+postgres store), owned by the row's tenant: a route's strategy, a provider's kind,
+a budget's or rate limit's scope, beside the budget period (#1902) and the
+`takes_over` class (#3321) it already named. The
 control plane's sanitizer applies the same readings, so an older control plane
 reading a newer row serves them too. A config file is written by hand, so there
 an unknown value is a typo: `GatewayConfig::from_toml_str` refuses it, and the

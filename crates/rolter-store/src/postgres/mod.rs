@@ -868,6 +868,93 @@ impl PostgresConfigStore {
         .map_err(store_err)
     }
 
+    /// The rows whose stored enum value this build does not know, one
+    /// problem each, naming the entity, the value and what happens to the row
+    /// (#3446). Since #3347 such a value no longer fails the snapshot, so
+    /// without these lines the row would simply stop being served: a route on
+    /// an unknown strategy is left out by the sanitizer, a provider of an
+    /// unknown kind cannot be read into the config, and a budget or rate limit
+    /// on an unknown scope is skipped by the loader and not enforced.
+    async fn unknown_value_problems(
+        &self,
+        budgets: &[Budget],
+    ) -> Result<Vec<crate::ConfigProblem>> {
+        use crate::{ConfigProblem, ProblemOwner};
+        let mut problems = Vec::new();
+        for row in self.enabled_route_rows().await? {
+            if parse_strategy(&row.strategy)? == BalancingStrategy::Unknown {
+                problems.push(ConfigProblem {
+                    message: format!(
+                        "route '{}' has balancing strategy '{}', which this build does not \
+                         know; the route is left out of the snapshot until the control plane \
+                         is upgraded or the strategy is changed",
+                        row.model, row.strategy
+                    ),
+                    owner: ProblemOwner::Tenant(Tenancy {
+                        org_id: row.org_id.to_string(),
+                        project_id: Some(row.project_id.to_string()),
+                    }),
+                });
+            }
+        }
+        let providers: Vec<(String, Uuid, Option<Uuid>, String)> =
+            sqlx::query_as("select name, org_id, project_id, kind from providers order by name")
+                .fetch_all(&self.pool)
+                .await
+                .map_err(store_err)?;
+        for (name, org, project, kind) in providers {
+            let read: ProviderKind =
+                serde_json::from_value(serde_json::Value::String(kind.clone()))
+                    .unwrap_or(ProviderKind::Unknown);
+            if read == ProviderKind::Unknown {
+                problems.push(ConfigProblem {
+                    message: format!(
+                        "provider '{name}' has kind '{kind}', which this build does not know; \
+                         it is not served until the control plane is upgraded or the kind is \
+                         changed"
+                    ),
+                    owner: ProblemOwner::Tenant(Tenancy {
+                        org_id: org.to_string(),
+                        project_id: project.map(|p| p.to_string()),
+                    }),
+                });
+            }
+        }
+        // the loader skips these rather than mis-enforce them, so the cap they
+        // set is not applied at all; no known scope names a tenant to own them
+        problems.extend(
+            budgets
+                .iter()
+                .filter(|row| BudgetScope::from_scope_type(&row.scope_type).is_none())
+                .map(|row| {
+                    ConfigProblem::deployment(format!(
+                        "budget '{}' has scope '{}', which this build does not know; it is \
+                         left out of the snapshot and not enforced until the control plane is \
+                         upgraded or the budget is recreated on a known scope",
+                        row.id, row.scope_type
+                    ))
+                }),
+        );
+        let limits: Vec<(Uuid, String)> =
+            sqlx::query_as("select id, scope_type from rate_limits order by created_at")
+                .fetch_all(&self.pool)
+                .await
+                .map_err(store_err)?;
+        problems.extend(
+            limits
+                .into_iter()
+                .filter(|(_, scope)| BudgetScope::from_scope_type(scope).is_none())
+                .map(|(id, scope)| {
+                    ConfigProblem::deployment(format!(
+                        "rate limit '{id}' has scope '{scope}', which this build does not know; \
+                         it is left out of the snapshot and not enforced until the control plane \
+                         is upgraded or the limit is recreated on a known scope"
+                    ))
+                }),
+        );
+        Ok(problems)
+    }
+
     /// `left_out` names the providers [`Self::load_providers`] did not return.
     async fn load_routes(&self, left_out: &HashSet<String>) -> Result<Vec<ModelRoute>> {
         Ok(self.assemble_routes(left_out).await?.0)
@@ -2432,6 +2519,10 @@ impl ConfigStore for PostgresConfigStore {
                 }
             })
         }));
+        // a stored value from a newer release, a downgrade or a hand-written
+        // row that this build reads as `Unknown` (#3446). a `takes_over` class
+        // is reported with its target below, and a budget period above
+        problems.extend(self.unknown_value_problems(&budgets).await?);
         // a target or route the snapshot drops for `takes_over` (#3321). a
         // failure to read them is itself the problem to report: failing the
         // whole list would hide every other explanation with it
@@ -4771,6 +4862,164 @@ mod tests {
             "{}",
             problems[1]
         );
+    }
+
+    /// #3446: a stored value this build reads as `Unknown` no longer fails the
+    /// snapshot, so the problems list is where the row is explained: each
+    /// kind names its entity, the value and what happens to the row, owned by
+    /// its tenant where it has one. The values are written with plain SQL past
+    /// the check constraints, as a newer release or a downgrade leaves them.
+    #[tokio::test]
+    async fn rows_read_as_unknown_are_listed_in_the_problems() {
+        if !test_database::is_configured() {
+            eprintln!("skipping: {} not set", test_database::URL_ENV);
+            return;
+        }
+        let db = fresh_db().await;
+        let pool = db.pool().clone();
+        // the constraints a newer release's migrations would have widened
+        sqlx::query(
+            "do $$ declare c record; begin
+               for c in select conname, conrelid::regclass::text as t from pg_constraint
+                        where contype = 'c'
+                          and conrelid::regclass::text in
+                              ('routes', 'providers', 'budgets', 'rate_limits', 'route_targets')
+               loop execute format('alter table %s drop constraint %I', c.t, c.conname);
+               end loop; end $$",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let org_id: Uuid = sqlx::query_scalar(
+            "insert into orgs (name, slug) values ('acme', 'acme') returning id",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let team_id: Uuid =
+            sqlx::query_scalar("insert into teams (org_id, name) values ($1, 'core') returning id")
+                .bind(org_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        let project_id: Uuid = sqlx::query_scalar(
+            "insert into projects (team_id, name) values ($1, 'api') returning id",
+        )
+        .bind(team_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let known: Uuid = sqlx::query_scalar(
+            "insert into providers (org_id, name, slug, kind, api_base)
+             values ($1, 'known', 'known', 'openai', 'https://a.example') returning id",
+        )
+        .bind(org_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "insert into providers (org_id, name, slug, kind, api_base)
+             values ($1, 'future', 'future', 'quantum', 'https://q.example')",
+        )
+        .bind(org_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "insert into routes (project_id, model, strategy)
+             values ($1, 'guessing', 'mind_reading')",
+        )
+        .bind(project_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let route: Uuid = sqlx::query_scalar(
+            "insert into routes (project_id, model, strategy)
+             values ($1, 'kept', 'round_robin') returning id",
+        )
+        .bind(project_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "insert into route_targets (route_id, provider_id, weight, takes_over)
+             values ($1, $2, 1, array['quantum_flux'])",
+        )
+        .bind(route)
+        .bind(known)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let galaxy: Uuid = sqlx::query_scalar(
+            "insert into budgets (scope_type, scope_id, limit_usd, period)
+             values ('galaxy', $1, 10, 'monthly') returning id",
+        )
+        .bind(org_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "insert into budgets (scope_type, scope_id, limit_usd, period)
+             values ('org', $1, 10, 'fortnightly')",
+        )
+        .bind(org_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let limit: Uuid = sqlx::query_scalar(
+            "insert into rate_limits (scope_type, scope_id, rpm)
+             values ('galaxy', $1, 10) returning id",
+        )
+        .bind(org_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+        let store = PostgresConfigStore::new(pool);
+        let problems = store.load_problem_records().await.unwrap();
+        let find = |needle: &str| {
+            problems
+                .iter()
+                .find(|p| p.message.contains(needle))
+                .unwrap_or_else(|| panic!("no problem names {needle}: {problems:?}"))
+        };
+        let tenant = crate::ProblemOwner::Tenant(rolter_core::Tenancy {
+            org_id: org_id.to_string(),
+            project_id: Some(project_id.to_string()),
+        });
+
+        let strategy = find("balancing strategy 'mind_reading'");
+        assert!(
+            strategy.message.contains("route 'guessing'"),
+            "{strategy:?}"
+        );
+        assert!(strategy.message.contains("left out"), "{strategy:?}");
+        assert_eq!(strategy.owner, tenant);
+
+        let kind = find("kind 'quantum'");
+        assert!(kind.message.contains("provider 'future'"), "{kind:?}");
+        assert!(kind.message.contains("not served"), "{kind:?}");
+        assert_eq!(
+            kind.owner,
+            crate::ProblemOwner::Tenant(rolter_core::Tenancy {
+                org_id: org_id.to_string(),
+                project_id: None,
+            })
+        );
+
+        let scope = find("scope 'galaxy', which this build does not know; it is left out");
+        assert!(scope.message.contains(&galaxy.to_string()), "{scope:?}");
+        assert!(scope.message.contains("not enforced"), "{scope:?}");
+        let rate = find(&format!("rate limit '{limit}'"));
+        assert!(rate.message.contains("scope 'galaxy'"), "{rate:?}");
+
+        let period = find("period 'fortnightly'");
+        assert!(period.message.contains("monthly"), "{period:?}");
+
+        let class = find("quantum_flux");
+        assert!(class.message.contains("route 'kept'"), "{class:?}");
+        assert!(class.message.contains("omitted"), "{class:?}");
+        assert_eq!(class.owner, tenant);
     }
 
     // the adaptive-routing kill switch and blend weights are control-plane
