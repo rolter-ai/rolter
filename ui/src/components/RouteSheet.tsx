@@ -43,7 +43,7 @@ import {
   type UpdateRouteInput,
 } from "@/lib/api";
 import { errorText } from "@/lib/error-copy";
-import { onlyRestrictedDialled } from "@/lib/failure-classes";
+import { allRestricted, onlyRestrictedDialled } from "@/lib/failure-classes";
 import { useErrorVisibility } from "@/lib/error-visibility";
 import { providersUsableFrom } from "@/lib/provider-scope";
 import {
@@ -114,9 +114,11 @@ export interface RouteSheetProps {
  * control plane judges each write against what is stored at that moment (a
  * route with variants dials only them, #3487), so the order is the one that
  * lets every end state it accepts land in one save (#3510): variants that stay
- * go first, since they decide whether the pool counts at all, and a removal of
- * every variant goes last, once the pool it hands the route to is stored. The
- * name, parameters, pricing and the rest stay in the model sheet.
+ * go first, since they decide whether the pool counts at all. A removal of
+ * every variant goes first too while the stored ones hold only fallbacks, since
+ * the pool is judged against them until they are gone, and last otherwise,
+ * once the pool it hands the route to is stored. The name, parameters, pricing
+ * and the rest stay in the model sheet.
  */
 export function RouteSheet({
   open,
@@ -215,6 +217,12 @@ export function RouteSheet({
     draft.variants.map((v) => v.targets.map((tg) => tg.takesOver)),
   );
   const variantsOnlyFallbacks = stranded && draft.variants.length > 0;
+  // the variants as stored now hold only fallbacks, so the pool is judged
+  // against a route that dials nothing until they change
+  const storedSets = (variants.data ?? []).map((v) =>
+    (v.targets ?? []).map((tg) => tg.takes_over ?? []),
+  );
+  const storedVariantsStranded = storedSets.length > 0 && allRestricted(storedSets.flat());
   const onlyFallbacks = stranded && draft.variants.length === 0;
   // a refusal of the whole list that is about the variants is said under them
   // (`onRefusal` below), so it never lands here while the route has variants
@@ -272,9 +280,10 @@ export function RouteSheet({
       // variants that stay decide whether the pool is dialled, so they are
       // stored first: a pool PUT judged against stored variants that are only
       // fallbacks would be refused, though the variants being saved repair them
-      // (#3510). a removal of every variant waits for the pool instead, which
-      // the variants PUT then judges
-      const variantsFirst = variantsDirty && draft.variants.length > 0;
+      // (#3510). a removal of every variant goes first for the same reason
+      // while the stored ones strand the route; otherwise it waits for the
+      // pool, since the variants PUT then judges the pool it hands the route to
+      const variantsFirst = variantsDirty && (draft.variants.length > 0 || storedVariantsStranded);
       if (variantsFirst) await saveVariants();
       if (routeDirty) {
         stageRef.current = "route";
