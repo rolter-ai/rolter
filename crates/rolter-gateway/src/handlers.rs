@@ -7897,15 +7897,17 @@ mod tests {
     }
 
     /// #2835: a retry that cannot happen is not waited for, and one that can
-    /// is waited for in full.
-    #[tokio::test]
+    /// is waited for in full. The clock is paused, so the elapsed time is the
+    /// virtual time `back_off` asked the runtime to sleep through: exact, and
+    /// out of reach of a descheduled or slow test process (#3416).
+    #[tokio::test(start_paused = true)]
     async fn back_off_waits_only_for_an_attempt_that_can_happen() {
         let delay = 250;
-        let start = Instant::now();
+        let start = tokio::time::Instant::now();
         back_off(delay, false).await;
-        assert!(start.elapsed() < Duration::from_millis(delay / 2));
+        assert_eq!(start.elapsed(), Duration::ZERO, "a refused retry waited");
         back_off(delay, true).await;
-        assert!(start.elapsed() >= Duration::from_millis(delay));
+        assert_eq!(start.elapsed(), Duration::from_millis(delay));
     }
 
     /// #1714: a balancer sized for more targets than the route carries must

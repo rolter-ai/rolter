@@ -364,18 +364,61 @@ async fn tool_group_assignments_reach_the_snapshot_and_stay_inside_the_organizat
     assert_eq!(carried[0]["disabled"], json!(true));
     assert_eq!(carried[0]["assignments"].as_array().unwrap().len(), 3);
 
-    // a subject deleted since it was assigned is dropped instead of blocking
-    // the save, while one that was never in the organization is still refused
+    // deleting a subject takes its assignments with it in the same
+    // transaction (#3382), so the listing and the next snapshot lose it at
+    // once, and naming the deleted key again is refused like any subject that
+    // is not in the organization
     sqlx::query("delete from virtual_keys where id = $1")
         .bind(subjects[0].2)
         .execute(&pool)
         .await
         .unwrap();
+    let swept: Value = client
+        .get(format!(
+            "{base}/api/v1/orgs/{org_id}/mcp/tool-group-assignments"
+        ))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(swept.as_array().unwrap().len(), 2, "{swept}");
+    let config = snapshot_config(&client, &base).await;
+    assert_eq!(
+        config["mcp_tool_groups"][0]["assignments"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2,
+        "{config}"
+    );
+    let refused = client
+        .put(&url)
+        .json(&json!({"assignments": [
+            {"kind": "team", "id": subjects[0].0},
+            {"kind": "virtual_key", "id": subjects[0].2},
+        ]}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(refused.status(), 400);
+
+    // a row that outlived its subject (one written around the delete, or from
+    // before the sweep) is still dropped instead of blocking the save
+    sqlx::query(
+        "insert into mcp_tool_group_assignments (group_id, subject_kind, subject_id) \
+         values ($1, 'virtual_key', $2)",
+    )
+    .bind(group_id.parse::<uuid::Uuid>().unwrap())
+    .bind(subjects[0].2)
+    .execute(&pool)
+    .await
+    .unwrap();
     let resaved: Value = client
         .put(&url)
         .json(&json!({"assignments": [
             {"kind": "team", "id": subjects[0].0},
-            {"kind": "project", "id": subjects[0].1},
             {"kind": "virtual_key", "id": subjects[0].2},
         ]}))
         .send()
@@ -384,14 +427,7 @@ async fn tool_group_assignments_reach_the_snapshot_and_stay_inside_the_organizat
         .json()
         .await
         .unwrap();
-    assert_eq!(resaved.as_array().unwrap().len(), 2, "{resaved}");
-    let refused = client
-        .put(&url)
-        .json(&json!({"assignments": [{"kind": "virtual_key", "id": subjects[0].2}]}))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(refused.status(), 400);
+    assert_eq!(resaved.as_array().unwrap().len(), 1, "{resaved}");
 
     // a group created with assignments has them from its first snapshot, and a
     // subject outside the organization refuses the whole create

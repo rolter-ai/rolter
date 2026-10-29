@@ -44,7 +44,7 @@ rolter is a high-performance OpenAI/Anthropic-compatible AI gateway and load bal
 - Prefer `thiserror` for library errors and `anyhow` only in binaries.
 - Keep the data-plane hot path allocation-light; do not block on locks (use `arc-swap` for config reads).
 - Avoid `unwrap()`/`expect()` on request paths; map errors to OpenAI-style JSON.
-- Use `parking_lot::Mutex`, never `std::sync::Mutex`, for shared state on the data plane. A std mutex poisons when a thread panics holding it, so one transient panic turns every later `.lock().unwrap()` into a panic — a permanent, restart-only outage. `crates/rolter-gateway/tests/lock_discipline.rs` enforces this.
+- Use `parking_lot::Mutex`, never `std::sync::Mutex`, for shared state on the data plane. A std mutex poisons when a thread panics holding it, so one transient panic turns every later `.lock().unwrap()` into a panic — a permanent, restart-only outage. `crates/rolter-gateway/tests/lock_discipline.rs` enforces this over the gateway and `rolter-balancer` sources.
 - Code comments start lowercase with no trailing punctuation; `///` doc comments use normal prose.
 - New balancing strategies implement `rolter_balancer::LoadBalancer` and are wired into `build()`.
 - A type that fixtures construct everywhere (`ProviderConfig` is the model) carries a `Default` so tests can write `..Default::default()`; production mapping code still writes the literal out in full. See `docs/dev-docs/development/merge-protection.md`.
