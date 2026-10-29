@@ -1845,17 +1845,44 @@ impl ModelRoute {
         )
     }
 
+    /// The targets the data plane dials first: the variants' targets when the
+    /// route has variants, because `forward_variants` never consults the
+    /// classic pool then, and the pool otherwise (#3430).
+    pub fn dialled_targets(&self) -> Box<dyn Iterator<Item = &Target> + '_> {
+        if self.variants.is_empty() {
+            Box::new(self.targets.iter())
+        } else {
+            Box::new(self.variants.iter().flat_map(|v| v.targets.iter()))
+        }
+    }
+
+    /// Whether this route has targets to dial and every one of them is
+    /// restricted, so it could never serve a first dial.
+    pub fn only_restricted_targets_dialled(&self) -> bool {
+        let mut dialled = self.dialled_targets().peekable();
+        dialled.peek().is_some() && dialled.all(Target::is_restricted)
+    }
+
     /// Every problem with the `takes_over` sets of this route's targets, the
     /// classic pool's and every variant's together: a class listed twice on a
-    /// target, and a route whose every target is restricted, which is refused
-    /// by name ([`crate::failover::ALL_TARGETS_RESTRICTED`]) because it could
-    /// never dial anything.
+    /// target, and a route whose every dialled target is restricted
+    /// ([`dialled_targets`](Self::dialled_targets)), which is refused by name
+    /// ([`crate::failover::ALL_TARGETS_RESTRICTED`]) because it could never
+    /// dial anything.
     pub fn takes_over_problems(&self) -> Vec<String> {
-        crate::failover::takes_over_problems(
+        let mut problems = crate::failover::takes_over_problems(
             &self.model,
             self.every_target()
                 .map(|t| (t.provider.as_str(), t.takes_over.as_slice())),
-        )
+        );
+        // the shared helper judges the pool and the variants together; a
+        // route with variants dials only the variants, so it is re-judged here
+        let stranded = crate::failover::all_targets_restricted(&self.model);
+        problems.retain(|p| *p != stranded);
+        if self.only_restricted_targets_dialled() {
+            problems.push(stranded);
+        }
+        problems
     }
 
     /// Whether this route has a target that takes refusals over, which is
@@ -5076,6 +5103,15 @@ impl GatewayConfig {
                     idx,
                     route.model.clone(),
                     "it has no target that references a known provider with a positive weight",
+                ));
+            } else if route.only_restricted_targets_dialled() {
+                // what is left to dial is only fallbacks, which `validate_snapshot`
+                // refuses the whole snapshot over (#3431)
+                drops.push((
+                    idx,
+                    route.model.clone(),
+                    "every target it dials sets takes_over, so it could never serve a request \
+                     (all_targets_restricted)",
                 ));
             }
         }
@@ -9648,6 +9684,89 @@ mod tests {
         let warnings = cfg.sanitize_for_snapshot();
         assert_eq!(warnings.len(), 1);
         assert!(cfg.routes.is_empty());
+    }
+
+    /// two providers; `pool` and `variant` are TOML target tables for the
+    /// route `m`, so a case states only what differs
+    fn restricted_route_config(pool: &str, variant: &str) -> GatewayConfig {
+        toml::from_str(&format!(
+            r#"
+            [[providers]]
+            name = "a"
+            kind = "openai"
+            api_base = "https://api.openai.com/v1"
+            [[providers]]
+            name = "b"
+            kind = "openai"
+            api_base = "https://api.openai.com/v1"
+
+            [[routes]]
+            model = "m"
+            {pool}
+            {variant}
+
+            [[routes]]
+            model = "ok"
+            [[routes.targets]]
+            provider = "a"
+            "#
+        ))
+        .unwrap()
+    }
+
+    const ORDINARY_POOL: &str = r#"[[routes.targets]]
+            provider = "a""#;
+    const RESTRICTED_VARIANT: &str = r#"[[routes.variants]]
+            name = "v"
+            [[routes.variants.targets]]
+            provider = "b"
+            takes_over = ["throttled"]"#;
+    const ORDINARY_VARIANT: &str = r#"[[routes.variants]]
+            name = "v"
+            [[routes.variants.targets]]
+            provider = "b""#;
+
+    #[test]
+    fn a_route_with_variants_dials_only_them_when_checking_for_restricted_targets() {
+        // the pool has an ordinary target but the data plane never consults it
+        let stranded = restricted_route_config(ORDINARY_POOL, RESTRICTED_VARIANT);
+        let problems = stranded.validate().unwrap_err();
+        assert!(
+            problems
+                .iter()
+                .any(|p| p.contains(crate::failover::ALL_TARGETS_RESTRICTED)),
+            "{problems:?}"
+        );
+        // an ordinary variant target serves, whatever the pool holds
+        let served = restricted_route_config(ORDINARY_POOL, ORDINARY_VARIANT);
+        assert!(served.validate().is_ok(), "{:?}", served.validate());
+        // with no variants the pool is what is dialled
+        let pool_only = restricted_route_config(
+            r#"[[routes.targets]]
+            provider = "b"
+            takes_over = ["throttled"]"#,
+            "",
+        );
+        assert!(pool_only.validate().is_err());
+    }
+
+    #[test]
+    fn sanitize_drops_a_route_left_with_only_restricted_targets() {
+        let mut cfg = restricted_route_config(ORDINARY_POOL, RESTRICTED_VARIANT);
+        let report = cfg.sanitize_for_snapshot_report();
+        let models: Vec<_> = cfg.routes.iter().map(|r| r.model.as_str()).collect();
+        assert_eq!(models, ["ok"]);
+        assert!(
+            report
+                .problems
+                .iter()
+                .any(|p| p.contains("route 'm'") && p.contains("all_targets_restricted")),
+            "{:?}",
+            report.problems
+        );
+        // the rest of the snapshot still validates and applies
+        assert_eq!(cfg.validate_snapshot(), Ok(()));
+        assert!(cfg.validate().is_ok(), "{:?}", cfg.validate());
     }
 
     #[test]
