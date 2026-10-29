@@ -81,7 +81,7 @@ in `hot_path_allocations.rs`, beside the key-pool mask read. It covers:
 - `admission` — `Breaker::allows`, `Cooldowns::is_parked` and `Health::is_healthy`
   for an 8-target route, all healthy.
 - `eligible_pick/<strategy>/<variant>/<targets>` — one `pick_eligible` the way
-  `pick_untried` makes it, over 4, 24, 64 and 128 targets, with one target
+  `TargetPool::pick` makes it, over 4, 24, 64 and 128 targets, with one target
   parked, one unhealthy, both at load 0 so a strategy that ignores eligibility
   reads them as the emptiest.
 - `snapshot_read` — `AppState.snapshot.load()` plus the route lookup, over 10 and
