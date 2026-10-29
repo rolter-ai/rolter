@@ -54,7 +54,7 @@ Until a record says `completed`, treat the data as still present. A deployment w
 
 ## In the dashboard
 
-**Observability › Log erasure** (superadmin) erases a virtual key, user or organization: choose the subject, paste its id, give the reason, and confirm. **Delete the log rows too** is on by default; turn it off to delete the captured bodies only. The recent erasures are listed below with their status, and a pending one keeps refreshing until ClickHouse reports it done. It reads **Erased** only for `completed`.
+**Observability › Log erasure** (superadmin) erases a virtual key, user or organization: pick the subject by name, give the reason, and confirm. The picker lists virtual keys (with the organization, team and project each lives in, since two projects may each have a `prod`), users by email and organizations, and filters as you type; the confirmation names the subject beside its id, so a wrong id is not erased on trust. An id the list does not show can be pasted instead: it is looked up and named when Rolter knows it, and flagged when it does not. **Delete the log rows too** is on by default; turn it off to delete the captured bodies only. The recent erasures are listed below with their status, and a pending one keeps refreshing until ClickHouse reports it done. It reads **Erased** only for `completed`.
 
 For a single request, **LLM Logs** has **Erase captured payload** in the detail of a row. It deletes that request's captured bodies and keeps its metadata, asks for the reason first, and shows the status of the record under the button. A row that records no organization cannot be addressed this way; erase by virtual key instead.
 
@@ -62,7 +62,7 @@ For a single request, **LLM Logs** has **Erase captured payload** in the detail 
 
 The steps are the same in the dashboard and through the API; the examples below use the API.
 
-1. Find the subject's id: the virtual key id from **Virtual Keys**, the user id from **Members**, the organization id, or the `request_id` and `ts` of a row in **LLM Logs**.
+1. Find the subject's id: through `GET /api/v1/log-erasures/subjects?kind=virtual_key|user|org&q=<part of a name or email>` (superadmin; add `id=<uuid>` to name an id you already hold), or the virtual key id from **Virtual Keys**, the user id from **Members**, the organization id, or the `request_id` and `ts` of a row in **LLM Logs**.
 2. Submit the erasure with a reason. The reason is stored and audited, so write the ticket or request reference, not the content.
 3. Poll the record until it reads `completed`, and keep its id as the proof.
 

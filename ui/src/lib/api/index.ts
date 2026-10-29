@@ -681,12 +681,20 @@ export {
   revokeApiToken,
 } from "./api-tokens";
 export type { ApiTokenRow, ApiTokenState, MintedApiToken, MintApiTokenInput } from "./api-tokens";
-export { createLogErasure, fetchLogErasure, fetchLogErasures } from "./log-erasure";
+export {
+  createLogErasure,
+  fetchLogErasure,
+  fetchLogErasures,
+  findLogErasureSubjects,
+} from "./log-erasure";
 export type {
   CreateLogErasureInput,
   LogErasureRow,
   LogErasureScope,
   LogErasureStatus,
+  LogErasureStore,
+  LogErasureSubject,
+  LogErasureSubjectKind,
 } from "./log-erasure";
 export { fetchVersion, fetchStability, fetchPublicUrl } from "./system";
 export type { SubsystemStability, VersionStatus, PublicUrl } from "./system";

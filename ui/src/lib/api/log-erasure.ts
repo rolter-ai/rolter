@@ -46,6 +46,32 @@ export interface LogErasureRow {
   last_error?: string;
 }
 
+/** a subject the erasure form can name (#3385) */
+export interface LogErasureSubject {
+  id: string;
+  /** a key's name or prefix, a user's email, an organization's name */
+  name: string;
+  /** a key's `org / team / project`, a user's display name, an organization's slug */
+  detail: string;
+}
+
+export type LogErasureSubjectKind = "virtual_key" | "user" | "org";
+
+/**
+ * The named subjects of one kind, by part of a name or email (`q`), or the one
+ * with `id` to name an id already in hand. Superadmin only, as the erasure is.
+ * Without `q` the control plane answers the first few hundred by name.
+ */
+export function findLogErasureSubjects(
+  kind: LogErasureSubjectKind,
+  { q, id }: { q?: string; id?: string } = {},
+): Promise<{ data: LogErasureSubject[] }> {
+  const query = new URLSearchParams({ kind });
+  if (q) query.set("q", q);
+  if (id) query.set("id", id);
+  return getJson<{ data: LogErasureSubject[] }>(`/api/v1/log-erasures/subjects?${query}`);
+}
+
 export interface CreateLogErasureInput {
   scope: LogErasureScope;
   /** stored and audited: write the ticket reference, not the content */

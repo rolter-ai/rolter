@@ -40,7 +40,43 @@ pub(crate) fn router() -> Router<ControlState> {
             "/api/v1/log-erasures",
             get(list_erasures).post(create_erasure),
         )
+        .route("/api/v1/log-erasures/subjects", get(find_subjects))
         .route("/api/v1/log-erasures/{id}", get(get_erasure))
+}
+
+#[derive(Deserialize)]
+struct SubjectQuery {
+    /// `virtual_key`, `user` or `org`
+    kind: String,
+    /// part of a name or email; empty lists the first few
+    #[serde(default)]
+    q: String,
+    /// one subject by id, to name an id someone pasted
+    id: Option<Uuid>,
+}
+
+/// `GET /api/v1/log-erasures/subjects`: the named virtual keys, users or
+/// organizations the erasure form offers, found by part of a name or email
+/// (#3385). An id typed by hand is a mistake waiting to erase another tenant's
+/// logs, and an id says nothing of whose data it is; this puts a name beside
+/// it. Gated as the erasure itself is, so it reads nothing a caller who could
+/// not erase could use.
+async fn find_subjects(
+    principal: Principal,
+    State(state): State<ControlState>,
+    axum::extract::Query(query): axum::extract::Query<SubjectQuery>,
+) -> ApiResult<Json<Value>> {
+    authorize_superadmin(&principal, superadmin_cap!("log_erasure", Create))?;
+    if !matches!(query.kind.as_str(), "virtual_key" | "user" | "org") {
+        return Err(invalid_field(
+            "kind",
+            "kind must be one of virtual_key|user|org",
+        ));
+    }
+    let subjects = LogErasureRepo(pool(&state))
+        .find_subjects(&query.kind, query.q.trim(), query.id)
+        .await?;
+    Ok(Json(json!({ "data": subjects })))
 }
 
 /// The most payload rows from before the `virtual_key_id` column that one

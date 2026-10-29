@@ -21,7 +21,7 @@ import {
   PageBody,
   primaryColumn,
 } from "@/components/screen";
-import { Combobox } from "@/components/ui/combobox";
+import { Combobox, type ComboboxOption } from "@/components/ui/combobox";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Field } from "@/components/ui/field";
 import { describedBy, FieldError } from "@/components/ui/field-error";
@@ -31,8 +31,10 @@ import { SwitchRow } from "@/components/ui/switch-row";
 import {
   createLogErasure,
   fetchLogErasures,
+  findLogErasureSubjects,
   type LogErasureRow,
   type LogErasureScope,
+  type LogErasureSubject,
 } from "@/lib/api";
 import { useFormat } from "@/lib/i18n/format";
 import { useToast } from "@/lib/toast";
@@ -58,6 +60,33 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const GRID = `${primaryColumn(1)} 1.2fr 1.4fr 1fr 1.3fr`;
 
+/**
+ * The named subjects of one kind (#3385). A hand-typed UUID that is wrong but
+ * valid erases another tenant's logs, and an id says nothing of whose data it
+ * is, so the form offers a list by name and email and puts the name in the
+ * confirmation. An id pasted instead still works: it is looked up and named
+ * when the control plane knows it, and stays usable when it does not.
+ */
+function useSubjects(scope: Scope, id: string) {
+  const list = useQuery({
+    queryKey: ["log-erasure-subjects", scope],
+    queryFn: () => findLogErasureSubjects(scope),
+    retry: false,
+  });
+  const listed = list.data?.data ?? [];
+  const known = listed.find((subject) => subject.id === id);
+  // an id the list does not show (more subjects than it carries, or one typed
+  // from a ticket) is asked for by itself
+  const lookup = useQuery({
+    queryKey: ["log-erasure-subject", scope, id],
+    queryFn: () => findLogErasureSubjects(scope, { id }),
+    enabled: UUID.test(id) && !known && list.isSuccess,
+    retry: false,
+  });
+  const found: LogErasureSubject | undefined = known ?? lookup.data?.data[0];
+  return { list, listed, found, lookup };
+}
+
 function EraseForm({ onErased }: { onErased: (row: LogErasureRow) => void }) {
   const { t } = useTranslation();
   const toast = useToast();
@@ -71,7 +100,13 @@ function EraseForm({ onErased }: { onErased: (row: LogErasureRow) => void }) {
 
   const id = subject.trim();
   const idInvalid = id !== "" && !UUID.test(id);
-  const ready = UUID.test(id) && reason.trim() !== "";
+  const { list, listed, found, lookup } = useSubjects(scope, id);
+  const ready = UUID.test(id) && reason.trim() !== "" && !lookup.isFetching;
+  const unknownId = UUID.test(id) && !found && lookup.isSuccess;
+  const subjectOptions: ComboboxOption[] = [
+    ...listed,
+    ...(found && !listed.some((s) => s.id === found.id) ? [found] : []),
+  ].map((s) => ({ value: s.id, label: s.name, description: s.detail || undefined }));
 
   const erase = useMutation({
     mutationFn: () => {
@@ -96,7 +131,10 @@ function EraseForm({ onErased }: { onErased: (row: LogErasureRow) => void }) {
         <Field label={t("pages.logErasure.form.scope")}>
           <Combobox
             value={scope}
-            onChange={(next) => setScope(next as Scope)}
+            onChange={(next) => {
+              setScope(next as Scope);
+              setSubject("");
+            }}
             options={SCOPES.map((s) => ({
               value: s,
               label: t(SCOPE_KEY[s]),
@@ -105,22 +143,49 @@ function EraseForm({ onErased }: { onErased: (row: LogErasureRow) => void }) {
           />
         </Field>
         <Field label={t("pages.logErasure.form.subject")} htmlFor="log-erasure-subject">
-          <Input
+          <Combobox
             id="log-erasure-subject"
-            className="font-mono"
-            value={subject}
-            aria-invalid={idInvalid || undefined}
-            aria-describedby={describedBy(idHint, idInvalid && idError)}
-            onChange={(e) => setSubject(e.target.value)}
-            placeholder={t("pages.logErasure.form.subjectPlaceholder")}
+            value={id}
+            onChange={setSubject}
+            options={subjectOptions}
+            allowCustom
+            clearable
+            disabled={list.isPending}
+            placeholder={
+              list.isPending
+                ? t("pages.logErasure.form.subjectLoading")
+                : t("pages.logErasure.form.subjectPlaceholder")
+            }
+            emptyText={
+              list.isPending
+                ? t("pages.logErasure.form.subjectLoading")
+                : t("pages.logErasure.form.subjectNone")
+            }
+            aria-invalid={idInvalid || unknownId || undefined}
+            aria-describedby={describedBy(idHint, (idInvalid || unknownId) && idError)}
           />
           <p id={idHint} className="text-xs text-muted-foreground">
             {t(`pages.logErasure.subjectHint.${scope}`)}
           </p>
           <FieldError
             id={idError}
-            error={idInvalid ? t("pages.logErasure.form.subjectInvalid") : undefined}
+            error={
+              idInvalid
+                ? t("pages.logErasure.form.subjectInvalid")
+                : unknownId
+                  ? t("pages.logErasure.form.subjectUnknown", { noun: t(NOUN_KEY[scope]) })
+                  : undefined
+            }
           />
+          {list.error && (
+            // load-error-allow: the list only decorates the form; a pasted id still works
+            <LoadError
+              error={list.error}
+              resource={t("errors.resources.logErasureSubjects")}
+              onRetry={() => void list.refetch()}
+              target="log-erasure-subjects"
+            />
+          )}
         </Field>
         <Field label={t("pages.logErasure.reason")} hint={t("pages.logErasure.reasonHint")}>
           <Input
@@ -168,7 +233,7 @@ function EraseForm({ onErased }: { onErased: (row: LogErasureRow) => void }) {
           includeLogs
             ? "pages.logErasure.confirm.titleLogs"
             : "pages.logErasure.confirm.titleBodies",
-          { noun: t(NOUN_KEY[scope]), id },
+          { noun: t(NOUN_KEY[scope]), name: found?.name ?? id },
         )}
         description={
           includeLogs
@@ -180,6 +245,16 @@ function EraseForm({ onErased }: { onErased: (row: LogErasureRow) => void }) {
         error={erase.error}
         onConfirm={() => erase.mutate()}
       >
+        <p className="text-sm text-foreground">
+          {found
+            ? t(
+                found.detail
+                  ? "pages.logErasure.confirm.subjectLine"
+                  : "pages.logErasure.confirm.subjectLineBare",
+                { name: found.name, detail: found.detail, id },
+              )
+            : t("pages.logErasure.confirm.subjectUnknown", { noun: t(NOUN_KEY[scope]), id })}
+        </p>
         <p className="text-xs text-muted-foreground">{t("pages.logErasure.confirm.notInstant")}</p>
       </ConfirmDialog>
     </SettingsPanel>

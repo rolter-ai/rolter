@@ -331,3 +331,107 @@ async fn a_user_who_holds_no_keys_is_recorded_as_leaving_the_request_logs_unsear
         assert!(searched(stores, "mcp_tool_call_logs").0);
     }
 }
+
+#[tokio::test]
+async fn the_subject_picker_finds_named_keys_users_and_orgs_for_a_superadmin() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let ch = clickhouse(Stub::default()).await;
+    let app = rolter_control::test_app_with_clickhouse_and_admin_token(
+        pool.clone(),
+        &ch,
+        Some(admin_token().to_string()),
+    )
+    .await
+    .unwrap();
+    let base = format!("http://{}", serve(app).await);
+    let client = reqwest::Client::new();
+
+    let org: uuid::Uuid = sqlx::query_scalar(
+        "insert into orgs (name, slug) values ('Acme Corp', 'acme') returning id",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let team: uuid::Uuid =
+        sqlx::query_scalar("insert into teams (org_id, name) values ($1, 'Platform') returning id")
+            .bind(org)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let project: uuid::Uuid =
+        sqlx::query_scalar("insert into projects (team_id, name) values ($1, 'prod') returning id")
+            .bind(team)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let key: uuid::Uuid = sqlx::query_scalar(
+        "insert into virtual_keys (project_id, key_hash, key_prefix, name) \
+         values ($1, 'h-picker', 'pfx-picker', 'ci-deploy') returning id",
+    )
+    .bind(project)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let user = seed_user(&pool, "Grace.Hopper@example.test", false).await;
+
+    let find = |query: String| {
+        let client = client.clone();
+        let url = format!("{base}/api/v1/log-erasures/subjects?{query}");
+        async move {
+            let response = client
+                .get(url)
+                .bearer_auth(admin_token())
+                .send()
+                .await
+                .unwrap();
+            let status = response.status().as_u16();
+            (status, response.json::<Value>().await.unwrap())
+        }
+    };
+
+    // by part of a name, case-insensitively; the place in the tenancy tells
+    // two keys of one name apart
+    let (status, body) = find("kind=virtual_key&q=DEPLOY".to_string()).await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["data"][0]["id"], key.to_string());
+    assert_eq!(body["data"][0]["name"], "ci-deploy");
+    assert_eq!(body["data"][0]["detail"], "Acme Corp / Platform / prod");
+    // by the key's prefix, too
+    let (_, body) = find("kind=virtual_key&q=pfx-pic".to_string()).await;
+    assert_eq!(body["data"][0]["id"], key.to_string());
+
+    let (_, body) = find("kind=user&q=hopper".to_string()).await;
+    assert_eq!(body["data"][0]["id"], user.to_string());
+    assert_eq!(body["data"][0]["name"], "Grace.Hopper@example.test");
+
+    let (_, body) = find("kind=org&q=acm".to_string()).await;
+    assert_eq!(body["data"][0]["id"], org.to_string());
+    assert_eq!(body["data"][0]["name"], "Acme Corp");
+
+    // an id already in hand is named; an unknown one finds nothing
+    let (_, body) = find(format!("kind=org&id={org}")).await;
+    assert_eq!(body["data"][0]["name"], "Acme Corp");
+    let (_, body) = find(format!("kind=org&id={}", uuid::Uuid::new_v4())).await;
+    assert_eq!(body["data"].as_array().unwrap().len(), 0);
+
+    // `%` and `_` in the search match themselves, not everything
+    let (_, body) = find("kind=org&q=%25".to_string()).await;
+    assert_eq!(body["data"].as_array().unwrap().len(), 0);
+
+    // an unknown kind is refused
+    let (status, _) = find("kind=request".to_string()).await;
+    assert_eq!(status, 400);
+
+    // and a caller who may not erase may not look
+    let member = seed_user(&pool, "member@example.test", false).await;
+    let session = seed_session(&pool, member, "picker-member").await;
+    let response = client
+        .get(format!("{base}/api/v1/log-erasures/subjects?kind=org"))
+        .bearer_auth(&session)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 403);
+}
