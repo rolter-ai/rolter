@@ -53,10 +53,11 @@ async fn insert_rows(client: &reqwest::Client, base: &str, table: &str, rows: &[
     );
 }
 
-/// `select count() from {table} where {predicate}`.
+/// `select count() from {table} where {predicate}`, sent as a GET: clickhouse
+/// refuses a POST with no body and no `content-length` (`HTTP_LENGTH_REQUIRED`)
 async fn count(client: &reqwest::Client, base: &str, table: &str, predicate: &str) -> u64 {
     let response = client
-        .post(format!("{base}/"))
+        .get(format!("{base}/"))
         .query(&[(
             "query",
             format!("select count() from {table} where {predicate}"),
@@ -64,14 +65,10 @@ async fn count(client: &reqwest::Client, base: &str, table: &str, predicate: &st
         .send()
         .await
         .expect("reach clickhouse");
-    assert!(response.status().is_success(), "count from {table}");
-    response
-        .text()
-        .await
-        .unwrap()
-        .trim()
-        .parse()
-        .expect("a count")
+    let ok = response.status().is_success();
+    let text = response.text().await.unwrap_or_default();
+    assert!(ok, "count from {table}: {text}");
+    text.trim().parse().expect("a count")
 }
 
 /// One organization's seeded traffic.
