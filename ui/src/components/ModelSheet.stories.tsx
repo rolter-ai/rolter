@@ -1315,9 +1315,9 @@ const withVariant =
       : backing(input, init);
 
 /**
- * The control plane counts the route's variants with its own targets (#3373):
- * a variant with an ordinary target lets every target of the list be a
- * fallback, and the sheet saves it.
+ * A route with variants dials only the variants' targets (#3487): a variant
+ * with an ordinary target lets every target of the list be a fallback, and the
+ * sheet saves it.
  */
 export const AVariantsOrdinaryTargetAllowsAListOfFallbacks: Story = {
   render: () => <Stage mode="edit" route={ROUTE} stub={withVariant([])} />,
@@ -1345,6 +1345,25 @@ export const VariantFallbacksCountTowardsAllFallbacks: Story = {
     const first = within(dialog.getByRole("group", { name: "Fallback classes of target 1" }));
     await userEvent.click(first.getByRole("button", { name: "Ordinary target" }));
     await userEvent.click(first.getByRole("button", { name: "timeout" }));
+    await userEvent.click(dialog.getByRole("button", { name: "Save route" }));
+    await waitFor(() => expect(dialog.getByText(/Every target is a fallback/)).toBeVisible());
+    calls.expectNotSent("PUT", "/routes/route-1");
+  },
+};
+
+/**
+ * The converse (#3487): variants that hold only fallbacks strand the route even
+ * over an ordinary list, since the list is not dialled while they exist. The
+ * sheet refuses the save and sends nothing.
+ */
+export const FallbackOnlyVariantsOverAnOrdinaryListAreRefused: Story = {
+  render: () => <Stage mode="edit" route={ROUTE} stub={withVariant(["throttled"])} />,
+  play: async () => {
+    const dialog = within(sheet());
+    await seeded(dialog);
+    const weight = dialog.getByLabelText("Target 1 weight");
+    await userEvent.clear(weight);
+    await userEvent.type(weight, "2");
     await userEvent.click(dialog.getByRole("button", { name: "Save route" }));
     await waitFor(() => expect(dialog.getByText(/Every target is a fallback/)).toBeVisible());
     calls.expectNotSent("PUT", "/routes/route-1");
