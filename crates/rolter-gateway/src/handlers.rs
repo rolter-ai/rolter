@@ -133,7 +133,7 @@ pub async fn metrics(State(state): State<AppState>) -> impl IntoResponse {
         };
         // the namespace, which is the route's name unless another org's route
         // shares it, so two orgs' series stay apart (ADR-0040)
-        let model = entry.namespace.as_str();
+        let model: &str = &entry.namespace;
         let label = model.replace('\\', "\\\\").replace('"', "\\\"");
         // the same per-target scores the control plane serves (#751), so a
         // deployment that scrapes prometheus does not need the dashboard to
@@ -1812,8 +1812,9 @@ async fn proxy(
         }
     };
     // what the requested route's metric series are labelled by: its runtime
-    // namespace, which tells two orgs' same-named routes apart (#3462)
-    let route_namespace = entry.namespace.clone();
+    // namespace, which tells two orgs' same-named routes apart (#3462). shared
+    // with the route's entry, so each row takes a reference, not a copy
+    let route_namespace = std::sync::Arc::clone(&entry.namespace);
     // The policy consumes only the request's already-bounded byte count. Its
     // ordered tier selection never retains prompt text. If an operator removes
     // a tier route or a key cannot access it, preserve the requested route and
@@ -2523,6 +2524,7 @@ async fn proxy(
                     business_unit_id: business_unit_id.clone(),
                     customer_id: customer_id.clone(),
                     model: model.clone(),
+                    route_namespace: Some(route_namespace.clone()),
                     sample_rate: snap.logging.sample_rate,
                     guardrail_events: guardrail_events.clone(),
                     plugin_events: plugin_events.clone(),
@@ -2590,6 +2592,7 @@ async fn proxy(
                             business_unit_id: business_unit_id.clone(),
                             customer_id: customer_id.clone(),
                             model: model.clone(),
+                            route_namespace: Some(route_namespace.clone()),
                             sample_rate: snap.logging.sample_rate,
                             guardrail_events: guardrail_events.clone(),
                             plugin_events: plugin_events.clone(),
@@ -2643,6 +2646,7 @@ async fn proxy(
             business_unit_id: business_unit_id.clone(),
             customer_id: customer_id.clone(),
             model: model.clone(),
+            route_namespace: Some(route_namespace.clone()),
             stream: stream as u8,
             sample_rate: snap.logging.sample_rate,
             guardrail_events: guardrail_events.clone(),
@@ -3180,7 +3184,7 @@ async fn proxy(
                 business_unit_id,
                 customer_id,
                 model,
-                route_namespace: route_namespace.clone(),
+                route_namespace: Some(route_namespace.clone()),
                 // the org that owns the provider in the snapshot that served
                 // the request; the row keeps the runtime id until it is queued
                 provider_org_id: snap.provider_label(&last_provider).1.to_string(),
@@ -3406,7 +3410,7 @@ async fn proxy(
                 business_unit_id,
                 customer_id,
                 model,
-                route_namespace: route_namespace.clone(),
+                route_namespace: Some(route_namespace.clone()),
                 provider_org_id: if no_target {
                     String::new()
                 } else {
@@ -3563,7 +3567,7 @@ async fn proxy_multipart(
         }
     };
     // the series label of the route, as on the JSON pipeline (#3462)
-    let route_namespace = entry.namespace.clone();
+    let route_namespace = std::sync::Arc::clone(&entry.namespace);
     if entry.route.targets.is_empty() {
         return refuse.log(error_json(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -3721,6 +3725,7 @@ async fn proxy_multipart(
             business_unit_id: business_unit_id.clone(),
             customer_id: customer_id.clone(),
             model: model.clone(),
+            route_namespace: Some(route_namespace.clone()),
             sample_rate: snap.logging.sample_rate,
             ..Default::default()
         },
@@ -4020,7 +4025,7 @@ async fn proxy_multipart(
                 business_unit_id,
                 customer_id,
                 model,
-                route_namespace: route_namespace.clone(),
+                route_namespace: Some(route_namespace.clone()),
                 // the org that owns the provider in the snapshot that served
                 // the request; the row keeps the runtime id until it is queued
                 provider_org_id: snap.provider_label(&last_provider).1.to_string(),
@@ -4114,7 +4119,7 @@ async fn proxy_multipart(
                 business_unit_id,
                 customer_id,
                 model,
-                route_namespace: route_namespace.clone(),
+                route_namespace: Some(route_namespace.clone()),
                 provider_org_id: if no_target {
                     String::new()
                 } else {
@@ -5494,6 +5499,9 @@ struct RequestLogCtx {
     business_unit_id: String,
     customer_id: String,
     model: String,
+    /// the resolved route's runtime namespace, which labels the request's
+    /// metric series (#3462); `None` before a route is resolved
+    route_namespace: Option<std::sync::Arc<str>>,
     sample_rate: f64,
     started: Instant,
     /// what each guardrail did to the request (#2158)
@@ -5527,6 +5535,7 @@ impl RequestLogCtx {
             business_unit_id: scope.business_unit.clone(),
             customer_id: scope.customer.clone(),
             model: model.to_string(),
+            route_namespace: None,
             sample_rate,
             started,
             guardrail_events: Vec::new(),
@@ -5551,6 +5560,7 @@ impl RequestLogCtx {
             business_unit_id: self.business_unit_id,
             customer_id: self.customer_id,
             model: self.model,
+            route_namespace: self.route_namespace,
             latency_ms,
             ttft_ms: latency_ms,
             sample_rate: self.sample_rate,
@@ -7210,7 +7220,7 @@ mod tests {
         let ctx = RouteContext::default();
         // the balancer's pick leads; declared order forms the fallback tail
         let entry = crate::state::RouteEntry {
-            namespace: route.model.clone(),
+            namespace: route.model.clone().into(),
             project_scope: None,
             overrides: Default::default(),
             throughput: None,
@@ -7225,7 +7235,7 @@ mod tests {
         );
         // an out-of-range pick degrades to plain declared order
         let entry = crate::state::RouteEntry {
-            namespace: route.model.clone(),
+            namespace: route.model.clone().into(),
             project_scope: None,
             overrides: Default::default(),
             throughput: None,
@@ -7240,7 +7250,7 @@ mod tests {
         );
         // no balancer built for the variant: declared order
         let entry = crate::state::RouteEntry {
-            namespace: route.model.clone(),
+            namespace: route.model.clone().into(),
             project_scope: None,
             overrides: Default::default(),
             throughput: None,
@@ -7290,7 +7300,7 @@ mod tests {
         let cache_aware = rolter_balancer::CacheAware::new(3, 0.5);
         rolter_balancer::LoadBalancer::observe(&cache_aware, 1, &ctx);
         let entry = crate::state::RouteEntry {
-            namespace: route.model.clone(),
+            namespace: route.model.clone().into(),
             project_scope: None,
             overrides: Default::default(),
             throughput: None,
@@ -7394,7 +7404,7 @@ mod tests {
             tenancy: None,
         };
         let entry = crate::state::RouteEntry {
-            namespace: route.model.clone(),
+            namespace: route.model.clone().into(),
             project_scope: None,
             overrides: Default::default(),
             throughput: None,
@@ -7475,7 +7485,7 @@ mod tests {
             tenancy: None,
         };
         crate::state::RouteEntry {
-            namespace: route.model.clone(),
+            namespace: route.model.clone().into(),
             project_scope: None,
             overrides: Default::default(),
             throughput: None,
@@ -7789,7 +7799,7 @@ mod tests {
             tenancy: None,
         };
         let entry = crate::state::RouteEntry {
-            namespace: route.model.clone(),
+            namespace: route.model.clone().into(),
             project_scope: None,
             overrides: Default::default(),
             throughput: None,
@@ -7849,7 +7859,7 @@ mod tests {
             tenancy: None,
         };
         let entry = crate::state::RouteEntry {
-            namespace: route.model.clone(),
+            namespace: route.model.clone().into(),
             project_scope: None,
             overrides: Default::default(),
             throughput: None,
@@ -7902,7 +7912,7 @@ mod tests {
             tenancy: None,
         };
         let entry = crate::state::RouteEntry {
-            namespace: route.model.clone(),
+            namespace: route.model.clone().into(),
             project_scope: None,
             overrides: Default::default(),
             throughput: None,
@@ -7975,7 +7985,7 @@ mod tests {
             tenancy: None,
         };
         let entry = crate::state::RouteEntry {
-            namespace: route.model.clone(),
+            namespace: route.model.clone().into(),
             project_scope: None,
             overrides: Default::default(),
             throughput: None,
@@ -8073,7 +8083,7 @@ mod tests {
             tenancy: None,
         };
         let entry = crate::state::RouteEntry {
-            namespace: route.model.clone(),
+            namespace: route.model.clone().into(),
             project_scope: None,
             overrides: Default::default(),
             throughput: None,
@@ -8203,7 +8213,7 @@ mod tests {
             tenancy: None,
         };
         let entry = crate::state::RouteEntry {
-            namespace: route.model.clone(),
+            namespace: route.model.clone().into(),
             project_scope: None,
             overrides: Default::default(),
             throughput: None,
@@ -8262,7 +8272,7 @@ mod tests {
             tenancy: None,
         };
         let entry = crate::state::RouteEntry {
-            namespace: route.model.clone(),
+            namespace: route.model.clone().into(),
             project_scope: None,
             overrides: Default::default(),
             throughput: None,
@@ -8653,7 +8663,7 @@ mod tests {
                     tenancy: None,
                 };
                 let entry = crate::state::RouteEntry {
-                    namespace: route.model.clone(),
+                    namespace: route.model.clone().into(),
                     project_scope: None,
                     overrides: Default::default(),
                     throughput: None,
@@ -8718,7 +8728,7 @@ mod tests {
             tenancy: None,
         };
         let entry = crate::state::RouteEntry {
-            namespace: route.model.clone(),
+            namespace: route.model.clone().into(),
             project_scope: None,
             overrides: Default::default(),
             throughput: None,

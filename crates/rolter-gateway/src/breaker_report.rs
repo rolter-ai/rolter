@@ -73,7 +73,7 @@ pub fn collect(state: &AppState) -> Vec<TargetBreaker> {
         let (org, model, entry) = snapshot
             .routes
             .iter()
-            .find(|(_, _, entry)| entry.namespace == namespace)?;
+            .find(|(_, _, entry)| *entry.namespace == *namespace)?;
         let target = entry.route.targets.get(idx)?;
         Some(Label {
             org_id: org.to_string(),

@@ -33,7 +33,7 @@ pub struct RouteEntry {
     /// org shares it, then `name@org`, so two orgs' `gpt-4o` never share a
     /// breaker (ADR-0040). For a synthetic `slug/model` entry it is the address,
     /// qualified the same way when the provider or group it pins is
-    pub namespace: String,
+    pub namespace: Arc<str>,
     /// the pool's balancer. `Arc` rather than `Box` because a group's balancer
     /// is owned by the snapshot and handed to every synthetic entry built for
     /// that group, so its rotation state outlives one request (#1655)
@@ -728,7 +728,7 @@ impl Snapshot {
                 org,
                 &route.model,
                 RouteEntry {
-                    namespace,
+                    namespace: namespace.into(),
                     project_scope,
                     overrides: rolter_proxy::RouteOverrides::from_advanced(&route.advanced),
                     throughput: crate::rate_limits::RouteWindow::new(
@@ -1147,7 +1147,7 @@ impl Snapshot {
             tenancy,
         };
         RouteEntry {
-            namespace,
+            namespace: namespace.into(),
             project_scope,
             overrides: Default::default(),
             throughput: None,
