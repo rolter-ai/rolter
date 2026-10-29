@@ -146,6 +146,21 @@ async fn proxy(
     };
     let rules = crate::mcp_policy::Rules::of(&snapshot, server, &caller);
     let is_post = method == Method::POST;
+    // a body the relay cannot decode cannot be judged, and the upstream may
+    // decode it (#3475). refused before any policy, whatever `fail_open` says:
+    // that setting covers a body the relay cannot read through no fault of the
+    // client, not one the client chose to compress
+    if is_post && rules.any() && is_encoded(&headers) {
+        return error(
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            format!(
+                "the request to MCP server '{}' has a Content-Encoding other than identity, so \
+                 the organization's tool groups cannot be applied to it; send the body uncompressed",
+                server.slug
+            ),
+            "mcp_request_unreadable",
+        );
+    }
     let read = if is_post {
         crate::mcp_policy::Read::of(&body, rules.any(), state.mcp_events.enabled())
     } else {
@@ -395,6 +410,21 @@ async fn proxy(
             )
         }
     }
+}
+
+/// Whether the request body is encoded: any `Content-Encoding` that is not
+/// `identity`, in any of the header's lines or its comma-separated values.
+fn is_encoded(headers: &HeaderMap) -> bool {
+    headers
+        .get_all(header::CONTENT_ENCODING)
+        .iter()
+        .any(|value| {
+            value.to_str().map_or(true, |value| {
+                value
+                    .split(',')
+                    .any(|coding| !coding.trim().eq_ignore_ascii_case("identity"))
+            })
+        })
 }
 
 /// The step-up answer for an upstream `403` whose challenge says
@@ -887,13 +917,17 @@ mod tests {
     }
 
     async fn post(state: AppState, body: Bytes) -> Response {
+        post_with(state, bearer(), body).await
+    }
+
+    async fn post_with(state: AppState, headers: HeaderMap, body: Bytes) -> Response {
         proxy(
             state,
             "github".to_string(),
             None,
             None,
             Method::POST,
-            bearer(),
+            headers,
             RequestId::default(),
             body,
         )
@@ -1375,6 +1409,58 @@ mod tests {
         config.mcp_settings = vec![strict(true)];
         let forwarded = post(AppState::new(&config), Bytes::from_static(b"{ nope")).await;
         assert_eq!(forwarded.status(), StatusCode::OK);
+    }
+
+    /// #3475: a compressed body cannot be judged, and an upstream that honours
+    /// `Content-Encoding` would run the tool it names. It is refused whatever
+    /// `fail_open` says, and an `identity` coding is no coding at all.
+    #[tokio::test]
+    async fn a_compressed_call_to_a_governed_server_is_refused_even_when_failing_open() {
+        let mut config = with_group(&["get_issue"]);
+        config.mcp_servers[0].url = serving(200, None).await;
+        config.mcp_settings = vec![McpOrgSettingsConfig {
+            org_id: "org-1".into(),
+            connect_timeout_ms: 5000,
+            request_timeout_ms: 30000,
+            max_retries: 0,
+            fail_open: true,
+            allow_unlisted_tools: false,
+        }];
+        let encoded = |coding: &'static str| {
+            let mut headers = bearer();
+            headers.insert(header::CONTENT_ENCODING, HeaderValue::from_static(coding));
+            headers
+        };
+        // stands in for gzip bytes: they are not JSON, which is exactly what
+        // fail_open would have forwarded
+        let gzip = Bytes::from_static(b"\x1f\x8b\x08\x00 compressed");
+        for coding in ["gzip", "br", "deflate", "identity, gzip", "GZIP"] {
+            let (status, code) =
+                code_of(post_with(AppState::new(&config), encoded(coding), gzip.clone()).await)
+                    .await;
+            assert_eq!(
+                (status, code.as_str()),
+                (StatusCode::UNSUPPORTED_MEDIA_TYPE, "mcp_request_unreadable"),
+                "{coding}"
+            );
+        }
+        // a readable body is refused just the same: the coding is the problem
+        let (status, code) =
+            code_of(post_with(AppState::new(&config), encoded("gzip"), call_body("drop")).await)
+                .await;
+        assert_eq!(
+            (status, code.as_str()),
+            (StatusCode::UNSUPPORTED_MEDIA_TYPE, "mcp_request_unreadable")
+        );
+        for coding in ["identity", "Identity"] {
+            let allowed = post_with(
+                AppState::new(&config),
+                encoded(coding),
+                call_body("get_issue"),
+            )
+            .await;
+            assert_eq!(allowed.status(), StatusCode::OK, "{coding}");
+        }
     }
 
     async fn serving(status: u16, challenge: Option<&'static str>) -> String {

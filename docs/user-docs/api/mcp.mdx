@@ -184,7 +184,10 @@ group returns to the organization-wide set. A new group can be created with its
 virtual-key assignments; deleting a team, project or key removes its assignments. Batches are refused as a whole when any call in
 them is refused, and while a group governs a server a request body that cannot
 be read as JSON-RPC is refused with `400` (`mcp_request_unreadable`) rather than
-forwarded unchecked. A body that repeats a key in a message or in its `params`
+forwarded unchecked. A request body with a `Content-Encoding` other than
+`identity` (`gzip`, `br`, `deflate`) is refused with `415` (`mcp_request_unreadable`)
+the same way, whatever the failure mode says: the proxy does not decompress
+requests, so it could not apply the rules to it. Send the body uncompressed. A body that repeats a key in a message or in its `params`
 (two `name` entries, or `name` and `NAME`, since some servers match keys without
 regard to case) is refused with `403` `mcp_tool_denied` whatever the
 failure policy says, and is logged like any other refused call, because parsers disagree about which copy wins and the
@@ -217,7 +220,8 @@ request once they are saved:
 - **Failure policy.** `default_failure_mode` decides what happens to a request
   the proxy cannot read as JSON-RPC, and so cannot check against the rules
   above: `fail_closed` (the default) refuses it with `400`, `fail_open` forwards
-  it. An upstream that does not answer is always a `502`; a gateway cannot fail
+  it. A request that declares a `Content-Encoding` is refused with `415` under
+  either mode. An upstream that does not answer is always a `502`; a gateway cannot fail
   open on a server that is down.
 - **Transport.** A server row always names its transport, so the organization's
   `default_transport` is what a server registered without one gets, at

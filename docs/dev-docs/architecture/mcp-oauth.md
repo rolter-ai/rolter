@@ -221,6 +221,16 @@ after the caller is authenticated and before anything is forwarded.
   refused whole if any call in it is. A `tools/call` notification (no id) is
   refused too. A body that is not JSON is refused `400`
   `mcp_request_unreadable`; an empty body is not a call and is forwarded.
+- **Encoded bodies (#3475).** The relay does not decode a request body, and
+  `Content-Encoding` is end to end, so an upstream that honours it would run a tool
+  the policy never saw. A `POST` to a governed server whose `Content-Encoding` is
+  anything but `identity` (in any header line or comma-separated value) is refused
+  `415` `mcp_request_unreadable` before the body is read, whatever `fail_open`
+  says: that setting covers a body the relay cannot read through no fault of the
+  client, not one the client chose to compress. There is deliberately no decoder:
+  MCP clients do not compress requests, and one on this path would be a
+  decompression-bomb surface for a shape nobody sends. A server no group or manifest
+  governs is not affected.
 - **Repeated keys (#3298).** `serde_json` keeps the last copy of a repeated key
   and another parser may keep the first, and a Go decoder (`encoding/json`, so
   mcp-go, go-sdk and the GitHub MCP server) matches keys case-insensitively and
@@ -281,7 +291,8 @@ trigger); an organization with no row is absent and gets the defaults.
   for an org with no row reports `allow_unlisted_tools` from the same marker.
   This sits beside the tool-group rule and both must pass.
 - **Failure policy.** `fail_open` / `fail_closed` governs a body the policy
-  cannot parse (the only failure of the policy check itself). It never lets a
+  cannot parse (the only failure of the policy check itself); a body with a
+  `Content-Encoding` is not that case and is refused regardless. It never lets a
   call to a refused tool through, and it has no say over an upstream that fails.
 - **Transport.** The server row is authoritative at request time; the org
   `default_transport` is applied by `create_server` when the request names none.
