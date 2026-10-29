@@ -182,6 +182,10 @@ having count(*) > 1;
 
 For each row, keep the route the organization's keys should reach and rename or delete the others: create the route under a new name in the dashboard or the API and move the keys that need it there, or delete the copy with `DELETE /api/v1/routes/{id}`. Then start the new control plane. Providers and provider groups that already share a slug in one organization are left as they are; only a new or renamed one is refused.
 
+### Circuit-breaker state during a mixed rollout
+
+From this release a gateway reports each route's circuit breakers with the organization that owns the route ([#3458](https://github.com/rolter-ai/rolter/issues/3458)), and the control plane shows a breaker only to the callers who see that organization's route. A gateway from an earlier release reports an organization's route without one, so while it runs, its breakers for organization routes are left out of `GET /api/v1/breaker-state` and the dashboard. Breakers of routes from the gateway's own config file still show. Once every gateway is upgraded the view is complete again, and the rows the older gateways left behind age out of the table within an hour.
+
 ## Model price rates
 
 The migration that adds `0084_model_price_rate_checks.sql` makes the database refuse a model price whose rate is negative or `NaN`. Before it, `PUT /api/v1/model-prices` accepted both: a negative rate turned a request into a credit against its budget, and `NaN` was stored but could not be read back, so the model was priced at zero. The API refuses both now (`400`, naming the field), and so does a `rolter.toml` with a negative rate. It also refuses a rate of a million or more, which the `numeric(12, 6)` columns cannot hold and which used to be a `500`.

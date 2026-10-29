@@ -176,9 +176,6 @@ async fn providers_groups_and_route_names_share_the_gateways_address_namespace()
     );
 }
 
-/// A readonly provider or group from the bootstrap file answers `slug/model`
-/// for every org, so no database provider or group may take its slug, on create
-/// or on rename, and no route may be named on its address (#1845).
 /// Two creates of one route name, sent at once to two projects of one org,
 /// both pass the API's check before either writes. The database's
 /// `routes_org_model_unique` (#3459) lets exactly one through, and the other
@@ -257,6 +254,9 @@ async fn concurrent_route_creates_in_one_org_end_in_one_route_and_a_409() {
     assert_eq!((s1, s2), (200, 200), "another org's namesake: {other_org}");
 }
 
+/// A readonly provider or group from the bootstrap file answers `slug/model`
+/// for every org, so no database provider or group may take its slug, on create
+/// or on rename, and no route may be named on its address (#1845).
 #[tokio::test]
 async fn a_bootstrap_slug_is_refused_to_every_database_row() {
     skip_without_db!();
