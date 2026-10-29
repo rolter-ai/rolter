@@ -2604,19 +2604,21 @@ async fn proxy(
         fallback_reason,
     } = if entry.route.has_variants() {
         forward_variants(
-            &state,
-            entry,
-            &snap,
-            &model,
-            &ctx,
-            VariantPayload::Json {
-                parsed: &parsed,
-                body: &body,
+            &Forward {
+                state: &state,
+                snap: &snap,
+                entry,
+                model: &model,
+                ctx: &ctx,
+                payload: ForwardPayload::Json {
+                    parsed: &parsed,
+                    body: &body,
+                },
+                path,
+                started,
+                trace_headers: &trace_headers,
+                key_meta: vk.as_ref(),
             },
-            path,
-            started,
-            &trace_headers,
-            vk.as_ref(),
             &mut cancel,
         )
         .await
@@ -3759,19 +3761,21 @@ async fn proxy_multipart(
     // sampled primary, the same candidates and fallback chain (#3494)
     if entry.route.has_variants() {
         let out = forward_variants(
-            &state,
-            entry,
-            &snap,
-            &model,
-            &ctx,
-            VariantPayload::Multipart {
-                body: &body,
-                content_type: &content_type,
+            &Forward {
+                state: &state,
+                snap: &snap,
+                entry,
+                model: &model,
+                ctx: &ctx,
+                payload: ForwardPayload::Multipart {
+                    body: &body,
+                    content_type: &content_type,
+                },
+                path,
+                started,
+                trace_headers: &trace_headers,
+                key_meta: vk.as_ref(),
             },
-            path,
-            started,
-            &trace_headers,
-            vk.as_ref(),
             &mut cancel,
         )
         .await;
@@ -4383,7 +4387,6 @@ impl Blocked {
 /// one its balancer picks from the eligible targets in the lead.
 /// The variant keys are `variant_keys`, one per variant in declared order,
 /// built once by the caller and reused by its forward loop.
-#[allow(clippy::too_many_arguments)]
 fn variant_candidates(
     state: &AppState,
     entry: &crate::state::RouteEntry,
@@ -4434,9 +4437,9 @@ fn variant_candidates(
     candidates
 }
 
-/// What [`forward_variants`] forwards on each attempt.
+/// What a forward loop forwards on each attempt.
 #[derive(Clone, Copy)]
-enum VariantPayload<'a> {
+enum ForwardPayload<'a> {
     /// a JSON body the variant's params are merged into
     Json { parsed: &'a Value, body: &'a Bytes },
     /// a multipart upload, forwarded verbatim with its content type, as
@@ -4445,6 +4448,27 @@ enum VariantPayload<'a> {
         body: &'a Bytes,
         content_type: &'a str,
     },
+}
+
+/// What a forward loop reads from the request it forwards. Shared by the
+/// classic pool and the variant chain, and by the JSON and multipart
+/// pipelines; built once per request from borrows, so handing it to a loop
+/// copies nothing.
+#[derive(Clone, Copy)]
+struct Forward<'a> {
+    state: &'a AppState,
+    snap: &'a Snapshot,
+    entry: &'a crate::state::RouteEntry,
+    /// the model the caller asked for, which a target without its own
+    /// upstream model forwards as
+    model: &'a str,
+    ctx: &'a RouteContext<'a>,
+    payload: ForwardPayload<'a>,
+    path: &'a str,
+    started: Instant,
+    /// trace context plus the client headers the operator allowlisted (#564)
+    trace_headers: &'a [(&'a str, &'a str)],
+    key_meta: Option<&'a KeyMeta>,
 }
 
 /// Forward through the weighted-variant fallback chain. Samples a primary
@@ -4456,20 +4480,22 @@ enum VariantPayload<'a> {
 /// Variant-level params are merged over route-level params per candidate before
 /// the override policy is applied. A multipart upload takes the same variant
 /// and the same candidates, and is forwarded as it came (#3494).
-#[allow(clippy::too_many_arguments)]
 async fn forward_variants(
-    state: &AppState,
-    entry: &crate::state::RouteEntry,
-    snap: &Snapshot,
-    model: &str,
-    ctx: &RouteContext<'_>,
-    payload: VariantPayload<'_>,
-    path: &str,
-    started: Instant,
-    trace_headers: &[(&str, &str)],
-    key_meta: Option<&KeyMeta>,
+    fwd: &Forward<'_>,
     cancel: &mut crate::cancel::CancelGuard,
 ) -> ForwardOutcome {
+    let Forward {
+        state,
+        snap,
+        entry,
+        model,
+        ctx,
+        payload,
+        path,
+        started,
+        trace_headers,
+        key_meta,
+    } = *fwd;
     let route = &entry.route;
     let retry = &snap.retry;
     // the route's own budget replaces the deployment's (#2924)
@@ -4592,7 +4618,7 @@ async fn forward_variants(
 
         // merge variant params over route params for this candidate's body
         let forward_body = match payload {
-            VariantPayload::Json { parsed, body } => {
+            ForwardPayload::Json { parsed, body } => {
                 let mut injected = parsed.clone();
                 route.apply_variant_params(v, &mut injected);
                 serde_json::to_vec(&injected)
@@ -4601,7 +4627,7 @@ async fn forward_variants(
             }
             // the params are JSON-only and the upload names its own model, so
             // the form goes as it came, as on the classic pool
-            VariantPayload::Multipart { body, .. } => body.clone(),
+            ForwardPayload::Multipart { body, .. } => body.clone(),
         };
 
         // count this attempt as in-flight under the variant's key
@@ -4627,7 +4653,7 @@ async fn forward_variants(
         out.attempts = out.attempts.saturating_add(1);
         let attempt_started = Instant::now();
         let forwarded = match payload {
-            VariantPayload::Json { .. } => {
+            ForwardPayload::Json { .. } => {
                 state
                     .provider_queues
                     .forward_json(
@@ -4643,7 +4669,7 @@ async fn forward_variants(
                     )
                     .await
             }
-            VariantPayload::Multipart { content_type, .. } => {
+            ForwardPayload::Multipart { content_type, .. } => {
                 state
                     .provider_queues
                     .forward_raw(
