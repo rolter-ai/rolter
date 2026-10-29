@@ -101,11 +101,11 @@ max_candidates = 256
 
 Enabling the cache must never change which policy a completion passes through (#1477). A buffered, successful body is finalised by exactly one function, `DeliveryPolicy::apply` in `crates/rolter-gateway/src/handlers.rs`. It runs the built-in output guardrails, then the `post_response` plugin chain, then the PII sanitizer's response leg, and returns either the body or the refusal to send instead. Every delivery path calls it:
 
-| Path                                       | Where                                          |
-| ------------------------------------------ | ---------------------------------------------- |
-| live non-streaming response, not cached    | `stream_response`'s buffered branch            |
-| cacheable miss (the response being stored) | the cache-store branch of `proxy`, after `put` |
-| exact hit and semantic hit                 | `cached_response`                              |
+| Path                                       | Where                               |
+| ------------------------------------------ | ----------------------------------- |
+| live non-streaming response, not cached    | `stream_response`'s buffered branch |
+| cacheable miss (the response being stored) | `store_and_deliver`, after `put`    |
+| exact hit and semantic hit                 | `cached_response`                   |
 
 The entry is written _before_ the policy runs, so it is always the upstream's own bytes. A transform is re-applied per delivery. A rule or plugin installed by a hot reload reaches entries cached before it. A PII restore uses the ticket of the request being answered and is never persisted. A refusal is returned as `Delivery::Refuse` with the reason for the log row. On the live and cacheable-miss paths it goes through `withheld_response`, so the upstream call is still billed. A refused hit writes a zero-cost withheld row (see [Billed but withheld](billed-but-withheld.md)). Streamed responses skip all three stages exactly as they do uncached (the request path has already refused the stream or had it opted out), so a cached SSE replay gets the same treatment as a live stream.
 

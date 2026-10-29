@@ -5722,12 +5722,13 @@ pub(crate) fn unpriced_admission(
 /// log row falls back to tenancy attribution alone (#539).
 ///
 /// The pipelines read the same pair off the request's [`ScopeIds`], which
-/// [`request_scope`] fills from the key; this stays for the unit tests that
-/// pin what a key reports.
+/// [`request_scope`] fills from the key. This reads it through
+/// [`request_scope`] too, so the unit tests that pin what a key reports pin
+/// the mapping the pipelines use.
 #[cfg(test)]
 fn key_attribution(vk: Option<&crate::state::KeyMeta>) -> (String, String) {
-    vk.map(|v| (v.business_unit_id.clone(), v.customer_id.clone()))
-        .unwrap_or_default()
+    let scope = request_scope(vk);
+    (scope.business_unit, scope.customer)
 }
 
 fn payload_capture_enabled(
