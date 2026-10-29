@@ -1664,7 +1664,7 @@ macro_rules! proceed {
 }
 
 /// What every stage of a request pipeline reads once the caller is known: the
-/// snapshot the request is served under, the caller's key, and
+/// snapshot the request is served under, the endpoint, the caller's key, and
 /// the [`Refusals`] that logs whatever a stage turns away (#1041).
 ///
 /// Shared by [`proxy`] and [`proxy_multipart`]. It holds only borrows and the
@@ -1672,6 +1672,8 @@ macro_rules! proceed {
 /// is cloned to call it.
 struct RequestCtx<'a> {
     snap: &'a Snapshot,
+    /// the endpoint the request was sent to
+    path: &'a str,
     vk: Option<&'a KeyMeta>,
     refuse: Refusals<'a>,
 }
@@ -1786,6 +1788,102 @@ impl<'a> RequestCtx<'a> {
         }
     }
 
+    /// The built-in `fake-llm` model answers locally, with `reply`, unless a
+    /// configured route shadows it for this caller; another org's route of
+    /// that name does not. Any other model goes on.
+    fn builtin(&self, reply: impl FnOnce() -> fake_llm::Reply) -> Stage<()> {
+        let model = self.model();
+        if model != fake_llm::MODEL_NAME || self.snap.named_route_for(model, self.vk).is_some() {
+            return Stage::Next(());
+        }
+        let refuse = &self.refuse;
+        let ctx = RequestLogCtx::new(
+            refuse.headers,
+            refuse.request_id,
+            refuse.scope,
+            model,
+            refuse.sample_rate,
+            refuse.started,
+        );
+        Stage::Answer(log_builtin(&self.state().log, ctx, reply()))
+    }
+
+    /// The answer when no route serves the model in the caller's tenancy.
+    fn route_miss(&self) -> Response {
+        self.refused(
+            crate::error::ApiError::new(
+                StatusCode::NOT_FOUND,
+                format!("no route for model '{}'", self.model()),
+            )
+            .with_code("model_not_found")
+            .with_param("model")
+            .into_response(),
+        )
+    }
+
+    /// The gates on the route that serves the request: it has something to
+    /// dial, the key may use it, and a decision model is not asked a chat or
+    /// upload endpoint it has no answer for (#3150). An upload must not reach
+    /// a route the caller could not address with a chat request (#1485).
+    fn admit_route(&self, entry: &crate::state::RouteEntry) -> Stage<()> {
+        if entry.route.targets.is_empty() && !entry.route.has_variants() {
+            return Stage::Answer(self.refused(error_json(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "route has no targets",
+            )));
+        }
+        if let Err(denial) = authorize_route(self.vk, entry) {
+            return Stage::Answer(self.refused(denial.into_response()));
+        }
+        self.refuse_if(
+            crate::system_one::endpoint_refusal(self.path, &entry.route, &self.snap.providers)
+                .map(IntoResponse::into_response),
+        )
+    }
+
+    /// The route's own caps, once the route is known to be the one that
+    /// serves the request; passes on the permit to hold to the end of the
+    /// response (#2936).
+    async fn route_permit(
+        &self,
+        entry: &crate::state::RouteEntry,
+    ) -> Stage<Option<crate::route_limits::ConcurrencyPermit>> {
+        match route_limit_refusal(self.state(), entry).await {
+            Ok(permit) => Stage::Next(permit),
+            Err(refusal) => Stage::Answer(self.refused(*refusal)),
+        }
+    }
+
+    /// Refuse a `max_tokens` (or its newer names) above the route's output
+    /// token limit.
+    fn output_token_cap(&self, entry: &crate::state::RouteEntry, parsed: &Value) -> Stage<()> {
+        let Some(max_output) = entry.route.advanced.limits.output_tokens else {
+            return Stage::Next(());
+        };
+        for field in ["max_tokens", "max_completion_tokens", "max_output_tokens"] {
+            if parsed
+                .get(field)
+                .and_then(Value::as_u64)
+                .is_some_and(|value| value > u64::from(max_output))
+            {
+                return Stage::Answer(
+                    self.refused(
+                        crate::error::ApiError::new(
+                            StatusCode::BAD_REQUEST,
+                            format!(
+                                "{field} exceeds this model's output token limit of {max_output}"
+                            ),
+                        )
+                        .with_code("max_tokens_exceeded")
+                        .with_param(field)
+                        .into_response(),
+                    ),
+                );
+            }
+        }
+        Stage::Next(())
+    }
+
     /// Answer with `refusal`, logged, when there is one; else go on.
     fn refuse_if(&self, refusal: Option<Response>) -> Stage<()> {
         match refusal {
@@ -1793,6 +1891,36 @@ impl<'a> RequestCtx<'a> {
             None => Stage::Next(()),
         }
     }
+}
+
+/// Complexity-tier selection: the route's policy picks a tier route by the
+/// request's already-bounded byte count, and never retains prompt text. If an
+/// operator removes a tier route or a key cannot access it, the requested
+/// route is kept and that safe fallback is exposed in bounded telemetry.
+fn complexity_tier<'e>(
+    snap: &'e Snapshot,
+    vk: Option<&KeyMeta>,
+    metrics: &crate::metrics::Metrics,
+    entry: &'e crate::state::RouteEntry,
+    request_bytes: usize,
+) -> &'e crate::state::RouteEntry {
+    let Some((tier, tier_route)) =
+        rolter_balancer::complexity::ComplexityPolicy::from_params(&entry.route.params)
+            .ok()
+            .flatten()
+            .and_then(|policy| policy.select(request_bytes).cloned())
+            .map(|tier| (tier.name, tier.route))
+    else {
+        return entry;
+    };
+    let selected = snap.named_route_for(&tier_route, vk).filter(|candidate| {
+        (!candidate.route.targets.is_empty() || candidate.route.has_variants())
+            && authorize_route(vk, candidate).is_ok()
+    });
+    let fallback = selected.is_none();
+    let chosen = selected.unwrap_or(entry);
+    metrics.observe_complexity(&entry.namespace, &tier, &chosen.namespace, fallback);
+    chosen
 }
 
 async fn proxy(
@@ -1843,6 +1971,7 @@ async fn proxy(
     // without limit (#2807)
     let req = RequestCtx {
         snap: &snap,
+        path,
         vk: vk.as_ref(),
         refuse: Refusals {
             state: &state,
@@ -1875,17 +2004,7 @@ async fn proxy(
 
     // built-in fake-llm answers locally unless a configured route shadows it
     // for this caller; another org's route of that name does not
-    if model == fake_llm::MODEL_NAME && snap.named_route_for(&model, vk.as_ref()).is_none() {
-        let ctx = RequestLogCtx::new(
-            &headers,
-            request_id.as_str(),
-            &scope,
-            &model,
-            snap.logging.sample_rate,
-            started,
-        );
-        return log_builtin(&state.log, ctx, fake_llm::respond(path, &parsed));
-    }
+    proceed!(req.builtin(|| fake_llm::respond(path, &parsed)));
 
     // route-name-first: a named route wins, even one whose name contains '/'.
     // only on a miss do we try `provider-slug/model` addressing (ADR-0017),
@@ -1903,65 +2022,15 @@ async fn proxy(
         candidates = tracing::field::Empty
     );
     let resolved = snap.resolve_for(&model, vk.as_ref());
-    let mut entry = match resolved.as_deref() {
-        Some(entry) => entry,
-        None => {
-            return refuse.log(
-                crate::error::ApiError::new(
-                    StatusCode::NOT_FOUND,
-                    format!("no route for model '{model}'"),
-                )
-                .with_code("model_not_found")
-                .with_param("model")
-                .into_response(),
-            )
-        }
+    let Some(requested) = resolved.as_deref() else {
+        return req.route_miss();
     };
     // what the requested route's metric series are labelled by: its runtime
     // namespace, which tells two orgs' same-named routes apart (#3462). shared
     // with the route's entry, so each row takes a reference, not a copy
-    let route_namespace = std::sync::Arc::clone(&entry.namespace);
-    // The policy consumes only the request's already-bounded byte count. Its
-    // ordered tier selection never retains prompt text. If an operator removes
-    // a tier route or a key cannot access it, preserve the requested route and
-    // expose that safe fallback in bounded telemetry.
-    if let Some((tier, tier_route)) =
-        rolter_balancer::complexity::ComplexityPolicy::from_params(&entry.route.params)
-            .ok()
-            .flatten()
-            .and_then(|policy| policy.select(body.len()).cloned())
-            .map(|tier| (tier.name, tier.route))
-    {
-        let selected = snap
-            .named_route_for(&tier_route, vk.as_ref())
-            .filter(|candidate| {
-                (!candidate.route.targets.is_empty() || candidate.route.has_variants())
-                    && authorize_route(vk.as_ref(), candidate).is_ok()
-            });
-        let fallback = selected.is_none();
-        if let Some(candidate) = selected {
-            entry = candidate;
-        }
-        state
-            .metrics
-            .observe_complexity(&route_namespace, &tier, &entry.namespace, fallback);
-    }
-    if entry.route.targets.is_empty() && !entry.route.has_variants() {
-        return refuse.log(error_json(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "route has no targets",
-        ));
-    }
-    if let Err(denial) = authorize_route(vk.as_ref(), entry) {
-        return refuse.log(denial.into_response());
-    }
-    // a decision model answers only decisions, and a chat api has no decision
-    // endpoint: refuse the crossing rather than forward a request the upstream
-    // would 404 (#3150)
-    if let Some(refusal) = crate::system_one::endpoint_refusal(path, &entry.route, &snap.providers)
-    {
-        return refuse.log(refusal.into_response());
-    }
+    let route_namespace = std::sync::Arc::clone(&requested.namespace);
+    let entry = complexity_tier(&snap, vk.as_ref(), &state.metrics, requested, body.len());
+    proceed!(req.admit_route(entry));
     // the route survived every access check: record what was chosen and close
     // the stage, so what follows is not nested under route selection
     route_stage.record("route", entry.route.model.as_str());
@@ -1969,32 +2038,11 @@ async fn proxy(
     route_stage.record("candidates", entry.route.targets.len());
     drop(route_stage);
 
-    if let Some(max_output) = entry.route.advanced.limits.output_tokens {
-        for field in ["max_tokens", "max_completion_tokens", "max_output_tokens"] {
-            if parsed
-                .get(field)
-                .and_then(Value::as_u64)
-                .is_some_and(|value| value > u64::from(max_output))
-            {
-                return refuse.log(
-                    crate::error::ApiError::new(
-                        StatusCode::BAD_REQUEST,
-                        format!("{field} exceeds this model's output token limit of {max_output}"),
-                    )
-                    .with_code("max_tokens_exceeded")
-                    .with_param(field)
-                    .into_response(),
-                );
-            }
-        }
-    }
+    proceed!(req.output_token_cap(entry, &parsed));
 
     // the route's own caps, once the route is known to be the one that serves
     // the request. the permit is held to the end of the response (#2936)
-    let mut route_permit = match route_limit_refusal(&state, entry).await {
-        Ok(permit) => permit,
-        Err(refusal) => return refuse.log(*refusal),
-    };
+    let mut route_permit = proceed!(req.route_permit(entry).await);
 
     // versioned prompt templates: render the immutable versions active for this
     // route and inject their decorator messages around the caller's own messages.
@@ -3191,6 +3239,7 @@ async fn proxy_multipart(
     // as on the chat path: a refusal of a caller we know is logged (#2807)
     let req = RequestCtx {
         snap: &snap,
+        path,
         vk: vk.as_ref(),
         refuse: Refusals {
             state: &state,
@@ -3210,60 +3259,22 @@ async fn proxy_multipart(
 
     // built-in fake-llm answers locally unless a configured route shadows it
     // for this caller; another org's route of that name does not
-    if model == fake_llm::MODEL_NAME && snap.named_route_for(&model, vk.as_ref()).is_none() {
-        let ctx = RequestLogCtx::new(
-            &headers,
-            request_id.as_str(),
-            &scope,
-            &model,
-            snap.logging.sample_rate,
-            started,
-        );
-        let reply =
-            fake_llm::Reply::untokenized(fake_llm::transcription(response_format.as_deref()));
-        return log_builtin(&state.log, ctx, reply);
-    }
+    proceed!(req.builtin(|| {
+        fake_llm::Reply::untokenized(fake_llm::transcription(response_format.as_deref()))
+    }));
 
     // the same resolution as the JSON pipeline: a named route in the caller's
     // tenancy first, then `provider-slug/model` addressing (ADR-0017)
     let resolved = snap.resolve_for(&model, vk.as_ref());
-    let entry = match resolved.as_deref() {
-        Some(entry) => entry,
-        None => {
-            return refuse.log(
-                crate::error::ApiError::new(
-                    StatusCode::NOT_FOUND,
-                    format!("no route for model '{model}'"),
-                )
-                .with_code("model_not_found")
-                .with_param("model")
-                .into_response(),
-            )
-        }
+    let Some(entry) = resolved.as_deref() else {
+        return req.route_miss();
     };
     // the series label of the route, as on the JSON pipeline (#3462)
     let route_namespace = std::sync::Arc::clone(&entry.namespace);
-    if entry.route.targets.is_empty() && !entry.route.has_variants() {
-        return refuse.log(error_json(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "route has no targets",
-        ));
-    }
-    // the same route gate as the JSON pipeline: an upload must not reach a
-    // route the caller could not address with a chat request (#1485)
-    if let Err(denial) = authorize_route(vk.as_ref(), entry) {
-        return refuse.log(denial.into_response());
-    }
-    // a decision model transcribes nothing either (#3150)
-    if let Some(refusal) = crate::system_one::endpoint_refusal(path, &entry.route, &snap.providers)
-    {
-        return refuse.log(refusal.into_response());
-    }
+    // the same route gates as the JSON pipeline (#1485, #3150)
+    proceed!(req.admit_route(entry));
     // the route's own caps, as on the JSON pipeline (#2936)
-    let mut route_permit = match route_limit_refusal(&state, entry).await {
-        Ok(permit) => permit,
-        Err(refusal) => return refuse.log(*refusal),
-    };
+    let mut route_permit = proceed!(req.route_permit(entry).await);
 
     let request_id = request_id.as_str().to_string();
     let trace_id = crate::trace::request_trace_id(&headers);
