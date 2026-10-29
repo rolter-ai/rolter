@@ -1643,6 +1643,101 @@ fn route_limit_response(message: String, retry_after: u64) -> Response {
     resp
 }
 
+/// What a pipeline stage hands on: the value the stages after it need, or the
+/// answer that ends the request here. An answer is a refusal the stage has
+/// already logged, or a response it served itself (the built-in model, a
+/// cache hit), so it is no error and the pipeline returns it as it is.
+#[must_use]
+enum Stage<T> {
+    Next(T),
+    Answer(Response),
+}
+
+/// The value a [`Stage`] passed on, or an early return of its answer.
+macro_rules! proceed {
+    ($stage:expr) => {
+        match $stage {
+            Stage::Next(value) => value,
+            Stage::Answer(answer) => return answer,
+        }
+    };
+}
+
+/// What every stage of a request pipeline reads once the caller is known: the
+/// snapshot the request is served under, the caller's key, and
+/// the [`Refusals`] that logs whatever a stage turns away (#1041).
+///
+/// Shared by [`proxy`] and [`proxy_multipart`]. It holds only borrows and the
+/// refusal log's plugin events, so a stage is handed `&RequestCtx` and nothing
+/// is cloned to call it.
+struct RequestCtx<'a> {
+    snap: &'a Snapshot,
+    vk: Option<&'a KeyMeta>,
+    refuse: Refusals<'a>,
+}
+
+impl<'a> RequestCtx<'a> {
+    fn state(&self) -> &'a AppState {
+        self.refuse.state
+    }
+
+    /// The caller's scope (empty for an anonymous request).
+    fn scope(&self) -> &'a ScopeIds {
+        self.refuse.scope
+    }
+
+    /// The model the caller asked for.
+    fn model(&self) -> &'a str {
+        self.refuse.model
+    }
+
+    /// Log `refusal` as this request's outcome and hand it back.
+    fn refused(&self, refusal: Response) -> Response {
+        self.refuse.log(refusal)
+    }
+
+    /// The model gate: the key may ask for this model at all.
+    fn admit_model(&self) -> Stage<()> {
+        match authorize_model(self.vk, self.model()) {
+            Ok(()) => Stage::Next(()),
+            Err(denial) => Stage::Answer(self.refused(denial.into_response())),
+        }
+    }
+
+    /// Refuse before spending upstream tokens when any applicable budget is
+    /// already spent.
+    async fn admit_budget(&self) -> Stage<()> {
+        self.refuse_if(budget_refusal(self.state(), self.snap, self.scope()).await)
+    }
+
+    /// The throughput cap: reject before forwarding when a matching
+    /// request/token window is already at capacity (admission also counts the
+    /// request).
+    async fn admit_rate(&self) -> Stage<()> {
+        self.refuse_if(rate_limit_refusal(self.state(), self.snap, self.scope()).await)
+    }
+
+    /// Refuse before the upstream call when the operator will not serve
+    /// traffic they cannot account for (#974).
+    fn admit_unpriced(&self, model: &str, priced: bool) -> Stage<()> {
+        self.refuse_if(unpriced_admission(
+            self.state(),
+            self.snap,
+            self.scope(),
+            model,
+            priced,
+        ))
+    }
+
+    /// Answer with `refusal`, logged, when there is one; else go on.
+    fn refuse_if(&self, refusal: Option<Response>) -> Stage<()> {
+        match refusal {
+            Some(refusal) => Stage::Answer(self.refused(refusal)),
+            None => Stage::Next(()),
+        }
+    }
+}
+
 async fn proxy(
     state: AppState,
     headers: HeaderMap,
@@ -1689,24 +1784,25 @@ async fn proxy(
     // logged. the three answers above are not: they come before any key was
     // looked up, and a row nobody owns is one anonymous traffic could write
     // without limit (#2807)
-    let refuse = Refusals {
-        state: &state,
-        headers: &headers,
-        request_id: request_id.as_str(),
-        scope: &scope,
-        model: &model,
-        sample_rate: snap.logging.sample_rate,
-        started,
-        plugin_events: parking_lot::Mutex::new(Vec::new()),
+    let req = RequestCtx {
+        snap: &snap,
+        vk: vk.as_ref(),
+        refuse: Refusals {
+            state: &state,
+            headers: &headers,
+            request_id: request_id.as_str(),
+            scope: &scope,
+            model: &model,
+            sample_rate: snap.logging.sample_rate,
+            started,
+            plugin_events: parking_lot::Mutex::new(Vec::new()),
+        },
     };
-    if let Err(denial) = authorize_model(vk.as_ref(), &model) {
-        return refuse.log(denial.into_response());
-    }
+    let refuse = &req.refuse;
+    proceed!(req.admit_model());
 
     // block before spending upstream tokens when any applicable budget is spent
-    if let Some(refusal) = budget_refusal(&state, &snap, &scope).await {
-        return refuse.log(refusal);
-    }
+    proceed!(req.admit_budget().await);
 
     // pre_route plugins: consult before the route is resolved, while only the
     // key's scope and raw request are known. Block rejects; transform rewrites
@@ -1755,9 +1851,7 @@ async fn proxy(
 
     // throughput cap: reject before forwarding when a matching request/token
     // window is already at capacity (admission also counts the request)
-    if let Some(refusal) = rate_limit_refusal(&state, &snap, &scope).await {
-        return refuse.log(refusal);
-    }
+    proceed!(req.admit_rate().await);
 
     // built-in fake-llm answers locally unless a configured route shadows it
     // for this caller; another org's route of that name does not
@@ -2354,11 +2448,7 @@ async fn proxy(
     let price = snap.prices.get(&effective_model).cloned();
     // refuse before the upstream call when the operator will not serve traffic
     // they cannot account for (#974)
-    if let Some(refused) =
-        unpriced_admission(&state, &snap, &scope, &effective_model, price.is_some())
-    {
-        return refuse.log(refused);
-    }
+    proceed!(req.admit_unpriced(&effective_model, price.is_some()));
     // records this request's cost against its budgets once cost_usd is known
     let recorder = SpendRecorder::new(state.budgets.clone(), snap.budgets.clone(), scope);
 
@@ -3111,27 +3201,24 @@ async fn proxy_multipart(
     };
     let scope = request_scope(vk.as_ref());
     // as on the chat path: a refusal of a caller we know is logged (#2807)
-    let refuse = Refusals {
-        state: &state,
-        headers: &headers,
-        request_id: request_id.as_str(),
-        scope: &scope,
-        model: &model,
-        sample_rate: snap.logging.sample_rate,
-        started,
-        plugin_events: parking_lot::Mutex::new(Vec::new()),
+    let req = RequestCtx {
+        snap: &snap,
+        vk: vk.as_ref(),
+        refuse: Refusals {
+            state: &state,
+            headers: &headers,
+            request_id: request_id.as_str(),
+            scope: &scope,
+            model: &model,
+            sample_rate: snap.logging.sample_rate,
+            started,
+            plugin_events: parking_lot::Mutex::new(Vec::new()),
+        },
     };
-    if let Err(denial) = authorize_model(vk.as_ref(), &model) {
-        return refuse.log(denial.into_response());
-    }
-
-    if let Some(refusal) = budget_refusal(&state, &snap, &scope).await {
-        return refuse.log(refusal);
-    }
-
-    if let Some(refusal) = rate_limit_refusal(&state, &snap, &scope).await {
-        return refuse.log(refusal);
-    }
+    let refuse = &req.refuse;
+    proceed!(req.admit_model());
+    proceed!(req.admit_budget().await);
+    proceed!(req.admit_rate().await);
 
     // built-in fake-llm answers locally unless a configured route shadows it
     // for this caller; another org's route of that name does not
@@ -3211,9 +3298,7 @@ async fn proxy_multipart(
     let price = snap.prices.get(&model).cloned();
     // see the chat path: refuse unaccountable traffic before spending upstream
     // tokens on it (#974)
-    if let Some(refused) = unpriced_admission(&state, &snap, &scope, &model, price.is_some()) {
-        return refuse.log(refused);
-    }
+    proceed!(req.admit_unpriced(&model, price.is_some()));
 
     // the response stage of the guardrails, on the transcript (#3331). the
     // request is audio, which no request-stage rule, provider, plugin or
