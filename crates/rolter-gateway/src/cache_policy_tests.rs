@@ -164,9 +164,7 @@ impl Harness {
             strategy: BalancingStrategy::RoundRobin,
             targets: vec![Target {
                 provider: "up".to_string(),
-                model: None,
-                weight: 1,
-                takes_over: Vec::new(),
+                ..Default::default()
             }],
             params: Default::default(),
             param_policy: Default::default(),
@@ -455,9 +453,7 @@ async fn a_cache_hit_on_a_translated_route_carries_the_param_adjustments() {
         strategy: BalancingStrategy::RoundRobin,
         targets: vec![Target {
             provider: "anthropic".to_string(),
-            model: None,
-            weight: 1,
-            takes_over: Vec::new(),
+            ..Default::default()
         }],
         params: Default::default(),
         param_policy: Default::default(),

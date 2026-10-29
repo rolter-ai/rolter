@@ -627,21 +627,9 @@ mod tests {
 
     fn db_vkey(id: &str, hash: &str) -> rolter_core::VirtualKeyRecord {
         rolter_core::VirtualKeyRecord {
-            previous: None,
             key_hash: hash.to_string(),
             id: id.to_string(),
-            org_id: String::new(),
-            team_id: String::new(),
-            project_id: String::new(),
-            user_id: String::new(),
-            models: vec![],
-            providers: vec![],
-            disabled: false,
-            expires_at: None,
-            cache: None,
-            business_unit_id: String::new(),
-            customer_id: String::new(),
-            access_policy: None,
+            ..Default::default()
         }
     }
 

@@ -1687,7 +1687,7 @@ period = "monthly"
                         provider: "zzz".to_string(),
                         model: Some("upstream".to_string()),
                         weight: 3,
-                        takes_over: Vec::new(),
+                        ..Default::default()
                     }],
                     ..route("zeta")
                 },

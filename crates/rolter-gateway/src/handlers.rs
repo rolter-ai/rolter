@@ -6670,9 +6670,7 @@ mod tests {
             variants: Default::default(),
             targets: vec![Target {
                 provider: "openai".to_string(),
-                model: None,
-                weight: 1,
-                takes_over: Vec::new(),
+                ..Default::default()
             }],
             tenancy: None,
         });
@@ -6686,9 +6684,7 @@ mod tests {
             variants: Default::default(),
             targets: vec![Target {
                 provider: "anthropic".to_string(),
-                model: None,
-                weight: 1,
-                takes_over: Vec::new(),
+                ..Default::default()
             }],
             tenancy: None,
         });
@@ -6901,8 +6897,7 @@ mod tests {
             targets: vec![Target {
                 provider: "openai-edge".to_string(),
                 model: Some("gpt-4o".to_string()),
-                weight: 1,
-                takes_over: Vec::new(),
+                ..Default::default()
             }],
             tenancy: None,
         });
@@ -7148,21 +7143,13 @@ mod tests {
         let mut config = GatewayConfig::default();
         let pepper = config.server.resolve_key_pepper();
         config.db_virtual_keys.push(VirtualKeyRecord {
-            previous: None,
-            access_policy: None,
             key_hash: rolter_auth::hash_key(&pepper, "sk-db-key"),
             id: "vk-1".to_string(),
             org_id: "org-1".to_string(),
             team_id: "team-1".to_string(),
             project_id: "proj-1".to_string(),
             user_id: "user-1".to_string(),
-            models: vec![],
-            providers: vec![],
-            disabled: false,
-            expires_at: None,
-            cache: None,
-            business_unit_id: String::new(),
-            customer_id: String::new(),
+            ..Default::default()
         });
         let state = AppState::new(&config);
 
@@ -7198,20 +7185,13 @@ mod tests {
                 key_hash: rolter_auth::hash_key(&pepper, previous),
                 valid_until,
             }),
-            access_policy: None,
             key_hash: rolter_auth::hash_key(&pepper, current),
             id: "vk-rotated".to_string(),
             org_id: "org-1".to_string(),
             team_id: "team-1".to_string(),
             project_id: "proj-1".to_string(),
-            user_id: String::new(),
-            models: vec![],
-            providers: vec![],
-            disabled: false,
             expires_at,
-            cache: None,
-            business_unit_id: String::new(),
-            customer_id: String::new(),
+            ..Default::default()
         });
         config
     }
@@ -7283,8 +7263,6 @@ mod tests {
         let mut config = GatewayConfig::default();
         let pepper = config.server.resolve_key_pepper();
         config.db_virtual_keys.push(VirtualKeyRecord {
-            previous: None,
-            access_policy: None,
             key_hash: rolter_auth::hash_key(&pepper, "sk-playground"),
             id: "vk-playground".to_string(),
             org_id: "org-1".to_string(),
@@ -7292,12 +7270,8 @@ mod tests {
             project_id: "proj-1".to_string(),
             user_id: "user-1".to_string(),
             models: vec![fake_llm::MODEL_NAME.to_string()],
-            providers: vec![],
-            disabled: false,
             expires_at: Some(Utc::now() + chrono::Duration::minutes(30)),
-            cache: None,
-            business_unit_id: String::new(),
-            customer_id: String::new(),
+            ..Default::default()
         });
         let mut state = AppState::new(&config);
         state.managed_auth = true;
@@ -7347,21 +7321,15 @@ mod tests {
         let mut config = GatewayConfig::default();
         let pepper = config.server.resolve_key_pepper();
         config.db_virtual_keys.push(VirtualKeyRecord {
-            previous: None,
-            access_policy: None,
             key_hash: rolter_auth::hash_key(&pepper, "sk-attributed"),
             id: "vk-1".to_string(),
             org_id: "org-1".to_string(),
             team_id: "team-1".to_string(),
             project_id: "proj-1".to_string(),
             user_id: "user-1".to_string(),
-            models: vec![],
-            providers: vec![],
-            disabled: false,
-            expires_at: None,
-            cache: None,
             business_unit_id: "bu-1".to_string(),
             customer_id: "cust-1".to_string(),
+            ..Default::default()
         });
         let state = AppState::new(&config);
         let snap = state.snapshot.load();
@@ -7475,15 +7443,11 @@ mod tests {
                 targets: vec![
                     Target {
                         provider: "a".to_string(),
-                        model: None,
-                        weight: 1,
-                        takes_over: Vec::new(),
+                        ..Default::default()
                     },
                     Target {
                         provider: "b".to_string(),
-                        model: None,
-                        weight: 1,
-                        takes_over: Vec::new(),
+                        ..Default::default()
                     },
                 ],
             }],
@@ -7550,9 +7514,7 @@ mod tests {
                 .into_iter()
                 .map(|provider| Target {
                     provider: provider.to_string(),
-                    model: None,
-                    weight: 1,
-                    takes_over: Vec::new(),
+                    ..Default::default()
                 })
                 .collect(),
         };
@@ -7623,9 +7585,7 @@ mod tests {
                     params: Default::default(),
                     targets: vec![Target {
                         provider: "a".to_string(),
-                        model: None,
-                        weight: 1,
-                        takes_over: Vec::new(),
+                        ..Default::default()
                     }],
                 },
                 rolter_core::Variant {
@@ -7634,9 +7594,7 @@ mod tests {
                     params: Default::default(),
                     targets: vec![Target {
                         provider: "b".to_string(),
-                        model: None,
-                        weight: 1,
-                        takes_over: Vec::new(),
+                        ..Default::default()
                     }],
                 },
             ],
@@ -7662,15 +7620,11 @@ mod tests {
             targets: vec![
                 Target {
                     provider: "a".to_string(),
-                    model: None,
-                    weight: 1,
-                    takes_over: Vec::new(),
+                    ..Default::default()
                 },
                 Target {
                     provider: "b".to_string(),
-                    model: None,
-                    weight: 1,
-                    takes_over: Vec::new(),
+                    ..Default::default()
                 },
             ],
             tenancy: None,
@@ -7741,9 +7695,7 @@ mod tests {
     fn three_target_entry() -> crate::state::RouteEntry {
         let target = |provider: &str| Target {
             provider: provider.to_string(),
-            model: None,
-            weight: 1,
-            takes_over: Vec::new(),
+            ..Default::default()
         };
         let route = ModelRoute {
             model: "m".to_string(),
@@ -8066,9 +8018,7 @@ mod tests {
             variants: Default::default(),
             targets: vec![Target {
                 provider: "a".to_string(),
-                model: None,
-                weight: 1,
-                takes_over: Vec::new(),
+                ..Default::default()
             }],
             tenancy: None,
         };
@@ -8119,15 +8069,11 @@ mod tests {
             targets: vec![
                 Target {
                     provider: "a".to_string(),
-                    model: None,
-                    weight: 1,
-                    takes_over: Vec::new(),
+                    ..Default::default()
                 },
                 Target {
                     provider: "b".to_string(),
-                    model: None,
-                    weight: 1,
-                    takes_over: Vec::new(),
+                    ..Default::default()
                 },
             ],
             tenancy: None,
@@ -8172,15 +8118,11 @@ mod tests {
             targets: vec![
                 Target {
                     provider: "a".to_string(),
-                    model: None,
-                    weight: 1,
-                    takes_over: Vec::new(),
+                    ..Default::default()
                 },
                 Target {
                     provider: "b".to_string(),
-                    model: None,
-                    weight: 1,
-                    takes_over: Vec::new(),
+                    ..Default::default()
                 },
             ],
             tenancy: None,
@@ -8243,9 +8185,7 @@ mod tests {
     fn cache_aware_balances_against_live_targets_only() {
         let target = |provider: &str| Target {
             provider: provider.to_string(),
-            model: None,
-            weight: 1,
-            takes_over: Vec::new(),
+            ..Default::default()
         };
         let route = ModelRoute {
             model: "m".to_string(),
@@ -8343,15 +8283,11 @@ mod tests {
             targets: vec![
                 Target {
                     provider: "a".to_string(),
-                    model: None,
-                    weight: 1,
-                    takes_over: Vec::new(),
+                    ..Default::default()
                 },
                 Target {
                     provider: "b".to_string(),
-                    model: None,
-                    weight: 1,
-                    takes_over: Vec::new(),
+                    ..Default::default()
                 },
             ],
             tenancy: None,
@@ -8475,9 +8411,7 @@ mod tests {
             strategy: BalancingStrategy::RoundRobin,
             targets: vec![Target {
                 provider: "a".to_string(),
-                model: None,
-                weight: 1,
-                takes_over: Vec::new(),
+                ..Default::default()
             }],
             params: Default::default(),
             param_policy: Default::default(),
@@ -8527,15 +8461,11 @@ mod tests {
             targets: vec![
                 Target {
                     provider: "a".to_string(),
-                    model: None,
-                    weight: 1,
-                    takes_over: Vec::new(),
+                    ..Default::default()
                 },
                 Target {
                     provider: "b".to_string(),
-                    model: None,
-                    weight: 1,
-                    takes_over: Vec::new(),
+                    ..Default::default()
                 },
             ],
             params: Default::default(),
@@ -8726,9 +8656,7 @@ mod tests {
         let pinned_to = |provider: &str| {
             vec![Target {
                 provider: provider.to_string(),
-                model: None,
-                weight: 1,
-                takes_over: Vec::new(),
+                ..Default::default()
             }]
         };
         for (name, org) in [("edge", "org-b"), ("squatter", "org-a")] {
@@ -8929,9 +8857,7 @@ mod tests {
                     targets: ["a", "b", "c"]
                         .map(|provider| Target {
                             provider: provider.to_string(),
-                            model: None,
-                            weight: 1,
-                            takes_over: Vec::new(),
+                            ..Default::default()
                         })
                         .to_vec(),
                     tenancy: None,
@@ -8995,9 +8921,7 @@ mod tests {
             variants: Default::default(),
             targets: vec![Target {
                 provider: "a".to_string(),
-                model: None,
-                weight: 1,
-                takes_over: Vec::new(),
+                ..Default::default()
             }],
             tenancy: None,
         };
@@ -9046,9 +8970,7 @@ mod tests {
             variants: Default::default(),
             targets: vec![Target {
                 provider: "a".to_string(),
-                model: None,
-                weight: 1,
-                takes_over: Vec::new(),
+                ..Default::default()
             }],
             tenancy: None,
         };

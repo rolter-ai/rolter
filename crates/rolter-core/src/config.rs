@@ -1365,6 +1365,20 @@ pub struct Target {
     pub takes_over: Vec<crate::failover::FailureClass>,
 }
 
+impl Default for Target {
+    /// An empty provider name with the weight an omitted `weight` key
+    /// deserializes to (1, not 0: a zero-weight target is never chosen). It
+    /// exists for fixtures; production code writes every field out.
+    fn default() -> Self {
+        Self {
+            provider: String::new(),
+            model: None,
+            weight: default_weight(),
+            takes_over: Vec::new(),
+        }
+    }
+}
+
 impl Target {
     /// Whether this target is a restricted fallback rather than a member of
     /// the pool.
@@ -2193,7 +2207,10 @@ const UNNAMED_KEY: &str = "<unnamed>";
 /// A database-defined virtual key as seen by the gateway: the peppered digest
 /// (never the plaintext) plus the scope identity used for log attribution,
 /// budgets and rate limits.
-#[derive(Debug, Clone, Deserialize, Serialize)]
+///
+/// `Default` is an enabled key with no scope and no restrictions; it exists
+/// for fixtures, production code writes every field out.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct VirtualKeyRecord {
     /// `rolter_auth::hash_key(pepper, key)` — how the gateway looks the key up
     pub key_hash: String,
@@ -6852,6 +6869,23 @@ fn is_proxy_reference(s: &str) -> bool {
 mod tests {
     use super::*;
 
+    /// #3332: a fixture's `..Default::default()` must mean what an omitted key
+    /// means in a file. A derived default would give weight 0, which no
+    /// balancer ever picks.
+    #[test]
+    fn a_default_target_is_what_a_target_with_only_a_provider_parses_to() {
+        let parsed: Target = toml::from_str("provider = \"p\"").unwrap();
+        let default = Target {
+            provider: "p".into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            serde_json::to_value(&default).unwrap(),
+            serde_json::to_value(&parsed).unwrap()
+        );
+        assert_eq!(Target::default().weight, 1);
+    }
+
     /// #2936: a route's throughput caps need a value that can be met. Zero
     /// would refuse every request, so a file is told and a stored row is
     /// served without that cap.
@@ -7466,9 +7500,7 @@ mod tests {
         route.model = "m".to_string();
         route.targets = vec![Target {
             provider: "p".to_string(),
-            model: None,
-            weight: 1,
-            takes_over: Vec::new(),
+            ..Default::default()
         }];
         cfg.routes.push(route);
         let problems = cfg.validate().unwrap_err().join("\n");
@@ -7562,9 +7594,7 @@ mod tests {
         route.model = "m".to_string();
         route.targets = vec![Target {
             provider: "p".to_string(),
-            model: None,
-            weight: 1,
-            takes_over: Vec::new(),
+            ..Default::default()
         }];
         cfg.routes.push(route);
 
@@ -10451,21 +10481,10 @@ mod tests {
             "#,
         );
         let db_key = |id: &str, providers: &[&str]| VirtualKeyRecord {
-            previous: None,
             key_hash: format!("hash-{id}"),
             id: id.to_string(),
-            org_id: String::new(),
-            team_id: String::new(),
-            project_id: String::new(),
-            user_id: String::new(),
-            models: Vec::new(),
             providers: providers.iter().map(|p| p.to_string()).collect(),
-            disabled: false,
-            expires_at: None,
-            cache: None,
-            business_unit_id: String::new(),
-            customer_id: String::new(),
-            access_policy: None,
+            ..Default::default()
         };
         cfg.db_virtual_keys = vec![
             db_key("db-mixed", &["bad", "openai"]),
@@ -11185,9 +11204,7 @@ mod tests {
                 .iter()
                 .map(|provider| Target {
                     provider: provider.to_string(),
-                    model: None,
-                    weight: 1,
-                    takes_over: Vec::new(),
+                    ..Default::default()
                 })
                 .collect(),
             params: Default::default(),
