@@ -2357,6 +2357,7 @@ mod tests {
         ),
         ("config_export.rs", include_str!("config_export.rs")),
         ("connectors.rs", include_str!("connectors.rs")),
+        ("conn_close.rs", include_str!("conn_close.rs")),
         ("cors.rs", include_str!("cors.rs")),
         ("deprecation.rs", include_str!("deprecation.rs")),
         ("crud/mod.rs", include_str!("crud/mod.rs")),
