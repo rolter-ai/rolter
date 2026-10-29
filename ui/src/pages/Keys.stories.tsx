@@ -172,7 +172,6 @@ const KEYS: VirtualKeyRow[] = [
   {
     id: "vk-1",
     project_id: "project-1",
-    key_hash: "hash-1",
     key_prefix: "sk-rolter-backend",
     name: "backend service",
     models: ["gpt-4o", "claude-sonnet"],
@@ -188,7 +187,6 @@ const KEYS: VirtualKeyRow[] = [
   {
     id: "vk-2",
     project_id: "project-1",
-    key_hash: "hash-2",
     key_prefix: "sk-rolter-laptop",
     name: "revoked laptop",
     models: [],
@@ -207,7 +205,6 @@ const KEYS: VirtualKeyRow[] = [
 const PLAYGROUND_KEY: VirtualKeyRow = {
   id: "vk-3",
   project_id: "project-1",
-  key_hash: "hash-3",
   key_prefix: "sk-rolter-play",
   name: "Playground",
   models: ["gpt-4o"],

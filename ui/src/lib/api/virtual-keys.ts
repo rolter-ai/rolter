@@ -4,7 +4,6 @@ import { getJson, sendJson } from "./request";
 export interface VirtualKeyRow {
   id: string;
   project_id: string;
-  key_hash: string;
   key_prefix: string;
   name?: string | null;
   models: string[];
@@ -77,13 +76,11 @@ export function fetchVirtualKeys(projectId: string): Promise<VirtualKeyRow[]> {
 }
 
 /**
- * A key as the organization-wide listing returns it: the row without any
- * digest of a secret (`key_hash`, `previous_*`).
+ * A key as the organization-wide listing returns it: the row without the
+ * retired secret's `previous_*` fields. No listing carries a digest of a
+ * secret (#3525).
  */
-export type OrgVirtualKeyRow = Omit<
-  VirtualKeyRow,
-  "key_hash" | "previous_key_prefix" | "previous_expires_at"
->;
+export type OrgVirtualKeyRow = Omit<VirtualKeyRow, "previous_key_prefix" | "previous_expires_at">;
 
 /**
  * Every key of every project of an organization the caller may read, each

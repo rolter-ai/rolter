@@ -218,7 +218,6 @@ function loadedStub({
         {
           id: KEY,
           project_id: PROJECT,
-          key_hash: "hash",
           key_prefix: "rlt_prod",
           name: "Support app",
           models: ["support"],

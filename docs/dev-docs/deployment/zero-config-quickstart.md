@@ -49,6 +49,9 @@ rolter easy-up --database-url postgres://user:pass@localhost:5432/rolter
 `easy-up` migrates, seeds a `default` org/team/project, imports the bootstrap
 toml, and starts both planes. The gateway port (4000) now also serves the
 management API: `/admin/*` proxies to the control plane's `/api/v1/*`.
+The seed flags (`--admin-*` and `--import`) act only here, so without
+`--database-url` `easy-up` refuses them at startup and names the flag rather
+than ignoring it (#3478, #3523).
 
 Two deployment secrets matter here:
 

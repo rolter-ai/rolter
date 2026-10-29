@@ -126,7 +126,7 @@ on the host through `ps` while the command runs and lands in shell history, so
 the three are mutually exclusive and the first two are the ones to use. The two
 that read a source need `--admin-email`, and an empty source is refused.
 
-Every `--admin-*` flag needs `--database-url`: without one `easy-up` refuses to start and names the missing flag, rather than starting with no admin.
+Every `--admin-*` flag needs `--database-url`: without one `easy-up` refuses to start and names the missing flag, rather than starting with no admin. `--import` needs it too, for the same reason: without a database `easy-up` serves `--config` directly, so an import file would be ignored and the gateway would start without its providers and routes.
 
 <Note>
   The `cargo install` and `uv`/`pip` methods install the `rolter` binary only — they do not start Postgres, Redis, or ClickHouse. Budget enforcement and request logging require those services. For a local-only setup without persistence, the gateway works fine without them; budgets will fail open and request logs will be skipped.

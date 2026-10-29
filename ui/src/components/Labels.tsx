@@ -105,14 +105,17 @@ export type LabelSubject = "provider" | "provider_group" | "route" | "model";
  *
  * A provider, group or route belongs to an org and is addressed by its row id;
  * a model belongs to the deployment-wide pricing catalog and is addressed by
- * its name, which is also why writing one is a superadmin's act. Everything
- * above this line is the same for both, so the difference lives here.
+ * its name. A label on an organization's model is that organization's act and
+ * takes its `label` capability, like its provider and route labels (#3520); a
+ * deployment-wide one is a superadmin's (`model_label`). Everything above this
+ * line is the same for both, so the difference lives here.
  */
 function endpoints(subjectType: LabelSubject, orgId: string) {
   const model = subjectType === "model";
   // a model of an organization is labelled as that organization's (#3476); a
   // config-file model has no organization and its labels are deployment-wide
   const modelOrg = orgId || undefined;
+  const gated = model && !modelOrg ? "model_label" : "label";
   return {
     list: (filter: LabelFilter) =>
       model ? fetchModelLabels({ ...filter, org_id: modelOrg }) : fetchLabels(orgId, filter),
@@ -123,8 +126,8 @@ function endpoints(subjectType: LabelSubject, orgId: string) {
     update: (id: string, value?: string) =>
       model ? updateModelLabel(id, value) : updateLabel(orgId, id, value),
     remove: (id: string) => (model ? deleteModelLabel(id) : deleteLabel(orgId, id)),
-    createGate: (model ? "model_label:create" : "label:create") as Capability,
-    deleteGate: (model ? "model_label:delete" : "label:delete") as Capability,
+    createGate: `${gated}:create` as Capability,
+    deleteGate: `${gated}:delete` as Capability,
   };
 }
 
