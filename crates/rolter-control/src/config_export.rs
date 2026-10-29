@@ -167,7 +167,7 @@ impl ScopeRefs {
     /// `within` is the deployment's and goes into every org's file. A cap whose
     /// owner cannot be told (a virtual key, a scope with no portable name) stays
     /// in, where the trailing comment counts it as the unscoped export does.
-    #[cfg(any(feature = "postgres", test))]
+    #[cfg(feature = "postgres")]
     fn in_org(
         &self,
         org: &str,
@@ -890,7 +890,7 @@ async fn load_mcp_manifest_enforcement(
 /// Leave in `config` what belongs in the file of the org `slug` (#3440): its
 /// providers, groups, routes, prompt templates and caps, plus the rows no org
 /// owns. Prices, currency and logging are deployment-wide and stay.
-#[cfg(any(feature = "postgres", test))]
+#[cfg(feature = "postgres")]
 fn scope_to_org(config: &mut GatewayConfig, slug: &str, org_id: &str, refs: &ScopeRefs) {
     let owned = |tenancy: &Option<rolter_core::Tenancy>| {
         tenancy.as_ref().is_none_or(|owner| owner.org_id == org_id)
