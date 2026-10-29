@@ -41,9 +41,11 @@ tracing.workspace = true
 clap.workspace = true
 chrono.workspace = true
 scalar_api_reference = { version = "0.2.12", default-features = false }
+# O_NOFOLLOW and O_NONBLOCK for the one open of a local guardrail model, so
+# a FIFO swapped in under model_root cannot block a reload (#3454)
+libc.workspace = true
 
 [dev-dependencies]
-libc.workspace = true
 # a paused clock, so a timing test asserts virtual time rather than a wall-clock
 # bound a loaded runner can cross (#3416)
 tokio = { workspace = true, features = ["test-util"] }

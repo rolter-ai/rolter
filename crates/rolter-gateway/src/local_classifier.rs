@@ -271,19 +271,14 @@ impl LinearModel {
         sha256: &str,
         root: Option<&Path>,
     ) -> Result<Self, ModelError> {
-        let path = confine(path, root)?;
-        // a FIFO or a device would block the read for as long as nothing
-        // writes to it, and the loader with it
-        if !std::fs::metadata(&path)?.is_file() {
-            return Err(ModelError::Malformed(
-                "the path is not a regular file".into(),
-            ));
-        }
-        let file = open(&path, root.is_some())?;
-        if file.metadata()?.len() > MAX_MODEL_FILE_BYTES {
+        let (target, root) = confine(path, root)?;
+        let file = open_checked(&target, root.as_deref())?;
+        // checked on the handle that is read, never on the path again
+        let len = file.metadata()?.len();
+        if len > MAX_MODEL_FILE_BYTES {
             return Err(ModelError::TooLarge);
         }
-        let mut bytes = Vec::new();
+        let mut bytes = Vec::with_capacity(len as usize);
         // the size is checked again while reading: the file may grow between
         // the two
         file.take(MAX_MODEL_FILE_BYTES + 1)
@@ -321,13 +316,14 @@ impl LinearModel {
     }
 }
 
-/// The path to open for `path`: itself without a root, else its canonical
-/// form, which must lie under the canonical `root`. Every `..` and every
-/// symlink, in the last component or any directory before it, is resolved
-/// before the check, so neither can lead out of the root.
-fn confine(path: &str, root: Option<&Path>) -> Result<PathBuf, ModelError> {
+/// The path to open for `path` and the canonical root it must stay under:
+/// `path` itself without a root, else its canonical form, which must lie
+/// under the canonical `root`. Every `..` and every symlink, in the last
+/// component or any directory before it, is resolved before the check. A
+/// relative `path` resolves against the process's working directory.
+fn confine(path: &str, root: Option<&Path>) -> Result<(PathBuf, Option<PathBuf>), ModelError> {
     let Some(root) = root else {
-        return Ok(PathBuf::from(path));
+        return Ok((PathBuf::from(path), None));
     };
     let root_real = std::fs::canonicalize(root).map_err(|error| ModelError::Root {
         root: root.display().to_string(),
@@ -340,19 +336,82 @@ fn confine(path: &str, root: Option<&Path>) -> Result<PathBuf, ModelError> {
             root: root_real.display().to_string(),
         });
     }
-    Ok(resolved)
+    Ok((resolved, Some(root_real)))
 }
 
-/// Open `path` for reading. Under a root the path is canonical, so its last
-/// component is no symlink; one swapped in after the check is refused rather
-/// than followed out of the root. (The pin still covers whatever is read.)
-fn open(path: &Path, confined: bool) -> Result<std::fs::File, ModelError> {
-    if confined && std::fs::symlink_metadata(path)?.file_type().is_symlink() {
+/// Open `target` once and check the handle, not the path: a regular file,
+/// and under a `root`, the very file the canonical path named.
+///
+/// The open never blocks, so a FIFO or a device swapped in after
+/// [`confine`] is refused rather than holding a blocking-pool thread (and a
+/// reload) until something writes to it. Under a root the last component is
+/// not followed if it became a symlink, and the opened file's own path (or,
+/// off Linux, its device and inode) must still be the canonical one, so a
+/// directory swapped for a symlink on the way cannot lead out of the root
+/// either. A hard link into the root to a file elsewhere is not detected:
+/// it is the same file, and the pin covers what is read.
+fn open_checked(target: &Path, root: Option<&Path>) -> Result<std::fs::File, ModelError> {
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        let nofollow = if root.is_some() { libc::O_NOFOLLOW } else { 0 };
+        options.custom_flags(libc::O_NONBLOCK | nofollow);
+    }
+    let file = match options.open(target) {
+        Ok(file) => file,
+        #[cfg(unix)]
+        Err(error) if root.is_some() && error.raw_os_error() == Some(libc::ELOOP) => {
+            return Err(ModelError::Malformed(
+                "the path became a symlink before it was read".into(),
+            ))
+        }
+        Err(error) => return Err(error.into()),
+    };
+    if !file.metadata()?.is_file() {
         return Err(ModelError::Malformed(
-            "the path became a symlink while it was read".into(),
+            "the path is not a regular file".into(),
         ));
     }
-    Ok(std::fs::File::open(path)?)
+    if let Some(root) = root {
+        same_file(&file, target, root)?;
+    }
+    Ok(file)
+}
+
+/// That `file` is the one `target` names, under `root`.
+#[cfg(target_os = "linux")]
+fn same_file(file: &std::fs::File, target: &Path, root: &Path) -> Result<(), ModelError> {
+    use std::os::fd::AsRawFd;
+    let opened = std::fs::read_link(format!("/proc/self/fd/{}", file.as_raw_fd()))?;
+    if opened != target || !opened.starts_with(root) {
+        return Err(ModelError::OutsideRoot {
+            resolved: opened.display().to_string(),
+            root: root.display().to_string(),
+        });
+    }
+    Ok(())
+}
+
+/// That `file` is the one `target` names: the same device and inode.
+#[cfg(not(target_os = "linux"))]
+fn same_file(file: &std::fs::File, target: &Path, root: &Path) -> Result<(), ModelError> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let opened = file.metadata()?;
+        let named = std::fs::metadata(target)?;
+        if opened.dev() != named.dev() || opened.ino() != named.ino() {
+            return Err(ModelError::OutsideRoot {
+                resolved: target.display().to_string(),
+                root: root.display().to_string(),
+            });
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = (file, target, root);
+    Ok(())
 }
 
 fn sigmoid(x: f64) -> f64 {
@@ -1525,6 +1584,78 @@ pub(crate) mod tests {
         assert!(error.to_string().contains("not a regular file"), "{error}");
         let error = confined.load(&confined.inside("missing.json")).unwrap_err();
         assert!(matches!(error, ModelError::Read(_)), "{error}");
+    }
+
+    /// Run `load` on a thread and fail if it has not returned in five
+    /// seconds: a blocked open would otherwise hang the test.
+    fn within_five_seconds<T: Send + 'static>(load: impl FnOnce() -> T + Send + 'static) -> T {
+        let (done, outcome) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = done.send(load());
+        });
+        outcome
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the load returned instead of blocking")
+    }
+
+    #[cfg(unix)]
+    fn mkfifo(path: &Path) {
+        let path = std::ffi::CString::new(path.to_string_lossy().into_owned()).unwrap();
+        // SAFETY: a valid nul-terminated path and a plain mode
+        assert_eq!(unsafe { libc::mkfifo(path.as_ptr(), 0o600) }, 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_fifo_is_refused_without_blocking_with_or_without_a_root() {
+        let confined = Confined::new("root-fifo");
+        let fifo = confined.root.join("model.fifo");
+        mkfifo(&fifo);
+        let path = fifo.to_string_lossy().into_owned();
+        let root = confined.root.clone();
+        let (inside, unconfined) = within_five_seconds(move || {
+            (
+                LinearModel::load_confined(&path, &"0".repeat(64), Some(&root))
+                    .map(|_| ())
+                    .map_err(|error| error.to_string()),
+                LinearModel::load(&path, &"0".repeat(64))
+                    .map(|_| ())
+                    .map_err(|error| error.to_string()),
+            )
+        });
+        for outcome in [inside, unconfined] {
+            let error = outcome.unwrap_err();
+            assert!(error.contains("not a regular file"), "{error}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_last_component_that_became_a_symlink_is_not_followed() {
+        let confined = Confined::new("root-swap");
+        // confine resolved the path to a regular file; a symlink then took
+        // its place, pointing outside the root
+        let target = confined.root.join("model.json");
+        std::fs::remove_file(&target).unwrap();
+        std::os::unix::fs::symlink(confined.dir.0.join("outside/model.json"), &target).unwrap();
+        let root = std::fs::canonicalize(&confined.root).unwrap();
+        let target = root.join("model.json");
+        let error = open_checked(&target, Some(&root)).unwrap_err();
+        assert!(error.to_string().contains("became a symlink"), "{error}");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_directory_swapped_for_a_symlink_is_caught_on_the_handle() {
+        let confined = Confined::new("root-dirswap");
+        // the canonical path named root/nested/model.json; nested then became
+        // a link to a directory outside the root
+        std::fs::remove_dir_all(confined.root.join("nested")).unwrap();
+        std::os::unix::fs::symlink(confined.dir.0.join("outside"), confined.root.join("nested"))
+            .unwrap();
+        let root = std::fs::canonicalize(&confined.root).unwrap();
+        let error = open_checked(&root.join("nested/model.json"), Some(&root)).unwrap_err();
+        assert!(matches!(error, ModelError::OutsideRoot { .. }), "{error}");
     }
 
     #[test]
