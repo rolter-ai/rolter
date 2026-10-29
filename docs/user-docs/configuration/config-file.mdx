@@ -806,8 +806,42 @@ Whether an organization that never saved MCP settings enforces its servers' tool
   The organization's slug.
 </ParamField>
 
-<ParamField path="enforce" type="bool" required>
+<ParamField path="enforce" type="boolean" required>
   `true` when the organization enforces its servers' tool manifests until it saves MCP settings, `false` when it allows tools a manifest leaves out.
+</ParamField>
+
+---
+
+### \[\[mcp_gateway_settings\]\]
+
+The MCP settings an organization saved on the MCP Settings screen ([MCP](/api/mcp#manage-the-registry)). `rolter config export` writes one entry for each organization that saved them, and `rolter-seed --import` applies them ([Config export](/configuration/config-export)). Unlike `[[mcp_manifest_enforcement]]` this is the desired state: the import sets the organization it targets (`--org-slug`) to exactly the values of its entry, stricter or laxer than it was, and logs what it changed. An entry for any other organization is skipped with a warning, and an entry that already matches writes nothing. The control plane does not ship this table in the snapshot, which carries the same values per organization.
+
+<ParamField path="org" type="string" required>
+  The organization's slug.
+</ParamField>
+
+<ParamField path="default_transport" type="string" required>
+  The transport a server registered without one gets: `sse`, `streamable_http` or `websocket`.
+</ParamField>
+
+<ParamField path="connect_timeout_ms" type="integer" required>
+  Milliseconds to wait for a connection to a server, from `100` to `60000`.
+</ParamField>
+
+<ParamField path="request_timeout_ms" type="integer" required>
+  Milliseconds to wait for a server's answer, from `1000` to `300000`.
+</ParamField>
+
+<ParamField path="max_retries" type="integer" required>
+  Times a call is repeated after a connection that was never made, from `0` to `5`.
+</ParamField>
+
+<ParamField path="default_failure_mode" type="string" required>
+  What to do when a request cannot be inspected for tool policy: `fail_closed` refuses it, `fail_open` forwards it unchecked.
+</ParamField>
+
+<ParamField path="allow_unlisted_tools" type="boolean" required>
+  `true` when a call may name a tool the server's manifest does not declare, `false` when the organization enforces its servers' manifests.
 </ParamField>
 
 ---

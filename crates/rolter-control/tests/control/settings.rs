@@ -110,6 +110,85 @@ async fn config_export_serves_importable_toml_without_credentials() {
     assert_eq!(unknown.status(), 400);
 }
 
+/// Two organizations that share a provider name cannot be exported as one
+/// file (#3440). The refusal carries a stable code, so the dashboard can tell
+/// the person to pick an organization in its own words (#3480), and
+/// `?org=<slug>` exports each.
+#[tokio::test]
+async fn an_unscoped_export_of_organizations_sharing_names_answers_a_code() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app = rolter_control::test_app_with_admin_token(pool, Some(admin_token().to_string()))
+        .await
+        .unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    for slug in ["acme", "globex"] {
+        let org: Value = client
+            .post(format!("{base}/api/v1/orgs"))
+            .bearer_auth(admin_token())
+            .json(&json!({"name": slug, "slug": slug}))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let org_id = org["id"].as_str().expect("org id");
+        let created = client
+            .post(format!("{base}/api/v1/orgs/{org_id}/providers"))
+            .bearer_auth(admin_token())
+            .json(&json!({
+                "name": "openai",
+                "kind": "openai",
+                "api_base": "https://api.openai.com",
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert!(created.status().is_success(), "{}", created.status());
+    }
+
+    let refused = client
+        .get(format!("{base}/api/v1/config/export"))
+        .bearer_auth(admin_token())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(refused.status(), 400);
+    let body: Value = refused.json().await.unwrap();
+    assert_eq!(body["error"]["code"], "config_export_needs_org", "{body}");
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("provider 'openai'") && m.contains("--org")),
+        "{body}"
+    );
+
+    for slug in ["acme", "globex"] {
+        let one = client
+            .get(format!("{base}/api/v1/config/export?org={slug}"))
+            .bearer_auth(admin_token())
+            .send()
+            .await
+            .unwrap();
+        assert!(one.status().is_success(), "{slug}: {}", one.status());
+    }
+    // a bad slug is still a plain 400 with no code to branch on
+    let unknown = client
+        .get(format!("{base}/api/v1/config/export?org=nobody"))
+        .bearer_auth(admin_token())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(unknown.status(), 400);
+    let body: Value = unknown.json().await.unwrap();
+    assert!(body["error"]["code"].is_null(), "{body}");
+}
+
 /// `GET /api/v1/version` is the dashboard's one source for the update hint
 /// (#902): any signed-in caller reads it, an anonymous one does not, and with
 /// the check disabled it reports the running version and nothing else — no

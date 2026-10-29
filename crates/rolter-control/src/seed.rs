@@ -33,7 +33,9 @@
 //! One exception goes the other way: an import never makes an existing org
 //! stricter. `[[mcp_manifest_enforcement]]` with `enforce = false` relaxes the
 //! org the import targets, and `enforce = true` never raises one that exists
-//! (#3398).
+//! (#3398). `[[mcp_gateway_settings]]` is the opposite: it sets the target
+//! org's saved MCP settings to exactly what the file says, and no other org's
+//! (#3482).
 //!
 //! Rows present in the database but absent from the file are not deleted: the
 //! file is the desired state for what it names, not an exhaustive inventory.
@@ -297,6 +299,7 @@ const IMPORTED_SECTIONS: &[&str] = &[
     "budgets",
     "rate_limits",
     "mcp_manifest_enforcement",
+    "mcp_gateway_settings",
     "prompt_templates",
 ];
 
@@ -717,6 +720,7 @@ async fn import_config(
     config: &GatewayConfig,
 ) -> anyhow::Result<()> {
     refuse_reserved_env_names(config)?;
+    validate_mcp_gateway_settings(config)?;
     let providers = ProviderRepo(pool);
     let routes = RouteRepo(pool);
     let targets = RouteTargetRepo(pool);
@@ -970,6 +974,7 @@ async fn import_config(
     import_model_prices(pool, config).await?;
     import_caps(pool, config).await?;
     import_mcp_manifest_enforcement(pool, org_id, config).await?;
+    import_mcp_gateway_settings(pool, org_id, config).await?;
     import_prompt_templates(pool, org_id, project_id, config).await?;
 
     Ok(())
@@ -1335,6 +1340,131 @@ async fn import_mcp_manifest_enforcement(
             .await?;
         tracing::info!(org = %slug, "relaxed MCP manifest enforcement as the import file says");
     }
+    Ok(())
+}
+
+/// Refuse a `[[mcp_gateway_settings]]` table the MCP Settings screen would
+/// not save: a transport, failure mode or number out of range, or two entries
+/// for one organization. Runs before anything is written, as
+/// [`refuse_reserved_env_names`] does, so a bad file imports nothing (#3482).
+/// Every entry is checked, the ones for organizations this import does not
+/// target included.
+fn validate_mcp_gateway_settings(config: &GatewayConfig) -> anyhow::Result<()> {
+    let mut seen = std::collections::HashSet::new();
+    for entry in &config.mcp_gateway_settings {
+        let slug = &entry.org;
+        if !seen.insert(slug.as_str()) {
+            anyhow::bail!("mcp_gateway_settings: more than one entry for organization '{slug}'");
+        }
+        if !rolter_core::MCP_TRANSPORTS.contains(&entry.default_transport.as_str()) {
+            anyhow::bail!(
+                "mcp_gateway_settings '{slug}': default_transport must be one of {}",
+                rolter_core::MCP_TRANSPORTS.join(", ")
+            );
+        }
+        if !matches!(
+            entry.default_failure_mode.as_str(),
+            "fail_open" | "fail_closed"
+        ) {
+            anyhow::bail!(
+                "mcp_gateway_settings '{slug}': default_failure_mode must be fail_open or fail_closed"
+            );
+        }
+        for (name, value, low, high) in [
+            ("connect_timeout_ms", entry.connect_timeout_ms, 100, 60_000),
+            (
+                "request_timeout_ms",
+                entry.request_timeout_ms,
+                1_000,
+                300_000,
+            ),
+            ("max_retries", entry.max_retries, 0, 5),
+        ] {
+            if !(low..=high).contains(&value) {
+                anyhow::bail!("mcp_gateway_settings '{slug}': {name} must be from {low} to {high}");
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Apply the `[[mcp_gateway_settings]]` entry of the file (#3482).
+///
+/// The file is the desired state here: the organization the import targets
+/// (`--org-slug`) ends up with exactly the settings the entry says, whether
+/// that is stricter or laxer than it had. An entry for any other organization
+/// is skipped with a warning, so a file cannot reconfigure an organization it
+/// was not aimed at. What changed is logged, and an entry that already matches
+/// writes nothing, because the `0114` trigger is a statement trigger that bumps
+/// `config_version` for any write.
+async fn import_mcp_gateway_settings(
+    pool: &PgPool,
+    org_id: Uuid,
+    config: &GatewayConfig,
+) -> anyhow::Result<()> {
+    let entries = &config.mcp_gateway_settings;
+    if entries.is_empty() {
+        return Ok(());
+    }
+    let slug: String = sqlx::query_scalar("select slug from orgs where id = $1")
+        .bind(org_id)
+        .fetch_one(pool)
+        .await?;
+    for entry in entries.iter().filter(|entry| entry.org != slug) {
+        tracing::warn!(
+            org = %entry.org,
+            target = %slug,
+            "skipping an mcp_gateway_settings entry for an organization this import does not target"
+        );
+    }
+    let Some(entry) = entries.iter().find(|entry| entry.org == slug) else {
+        return Ok(());
+    };
+    let stored: Option<(String, i32, i32, i32, String, bool)> = sqlx::query_as(
+        "select default_transport, connect_timeout_ms, request_timeout_ms, max_retries,
+                default_failure_mode, allow_unlisted_tools
+         from mcp_gateway_settings where org_id = $1",
+    )
+    .bind(org_id)
+    .fetch_optional(pool)
+    .await?;
+    let wanted = (
+        entry.default_transport.clone(),
+        entry.connect_timeout_ms,
+        entry.request_timeout_ms,
+        entry.max_retries,
+        entry.default_failure_mode.clone(),
+        entry.allow_unlisted_tools,
+    );
+    if stored.as_ref() == Some(&wanted) {
+        return Ok(());
+    }
+    sqlx::query(
+        "insert into mcp_gateway_settings
+         (org_id, default_transport, connect_timeout_ms, request_timeout_ms, max_retries,
+          default_failure_mode, allow_unlisted_tools, updated_at)
+         values ($1, $2, $3, $4, $5, $6, $7, now())
+         on conflict (org_id) do update set default_transport = excluded.default_transport,
+         connect_timeout_ms = excluded.connect_timeout_ms,
+         request_timeout_ms = excluded.request_timeout_ms, max_retries = excluded.max_retries,
+         default_failure_mode = excluded.default_failure_mode,
+         allow_unlisted_tools = excluded.allow_unlisted_tools, updated_at = now()",
+    )
+    .bind(org_id)
+    .bind(&wanted.0)
+    .bind(wanted.1)
+    .bind(wanted.2)
+    .bind(wanted.3)
+    .bind(&wanted.4)
+    .bind(wanted.5)
+    .execute(pool)
+    .await?;
+    tracing::info!(
+        org = %slug,
+        previous = ?stored,
+        now = ?wanted,
+        "set the MCP gateway settings as the import file says"
+    );
     Ok(())
 }
 

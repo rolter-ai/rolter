@@ -66,6 +66,20 @@ hands one org the other's variants. The clash check then runs on what is
 left, so an unscoped export of such a deployment still refuses and names the
 option. Test: `config_export::tests::round_trip::two_orgs_sharing_names_export_one_file_each`.
 
+## An org that shadows a deployment-wide row (#3481)
+
+ADR-0040 lets an org's route, provider or provider group shadow a row no org
+owns (the gateway's own config file) of the same name. A flat file cannot hold
+both, so `scope_to_org` drops the deployment-wide row whenever the org has one
+of that name and returns the dropped names in `OrgScope::shadowed`;
+`render_shadowed` writes them as a comment, so a reader sees what the file
+leaves out. There is no flag. A provider shadowed by _slug_ only (a different name) is
+not dropped, and the clash check still refuses them. Groups are keyed by slug, as `clashing_names` and the importer do. A kept no-org route or group that uses a shadowed provider is refused (`ExportError::ShadowedBinding`, code `config_export_binding_shadowed`), since the import's org-owned copy would bind to the org's provider. The unscoped refusal is `ExportError::NeedsOrganization` (code `config_export_needs_org`) whenever `an_org_settles_every_clash`. The import turns the
+deployment-wide rows that stay in the file into the org's own, which then shadow
+the originals, so a second export of the same database drops them too; the
+round-trip test therefore re-adds only the shadowed rows, and also asserts the real case where the originals are all still served. Test:
+`config_export::tests::round_trip::an_org_shadowing_deployment_wide_rows_exports_without_them`.
+
 ## Leaving person caps out (#3396)
 
 A cap on a person names the account by email (#3311), and #1312 kept addresses
@@ -94,6 +108,20 @@ looks before it writes, since the `0153` trigger is a statement trigger that
 bumps `config_version` even for an update that matches no row. Tests:
 `config_export::tests::round_trip::the_mcp_manifest_marker_is_exported_for_an_org_without_settings`
 and `seed::tests::the_mcp_manifest_marker_never_makes_an_org_stricter`.
+
+## Saved MCP gateway settings (#3482)
+
+An org's saved `mcp_gateway_settings` row is exported as `[[mcp_gateway_settings]]`
+(`load_mcp_gateway_settings`, `render_mcp_gateway_settings`) from
+`GatewayConfig::mcp_gateway_settings`, a bootstrap-only field like the marker
+above: `MergedConfigStore::load` clears it and the snapshot carries the same
+values as `mcp_settings`. Unlike the marker it is the desired state.
+`import_mcp_gateway_settings` sets the targeted org to exactly the entry,
+stricter or laxer, only when the stored row differs (the `0114` trigger is a
+statement trigger), logs the previous and new values, validates the ranges the
+table's check constraints hold, and skips entries for other orgs with a warning.
+No migration was needed. Test:
+`config_export::tests::round_trip::saved_mcp_gateway_settings_round_trip_for_one_org`.
 
 ## Budgets and rate limits (#1312)
 

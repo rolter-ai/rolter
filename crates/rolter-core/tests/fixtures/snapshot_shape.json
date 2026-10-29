@@ -382,6 +382,33 @@
     "logging.ui_events": [
       "boolean"
     ],
+    "mcp_gateway_settings": [
+      "array"
+    ],
+    "mcp_gateway_settings[]": [
+      "object"
+    ],
+    "mcp_gateway_settings[].allow_unlisted_tools": [
+      "boolean"
+    ],
+    "mcp_gateway_settings[].connect_timeout_ms": [
+      "number"
+    ],
+    "mcp_gateway_settings[].default_failure_mode": [
+      "string"
+    ],
+    "mcp_gateway_settings[].default_transport": [
+      "string"
+    ],
+    "mcp_gateway_settings[].max_retries": [
+      "number"
+    ],
+    "mcp_gateway_settings[].org": [
+      "string"
+    ],
+    "mcp_gateway_settings[].request_timeout_ms": [
+      "number"
+    ],
     "mcp_manifest_enforcement": [
       "array"
     ],

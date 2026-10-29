@@ -15,6 +15,8 @@ export const KNOWN_ERROR_CODES = [
   "analytics_query_failed",
   "analytics_query_timeout",
   "api_token_inactive",
+  "config_export_binding_shadowed",
+  "config_export_needs_org",
   "internal",
   "invalid_body",
   "invalid_credentials",
