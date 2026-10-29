@@ -3110,6 +3110,43 @@ async fn proxy(
                 param_adjustments,
                 ..Default::default()
             };
+            // a request that did not ask for a stream keeps the legs that judge
+            // a whole body: the built-in output rules, the post_response
+            // plugins and the sanitizer's response leg. none of them can read
+            // an event stream (a non-JSON body is delivered untouched), so an
+            // upstream that streams anyway would get its answer past them on
+            // both the live and the cacheable path. it is withheld instead,
+            // still billed from the body it sent, rather than buffered and
+            // shown to legs that would pass it unread (#3471)
+            if is_sse
+                && !stream
+                && status < 400
+                && (output_guard.is_some() || post_response_plugins.is_some() || pii_leg.is_some())
+            {
+                let cap = crate::semantic_guards::MAX_BUFFERED_STREAM_BYTES;
+                let billed = match read_bounded(response, cap).await {
+                    Ok(Some(bytes)) => crate::logging::parse_usage_with(
+                        true,
+                        &translation.translate_response(bytes, true),
+                        translation.thinking_count(),
+                    ),
+                    Ok(None) | Err(_) => crate::logging::Usage::default(),
+                };
+                return withheld_response(
+                    guardrail_output_blocked(UNREQUESTED_STREAM),
+                    guardrail_withheld_reason(UNREQUESTED_STREAM),
+                    billed,
+                    true,
+                    started,
+                    state.log.clone(),
+                    price,
+                    log,
+                    recorder,
+                    token_recorder,
+                    inflight_guard,
+                    genai_span.clone(),
+                );
+            }
             // on a cache-eligible route, buffer a successful response (JSON or a
             // full SSE stream) so it can be stored in Redis, then replay the
             // buffered bytes through the same accounting stream (byte-for-byte
@@ -6208,6 +6245,10 @@ fn append_new(into: &mut Vec<String>, entries: Vec<String>) {
         }
     }
 }
+
+/// The withheld reason of a non-streamed request whose upstream answered with
+/// an event stream the response guardrails cannot read (#3471).
+const UNREQUESTED_STREAM: &str = "unrequested_stream";
 
 /// The reply when a post-call rule refuses to deliver a completion.
 ///

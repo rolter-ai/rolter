@@ -35,6 +35,8 @@ A response rule (stage **Before response**) needs the whole answer, so it cannot
 - `reject` (the default) — while the rule is enforced, a request with `"stream": true` on a route the rule covers is refused with `400 guardrail_streaming_unsupported`. Chat clients and coding agents usually stream, so one response rule can refuse most interactive traffic.
 - `passthrough` — the stream is served and the rule does not see it. Only non-streamed responses are checked.
 
+A request sent without `"stream": true` is always checked. If its provider streams the answer anyway, the response rules, `post_response` plugins and PII sanitizer cannot read it, so it is withheld with `403 guardrail_blocked` and recorded as `blocked:unrequested_stream`. It is still billed like any other [withheld response](/observability/logs-and-cost#withheld-responses).
+
 The rule dialog shows which of the two applies as soon as **Before response** is picked, and each response rule's card repeats it in one line. Both read the value from the effective configuration (`GET /api/v1/config`). When that cannot be read, they say so and describe both outcomes rather than assuming the default. The dashboard shows the setting but does not change it.
 
 ### Audio transcriptions and translations
