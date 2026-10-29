@@ -120,9 +120,8 @@ rolter easy-up --database-url "$ROLTER_DATABASE_URL" \
 ```
 
 `--admin-password-stdin` reads the first line of standard input and
-`--admin-password-file <path>` the first line of a file. `--admin-password
-
-<value>` still works, but a value on the command line is visible to every user
+`--admin-password-file <path>` the first line of a file. Giving the password as
+the value of `--admin-password` still works, but a value on the command line is visible to every user
 on the host through `ps` while the command runs and lands in shell history, so
 the three are mutually exclusive and the first two are the ones to use. The two
 that read a source need `--admin-email`, and an empty source is refused.

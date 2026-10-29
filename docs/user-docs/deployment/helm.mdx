@@ -10,10 +10,25 @@ The chart in `charts/rolter` deploys the data-plane gateway and the control plan
 
 ## Install
 
+Keep the database URL, which carries a password, in a Kubernetes Secret and hand it to both workloads through `secretEnv` (see [Secrets](#secrets)):
+
 ```bash
+kubectl create secret generic rolter-db \
+  --from-literal=url='postgres://rolter:secret@postgres/rolter'
+
 helm upgrade --install rolter ./charts/rolter \
-  --set env.databaseUrl='postgres://rolter:secret@postgres/rolter' \
-  --set env.redisUrl='redis://redis:6379'
+  --set env.redisUrl='redis://redis:6379' \
+  -f secrets-values.yaml
+```
+
+```yaml
+# secrets-values.yaml
+secretEnv:
+  - name: ROLTER_DATABASE_URL
+    valueFrom:
+      secretKeyRef:
+        name: rolter-db
+        key: url
 ```
 
 `env.clickhouseUrl` turns on request logging and the dashboard's analytics. Without Redis each control-plane replica keeps its own sign-in throttle counters, so a multi-replica install wants it set. The control plane refuses to start without an admin token when it listens on `0.0.0.0`, which it does in a pod, so supply `ROLTER_ADMIN_TOKEN` as described below.
@@ -63,7 +78,7 @@ By default (`preflight.enabled`) each pod runs `rolter check --strict` in an ini
 
 ## Probes
 
-The gateway and the control plane each wire a startup, readiness and liveness probe.
+The control plane wires a startup, readiness and liveness probe; the gateway wires readiness and liveness.
 
 | Probe     | Endpoint   | Means                                                                                                                                                                                              |
 | --------- | ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
