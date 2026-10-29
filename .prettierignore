@@ -39,3 +39,8 @@ charts/rolter/templates/
 # scripts/refresh-price-catalogue.ts as one compact line per run so a refresh
 # diffs as a whole snapshot, and the file is data nothing reads for style
 crates/rolter-control/catalogue/
+
+# rewritten by examples/rolter-linear-trainer with json.dumps whenever
+# ROLTER_TEST_REGENERATE_GOLDEN is set (#3455); a regeneration that had to be
+# followed by a prettier run would fail the docs gate every time
+crates/rolter-gateway/tests/fixtures/local_classifier/golden_features.json

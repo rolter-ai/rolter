@@ -109,13 +109,25 @@ fn test_pool_config() -> PoolConfig {
     }
 }
 
-/// `host:port` of the server `url` names, with the credentials left out, for
-/// messages a test prints.
+/// `host:port` of the server `url` names, or the socket path of one reached
+/// over a Unix socket, with the credentials left out, for messages a test
+/// prints.
 fn server_label(url: &str) -> String {
     url.parse::<PgConnectOptions>().map_or_else(
         |_| "the configured server".to_string(),
-        |options| format!("{}:{}", options.get_host(), options.get_port()),
+        |options| match options.get_socket() {
+            Some(socket) => format!("{} (port {})", socket.display(), options.get_port()),
+            None => format!("{}:{}", options.get_host(), options.get_port()),
+        },
     )
+}
+
+/// SQLSTATE class 28: the server refused the credentials (invalid
+/// authorization specification), which it does before it looks at a role's
+/// connection limit.
+#[cfg(test)]
+fn is_auth_failure(err: &sqlx::Error) -> bool {
+    matches!(err, sqlx::Error::Database(db) if db.code().is_some_and(|code| code.starts_with("28")))
 }
 
 fn is_too_many_connections(err: &sqlx::Error) -> bool {
@@ -739,22 +751,40 @@ mod tests {
         );
     }
 
-    /// `url` with `role` and `password` in place of its credentials.
+    /// `url` with `role` and `password` in place of its credentials. The url is
+    /// rebuilt by sqlx from the parsed options, so a server reached over a Unix
+    /// socket keeps its (percent-encoded) socket directory as the host instead
+    /// of losing it to a hand-written `host:port` authority (#3257).
     fn url_as(url: &str, role: &str, password: &str) -> String {
-        let options = url
-            .parse::<PgConnectOptions>()
-            .expect("the test url parses");
-        let host = options.get_host();
-        let host = if host.contains(':') {
-            format!("[{host}]")
-        } else {
-            host.to_string()
-        };
-        format!(
-            "postgres://{role}:{password}@{host}:{}/{}",
-            options.get_port(),
-            options.get_database().unwrap_or("postgres")
-        )
+        use sqlx::ConnectOptions;
+        url.parse::<PgConnectOptions>()
+            .expect("the test url parses")
+            .username(role)
+            .password(password)
+            .to_url_lossy()
+            .to_string()
+    }
+
+    #[test]
+    fn url_as_keeps_a_socket_host_and_a_tcp_one() {
+        // generated rather than written out, like the role's real password below
+        let password = uuid::Uuid::new_v4().simple().to_string();
+        for (url, host) in [
+            ("postgres://root@%2Fvar%2Frun%2Fpostgresql/postgres", None),
+            ("postgres://u:p@127.0.0.1:5433/db", Some("127.0.0.1")),
+            ("postgres://u:p@[::1]:5433/db", Some("[::1]")),
+        ] {
+            let rebuilt = url_as(url, "slotless", &password);
+            let options = rebuilt.parse::<PgConnectOptions>().expect("reparses");
+            let original = url.parse::<PgConnectOptions>().expect("parses");
+            assert_eq!(options.get_socket(), original.get_socket(), "{rebuilt}");
+            assert_eq!(options.get_port(), original.get_port(), "{rebuilt}");
+            assert_eq!(options.get_database(), original.get_database(), "{rebuilt}");
+            assert_eq!(options.get_username(), "slotless", "{rebuilt}");
+            if let Some(host) = host {
+                assert!(rebuilt.contains(host), "{rebuilt}");
+            }
+        }
     }
 
     /// Postgres refuses a role over its `connection limit` with the same
@@ -782,6 +812,30 @@ mod tests {
             .await
             .expect("create a role with no connection slots");
         let slotless = url_as(&url, &role, &password);
+
+        // over a socket, `pg_hba.conf` often says `peer`, which authenticates
+        // by the operating-system user and so can never accept a role made up
+        // for this test. Postgres checks authentication before the connection
+        // limit, so there is nothing to observe: say so and stop
+        let over_socket = url
+            .parse::<PgConnectOptions>()
+            .is_ok_and(|options| options.get_socket().is_some());
+        if over_socket {
+            if let Err(err) = PgConnection::connect(&slotless).await {
+                if is_auth_failure(&err) {
+                    let _ = admin
+                        .execute(sqlx::AssertSqlSafe(format!("drop role if exists {role}")))
+                        .await;
+                    eprintln!(
+                        "skipping: {} authenticates by socket (peer), which a generated \
+                         role cannot satisfy ({err}); use a `trust` or password rule for \
+                         the test cluster",
+                        server_label(&url)
+                    );
+                    return;
+                }
+            }
+        }
 
         // assertions run in a task of their own so the role is dropped even
         // when one of them fails
