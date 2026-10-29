@@ -1029,7 +1029,19 @@ mod tests {
         reply: &'static str,
         body: &str,
     ) -> (StatusCode, Vec<crate::mcp_log::McpEvent>) {
+        recorded_on("streamable_http", tools, status, reply, body).await
+    }
+
+    /// [`recorded`] for a server on `transport`
+    async fn recorded_on(
+        transport: &str,
+        tools: &[&str],
+        status: u16,
+        reply: &'static str,
+        body: &str,
+    ) -> (StatusCode, Vec<crate::mcp_log::McpEvent>) {
         let mut config = with_group(tools);
+        config.mcp_servers[0].transport = transport.to_string();
         config.mcp_servers[0].url = replying(status, reply).await;
         let mut state = AppState::new(&config);
         let (sink, mut events) =
@@ -1261,6 +1273,38 @@ mod tests {
             (rows[0].status, rows[0].notification),
             ("auth_denied", false)
         );
+    }
+
+    /// #3529: a legacy `sse` server answers the `POST` `202` and sends the reply
+    /// on its stream, so the call is `accepted`, not a transport error. A `202`
+    /// whose body does carry the reply is judged by it, and a streamable-HTTP
+    /// server owes the reply in its answer, so there a bare `202` stays a
+    /// failure.
+    #[tokio::test]
+    async fn a_legacy_sse_call_answered_202_is_accepted_with_its_reply_on_the_stream() {
+        let call =
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_issue"}}"#;
+        let (status, rows) = recorded_on("sse", &["get_issue"], 202, "Accepted", call).await;
+        assert_eq!(status, StatusCode::ACCEPTED);
+        assert_eq!(
+            (rows[0].status, rows[0].outcome, rows[0].notification),
+            ("success", "accepted", false)
+        );
+        let row = serde_json::to_value(&rows[0]).unwrap();
+        assert_eq!(
+            (&row["outcome"], &row["error"]),
+            (&serde_json::json!("accepted"), &serde_json::json!(""))
+        );
+
+        let rpc_error = r#"{"jsonrpc":"2.0","id":1,"error":{"code":-32602,"message":"bad"}}"#;
+        let (_, rows) = recorded_on("sse", &["get_issue"], 202, rpc_error, call).await;
+        assert_eq!((rows[0].status, rows[0].outcome), ("error", ""));
+
+        let (_, rows) = recorded_on("streamable_http", &["get_issue"], 202, "", call).await;
+        assert_eq!((rows[0].status, rows[0].outcome), ("transport_error", ""));
+        // every other row leaves the field out, for a table without `051`
+        let row = serde_json::to_value(&rows[0]).unwrap();
+        assert!(row.get("outcome").is_none(), "{row}");
     }
 
     /// #1403: a tool outside the organization's groups is refused before

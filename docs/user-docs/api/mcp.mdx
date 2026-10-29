@@ -101,6 +101,23 @@ slug and the request id the response carries (in `x-request-id` unless the
 deployment configures another header), and the MCP tool-call log records it as
 a `timeout` or `transport_error`.
 
+### How a call's outcome is recorded
+
+The MCP tool-call log reads a call's outcome from the JSON-RPC reply to it: a
+`result` is a `success` (an `error` when it says `isError`), and an `error` is
+an `error`. Some calls have no reply for the proxy to read:
+
+- **A call to a legacy `sse` server.** Such a server answers the `POST` with
+  `202 Accepted` and sends the reply later on the event stream the client holds
+  open. The proxy does not match the stream's replies to the calls posted, so a
+  call answered that way is recorded as **accepted, reply on the stream**
+  (`outcome: accepted`). A `202` whose body does carry the call's reply, such as
+  a JSON-RPC error, is judged by that reply. A `streamable_http` server owes the
+  reply in its answer, so there a bare `202` is a `transport_error`.
+
+`outcome` needs `clickhouse/051_mcp_log_outcome.sql`; until it is applied such a
+call is a plain `success` row.
+
 ### Accepted values
 
 A registered server's `transport`, and an organization's

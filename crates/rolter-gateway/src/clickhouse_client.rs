@@ -230,6 +230,7 @@ mod tests {
             error: String::new(),
             error_scopes: Vec::new(),
             notification: false,
+            outcome: "",
         }
     }
 
