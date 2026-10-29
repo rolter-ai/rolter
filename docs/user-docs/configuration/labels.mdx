@@ -75,8 +75,8 @@ curl -X POST https://rolter.example.com/api/v1/orgs/$ORG_ID/labels \
 labels takes the `viewer` role; adding, changing or removing one takes `admin`.
 
 Models are labelled through a separate endpoint, because a model belongs to the
-deployment-wide pricing catalog rather than to one org — labelling one is a
-superadmin action:
+deployment-wide pricing catalog rather than to one org — a deployment-wide label
+on one is a superadmin action:
 
 ```bash
 curl -X POST https://rolter.example.com/api/v1/model-labels \
@@ -97,6 +97,10 @@ curl -X POST https://rolter.example.com/api/v1/model-labels \
 ```
 
 The organization must serve a route of that name, or the request is a `404`.
+A label that names an organization takes the same role as its provider and
+route labels: an `admin` of that organization can add, change and remove it,
+while a label on another organization's model, or a deployment-wide one, is a
+`403` for them.
 A label without `org_id` is deployment-wide, and is the only kind a model from
 the gateway's config file can carry. `GET /api/v1/model-labels?org_id=$ORG_ID`
 lists what applies to that organization's models: its own labels, and each

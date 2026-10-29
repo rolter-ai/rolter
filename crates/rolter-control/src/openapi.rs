@@ -2194,17 +2194,20 @@ fn operations() -> Vec<Op> {
                 "Attach a custom label to a model: `model`, `key`, an optional `value`, and an \
                  optional `org_id` naming the organization whose model it is (a 404 when that \
                  organization serves no route of that name); without `org_id` the label is \
-                 deployment-wide",
+                 deployment-wide. A label naming an organization takes that organization's \
+                 `label:create`; a deployment-wide one is superadmin-only",
             ),
             Op::put(
                 "/api/v1/model-labels/{id}",
                 "updateModelLabel",
-                "Change a custom model label's value",
+                "Change a custom model label's value. Takes `label:update` in the label's \
+                 organization, or superadmin for a deployment-wide label",
             ),
             Op::delete(
                 "/api/v1/model-labels/{id}",
                 "deleteModelLabel",
-                "Remove a custom model label",
+                "Remove a custom model label. Takes `label:delete` in the label's organization, \
+                 or superadmin for a deployment-wide label",
             ),
         ],
     ));
