@@ -767,12 +767,14 @@ mod tests {
 
     #[test]
     fn url_as_keeps_a_socket_host_and_a_tcp_one() {
+        // generated rather than written out, like the role's real password below
+        let password = uuid::Uuid::new_v4().simple().to_string();
         for (url, host) in [
             ("postgres://root@%2Fvar%2Frun%2Fpostgresql/postgres", None),
             ("postgres://u:p@127.0.0.1:5433/db", Some("127.0.0.1")),
             ("postgres://u:p@[::1]:5433/db", Some("[::1]")),
         ] {
-            let rebuilt = url_as(url, "slotless", "pw");
+            let rebuilt = url_as(url, "slotless", &password);
             let options = rebuilt.parse::<PgConnectOptions>().expect("reparses");
             let original = url.parse::<PgConnectOptions>().expect("parses");
             assert_eq!(options.get_socket(), original.get_socket(), "{rebuilt}");
