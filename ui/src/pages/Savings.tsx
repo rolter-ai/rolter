@@ -740,7 +740,8 @@ function ExcludedSection({
             {unknown.map((model) => (
               <li key={model}>
                 <Link
-                  to="/pricing-overrides"
+                  // the editor opens on this model (#3422)
+                  to={`/pricing-overrides?${new URLSearchParams({ model })}`}
                   className="font-mono text-xs underline underline-offset-2"
                 >
                   {model}

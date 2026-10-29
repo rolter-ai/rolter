@@ -20,7 +20,7 @@ It needs the control plane's `CLICKHOUSE_URL`, like every other analytics read; 
 - **Window and scope.** The window defaults to the last 7 days, as the endpoint does, and, with the organization, project, route and virtual key pickers and the three thresholds, lives in the address, so a link opens on the same report. The thresholds apply together when you press **Recalculate**.
 - **Spend.** Requests, spend, the unpriced requests inside it, retried or failed-over requests, failed requests, response-cache hits and misses, then the route, upstream model and caller breakdowns. The caller table names each project and key from the lists the pickers use; a project or key your account cannot read, or one since deleted, shows as its id.
 - **Candidates.** One table per route and current model. Projected costs and savings are always a range from the optimistic to the pessimistic end; a saving's pessimistic end can be negative. The summary line above them gives the range for everything substitutable.
-- **Left out.** Requests the advisor did not re-price, by reason, and the pool models it could not consider for lack of a price. Each such model links to **Pricing Overrides** so you can set one.
+- **Left out.** Requests the advisor did not re-price, by reason, and the pool models it could not consider for lack of a price. Each such model links to **Pricing Overrides** with `?model=<name>`, which opens the price form already named for it so you can set one (a role that cannot write prices sees the list narrowed to the model instead).
 
 ## Asking for a report
 

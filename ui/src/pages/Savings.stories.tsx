@@ -142,7 +142,7 @@ export const Populated: Story = {
     const unknown = canvas.getByTestId("savings-unknown-prices");
     await expect(within(unknown).getByRole("link", { name: "mystery-1" })).toHaveAttribute(
       "href",
-      "/pricing-overrides",
+      "/pricing-overrides?model=mystery-1",
     );
   },
 };
