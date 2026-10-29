@@ -74,10 +74,14 @@ and a good answer, and `settle_error` a transport failure. So the retry,
 cooldown, breaker and failover bookkeeping exists once
 ([load-balancing.md](load-balancing.md)). The loop returns a `ForwardOutcome`.
 
-A JSON attempt on the classic pool opens an `upstream.request` span
+Every attempt either loop dials opens an `upstream.request` span
 (`genai_attempt_span`) and injects its trace context from inside it
-(`attempt_trace_context`, #805). A variant attempt and an upload do neither, as
-before.
+(`attempt_trace_context`, #805): on the classic pool and the variant chain, for
+a JSON body and an upload, under the target the attempt dialled and the
+endpoint's GenAI operation. The answering attempt's span leaves the loop as
+`ForwardOutcome::genai_span`. Until #3535 only a JSON attempt on the classic
+pool was traced. With no pipeline installed the span is disabled and nothing
+is injected, so the untraced path builds nothing.
 
 ## The response
 

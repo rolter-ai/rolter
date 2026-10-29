@@ -54,6 +54,11 @@ otlp = [
 # prints a secret from the environment in `--help`. Enabled by the binary
 # crates' dev-dependencies, so it is test support and never in a release build
 cli-guard = ["dep:clap"]
+# `rolter_core::telemetry::test_pipeline`: a real tracer pipeline exporting to
+# memory, so a binary crate's integration test can assert the spans it exports
+# and how they are parented (#3535). Enabled by dev-dependencies only, like
+# `cli-guard`, so it is never in a release build
+test-pipeline = ["otlp", "opentelemetry_sdk/testing"]
 # `rolter_core::shutdown`: the SIGINT/SIGTERM future both planes drain on (#2378)
 shutdown = ["dep:tokio"]
 

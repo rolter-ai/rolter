@@ -2689,11 +2689,11 @@ async fn proxy(
             parsed: &parsed,
             body: &body,
             forward_body: &forward_body,
-            inbound: (&headers, &forwarded_names),
         },
         path,
         started,
         trace_headers: &trace_headers,
+        inbound: (&headers, &forwarded_names),
         key_meta: vk.as_ref(),
     };
 
@@ -3468,9 +3468,10 @@ async fn proxy_multipart(
         // see the chat path: an adapter only exists when the request addresses
         // something other than the route's own model
         .with_adapter((model != entry.route.model).then_some(model));
-    // trace context plus any client headers the operator allowlisted (#564)
-    let trace_ctx =
-        crate::trace::outbound_headers(&headers, &state.forwarder.forwarded_header_names());
+    // trace context plus any client headers the operator allowlisted (#564);
+    // the fallback set, as on the chat path, for when no pipeline is installed
+    let forwarded_names = state.forwarder.forwarded_header_names();
+    let trace_ctx = crate::trace::outbound_headers(&headers, &forwarded_names);
     let trace_headers: Vec<(&str, &str)> = trace_ctx
         .iter()
         .map(|(k, v)| (k.as_str(), v.as_str()))
@@ -3504,6 +3505,7 @@ async fn proxy_multipart(
         path,
         started,
         trace_headers: &trace_headers,
+        inbound: (&headers, &forwarded_names),
         key_meta: vk.as_ref(),
     };
     let mut out = forward(&fwd, &mut cancel).await;
@@ -3537,6 +3539,7 @@ async fn proxy_multipart(
         attempts,
         fallback_reason,
         inflight_guard,
+        genai_span,
         ..
     } = out;
     let log = RequestLog {
@@ -3578,7 +3581,7 @@ async fn proxy_multipart(
             recorder,
             token_recorder,
             inflight_guard,
-            genai_span: None,
+            genai_span,
         },
         None,
         DeliveryPolicy {
@@ -3616,8 +3619,9 @@ struct ForwardOutcome {
     /// the failure that sent the request on to the last target it tried, as
     /// its class token; empty when the first dial answered (#1584)
     fallback_reason: String,
-    /// the answering attempt's `upstream.request` span, which only a classic
-    /// JSON attempt opens (#808)
+    /// the answering attempt's `upstream.request` span, which every dialled
+    /// attempt opens (#808, #3535); a disabled span when no pipeline is
+    /// installed
     genai_span: Option<tracing::Span>,
 }
 
@@ -3792,14 +3796,11 @@ fn variant_candidates(
 #[derive(Clone, Copy)]
 enum ForwardPayload<'a> {
     /// a JSON body: a variant merges its params into `parsed`, the classic
-    /// pool sends `forward_body`, which already carries the route's.
-    /// `inbound` is the caller's headers and the allowlisted names, which a
-    /// classic attempt re-injects its trace context from (#805)
+    /// pool sends `forward_body`, which already carries the route's
     Json {
         parsed: &'a Value,
         body: &'a Bytes,
         forward_body: &'a Bytes,
-        inbound: (&'a HeaderMap, &'a [String]),
     },
     /// a multipart upload, forwarded verbatim with its content type, as
     /// [`proxy_multipart`] forwards one to the classic pool (#3494)
@@ -3827,6 +3828,9 @@ struct Forward<'a> {
     started: Instant,
     /// trace context plus the client headers the operator allowlisted (#564)
     trace_headers: &'a [(&'a str, &'a str)],
+    /// the caller's headers and the allowlisted names, which every attempt
+    /// re-injects its trace context from when a pipeline is installed (#805)
+    inbound: (&'a HeaderMap, &'a [String]),
     key_meta: Option<&'a KeyMeta>,
 }
 
@@ -3854,6 +3858,7 @@ async fn forward_variants(
         started,
         trace_headers,
         key_meta,
+        ..
     } = *fwd;
     let route = &entry.route;
     let cd_enabled = snap.cooldown.enabled();
@@ -3944,6 +3949,23 @@ async fn forward_variants(
         run.out.provider_key_fingerprint = picked.fingerprint();
         let upstream_model = target.model.as_deref();
 
+        // traced as a classic attempt is, under the target actually dialled
+        // (#3535)
+        let upstream_stage = genai_attempt_span(fwd, target, attempt);
+        run.out.genai_span = Some(upstream_stage.clone());
+        let injected_ctx = attempt_trace_context(fwd, &upstream_stage);
+        let injected_refs;
+        let attempt_headers: &[(&str, &str)] = match &injected_ctx {
+            Some(injected) => {
+                injected_refs = injected
+                    .iter()
+                    .map(|(k, v)| (k.as_str(), v.as_str()))
+                    .collect::<Vec<_>>();
+                &injected_refs
+            }
+            None => trace_headers,
+        };
+
         let dial = run.begin_attempt(attempt, key, ti, &picked);
         let forwarded = match payload {
             ForwardPayload::Json { .. } => {
@@ -3957,9 +3979,10 @@ async fn forward_variants(
                         forward_body,
                         api_key,
                         upstream_model,
-                        trace_headers,
+                        attempt_headers,
                         &entry.overrides,
                     )
+                    .instrument(upstream_stage.clone())
                     .await
             }
             ForwardPayload::Multipart { content_type, .. } => {
@@ -3973,14 +3996,18 @@ async fn forward_variants(
                         forward_body,
                         content_type,
                         api_key,
-                        trace_headers,
+                        attempt_headers,
                         &entry.overrides,
                     )
+                    .instrument(upstream_stage.clone())
                     .await
             }
         };
         let next = match forwarded {
-            Ok(response) => run.settle_response(&dial, response, guard, cancel).await,
+            Ok(response) => {
+                record_attempt_status(&upstream_stage, response.status().as_u16());
+                run.settle_response(&dial, response, guard, cancel).await
+            }
             Err(err) => run.settle_error(&dial, err.to_string(), cancel).await,
         };
         if next == Next::Stop {
@@ -4051,9 +4078,9 @@ fn next_candidate(
 /// and on a transient failure retry on a fresh one (exponential backoff +
 /// jitter), parking failed keys and targets and feeding the circuit breaker.
 /// Retries happen before any body bytes reach the client, so a partial
-/// response is never duplicated. A JSON request opens one `upstream.request`
-/// span per attempt and injects its trace context from inside it (#805); an
-/// upload is forwarded as it came.
+/// response is never duplicated. Each attempt opens one `upstream.request`
+/// span and injects its trace context from inside it (#805); an upload is
+/// forwarded as it came.
 async fn forward_classic(
     fwd: &Forward<'_>,
     cancel: &mut crate::cancel::CancelGuard,
@@ -4069,6 +4096,7 @@ async fn forward_classic(
         started,
         trace_headers,
         key_meta,
+        ..
     } = *fwd;
     let cd_enabled = snap.cooldown.enabled();
     // live per-target in-flight counts steer load-aware strategies away from busy
@@ -4140,18 +4168,11 @@ async fn forward_classic(
         }
         let upstream_model = target.model.as_deref();
 
-        // a JSON attempt is traced (see `genai_attempt_span`); an upload never
-        // was, and is forwarded under the caller's trace headers as they came
-        let upstream_stage = match payload {
-            ForwardPayload::Json { parsed, .. } => {
-                Some(genai_attempt_span(fwd, target, attempt, parsed))
-            }
-            ForwardPayload::Multipart { .. } => None,
-        };
-        if let Some(stage) = &upstream_stage {
-            run.out.genai_span = Some(stage.clone());
-        }
-        let injected_ctx = attempt_trace_context(payload, upstream_stage.as_ref());
+        // every attempt is traced (see `genai_attempt_span`), an upload under
+        // its audio operation (#3535)
+        let upstream_stage = genai_attempt_span(fwd, target, attempt);
+        run.out.genai_span = Some(upstream_stage.clone());
+        let injected_ctx = attempt_trace_context(fwd, &upstream_stage);
         let injected_refs;
         let attempt_headers: &[(&str, &str)] = match &injected_ctx {
             Some(injected) => {
@@ -4180,8 +4201,7 @@ async fn forward_classic(
                         attempt_headers,
                         &entry.overrides,
                     )
-                    // a JSON attempt always has its span
-                    .instrument(upstream_stage.clone().unwrap_or_else(tracing::Span::none))
+                    .instrument(upstream_stage.clone())
                     .await
             }
             ForwardPayload::Multipart { body, content_type } => {
@@ -4198,14 +4218,13 @@ async fn forward_classic(
                         attempt_headers,
                         &entry.overrides,
                     )
+                    .instrument(upstream_stage.clone())
                     .await
             }
         };
         let next = match forwarded {
             Ok(response) => {
-                if let Some(stage) = &upstream_stage {
-                    record_attempt_status(stage, response.status().as_u16());
-                }
+                record_attempt_status(&upstream_stage, response.status().as_u16());
                 run.settle_response(&dial, response, guard, cancel).await
             }
             Err(err) => run.settle_error(&dial, err.to_string(), cancel).await,
@@ -4217,26 +4236,20 @@ async fn forward_classic(
     run.out
 }
 
-/// The trace context a classic JSON attempt hands its provider, injected from
-/// inside the attempt's span so the provider call parents to the gateway
-/// (#805). `None` when no OTLP pipeline is installed, or for an upload: the
-/// caller's own trace headers are forwarded then.
+/// The trace context an attempt hands its provider, injected from inside the
+/// attempt's span so the provider call parents to the gateway (#805), on the
+/// classic pool and the variant chain, for a JSON body and an upload alike
+/// (#3535). `None` when no OTLP pipeline is installed: the caller's own trace
+/// headers are forwarded then, and nothing is built.
 fn attempt_trace_context(
-    payload: ForwardPayload<'_>,
-    stage: Option<&tracing::Span>,
+    fwd: &Forward<'_>,
+    stage: &tracing::Span,
 ) -> Option<Vec<(String, String)>> {
-    match (payload, stage) {
-        (
-            ForwardPayload::Json {
-                inbound: (headers, forwarded_names),
-                ..
-            },
-            Some(stage),
-        ) if rolter_core::telemetry::is_active() => {
-            Some(stage.in_scope(|| crate::trace::outbound_headers(headers, forwarded_names)))
-        }
-        _ => None,
+    if !rolter_core::telemetry::is_active() {
+        return None;
     }
+    let (headers, forwarded_names) = fwd.inbound;
+    Some(stage.in_scope(|| crate::trace::outbound_headers(headers, forwarded_names)))
 }
 
 /// Record the status an attempt was answered with on its span. `error.type`
@@ -4633,7 +4646,6 @@ fn genai_attempt_span(
     fwd: &Forward<'_>,
     target: &rolter_core::Target,
     attempt: u32,
-    parsed: &Value,
 ) -> tracing::Span {
     let snap = fwd.snap;
     let genai_model = target.model.as_deref().unwrap_or(fwd.model);
@@ -4668,7 +4680,9 @@ fn genai_attempt_span(
         }
         // how the caller asked for the vectors — a request-side
         // attribute, so it is known now rather than at finalize (#846)
-        if operation.name == crate::genai::OP_EMBEDDINGS {
+        if let (crate::genai::OP_EMBEDDINGS, ForwardPayload::Json { parsed, .. }) =
+            (operation.name, fwd.payload)
+        {
             if let Some(formats) = crate::genai::encoding_formats(parsed) {
                 upstream_stage.record(crate::genai::REQUEST_ENCODING_FORMATS, formats.as_str());
             }

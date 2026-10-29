@@ -2284,3 +2284,96 @@ mod metrics_export_tests {
         QueueWaitRecorder::default().record(5);
     }
 }
+
+/// Test support: the pipeline [`init`] installs for an OTLP endpoint, exporting
+/// to memory instead, so an integration test in a binary crate can assert
+/// which spans the request path exports and what they are parented to (#3535).
+///
+/// Behind the `test-pipeline` feature, which only dev-dependencies enable.
+#[cfg(feature = "test-pipeline")]
+pub mod test_pipeline {
+    use std::sync::OnceLock;
+
+    use opentelemetry::trace::TracerProvider as _;
+    use opentelemetry_sdk::trace::{InMemorySpanExporter, Sampler, SdkTracerProvider};
+    use tracing_subscriber::prelude::*;
+
+    /// One finished span as the exporter received it.
+    #[derive(Debug, Clone)]
+    pub struct ExportedSpan {
+        /// The exported name, after `otel.name` renamed it.
+        pub name: String,
+        /// The trace id, as lowercase hex.
+        pub trace_id: String,
+        /// The span id, as lowercase hex.
+        pub span_id: String,
+        /// The parent's span id, as lowercase hex; all zeroes for a root.
+        pub parent_span_id: String,
+        /// Every attribute, its value rendered as a string.
+        pub attributes: Vec<(String, String)>,
+    }
+
+    impl ExportedSpan {
+        /// The value of attribute `key`, when the span carries it.
+        #[must_use]
+        pub fn attribute(&self, key: &str) -> Option<&str> {
+            self.attributes
+                .iter()
+                .find(|(k, _)| k == key)
+                .map(|(_, v)| v.as_str())
+        }
+    }
+
+    /// The installed pipeline, shared by every test in the process.
+    pub struct TestPipeline {
+        exporter: InMemorySpanExporter,
+        provider: SdkTracerProvider,
+    }
+
+    impl TestPipeline {
+        /// Every span finished so far, by every test in the process: filter
+        /// them by a trace id the test owns.
+        #[must_use]
+        pub fn spans(&self) -> Vec<ExportedSpan> {
+            let _ = self.provider.force_flush();
+            self.exporter
+                .get_finished_spans()
+                .unwrap_or_default()
+                .into_iter()
+                .map(|span| ExportedSpan {
+                    name: span.name.to_string(),
+                    trace_id: span.span_context.trace_id().to_string(),
+                    span_id: span.span_context.span_id().to_string(),
+                    parent_span_id: span.parent_span_id.to_string(),
+                    attributes: span
+                        .attributes
+                        .iter()
+                        .map(|kv| (kv.key.to_string(), kv.value.to_string()))
+                        .collect(),
+                })
+                .collect()
+        }
+    }
+
+    /// Install the pipeline as the process's global subscriber, with the W3C
+    /// propagator, and mark it active as [`super::init`] does. Idempotent:
+    /// every later call returns the pipeline the first one installed.
+    pub fn install() -> &'static TestPipeline {
+        static PIPELINE: OnceLock<TestPipeline> = OnceLock::new();
+        PIPELINE.get_or_init(|| {
+            let exporter = InMemorySpanExporter::default();
+            let provider = SdkTracerProvider::builder()
+                .with_sampler(Sampler::AlwaysOn)
+                .with_simple_exporter(exporter.clone())
+                .build();
+            let _ = tracing_subscriber::registry()
+                .with(tracing_opentelemetry::layer().with_tracer(provider.tracer("rolter")))
+                .try_init();
+            opentelemetry::global::set_text_map_propagator(
+                opentelemetry_sdk::propagation::TraceContextPropagator::new(),
+            );
+            super::PIPELINE_ACTIVE.store(true, std::sync::atomic::Ordering::Relaxed);
+            TestPipeline { exporter, provider }
+        })
+    }
+}

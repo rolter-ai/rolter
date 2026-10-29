@@ -90,6 +90,23 @@ endpoint is configured:
   invalidated every waterfall built from the data. The allowlisted client headers
   from `Forwarder::forwarded_header_names` are unaffected; only the trace headers
   changed hands.
+
+  Every dialled attempt opens that span (`genai_attempt_span` in
+  `crates/rolter-gateway/src/handlers.rs`) and injects from inside it
+  (`attempt_trace_context`): an attempt on the route's classic pool and one on
+  its weighted-variant chain, for a JSON body and for an audio upload. The span
+  names the target actually dialled (`gen_ai.request.model`, and the variant's
+  target on a variant route) and the operation of the endpoint, so a
+  transcription or translation is `generate_content` with
+  `gen_ai.output.type=text`. The answering attempt's span is handed on as
+  `ForwardOutcome::genai_span`, which is where `UsageLoggingStream` records the
+  usage and the response attributes. Until #3535 only a JSON attempt on the
+  classic pool did this: a route with variants and every upload exported no
+  `upstream.request` span and forwarded the caller's trace headers as they came.
+  Tests: `crates/rolter-gateway/tests/attempt_spans.rs`, against an in-memory
+  pipeline (`rolter_core::telemetry::test_pipeline`, behind the dev-only
+  `test-pipeline` feature).
+
 - **Log correlation.** `RequestLog.trace_id` is read off the span context when a
   pipeline is installed and falls back to parsing the inbound header otherwise,
   so ClickHouse and the trace backend agree by construction.
