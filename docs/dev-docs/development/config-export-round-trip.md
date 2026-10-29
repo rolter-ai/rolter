@@ -123,6 +123,42 @@ table's check constraints hold, and skips entries for other orgs with a warning.
 No migration was needed. Test:
 `config_export::tests::round_trip::saved_mcp_gateway_settings_round_trip_for_one_org`.
 
+## MCP tool groups (#3514)
+
+An org's MCP tool groups are exported as `[[mcp_gateway_tool_groups]]`
+(`load_mcp_gateway_tool_groups`, `render_mcp_gateway_tool_groups`) from
+`GatewayConfig::mcp_gateway_tool_groups`, bootstrap-only like the two tables
+above: `MergedConfigStore::load` clears it, and the snapshot carries the store's
+groups as `mcp_tool_groups`, by id. The file names nothing by id. A tool's
+server is its slug in the org; a team or project assignment is the `org/team` or
+`org/team/project` path the caps use (`ScopeRefs`); a key assignment is its
+project path plus its `name`, or, for a key with none, the `key_prefix` the
+dashboard shows. Never the key's secret or digest. An assignment with no such
+name (a key of a project whose name holds `/`) is left out with a warning in the
+control plane's log.
+
+`import_mcp_gateway_tool_groups` is the desired state for the groups the file
+names, in the targeted org only. `validate_mcp_gateway_tool_groups` refuses a
+malformed entry before anything is written. A group is matched on
+`(org, slug)`, created with its assignments in one transaction
+(`McpToolGroupRepo::create`), or updated only where its name, description,
+state or tools (compared as a set) differ, and its assignments replaced only
+where they differ, since both tables bump `config_version` per statement. Each
+write is logged. `resolve_tool_group_subjects` resolves the references: one that
+names another org or nothing here is skipped with a warning, and while one is
+missing the import only adds assignments, never removes them, as the missing
+one may be one the group has. A key reference that matches more than one key of
+the project (a prefix matches unnamed keys only) is assigned to each, since an
+assignment only narrows and holding one key too many fails closed where leaving
+the meant one out would not. A tool on a server the org lacks is skipped with a
+warning. A group that cannot be written fails the import. The export
+deduplicates key references, so the file reads back the same after an
+ambiguous import. No migration was needed. Tests in
+`config_export::tests::round_trip`:
+`mcp_tool_groups_round_trip_with_their_assignments`,
+`an_mcp_tool_group_keeps_its_group_when_a_key_is_missing` and
+`an_ambiguous_key_reference_holds_every_match_to_the_group`.
+
 ## Budgets and rate limits (#1312)
 
 `BudgetConfig::id` is a database id, which the one identity rule of the format

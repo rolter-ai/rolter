@@ -450,6 +450,9 @@ impl ConfigStore for MergedConfigStore {
         // carries the same fact inside each server, never this table (#3398)
         merged.mcp_manifest_enforcement = db.mcp_manifest_enforcement;
         merged.mcp_gateway_settings = db.mcp_gateway_settings;
+        // the importer's spelling of the tool groups (#3514): the snapshot
+        // carries the store's own, as `mcp_tool_groups`, above
+        merged.mcp_gateway_tool_groups = db.mcp_gateway_tool_groups;
         merged
             .model_prices
             .extend(db.model_prices.into_iter().filter(|p| {
@@ -1037,6 +1040,28 @@ mod tests {
             .unwrap();
         assert!(
             merged.mcp_gateway_settings.is_empty(),
+            "a bootstrap-only table reached the snapshot"
+        );
+    }
+
+    /// `[[mcp_gateway_tool_groups]]` is read by the importer only (#3514):
+    /// the snapshot carries the store's groups as `mcp_tool_groups`.
+    #[tokio::test(flavor = "current_thread")]
+    async fn merged_store_never_ships_the_bootstrap_mcp_gateway_tool_groups() {
+        let file = GatewayConfig {
+            mcp_gateway_tool_groups: vec![rolter_core::McpGatewayToolGroupConfig {
+                org: "acme".to_string(),
+                slug: "read-only".to_string(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let merged = merged_with(file, GatewayConfig::default())
+            .load()
+            .await
+            .unwrap();
+        assert!(
+            merged.mcp_gateway_tool_groups.is_empty(),
             "a bootstrap-only table reached the snapshot"
         );
     }
