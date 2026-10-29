@@ -1308,6 +1308,44 @@ export const EditsAVariantSplit: Story = {
 };
 
 /**
+ * A variant weight of 0 is a fallback-only variant (#3427): the sheet accepts
+ * it, the preview shows the share the gateway applies, and the note says what
+ * the 0 means.
+ */
+export const AcceptsAZeroVariantWeight: Story = {
+  render: () => {
+    splits = withVariants(SPLIT);
+    return (
+      <Harness fetchStub={splits.stub} role="admin">
+        <Toasted>
+          <RoutingRules />
+        </Toasted>
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const dialog = await openRouteSheet(canvasElement);
+    const weight = dialog.getByLabelText("Variant 2 weight");
+    await userEvent.clear(weight);
+    await userEvent.type(weight, "0");
+    await waitFor(async () =>
+      expect(
+        within(await dialog.findByRole("list", { name: "Traffic split" })).getByText("100%"),
+      ).toBeInTheDocument(),
+    );
+    await expect(dialog.getByText(/gets no first attempts while another variant/)).toBeVisible();
+    await expect(dialog.queryByText(/variant weight is a whole number/)).toBeNull();
+
+    await userEvent.click(dialog.getByRole("button", { name: "Save route" }));
+    const sent = await splits.expectSentBody<{ variants: RouteVariantInput[] }>(
+      "PUT",
+      "/api/v1/routes/route-1/variants",
+    );
+    await expect(sent.variants.map((v) => v.weight)).toEqual([9, 0]);
+  },
+};
+
+/**
  * A route that routes through variants shows them on its card, in fallback
  * order with the split their weights give, and sets its own targets aside
  * (#3343); a route with targets only is drawn as it always was, beside it.
@@ -1580,10 +1618,9 @@ export const AddsAVariant: Story = {
 };
 
 /**
- * A variant weight of 0, a repeated name and a variant left without a target
- * are refused in the sheet, each at its field, and nothing is sent. The 0 is
- * still previewed as the share the gateway would give it, since an import can
- * store one.
+ * A fractional variant weight, a repeated name and a variant left without a
+ * target are refused in the sheet, each at its field, and nothing is sent. A 0
+ * is accepted and previewed as the share the gateway gives it (#3427).
  */
 let refusesSplit: Recorder;
 export const RefusesASplitTheGatewayCannotRoute: Story = {
@@ -1608,6 +1645,8 @@ export const RefusesASplitTheGatewayCannotRoute: Story = {
     const split = within(dialog.getByRole("list", { name: "Traffic split" }));
     await expect(split.getByText("100%")).toBeInTheDocument();
     await expect(split.getByText("0%")).toBeInTheDocument();
+    await userEvent.clear(second);
+    await userEvent.type(second, "1.5");
     const name = dialog.getByLabelText("Variant 2 name");
     await userEvent.clear(name);
     await userEvent.type(name, "stable");
@@ -1616,7 +1655,7 @@ export const RefusesASplitTheGatewayCannotRoute: Story = {
     await userEvent.click(dialog.getByRole("button", { name: "Save route" }));
 
     await waitFor(() =>
-      expect(dialog.getByText("A variant weight is a whole number, 1 or more.")).toBeVisible(),
+      expect(dialog.getByText("A variant weight is a whole number, 0 or more.")).toBeVisible(),
     );
     await expect(dialog.getByText(/Another variant of this route has this name/)).toBeVisible();
     await expect(dialog.getByText("A variant needs at least one target.")).toBeVisible();

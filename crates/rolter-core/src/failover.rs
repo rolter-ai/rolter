@@ -322,12 +322,29 @@ pub fn takes_over_problems<'a>(
     route: &str,
     targets: impl IntoIterator<Item = (&'a str, &'a [FailureClass])>,
 ) -> Vec<String> {
-    let mut problems = Vec::new();
     let mut any = false;
     let mut all_restricted = true;
-    for (provider, classes) in targets {
+    let targets: Vec<_> = targets.into_iter().collect();
+    for (_, classes) in &targets {
         any = true;
         all_restricted &= !classes.is_empty();
+    }
+    let mut problems = duplicate_class_problems(route, targets);
+    if any && all_restricted {
+        problems.push(all_targets_restricted(route));
+    }
+    problems
+}
+
+/// The targets of `route` that list a `takes_over` class twice, one problem
+/// each. Whether the route is left with nothing it may dial is judged apart,
+/// over the targets the data plane dials.
+pub fn duplicate_class_problems<'a>(
+    route: &str,
+    targets: impl IntoIterator<Item = (&'a str, &'a [FailureClass])>,
+) -> Vec<String> {
+    let mut problems = Vec::new();
+    for (provider, classes) in targets {
         for (i, class) in classes.iter().enumerate() {
             if classes[..i].contains(class) {
                 problems.push(format!(
@@ -335,9 +352,6 @@ pub fn takes_over_problems<'a>(
                 ));
             }
         }
-    }
-    if any && all_restricted {
-        problems.push(all_targets_restricted(route));
     }
     problems
 }

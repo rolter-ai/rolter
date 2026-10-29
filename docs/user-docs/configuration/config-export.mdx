@@ -25,21 +25,28 @@ Exporting is read-only. It never writes to the database it reads.
 
 The export deliberately carries only the sections the importer consumes, so nothing in the file is dropped on the way back in.
 
-| Section                                                                             | Notes                                                                                              |
-| ----------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
-| `[[providers.readonly]]` and `[[providers.default]]`                                | name, slug, kind, `api_base`, `api_keys` (the variable name only), `egress_proxies`, in both tiers |
-| `[[provider_groups.readonly]]` / `[[provider_groups.default]]` and their `.members` | group strategy and its weighted members                                                            |
-| `[[routes]]`, `[routes.params]`, `[routes.param_policy]`, `[[routes.targets]]`      | strategy, admin parameter defaults, the override policy, and the weighted upstream targets         |
-| `[[routes.variants]]`, `[routes.variants.params]`, `[[routes.variants.targets]]`    | weighted variants in fallback order, their parameter defaults and their ordered targets            |
-| `[[model_prices]]`                                                                  | input, output, cached-input and cache-write rates with their currency                              |
-| `[[budgets]]` and `[[rate_limits]]`                                                 | spend and rate caps, each naming its scope by a portable reference (below)                         |
-| `[prompt_templates]`                                                                | published templates with their variables, decorators and route bindings                            |
-| `[logging]` `ui_events`                                                             | whether the control plane records dashboard usage events                                           |
-| `[logging.payload_capture]`                                                         | the capture policy, its size cap and its redaction and model filters                               |
+| Section                                                                             | Notes                                                                                               |
+| ----------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| `[[providers.readonly]]` and `[[providers.default]]`                                | name, slug, kind, `api_base`, `api_keys` (the variable name only), `egress_proxies`, in both tiers  |
+| `[[provider_groups.readonly]]` / `[[provider_groups.default]]` and their `.members` | group strategy and its weighted members                                                             |
+| `[[routes]]`, `[routes.params]`, `[routes.param_policy]`, `[[routes.targets]]`      | strategy, admin parameter defaults, the override policy, and the weighted upstream targets          |
+| `[[routes.variants]]`, `[routes.variants.params]`, `[[routes.variants.targets]]`    | weighted variants in fallback order, their parameter defaults and their ordered targets             |
+| `[[model_prices]]`                                                                  | input, output, cached-input and cache-write rates with their currency                               |
+| `[[budgets]]` and `[[rate_limits]]`                                                 | spend and rate caps, each naming its scope by a portable reference (below)                          |
+| `[[mcp_manifest_enforcement]]`                                                      | for each org that never saved MCP settings, whether it enforces its servers' tool manifests (below) |
+| `[prompt_templates]`                                                                | published templates with their variables, decorators and route bindings                             |
+| `[logging]` `ui_events`                                                             | whether the control plane records dashboard usage events                                            |
+| `[logging.payload_capture]`                                                         | the capture policy, its size cap and its redaction and model filters                                |
 
 A route's variants are the one place an import deletes what the file leaves out. A route whose entry declares `[[routes.variants]]` has its stored variants replaced by the file's, because an ordered, weighted split cannot be merged; the import warns with the names of the variants it removes. A route whose entry declares no variants keeps the stored ones, and the import warns when the entry gives the route `[[routes.targets]]`, since a route with variants does not use its targets.
 
 A variant target on a provider that is left out of the gateway snapshot is still exported, under a comment that names the provider. The provider itself is not in the file, so the import cannot resolve that target and leaves the route's variants as they are rather than deleting it.
+
+### MCP manifest enforcement
+
+An organization created after manifests were enforced (#3334) refuses a tool its server's manifest leaves out until it saves MCP settings, and one that existed before allows it. That marker (`orgs.mcp_enforce_manifests`) is not part of any saved setting, so the export writes it for each organization with no saved MCP settings, as `[[mcp_manifest_enforcement]]` with the organization's `org` slug and `enforce`. An organization that saved its settings follows them and has no entry.
+
+The import never makes an existing organization stricter. The import is the desired state, with this one exception. An entry with `enforce = false` relaxes the organization the import targets (`--org-slug`), which is how an import that creates the organization anew keeps one that was grandfathered, and the import logs it. `enforce = true` is what a new organization already has and changes nothing on one that exists. An entry for any other organization is skipped with a warning, so a staging file cannot loosen the same-named organization of a database it was not aimed at.
 
 ### Import warnings
 
@@ -92,6 +99,8 @@ limit_usd = 50.0
 period = "monthly"
 ```
 
+To keep addresses out of a file you commit, leave person caps out: `rolter config export --without-person-caps` (`?without_person_caps=true` on the endpoint). The export then reads no account address from the database, writes no `scope = "user"` cap, and counts those caps in the trailing `# not exported:` comment, as it counts caps on a virtual key. Importing such a file leaves the receiving deployment's person caps as they are. The default is to write them.
+
 On import the email is looked up among the receiving deployment's accounts. An account that does not exist there is **never created**: the cap is skipped and reported in the log, like a scope that names nothing. A `within` that names nothing there skips the cap the same way. Keep the account list and the file in step by inviting or provisioning the person first.
 
 On import each reference is looked up on the receiving deployment. A cap whose scope does not exist there, or whose `id` is a database id, is left alone and reported in the log; it is never half applied. A cap is matched to an existing row by its scope, its `within` place and, for a budget, its window, so re-importing an edited file changes the cap instead of adding another, and an unchanged file writes nothing. Caps the file does not mention are not deleted. A cap on a virtual key is not exported: keys are never exported, so it would name nothing on the other side, and the export counts it in a comment instead. A team or project whose name contains `/` is not portable for the same reason and is counted the same way.
@@ -108,7 +117,24 @@ An export that carried rows the importer ignores would promise more than a re-im
 
 ### Two organizations sharing a name
 
-Two organizations can each have a `gpt-4o` route or an `openai` provider, but the exported file carries no organization, so it could not hold both. While two organizations (or an organization and a readonly row) share a route name, a provider name or a provider or group slug, the export refuses with `400` (`rolter config export` exits with an error) and names each shared name, rather than writing a file that would not load. Rename one of them to export, until per-organization exports land ([#3440](https://github.com/rolter-ai/rolter/issues/3440)).
+Two organizations can each have a `gpt-4o` route or an `openai` provider, but the exported file carries no organization, so it could not hold both. Rolter exports **one organization per file**: a file carrying an `org` key on every row would need an importer that spans organizations, and `rolter-seed --import` loads a file into the one organization it is pointed at.
+
+```bash
+rolter config export --org acme --output acme.toml
+rolter seed --org-slug acme --import acme.toml
+```
+
+`--org <slug>` (`?org=<slug>` on the endpoint) writes these rows of that organization:
+
+- its providers, provider groups, routes (with their variants) and published prompt templates;
+- the caps on the organization, its teams, projects, business units and customers, and on the keys minted in it (counted in the trailing comment, as keys are never exported);
+- a cap on a person when its `within` names the organization or one of its projects, or, with no `within`, when the person is a member of the organization (directly or through a team or project). With `--without-person-caps` none is written;
+- the payload-capture policy: kept as it is when it is not limited to keys. A policy limited to virtual keys spans organizations and cannot be split, so the file leaves `[logging.payload_capture]` out and says so in a comment; importing the file then leaves the deployment's capture policy as it is;
+- its `[[mcp_manifest_enforcement]]` entry.
+
+Rows owned by no organization (those of the gateway's own config file) and the deployment-wide sections (model prices, currency, the rest of logging) are written as the whole-deployment export writes them. Logging is a deployment-wide setting, so importing an organization's file applies the logging it declares to the deployment. Importing the file into the same organization and exporting again gives the same bytes. A slug no organization has is a `400`.
+
+Without the option the export keeps refusing while two organizations (or an organization and a readonly row) share a route name, a provider name, a provider or group slug or a prompt template slug. `--org` cannot separate an organization from a readonly row, which lands in every organization's file: rename one of the two. It answers `400` (`rolter config export` exits with an error), names each shared name and names the option, rather than writing a file that would not load.
 
 ### Credentials never leave
 
@@ -176,6 +202,8 @@ The control plane serves the same document over HTTP:
 
 ```http
 GET /api/v1/config/export
+GET /api/v1/config/export?org=acme
+GET /api/v1/config/export?without_person_caps=true
 ```
 
 ```bash
@@ -183,6 +211,6 @@ curl -H "Authorization: Bearer $ROLTER_ADMIN_TOKEN" \
   http://localhost:4001/api/v1/config/export -o rolter.toml
 ```
 
-The response is `application/toml` with a `rolter.toml` download filename. The endpoint is whole-deployment and read-only for a superadmin or a security auditor ([deployment role](/security/rbac#deployment-roles)): one document spans every org's providers, groups and routes, so there is no tenancy scope narrow enough to delegate it.
+The response is `application/toml` with a `rolter.toml` download filename. The endpoint needs the `config_export:read` capability, which a superadmin and a security auditor ([deployment role](/security/rbac#deployment-roles)) hold. It is a deployment-level capability, not an organization one: even with `?org=` the document is one an organization admin cannot fetch.
 
 The CLI does not call this endpoint — it reads the store directly, the same way `rolter-seed` writes to it directly, so an export works during a bootstrap or an incident when the control plane is not serving. Both paths render through the same code, so they cannot drift.

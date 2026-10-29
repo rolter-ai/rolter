@@ -216,6 +216,10 @@ pub enum Conformance {
     Partial,
     /// A provider's auth/path profile over an OpenAI-shaped transport.
     ProviderProfile,
+    /// A provider kind rolter ships a profile for, but whose public API
+    /// reference was not found: whether it speaks an OpenAI-compatible API at
+    /// a stable base URL is not established (#3428).
+    Unverified,
 }
 
 impl Conformance {
@@ -227,6 +231,7 @@ impl Conformance {
             Conformance::Extension => "extension",
             Conformance::Partial => "partial",
             Conformance::ProviderProfile => "provider-profile",
+            Conformance::Unverified => "unverified",
         }
     }
 }
@@ -290,6 +295,18 @@ pub fn registry() -> Option<&'static Registry> {
             }
         })
         .as_ref()
+}
+
+/// Whether the registry records `kind` as [`Conformance::Unverified`]: no
+/// public API reference was located for it (#3428). The dashboard marks such a
+/// kind from this rather than from a list of its own.
+pub fn is_unverified(kind: ProviderKind) -> bool {
+    registry().is_some_and(|registry| {
+        registry
+            .providers
+            .iter()
+            .any(|p| p.kind == kind && p.conformance == Conformance::Unverified)
+    })
 }
 
 const METHODS: &[&str] = &["GET", "POST", "PUT", "PATCH", "DELETE"];
@@ -368,9 +385,13 @@ impl Registry {
             }
             check_date(&mut problems, &at, &spec.reviewed_at);
             check_version(&mut problems, &at, spec);
-            if spec.conformance == Conformance::ProviderProfile {
+            if matches!(
+                spec.conformance,
+                Conformance::ProviderProfile | Conformance::Unverified
+            ) {
                 problems.push(format!(
-                    "{at}: provider-profile describes a [[provider]], not a [[spec]]"
+                    "{at}: {} describes a [[provider]], not a [[spec]]",
+                    spec.conformance.as_str()
                 ));
             }
             for endpoint in spec.gateway_endpoints.iter().chain(&spec.control_endpoints) {

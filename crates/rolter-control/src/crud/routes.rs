@@ -989,8 +989,8 @@ struct VariantTargetInput {
 }
 
 /// The checks a variant set passes before any provider is looked up, and the
-/// set as the store takes it: unique non-blank names, a variant weight of at
-/// least 1, target weights none negative and not all zero within a variant, at
+/// set as the store takes it: unique non-blank names, a variant weight of 0
+/// or more, target weights none negative and not all zero within a variant, at
 /// least one target per variant, and object params. Every refusal names
 /// the field it is about, `variants[i].targets[j].weight` say.
 fn variant_specs(variants: Vec<VariantInput>) -> ApiResult<Vec<RouteVariantSpec>> {
@@ -1016,12 +1016,12 @@ fn variant_specs(variants: Vec<VariantInput>) -> ApiResult<Vec<RouteVariantSpec>
                 format!("variant name '{name}' is used twice; names must be unique in a route"),
             ));
         }
-        // the API writes 1 or more; a 0 (fallback only) can only arrive by
-        // importing a rolter.toml variant
-        if variant.weight < 1 {
+        // a 0 is a fallback-only variant, and a set of only zeroes is sampled
+        // uniformly by the gateway (#3341, #3427)
+        if variant.weight < 0 {
             return Err(invalid_field(
                 format!("variants[{i}].weight"),
-                "weight must be at least 1",
+                "weight must be 0 or more",
             ));
         }
         if variant.targets.is_empty() {
@@ -1217,11 +1217,10 @@ mod variant_tests {
             refused_field(vec![variant("a", -1)]).as_deref(),
             Some("variants[0].weight")
         );
-        // a 0 is not written through the API, which asks for 1 or more
-        assert_eq!(
-            refused_field(vec![variant("a", 3), variant("b", 0)]).as_deref(),
-            Some("variants[1].weight")
-        );
+        // a 0 is a fallback-only variant, and a set of only zeroes is allowed
+        // (the gateway samples it uniformly, #3427)
+        assert!(variant_specs(vec![variant("a", 3), variant("b", 0)]).is_ok());
+        assert!(variant_specs(vec![variant("a", 0), variant("b", 0)]).is_ok());
         let mut negative_target = variant("a", 1);
         negative_target.targets = vec![target(1), target(-3)];
         assert_eq!(

@@ -798,6 +798,20 @@ Not a `rolter.toml` table. Each entry is one organization's saved MCP settings, 
 
 ---
 
+### \[\[mcp_manifest_enforcement\]\]
+
+Whether an organization that never saved MCP settings enforces its servers' tool manifests. An organization created after enforcement was introduced does; one that existed before it allows tools a manifest leaves out until it saves settings of its own ([MCP](/api/mcp#manage-the-registry)). `rolter config export` writes one entry for each organization with no saved settings, and `rolter-seed --import` applies them ([Config export](/configuration/config-export)). An import never makes an existing organization stricter: an entry with `enforce = false` relaxes the organization the import targets, and one with `enforce = true` changes nothing on an organization that exists. An entry for any other organization is skipped with a warning. The control plane does not ship this table in the snapshot, which carries the marker inside each server.
+
+<ParamField path="org" type="string" required>
+  The organization's slug.
+</ParamField>
+
+<ParamField path="enforce" type="bool" required>
+  `true` when the organization enforces its servers' tool manifests until it saves MCP settings, `false` when it allows tools a manifest leaves out.
+</ParamField>
+
+---
+
 ### \[\[mcp_oauth_sessions\]\]
 
 Not a `rolter.toml` table. Each entry is a live OAuth session, one user's access token for one MCP server, that the control plane adds to the snapshot after the user completes the consent flow and drops when the session expires. The tokens cross only the protected `/internal/snapshot` channel and are never shown on the dashboard or through the public API. Entries carry `id`, `server_id`, `user_id`, `scopes`, `expires_at` and `access_token`. There is nothing to write by hand; see [MCP OAuth](/security/mcp-oauth) for the consent flow.

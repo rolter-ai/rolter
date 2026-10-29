@@ -382,6 +382,18 @@
     "logging.ui_events": [
       "boolean"
     ],
+    "mcp_manifest_enforcement": [
+      "array"
+    ],
+    "mcp_manifest_enforcement[]": [
+      "object"
+    ],
+    "mcp_manifest_enforcement[].enforce": [
+      "boolean"
+    ],
+    "mcp_manifest_enforcement[].org": [
+      "string"
+    ],
     "mcp_oauth_sessions": [
       "array"
     ],

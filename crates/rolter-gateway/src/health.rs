@@ -826,7 +826,7 @@ mod tests {
 
         let (url, _) = probe_request(
             ProviderKind::Bedrock,
-            "https://bedrock-runtime.us-east-1.amazonaws.com/v1",
+            "https://bedrock-runtime.us-east-1.amazonaws.com/openai/v1",
             "/",
         );
         assert_eq!(
