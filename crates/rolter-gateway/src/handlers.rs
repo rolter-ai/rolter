@@ -3358,339 +3358,45 @@ async fn proxy_multipart(
         },
     );
 
-    let mut fallback_reason = String::new();
-    let mut last_provider = String::new();
-    let mut last_target = model.clone();
-    // see the chat path: guards the error row against double-counting an
-    // attempt the per-attempt funnel already recorded
-    let mut last_attempt_recorded = false;
-    let mut last_error: Option<String> = None;
-    // see the chat path: what the request ends with when no target is left
-    let mut last_status: Option<StatusFailure> = None;
-    let mut attempts: u8 = 0;
-    let mut outcome: Option<(reqwest::Response, u16, bool)> = None;
-    let mut inflight_guard: Option<crate::load::LoadGuard> = None;
-    let mut chosen_variant = String::new();
-
     // a route with variants dials only them, as on the chat path: the same
-    // sampled primary, the same candidates and fallback chain (#3494)
-    if entry.route.has_variants() {
-        let out = forward_variants(
-            &Forward {
-                state: &state,
-                snap: &snap,
-                entry,
-                model: &model,
-                ctx: &ctx,
-                payload: ForwardPayload::Multipart {
-                    body: &body,
-                    content_type: &content_type,
-                },
-                path,
-                started,
-                trace_headers: &trace_headers,
-                key_meta: vk.as_ref(),
-            },
-            &mut cancel,
-        )
-        .await;
-        outcome = out.outcome;
-        last_provider = out.last_provider;
-        last_target = out.last_target;
-        last_attempt_recorded = out.last_attempt_recorded;
-        last_error = out.last_error;
-        last_status = out.last_status;
-        inflight_guard = out.inflight_guard;
-        chosen_variant = out.variant;
-        attempts = out.attempts;
-        fallback_reason = out.fallback_reason;
-        // the slot rides on the guard, as the classic loop below hands it over
-        if let Some(guard) = inflight_guard.as_mut() {
-            guard.hold_route_permit(route_permit.take());
-        }
+    // sampled primary, the same candidates and fallback chain (#3494). the
+    // classic pool is walked by the loop the chat path uses, with the upload
+    // forwarded as it came
+    let fwd = Forward {
+        state: &state,
+        snap: &snap,
+        entry,
+        model: &model,
+        ctx: &ctx,
+        payload: ForwardPayload::Multipart {
+            body: &body,
+            content_type: &content_type,
+        },
+        path,
+        started,
+        trace_headers: &trace_headers,
+        key_meta: vk.as_ref(),
+    };
+    let ForwardOutcome {
+        outcome,
+        last_provider,
+        last_target,
+        last_attempt_recorded,
+        last_error,
+        last_status,
+        mut inflight_guard,
+        variant: chosen_variant,
+        attempts,
+        fallback_reason,
+        ..
+    } = if entry.route.has_variants() {
+        forward_variants(&fwd, &mut cancel).await
     } else {
-        let retry = &snap.retry;
-        // the route's own budget replaces the deployment's (#2924)
-        let max_retries = entry.route.advanced.limits.max_retries(retry.max_retries);
-        let cooldown = &snap.cooldown;
-        let cd_enabled = cooldown.enabled();
-        let mut loads = state
-            .loads
-            .snapshot(&entry.namespace, entry.route.targets.len());
-        for (i, target) in entry.route.targets.iter().enumerate() {
-            if let Some(l) = loads.get_mut(i) {
-                *l = l.saturating_add(state.upstream_metrics.queue_depth(&target.provider));
-            }
-        }
-        let mut tried: Vec<usize> = Vec::with_capacity(entry.route.targets.len());
-        // the failure the last attempt ended with, which decides which targets
-        // may follow it and is what the row records as the fallback reason (#1584)
-        let mut last_failure: Option<Failure> = None;
-        let pool = TargetPool {
-            entry,
-            ctx: &ctx,
-            loads: &loads,
-            cooldowns: &state.cooldowns,
-            health: &state.health,
-            breaker: &state.breaker,
-            namespace: &entry.namespace,
-            cd_enabled,
-            key_meta: vk.as_ref(),
-        };
-        for attempt in 0..=max_retries {
-            let idx = match pool.pick(&tried, last_failure.as_ref()) {
-                Some(i) => i,
-                None => break,
-            };
-            entry.balancer.observe(idx, &ctx);
-            tried.push(idx);
-            fallback_reason = last_failure
-                .as_ref()
-                .map(Failure::token)
-                .unwrap_or_default();
-            let mut guard = state.loads.begin(&entry.namespace, idx);
-            // the latency model learns cost as a function of prompt size, so it
-            // needs this request's size before the guard's drop folds in the
-            // sample (#853). inert on every other strategy
-            guard.set_prompt_tokens(rolter_balancer::predictor::prompt_tokens(&ctx));
-
-            let target = &entry.route.targets[idx];
-            let provider = match snap.providers.get(&target.provider) {
-                Some(provider) => provider,
-                None => {
-                    // nothing was sent, so the probe slot this target took goes back
-                    state.breaker.release(&entry.namespace, idx);
-                    last_error = Some("configured target provider not found".to_string());
-                    break;
-                }
-            };
-            last_provider = target.provider.clone();
-            last_target = target.model.clone().unwrap_or_else(|| model.clone());
-            // see the chat path: an abandoned upload names the target it left
-            cancel.attribute(&last_provider, &last_target, "");
-            let multi_key = provider.api_keys.len() > 1;
-            let key_ns = key_pool_key(&target.provider);
-            let parked_keys = parked_keys(&state, provider, &key_ns);
-            let picked_key =
-                provider.pick_api_key_indexed(jitter(started), |i| parked_keys.contains(i));
-            let api_key = picked_key.as_ref().map(|(_, k)| k.as_str());
-
-            // per-attempt clock: `started` is the whole request, and a superseded
-            // attempt's own duration is what the health funnel records (#1646)
-            last_attempt_recorded = false;
-            attempts = attempts.saturating_add(1);
-            let attempt_started = Instant::now();
-            match state
-                .provider_queues
-                .forward_raw(
-                    &snap.queue,
-                    snap.generation,
-                    provider,
-                    path,
-                    body.clone(),
-                    &content_type,
-                    api_key,
-                    &trace_headers,
-                    &entry.overrides,
-                )
-                .await
-            {
-                Ok(response) => {
-                    let status = response.status().as_u16();
-                    // a content-policy refusal is final unless the route has a target
-                    // that takes refusals over and one is left to try: then the body is
-                    // read to classify it, and an answer that is not taken over goes on
-                    // to the caller whole (#1584)
-                    let response = if attempt < max_retries
-                        && crate::failover::may_be_refusal(status)
-                        && entry.route.takes_over_refusals()
-                    {
-                        let peeked = crate::failover::peek_refusal(response).await;
-                        match peeked.refusal {
-                            Some(failure)
-                                if has_untried_target(
-                                    entry,
-                                    &tried,
-                                    vk.as_ref(),
-                                    Some(&failure),
-                                ) =>
-                            {
-                                // a refusal says nothing about the target's health, so it
-                                // neither parks it nor feeds its breaker
-                                cancel.record_failed_attempt(&crate::logging::FailedAttempt {
-                                    provider: &last_provider,
-                                    target: &last_target,
-                                    status,
-                                    latency_ms: attempt_started.elapsed().as_millis() as u32,
-                                    error: "",
-                                });
-                                last_attempt_recorded = true;
-                                count_retry(&state.metrics, true);
-                                last_status = Some(StatusFailure {
-                                    status,
-                                    reason: peeked.reason,
-                                    retry_after: None,
-                                });
-                                last_error = None;
-                                last_failure = Some(failure);
-                                state.breaker.release(&entry.namespace, idx);
-                                continue;
-                            }
-                            _ => peeked.response,
-                        }
-                    } else {
-                        response
-                    };
-                    let key_failure = multi_key && (status == 429 || status == 401);
-                    if key_failure {
-                        if let Some((ki, _)) = &picked_key {
-                            let secs = cooldown.duration_secs(retry_after_secs(&response));
-                            state.cooldowns.park(&key_ns, *ki, secs.max(1));
-                            state
-                                .metrics
-                                .key_cooldowns_tripped_total
-                                .fetch_add(1, Relaxed);
-                        }
-                        tried.pop();
-                        // a key-level failure says nothing about the target, so its probe
-                        // slot is given back rather than held for the lease
-                        state.breaker.release(&entry.namespace, idx);
-                        last_failure = Failure::from_status(status);
-                        if attempt < max_retries {
-                            // the caller will never see this failure, so record it against the
-                            // target that produced it before superseding the attempt (#1646).
-                            // through the guard, so a caller leaving during the backoff below
-                            // is not charged to the target a second time
-                            cancel.record_failed_attempt(&crate::logging::FailedAttempt {
-                                provider: &last_provider,
-                                target: &last_target,
-                                status,
-                                latency_ms: attempt_started.elapsed().as_millis() as u32,
-                                error: "",
-                            });
-                            last_attempt_recorded = true;
-                            let retrying = count_retry(
-                                &state.metrics,
-                                has_untried_target(
-                                    entry,
-                                    &tried,
-                                    vk.as_ref(),
-                                    last_failure.as_ref(),
-                                ),
-                            );
-                            // the response is read for its reason and dropped here, so the delay
-                            // is taken from it first; the reason is what the request ends with if
-                            // this was the last target (#2807)
-                            let delay = retry_delay_ms(retry, &response, attempt + 1, started);
-                            let retry_after = retry_after_secs(&response);
-                            last_status = Some(StatusFailure::read(response, retry_after).await);
-                            last_error = None;
-                            back_off(delay, retrying).await;
-                            continue;
-                        }
-                    } else if is_retryable_status(status) {
-                        last_failure = Failure::from_status(status);
-                        if cd_enabled {
-                            let secs = cooldown.duration_secs(retry_after_secs(&response));
-                            state.cooldowns.park(&entry.namespace, idx, secs);
-                            state.metrics.cooldowns_tripped_total.fetch_add(1, Relaxed);
-                        }
-                        if state.breaker.on_failure(&entry.namespace, idx) {
-                            state.metrics.breaker_opened_total.fetch_add(1, Relaxed);
-                        }
-                        if attempt < max_retries {
-                            // the caller will never see this failure, so record it against the
-                            // target that produced it before superseding the attempt (#1646).
-                            // through the guard, so a caller leaving during the backoff below
-                            // is not charged to the target a second time
-                            cancel.record_failed_attempt(&crate::logging::FailedAttempt {
-                                provider: &last_provider,
-                                target: &last_target,
-                                status,
-                                latency_ms: attempt_started.elapsed().as_millis() as u32,
-                                error: "",
-                            });
-                            last_attempt_recorded = true;
-                            let retrying = count_retry(
-                                &state.metrics,
-                                has_untried_target(
-                                    entry,
-                                    &tried,
-                                    vk.as_ref(),
-                                    last_failure.as_ref(),
-                                ),
-                            );
-                            // the response is read for its reason and dropped here, so the delay
-                            // is taken from it first; the reason is what the request ends with if
-                            // this was the last target (#2807)
-                            let delay = retry_delay_ms(retry, &response, attempt + 1, started);
-                            let retry_after = retry_after_secs(&response);
-                            last_status = Some(StatusFailure::read(response, retry_after).await);
-                            last_error = None;
-                            back_off(delay, retrying).await;
-                            continue;
-                        }
-                    } else if state.breaker.on_success(&entry.namespace, idx) {
-                        state.metrics.breaker_closed_total.fetch_add(1, Relaxed);
-                    }
-                    if status < 400 {
-                        guard.mark_ok();
-                    }
-                    guard.hold_route_permit(route_permit.take());
-                    inflight_guard = Some(guard);
-                    // a transcription is JSON or text, or SSE for `stream=true`
-                    // on the models that stream (#3432)
-                    let sse = response
-                        .headers()
-                        .get(reqwest::header::CONTENT_TYPE)
-                        .and_then(|v| v.to_str().ok())
-                        .is_some_and(|ct| ct.contains("event-stream"));
-                    outcome = Some((response, status, sse));
-                    break;
-                }
-                Err(err) => {
-                    let message = err.to_string();
-                    last_failure = Some(Failure::from_transport_error(&message));
-                    if is_queue_admission_error(&message) {
-                        // the queue turned the request away before the target saw it
-                        state.breaker.release(&entry.namespace, idx);
-                        last_error = Some(message);
-                        break;
-                    }
-                    last_error = Some(message);
-                    if cd_enabled {
-                        state
-                            .cooldowns
-                            .park(&entry.namespace, idx, cooldown.duration_secs(None));
-                        state.metrics.cooldowns_tripped_total.fetch_add(1, Relaxed);
-                    }
-                    if state.breaker.on_failure(&entry.namespace, idx) {
-                        state.metrics.breaker_opened_total.fetch_add(1, Relaxed);
-                    }
-                    if attempt < max_retries {
-                        // the caller will never see this failure, so record it against the
-                        // target that produced it before superseding the attempt (#1646).
-                        // through the guard, so a caller leaving during the backoff below
-                        // is not charged to the target a second time
-                        cancel.record_failed_attempt(&crate::logging::FailedAttempt {
-                            provider: &last_provider,
-                            target: &last_target,
-                            status: 0,
-                            latency_ms: attempt_started.elapsed().as_millis() as u32,
-                            error: last_error.as_deref().unwrap_or_default(),
-                        });
-                        last_attempt_recorded = true;
-                        let retrying = count_retry(
-                            &state.metrics,
-                            has_untried_target(entry, &tried, vk.as_ref(), last_failure.as_ref()),
-                        );
-                        back_off(retry.backoff_ms(attempt + 1, jitter(started)), retrying).await;
-                        continue;
-                    }
-                    break;
-                }
-            }
-        }
+        forward_classic(&fwd, &mut cancel).await
+    };
+    // the slot rides on the guard, as on the chat path
+    if let Some(guard) = inflight_guard.as_mut() {
+        guard.hold_route_permit(route_permit.take());
     }
 
     let capture_payloads = payload_capture_enabled(&snap.logging.payload_capture, &model, &vk_id);
