@@ -24,10 +24,15 @@ export const SSO_FAILURES = [
 
 /**
  * The SSO codes `describeError` does not translate on its own, although their
- * sentence is in `errors.api.codes` with the rest: other endpoints answer the
- * same names with other meanings (the MCP consent flow's `not_configured` and
- * `internal_error`), so an `ApiError` carrying one is worded by its status
- * there. The login page knows the code came from single sign-on and words it.
+ * sentence is in `errors.api.codes` with the rest. Their names say nothing of
+ * single sign-on, and `describeError` would word any endpoint's
+ * `error.code` of that name with the SSO sentence: today only the SSO
+ * callback sends them as a JSON `error.code`, but the MCP consent flow already
+ * uses both as redirect `reason=` codes with copy of its own
+ * (`CONSENT_FAILURES` in `mcp-consent.ts`), so a generic name is kept from
+ * reading as an SSO failure wherever it arrives. A JSON refusal carrying one is
+ * worded by its status; the login page knows the code came from single
+ * sign-on and words it.
  */
 export const SSO_SHARED_NAMES = ["not_configured", "internal_error"] as const;
 
