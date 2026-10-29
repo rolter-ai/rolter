@@ -49,10 +49,13 @@ enum Source {
     /// its client examples read
     Fetched(&'static str),
     /// written from memory of the documentation; not checked against the page.
-    /// No case is recalled today; a kind whose page cannot be read records its
-    /// case honestly here, and the registry test in `rolter_core` refuses such a
-    /// case as the only evidence of `provider-profile` (#3495)
-    #[allow(dead_code)]
+    /// A kind whose page cannot be read records its case honestly here, and the
+    /// registry test in `rolter_core` refuses such a case as the only evidence
+    /// of `provider-profile` (#3495)
+    #[expect(
+        dead_code,
+        reason = "no case is recalled today; the variant stays so one can say so (#3488)"
+    )]
     Recalled,
 }
 
