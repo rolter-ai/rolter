@@ -15,6 +15,24 @@ pub const MCP_STATUSES: &[&str] = &[
     "error",
 ];
 
+/// The outcomes that refine a `status` the HTTP layer gave, for a call whose
+/// result nothing judged (#3529, #3528). Stored in the `outcome` column
+/// (ClickHouse `051`), never in the closed `status` enum, so a writer against a
+/// table without the column still has its rows accepted: there they read as
+/// the `status` written beside them, `success`.
+///
+/// - `accepted`: a legacy `sse` server answered the `POST` `202 Accepted` with
+///   no JSON-RPC reply in its body, so the reply comes on the stream the client
+///   holds open and the relay does not correlate it.
+/// - `unread`: the relay forwarded the body to an ungoverned server without
+///   reading it (it was encoded, or it was not JSON), so the calls it held are
+///   not itemised: the one row has no tool.
+///
+/// A row with one of these, like a notification, says nothing about whether a
+/// tool succeeded, and the MCP summary leaves it out of the success and the
+/// failure rate.
+pub const MCP_OUTCOMES: &[&str] = &["accepted", "unread"];
+
 /// Replace the value of every object key named in `fields` (case-insensitive,
 /// recursively) with a placeholder.
 pub fn redact(value: &mut Value, fields: &[String]) {

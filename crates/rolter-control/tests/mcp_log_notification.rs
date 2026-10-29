@@ -1,4 +1,5 @@
-//! The MCP log against a ClickHouse that has not applied `047` (#3466), end to
+//! The MCP log against a ClickHouse that has not applied `047` (#3466) or `051`
+//! (#3529), and the summary rates (#3526), end to
 //! end against a real one.
 //!
 //! `047_mcp_log_notification.sql` adds `notification` to `mcp_tool_call_logs`,
@@ -148,58 +149,111 @@ async fn serve(app: Router) -> SocketAddr {
     addr
 }
 
+/// A control plane over a scratch ClickHouse database migrated through `last`.
+/// The guards drop the database and the Postgres schema when the test ends.
+struct Stack {
+    http: reqwest::Client,
+    addr: SocketAddr,
+    _schema: TestSchema,
+    _scratch: ScratchDatabase,
+}
+
+impl Stack {
+    async fn migrated_through(last: u32) -> Option<Self> {
+        let base = clickhouse_url().filter(|_| test_database::is_configured())?;
+        let http = reqwest::Client::new();
+        let scratch = ScratchDatabase::create(&http, &base).await;
+        clickhouse_ddl::apply_schema_through(&http, &base, Some(&scratch.name), last).await;
+        let proxy = serve(
+            Router::new()
+                .fallback(axum::routing::post(forward))
+                .with_state(Target {
+                    base: base.clone(),
+                    database: scratch.name.clone(),
+                    client: http.clone(),
+                }),
+        )
+        .await;
+        let schema = TestSchema::create(&test_database::url().await?).await;
+        let app = rolter_control::test_app_with_clickhouse_and_admin_token(
+            schema.pool().clone(),
+            &format!("http://{proxy}"),
+            Some(ADMIN_TOKEN.to_string()),
+        )
+        .await
+        .unwrap();
+        let addr = serve(app).await;
+        Some(Self {
+            http,
+            addr,
+            _schema: schema,
+            _scratch: scratch,
+        })
+    }
+
+    /// Ingest one event with `fields` over a plain successful call; returns its
+    /// id and the ingest status.
+    async fn ingest(&self, fields: Value) -> (String, StatusCode) {
+        let event_id = format!("evt-{}", Uuid::new_v4().simple());
+        let mut event = json!({
+            "event_id": event_id, "server": "docs", "tool": "search",
+            "transport": "streamable_http", "status": "success", "latency_ms": 1,
+        });
+        for (key, value) in fields.as_object().into_iter().flatten() {
+            event[key] = value.clone();
+        }
+        let response = self
+            .http
+            .post(format!("http://{}/api/v1/mcp/events", self.addr))
+            .bearer_auth(ADMIN_TOKEN)
+            .json(&event)
+            .send()
+            .await
+            .unwrap();
+        (event_id, response.status())
+    }
+
+    async fn get(&self, path: &str) -> Value {
+        let response = self
+            .http
+            .get(format!("http://{}{path}", self.addr))
+            .bearer_auth(ADMIN_TOKEN)
+            .send()
+            .await
+            .unwrap();
+        let status = response.status();
+        let body: Value = response.json().await.unwrap_or(Value::Null);
+        assert_eq!(status, 200, "{path}: {body}");
+        body
+    }
+
+    async fn detail(&self, event_id: &str) -> Value {
+        self.get(&format!("/api/v1/mcp/logs/{event_id}")).await
+    }
+
+    /// the list row of `event_id`
+    async fn listed(&self, event_id: &str) -> Value {
+        let page = self.get("/api/v1/mcp/logs?limit=200").await;
+        page["data"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|row| row["event_id"] == event_id)
+            .cloned()
+            .unwrap_or_else(|| panic!("{event_id} is not listed: {page}"))
+    }
+
+    async fn summary(&self) -> Value {
+        self.get("/api/v1/mcp/logs/summary").await["data"][0].clone()
+    }
+}
+
 /// An event ingested as a notification into a table migrated through `last`,
 /// read back through the detail. Returns the ingest status and the detail row.
 async fn ingest_then_read(last: u32) -> Option<(StatusCode, Value)> {
-    let base = clickhouse_url().filter(|_| test_database::is_configured())?;
-    let http = reqwest::Client::new();
-    let scratch = ScratchDatabase::create(&http, &base).await;
-    clickhouse_ddl::apply_schema_through(&http, &base, Some(&scratch.name), last).await;
-    let proxy = serve(
-        Router::new()
-            .fallback(axum::routing::post(forward))
-            .with_state(Target {
-                base: base.clone(),
-                database: scratch.name.clone(),
-                client: http.clone(),
-            }),
-    )
-    .await;
-    let schema = TestSchema::create(&test_database::url().await?).await;
-    let app = rolter_control::test_app_with_clickhouse_and_admin_token(
-        schema.pool().clone(),
-        &format!("http://{proxy}"),
-        Some(ADMIN_TOKEN.to_string()),
-    )
-    .await
-    .unwrap();
-    let addr = serve(app).await;
-
-    let event_id = format!("notification-{}", Uuid::new_v4().simple());
-    let ingest = http
-        .post(format!("http://{addr}/api/v1/mcp/events"))
-        .bearer_auth(ADMIN_TOKEN)
-        .json(&json!({
-            "event_id": event_id, "server": "docs", "tool": "search",
-            "transport": "streamable_http", "status": "success", "latency_ms": 1,
-            "notification": true,
-        }))
-        .send()
-        .await
-        .unwrap();
-    let status = ingest.status();
-    let detail = http
-        .get(format!("http://{addr}/api/v1/mcp/logs/{event_id}"))
-        .bearer_auth(ADMIN_TOKEN)
-        .send()
-        .await
-        .unwrap();
-    let read = detail.status();
-    let row: Value = detail.json().await.unwrap_or(Value::Null);
-    drop(schema);
-    drop(scratch);
-    assert_eq!(read, 200, "the detail failed after migration {last}: {row}");
-    Some((status, row))
+    let stack = Stack::migrated_through(last).await?;
+    let (event_id, status) = stack.ingest(json!({"notification": true})).await;
+    Some((status, stack.detail(&event_id).await))
 }
 
 #[tokio::test]
@@ -217,4 +271,148 @@ async fn a_table_with_047_keeps_the_notification_flag() {
     let (status, row) = ingest_then_read(47).await.expect("a configured stack");
     assert_eq!(status, 202);
     assert_eq!(row["notification"], 1, "{row}");
+}
+
+/// #3526, #3529: the list carries both flags, and a table that has not applied
+/// `051` stores an `accepted` call as a plain success and reads no outcome
+#[tokio::test]
+async fn the_list_and_detail_carry_the_notification_flag_and_the_outcome() {
+    let _ = skip_without_stack!();
+    for (last, outcome) in [(50, ""), (51, "accepted")] {
+        let stack = Stack::migrated_through(last)
+            .await
+            .expect("a configured stack");
+        let (accepted, status) = stack
+            .ingest(json!({"transport": "sse", "outcome": "accepted"}))
+            .await;
+        assert_eq!(status, 202);
+        let (note, _) = stack.ingest(json!({"notification": true})).await;
+        for row in [stack.listed(&accepted).await, stack.detail(&accepted).await] {
+            assert_eq!(
+                (&row["status"], &row["outcome"], &row["notification"]),
+                (&json!("success"), &json!(outcome), &json!(0)),
+                "{last}: {row}"
+            );
+        }
+        let row = stack.listed(&note).await;
+        assert_eq!(
+            (&row["notification"], &row["outcome"]),
+            (&json!(1), &json!("")),
+            "{row}"
+        );
+    }
+}
+
+/// Independently applied `051` must not make any read depend on `047`.
+#[tokio::test]
+async fn a_table_with_051_but_without_047_reads_outcomes_and_defaults_notifications() {
+    let _ = skip_without_stack!();
+    let stack = Stack::migrated_through(51)
+        .await
+        .expect("a configured stack");
+    // model a deployment with `051` but no `047`, before its first read
+    let response = stack
+        .http
+        .post(format!("{}/", stack._scratch.base))
+        .query(&[("database", stack._scratch.name.as_str())])
+        .body("alter table mcp_tool_call_logs drop column notification")
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        response.status().is_success(),
+        "remove notification: {}",
+        response.text().await.unwrap_or_default()
+    );
+
+    let empty = stack.summary().await;
+    assert_eq!(empty["success_rate"], Value::Null, "{empty}");
+    assert_eq!(empty["failure_rate"], Value::Null, "{empty}");
+    for fields in [
+        json!({"transport": "sse", "outcome": "accepted"}),
+        json!({"outcome": "unread", "tool": ""}),
+        json!({"notification": true}),
+        json!({"status": "error"}),
+    ] {
+        let expected_outcome = fields["outcome"].as_str().unwrap_or("");
+        let (event_id, status) = stack.ingest(fields.clone()).await;
+        assert_eq!(status, StatusCode::ACCEPTED);
+        // repeated list/detail reads neither need the absent column nor change the row
+        for _ in 0..2 {
+            for row in [stack.listed(&event_id).await, stack.detail(&event_id).await] {
+                assert_eq!(row["notification"], json!(0), "{row}");
+                assert_eq!(row["outcome"], json!(expected_outcome), "{row}");
+            }
+        }
+    }
+    for _ in 0..2 {
+        let summary = stack.summary().await;
+        let count = |name: &str| summary[name].to_string().trim_matches('"').to_string();
+        assert_eq!(count("calls"), "4", "{summary}");
+        assert_eq!(count("not_awaited"), "2", "{summary}");
+        assert_eq!(count("successes"), "1", "{summary}");
+        assert_eq!(count("failures"), "1", "{summary}");
+        assert_eq!(summary["success_rate"], json!(0.5), "{summary}");
+        assert_eq!(summary["failure_rate"], json!(0.5), "{summary}");
+    }
+}
+
+/// #3526: a notification the upstream accepted, an `accepted` call and an
+/// `unread` body (#3528) say nothing about the tool, so the summary counts them
+/// apart and leaves them out of both rates; a notification that failed is a
+/// failure
+#[tokio::test]
+async fn the_summary_rates_leave_out_the_calls_no_reply_was_awaited_for() {
+    let _ = skip_without_stack!();
+    let stack = Stack::migrated_through(51)
+        .await
+        .expect("a configured stack");
+    for fields in [
+        json!({}),
+        json!({}),
+        json!({"status": "error"}),
+        json!({"status": "timeout"}),
+        json!({"notification": true}),
+        json!({"notification": true}),
+        // not delivered, so a failure like any other
+        json!({"notification": true, "status": "transport_error"}),
+        json!({"transport": "sse", "outcome": "accepted"}),
+        // the one row of a body forwarded unread names no tool
+        json!({"outcome": "unread", "tool": ""}),
+    ] {
+        assert_eq!(stack.ingest(fields).await.1, 202);
+    }
+    let summary = stack.summary().await;
+    // clickhouse writes a UInt64 as a JSON string
+    let count = |name: &str| summary[name].to_string().trim_matches('"').to_string();
+    assert_eq!(count("calls"), "9", "{summary}");
+    assert_eq!(count("not_awaited"), "4", "{summary}");
+    assert_eq!(count("successes"), "2", "{summary}");
+    assert_eq!(count("failures"), "3", "{summary}");
+    assert_eq!(summary["success_rate"], json!(0.4), "{summary}");
+    assert_eq!(summary["failure_rate"], json!(0.6), "{summary}");
+
+    // a window with nothing awaited has no rate at all, not a rate of zero
+    let only_notes = Stack::migrated_through(51)
+        .await
+        .expect("a configured stack");
+    only_notes.ingest(json!({"notification": true})).await;
+    let summary = only_notes.summary().await;
+    assert_eq!(summary["success_rate"], Value::Null, "{summary}");
+    assert_eq!(summary["failure_rate"], Value::Null, "{summary}");
+
+    // a table without either column reads every call as awaited
+    let bare = Stack::migrated_through(46)
+        .await
+        .expect("a configured stack");
+    bare.ingest(json!({"notification": true})).await;
+    bare.ingest(json!({"status": "error"})).await;
+    let summary = bare.summary().await;
+    let count = |name: &str| summary[name].to_string().trim_matches('"').to_string();
+    assert_eq!(
+        (count("not_awaited"), count("failures")),
+        ("0".to_string(), "1".to_string()),
+        "{summary}"
+    );
+    assert_eq!(summary["failure_rate"], json!(0.5), "{summary}");
 }

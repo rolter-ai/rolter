@@ -4226,8 +4226,25 @@
         "error": "Error",
         "timeout": "Timed out",
         "auth_denied": "Auth denied",
-        "transport_error": "Transport error"
+        "transport_error": "Transport error",
+        "accepted": "Accepted",
+        "unread": "Not read"
       },
+      "notAwaited": {
+        "notification": "notification, no reply awaited",
+        "accepted": "accepted, reply on the stream",
+        "unread": "body not read, calls not itemised"
+      },
+      "notAwaitedDetail": {
+        "notification": "This call was sent as a notification, so no reply was awaited. Its status is only what the server's HTTP response said, not what the tool did, and the summary leaves it out of the failure rate.",
+        "notificationFailed": "This call was sent as a notification, so no reply was awaited. The server's HTTP response refused or failed it, so it was not delivered, and the summary counts it as a failure.",
+        "accepted": "The server accepted this call and sends its reply on the event stream the client holds open, which is not matched back to the call. Nothing here says what the tool did, and the summary leaves it out of the failure rate.",
+        "unread": "The gateway forwarded this request body to a server no tool group governs without reading it, because it was compressed or was not valid JSON. The tool calls it held are not itemised, so this one row stands for the whole request and the summary leaves it out of the failure rate."
+      },
+      "noTool": "not itemised",
+      "notAwaitedCount_one": "{{formatted}} not awaited, left out of the rates",
+      "notAwaitedCount_other": "{{formatted}} not awaited, left out of the rates",
+      "failureRate": "{{rate}} of awaited calls",
       "serverFilterAria": "Filter by server",
       "toolFilterAria": "Filter by tool",
       "allServers": "all servers",

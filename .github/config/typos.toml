@@ -67,6 +67,8 @@ extend-ignore-re = [
   # dashboards (#956) are parsed by SigNoz, not by us — correcting the spelling
   # would make the import silently drop the setting
   "timePreferance",
+  # published MCP unread-body metric reason, kept stable for dashboards
+  "unparseable",
   # "titel": a misspelt key in the specification registry's unknown-key test,
   # which asserts a record carrying a key no table declares is refused.
   # correcting it would delete the test's subject

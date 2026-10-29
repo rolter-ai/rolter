@@ -934,3 +934,167 @@ export const PickingAWindowWritesTheAddress: Story = {
     await waitFor(() => expect(canvas.getByTestId("where")).toHaveTextContent(/^\?server=github$/));
   },
 };
+
+// a notification awaits no reply, and a legacy `sse` server answers a call
+// `202` and sends the reply on its stream (#3529)
+const NOTIFICATION: Partial<McpLogRow> = {
+  event_id: "evt-note",
+  tool: "notify_build",
+  status: "success",
+  notification: 1,
+};
+const ACCEPTED: Partial<McpLogRow> = {
+  event_id: "evt-accepted",
+  tool: "list_repos",
+  transport: "sse",
+  status: "success",
+  outcome: "accepted",
+};
+
+const notAwaited = routes([
+  [
+    "/mcp/logs/summary",
+    () => ({
+      data: [{ ...SUMMARY, not_awaited: 5, successes: 120, failures: 3, failure_rate: 0.0244 }],
+    }),
+  ],
+  [
+    "/mcp/logs/evt-accepted",
+    () => ({ ...call(ACCEPTED), notification: 0, arguments: null, result: null }),
+  ],
+  ["/mcp/logs", () => ({ data: [call(), call(NOTIFICATION), call(ACCEPTED)], next_cursor: null })],
+]);
+
+/**
+ * A call no reply was awaited for says so in its row and its detail, and the
+ * summary counts it apart from the failure rate rather than as a success
+ * (#3526, #3529).
+ */
+export const CallsNoReplyWasAwaitedForAreMarkedAndCountedApart: Story = {
+  render: () => (
+    <Harness fetchStub={notAwaited}>
+      <McpLogs />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const copy = en.pages.mcpLogs;
+    await canvas.findByText(copy.notAwaited.notification);
+    await expect(canvas.getByText(copy.notAwaited.accepted)).toBeInTheDocument();
+    // the accepted call reads as accepted, not as the success stored beside it
+    await expect(canvas.getByText(copy.statuses.accepted)).toBeInTheDocument();
+    await expect(canvas.getByText("5 not awaited, left out of the rates")).toBeInTheDocument();
+    await expect(canvas.getByText("2.4% of awaited calls")).toBeInTheDocument();
+    await expectListTable(canvasElement, "MCP Logs");
+    await userEvent.click(
+      await canvas.findByRole("button", { name: /Open call details for list_repos/ }),
+    );
+    const drawer = within(await canvas.findByRole("complementary", { name: "MCP call details" }));
+    await expect(await drawer.findByText(copy.notAwaitedDetail.accepted)).toBeInTheDocument();
+  },
+};
+
+/** The same marks in the dashboard's language. */
+export const CallsNoReplyWasAwaitedForInRussian: Story = {
+  globals: { locale: "ru" },
+  render: () => (
+    <Harness fetchStub={notAwaited}>
+      <McpLogs />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const copy = ru.pages.mcpLogs;
+    await canvas.findByText(copy.notAwaited.notification);
+    await expect(canvas.getByText(copy.notAwaited.accepted)).toBeInTheDocument();
+    await expect(canvas.getByText(copy.statuses.accepted)).toBeInTheDocument();
+  },
+};
+
+/**
+ * A body forwarded unread to an ungoverned server is one row with no tool: it
+ * says its calls are not itemised, in the row and in the detail (#3528).
+ */
+export const ABodyForwardedUnreadIsOneRowWithNoTool: Story = {
+  render: () => (
+    <Harness
+      fetchStub={routes([
+        ["/mcp/logs/summary", () => ({ data: [{ ...SUMMARY, not_awaited: 1 }] })],
+        [
+          "/mcp/logs/evt-unread",
+          () => ({
+            ...call({ event_id: "evt-unread", tool: "", outcome: "unread" }),
+            arguments: null,
+            result: null,
+          }),
+        ],
+        [
+          "/mcp/logs",
+          () => ({
+            data: [call({ event_id: "evt-unread", tool: "", outcome: "unread" })],
+            next_cursor: null,
+          }),
+        ],
+      ])}
+    >
+      <McpLogs />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const copy = en.pages.mcpLogs;
+    await canvas.findByText(copy.notAwaited.unread);
+    await expect(canvas.getByText(copy.statuses.unread)).toBeInTheDocument();
+    await expect(canvas.getByText(copy.noTool)).toBeInTheDocument();
+    await expect(canvas.getByText("1 not awaited, left out of the rates")).toBeInTheDocument();
+    await userEvent.click(
+      await canvas.findByRole("button", { name: /Open call details for not itemised/ }),
+    );
+    const drawer = within(await canvas.findByRole("complementary", { name: "MCP call details" }));
+    await expect(await drawer.findByText(copy.notAwaitedDetail.unread)).toBeInTheDocument();
+  },
+};
+
+/**
+ * A notification the server refused was not delivered: its detail says the
+ * summary counts it as a failure, not that it is left out.
+ */
+export const AFailedNotificationCountsAsAFailure: Story = {
+  render: () => (
+    <Harness
+      fetchStub={routes([
+        ["/mcp/logs/summary", () => ({ data: [SUMMARY] })],
+        [
+          "/mcp/logs/evt-note",
+          () => ({
+            ...call({ ...NOTIFICATION, status: "transport_error" }),
+            arguments: null,
+            result: null,
+          }),
+        ],
+        [
+          "/mcp/logs",
+          () => ({
+            data: [call({ ...NOTIFICATION, status: "transport_error" })],
+            next_cursor: null,
+          }),
+        ],
+      ])}
+    >
+      <McpLogs />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const copy = en.pages.mcpLogs;
+    await canvas.findByText(copy.notAwaited.notification);
+    await userEvent.click(
+      await canvas.findByRole("button", { name: /Open call details for notify_build/ }),
+    );
+    const drawer = within(await canvas.findByRole("complementary", { name: "MCP call details" }));
+    await expect(
+      await drawer.findByText(copy.notAwaitedDetail.notificationFailed),
+    ).toBeInTheDocument();
+    await expect(drawer.queryByText(copy.notAwaitedDetail.notification)).toBeNull();
+  },
+};

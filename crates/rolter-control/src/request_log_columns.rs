@@ -322,6 +322,8 @@ pub(crate) struct McpColumns {
     pub error_scopes: bool,
     /// `047_mcp_log_notification.sql`
     pub notification: bool,
+    /// `051_mcp_log_outcome.sql`
+    pub outcome: bool,
 }
 
 #[cfg_attr(not(feature = "postgres"), allow(dead_code))]
@@ -331,6 +333,7 @@ impl McpColumns {
     pub(crate) const ALL: Self = Self {
         error_scopes: true,
         notification: true,
+        outcome: true,
     };
 
     pub(crate) fn from_names<'a>(names: impl Iterator<Item = &'a str>) -> Self {
@@ -339,6 +342,7 @@ impl McpColumns {
             match name {
                 "error_scopes" => found.error_scopes = true,
                 "notification" => found.notification = true,
+                "outcome" => found.outcome = true,
                 _ => {}
             }
         }
@@ -351,8 +355,8 @@ impl McpColumns {
 }
 
 /// Whether `mcp_tool_call_logs` has the columns a hand-applied migration adds
-/// (#3375, #3466), remembered per client so a detail read does not probe each
-/// time. Applying `042` or `047` is an operator's step on an existing deployment
+/// (#3375, #3466, #3529), remembered per client so an MCP log read does not probe each
+/// time. Applying `042`, `047` or `051` is an operator's step on an existing deployment
 /// and may come after the control plane is upgraded, so a select that names a
 /// column unconditionally would fail every detail read until then, as the
 /// invocation list's optional columns once did (#2903, see this module).

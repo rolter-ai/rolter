@@ -1006,7 +1006,7 @@ A valid bound is forwarded byte for byte, so it means what it always meant. The 
 - `outcome` is `ok` / `error` / `timeout`; `error_kind` gives a coarse label (`rate_limited`, `upstream_error`, `connect_error`, `timeout`). An `llm_call` event adds two for a status the free probe would have called healthy: `wrong_endpoint` (`404`/`405`) and `key_refused` (`401`/`403`); see [How the llm-call check is aimed and judged](../deployment/configuration.md#how-the-llm-call-check-is-aimed-and-judged).
 - Writes reuse the same **async, batched, off-hot-path** writer and ClickHouse endpoint as `request_logs`; when no `clickhouse_url` is configured the sink is a no-op.
 - Counters `rolter_health_events_written_total` and `rolter_health_events_dropped_total` track the writer, mirroring the request-log counters.
-- `rolter_mcp_events_written_total` and `rolter_mcp_events_dropped_total` do the same for the MCP tool-call writer (see [MCP servers, OAuth grants and sessions](mcp-oauth.md#the-tool-call-log)).
+- `rolter_mcp_events_written_total` and `rolter_mcp_events_dropped_total` do the same for the MCP tool-call writer (see [MCP servers, OAuth grants and sessions](mcp-oauth.md#the-tool-call-log)). `rolter_mcp_unread_bodies_total{reason}` counts the MCP bodies forwarded unread to an ungoverned server, whose calls have no rows of their own (#3528).
 - This event stream feeds uptime %/MTTR rollups and the dashboard health panel.
 
 #### Passive events are per _attempt_, not per request

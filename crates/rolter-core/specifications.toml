@@ -850,6 +850,8 @@ omissions = [
   "no protocol-version negotiation: `MCP-Protocol-Version` is relayed, never read",
   "no validation of what an allowed message contains, and none of the server's replies",
   "the deprecated HTTP+SSE transport is relayed like any other request, not implemented",
+  "the replies a deprecated HTTP+SSE server sends on its event stream are not matched to the calls posted: a POST it answers 202 with no reply in the body is logged `accepted`",
+  "a body forwarded unread to a server no rule governs (encoded, or not JSON) has its calls not itemised: it is counted in `rolter_mcp_unread_bodies_total` and logged as one `unread` row",
 ]
 tests = [
   "crates/rolter-gateway/src/mcp_proxy.rs::proxy_replaces_client_auth_and_preserves_path_query_and_body",
@@ -857,6 +859,8 @@ tests = [
   "crates/rolter-gateway/src/mcp_proxy.rs::insufficient_scope_from_an_oauth_server_is_the_step_up_answer",
   "crates/rolter-gateway/tests/integration.rs::mcp_proxy_binds_virtual_key_owner_to_server_scopes_and_bearer",
   "crates/rolter-gateway/tests/integration.rs::mcp_proxy_refuses_a_content_encoded_body_to_a_governed_server",
+  "crates/rolter-gateway/src/mcp_proxy.rs::a_legacy_sse_call_answered_202_is_accepted_with_its_reply_on_the_stream",
+  "crates/rolter-gateway/src/mcp_proxy.rs::a_body_forwarded_unread_is_counted_and_recorded_as_unread",
 ]
 
 [[spec]]
