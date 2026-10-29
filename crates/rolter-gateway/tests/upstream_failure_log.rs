@@ -569,8 +569,10 @@ async fn a_request_that_succeeded_after_a_failover_records_its_attempts() {
     assert_eq!(row["provider"], "up", "{row}");
     assert_eq!(row["error"], "", "{row}");
     // the classic pool assigns no variant, and the empty field is left out
-    // so a ClickHouse without `048` takes the row as before (#3505)
+    // so a ClickHouse without `048` takes the row as before (#3505), and
+    // the same for the sampled variant and `050` (#3547)
     assert!(row.get("first_variant").is_none(), "{row}");
+    assert!(row.get("sampled_variant").is_none(), "{row}");
 }
 
 /// A request the split assigned to one variant and another variant answered
@@ -629,6 +631,75 @@ async fn a_variant_failover_records_the_variant_first_dialled() {
     assert_eq!(row["attempts"], 1, "{row}");
     assert_eq!(row["first_variant"], "chosen", "{row}");
     assert_eq!(row["variant"], "chosen", "{row}");
+}
+
+/// The variant the split sampled is recorded beside the one dialled first
+/// (#3547). `primary` takes every sample; its first request fails over to
+/// `spare` and trips its breaker, so the next request sampled for it is
+/// dialled to `spare` first. That row records `sampled_variant` `primary`
+/// and `first_variant` `spare`, which by-variant's sampled and assigned
+/// counts tell apart.
+#[tokio::test]
+async fn a_request_sampled_for_an_open_breaker_records_the_sampled_variant() {
+    let down = upstream(
+        "/v1/chat/completions",
+        StatusCode::SERVICE_UNAVAILABLE,
+        json!({"error": {"message": "down"}}),
+        None,
+    )
+    .await;
+    let up = upstream(
+        "/v1/chat/completions",
+        StatusCode::OK,
+        json!({"id": "x", "choices": [], "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}}),
+        None,
+    )
+    .await;
+    let rows = Rows::default();
+    let mut config = base_config(rows.serve().await);
+    // the breaker alone skips `primary`: no cooldown parks it
+    config.cooldown.base_secs = 0;
+    config.breaker.enabled = true;
+    config.breaker.failure_threshold = 1;
+    config.breaker.open_secs = 3600;
+    config.providers = vec![
+        provider("down", ProviderKind::OpenaiCompatible, down.addr),
+        provider("up", ProviderKind::OpenaiCompatible, up.addr),
+    ];
+    let variant = |name: &str, weight: u32, provider: &str| rolter_core::Variant {
+        name: name.into(),
+        weight,
+        targets: vec![target(provider)],
+        params: Default::default(),
+    };
+    let mut split = route("split", Vec::new());
+    split.variants = vec![variant("primary", 1, "down"), variant("spare", 0, "up")];
+    config.routes = vec![split];
+    let gw = gateway(&config).await;
+
+    // the breaker is closed: `primary` is sampled and dialled first
+    let response = chat(gw, "sampled-trips", "split").await;
+    assert_eq!(response.status(), 200);
+    let _ = response.bytes().await.unwrap();
+    let row = rows.row_for("sampled-trips").await;
+    assert_eq!(row["sampled_variant"], "primary", "{row}");
+    assert_eq!(row["first_variant"], "primary", "{row}");
+    assert_eq!(row["variant"], "spare", "{row}");
+
+    // now open: `primary` is still sampled, and skipped
+    let response = chat(gw, "sampled-skipped", "split").await;
+    assert_eq!(response.status(), 200);
+    let _ = response.bytes().await.unwrap();
+    let row = rows.row_for("sampled-skipped").await;
+    assert_eq!(row["attempts"], 1, "{row}");
+    assert_eq!(row["sampled_variant"], "primary", "{row}");
+    assert_eq!(row["first_variant"], "spare", "{row}");
+    assert_eq!(row["variant"], "spare", "{row}");
+    assert_eq!(
+        down.calls.load(Ordering::SeqCst),
+        1,
+        "the open breaker kept the second request off `down`"
+    );
 }
 
 /// A connection that fails before any status line has no upstream status.

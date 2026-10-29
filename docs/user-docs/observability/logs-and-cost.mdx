@@ -584,12 +584,15 @@ These fields of a row come from ClickHouse files that an existing deployment app
 | `turns`                 | number | `031_request_shape.sql`        | `0`                             |
 | `cache_usage_reported`  | number | `045_cache_usage_reported.sql` | `0`                             |
 | `first_variant`         | string | `048_first_variant.sql`        | `""` (empty string)             |
+| `sampled_variant`       | string | `050_sampled_variant.sql`      | `""` (empty string)             |
 
 `guardrail_events` lists what each guardrail did to the request, as `<action>:<rule name>` entries (`blocked:`, `redacted:` or `annotated:`) and `provider_blocked:<provider name>` / `provider_transformed:<provider name>` for the guardrail provider (the bare `provider_blocked` / `provider_transformed` on rows that predate the name, or for a provider with none); it is empty for a request no guardrail touched. See [What each rule did](/security/guardrails#what-each-rule-did).
 
 `fallback_reason` is the class of the failure that sent the request on to the target that answered it: `throttled`, `timeout`, `transport`, `server_error`, `refusal` or `refusal:<category>`. It is empty when the first dial answered. **LLM Logs** shows a non-empty one as **Fallback reason** in the **Routing** group of the detail drawer. See [Fallback targets](/reliability/fallback-targets#seeing-why-a-request-reached-a-fallback).
 
 `first_variant` is the weighted [variant](/concepts/providers-and-routes) the request was first dialled to. That is usually the variant the route's weights picked, but not always: a variant skipped while its breaker is open or its targets are parked is never dialled first. It differs from `variant` when the request failed over to another variant's target, and is empty on a route without variants. The route sheet's **Assigned** share is read from it (see [Dashboard analytics](/api/dashboard-analytics)).
+
+`sampled_variant` is the variant the route's weights picked for the request, before the gateway skipped any variant whose breaker was open or whose targets were parked or unhealthy. It differs from `first_variant` exactly when the gateway routed the request around the variant it sampled, and is empty on a route without variants. The route sheet's **Sampled** share is read from it. On a realtime turn row it is not a weighted draw: a session leads with the route's first variant with a non-zero weight, and every turn row of the session records that variant, so Sampled and Assigned are counted over the same rows ([#3553](https://github.com/rolter-ai/rolter/issues/3553) tracks sampling realtime sessions by weight).
 
 `plugin_events` lists what each plugin did to the request, as `<outcome>:<slug>` entries (`allowed`, `blocked`, `transformed` or `annotated`) and `error:<slug>:<kind>` for a call that got no verdict; it is empty for a request no plugin was consulted on. See [What each plugin did](/configuration/plugins#what-each-plugin-did).
 

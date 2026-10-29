@@ -284,6 +284,8 @@ pub async fn realtime(
         provider: selected.provider.clone(),
         target: selected.target.clone(),
         variant: selected.variant.clone(),
+        first_variant: selected.first_variant.clone(),
+        sampled_variant: selected.sampled_variant.clone(),
         request_id,
         trace_id,
         key_digest: virtual_key
@@ -320,6 +322,12 @@ struct SelectedSession {
     /// the variant the session was pinned to; empty on a route without
     /// variants
     variant: String,
+    /// the variant the walk dialled first, which differs from `variant` when
+    /// the session failed over to another variant's target (#3543)
+    first_variant: String,
+    /// the variant the walk took as primary, before skipping one whose
+    /// targets are parked, unhealthy or behind an open breaker (#3547)
+    sampled_variant: String,
 }
 
 /// One target a session may be pinned to, in the order it is tried.
@@ -352,6 +360,9 @@ async fn connect_selected(
     // follow it: a restricted fallback is dialled only after a failure it
     // takes over (#1584, #3322)
     let mut last_failure: Option<Failure> = None;
+    // the variant of the first dial, kept across failovers as on the HTTP
+    // rows (#3543); empty on the classic pool
+    let mut first_variant: Option<&str> = None;
 
     while let Some(candidate) = walk.next(last_failure.as_ref()) {
         let Candidate {
@@ -378,6 +389,7 @@ async fn connect_selected(
         // the HTTP path does
         let _ = state.breaker.allows(&namespace, index);
         let mut load = state.loads.begin(&namespace, index);
+        let first_variant = *first_variant.get_or_insert(variant);
         match connect_async(request).await {
             Ok((upstream, _)) => {
                 load.mark_ok();
@@ -397,6 +409,8 @@ async fn connect_selected(
                     provider: target.provider.clone(),
                     target: upstream_model.to_string(),
                     variant: variant.to_string(),
+                    first_variant: first_variant.to_string(),
+                    sampled_variant: walk.sampled.to_string(),
                 });
             }
             Err(error) => {
@@ -455,6 +469,9 @@ struct CandidateWalk<'w, 'a> {
     candidates: Vec<(usize, usize)>,
     /// pool indexes, or positions in `candidates`, already handed out
     tried: Vec<usize>,
+    /// the variant the walk leads with, before any skipping (#3547); empty
+    /// for the classic pool
+    sampled: &'a str,
 }
 
 impl<'w, 'a> CandidateWalk<'w, 'a> {
@@ -476,6 +493,7 @@ impl<'w, 'a> CandidateWalk<'w, 'a> {
             loads: Vec::new(),
             candidates: Vec::new(),
             tried: Vec::new(),
+            sampled: "",
         };
         if !entry.route.has_variants() {
             walk.loads = state.loads.snapshot(model, entry.route.targets.len());
@@ -488,6 +506,11 @@ impl<'w, 'a> CandidateWalk<'w, 'a> {
             return walk;
         }
         let primary = entry.route.sample_variant(0.0).unwrap_or(0);
+        walk.sampled = entry
+            .route
+            .variants
+            .get(primary)
+            .map_or("", |variant| variant.name.as_str());
         for variant_index in entry.route.fallback_order(primary) {
             let Some(variant) = entry.route.variants.get(variant_index) else {
                 continue;
@@ -636,6 +659,8 @@ async fn relay(
         provider,
         target,
         variant: _,
+        first_variant: _,
+        sampled_variant: _,
     } = session;
     let closing = state.realtime_sessions.closing.clone();
     let channels = meter.spawn();

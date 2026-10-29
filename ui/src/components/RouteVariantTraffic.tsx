@@ -26,17 +26,28 @@ import { useFormat } from "@/lib/i18n/format";
 import { trafficSplit } from "@/lib/route-variants";
 import { useTimeWindowOptions, windowBounds, type TimeWindow } from "@/lib/time-window";
 
-// the assigned and first-attempt shares each add a column when the read
-// carries them
-const grid = (assigned: boolean, first: boolean) =>
+// the sampled, assigned and first-attempt shares each add a column when the
+// read carries them
+const grid = (sampled: boolean, assigned: boolean, first: boolean) =>
   [
     primaryColumn(1.4),
     "84px",
+    ...(sampled ? ["84px"] : []),
     ...(assigned ? ["84px"] : []),
     "84px",
     ...(first ? ["84px"] : []),
     "84px 70px 112px",
   ].join(" ");
+
+// the width the grid above needs before it squeezes a column: the primary
+// column's floor (11rem), the fixed columns, a 12px gap between columns and
+// the row's 16px side padding. the list table's default floor (760px) is
+// narrower than the six-column grid, so every case passes its own
+const minWidth = (sampled: boolean, assigned: boolean, first: boolean) => {
+  const shares = 2 + Number(sampled) + Number(assigned) + Number(first);
+  const columns = 1 + shares + 3;
+  return 176 + shares * 84 + 84 + 70 + 112 + (columns - 1) * 12 + 32;
+};
 
 /** one row of the table: a configured variant, or traffic no configured variant explains */
 interface TrafficLine {
@@ -48,9 +59,14 @@ interface TrafficLine {
 
 const num = (v: number | string | null | undefined) => Number(v ?? 0);
 
+/** a by-variant row's key: two organizations may each have a variant of one name (#3548) */
+const rowKey = (orgId: string, variant: string) => `${orgId}\u0000${variant}`;
+
 /** whether some line carries a figure for `field`: a null or absent one is unknown */
-const carries = (lines: TrafficLine[], field: "first_attempt_requests" | "assigned_requests") =>
-  lines.some((line) => line.row?.[field] !== undefined && line.row[field] !== null);
+const carries = (
+  lines: TrafficLine[],
+  field: "first_attempt_requests" | "assigned_requests" | "sampled_requests",
+) => lines.some((line) => line.row?.[field] !== undefined && line.row[field] !== null);
 
 /**
  * What each saved variant of a route actually served (#3342), beside the split
@@ -67,7 +83,11 @@ const carries = (lines: TrafficLine[], field: "first_attempt_requests" | "assign
  * often fails over keeps its assignments there, and a variant that answered
  * nothing still has a line. It is not the sampled split: a variant the
  * gateway skips while its breaker is open or its targets are parked is
- * dialled first by none of the requests sampled for it. A ClickHouse that cannot tell a first attempt from a
+ * dialled first by none of the requests sampled for it. The sampled share
+ * (#3547) is the split itself, the requests the weights picked each variant
+ * for before any skipping, so it sits next to the configured share, and a
+ * variant the gateway routes around reads above its assigned share there. A
+ * ClickHouse that cannot tell a first attempt from a
  * failover, or that does not record the first variant, sends no count for
  * that column, and the column is left out rather than drawn as a guess.
  *
@@ -101,14 +121,21 @@ export function RouteVariantTraffic({
   });
   if (saved.length === 0) return null;
 
-  const rows = read.data ?? [];
-  const byName = new Map(rows.map((row) => [row.variant, row]));
+  const all = read.data ?? [];
+  // rows are keyed on the organization too (#3548). taking the first row's
+  // org is right only because the read is narrowed by `project: projectId`
+  // and a project belongs to exactly one org, so every row names the route's
+  // own; a control plane older than the field sends none, which keys every
+  // row on the empty string
+  const orgId = all[0]?.org_id ?? "";
+  const rows = all.filter((row) => (row.org_id ?? "") === orgId);
+  const byKey = new Map(rows.map((row) => [rowKey(orgId, row.variant), row]));
   const split = trafficSplit(saved.map((v) => v.weight));
   const lines: TrafficLine[] = [
     ...saved.map((v, i) => ({
       name: v.name,
       configured: split[i] ?? null,
-      row: byName.get(v.name),
+      row: byKey.get(rowKey(orgId, v.name)),
     })),
     // a variant that served traffic and is no longer configured is still a share of what happened
     ...rows
@@ -120,9 +147,12 @@ export function RouteVariantTraffic({
   const splitKnown = carries(lines, "first_attempt_requests");
   const assignedKnown = carries(lines, "assigned_requests");
   const assignedTotal = lines.reduce((sum, line) => sum + num(line.row?.assigned_requests), 0);
-  const gridColumns = grid(assignedKnown, splitKnown);
+  const sampledKnown = carries(lines, "sampled_requests");
+  const sampledTotal = lines.reduce((sum, line) => sum + num(line.row?.sampled_requests), 0);
+  const gridColumns = grid(sampledKnown, assignedKnown, splitKnown);
+  const tableWidth = minWidth(sampledKnown, assignedKnown, splitKnown);
   const firstServed = lines.reduce((sum, line) => sum + num(line.row?.first_attempt_requests), 0);
-  const unattributed = num(byName.get("")?.requests);
+  const unattributed = num(byKey.get(rowKey(orgId, ""))?.requests);
   const unavailable = read.error instanceof AnalyticsUnavailableError ? read.error : null;
 
   return (
@@ -151,7 +181,7 @@ export function RouteVariantTraffic({
           onRetry={() => void read.refetch()}
           target="route-variant-traffic"
         />
-      ) : served === 0 && assignedTotal === 0 ? (
+      ) : served === 0 && assignedTotal === 0 && sampledTotal === 0 ? (
         <EmptyState
           inline
           uxTarget="route-variant-traffic"
@@ -161,12 +191,17 @@ export function RouteVariantTraffic({
         />
       ) : (
         <>
-          <ListTable label={t("routeSheet.variants.observed.title")}>
+          <ListTable label={t("routeSheet.variants.observed.title")} minWidth={tableWidth}>
             <ListHeader grid={gridColumns}>
               <ListHeaderCell>{t("routeSheet.variants.observed.variant")}</ListHeaderCell>
               <ListHeaderCell className="text-right">
                 {t("routeSheet.variants.observed.configured")}
               </ListHeaderCell>
+              {sampledKnown && (
+                <ListHeaderCell className="text-right">
+                  {t("routeSheet.variants.observed.sampled")}
+                </ListHeaderCell>
+              )}
               {assignedKnown && (
                 <ListHeaderCell className="text-right">
                   {t("routeSheet.variants.observed.assigned")}
@@ -193,11 +228,18 @@ export function RouteVariantTraffic({
             {lines.map((line) => {
               const requests = num(line.row?.requests);
               return (
-                <ListRow key={line.name} grid={gridColumns}>
+                <ListRow key={rowKey(orgId, line.name)} grid={gridColumns}>
                   <ListCell className="truncate font-mono text-xs">{line.name}</ListCell>
                   <ListCell className="text-right font-mono text-xs">
                     {line.configured === null ? "—" : fmt.percent(line.configured, 0)}
                   </ListCell>
+                  {sampledKnown && (
+                    <ListCell className="text-right font-mono text-xs">
+                      {sampledTotal > 0
+                        ? fmt.percent(num(line.row?.sampled_requests) / sampledTotal, 0)
+                        : "—"}
+                    </ListCell>
+                  )}
                   {assignedKnown && (
                     <ListCell className="text-right font-mono text-xs">
                       {assignedTotal > 0
@@ -242,6 +284,7 @@ export function RouteVariantTraffic({
                   ? "routeSheet.variants.observed.noteWithFirstAttempt"
                   : "routeSheet.variants.observed.note",
             )}
+            {sampledKnown && <> {t("routeSheet.variants.observed.noteSampled")}</>}
             {unattributed > 0 && (
               <>
                 {" "}

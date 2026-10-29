@@ -650,6 +650,11 @@ pub(crate) struct SessionMeter {
     pub(crate) provider: String,
     pub(crate) target: String,
     pub(crate) variant: String,
+    /// the variant the session's dial walk dialled first (#3543); it differs
+    /// from `variant` when the session failed over to another variant
+    pub(crate) first_variant: String,
+    /// the variant the dial walk took as primary, before skipping (#3547)
+    pub(crate) sampled_variant: String,
     /// the upgrade request's id; each turn's row appends its ordinal
     pub(crate) request_id: String,
     pub(crate) trace_id: String,
@@ -977,6 +982,8 @@ impl Runner {
             provider: meter.provider.clone(),
             target: meter.target.clone(),
             variant: meter.variant.clone(),
+            first_variant: meter.first_variant.clone(),
+            sampled_variant: meter.sampled_variant.clone(),
             // a turn is streamed to the client as it is generated
             stream: 1,
             unpriced: u8::from(price.is_none()),

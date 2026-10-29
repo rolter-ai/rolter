@@ -244,6 +244,15 @@ pub struct RequestLog {
     /// the field from the rest (`input_format_skip_unknown_fields=1`)
     #[serde(skip_serializing_if = "String::is_empty")]
     pub first_variant: String,
+    /// The variant the route's weighted split sampled as the request's primary
+    /// (#3547), before cooldown, breaker and health skipping. It differs from
+    /// `first_variant` exactly when the loop skipped the sampled variant, so
+    /// by-variant can tell a split that is wrong from a gateway routing around
+    /// a variant. Empty on the classic pool and on every row older than
+    /// `clickhouse/050_sampled_variant.sql`. Not serialized when empty, for
+    /// the same reason as `first_variant`
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub sampled_variant: String,
     pub status: u16,
     pub stream: u8,
     pub cache_hit: u8,
@@ -472,6 +481,7 @@ impl Default for RequestLog {
             target: String::new(),
             variant: String::new(),
             first_variant: String::new(),
+            sampled_variant: String::new(),
             status: 0,
             stream: 0,
             cache_hit: 0,
