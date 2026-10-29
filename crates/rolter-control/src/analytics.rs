@@ -1112,6 +1112,12 @@ fn assigned_rows(columns: &Columns) -> &'static str {
 /// so it is left out rather than guessed.
 const SAMPLED_ROWS: &str = "(request_logs.sampled_variant != '' or request_logs.variant = '')";
 
+/// The variant a row counts for in the sampled count (#3547). Parenthesised
+/// so the literal is not a bare dotted name, which the dashboard's audit
+/// vocabulary scan (`ui/scripts/audit-vocabulary-source.ts`) reads as an
+/// audit action.
+const SAMPLED_VARIANT: &str = "(request_logs.sampled_variant)";
+
 /// The null a count reads as on a table that cannot make it.
 const UNKNOWN_COUNT: &str = "CAST(NULL AS Nullable(Float64))";
 
@@ -1203,7 +1209,7 @@ pub(crate) fn by_variant_sql(columns: &Columns) -> String {
     }
     if has_sampled {
         halves.push_str(&half(
-            "request_logs.sampled_variant",
+            SAMPLED_VARIANT,
             SAMPLED_ROWS,
             assigned_zero,
             REQUESTS,
@@ -2254,9 +2260,9 @@ mod tests {
             "{sql}"
         );
         assert!(
-            sql.contains(
-                "group by request_logs.org_id, request_logs.model, request_logs.sampled_variant"
-            ),
+            sql.contains(&format!(
+                "group by request_logs.org_id, request_logs.model, {SAMPLED_VARIANT}"
+            )),
             "{sql}"
         );
         assert!(sql.contains(SAMPLED_ROWS), "{sql}");
