@@ -313,7 +313,8 @@ function useLogFilters() {
      * the rest of the address alone. A filter the view does not name is
      * cleared: applying it must give the view, not the view plus what was
      * already picked, and that includes the Cost checks (unpriced, withheld,
-     * unknown usage), which a view does not hold (#3346). A lookup would mask
+     * unknown usage), which a view does not hold (#3346), and the guardrail and
+     * plugin outcomes the Guardrails and Plugins screens link here (#3405). A lookup would mask
      * the filters, so it goes too.
      */
     applyView: (view: SavedViewFilters) =>
@@ -327,6 +328,8 @@ function useLogFilters() {
         unpriced: "",
         withheld: "",
         usage_unknown: "",
+        guardrail: "",
+        plugin: "",
         request_id: "",
         trace_id: "",
       }),

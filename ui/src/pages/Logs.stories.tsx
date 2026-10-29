@@ -3422,11 +3422,13 @@ const withSavedView = recording(
  * counted, not named. The log is then read with the view's window, key and
  * attribution, and with no cursor or request id. The Cost checks are not part
  * of a view, so each one ticked beforehand is cleared with the rest instead of
- * narrowing the log beyond what the view says (#3346).
+ * narrowing the log beyond what the view says (#3346); so are the guardrail and
+ * plugin outcomes (#3405).
  */
 export const ApplyingASavedViewSetsTheAddress: Story = {
   parameters: {
-    address: "/logs?request_id=req-ok&unpriced=true&withheld=true&usage_unknown=true",
+    address:
+      "/logs?request_id=req-ok&unpriced=true&withheld=true&usage_unknown=true&guardrail=pii-block&plugin=redact",
   },
   render: () => (
     <Harness fetchStub={withSavedView.stub}>
@@ -3448,7 +3450,7 @@ export const ApplyingASavedViewSetsTheAddress: Story = {
     // the lookup would have masked the filters, so it is gone, and so is every
     // Cost check the view does not name
     await expect(address.has("request_id")).toBe(false);
-    for (const flag of ["unpriced", "withheld", "usage_unknown"]) {
+    for (const flag of ["unpriced", "withheld", "usage_unknown", "guardrail", "plugin"]) {
       await expect(address.has(flag)).toBe(false);
     }
     await expect(await canvas.findByRole("status")).toHaveTextContent(
@@ -3460,7 +3462,7 @@ export const ApplyingASavedViewSetsTheAddress: Story = {
       expect(sent.get("customer")).toBe("cust-1");
       expect(sent.get("status")).toBe("error");
       expect(sent.has("request_id")).toBe(false);
-      for (const flag of ["unpriced", "withheld", "usage_unknown"])
+      for (const flag of ["unpriced", "withheld", "usage_unknown", "guardrail", "plugin"])
         expect(sent.has(flag)).toBe(false);
       const span = Date.now() - Date.parse(sent.get("since") ?? "");
       expect(span).toBeGreaterThan(6.9 * 24 * 3600_000);
