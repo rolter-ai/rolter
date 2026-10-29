@@ -329,11 +329,15 @@ fn unavailable(label: &str, failure: CallFailure) -> Verdict {
 /// is shown.
 ///
 /// A transcription's `transcript.text.done` event carries the whole text again,
-/// so when one arrives its text is the answer rather than a second copy
-/// appended to the deltas.
+/// and a diarized one's `transcript.text.segment` events carry it once more,
+/// per speaker. The deltas are what the caller is shown as they arrive, so
+/// they are always judged; the `done` and segment text are added when they
+/// differ from the deltas, so neither copy can carry text the other lacks
+/// past the providers, and an identical copy is not judged twice.
 pub fn stream_text(body: &[u8]) -> String {
     let mut text = String::new();
-    let mut transcript_done: Option<String> = None;
+    let mut transcript_done = String::new();
+    let mut transcript_segments = String::new();
     let source = String::from_utf8_lossy(body);
     for line in source.lines() {
         let Some(data) = line.strip_prefix("data:") else {
@@ -346,17 +350,29 @@ pub fn stream_text(body: &[u8]) -> String {
         let Ok(event) = serde_json::from_str::<Value>(data) else {
             continue;
         };
-        if event.get("type").and_then(Value::as_str) == Some("transcript.text.done") {
-            if let Some(done) = event.get("text").and_then(Value::as_str) {
-                transcript_done
-                    .get_or_insert_with(String::new)
-                    .push_str(done);
+        let copy = match event.get("type").and_then(Value::as_str) {
+            Some("transcript.text.done") => Some(&mut transcript_done),
+            Some("transcript.text.segment") => Some(&mut transcript_segments),
+            _ => None,
+        };
+        if let Some(copy) = copy {
+            if let Some(fragment) = event.get("text").and_then(Value::as_str) {
+                copy.push_str(fragment);
             }
             continue;
         }
         collect_event_text(&event, &mut text);
     }
-    transcript_done.unwrap_or(text)
+    let deltas = text.clone();
+    for copy in [transcript_done, transcript_segments] {
+        if !copy.is_empty() && copy != deltas && !text.ends_with(&copy) {
+            if !text.is_empty() {
+                text.push('\n');
+            }
+            text.push_str(&copy);
+        }
+    }
+    text
 }
 
 fn collect_event_text(event: &Value, text: &mut String) {
@@ -879,8 +895,8 @@ data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"thinking_delta\",\
         assert_eq!(stream_content(b"garbage")["text"], json!(""));
     }
 
-    /// A streamed transcription is judged as its text: the deltas joined, or
-    /// the `done` event's whole text once it arrives, never both (#3432).
+    /// A streamed transcription is judged as its text: the deltas joined, and
+    /// the `done` or segment text only where it differs from them (#3432).
     #[test]
     fn stream_text_reads_a_streamed_transcription() {
         let deltas = b"data: {\"type\":\"transcript.text.delta\",\"delta\":\"my card \"}\n\n\
@@ -890,6 +906,14 @@ data: {\"type\":\"transcript.text.delta\",\"delta\":\"is 4111\"}\n\n";
 data: {\"type\":\"transcript.text.delta\",\"delta\":\"is 4111\"}\n\n\
 data: {\"type\":\"transcript.text.done\",\"text\":\"my card is 4111\"}\n\n";
         assert_eq!(stream_text(done), "my card is 4111");
+        // a `done` event that says more than the deltas is judged too, and
+        // so are the segments of a diarized transcript
+        let differs = b"data: {\"type\":\"transcript.text.delta\",\"delta\":\"hello\"}\n\n\
+data: {\"type\":\"transcript.text.segment\",\"text\":\"hello\",\"speaker\":\"A\"}\n\n\
+data: {\"type\":\"transcript.text.done\",\"text\":\"hello 4111\"}\n\n";
+        assert_eq!(stream_text(differs), "hello\nhello 4111");
+        let segments = b"data: {\"type\":\"transcript.text.segment\",\"text\":\"secret\"}\n\n";
+        assert_eq!(stream_text(segments), "secret");
     }
 
     #[test]
