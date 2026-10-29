@@ -27,6 +27,7 @@ import {
 import { useAuth } from "@/lib/auth";
 import { useDocumentTitle } from "@/lib/document-title";
 import { useFormat } from "@/lib/i18n/format";
+import { ssoFailureKey } from "@/lib/sso-failures";
 import { isOpenMode } from "@/lib/telemetry";
 import { useToast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
@@ -37,27 +38,6 @@ import { cn } from "@/lib/utils";
  * visitor and the QR encoder behind it is needed by almost none of them.
  */
 const SignInEnrolment = lazy(() => import("@/components/SignInEnrolment"));
-
-/** the refusal codes `/auth/sso/{slug}/callback` sends (`SsoFailure` in `sso.rs`) */
-const SSO_ERRORS = [
-  "idp_error",
-  "state_expired",
-  "sso_disabled",
-  "unknown_provider",
-  "no_mapped_group",
-  "account_deactivated",
-  "account_outside_org",
-  "idp_verification_failed",
-  "not_configured",
-  "internal_error",
-] as const;
-
-/** a code this dashboard has no wording for is still an SSO failure, not a blank screen */
-function ssoErrorKey(code: string): (typeof SSO_ERRORS)[number] {
-  return (SSO_ERRORS as readonly string[]).includes(code)
-    ? (code as (typeof SSO_ERRORS)[number])
-    : "internal_error";
-}
 
 /**
  * Guesses one challenge allows, matching `MAX_CHALLENGE_ATTEMPTS` in
@@ -165,7 +145,7 @@ export default function Login() {
     // a code in the address bar outlives the redeeming of it in history
     window.history.replaceState(null, "", window.location.pathname + window.location.hash);
     if (ssoError) {
-      setSsoNotice({ key: `auth.sso.errors.${ssoErrorKey(ssoError)}`, slug: params.get("sso") });
+      setSsoNotice({ key: ssoFailureKey(ssoError), slug: params.get("sso") });
       return;
     }
     setPending(true);
@@ -177,7 +157,7 @@ export default function Login() {
             err instanceof ApiError && err.code === "invalid_exchange_code"
               ? "auth.sso.exchangeExpired"
               : err instanceof ApiError && err.status < 500
-                ? "auth.sso.errors.internal_error"
+                ? ssoFailureKey("internal_error")
                 : "auth.errors.unavailable",
           slug: null,
         });
