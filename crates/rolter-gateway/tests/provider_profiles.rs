@@ -139,6 +139,17 @@ async fn replay(profile: &Profile) {
         .await
         .unwrap();
     let kind = (profile.kind, profile.source);
+    if let Source::Fetched(date) = profile.source {
+        let shaped = date.len() == 10
+            && date.char_indices().all(|(i, c)| {
+                if i == 4 || i == 7 {
+                    c == '-'
+                } else {
+                    c.is_ascii_digit()
+                }
+            });
+        assert!(shaped, "{kind:?}: fetched on '{date}', not YYYY-MM-DD");
+    }
     assert_eq!(answered.status(), 200, "{kind:?}");
     let body: Value = answered.json().await.unwrap();
     assert_eq!(
