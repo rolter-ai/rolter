@@ -390,6 +390,183 @@ async fn a_bootstrap_slug_is_refused_to_every_database_row() {
     }
 }
 
+/// An org's provider, group and route that a bootstrap file later repeats as
+/// global rows are still the org's own (#3516): its admin edits and deletes
+/// them, and the model list names the org's route as stored and only the
+/// file's as config.
+#[tokio::test]
+async fn an_org_row_a_bootstrap_row_shares_a_name_with_stays_the_orgs() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let token = admin_token();
+    let client = reqwest::Client::new();
+    let send =
+        |base: String, bearer: String, method: reqwest::Method, path: String, body: Value| {
+            let client = client.clone();
+            async move {
+                let resp = client
+                    .request(method, format!("{base}{path}"))
+                    .bearer_auth(bearer)
+                    .json(&body)
+                    .send()
+                    .await
+                    .unwrap();
+                let status = resp.status().as_u16();
+                (status, resp.json::<Value>().await.unwrap_or(Value::Null))
+            }
+        };
+
+    // the org's rows exist first, created while no file names them
+    let before = serve(
+        rolter_control::test_app_with_admin_token(pool.clone(), Some(token.to_string()))
+            .await
+            .unwrap(),
+    )
+    .await;
+    let before = format!("http://{before}");
+    let admin =
+        |method, path: String, body| send(before.clone(), token.to_string(), method, path, body);
+    let (_, org) = admin(
+        reqwest::Method::POST,
+        "/api/v1/orgs".into(),
+        json!({"name": "tenant", "slug": "tenant"}),
+    )
+    .await;
+    let org_id = org["id"].as_str().unwrap().to_string();
+    let (_, team) = admin(
+        reqwest::Method::POST,
+        format!("/api/v1/orgs/{org_id}/teams"),
+        json!({"name": "core"}),
+    )
+    .await;
+    let (_, project) = admin(
+        reqwest::Method::POST,
+        format!("/api/v1/teams/{}/projects", team["id"].as_str().unwrap()),
+        json!({"name": "app"}),
+    )
+    .await;
+    let (status, provider) = admin(
+        reqwest::Method::POST,
+        format!("/api/v1/orgs/{org_id}/providers"),
+        json!({"name": "openai", "slug": "openai", "kind": "openai_compatible",
+               "api_base": "http://127.0.0.1:9"}),
+    )
+    .await;
+    assert_eq!(status, 200, "{provider}");
+    let (status, group) = admin(
+        reqwest::Method::POST,
+        format!("/api/v1/orgs/{org_id}/provider-groups"),
+        json!({"name": "pool", "slug": "pool", "strategy": "round_robin",
+               "members": [{"provider_id": provider["id"]}]}),
+    )
+    .await;
+    assert_eq!(status, 200, "{group}");
+    let (status, route) = admin(
+        reqwest::Method::POST,
+        format!(
+            "/api/v1/projects/{}/routes",
+            project["id"].as_str().unwrap()
+        ),
+        json!({"model": "gpt-4o", "strategy": "round_robin"}),
+    )
+    .await;
+    assert_eq!(status, 200, "{route}");
+
+    // then the control plane starts with a file holding the same names globally
+    let mut file = rolter_core::GatewayConfig::default();
+    file.providers.push(rolter_core::ProviderConfig {
+        name: "openai".to_string(),
+        slug: Some("openai".to_string()),
+        kind: rolter_core::ProviderKind::OpenaiCompatible,
+        api_base: "http://127.0.0.1:8".to_string(),
+        ..Default::default()
+    });
+    file.provider_groups.push(rolter_core::ProviderGroupConfig {
+        name: "pool".to_string(),
+        slug: Some("pool".to_string()),
+        strategy: rolter_core::BalancingStrategy::RoundRobin,
+        members: vec![rolter_core::GroupMember {
+            provider: "openai".to_string(),
+            model: None,
+            weight: 1,
+        }],
+        tenancy: None,
+        ..Default::default()
+    });
+    file.routes.push(
+        serde_json::from_value(json!({
+            "model": "gpt-4o",
+            "targets": [{"provider": "openai", "model": "gpt-4o"}]
+        }))
+        .unwrap(),
+    );
+    let after = serve(
+        rolter_control::test_app_with_file_config(pool.clone(), Some(token.to_string()), file)
+            .await
+            .unwrap(),
+    )
+    .await;
+    let after = format!("http://{after}");
+    let org_uuid: uuid::Uuid = org_id.parse().unwrap();
+    let actors = seed_actors(&pool, org_uuid).await;
+    let manager = |method, path: String, body| {
+        send(
+            after.clone(),
+            actors.manager_bearer.clone(),
+            method,
+            path,
+            body,
+        )
+    };
+
+    let (status, body) = manager(
+        reqwest::Method::PUT,
+        format!("/api/v1/providers/{}", provider["id"].as_str().unwrap()),
+        json!({"api_base": "http://127.0.0.1:10"}),
+    )
+    .await;
+    assert_eq!(status, 200, "the org's own provider: {body}");
+    let (status, body) = manager(
+        reqwest::Method::PUT,
+        format!("/api/v1/provider-groups/{}", group["id"].as_str().unwrap()),
+        json!({"name": "renamed pool"}),
+    )
+    .await;
+    assert_eq!(status, 200, "the org's own group: {body}");
+
+    let (status, models) = send(
+        after.clone(),
+        token.to_string(),
+        reqwest::Method::GET,
+        "/api/v1/models".into(),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, 200, "{models}");
+    let sources: Vec<(Option<&str>, &str)> = models
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|m| m["model"] == "gpt-4o")
+        .map(|m| (m["org_id"].as_str(), m["source"].as_str().unwrap()))
+        .collect();
+    assert_eq!(sources.len(), 2, "{models}");
+    assert!(sources.contains(&(Some(org_id.as_str()), "db")), "{models}");
+    assert!(sources.contains(&(None, "config")), "{models}");
+
+    let (status, body) = manager(
+        reqwest::Method::DELETE,
+        format!("/api/v1/provider-groups/{}", group["id"].as_str().unwrap()),
+        Value::Null,
+    )
+    .await;
+    assert!(
+        (200..300).contains(&status),
+        "the org's own group: {status} {body}"
+    );
+}
+
 #[tokio::test]
 async fn org_slug_is_validated() {
     skip_without_db!();

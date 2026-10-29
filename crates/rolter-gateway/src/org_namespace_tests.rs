@@ -209,6 +209,38 @@ async fn a_refused_connection_parks_only_its_own_orgs_target() {
     assert_eq!(ask(gw, "org-a", "hello").await, (200, "from-a".to_string()));
 }
 
+/// An org's own `chat` and `openai` shadow the deployment-wide rows of the
+/// same names (a control plane's config file) for that org's keys only
+/// (#3516): every other org and a key with no org are served the global rows.
+#[tokio::test]
+async fn an_orgs_own_row_shadows_a_global_row_of_the_same_name_for_its_keys_only() {
+    let (a, a_calls) = upstream("from-org-a").await;
+    let (global, global_calls) = upstream("from-file").await;
+    let mut config = config([format!("http://{a}"), format!("http://{global}")], false);
+    config.cache.enabled = false;
+    // org-b's rows become the file's: no tenancy
+    config.providers[1].tenancy = None;
+    config.routes[1].tenancy = None;
+    config.db_virtual_keys.push(VirtualKeyRecord {
+        key_hash: rolter_auth::hash_key(&config.server.resolve_key_pepper(), &key_of("")),
+        id: "key-global".to_string(),
+        ..Default::default()
+    });
+    let (gw, _) = gateway(&config).await;
+
+    assert_eq!(
+        ask(gw, "org-a", "hello").await,
+        (200, "from-org-a".to_string())
+    );
+    assert_eq!(
+        ask(gw, "org-b", "hello").await,
+        (200, "from-file".to_string())
+    );
+    assert_eq!(ask(gw, "", "hello").await, (200, "from-file".to_string()));
+    assert_eq!(a_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(global_calls.load(Ordering::SeqCst), 2);
+}
+
 /// A snapshot of `routes` and `providers`, given as JSON rows.
 fn snapshot_of(providers: Value, routes: Value) -> crate::state::Snapshot {
     let config: GatewayConfig =
