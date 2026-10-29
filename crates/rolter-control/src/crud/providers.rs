@@ -19,8 +19,8 @@ use rolter_store::postgres::repo::{
 
 use super::{
     explicit_null, invalid_field, log_audit, pool, publish_config_change, require_allowed_egress,
-    require_non_empty, require_not_config_owned, resolve_new_slug, resolve_slug_change, ApiError,
-    ApiResult, Query, SafeJson, SCOPE_MISMATCH,
+    require_non_empty, require_not_config_owned, require_row_not_config_owned, resolve_new_slug,
+    resolve_slug_change, ApiError, ApiResult, Query, SafeJson, SCOPE_MISMATCH,
 };
 use crate::rbac::{authorize, reaches_org, Principal, ScopeChain, ScopeFilter};
 use crate::rbac_matrix::{cap, Requirement};
@@ -989,7 +989,12 @@ async fn update_provider(
             .await?;
         }
     }
-    require_not_config_owned(&state.config_owned.providers, &existing.name, "provider")?;
+    require_row_not_config_owned(
+        &state.config_owned.provider_rows,
+        existing.org_id,
+        &existing.name,
+        "provider",
+    )?;
     if let Some(Some(project_id)) = body.project_id {
         require_scope_project(&state, org_id, project_id).await?;
     }
