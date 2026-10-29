@@ -2769,6 +2769,7 @@ async fn proxy(
         last_provider,
         last_target,
         variant,
+        first_variant,
         attempts,
         fallback_reason,
         inflight_guard,
@@ -2782,6 +2783,7 @@ async fn proxy(
         provider: last_provider,
         target: last_target,
         variant,
+        first_variant,
         status,
         upstream_status: status,
         attempts,
@@ -3184,6 +3186,7 @@ fn unanswered(
         last_error,
         last_status,
         variant,
+        first_variant,
         attempts,
         fallback_reason,
         ..
@@ -3244,6 +3247,7 @@ fn unanswered(
             last_target
         },
         variant,
+        first_variant,
         status,
         upstream_status,
         attempts,
@@ -3536,6 +3540,7 @@ async fn proxy_multipart(
         last_provider,
         last_target,
         variant,
+        first_variant,
         attempts,
         fallback_reason,
         inflight_guard,
@@ -3549,6 +3554,7 @@ async fn proxy_multipart(
         provider: last_provider,
         target: last_target,
         variant,
+        first_variant,
         status,
         upstream_status: status,
         attempts,
@@ -3612,6 +3618,9 @@ struct ForwardOutcome {
     inflight_guard: Option<crate::load::LoadGuard>,
     /// chosen variant name for attribution
     variant: String,
+    /// the variant the first attempt dialled, which the weighted split
+    /// assigned; empty on the classic pool and when nothing was dialled (#3505)
+    first_variant: String,
     provider_key_fingerprint: Option<String>,
     /// upstream attempts made, the one that answered included. Saturates, so
     /// a retry budget past 255 cannot wrap the count to zero
@@ -4385,6 +4394,7 @@ impl<'f> ForwardLoop<'f> {
                 last_status: None,
                 inflight_guard: None,
                 variant: String::new(),
+                first_variant: String::new(),
                 provider_key_fingerprint: None,
                 attempts: 0,
                 fallback_reason: String::new(),
@@ -4416,6 +4426,12 @@ impl<'f> ForwardLoop<'f> {
         key: &'a PickedKey,
     ) -> Dial<'a> {
         self.out.last_attempt_recorded = false;
+        // the variant loop names the variant before it dials, so the first
+        // attempt's is the one the split assigned (#3505); the classic pool
+        // has none and copies nothing
+        if self.out.attempts == 0 {
+            self.out.first_variant.clone_from(&self.out.variant);
+        }
         self.out.attempts = self.out.attempts.saturating_add(1);
         Dial {
             attempt,

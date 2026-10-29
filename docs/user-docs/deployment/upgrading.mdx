@@ -145,6 +145,8 @@ Eight columns of `request_logs` are added by files an existing deployment applie
 
 `045_cache_usage_reported.sql` adds `cache_usage_reported` the same way: whether the provider stated its prompt-cache reads on a request, zero included, so the Dashboard's prompt-cache read share leaves out the requests of a provider that does not report them ([#3410](https://github.com/rolter-ai/rolter/issues/3410)). Until it is applied a gateway drops the field and the share stays over every prompt token, as before; rows written before it count as not measured once it is.
 
+`048_first_variant.sql` adds `first_variant` the same way: the weighted variant a request was first dialled to, so the route sheet can show the share the split assigned each variant beside the share it answered ([#3505](https://github.com/rolter-ai/rolter/issues/3505)). Until it is applied a gateway drops the field and by-variant answers `assigned_requests: null`; rows written before it count for the variant that answered them when they did not fail over.
+
 `022_param_adjustments.sql` adds `param_adjustments` the same way: the request parameters a translated request did not forward as sent (see [Adjusted parameters](/api/overview#adjusted-parameters)). Until it is applied a gateway leaves the field out of the rows it writes and loses only those entries; the `x-rolter-param-adjustments` response header does not depend on it.
 
 `042_mcp_log_error_scopes.sql` adds `error_scopes` to `mcp_tool_call_logs`: the OAuth scopes an MCP server asked for when it refused a call with `insufficient_scope`, which the MCP Logs detail uses to offer the step-up for exactly those. Until it is applied a gateway drops the field and the log detail shows no scopes; nothing else changes.

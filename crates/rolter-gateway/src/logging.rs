@@ -233,6 +233,16 @@ pub struct RequestLog {
     /// chosen variant name for A/B attribution; empty on the classic single-pool
     /// path (a route with no variants)
     pub variant: String,
+    /// The variant the request was first dialled to, which the weighted split
+    /// assigned it (#3505). It differs from `variant` exactly when the request
+    /// failed over to another variant's target, so by-variant can report the
+    /// share the router gave a variant beside the share it answered. Empty on
+    /// the classic pool, on a row that never dialled, and on every row older
+    /// than `clickhouse/048_first_variant.sql`. Not serialized when empty, so
+    /// a ClickHouse without that file keeps accepting those rows, and drops
+    /// the field from the rest (`input_format_skip_unknown_fields=1`)
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub first_variant: String,
     pub status: u16,
     pub stream: u8,
     pub cache_hit: u8,
@@ -460,6 +470,7 @@ impl Default for RequestLog {
             route_namespace: None,
             target: String::new(),
             variant: String::new(),
+            first_variant: String::new(),
             status: 0,
             stream: 0,
             cache_hit: 0,

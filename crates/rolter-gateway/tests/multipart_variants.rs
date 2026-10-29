@@ -358,6 +358,7 @@ async fn a_transcription_dials_the_sampled_variants_target_and_logs_it() {
         assert_eq!(response.status(), 200, "{:?}", response.text().await);
         let row = rows.row_for(&id).await;
         assert_eq!(row["variant"], "chosen", "{row}");
+        assert_eq!(row["first_variant"], "chosen", "{row}");
         assert_eq!(row["provider"], "chosen", "{row}");
         assert_eq!(row["target"], "whisper-1", "{row}");
         assert_eq!(row["attempts"], 1, "{row}");
@@ -400,6 +401,8 @@ async fn a_transcription_falls_over_to_the_next_variant() {
     assert_eq!(response.status(), 200, "{:?}", response.text().await);
     let row = rows.row_for("failover").await;
     assert_eq!(row["variant"], "spare", "{row}");
+    // the variant the split assigned it, which failed (#3505)
+    assert_eq!(row["first_variant"], "primary", "{row}");
     assert_eq!(row["provider"], "spare", "{row}");
     assert_eq!(row["attempts"], 2, "{row}");
     assert_eq!(down.calls.load(Ordering::SeqCst), 1);
