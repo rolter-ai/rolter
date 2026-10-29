@@ -846,6 +846,50 @@ The MCP settings an organization saved on the MCP Settings screen ([MCP](/api/mc
 
 ---
 
+### \[\[mcp_gateway_tool_groups\]\]
+
+An organization's MCP tool groups ([MCP](/api/mcp#manage-the-registry)): the tools each group allows, and the teams, projects and virtual keys it is assigned to. `rolter config export` writes one entry per group, and `rolter-seed --import` applies them ([Config export](/configuration/config-export)). Every reference is the name an import can find on another deployment, never a database id, a key's secret or its digest.
+
+The import is the desired state for the groups the file names, in the organization it targets (`--org-slug`) only: a group is matched on its slug and created, or brought to the entry's name, description, state, tools and assignments, and what changed is logged. An entry for any other organization is skipped with a warning, an entry that already matches writes nothing, and a group the file does not name is left alone. A tool on a server the organization does not have fails the whole import before anything is written. An assignment to a team, project or key that does not exist is skipped with a warning that names it; the group is still created, so its other assignments still narrow their callers. While an entry has such a reference, the group's assignments are only added to. Virtual keys are never exported, so a key assignment survives a round trip only where the key exists. A key name or prefix that matches more than one key of the project refuses the import before any write; give the keys distinct names first. Assigning the group to all matches is unsafe because assigned groups are unioned and another group can grant tools to an already-restricted key. An assignment the file cannot name (a team or project whose name contains `/`) is not exported, and a re-import keeps it. A group that cannot be written fails the import. The control plane does not ship this table in the snapshot, which carries the groups in its own form.
+
+<ParamField path="org" type="string" required>
+  The organization's slug.
+</ParamField>
+
+<ParamField path="slug" type="string" required>
+  The group's slug, unique within the organization: lowercase letters, digits and `-`, starting with a letter or digit, at most 63 characters.
+</ParamField>
+
+<ParamField path="name" type="string" required>
+  The group's display name.
+</ParamField>
+
+<ParamField path="description" type="string">
+  A note on the group. Omitted when empty.
+</ParamField>
+
+<ParamField path="enabled" type="boolean" default="true">
+  `false` for a disabled group, which governs no one but the callers assigned to it, and they get none of its tools.
+</ParamField>
+
+<ParamField path="tools" type="array">
+  The tools the group allows, each `{ server = "<server slug>", tool = "<tool name>" }`, on a server of the organization. A server any enabled group names serves only the tools its groups list.
+</ParamField>
+
+<ParamField path="teams" type="string[]">
+  Teams the group is assigned to, each as `org/team`.
+</ParamField>
+
+<ParamField path="projects" type="string[]">
+  Projects the group is assigned to, each as `org/team/project`.
+</ParamField>
+
+<ParamField path="keys" type="array">
+  Virtual keys the group is assigned to, each `{ project = "org/team/project", name = "<key name>" }`, or `{ project = "…", prefix = "<prefix>" }` with the prefix the dashboard shows for a key that has no name. A prefix matches only the project's keys without a name.
+</ParamField>
+
+---
+
 ### \[\[mcp_oauth_sessions\]\]
 
 Not a `rolter.toml` table. Each entry is a live OAuth session, one user's access token for one MCP server, that the control plane adds to the snapshot after the user completes the consent flow and drops when the session expires. The tokens cross only the protected `/internal/snapshot` channel and are never shown on the dashboard or through the public API. Entries carry `id`, `server_id`, `user_id`, `scopes`, `expires_at` and `access_token`. There is nothing to write by hand; see [MCP OAuth](/security/mcp-oauth) for the consent flow.

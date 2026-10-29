@@ -300,6 +300,7 @@ const IMPORTED_SECTIONS: &[&str] = &[
     "rate_limits",
     "mcp_manifest_enforcement",
     "mcp_gateway_settings",
+    "mcp_gateway_tool_groups",
     "prompt_templates",
 ];
 
@@ -721,6 +722,8 @@ async fn import_config(
 ) -> anyhow::Result<()> {
     refuse_reserved_env_names(config)?;
     validate_mcp_gateway_settings(config)?;
+    validate_mcp_gateway_tool_groups(config)?;
+    let tool_group_subjects = preflight_mcp_tool_groups(pool, org_id, config).await?;
     let providers = ProviderRepo(pool);
     let routes = RouteRepo(pool);
     let targets = RouteTargetRepo(pool);
@@ -975,6 +978,7 @@ async fn import_config(
     import_caps(pool, config).await?;
     import_mcp_manifest_enforcement(pool, org_id, config).await?;
     import_mcp_gateway_settings(pool, org_id, config).await?;
+    import_mcp_gateway_tool_groups(pool, org_id, config, tool_group_subjects).await?;
     import_prompt_templates(pool, org_id, project_id, config).await?;
 
     Ok(())
@@ -1386,6 +1390,438 @@ fn validate_mcp_gateway_settings(config: &GatewayConfig) -> anyhow::Result<()> {
         }
     }
     Ok(())
+}
+
+/// Refuse a `[[mcp_gateway_tool_groups]]` table the MCP screens would not save
+/// (#3514): a slug the store refuses, a group with no name, a tool with no
+/// server or name, one tool written twice, a key named by neither or both of
+/// its name and prefix, or two entries for one group. Runs before anything is
+/// written, so a bad file imports nothing.
+fn validate_mcp_gateway_tool_groups(config: &GatewayConfig) -> anyhow::Result<()> {
+    let mut seen = std::collections::HashSet::new();
+    for group in &config.mcp_gateway_tool_groups {
+        let at = format!("mcp_gateway_tool_groups '{}/{}'", group.org, group.slug);
+        if !seen.insert((group.org.as_str(), group.slug.as_str())) {
+            anyhow::bail!("{at}: more than one entry for this group");
+        }
+        let slug_ok = group.slug.len() <= 63
+            && group
+                .slug
+                .starts_with(|c: char| c.is_ascii_lowercase() || c.is_ascii_digit())
+            && group
+                .slug
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
+        if !slug_ok {
+            anyhow::bail!(
+                "{at}: a slug is lowercase letters, digits and '-', and starts with a letter or \
+                 digit"
+            );
+        }
+        if group.name.trim().is_empty() {
+            anyhow::bail!("{at}: name must not be empty");
+        }
+        let mut tools = std::collections::HashSet::new();
+        for tool in &group.tools {
+            if tool.server.trim().is_empty() || tool.tool.trim().is_empty() {
+                anyhow::bail!("{at}: every tool names a server and a tool");
+            }
+            if !tools.insert((tool.server.as_str(), tool.tool.as_str())) {
+                anyhow::bail!(
+                    "{at}: tool '{}' of '{}' is listed twice",
+                    tool.tool,
+                    tool.server
+                );
+            }
+        }
+        for key in &group.keys {
+            if key.name.is_some() == key.prefix.is_some() {
+                anyhow::bail!(
+                    "{at}: a key of project '{}' is named by exactly one of `name` and `prefix`",
+                    key.project
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The subjects resolved before an import writes anything.
+struct ToolGroupSubjects {
+    subjects: Vec<(String, Uuid)>,
+    complete: bool,
+}
+
+/// Resolve the targeted organization's tool-group subjects and refuse missing
+/// servers or ambiguous key references before anything is written (#3514, #3575).
+///
+/// The tool cannot be dropped instead: a server created later under that slug
+/// would start ungoverned when no other group names it. Runs with the other
+/// checks, before anything is written, so a refused file leaves the
+/// organization as it was, its MCP settings included. MCP servers are not part
+/// of the file, so the ones the organization already has are the ones checked.
+async fn preflight_mcp_tool_groups(
+    pool: &PgPool,
+    org_id: Uuid,
+    config: &GatewayConfig,
+) -> anyhow::Result<HashMap<String, ToolGroupSubjects>> {
+    let mut subjects = HashMap::new();
+    if config.mcp_gateway_tool_groups.is_empty() {
+        return Ok(subjects);
+    }
+    let slug: String = sqlx::query_scalar("select slug from orgs where id = $1")
+        .bind(org_id)
+        .fetch_one(pool)
+        .await?;
+    let servers: std::collections::HashSet<String> =
+        sqlx::query_scalar("select slug from mcp_servers where org_id = $1")
+            .bind(org_id)
+            .fetch_all(pool)
+            .await?
+            .into_iter()
+            .collect();
+    for entry in config
+        .mcp_gateway_tool_groups
+        .iter()
+        .filter(|entry| entry.org == slug)
+    {
+        if let Some(tool) = entry
+            .tools
+            .iter()
+            .find(|tool| !servers.contains(&tool.server))
+        {
+            anyhow::bail!(
+                "mcp_gateway_tool_groups '{slug}/{}': tool '{}' names server '{}', which \
+                 organization '{slug}' does not have; register the server before importing \
+                 its tool groups",
+                entry.slug,
+                tool.tool,
+                tool.server
+            );
+        }
+        subjects.insert(
+            entry.slug.clone(),
+            resolve_tool_group_subjects(pool, &slug, entry).await?,
+        );
+    }
+    Ok(subjects)
+}
+
+/// Apply the `[[mcp_gateway_tool_groups]]` entries of the file (#3514).
+///
+/// The file is the desired state for the groups it names, in the organization
+/// the import targets (`--org-slug`) only; an entry for any other organization
+/// is skipped with a warning. A group is matched on its slug and created, or
+/// brought to the entry's name, description, state and tools, and its
+/// assignments become the ones the entry names. A group the file does not name
+/// is left alone, as every other row is.
+///
+/// A tool on a server the organization does not have has already failed the
+/// import, before anything was written (see
+/// `preflight_mcp_tool_groups`). An assignment that
+/// names nothing here is skipped with a warning that names it: a team, project
+/// or key that does not exist (keys are never exported, so a key assignment
+/// survives only where the key does). An ambiguous key reference has already
+/// failed preflight: adding a group can expand an assigned caller's union.
+/// The group is still written for a missing reference. While an entry has such a
+/// reference, the group's assignments are only added to, never removed, since
+/// the one that did not resolve may be one the group already has. A group that
+/// cannot be written fails the import, rather than leaving the organization's
+/// keys without the restriction. Nothing is written for an entry that already
+/// matches, since every write bumps `config_version`.
+async fn import_mcp_gateway_tool_groups(
+    pool: &PgPool,
+    org_id: Uuid,
+    config: &GatewayConfig,
+    mut resolved: HashMap<String, ToolGroupSubjects>,
+) -> anyhow::Result<()> {
+    use rolter_store::postgres::repo::{
+        McpToolGroupAssignmentRepo, McpToolGroupRepo, NewMcpToolGroup,
+    };
+    let entries = &config.mcp_gateway_tool_groups;
+    if entries.is_empty() {
+        return Ok(());
+    }
+    let slug: String = sqlx::query_scalar("select slug from orgs where id = $1")
+        .bind(org_id)
+        .fetch_one(pool)
+        .await?;
+    for entry in entries.iter().filter(|entry| entry.org != slug) {
+        tracing::warn!(
+            org = %entry.org,
+            group = %entry.slug,
+            target = %slug,
+            "skipping an mcp_gateway_tool_groups entry for an organization this import does not target"
+        );
+    }
+    let servers: HashMap<String, Uuid> =
+        sqlx::query_as::<_, (String, Uuid)>("select slug, id from mcp_servers where org_id = $1")
+            .bind(org_id)
+            .fetch_all(pool)
+            .await?
+            .into_iter()
+            .collect();
+    // every server and key reference was checked before any import write
+    for entry in entries.iter().filter(|entry| entry.org == slug) {
+        let group = entry.slug.as_str();
+        let tools: Vec<rolter_core::McpToolRefConfig> = entry
+            .tools
+            .iter()
+            .filter_map(|tool| {
+                Some(rolter_core::McpToolRefConfig {
+                    server_id: servers.get(&tool.server)?.to_string(),
+                    tool: tool.tool.clone(),
+                })
+            })
+            .collect();
+        let ToolGroupSubjects { subjects, complete } = resolved
+            .remove(group)
+            .with_context(|| format!("MCP tool group '{group}' was not preflighted"))?;
+        let tools_value = serde_json::to_value(&tools)?;
+        let existing: Option<(Uuid, String, String, bool, serde_json::Value)> = sqlx::query_as(
+            "select id, name, description, enabled, tools from mcp_tool_groups
+             where org_id = $1 and slug = $2",
+        )
+        .bind(org_id)
+        .bind(group)
+        .fetch_optional(pool)
+        .await?;
+        let Some((id, name, description, enabled, stored_tools)) = existing else {
+            McpToolGroupRepo(pool)
+                .create(NewMcpToolGroup {
+                    org_id,
+                    name: &entry.name,
+                    slug: group,
+                    description: &entry.description,
+                    enabled: entry.enabled,
+                    tools: &tools_value,
+                    assignments: &subjects,
+                })
+                .await
+                .with_context(|| format!("could not create MCP tool group '{group}'"))?;
+            tracing::info!(
+                org = %slug,
+                group,
+                tools = tools.len(),
+                assignments = subjects.len(),
+                "created MCP tool group from file"
+            );
+            continue;
+        };
+        // the order of a group's tools means nothing, so a group the dashboard
+        // wrote in another order is not rewritten for it
+        let sorted = |mut tools: Vec<rolter_core::McpToolRefConfig>| {
+            tools.sort_by(|a, b| (&a.server_id, &a.tool).cmp(&(&b.server_id, &b.tool)));
+            tools
+        };
+        let same_tools = serde_json::from_value::<Vec<rolter_core::McpToolRefConfig>>(stored_tools)
+            .map(sorted)
+            .ok()
+            == Some(sorted(tools.clone()));
+        if name != entry.name
+            || description != entry.description
+            || enabled != entry.enabled
+            || !same_tools
+        {
+            McpToolGroupRepo(pool)
+                .update(
+                    id,
+                    &entry.name,
+                    &entry.description,
+                    entry.enabled,
+                    &tools_value,
+                )
+                .await
+                .with_context(|| format!("could not update MCP tool group '{group}'"))?;
+            tracing::info!(
+                org = %slug,
+                group,
+                enabled = entry.enabled,
+                tools = tools.len(),
+                "updated MCP tool group from file"
+            );
+        }
+        let assignments = McpToolGroupAssignmentRepo(pool);
+        let current: std::collections::BTreeSet<(String, Uuid)> =
+            assignments.list_for_group(id).await?.into_iter().collect();
+        let mut wanted: std::collections::BTreeSet<(String, Uuid)> = subjects.into_iter().collect();
+        if !complete {
+            // a reference that did not resolve may be one the group has, so
+            // nothing is taken away while one is missing
+            wanted.extend(current.iter().cloned());
+        }
+        // an assignment the export could not name is in no file, so its
+        // absence from this one says nothing: dropping it would hand its
+        // subject the organization-wide set back
+        for subject in unportable_subjects(pool, &current).await? {
+            if wanted.insert(subject.clone()) {
+                tracing::warn!(
+                    org = %slug,
+                    group,
+                    kind = %subject.0,
+                    id = %subject.1,
+                    "keeping an MCP tool group assignment the file cannot name: its team or \
+                     project name holds a '/' or is empty"
+                );
+            }
+        }
+        if wanted != current {
+            let wanted: Vec<(String, Uuid)> = wanted.into_iter().collect();
+            assignments
+                .replace(id, &wanted)
+                .await
+                .with_context(|| format!("could not assign MCP tool group '{group}'"))?;
+            tracing::info!(
+                org = %slug,
+                group,
+                from = current.len(),
+                to = wanted.len(),
+                "set the MCP tool group's assignments from file"
+            );
+        }
+    }
+    Ok(())
+}
+
+/// The subjects of `current` an export cannot name, and so never writes: a
+/// team, project or key whose team or project name holds a `/` or is empty,
+/// as `config_export::ScopeRefs::insert` refuses them. A re-import keeps them.
+async fn unportable_subjects(
+    pool: &PgPool,
+    current: &std::collections::BTreeSet<(String, Uuid)>,
+) -> anyhow::Result<Vec<(String, Uuid)>> {
+    let portable = |name: &str| !name.is_empty() && !name.contains('/');
+    let mut out = Vec::new();
+    for (kind, id) in current {
+        let names: Vec<String> = match kind.as_str() {
+            "team" => {
+                sqlx::query_scalar("select name from teams where id = $1")
+                    .bind(id)
+                    .fetch_all(pool)
+                    .await?
+            }
+            "project" => {
+                let row: Option<(String, String)> = sqlx::query_as(
+                    "select t.name, p.name from projects p join teams t on t.id = p.team_id
+                     where p.id = $1",
+                )
+                .bind(id)
+                .fetch_optional(pool)
+                .await?;
+                row.map(|(team, project)| vec![team, project])
+                    .unwrap_or_default()
+            }
+            "virtual_key" => {
+                let row: Option<(String, String)> = sqlx::query_as(
+                    "select t.name, p.name from virtual_keys k
+                     join projects p on p.id = k.project_id join teams t on t.id = p.team_id
+                     where k.id = $1",
+                )
+                .bind(id)
+                .fetch_optional(pool)
+                .await?;
+                row.map(|(team, project)| vec![team, project])
+                    .unwrap_or_default()
+            }
+            _ => Vec::new(),
+        };
+        if names.iter().any(|name| !portable(name)) {
+            out.push((kind.clone(), *id));
+        }
+    }
+    Ok(out)
+}
+
+/// The `(kind, id)` subjects an `[[mcp_gateway_tool_groups]]` entry assigns its
+/// group to in organization `org`, and whether every reference resolved. A
+/// reference that names another organization, or nothing on this deployment,
+/// is skipped with a warning. A key reference its project holds more than one
+/// key by is refused: assigning another group can grant tools to the wrong key.
+async fn resolve_tool_group_subjects(
+    pool: &PgPool,
+    org: &str,
+    entry: &rolter_core::McpGatewayToolGroupConfig,
+) -> anyhow::Result<ToolGroupSubjects> {
+    let group = entry.slug.as_str();
+    let in_org = |reference: &str| reference.split('/').next() == Some(org);
+    let mut subjects = Vec::new();
+    let mut complete = true;
+    for (scope, kind, references) in [
+        (BudgetScope::Team, "team", &entry.teams),
+        (BudgetScope::Project, "project", &entry.projects),
+    ] {
+        for reference in references {
+            let found = if in_org(reference) {
+                resolve_cap_scope(pool, scope, reference).await?
+            } else {
+                None
+            };
+            match found {
+                Some((_, id)) => subjects.push((kind.to_string(), id)),
+                None => {
+                    complete = false;
+                    tracing::warn!(
+                        org,
+                        group,
+                        kind,
+                        reference = %reference,
+                        "skipping an MCP tool group assignment: no such {kind} in this organization"
+                    );
+                }
+            }
+        }
+    }
+    for key in &entry.keys {
+        let project = if in_org(&key.project) {
+            resolve_cap_scope(pool, BudgetScope::Project, &key.project).await?
+        } else {
+            None
+        };
+        // the export names a key by its prefix only when it has no name, so a
+        // prefix matches the unnamed keys alone
+        let (column, value, unnamed) = match (&key.name, &key.prefix) {
+            (Some(name), _) => ("name", name, ""),
+            (None, Some(prefix)) => (
+                "key_prefix",
+                prefix,
+                " and (name is null or btrim(name) = '')",
+            ),
+            (None, None) => continue,
+        };
+        let found: Vec<Uuid> = match project {
+            Some((_, project_id)) => {
+                sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+                    "select id from virtual_keys where project_id = $1 and {column} = $2{unnamed}"
+                )))
+                .bind(project_id)
+                .bind(value)
+                .fetch_all(pool)
+                .await?
+            }
+            None => Vec::new(),
+        };
+        if found.is_empty() {
+            complete = false;
+            tracing::warn!(
+                org,
+                group,
+                project = %key.project,
+                key = %value,
+                "skipping an MCP tool group assignment: the project holds no key by that {column}"
+            );
+            continue;
+        }
+        if found.len() > 1 {
+            anyhow::bail!(
+                "mcp_gateway_tool_groups '{org}/{group}': project '{}' holds {} keys by \
+                 {column} '{value}'; give the keys distinct names before importing",
+                key.project,
+                found.len()
+            );
+        }
+        subjects.extend(found.into_iter().map(|id| ("virtual_key".to_string(), id)));
+    }
+    Ok(ToolGroupSubjects { subjects, complete })
 }
 
 /// Apply the `[[mcp_gateway_settings]]` entry of the file (#3482).

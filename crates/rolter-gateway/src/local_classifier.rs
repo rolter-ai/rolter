@@ -802,9 +802,9 @@ pub struct LocalClassifiers {
     /// the paths whose read is still running, abandoned or not: a path is
     /// not read again while it is here (#3512)
     in_flight: Arc<parking_lot::Mutex<HashSet<String>>>,
-    /// models whose abandoned read returned after its deadline, by digest:
-    /// verified against the pin like any read, and taken by the next read of
-    /// that digest instead of reading the file again
+    /// completed reads not yet accepted by their batch, by digest: kept before
+    /// sending the answer, so even a successful buffered send after timeout
+    /// cannot discard the model when its receiver is dropped (#3578)
     late: Arc<parking_lot::Mutex<HashMap<String, Arc<LinearModel>>>>,
 }
 
@@ -924,7 +924,12 @@ impl LocalClassifiers {
                     };
                     let left = deadline.saturating_duration_since(Instant::now());
                     match receiver.recv_timeout(left) {
-                        Ok(read) => read.map(Arc::new),
+                        Ok(read) => {
+                            if read.is_ok() {
+                                self.late.lock().remove(&want.digest);
+                            }
+                            read
+                        }
                         Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
                             Err(ModelError::Deadline(reader.deadline))
                         }
@@ -946,7 +951,7 @@ impl LocalClassifiers {
         reader: &Reader,
         want: &Wanted,
         root: Option<Arc<PathBuf>>,
-    ) -> Result<std::sync::mpsc::Receiver<Result<LinearModel, ModelError>>, ModelError> {
+    ) -> Result<std::sync::mpsc::Receiver<Result<Arc<LinearModel>, ModelError>>, ModelError> {
         {
             let mut in_flight = self.in_flight.lock();
             if in_flight.len() >= MAX_IN_FLIGHT_READS || !in_flight.insert(want.path.clone()) {
@@ -971,21 +976,25 @@ impl LocalClassifiers {
         std::thread::Builder::new()
             .name("rolter-model-read".into())
             .spawn(move || {
-                let read = read(&path, &digest, root.as_deref().map(PathBuf::as_path));
+                let read =
+                    read(&path, &digest, root.as_deref().map(PathBuf::as_path)).map(Arc::new);
                 // released before the answer, so whoever takes the answer can
                 // read the path again
                 drop(guard);
-                // the receiver is gone when the read was abandoned
+                // retain before sending: timeout and receiver drop are not
+                // atomic, so a successful send can still go unread (#3578)
+                if let Ok(model) = &read {
+                    late.lock().insert(digest, model.clone());
+                }
                 if let Err(std::sync::mpsc::SendError(read)) = sender.send(read) {
                     match read {
-                        Ok(model) => {
+                        Ok(_) => {
                             tracing::warn!(
                                 provider,
                                 path,
                                 "an abandoned local guardrail model read returned after its \
                                  deadline; the model is installed on the next retry"
                             );
-                            late.lock().insert(digest, Arc::new(model));
                             retry.notify_one();
                         }
                         Err(error) => tracing::warn!(
@@ -1883,6 +1892,10 @@ pub(crate) mod tests {
         classifiers
             .preload(&guards_with(Some(&provider)), &legacy)
             .await;
+        assert!(
+            classifiers.late.lock().is_empty(),
+            "an accepted read is not retained"
+        );
         classifiers.apply(&guards_with(Some(&provider)), &legacy);
         assert!(classifiers.classify(&provider, &json!("x")).await.is_ok());
     }
@@ -1984,6 +1997,52 @@ pub(crate) mod tests {
         assert_eq!(reader.reads.load(Ordering::SeqCst), 1);
         assert_eq!(states(&classifiers), [("local".to_string(), true)]);
         assert!(classifiers.classify(&provider, &json!("x")).await.is_ok());
+        assert!(classifiers.late.lock().is_empty());
+    }
+
+    /// A sender can buffer its result after a receive times out but before
+    /// the receiver is dropped. Retain that model too (#3578).
+    #[tokio::test]
+    async fn a_successful_read_after_timeout_survives_receiver_drop() {
+        let provider = local_provider(&fixture_sha256(), 2_000);
+        let legacy = GuardrailWebhookConfig::default();
+        let guards = guards_with(Some(&provider));
+        let classifiers = LocalClassifiers::default();
+        classifiers.apply(&guards, &legacy);
+        let reader = HungReader::default();
+        reader.install(&classifiers, Duration::ZERO);
+        assert!(classifiers.read_all(Vec::new()).is_empty());
+        assert_eq!(reader.reads.load(Ordering::SeqCst), 0);
+        let want = wanted(&guards, &legacy).pop().unwrap();
+        let receiver = classifiers
+            .start_read(&classifiers.reader.load_full(), &want, None)
+            .unwrap();
+        assert!(matches!(
+            receiver.recv_timeout(Duration::ZERO),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+        ));
+
+        // hold the timed-out receiver alive while the real fixture read returns
+        reader.open();
+        drop(
+            receiver
+                .recv_timeout(Duration::from_secs(5))
+                .unwrap()
+                .unwrap(),
+        );
+        drop(receiver);
+        assert!(
+            classifiers.late.lock().contains_key(&want.digest),
+            "a successful send after timeout must not discard the model"
+        );
+        classifiers.retry_missing(Duration::ZERO).await;
+        classifiers.retry_missing(Duration::ZERO).await;
+        assert_eq!(reader.reads.load(Ordering::SeqCst), 1);
+        assert_eq!(states(&classifiers), [("local".to_string(), true)]);
+        assert!(classifiers
+            .classify(&provider, &json!("jailbreak"))
+            .await
+            .is_ok());
         assert!(classifiers.late.lock().is_empty());
     }
 

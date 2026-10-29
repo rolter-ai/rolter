@@ -452,6 +452,29 @@ inert and allocates nothing.
   comparable and would not be.
 </Note>
 
+### Control-plane metrics
+
+The control plane has no `/metrics` endpoint: it exports over OTLP only, when
+`OTEL_EXPORTER_OTLP_ENDPOINT` is set on it. Besides its snapshot, API and
+connection-pool series it exports one gauge of its configuration's health:
+
+<AccordionGroup>
+  <Accordion title="rolter_config_problems">
+    **Type:** Gauge · **Labels:** `kind`
+
+    How many problems `GET /api/v1/config/problems` lists for the whole deployment, by kind, as the control plane found them the last time it built a configuration snapshot for a new config version. The kinds are:
+
+    - `omitted`: a provider, route or key left out of the snapshot whole, as listed under `omitted`.
+    - `sanitized`: every other change the snapshot makes to serve the rest: a route target or reference pruned, a setting reset to its default, a stored key left out.
+    - `invalid`: a structural problem, such as two rows with one name, that makes the control plane refuse the snapshot, so gateways keep the config they have.
+    - `misread`: a stored row the control plane could read only by guessing, or left out, such as a budget period it does not know.
+    - `bootstrap_shadow`: an organization's provider, route or provider group that shares a name with a readonly row of the control plane's config file, and so replaces the file's row for that organization's keys.
+
+    The label is the kind only, never a row's name or organization. The gauge reports nothing until the control plane has built its first snapshot, and a kind drops back to `0` from the first snapshot built after its last problem is fixed. Alert on a non-zero `invalid`, since configuration changes stop reaching the gateways; the other kinds name rows to look at in the dashboard's configuration problems.
+
+  </Accordion>
+</AccordionGroup>
+
 ### Labels become attributes
 
 Prometheus labels are exported as OTLP attributes with the same names:

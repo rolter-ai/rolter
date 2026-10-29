@@ -100,7 +100,6 @@ import { useCan, useCapabilities } from "@/lib/can";
 import { useFormat } from "@/lib/i18n/format";
 import { classifyLoadError } from "@/lib/load-error";
 import {
-  LAST_ORG_ADMIN,
   afterRevoke,
   grantScope,
   isLastOrgAdmin,
@@ -1909,10 +1908,8 @@ function RevokeRoleDialog({
         return "revoked" as const;
       } catch (error) {
         if (error instanceof ApiError && error.status === 404) return "gone" as const;
-        // the control plane's reason, said in the dashboard's language
-        if (error instanceof ApiError && error.code === LAST_ORG_ADMIN) {
-          throw new Error(t("pages.users.confirm.lastAdminRefused"));
-        }
+        // a coded refusal (`last_org_admin`) is translated by the dialog
+        // through the catalog, like every other code (#3522)
         throw error;
       }
     },
@@ -2007,7 +2004,7 @@ function RevokeRoleDialog({
  * updating it would only duplicate the other.
  *
  * Demoting the org's last admin is refused with `last_org_admin`, which the
- * dialog says in the dashboard's language.
+ * dialog says through the catalog's sentence for the code (#3484, #3522).
  */
 function ChangeRoleDialog({
   target,
@@ -2062,12 +2059,6 @@ function ChangeRoleDialog({
     },
   });
 
-  // the last-admin refusal is said in the dashboard's language, not verbatim
-  const changeError =
-    change.error instanceof ApiError && change.error.code === LAST_ORG_ADMIN
-      ? new Error(t("pages.users.confirm.lastAdminRefused"))
-      : change.error;
-
   const close = () => {
     onClose();
     setRole("");
@@ -2108,7 +2099,7 @@ function ChangeRoleDialog({
       confirmLabel={t("pages.users.confirm.changeConfirm")}
       tone="default"
       pending={change.isPending}
-      error={changeError}
+      error={change.error}
       confirmDisabled={!role}
       onConfirm={confirm}
     >
