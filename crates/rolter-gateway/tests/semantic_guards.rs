@@ -1266,3 +1266,52 @@ async fn a_streamed_transcription_is_refused_by_a_fail_closed_plugin_and_the_pii
     assert_eq!(refused.code(), "pii_streaming_unsupported");
     assert_eq!(upstream.calls.load(SeqCst), 0, "refused before dialling");
 }
+
+/// The refusals before the upstream call run in one order on the chat and the
+/// upload pipeline (#3538): a stream the sanitizer's `streaming` rejects, that
+/// a fail-closed `post_response` plugin refuses and whose model has no price
+/// under `unpriced_policy = "block"` gets the sanitizer's answer on both,
+/// then the plugin's once the sanitizer lets it pass, and the unpriced
+/// refusal only when nothing else refuses it.
+#[tokio::test]
+async fn a_stream_two_checks_refuse_gets_the_same_answer_on_chat_and_upload() {
+    let upstream = Upstream::default();
+    let up = upstream.serve_audio().await;
+    let path = "/v1/audio/transcriptions";
+    let stream = [("stream", "true")];
+
+    let mut config = config(up, ProviderKind::OpenaiCompatible);
+    config.unpriced_policy = rolter_core::UnpricedPolicy::Block;
+    config.plugins = post_response_plugin(plugin("allow").await, FailureMode::FailClosed);
+    config.pii_sanitizer = rolter_core::PiiSanitizerConfig {
+        enabled: true,
+        url: format!("http://{}/sanitize", sanitizer().await),
+        direction: rolter_core::SanitizeDirection::Response,
+        ..Default::default()
+    };
+    let chat = send(&config, Dialect::OpenAi, "a calm answer", true, None).await;
+    let upload = transcribe_with(&config, path, "a calm answer", &stream).await;
+    for run in [&chat, &upload] {
+        assert_eq!(run.status, 400, "{}", run.body);
+        assert_eq!(run.code(), "pii_streaming_unsupported");
+    }
+
+    // with the sanitizer out of the way the plugin decides, not the price
+    config.pii_sanitizer = Default::default();
+    let chat = send(&config, Dialect::OpenAi, "a calm answer", true, None).await;
+    let upload = transcribe_with(&config, path, "a calm answer", &stream).await;
+    for run in [&chat, &upload] {
+        assert_eq!(run.status, 400, "{}", run.body);
+        assert_eq!(run.code(), "plugin_streaming_unsupported");
+    }
+
+    // and the unpriced policy answers only what no response leg refused
+    config.plugins = Default::default();
+    let chat = send(&config, Dialect::OpenAi, "a calm answer", true, None).await;
+    let upload = transcribe_with(&config, path, "a calm answer", &stream).await;
+    for run in [&chat, &upload] {
+        assert_eq!(run.status, 402, "{}", run.body);
+        assert_eq!(run.code(), "model_unpriced");
+    }
+    assert_eq!(upstream.calls.load(SeqCst), 0, "refused before dialling");
+}

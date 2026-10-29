@@ -79,6 +79,11 @@ impl CancelGuard {
         let Some(row) = self.row.as_mut() else {
             return;
         };
+        // the first attribution is the first dial, which names the variant
+        // dialled first (#3505); a failover keeps it
+        if row.first_variant.is_empty() {
+            row.first_variant.push_str(variant);
+        }
         for (slot, value) in [
             (&mut row.provider, provider),
             (&mut row.target, target),
@@ -190,6 +195,17 @@ mod tests {
         guard.disarm();
         guard.attribute("other", "other", "");
         assert!(guard.row.is_none());
+    }
+
+    #[test]
+    fn the_row_keeps_the_variant_first_dialled_across_a_failover() {
+        let metrics = Arc::new(Metrics::default());
+        let mut guard = CancelGuard::new(LogSink::disabled(metrics), Instant::now(), row());
+        guard.attribute("down", "m", "primary");
+        guard.attribute("up", "m", "spare");
+        let row = guard.row.as_ref().unwrap();
+        assert_eq!(row.variant, "spare");
+        assert_eq!(row.first_variant, "primary");
     }
 
     #[test]

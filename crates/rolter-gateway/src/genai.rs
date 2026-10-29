@@ -206,6 +206,18 @@ pub(crate) fn encoding_formats(request: &serde_json::Value) -> Option<String> {
     Some(joined)
 }
 
+/// The `error.type` value for an upstream attempt that got no response: the
+/// transport failure's kind, by the same rule the failover classes use
+/// (`rolter_core::failover::Failure::from_transport_error`), so a span and the
+/// row's `fallback_reason` agree on what went wrong.
+pub(crate) fn error_type_for_transport(message: &str) -> &'static str {
+    if message.contains("timed out") {
+        "timeout"
+    } else {
+        "transport"
+    }
+}
+
 /// The `error.type` value for a failed upstream attempt.
 ///
 /// The spec asks for "the low-cardinality class of error", so an HTTP failure
@@ -426,5 +438,17 @@ mod tests {
         assert_eq!(error_type_for_status(418), "client_error");
         assert_eq!(error_type_for_status(599), "server_error");
         assert_eq!(error_type_for_status(0), "unknown");
+    }
+
+    #[test]
+    fn a_transport_failure_is_typed_by_kind_never_by_its_message() {
+        assert_eq!(
+            error_type_for_transport("upstream request timed out after 30s"),
+            "timeout"
+        );
+        assert_eq!(
+            error_type_for_transport("error sending request for url (http://10.0.0.1:8000/)"),
+            "transport"
+        );
     }
 }

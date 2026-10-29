@@ -334,6 +334,7 @@ async fn a_request_abandoned_on_a_variant_route_names_its_variant_and_target() {
     assert_eq!(row["provider"], "slow");
     assert_eq!(row["target"], "slow-chat");
     assert_eq!(row["variant"], "canary");
+    assert_eq!(row["first_variant"], "canary");
 }
 
 #[tokio::test]

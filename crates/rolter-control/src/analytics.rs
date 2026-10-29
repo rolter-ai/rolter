@@ -1074,17 +1074,61 @@ async fn by_variant(
 pub(crate) const FIRST_ATTEMPT_REQUESTS: &str =
     "round(sumIf(sample_weight, request_logs.fallback_reason = ''))";
 
-/// The by-variant rollup's select, for a table that has (or lacks) the
+/// The variant a row counts for in the assigned count (#3505): the one the
+/// gateway first dialled (`first_variant`, `clickhouse/048`), or, for a row
+/// that records none, the one that answered it. Which of those rows count at
+/// all is [`assigned_rows`]'s rule.
+const ASSIGNED_VARIANT: &str =
+    "if(request_logs.first_variant != '', request_logs.first_variant, request_logs.variant)";
+
+/// The rows the assigned count reads, for a table that has (or lacks) the
 /// `fallback_reason` column.
 ///
-/// A table without it cannot say which requests failed over, and reading every
-/// row as a first attempt would claim they all were, so `first_attempt_requests`
-/// is `null` there and the dashboard states that the split is unknown. A row
-/// logged before the column was applied reads as a first attempt on a table
-/// that has it, the same default the invocation list gives such a row.
+/// A row that names its first-dialled variant counts for that variant. A row
+/// served without a variant (the classic pool) has nothing to be reassigned
+/// from and counts under the empty string. A variant row without
+/// `first_variant` was written before `048` (or by an older gateway): it
+/// counts for the variant that answered it only when it records no
+/// `fallback_reason`, since a request that failed over could have been
+/// assigned to any variant, and is otherwise left out rather than guessed. On
+/// a table without `fallback_reason` no such row can be placed.
+fn assigned_rows(columns: &Columns) -> &'static str {
+    if columns.has("fallback_reason") {
+        "(request_logs.first_variant != '' or request_logs.variant = '' \
+          or request_logs.fallback_reason = '')"
+    } else {
+        "(request_logs.first_variant != '' or request_logs.variant = '')"
+    }
+}
+
+/// The by-variant rollup's select, for a table that has (or lacks) the
+/// `fallback_reason` and `first_variant` columns.
+///
+/// A table without `fallback_reason` cannot say which requests failed over,
+/// and reading every row as a first attempt would claim they all were, so
+/// `first_attempt_requests` is `null` there and the dashboard states that the
+/// split is unknown. A row logged before the column was applied reads as a
+/// first attempt on a table that has it, the same default the invocation list
+/// gives such a row.
+///
+/// `assigned_requests` (#3505) counts the requests each variant was dialled to
+/// first, grouped by that variant rather than the one that answered, so a variant that only ever failed over still has a row (with no
+/// answered requests) and its assigned share. Two halves over the same window
+/// and filters, one grouped by the answering variant and one by the assigned
+/// one, are summed per `(model, variant)`: each half holds a key at most once,
+/// so a sum (and a `max` for the percentiles) adds a figure to zero and is
+/// exact. It is `null` on a table without `first_variant`.
 pub(crate) fn by_variant_sql(columns: &Columns) -> String {
     let first_attempt = if columns.has("fallback_reason") {
         FIRST_ATTEMPT_REQUESTS
+    } else {
+        "CAST(NULL AS Nullable(Float64))"
+    };
+    let has_assigned = columns.has("first_variant");
+    // without the column no row says where it was assigned, so the count is
+    // not claimed; with it the answered half contributes nothing to it
+    let assigned = if has_assigned {
+        "toFloat64(0)"
     } else {
         "CAST(NULL AS Nullable(Float64))"
     };
@@ -1092,10 +1136,11 @@ pub(crate) fn by_variant_sql(columns: &Columns) -> String {
     // qualified with the table: ClickHouse resolves a bare name to the alias
     // before the column. the sums alias other names, which carry their own
     // qualifiers where they need them
-    format!(
+    let answered = format!(
         "select request_logs.model as model, request_logs.variant as variant, \
                 {REQUESTS} as requests, \
                 {first_attempt} as first_attempt_requests, \
+                {assigned} as assigned_requests, \
                 {TOKENS} as tokens, \
                 {COST} as cost_usd, \
                 {UNPRICED} as unpriced_requests, \
@@ -1103,7 +1148,48 @@ pub(crate) fn by_variant_sql(columns: &Columns) -> String {
                 {P50_LATENCY} as p50_latency_ms, \
                 {P95_LATENCY} as p95_latency_ms \
          from request_logs where {WHERE_WINDOW} and {ROW_VISIBLE} and {ROW_FILTERS} \
-         group by request_logs.model, request_logs.variant \
+         group by request_logs.model, request_logs.variant"
+    );
+    if !has_assigned {
+        return format!("{answered} order by requests desc, model, variant format JSON");
+    }
+    let assigned_rows = assigned_rows(columns);
+    // a union matches its halves by position and takes the first one's names,
+    // so the assigned half's columns carry names no column of `request_logs`
+    // has (an alias such as `cost_usd` would shadow the column). typed as the
+    // answered half's figures, or as their common supertype
+    let first_attempt_zero = if columns.has("fallback_reason") {
+        "toFloat64(0)"
+    } else {
+        "CAST(NULL AS Nullable(Float64))"
+    };
+    // the outer sums read the union through its alias, since a bare
+    // `requests` inside `sum(...) as requests` would name the sum itself
+    format!(
+        "select by_role.model as model, by_role.variant as variant, \
+                sum(by_role.requests) as requests, \
+                sum(by_role.first_attempt_requests) as first_attempt_requests, \
+                sum(by_role.assigned_requests) as assigned_requests, \
+                sum(by_role.tokens) as tokens, \
+                sum(by_role.cost_usd) as cost_usd, \
+                sum(by_role.unpriced_requests) as unpriced_requests, \
+                sum(by_role.errors) as errors, \
+                max(by_role.p50_latency_ms) as p50_latency_ms, \
+                max(by_role.p95_latency_ms) as p95_latency_ms \
+         from ( \
+             {answered} \
+             union all \
+             select request_logs.model as model, {ASSIGNED_VARIANT} as assigned_variant, \
+                    toFloat64(0) as zero_requests, {first_attempt_zero} as zero_first_attempts, \
+                    {REQUESTS} as assigned, toFloat64(0) as zero_tokens, \
+                    toFloat64(0) as zero_cost, toFloat64(0) as zero_unpriced, \
+                    toFloat64(0) as zero_errors, toFloat64(0) as zero_p50, \
+                    toFloat64(0) as zero_p95 \
+             from request_logs \
+             where {WHERE_WINDOW} and {ROW_VISIBLE} and {ROW_FILTERS} and {assigned_rows} \
+             group by request_logs.model, {ASSIGNED_VARIANT} \
+         ) as by_role \
+         group by by_role.model, by_role.variant \
          order by requests desc, model, variant format JSON"
     )
 }
@@ -1517,10 +1603,12 @@ pub(crate) fn invocations_sql(status_expr: &str, columns: &Columns) -> String {
     let provider_org_id = columns.select("provider_org_id");
     // whether the row's cache reads were stated at all (#3410)
     let cache_usage_reported = columns.select("cache_usage_reported");
+    // the variant dialled first, beside the one that answered (#3505)
+    let first_variant = columns.select("first_variant");
     format!(
         "select ts, request_id, trace_id, org_id, team_id, project_id, virtual_key_id, \
                 business_unit_id, customer_id, \
-                model, provider, {provider_org_id}, target, variant, status, stream, cache_hit, cache_read_tokens, cache_write_tokens, \
+                model, provider, {provider_org_id}, target, variant, {first_variant}, status, stream, cache_hit, cache_read_tokens, cache_write_tokens, \
                 {cache_write_1h_tokens}, \
                 prompt_tokens, completion_tokens, total_tokens, cost_usd, unpriced, withheld, usage_unknown, latency_ms, ttft_ms, error, \
                 {upstream_status}, {attempts}, {lifecycle_operation}, {guardrail_events}, {plugin_events}, {seq}, \
@@ -2033,6 +2121,65 @@ mod tests {
             "{sql}"
         );
         assert!(sql.contains(&format!("{REQUESTS} as requests")), "{sql}");
+    }
+
+    #[test]
+    fn by_variant_counts_the_requests_the_split_assigned_each_variant() {
+        // #3505: grouped by the variant first dialled, beside the answered
+        // counts, from one window and the same filters
+        let sql = by_variant_sql(&Columns::default());
+        assert!(sql.contains("as assigned_requests"), "{sql}");
+        assert!(
+            sql.contains(&format!("group by request_logs.model, {ASSIGNED_VARIANT}")),
+            "{sql}"
+        );
+        // a row from before `048` counts only when it never failed over, and
+        // a classic row counts under the empty string
+        assert!(
+            sql.contains(
+                "(request_logs.first_variant != '' or request_logs.variant = '' \
+                 or request_logs.fallback_reason = '')"
+            ),
+            "{sql}"
+        );
+        assert_eq!(
+            sql.matches(&format!(
+                "{WHERE_WINDOW} and {ROW_VISIBLE} and {ROW_FILTERS}"
+            ))
+            .count(),
+            2,
+            "both halves read the same window and filters: {sql}"
+        );
+        // the figures are summed per key, so the answered half is unchanged
+        assert!(sql.contains("sum(by_role.requests) as requests"), "{sql}");
+        assert!(sql.contains("max(by_role.p95_latency_ms)"), "{sql}");
+        assert!(sql.ends_with("order by requests desc, model, variant format JSON"));
+    }
+
+    #[test]
+    fn by_variant_does_not_claim_an_assignment_a_table_without_first_variant_cannot_make() {
+        let sql = by_variant_sql(&Columns::lacking(&["first_variant"]));
+        assert!(
+            sql.contains("CAST(NULL AS Nullable(Float64)) as assigned_requests"),
+            "{sql}"
+        );
+        assert!(!sql.contains("first_variant"), "{sql}");
+        assert!(!sql.contains("union all"), "{sql}");
+        // the first-attempt count is still read
+        assert!(sql.contains(FIRST_ATTEMPT_REQUESTS), "{sql}");
+    }
+
+    #[test]
+    fn by_variant_places_no_old_failed_over_row_without_fallback_reason() {
+        // with `048` but not `023`, a variant row from before `048` cannot be
+        // told apart from a failover, so only rows that name their variant
+        // and classic rows count
+        let sql = by_variant_sql(&Columns::lacking(&["fallback_reason"]));
+        assert!(
+            sql.contains("(request_logs.first_variant != '' or request_logs.variant = '')"),
+            "{sql}"
+        );
+        assert!(!sql.contains("fallback_reason"), "{sql}");
     }
 
     #[test]

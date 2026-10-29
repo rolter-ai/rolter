@@ -151,6 +151,11 @@ POST /v1/chat/completions
    └─ translate.request
 ```
 
+Every attempt the gateway makes gets its own `upstream.request` span, a retry
+or a failover included: on a route's targets and on its weighted variants, for
+a JSON request and for an audio upload alike. The span names the model of the
+target that attempt dialled, and the provider call is its child.
+
 `queue.wait` measures only the time the request spent waiting for a provider
 worker — not the wait plus the upstream call — so queue pressure is
 distinguishable from a slow provider.

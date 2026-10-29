@@ -2506,7 +2506,15 @@ fn operations() -> Vec<Op> {
                  `first_attempt_requests` counts those it served on the first attempt (no \
                  `fallback_reason`, `clickhouse/023`), the closer comparison with the configured \
                  weights; a request that failed over from another variant counts for neither. It is `null` on a ClickHouse that has not applied \
-                 `023`, which cannot tell the two apart",
+                 `023`, which cannot tell the two apart. `assigned_requests` counts the requests each \
+                 variant was dialled to first (`first_variant`, `clickhouse/048`), so a request that \
+                 failed over counts for the variant it was dialled to first and a variant that \
+                 answered nothing still has a row. It is not the sampled split: a variant skipped \
+                 while its breaker is open or its targets are parked is dialled first by none of the \
+                 requests sampled for it; requests \
+                 served without a variant count under the empty string. A row written before `048` \
+                 counts for the variant that answered it when it has no `fallback_reason`, and for no \
+                 variant otherwise. It is `null` on a ClickHouse that has not applied `048`",
             )
             .clickhouse_read()
             .query(DASHBOARD_QUERY),
@@ -2535,6 +2543,10 @@ fn operations() -> Vec<Op> {
                  the target that answered it (`throttled`, `timeout`, `transport`, `server_error`, \
                  `refusal` or `refusal:<category>`), and an empty string when the first dial answered, \
                  for a row older than the column, or on a table that lacks it. \
+                 `first_variant` (`clickhouse/048`) is the weighted variant the request was first \
+                 dialled to, which differs from `variant` when it failed over to another variant, and \
+                 an empty string on the classic pool, for a row older than the column, or on a table \
+                 that lacks it. \
                  `outcome` (a string, `clickhouse/030`) names what happened to the request: `served`, \
                  `upstream_error`, `withheld`, `cancelled` or a `refused_*` reason, and `unknown` for a \
                  row written before the gateway recorded one or on a table without the column. \
