@@ -96,9 +96,20 @@ pub struct EasyUpArgs {
     #[cfg(feature = "postgres")]
     #[arg(long)]
     pub admin_email: Option<String>,
+    /// admin password. Visible to every user of the host through `ps` while the
+    /// command runs and kept in shell history: prefer --admin-password-stdin or
+    /// --admin-password-file
     #[cfg(feature = "postgres")]
-    #[arg(long)]
+    #[arg(long, conflicts_with_all = ["admin_password_stdin", "admin_password_file"])]
     pub admin_password: Option<String>,
+    /// read the admin password from standard input (one line)
+    #[cfg(feature = "postgres")]
+    #[arg(long, conflicts_with = "admin_password_file", requires = "admin_email")]
+    pub admin_password_stdin: bool,
+    /// read the admin password from a file (first line)
+    #[cfg(feature = "postgres")]
+    #[arg(long, value_name = "PATH", requires = "admin_email")]
+    pub admin_password_file: Option<PathBuf>,
     /// bootstrap rolter.toml to import providers/routes from on seed; database
     /// mode only (defaults to `--config`)
     #[cfg(feature = "postgres")]
@@ -326,6 +337,14 @@ pub async fn run(args: EasyUpArgs) -> anyhow::Result<()> {
         use rolter_control::seed::{seed, SeedOptions};
         use rolter_store::postgres::{connect, run_migrations};
 
+        // before any connection, so a missing file or an empty stdin stops the
+        // command before it touches the database
+        let admin_password = rolter_control::seed::read_admin_password(
+            args.admin_password.as_deref(),
+            args.admin_password_stdin,
+            args.admin_password_file.as_deref(),
+            &mut std::io::stdin().lock(),
+        )?;
         tracing::info!("database mode: connecting, migrating and seeding");
         let pool = connect(&url).await?;
         run_migrations(&pool).await?;
@@ -335,7 +354,7 @@ pub async fn run(args: EasyUpArgs) -> anyhow::Result<()> {
                 org: "default".to_string(),
                 org_slug: None,
                 admin_email: args.admin_email.clone(),
-                admin_password: args.admin_password.clone(),
+                admin_password,
                 import: args.import.clone().or_else(|| Some(args.config.clone())),
             },
         )
@@ -738,6 +757,10 @@ models = ["fake-llm"]
             #[cfg(feature = "postgres")]
             admin_password: None,
             #[cfg(feature = "postgres")]
+            admin_password_stdin: false,
+            #[cfg(feature = "postgres")]
+            admin_password_file: None,
+            #[cfg(feature = "postgres")]
             import: None,
         }
     }
@@ -953,5 +976,79 @@ models = ["fake-llm"]
         assert_eq!(built.db_acquire_timeout_secs, 30);
         assert_eq!(built.db_idle_timeout_secs, 600);
         assert_eq!(built.db_max_lifetime_secs, 1800);
+    }
+
+    #[cfg(feature = "postgres")]
+    mod admin_password {
+        use super::*;
+        use clap::Parser;
+        use std::io::Cursor;
+
+        fn parse(extra: &[&str]) -> Result<EasyUpArgs, clap::Error> {
+            let mut argv = vec!["rolter"];
+            argv.extend_from_slice(extra);
+            Cli::try_parse_from(argv).map(|cli| cli.easy_up)
+        }
+
+        fn resolve(args: &EasyUpArgs, stdin: &[u8]) -> anyhow::Result<Option<String>> {
+            rolter_control::seed::read_admin_password(
+                args.admin_password.as_deref(),
+                args.admin_password_stdin,
+                args.admin_password_file.as_deref(),
+                &mut Cursor::new(stdin.to_vec()),
+            )
+        }
+
+        #[test]
+        fn the_password_comes_from_the_flag_stdin_or_a_file() {
+            let args =
+                parse(&["--admin-email", "a@example.com", "--admin-password", "flag"]).unwrap();
+            assert_eq!(resolve(&args, b"").unwrap().as_deref(), Some("flag"));
+
+            let args =
+                parse(&["--admin-email", "a@example.com", "--admin-password-stdin"]).unwrap();
+            assert_eq!(
+                resolve(&args, b"from-stdin\r\nrest").unwrap().as_deref(),
+                Some("from-stdin")
+            );
+
+            let path = std::env::temp_dir().join(format!("rolter-up-pw-{}", std::process::id()));
+            std::fs::write(&path, "from-file\n").unwrap();
+            let args = parse(&[
+                "--admin-email",
+                "a@example.com",
+                "--admin-password-file",
+                path.to_str().unwrap(),
+            ])
+            .unwrap();
+            let got = resolve(&args, b"").unwrap();
+            let _ = std::fs::remove_file(&path);
+            assert_eq!(got.as_deref(), Some("from-file"));
+
+            assert_eq!(resolve(&parse(&[]).unwrap(), b"").unwrap(), None);
+        }
+
+        #[test]
+        fn an_empty_source_is_refused_and_the_sources_exclude_one_another() {
+            let args =
+                parse(&["--admin-email", "a@example.com", "--admin-password-stdin"]).unwrap();
+            assert!(resolve(&args, b"\n").is_err());
+
+            let both = [
+                ["--admin-password", "x", "--admin-password-stdin"],
+                ["--admin-password", "x", "--admin-password-file"],
+            ];
+            for extra in both {
+                let mut argv = vec!["--admin-email", "a@example.com"];
+                argv.extend(extra);
+                if extra[2] == "--admin-password-file" {
+                    argv.push("f");
+                }
+                assert!(parse(&argv).is_err(), "{argv:?}");
+            }
+            assert!(parse(&["--admin-password-stdin", "--admin-password-file", "f"]).is_err());
+            // a source other than the flag needs an email to be for
+            assert!(parse(&["--admin-password-stdin"]).is_err());
+        }
     }
 }
