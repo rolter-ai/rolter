@@ -6325,7 +6325,7 @@
       "csv": "Export CSV",
       "pending": "Exporting…",
       "downloaded": "Export downloaded. Its name gives the window and currency; a row marked partial holds unpriced requests.",
-      "saved": "Export saved to the file you chose",
+      "saved": "Export saved to the file you chose. Its suggested name gives the window and currency; a row marked partial holds unpriced requests.",
       "cancelled": "Export cancelled. Nothing was saved.",
       "received": "{{size}} MB received",
       "cancel": "Cancel the {{what}}",

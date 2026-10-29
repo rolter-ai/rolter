@@ -51,6 +51,7 @@ import type { CodeLanguage } from "@/lib/code";
 import { useCan } from "@/lib/can";
 import { dispositionLabel, parseAdjustment } from "@/lib/param-adjustments";
 import { useCurrencyCode } from "@/lib/currency";
+import { exportFileName } from "@/lib/export-file-name";
 import { useFormat } from "@/lib/i18n/format";
 import { parseLogLookup, type LogLookup } from "@/lib/log-lookup";
 import { useModalA11y } from "@/lib/modal-a11y";
@@ -1186,7 +1187,11 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
             {!lookup && (
               <ExportCsvButton
                 what={t("errors.resources.requestLogExport")}
-                fallbackName="request-log.csv"
+                // the name the server gives, so the save dialog suggests it
+                // before the request leaves (#3498)
+                fallbackName={() =>
+                  exportFileName("request-log", windowBounds(logWindow), currency)
+                }
                 toDisk
                 run={(signal) =>
                   exportInvocationsCsv(
