@@ -261,6 +261,10 @@ const CHECKS: &[Check] = &[
     plain("### \\[\\[virtual_keys\\]\\]", "VirtualKeyConfig"),
     plain("### \\[\\[model_prices\\]\\]", "ModelPriceConfig"),
     plain("### \\[currency\\]", "CurrencyConfig"),
+    plain(
+        "### \\[\\[mcp_manifest_enforcement\\]\\]",
+        "McpManifestEnforcementConfig",
+    ),
     plain("### \\[\\[budgets\\]\\]", "BudgetConfig"),
     Check {
         heading: "### unpriced_policy",
@@ -484,6 +488,7 @@ fn tables() -> Vec<Table> {
         Table::repeated("mcp_oauth_sessions").owned("/security/mcp-oauth"),
         Table::repeated("mcp_tool_groups").owned("/api/mcp"),
         Table::repeated("mcp_settings").owned("/api/mcp"),
+        Table::repeated("mcp_manifest_enforcement"),
         Table::repeated("model_prices"),
         Table::single("currency"),
         Table::repeated("budgets"),

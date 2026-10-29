@@ -58,6 +58,22 @@ logging are deployment-wide and stay. The clash check then runs on what is
 left, so an unscoped export of such a deployment still refuses and names the
 option. Test: `config_export::tests::round_trip::two_orgs_sharing_names_export_one_file_each`.
 
+## The MCP manifest marker (#3398)
+
+`orgs.mcp_enforce_manifests` decides for an org with no `mcp_gateway_settings`
+row (migration `0152`), and no saved setting carries it, so the export reads it
+straight from `orgs` (`load_mcp_manifest_enforcement`) into
+`GatewayConfig::mcp_manifest_enforcement` and writes
+`[[mcp_manifest_enforcement]]` (`org` slug, `enforce`). The field is bootstrap
+only: the store never fills it, so the snapshot does not carry it, and the
+representative snapshot fixture holds one entry only so the shape guard sees it.
+`import_mcp_manifest_enforcement` writes only `enforce = false` and only to a
+row that is still strict, because an import never makes an org stricter. It
+looks before it writes, since the `0153` trigger is a statement trigger that
+bumps `config_version` even for an update that matches no row. Tests:
+`config_export::tests::round_trip::the_mcp_manifest_marker_is_exported_for_an_org_without_settings`
+and `seed::tests::the_mcp_manifest_marker_never_makes_an_org_stricter`.
+
 ## Budgets and rate limits (#1312)
 
 `BudgetConfig::id` is a database id, which the one identity rule of the format

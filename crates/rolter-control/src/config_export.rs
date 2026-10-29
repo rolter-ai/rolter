@@ -80,6 +80,10 @@ const HEADER: &str = "\
 # prices, published prompt templates, the payload-capture policy and the
 # dashboard UX-event opt-out.
 #
+# `[[mcp_manifest_enforcement]]` records, for each org that never saved MCP
+# settings, whether it enforces its servers' tool manifests. An import only
+# ever relaxes an org with `enforce = false`; it never makes one stricter.
+#
 # Budgets and rate limits round-trip too, and name what they cap the way the
 # importer finds it, never by database id: `scope = \"team\"` with `id =
 # \"acme/platform\"` is the team called `platform` of the org with slug `acme`
@@ -220,6 +224,7 @@ pub fn render_with(config: &GatewayConfig, refs: &ScopeRefs) -> String {
     render_routes(&mut out, config);
     render_model_prices(&mut out, config);
     render_caps(&mut out, config, refs);
+    render_mcp_manifest_enforcement(&mut out, config);
     render_prompt_templates(&mut out, config);
     render_logging(&mut out, config);
     out
@@ -577,6 +582,20 @@ fn render_caps(out: &mut String, config: &GatewayConfig, refs: &ScopeRefs) {
     }
 }
 
+/// `[[mcp_manifest_enforcement]]`: the marker of each org that never saved MCP
+/// settings (#3398). Without it a strict org reads back as unconfigured, and a
+/// re-import that creates the org anew would give a grandfathered one the
+/// strict default.
+fn render_mcp_manifest_enforcement(out: &mut String, config: &GatewayConfig) {
+    let mut rows: Vec<_> = config.mcp_manifest_enforcement.iter().collect();
+    rows.sort_by(|a, b| a.org.cmp(&b.org));
+    for row in rows {
+        out.push_str("\n[[mcp_manifest_enforcement]]\n");
+        key(out, "org", &row.org);
+        key(out, "enforce", &row.enforce);
+    }
+}
+
 fn period_rank(period: rolter_core::BudgetPeriod) -> u8 {
     match period {
         rolter_core::BudgetPeriod::Daily => 0,
@@ -828,7 +847,32 @@ pub async fn export_document(
         )));
     }
     with_stored_variants(pool, &mut config).await?;
+    config.mcp_manifest_enforcement = load_mcp_manifest_enforcement(pool, options).await?;
     Ok(render_with(&config, &refs))
+}
+
+/// The marker of each org that has not saved MCP settings, which is the only
+/// org the marker decides for (#3398): one with a saved row follows that row.
+#[cfg(feature = "postgres")]
+async fn load_mcp_manifest_enforcement(
+    pool: &sqlx::PgPool,
+    options: &ExportOptions,
+) -> rolter_core::Result<Vec<rolter_core::McpManifestEnforcementConfig>> {
+    use rolter_store::postgres::store_err;
+    let rows: Vec<(String, bool)> = sqlx::query_as(
+        "select o.slug, o.mcp_enforce_manifests from orgs o
+         where not exists (select 1 from mcp_gateway_settings s where s.org_id = o.id)
+           and ($1::text is null or o.slug = $1)
+         order by o.slug",
+    )
+    .bind(&options.org)
+    .fetch_all(pool)
+    .await
+    .map_err(store_err)?;
+    Ok(rows
+        .into_iter()
+        .map(|(org, enforce)| rolter_core::McpManifestEnforcementConfig { org, enforce })
+        .collect())
 }
 
 /// Leave in `config` what belongs in the file of the org `slug` (#3440): its
@@ -2019,6 +2063,59 @@ model = "gpt-4o"
                 .unwrap_err()
                 .to_string();
             assert!(err.contains("'nobody'"), "{err}");
+        }
+
+        /// The marker is exported for an org that never saved MCP settings, in
+        /// both values, and not for one that did (#3398).
+        #[tokio::test]
+        async fn the_mcp_manifest_marker_is_exported_for_an_org_without_settings() {
+            let Some(db) = scratch_db().await else {
+                return;
+            };
+            let pool = db.pool().clone();
+            let (strict, _) = bootstrap_named_org(&pool, "strict").await;
+            let (lax, _) = bootstrap_named_org(&pool, "lax").await;
+            let (saved, _) = bootstrap_named_org(&pool, "saved").await;
+            sqlx::query("update orgs set mcp_enforce_manifests = false where id = $1")
+                .bind(lax)
+                .execute(&pool)
+                .await
+                .unwrap();
+            sqlx::query("insert into mcp_gateway_settings (org_id) values ($1)")
+                .bind(saved)
+                .execute(&pool)
+                .await
+                .unwrap();
+            let _ = strict;
+
+            let store = PostgresConfigStore::new(pool.clone());
+            let served = store.load().await.unwrap();
+            let all = super::export_document(&pool, &served, &Default::default())
+                .await
+                .unwrap();
+            assert!(
+                all.contains("[[mcp_manifest_enforcement]]\norg = \"lax\"\nenforce = false\n"),
+                "{all}"
+            );
+            assert!(
+                all.contains("[[mcp_manifest_enforcement]]\norg = \"strict\"\nenforce = true\n"),
+                "{all}"
+            );
+            assert!(
+                !all.contains("org = \"saved\""),
+                "an org with saved settings follows them, not the marker:\n{all}"
+            );
+            let one = super::export_document(
+                &pool,
+                &served,
+                &super::ExportOptions {
+                    org: Some("lax".to_string()),
+                },
+            )
+            .await
+            .unwrap();
+            assert!(one.contains("org = \"lax\""), "{one}");
+            assert!(!one.contains("org = \"strict\""), "{one}");
         }
 
         /// A cap whose scope does not resolve is left alone rather than

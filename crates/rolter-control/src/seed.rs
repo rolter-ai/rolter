@@ -272,6 +272,7 @@ const IMPORTED_SECTIONS: &[&str] = &[
     "model_prices",
     "budgets",
     "rate_limits",
+    "mcp_manifest_enforcement",
     "prompt_templates",
 ];
 
@@ -944,6 +945,7 @@ async fn import_config(
     import_provider_groups(pool, org_id, project_id, config, &provider_ids).await?;
     import_model_prices(pool, config).await?;
     import_caps(pool, config).await?;
+    import_mcp_manifest_enforcement(pool, config).await?;
     import_prompt_templates(pool, org_id, project_id, config).await?;
 
     Ok(())
@@ -1278,6 +1280,41 @@ async fn resolve_within(
 /// file does not mention are not deleted. A value outside what the column or
 /// the gateway can hold fails the import before it writes anything, as a
 /// negative price does.
+/// Apply the `[[mcp_manifest_enforcement]]` markers of the file (#3398).
+///
+/// An import never makes an existing organization stricter, so only
+/// `enforce = false` writes anything: it relaxes the organization the entry
+/// names, which is how a re-import into a database whose organizations are
+/// created anew keeps the ones that were grandfathered. `enforce = true` is the
+/// default of a new organization and is left alone on an existing one. An
+/// organization the database does not have is skipped, as an unresolved cap is,
+/// and a repeated import writes nothing, so it bumps no config version.
+async fn import_mcp_manifest_enforcement(
+    pool: &PgPool,
+    config: &GatewayConfig,
+) -> anyhow::Result<()> {
+    let entries = &config.mcp_manifest_enforcement;
+    let relax: Vec<&str> = entries
+        .iter()
+        .filter(|entry| !entry.enforce)
+        .map(|entry| entry.org.as_str())
+        .collect();
+    // the update trigger is a statement trigger, so it fires for an update that
+    // matches no row: look first, and write only when something changes
+    let strict: Vec<String> =
+        sqlx::query_scalar("select slug from orgs where slug = any($1) and mcp_enforce_manifests")
+            .bind(&relax)
+            .fetch_all(pool)
+            .await?;
+    if !strict.is_empty() {
+        sqlx::query("update orgs set mcp_enforce_manifests = false where slug = any($1)")
+            .bind(&strict)
+            .execute(pool)
+            .await?;
+    }
+    Ok(())
+}
+
 async fn import_caps(pool: &PgPool, config: &GatewayConfig) -> anyhow::Result<()> {
     use rust_decimal::Decimal;
     let ceiling: Decimal = "99999999.9999".parse()?;
@@ -3197,6 +3234,106 @@ takes_over = ["throttled", "refusal:violence"]
     }
 
     /// A scratch directory for the bootstrap toml a test writes.
+    /// The marker in the file follows the organization it names, and an import
+    /// never makes an existing organization stricter (#3398).
+    #[tokio::test]
+    async fn the_mcp_manifest_marker_never_makes_an_org_stricter() {
+        let Some(db) = scratch_db().await else {
+            return;
+        };
+        let pool = db.pool().clone();
+        let dir = tempdir("mcp-marker");
+        let enforcing = |slug: &str| {
+            let pool = pool.clone();
+            let slug = slug.to_string();
+            async move {
+                sqlx::query_scalar::<_, bool>(
+                    "select mcp_enforce_manifests from orgs where slug = $1",
+                )
+                .bind(slug)
+                .fetch_one(&pool)
+                .await
+                .unwrap()
+            }
+        };
+        let write = |name: &str, body: &str| {
+            let path = dir.join(name);
+            std::fs::write(&path, body).unwrap();
+            path
+        };
+        let seed_into = |slug: &str, path: std::path::PathBuf| {
+            let pool = pool.clone();
+            let slug = slug.to_string();
+            async move {
+                crate::seed::seed(
+                    &pool,
+                    &crate::seed::SeedOptions {
+                        org: slug.clone(),
+                        org_slug: Some(slug),
+                        import: Some(path),
+                        ..Default::default()
+                    },
+                )
+                .await
+                .unwrap();
+            }
+        };
+
+        // an org the import creates anew takes the file's value, not the new default
+        let file = write(
+            "lax.toml",
+            "[[mcp_manifest_enforcement]]\norg = \"grandfathered\"\nenforce = false\n\
+             [[mcp_manifest_enforcement]]\norg = \"nowhere\"\nenforce = false\n",
+        );
+        seed_into("grandfathered", file.clone()).await;
+        assert!(!enforcing("grandfathered").await);
+        let orgs: i64 = sqlx::query_scalar("select count(*) from orgs where slug = 'nowhere'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            orgs, 0,
+            "an entry for an org this database lacks created it"
+        );
+
+        // a second import writes nothing, so it wakes no gateway
+        let version = || async {
+            sqlx::query_scalar::<_, i64>("select version from config_version where id = 1")
+                .fetch_one(&pool)
+                .await
+                .unwrap()
+        };
+        let before = version().await;
+        seed_into("grandfathered", file).await;
+        assert_eq!(
+            version().await,
+            before,
+            "a repeated import bumped the config version"
+        );
+
+        // `enforce = true` never tightens an org that exists
+        let strict = write(
+            "strict.toml",
+            "[[mcp_manifest_enforcement]]\norg = \"grandfathered\"\nenforce = true\n",
+        );
+        seed_into("grandfathered", strict).await;
+        assert!(
+            !enforcing("grandfathered").await,
+            "the import made an org stricter"
+        );
+
+        // `enforce = false` relaxes one that was strict, and an org created
+        // with no entry stays strict
+        seed_into("fresh", write("empty.toml", "")).await;
+        assert!(enforcing("fresh").await);
+        let relax = write(
+            "relax.toml",
+            "[[mcp_manifest_enforcement]]\norg = \"fresh\"\nenforce = false\n",
+        );
+        seed_into("fresh", relax).await;
+        assert!(!enforcing("fresh").await);
+    }
+
     fn tempdir(label: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!("rolter-seed-{label}-{}", Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
