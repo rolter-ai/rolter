@@ -520,6 +520,8 @@ disabled = false # revoke without deleting
 # connect_timeout_ms = 5000               # 100 to 60000
 # request_timeout_ms = 30000              # 1000 to 300000
 # max_retries = 1                         # 0 to 5
+# deprecated and ignored (#3527): a body the proxy cannot check is always
+# refused. still accepted and exported, so existing files keep loading
 # default_failure_mode = "fail_closed"    # fail_open | fail_closed
 # allow_unlisted_tools = false
 
