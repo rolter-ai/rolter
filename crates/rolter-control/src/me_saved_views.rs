@@ -16,11 +16,12 @@
 //! of the wrong shape, is refused rather than stored, so a preset can never
 //! carry an arbitrary parameter back to the analytics routes:
 //!
-//! * `llm_logs` mirrors `GET /api/v1/analytics/invocations`: `window`,
-//!   `status`, `model`, `key`, `business_unit` and `customer`.
+//! * `llm_logs` mirrors `GET /api/v1/analytics/invocations`: `window` (with
+//!   `since` and `until` for a custom range), `status`, `model`, `key`,
+//!   `business_unit` and `customer`.
 //! * `dashboard` mirrors the summary / timeseries / by-model routes the
-//!   dashboard calls: `window`, `bucket`, `model`, `key`, `business_unit` and
-//!   `customer` (#2453). The four row filters take the same shapes as on
+//!   dashboard calls: `window` (with `since` and `until` for a custom range),
+//!   `bucket`, `model`, `key`, `business_unit` and `customer` (#2453). The four row filters take the same shapes as on
 //!   `llm_logs`, because the routes read them as the invocation list does.
 //!
 //! `window` is a rolling window's *name* (`24h`, `7d`, ...), never a pair of
@@ -48,7 +49,7 @@ use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::routing::get;
 use axum::{Json, Router};
-use chrono::{DateTime, NaiveDate, Utc};
+use chrono::{DateTime, Datelike, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use uuid::Uuid;
@@ -254,16 +255,36 @@ pub(crate) fn validate_filters(surface: &str, filters: &Value) -> ApiResult<Map<
     Ok(out)
 }
 
-/// A calendar day written `YYYY-MM-DD`, as a date. The shape is exact (four
-/// digit year, two digit month and day) so one day has one stored spelling.
+/// The first year a custom window may name. The dashboard's own day parser
+/// rejects an earlier one, so a view the server stored always applies.
+const MIN_DAY_YEAR: i32 = 2000;
+
+/// A calendar day written exactly `YYYY-MM-DD` in ASCII digits, a real date in
+/// the years 2000 to 9999, as a date. One day has one stored spelling, and it
+/// is one the dashboard reads back the same: `chrono` alone also takes a year of
+/// `0001`, a sign (`+999-01-01`) or a single digit month, none of which the
+/// dashboard's parser accepts, and a view holding one would silently apply as
+/// the default window.
 fn day_of(field: &str, value: &Value) -> ApiResult<NaiveDate> {
+    let exact = |text: &&str| {
+        let bytes = text.as_bytes();
+        bytes.len() == 10
+            && bytes.iter().enumerate().all(|(i, b)| {
+                if i == 4 || i == 7 {
+                    *b == b'-'
+                } else {
+                    b.is_ascii_digit()
+                }
+            })
+    };
     value
         .as_str()
-        .filter(|text| text.len() == 10)
+        .filter(exact)
         .and_then(|text| NaiveDate::parse_from_str(text, "%Y-%m-%d").ok())
+        .filter(|date| date.year() >= MIN_DAY_YEAR)
         .ok_or_else(|| {
             bad_request(&format!(
-                "filter '{field}' must be a day written YYYY-MM-DD"
+                "filter '{field}' must be a day written YYYY-MM-DD, from the year {MIN_DAY_YEAR}"
             ))
         })
 }
@@ -744,6 +765,11 @@ mod tests {
             assert_eq!(got["window"], "custom");
             assert_eq!(got["since"], "2026-10-01");
             assert_eq!(got["until"], "2026-10-07");
+            // the earliest year the dashboard's parser reads
+            ok(
+                surface,
+                json!({"window": "custom", "since": "2000-01-01", "until": "2000-01-31"}),
+            );
             // a single day is a range
             ok(
                 surface,
@@ -775,6 +801,12 @@ mod tests {
             "2026-1-5",
             "10/01/2026",
             "",
+            // a year the dashboard's parser does not read, a sign, other digits
+            "0001-01-01",
+            "0099-12-31",
+            "1999-12-31",
+            "+999-01-01",
+            "٢٠٢٦-١٠-٠١",
         ] {
             assert!(
                 refused(

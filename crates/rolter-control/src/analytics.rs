@@ -883,9 +883,8 @@ pub(crate) const P50_LATENCY: &str =
 // Request-log sampling keeps 1 row in `1 / sample_rate`, and each stored row
 // carries `sample_weight` (clickhouse/014) = how many real requests it stands
 // for. Counts and sums are scaled by it so a sampled log does not under-report
-// traffic or spend (#2239). Averages are left alone, since a uniform sample
-// already estimates them; percentiles are weighted (#3355), see
-// `P95_LATENCY`. Rows written unsampled, or before the column existed,
+// traffic or spend (#2239). The mean and the percentiles are weighted too
+// (#3420, #3355), see `AVG_LATENCY` and `P95_LATENCY`. Rows written unsampled, or before the column existed,
 // weigh 1.
 pub(crate) const REQUESTS: &str = "round(sum(sample_weight))";
 pub(crate) const TOKENS: &str = "round(sum(total_tokens * sample_weight))";
