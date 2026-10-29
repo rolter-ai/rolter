@@ -987,6 +987,11 @@ async fn timeseries(
 }
 
 /// Per-model aggregates: requests, tokens, cost, error rate, latency percentiles.
+///
+/// A row is one organization's model, `(org_id, model)` (#3486): since #1857
+/// two organizations may each have a route named `gpt-4o`, and a caller who
+/// reads both (a superadmin, a member of two) gets them as two rows rather
+/// than one whose figures are summed across tenants.
 async fn by_model(
     access: AnalyticsAccess,
     State(state): State<crate::ControlState>,
@@ -996,8 +1001,15 @@ async fn by_model(
         Ok(ch) => ch,
         Err(resp) => return resp,
     };
-    let sql = format!(
-        "select model, \
+    run(ch
+        .query(&by_model_sql(), &with_access(q.params(), &access))
+        .await)
+}
+
+/// The select behind [`by_model`].
+pub(crate) fn by_model_sql() -> String {
+    format!(
+        "select org_id, model, \
                 {REQUESTS} as requests, \
                 {TOKENS} as tokens, \
                 {COST} as cost_usd, \
@@ -1009,9 +1021,8 @@ async fn by_model(
                 {P50_LATENCY} as p50_latency_ms, \
                 {P95_LATENCY} as p95_latency_ms \
          from request_logs where {WHERE_WINDOW} and {ROW_VISIBLE} and {ROW_FILTERS} \
-         group by model order by cost_usd desc format JSON"
-    );
-    run(ch.query(&sql, &with_access(q.params(), &access)).await)
+         group by org_id, model order by cost_usd desc, org_id, model format JSON"
+    )
 }
 
 /// Per-variant aggregates (#3342): what each weighted variant of a route
@@ -2044,6 +2055,16 @@ mod tests {
             ERRORS,
             format!("round(sumIf(sample_weight, {ERROR_STATUS}))")
         );
+    }
+
+    #[test]
+    fn by_model_keeps_two_orgs_same_named_routes_apart() {
+        // #3486: grouping by the bare name summed two tenants' routes
+        let sql = by_model_sql();
+        assert!(sql.starts_with("select org_id, model,"), "{sql}");
+        assert!(sql.contains("group by org_id, model "), "{sql}");
+        assert!(!sql.contains("group by model "), "{sql}");
+        assert!(sql.contains(ROW_VISIBLE), "{sql}");
     }
 
     #[test]

@@ -2367,3 +2367,107 @@ async fn summary_reports_weighted_prompt_cache_reads_beside_prompt_tokens() {
     assert_eq!(number(&row["prompt_tokens"]), 6000.0);
     assert_eq!(number(&row["cache_read_tokens"]), 1800.0);
 }
+
+/// The by-model rows `token` reads for `model`, as `(org_id, requests)`, sorted.
+async fn by_model_rows(
+    client: &reqwest::Client,
+    addr: SocketAddr,
+    token: &str,
+    model: &str,
+) -> Vec<(String, f64)> {
+    let response = client
+        .get(format!(
+            "http://{addr}/api/v1/analytics/by-model?model={model}"
+        ))
+        .bearer_auth(token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200, "by-model as {token}");
+    let body: Value = response.json().await.unwrap();
+    let mut rows: Vec<(String, f64)> = body["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| {
+            assert_eq!(row["model"], model, "{body}");
+            let requests = match &row["requests"] {
+                Value::String(text) => text.parse().unwrap(),
+                other => other.as_f64().unwrap(),
+            };
+            (
+                row["org_id"].as_str().unwrap_or_default().to_string(),
+                requests,
+            )
+        })
+        .collect();
+    rows.sort_by(|a, b| a.0.cmp(&b.0));
+    rows
+}
+
+/// #3486: two orgs may each have a route named `gpt-4o` (#1857). Grouped by the
+/// bare name, a superadmin read them as one row whose figures were summed
+/// across tenants. Grouped by `(org_id, model)` they are two rows, each naming
+/// its org, and a member of one org still reads only its own.
+#[tokio::test]
+async fn by_model_keeps_two_orgs_same_named_routes_as_two_rows() {
+    let ch = skip_without_stack!();
+    let http = reqwest::Client::new();
+    ensure_schema(&http, &ch).await;
+
+    let db = TestSchema::create(&test_database::url().await.unwrap()).await;
+    let pool = db.pool().clone();
+    let acme = seed_tenant(&pool, "acme").await;
+    let umbrella = seed_tenant(&pool, "umbrella").await;
+    let app = rolter_control::test_app_with_clickhouse_and_admin_token(
+        pool.clone(),
+        &ch,
+        Some(ADMIN_TOKEN.to_string()),
+    )
+    .await
+    .unwrap();
+    let addr = serve(app).await;
+
+    // one name, unique to this run, served in both orgs: twice in acme, three
+    // times in umbrella
+    let model = format!("shared-{}", Uuid::new_v4().simple());
+    let ts = chrono::Utc::now()
+        .format("%Y-%m-%d %H:%M:%S%.3f")
+        .to_string();
+    let rows: Vec<Value> = [(&acme, 2), (&umbrella, 3)]
+        .iter()
+        .flat_map(|(tenant, count)| {
+            (0..*count).map(|i| {
+                json!({
+                    "ts": ts,
+                    "request_id": format!("shared-{i}-{}", Uuid::new_v4().simple()),
+                    "org_id": tenant.org.to_string(), "team_id": tenant.team.to_string(),
+                    "project_id": tenant.project_a.to_string(),
+                    "model": model, "status": 200, "latency_ms": 10,
+                })
+            })
+        })
+        .collect();
+    insert_rows(&http, &ch, "request_logs", &rows).await;
+
+    let mut both = vec![(acme.org.to_string(), 2.0), (umbrella.org.to_string(), 3.0)];
+    both.sort_by(|a, b| a.0.cmp(&b.0));
+    assert_eq!(
+        by_model_rows(&http, addr, ADMIN_TOKEN, &model).await,
+        both,
+        "the deployment admin reads each org's route as its own row"
+    );
+
+    let acme_viewer = seed_user(&pool, Some(acme.org), None, None, "viewer").await;
+    assert_eq!(
+        by_model_rows(&http, addr, &acme_viewer, &model).await,
+        vec![(acme.org.to_string(), 2.0)],
+        "a member of acme never reads umbrella's row"
+    );
+    let umbrella_member = seed_user(&pool, None, None, Some(umbrella.project_a), "member").await;
+    assert_eq!(
+        by_model_rows(&http, addr, &umbrella_member, &model).await,
+        vec![(umbrella.org.to_string(), 3.0)],
+        "nor a member of umbrella acme's"
+    );
+}

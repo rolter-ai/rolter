@@ -2438,7 +2438,7 @@ fn operations() -> Vec<Op> {
             Op::get(
                 "/api/v1/analytics/by-model",
                 "getAnalyticsByModel",
-                "Spend and usage grouped by model",
+                "Spend and usage grouped by organization and model: a row carries `org_id` (an empty string for a request no organization owns) beside `model`, since two organizations may each have a route of one name",
             )
             .clickhouse_read()
             .query(DASHBOARD_QUERY),

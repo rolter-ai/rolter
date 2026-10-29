@@ -453,8 +453,15 @@ function UnpricedModels({
     retry: false,
   });
   const pricedModels = new Set((priced.data ?? []).map((p) => p.model));
-  const rows = (traffic.data ?? [])
-    .map((r) => ({ model: r.model, requests: Number(r.unpriced_requests) }))
+  // a price is per model name, while the read answers one row per
+  // organization's model (#3486), so two organizations' unpriced `gpt-4o` is
+  // one model to price
+  const unpriced = new Map<string, number>();
+  for (const r of traffic.data ?? []) {
+    unpriced.set(r.model, (unpriced.get(r.model) ?? 0) + Number(r.unpriced_requests));
+  }
+  const rows = [...unpriced]
+    .map(([model, requests]) => ({ model, requests }))
     .filter((r) => r.model && r.requests > 0 && !pricedModels.has(r.model))
     .sort((a, b) => b.requests - a.requests);
 
