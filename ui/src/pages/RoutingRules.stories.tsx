@@ -1423,6 +1423,7 @@ const observing = (data: unknown[], status = 200) =>
     }),
   );
 const variantTraffic = (variant: string, requests: number, errors: number, p95 = 300) => ({
+  org_id: "org-1",
   model: "gpt-4o",
   variant,
   requests,
@@ -1615,6 +1616,117 @@ export const AVariantThatAnsweredNothingKeepsItsAssignedShare: Story = {
       // no latency either: the zeros the read carries for it are not a measurement
       expect(cells("canary")).toEqual(["canary", "10%", "10%", "0%", "0%", "0", "—", "—"]),
     );
+  },
+};
+
+/**
+ * The sampled column counts the requests the weighted split picked each
+ * variant for, before the gateway skipped one (#3547): here the canary's
+ * breaker was open, so it was sampled for its 10% and dialled first for 1%,
+ * and the gap is the traffic routed around it.
+ */
+const routedAround = observing([
+  {
+    ...variantTraffic("stable", 990, 8, 420),
+    first_attempt_requests: 990,
+    assigned_requests: 990,
+    sampled_requests: 900,
+  },
+  {
+    ...variantTraffic("canary", 10, 0, 900),
+    first_attempt_requests: 10,
+    assigned_requests: 10,
+    sampled_requests: 100,
+  },
+]);
+export const SampledSharesShowTheTrafficRoutedAroundAVariant: Story = {
+  render: () => (
+    <Harness fetchStub={routedAround.stub} role="admin">
+      <Toasted>
+        <RoutingRules />
+      </Toasted>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const dialog = await openRouteSheet(canvasElement);
+    const table = within(await dialog.findByRole("table", { name: "Observed traffic" }));
+    await expect(await table.findByRole("columnheader", { name: "Sampled" })).toBeVisible();
+    await expect(table.getAllByRole("columnheader")).toHaveLength(9);
+    // the widest grid fits the table's own floor: no row runs past it
+    const tableEl = dialog.getByRole("table", { name: "Observed traffic" });
+    for (const group of Array.from(tableEl.children) as HTMLElement[]) {
+      await expect(group.scrollWidth).toBeLessThanOrEqual(group.clientWidth);
+    }
+    const row = (name: string) => table.getByText(name).closest('[role="row"]') as HTMLElement;
+    const cells = (name: string) =>
+      Array.from(row(name).querySelectorAll('[role="cell"]')).map((c) => c.textContent);
+    // configured, sampled, assigned, observed
+    await waitFor(() =>
+      expect(cells("stable").slice(0, 5)).toEqual(["stable", "90%", "90%", "99%", "99%"]),
+    );
+    await expect(cells("canary").slice(0, 5)).toEqual(["canary", "10%", "10%", "1%", "1%"]);
+    await expect(dialog.getByText(/the gateway routed requests around the variant/)).toBeVisible();
+  },
+};
+
+/**
+ * A ClickHouse without the sampled-variant file answers `null`, and the
+ * column is left out rather than drawn as a guess.
+ */
+const unsampled = observing([
+  { ...variantTraffic("stable", 900, 8, 420), assigned_requests: 900, sampled_requests: null },
+  { ...variantTraffic("canary", 100, 24, 900), assigned_requests: 100, sampled_requests: null },
+]);
+export const NoSampledColumnWithoutTheSampledVariant: Story = {
+  render: () => (
+    <Harness fetchStub={unsampled.stub} role="admin">
+      <Toasted>
+        <RoutingRules />
+      </Toasted>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const dialog = await openRouteSheet(canvasElement);
+    const table = within(await dialog.findByRole("table", { name: "Observed traffic" }));
+    await expect(await table.findByRole("columnheader", { name: "Assigned" })).toBeVisible();
+    await expect(table.queryByRole("columnheader", { name: "Sampled" })).toBeNull();
+    await expect(dialog.queryByText(/routed requests around the variant/)).toBeNull();
+  },
+};
+
+/**
+ * Rows are keyed on the organization too (#3548): two organizations may each
+ * have a route and variants of one name. The read is narrowed to the route's
+ * project, so another organization's rows of the same names never join this
+ * route's, here neither in the shares nor as lines of their own.
+ */
+const twoOrgs = observing([
+  { ...variantTraffic("stable", 900, 8, 420), assigned_requests: 900 },
+  { ...variantTraffic("canary", 100, 24, 900), assigned_requests: 100 },
+  { ...variantTraffic("stable", 50, 0), org_id: "org-2", assigned_requests: 50 },
+  { ...variantTraffic("canary", 50, 0), org_id: "org-2", assigned_requests: 50 },
+  { ...variantTraffic("other-org-only", 20, 0), org_id: "org-2", assigned_requests: 20 },
+]);
+export const AnotherOrganizationsVariantsOfOneNameStayApart: Story = {
+  render: () => (
+    <Harness fetchStub={twoOrgs.stub} role="admin">
+      <Toasted>
+        <RoutingRules />
+      </Toasted>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const dialog = await openRouteSheet(canvasElement);
+    const table = within(await dialog.findByRole("table", { name: "Observed traffic" }));
+    const row = (name: string) => table.getByText(name).closest('[role="row"]') as HTMLElement;
+    const cells = (name: string) =>
+      Array.from(row(name).querySelectorAll('[role="cell"]')).map((c) => c.textContent);
+    // 900 / 100 of this organization's requests, not 950 / 150 of both
+    await waitFor(() =>
+      expect(cells("stable").slice(0, 5)).toEqual(["stable", "90%", "90%", "90%", "900"]),
+    );
+    await expect(cells("canary").slice(0, 5)).toEqual(["canary", "10%", "10%", "10%", "100"]);
+    await expect(table.queryByText("other-org-only")).toBeNull();
   },
 };
 

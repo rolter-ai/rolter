@@ -142,6 +142,12 @@ pub(crate) const OPTIONAL_COLUMNS: &[OptionalColumn] = &[
         name: "first_variant",
         default: "''",
     },
+    // 050_sampled_variant.sql: the variant the weighted split sampled, read
+    // by by-variant's sampled count (#3547)
+    OptionalColumn {
+        name: "sampled_variant",
+        default: "''",
+    },
 ];
 
 /// The probe: every column `request_logs` has in the database the client reads
@@ -457,6 +463,7 @@ mod tests {
             "provider_org_id",
             "cache_usage_reported",
             "first_variant",
+            "sampled_variant",
         ]))
         .expect("the table is visible");
         assert_eq!(columns.missing(), ["cache_write_1h_tokens"]);

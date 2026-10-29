@@ -629,6 +629,7 @@
         "variant": "Variant",
         "configured": "Configured",
         "assigned": "Assigned",
+        "sampled": "Sampled",
         "share": "Observed",
         "requests": "Requests",
         "errors": "Errors",
@@ -639,6 +640,7 @@
         "firstAttempt": "First attempt",
         "noteWithFirstAttempt": "Observed is each variant's share of the requests it answered, counting failovers, so a variant that others fail over to reads higher than its weight. First attempt is the share of requests answered on the first attempt, with no failover. A request first sent to one variant that failed over is logged under the variant that answered, with a reason, so it counts for neither: a variant that often fails over reads below its weight there.",
         "noteWithAssigned": "Assigned is each variant's share of the requests it was dialled to first, whether it answered them or they failed over. It is not the sampled split: a variant skipped while its breaker is open or its targets are parked is dialled first by none of the requests sampled for it. Observed is its share of the requests it answered, counting failovers, and First attempt the share it answered with no failover. Requests logged before the gateway recorded the first variant count under Assigned only when they did not fail over.",
+        "noteSampled": "Sampled is each variant's share of the requests the weighted split picked it for, before the gateway skipped a variant whose breaker is open or whose targets are parked, so it is the share to compare with Configured. Where Sampled is above Assigned, the gateway routed requests around the variant. Requests logged before the gateway recorded the sample are not counted there. A realtime session is not sampled by weight yet: it leads with the first variant with a non-zero weight, and each of its turns counts for that variant.",
         "unattributed_one": "{{requests}} request in this window was served without a variant.",
         "unattributed_other": "{{requests}} requests in this window were served without a variant.",
         "noAnalytics": {

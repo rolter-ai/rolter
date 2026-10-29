@@ -2770,6 +2770,7 @@ async fn proxy(
         last_target,
         variant,
         first_variant,
+        sampled_variant,
         attempts,
         fallback_reason,
         inflight_guard,
@@ -2784,6 +2785,7 @@ async fn proxy(
         target: last_target,
         variant,
         first_variant,
+        sampled_variant,
         status,
         upstream_status: status,
         attempts,
@@ -3187,6 +3189,7 @@ fn unanswered(
         last_status,
         variant,
         first_variant,
+        sampled_variant,
         attempts,
         fallback_reason,
         ..
@@ -3248,6 +3251,7 @@ fn unanswered(
         },
         variant,
         first_variant,
+        sampled_variant,
         status,
         upstream_status,
         attempts,
@@ -3541,6 +3545,7 @@ async fn proxy_multipart(
         last_target,
         variant,
         first_variant,
+        sampled_variant,
         attempts,
         fallback_reason,
         inflight_guard,
@@ -3555,6 +3560,7 @@ async fn proxy_multipart(
         target: last_target,
         variant,
         first_variant,
+        sampled_variant,
         status,
         upstream_status: status,
         attempts,
@@ -3621,6 +3627,9 @@ struct ForwardOutcome {
     /// the variant the first attempt dialled; empty on the classic pool and
     /// when nothing was dialled (#3505)
     first_variant: String,
+    /// the variant the weighted split sampled as primary, before cooldown,
+    /// breaker and health skipping; empty on the classic pool (#3547)
+    sampled_variant: String,
     provider_key_fingerprint: Option<String>,
     /// upstream attempts made, the one that answered included. Saturates, so
     /// a retry budget past 255 cannot wrap the count to zero
@@ -3892,6 +3901,13 @@ async fn forward_variants(
     );
 
     let mut run = ForwardLoop::new(fwd, ForwardPool::Variants(&candidates));
+    // the split's own pick, which `next_candidate` may skip while its targets
+    // are parked, unhealthy or behind an open breaker (#3547). recorded on the
+    // variant path only, so a classic route allocates nothing for it
+    if let Some(sampled) = route.variants.get(primary) {
+        run.out.sampled_variant.clone_from(&sampled.name);
+        cancel.sampled(&sampled.name);
+    }
     for attempt in 0..=run.max_retries {
         let ci = match next_candidate(state, route, &candidates, &variant_keys, &run, cd_enabled) {
             Some(ci) => ci,
@@ -4417,6 +4433,7 @@ impl<'f> ForwardLoop<'f> {
                 inflight_guard: None,
                 variant: String::new(),
                 first_variant: String::new(),
+                sampled_variant: String::new(),
                 provider_key_fingerprint: None,
                 attempts: 0,
                 fallback_reason: String::new(),

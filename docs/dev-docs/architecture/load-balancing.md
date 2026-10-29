@@ -301,7 +301,7 @@ Tests: `rolter_core::failover` unit tests (vocabulary, classification, `may_dial
 
 `GET /api/v1/analytics/by-variant` (`by_variant_sql` in
 `crates/rolter-control/src/analytics.rs`) gives each weighted variant of a route
-three counts, which the route sheet (`ui/src/components/RouteVariantTraffic.tsx`)
+four counts, which the route sheet (`ui/src/components/RouteVariantTraffic.tsx`)
 sets beside the configured weights:
 
 - `requests`: every request the variant answered (`request_logs.variant`),
@@ -315,7 +315,7 @@ sets beside the configured weights:
   request. It is not the sampled primary: `next_candidate` skips a candidate
   whose target is parked, unhealthy or behind an open breaker, so a variant in
   that state is dialled first by none of the requests sampled for it and reads
-  near 0 here. Recording the sampled primary beside it is #3547.
+  near 0 here; `sampled_requests` is the count that keeps those requests.
   `forward_variants` names the candidate's variant in
   `ForwardOutcome::variant` before it dials, and `ForwardLoop::begin_attempt`
   copies it to `first_variant` while `attempts` is still `0`; the cancel guard's
@@ -323,22 +323,54 @@ sets beside the configured weights:
   classic pool has no variant and copies nothing, and an empty field is left out
   of the row, so a ClickHouse without `clickhouse/048_first_variant.sql` takes
   every row as before.
+- `sampled_requests` (#3547): the requests the weighted split sampled each
+  variant for, grouped by `request_logs.sampled_variant`. `forward_variants`
+  copies the name of `route.sample_variant`'s pick into
+  `ForwardOutcome::sampled_variant` (and `CancelGuard::sampled`) before
+  `next_candidate` skips anything, so it is the split itself: a variant behind
+  an open breaker keeps its sampled share while its assigned share falls, and
+  the gap between the two is the traffic the gateway routed around it. Only the
+  variant path copies it, so a classic route allocates nothing for it, and an
+  empty field is left out of the row
+  (`clickhouse/050_sampled_variant.sql`).
 
-The assigned count needs rows grouped by another key than the answered ones,
-and a variant that only failed over has no answered row at all, so the select
-is a `union all` of the answered rollup and an assigned rollup over the same
-window and filters, summed per `(model, variant)`. A row without
+The assigned and sampled counts need rows grouped by other keys than the
+answered ones, and a variant that only failed over (or was only ever skipped)
+has no answered row at all, so the select is a `union all` of the answered
+rollup, an assigned rollup and a sampled rollup over the same window and
+filters, summed per `(org_id, model, variant)`. The organization is
+part of every key (#3548), as in by-model since #3486: two organizations may
+each have a route of one name, and a caller who reads both gets each one's
+variants as their own rows. A row without
 `first_variant` (written before `048`, or by an older gateway) counts for the
 variant that answered it when it has no `fallback_reason`, for no variant when
 it failed over, and a classic row counts under the empty variant. Without
 `fallback_reason` (`023`) such an old variant row is never counted. Without
-`048` the count is `null` and the sheet leaves its column out. Realtime turn
-rows do not record a first variant yet, so they count by the old-row rule.
+`048` the count is `null` and the sheet leaves its column out. The sampled
+count reads only rows that name their sample and classic rows: a variant row
+written before `050` could have been sampled for any variant, so it is left
+out, and without `050` the count is `null` and its half is not selected.
+
+Realtime turn rows carry the same fields (#3543). A session walks its dial list
+one connect at a time (`CandidateWalk` in `realtime.rs`) and can fail over
+across variants before it is pinned: `connect_selected` keeps the variant of
+the first dial, `CandidateWalk` the variant it led with, and both ride
+`SelectedSession` into `SessionMeter`, whose `base_row` writes them on every
+turn row of the session. A session assigned one variant and pinned to another
+therefore counts for the first in `assigned_requests` and for the second in
+`requests`, as an HTTP request that failed over does. The walk leads with
+`sample_variant(0.0)`, not a weighted draw, so a realtime session's sampled
+variant is the route's first variant with a non-zero weight (#3553 tracks
+sampling it by weight).
 Tests: `by_variant_*` in `analytics.rs`; the `by_variant_*048*`,
+`by_variant_*050*`, `by_variant_counts_the_sampled_primary_*`,
 `by_variant_counts_a_failover_*` and `by_variant_lists_a_variant_*` cases of
 `crates/rolter-control/tests/invocations_optional_columns.rs` (real
-ClickHouse); `a_variant_failover_records_the_variant_first_dialled` in
-`crates/rolter-gateway/tests/upstream_failure_log.rs`.
+ClickHouse); `a_variant_failover_records_the_variant_first_dialled` and
+`a_request_sampled_for_an_open_breaker_records_the_sampled_variant` in
+`crates/rolter-gateway/tests/upstream_failure_log.rs`;
+`a_session_that_fails_over_to_another_variant_records_the_first_dialled` in
+`crates/rolter-gateway/tests/realtime_metering.rs`.
 
 ## Selecting a strategy from the dashboard
 
