@@ -180,6 +180,7 @@
       "to": "To",
       "endBeforeStart": "The end day is before the start day. Pick an end on or after the start.",
       "rangeLabel": "{{from}} – {{to}}",
+      "countedIn": "Days are counted in {{zone}}, the zone the charts use.",
       "pickBothDays": "Pick a start day and an end day."
     },
     "sampledLog": {

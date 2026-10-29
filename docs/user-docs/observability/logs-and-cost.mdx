@@ -480,7 +480,7 @@ The call's arguments and result are stored only when `[logging.payload_capture]`
 Every usage, spend, provider-health and MCP-log read takes an optional `since` (inclusive) and `until` (exclusive). Left out, or sent empty, they cover the last 7 days up to now. Each accepts:
 
 - RFC 3339, which is what `Date.prototype.toISOString()` and most SDKs write: `2026-07-01T00:00:00Z`, `2026-07-01T00:00:00.123+02:00`
-- a date and time with no offset, read in the ClickHouse server's time zone: `2026-07-01 00:00:00`, `2026-07-01T00:00:00.000`
+- a date and time with no offset, read as UTC: `2026-07-01 00:00:00`, `2026-07-01T00:00:00.000`
 - a bare date: `2026-07-01`
 
 Anything else is refused with `400` and an error naming the parameter:
@@ -496,7 +496,7 @@ Anything else is refused with `400` and an error naming the parameter:
 }
 ```
 
-That covers a date the calendar does not have (`2026-02-30`), a lowercase `t` or `z`, and a Unix timestamp; send those as RFC 3339 instead. The check exists because ClickHouse reads a bound it cannot parse as 1970-01-01, so without it a typo would scan the whole log rather than fail.
+That covers a date the calendar does not have (`2026-02-30`), a lowercase `t` or `z`, and a Unix timestamp; send those as RFC 3339 instead. The check exists because ClickHouse reads a bound it cannot parse as 1970-01-01, so without it a typo would scan the whole log rather than fail. A bound that parses but lies before `2000-01-01T00:00:00Z` or more than one day past now is refused the same way, with `code: "time_bound_out_of_range"`.
 
 <Warning>
   Percent-encode the `+` of a positive offset as `%2B`. A query string decodes a bare `+` to a space, so `since=2026-07-01T00:00:00+02:00` arrives as `2026-07-01T00:00:00 02:00` and is refused, with a message that says so.
@@ -504,7 +504,7 @@ That covers a date the calendar does not have (`2026-02-30`), a lowercase `t` or
 
 ### The dashboard's window picker
 
-The picker on the Dashboard, LLM Logs, Cost Attribution and Savings offers the named windows above and **Custom range…**, which takes a start and an end day in your calendar. The end day is included: 1 to 7 October covers seven whole days, from midnight on the 1st to midnight on the 8th, and the dashboard sends those two instants as `since` and `until`. An end before the start is refused where you type it, and the screen keeps the last range that was whole. The address carries a range as `window=custom&since=2026-10-01&until=2026-10-07`, and a saved view stores the same three values. On the Dashboard, each figure's arrow compares a custom range with the same number of days straight before it.
+The picker on the Dashboard, LLM Logs, Cost Attribution and Savings offers the named windows above and **Custom range…**, which takes a start and an end day. The end day is included: 1 to 7 October covers seven whole days, from midnight on the 1st to midnight on the 8th, and the dashboard sends those two instants as `since` and `until`; a range whose last day has not ended yet runs up to now. The days, like the month windows, are counted in the time zone the charts are drawn in: your **Time zone** preference when you set one, your browser's otherwise. When that zone is not your browser's, the picker names it under the list. An end before the start is refused where you type it, and the screen keeps the last range that was whole. The address carries a range as `window=custom&since=2026-10-01&until=2026-10-07`, and a saved view stores the same three values. On the Dashboard, each figure's arrow compares a custom range with the same number of days straight before it.
 
 ## Filtering LLM Logs
 

@@ -2,7 +2,7 @@ import * as React from "react";
 import { useTranslation } from "react-i18next";
 import { useSearchParams } from "react-router";
 
-import { useFormat } from "@/lib/i18n/format";
+import { chartTimeZone, useFormat, wallClock, type WallClock } from "@/lib/i18n/format";
 
 /**
  * The reporting windows a spend screen can be read over (#2107).
@@ -14,6 +14,12 @@ import { useFormat } from "@/lib/i18n/format";
  * every hour since the screen was opened (#1975).
  *
  * The values are what the address carries (`?window=last-month`).
+ *
+ * A calendar day is a day in the chart zone (#3500): the zone the charts,
+ * tables and clocks are drawn in (`chart_time_zone`, `chartTimeZone()`), or the
+ * browser's when the account sets none. "Month to date", "last month" and a
+ * custom range therefore start and end at the midnights the charts label. Each
+ * function takes the zone as its last argument, the chart zone by default.
  */
 export const TIME_WINDOWS = ["24h", "7d", "30d", "mtd", "last-month"] as const;
 
@@ -57,37 +63,71 @@ const MIN_DAY_YEAR = 2000;
 
 const DAY = /^(\d{4})-(\d{2})-(\d{2})$/;
 
-/** `YYYY-MM-DD` as local midnight, or null when it is not a real day */
-function parseDay(raw: string | null | undefined): Date | null {
+/** a calendar day, with no zone: `month` counts from 0 */
+type CalendarDay = Pick<WallClock, "year" | "month" | "day">;
+
+/**
+ * The instant the clock in `zone` reads `at`, the browser's zone when
+ * `undefined`. A field past its range carries over the way `Date`'s
+ * constructor does (a month of -1 is December before), and a reading a
+ * daylight-saving change skips lands just after the gap, as `Date` does too.
+ */
+function zonedInstant(at: Partial<WallClock> & CalendarDay, zone: string | undefined): Date {
+  const { year, month, day, hour = 0, minute = 0, second = 0, ms = 0 } = at;
+  if (!zone) return new Date(year, month, day, hour, minute, second, ms);
+  const wall = Date.UTC(year, month, day, hour, minute, second, ms);
+  // the zone's offset at an instant: the wall clock there, read as UTC, minus it
+  const offsetAt = (instant: number) => {
+    const c = wallClock(new Date(instant), zone);
+    return Date.UTC(c.year, c.month, c.day, c.hour, c.minute, c.second, c.ms) - instant;
+  };
+  // the offset at a first guess may not be the offset at the answer when a
+  // change falls between them, so a second guess uses the first's. the earlier
+  // of the two that reads `at` back wins, as `Date` picks the first of an hour
+  // that happens twice; when neither does, `at` is in a gap and the later one
+  // is just past it
+  const first = wall - offsetAt(wall);
+  const second_ = wall - offsetAt(first);
+  const reads = (instant: number) => instant + offsetAt(instant) === wall;
+  const [early, late] = first < second_ ? [first, second_] : [second_, first];
+  if (reads(early)) return new Date(early);
+  return new Date(late);
+}
+
+/** `YYYY-MM-DD` as the day it names, or null when it is not a real day */
+function parseDay(raw: string | null | undefined): CalendarDay | null {
   const match = raw ? DAY.exec(raw) : null;
   if (!match) return null;
   const [year, month, day] = [Number(match[1]), Number(match[2]) - 1, Number(match[3])];
   // the server holds a saved range to the same years (`MIN_DAY_YEAR`), and
-  // `new Date(99, …)` is 1999 besides, so an earlier year is not a day here
+  // `Date.UTC(99, …)` is 1999 besides, so an earlier year is not a day here
   if (year < MIN_DAY_YEAR) return null;
-  const date = new Date(year, month, day);
-  // `new Date(2026, 1, 31)` is the 3rd of March, which is not the day that was typed
-  return date.getFullYear() === year && date.getMonth() === month && date.getDate() === day
-    ? date
+  const date = new Date(Date.UTC(year, month, day));
+  // the 31st of February is the 3rd of March, which is not the day that was typed
+  return date.getUTCFullYear() === year && date.getUTCMonth() === month && date.getUTCDate() === day
+    ? { year, month, day }
     : null;
 }
 
-/** a date as `YYYY-MM-DD` in the viewer's calendar */
-export function formatDay(date: Date): string {
+/** the day `instant` falls on in `zone` (the chart zone by default), as `YYYY-MM-DD` */
+export function formatDay(instant: Date, zone: string | undefined = chartTimeZone()): string {
+  const { year, month, day } = wallClock(instant, zone);
   const pad = (n: number, width = 2) => String(n).padStart(width, "0");
-  return `${pad(date.getFullYear(), 4)}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+  return `${pad(year, 4)}-${pad(month + 1)}-${pad(day)}`;
 }
 
-const addDays = (date: Date, days: number) =>
-  new Date(date.getFullYear(), date.getMonth(), date.getDate() + days);
+/** the day `days` after `day`, on the calendar */
+const addDays = (day: CalendarDay, days: number): CalendarDay => {
+  const date = new Date(Date.UTC(day.year, day.month, day.day + days));
+  return { year: date.getUTCFullYear(), month: date.getUTCMonth(), day: date.getUTCDate() };
+};
+
+/** midnight at the start of `day` in `zone` */
+const dayStart = (day: CalendarDay, zone: string | undefined) => zonedInstant(day, zone);
 
 /** whole days from `a` to `b`, counted on the calendar so a daylight-saving change is not one off */
-const daysBetween = (a: Date, b: Date) =>
-  Math.round(
-    (Date.UTC(b.getFullYear(), b.getMonth(), b.getDate()) -
-      Date.UTC(a.getFullYear(), a.getMonth(), a.getDate())) /
-      (24 * HOUR),
-  );
+const daysBetween = (a: CalendarDay, b: CalendarDay) =>
+  Math.round((Date.UTC(b.year, b.month, b.day) - Date.UTC(a.year, a.month, a.day)) / (24 * HOUR));
 
 /** the two days of a custom range, as typed */
 export interface DayRange {
@@ -103,7 +143,7 @@ export function dayRangeProblem(range: Partial<DayRange>): "invalid" | "order" |
   const since = parseDay(range.since);
   const until = parseDay(range.until);
   if (!since || !until) return "invalid";
-  return until.getTime() < since.getTime() ? "order" : null;
+  return daysBetween(since, until) < 0 ? "order" : null;
 }
 
 /** The custom window over `since` to `until`, or null when they are not a range. */
@@ -210,12 +250,13 @@ export interface WindowBounds {
 
 const HOUR = 3_600_000;
 
-// local midnight on the first of the month `offset` months from `now`'s. the
-// Date constructor carries a month of -1 or 12 into the neighbouring year, and
-// a local midnight is what makes the boundary the viewer's calendar month
-// rather than UTC's
-function monthStart(now: Date, offset = 0): Date {
-  return new Date(now.getFullYear(), now.getMonth() + offset, 1);
+// midnight in `zone` on the first of the month `offset` months from the one
+// `now` falls in there. a month of -1 or 12 carries into the neighbouring year,
+// and a midnight in the chart zone is what makes the boundary the month the
+// charts label rather than UTC's or the browser's (#3500)
+function monthStart(now: Date, offset: number, zone: string | undefined): Date {
+  const { year, month } = wallClock(now, zone);
+  return zonedInstant({ year, month: month + offset, day: 1 }, zone);
 }
 
 /**
@@ -231,22 +272,26 @@ const notBeforeEarliest = (instant: Date) =>
 
 /**
  * What a custom range covers: from the start of its first day to the start of
- * the day after its last, in the viewer's calendar, since `until` is exclusive.
+ * the day after its last, in the chart zone, since `until` is exclusive.
  * A range that has not ended by `now` runs up to now and sends no `until`, the
  * way a named window does, so a last day typed in the future is never a bound
  * the control plane refuses (#3506).
  */
-function customBounds(range: DayRange, now: Date): WindowBounds {
-  const first = parseDay(range.since) as Date;
-  const end = addDays(parseDay(range.until) as Date, 1);
+function customBounds(range: DayRange, now: Date, zone: string | undefined): WindowBounds {
+  const first = dayStart(parseDay(range.since) as CalendarDay, zone);
+  const end = dayStart(addDays(parseDay(range.until) as CalendarDay, 1), zone);
   if (end.getTime() > now.getTime()) return { since: first.toISOString() };
   return { since: first.toISOString(), until: end.toISOString() };
 }
 
-/** What `window` covers at the instant `now`. */
-export function windowBounds(window: WindowSelection, now: Date = new Date()): WindowBounds {
+/** What `window` covers at the instant `now`, its days counted in `zone`. */
+export function windowBounds(
+  window: WindowSelection,
+  now: Date = new Date(),
+  zone: string | undefined = chartTimeZone(),
+): WindowBounds {
   const range = customRange(window);
-  if (range) return customBounds(range, now);
+  if (range) return customBounds(range, now, zone);
   const hoursBack = (hours: number) => ({
     since: new Date(now.getTime() - hours * HOUR).toISOString(),
   });
@@ -258,14 +303,17 @@ export function windowBounds(window: WindowSelection, now: Date = new Date()): W
     case "30d":
       return hoursBack(24 * 30);
     case "mtd":
-      return { since: monthStart(now).toISOString() };
+      return { since: monthStart(now, 0, zone).toISOString() };
     case "last-month":
       // the whole previous month, however far into this one `now` is
-      return { since: monthStart(now, -1).toISOString(), until: monthStart(now).toISOString() };
+      return {
+        since: monthStart(now, -1, zone).toISOString(),
+        until: monthStart(now, 0, zone).toISOString(),
+      };
     default:
       // a custom range that is not one (cannot happen for a value read through
       // `readWindowSelection`) reads as the default rather than as no bounds
-      return windowBounds(DEFAULT_TIME_WINDOW, now);
+      return windowBounds(DEFAULT_TIME_WINDOW, now, zone);
   }
 }
 
@@ -281,7 +329,8 @@ const HOURLY_CUSTOM_DAYS = 3;
 export function chartBucket(window: WindowSelection): "hour" | "day" {
   const range = customRange(window);
   if (!range) return "hour";
-  const days = daysBetween(parseDay(range.since) as Date, parseDay(range.until) as Date) + 1;
+  const days =
+    daysBetween(parseDay(range.since) as CalendarDay, parseDay(range.until) as CalendarDay) + 1;
   return days > HOURLY_CUSTOM_DAYS ? "day" : "hour";
 }
 
@@ -296,16 +345,20 @@ export function chartBucket(window: WindowSelection): "hour" | "day" {
 export function previousWindowBounds(
   window: WindowSelection,
   now: Date = new Date(),
+  zone: string | undefined = chartTimeZone(),
 ): Required<WindowBounds> {
   const range = customRange(window);
   if (range) {
     // the same number of days straight before the first: a range of three days
     // is compared with the three days that precede it
-    const first = parseDay(range.since) as Date;
-    const days = daysBetween(first, parseDay(range.until) as Date) + 1;
+    const first = parseDay(range.since) as CalendarDay;
+    const days = daysBetween(first, parseDay(range.until) as CalendarDay) + 1;
     // a range that starts in the first days of 2000 has a shorter window
     // before it, since the control plane reads nothing earlier (#3506)
-    return { since: notBeforeEarliest(addDays(first, -days)), until: notBeforeEarliest(first) };
+    return {
+      since: notBeforeEarliest(dayStart(addDays(first, -days), zone)),
+      until: notBeforeEarliest(dayStart(first, zone)),
+    };
   }
   const hoursBack = (hours: number) => ({
     since: new Date(now.getTime() - 2 * hours * HOUR).toISOString(),
@@ -319,30 +372,23 @@ export function previousWindowBounds(
     case "30d":
       return hoursBack(24 * 30);
     case "mtd": {
-      const since = monthStart(now, -1);
-      // the same wall-clock moment a month back, so a daylight-saving change
-      // between the two does not shift it by an hour. a 31st has no
-      // counterpart in a 30-day month and the Date constructor would carry it
-      // into this one, so the comparison stops at last month's end
-      const sameMoment = new Date(
-        now.getFullYear(),
-        now.getMonth() - 1,
-        now.getDate(),
-        now.getHours(),
-        now.getMinutes(),
-        now.getSeconds(),
-        now.getMilliseconds(),
-      );
-      const until = Math.min(sameMoment.getTime(), monthStart(now).getTime());
+      const since = monthStart(now, -1, zone);
+      // the same wall-clock moment a month back, in the chart zone, so a
+      // daylight-saving change between the two does not shift it by an hour.
+      // a 31st has no counterpart in a 30-day month and would carry into this
+      // one, so the comparison stops at last month's end
+      const wall = wallClock(now, zone);
+      const sameMoment = zonedInstant({ ...wall, month: wall.month - 1 }, zone);
+      const until = Math.min(sameMoment.getTime(), monthStart(now, 0, zone).getTime());
       return { since: since.toISOString(), until: new Date(until).toISOString() };
     }
     case "last-month":
       return {
-        since: monthStart(now, -2).toISOString(),
-        until: monthStart(now, -1).toISOString(),
+        since: monthStart(now, -2, zone).toISOString(),
+        until: monthStart(now, -1, zone).toISOString(),
       };
     default:
-      return previousWindowBounds(DEFAULT_TIME_WINDOW, now);
+      return previousWindowBounds(DEFAULT_TIME_WINDOW, now, zone);
   }
 }
 
