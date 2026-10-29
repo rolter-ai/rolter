@@ -406,6 +406,23 @@ const UNTIL: QueryParam = QueryParam::new(
      does not parse is a 400",
 );
 
+/// What `GET /api/v1/config/export` narrows by.
+const CONFIG_EXPORT_QUERY: &[QueryParam] = &[
+    QueryParam::new(
+        "org",
+        "string",
+        "the slug of one organization: export its rows only (and those no organization owns), \
+         which is how a deployment whose organizations share a route or provider name is \
+         exported. A slug no organization has is a 400",
+    ),
+    QueryParam::new(
+        "without_person_caps",
+        "boolean",
+        "`true` leaves caps on a person out, which name an account by its email, and counts \
+         them in the trailing comment; defaults to `false`",
+    ),
+];
+
 /// What a gateway sends on every snapshot poll (ADR-0038).
 const SNAPSHOT_QUERY: &[QueryParam] = &[
     QueryParam::new(
@@ -971,7 +988,8 @@ fn operations() -> Vec<Op> {
                 "/api/v1/config/export",
                 "exportConfig",
                 "The live configuration as an importable rolter.toml",
-            ),
+            )
+            .query(CONFIG_EXPORT_QUERY),
             Op::get(
                 "/api/v1/currency",
                 "getCurrency",
@@ -2397,7 +2415,12 @@ fn operations() -> Vec<Op> {
                 "/api/v1/analytics/by-variant",
                 "getAnalyticsByVariant",
                 "Spend and usage grouped by route and the weighted variant that served it (`model` \
-                 narrows to one route); requests served without a variant come back under the empty string",
+                 narrows to one route); requests served without a variant come back under the empty string. \
+                 `requests` counts every request the variant answered, failovers included; \
+                 `first_attempt_requests` counts those it served on the first attempt (no \
+                 `fallback_reason`, `clickhouse/023`), the closer comparison with the configured \
+                 weights; a request that failed over from another variant counts for neither. It is `null` on a ClickHouse that has not applied \
+                 `023`, which cannot tell the two apart",
             )
             .clickhouse_read()
             .query(DASHBOARD_QUERY),
@@ -4079,7 +4102,7 @@ fn routing_schemas(p: &Prim) -> Value {
             "properties": {
                 "id": uuid, "route_id": uuid,
                 "name": {"type": "string", "description": "the variant's name, unique in its route; request logs and metrics carry it"},
-                "weight": {"type": "integer", "minimum": 0, "description": "relative share of the requests that sample this variant as their primary. The API writes 1 or more; a 0 imported from rolter.toml takes no first attempts while another variant has a positive weight"},
+                "weight": {"type": "integer", "minimum": 0, "description": "relative share of the requests that sample this variant as their primary. A weight of 0 is accepted: the variant stays and takes no first attempts while another variant has a positive weight, and is still tried in fallback order (a set of only zeroes is sampled uniformly)"},
                 "position": {"type": "integer", "description": "the declared order, which is the fallback chain after the sampled primary"},
                 "params": {"type": "object", "description": "variant-scoped default inference params, layered over the route's"},
                 "targets": {
@@ -4108,13 +4131,13 @@ fn routing_schemas(p: &Prim) -> Value {
                 "variants": {
                     "type": "array",
                     "maxItems": 32,
-                    "description": "the route's whole variant set in fallback order. A variant's weight is at least 1; names are unique and not blank; each variant names 1 to 32 targets, each a provider of the route's org its project may use",
+                    "description": "the route's whole variant set in fallback order. A variant's weight is 0 or more (0 takes no first attempts while another variant has a positive weight and is still tried in fallback order; a set of only zeroes is sampled uniformly); names are unique and not blank; each variant names 1 to 32 targets, each a provider of the route's org its project may use",
                     "items": {
                         "type": "object",
                         "required": ["name", "targets"],
                         "properties": {
                             "name": string,
-                            "weight": {"type": "integer", "default": 1, "minimum": 1},
+                            "weight": {"type": "integer", "default": 1, "minimum": 0, "description": "relative share of first attempts; 0 is accepted and takes none while another variant has a positive weight (the variant stays and is still tried in fallback order), and a set of only zeroes is sampled uniformly"},
                             "params": {"type": ["object", "null"], "description": "variant-scoped default inference params; omitted or null is none"},
                             "targets": {
                                 "type": "array",
@@ -4813,6 +4836,23 @@ mod tests {
             "these operations are documented but no router mounts them; \
              drop them from `operations()` in src/openapi.rs:\n{}",
             stale.join("\n")
+        );
+    }
+
+    // #3427: a variant weight of 0 is accepted, so the published schema must not
+    // refuse it to a client that validates against it
+    #[test]
+    fn a_variant_weight_of_zero_is_within_the_published_schema() {
+        let doc = document();
+        let schemas = &doc["components"]["schemas"];
+        assert_eq!(
+            schemas["SetRouteVariants"]["properties"]["variants"]["items"]["properties"]["weight"]
+                ["minimum"],
+            0
+        );
+        assert_eq!(
+            schemas["RouteVariant"]["properties"]["weight"]["minimum"],
+            0
         );
     }
 

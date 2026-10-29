@@ -1482,7 +1482,7 @@ dialects = ["openai-chat-completions"]
 auth = "api-key"
 primary_path = "/v1/chat/completions"
 conformance = "provider-profile"
-reviewed_at = "2026-10-27"
+reviewed_at = "2026-10-29"
 tests = [
   "crates/rolter-proxy/src/lib.rs::every_kind_authenticates_with_the_header_the_probes_use",
   "crates/rolter-gateway/tests/provider_profiles.rs::azure_openai_v1_authenticates_with_the_api_key_header",
@@ -1492,12 +1492,12 @@ tests = [
 kind = "bedrock"
 authority = "Amazon Web Services"
 url = "https://docs.aws.amazon.com/bedrock/latest/userguide/inference-chat-completions.html"
-base = "https://bedrock-runtime.us-east-1.amazonaws.com/v1"
+base = "https://bedrock-runtime.us-east-1.amazonaws.com/openai/v1"
 dialects = ["openai-chat-completions"]
 auth = "bearer"
 primary_path = "/v1/chat/completions"
 conformance = "provider-profile"
-reviewed_at = "2026-10-27"
+reviewed_at = "2026-10-29"
 notes = "a Bedrock API key as a bearer token; SigV4 signing is not implemented"
 tests = [
   "crates/rolter-proxy/src/lib.rs::the_previewed_address_is_the_one_the_forwarder_builds",
@@ -1507,13 +1507,13 @@ tests = [
 [[provider]]
 kind = "vertex"
 authority = "Google Cloud"
-url = "https://cloud.google.com/vertex-ai/generative-ai/docs/migrate/openai/overview"
+url = "https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/migrate/openai/examples"
 base = "https://aiplatform.googleapis.com/v1/projects/PROJECT/locations/global/endpoints/openapi"
 dialects = ["openai-chat-completions"]
 auth = "bearer"
 primary_path = "/v1/chat/completions"
 conformance = "provider-profile"
-reviewed_at = "2026-10-27"
+reviewed_at = "2026-10-29"
 notes = "a short-lived OAuth access token as the bearer; rolter does not mint it"
 tests = [
   "crates/rolter-proxy/src/lib.rs::the_previewed_address_is_the_one_the_forwarder_builds",
@@ -1529,7 +1529,7 @@ dialects = ["gemini-openai-compat"]
 auth = "bearer"
 primary_path = "/v1/chat/completions"
 conformance = "provider-profile"
-reviewed_at = "2026-10-27"
+reviewed_at = "2026-10-29"
 tests = [
   "crates/rolter-core/src/config.rs::every_kind_resolves_by_the_documented_rule",
   "crates/rolter-gateway/tests/provider_profiles.rs::gemini_openai_shim_lives_under_v1beta_openai",
@@ -1572,7 +1572,7 @@ dialects = ["openai-chat-completions"]
 auth = "bearer"
 primary_path = "/v1/chat/completions"
 conformance = "provider-profile"
-reviewed_at = "2026-10-27"
+reviewed_at = "2026-10-29"
 tests = [
   "crates/rolter-core/src/config.rs::every_kind_resolves_by_the_documented_rule",
   "crates/rolter-gateway/tests/provider_profiles.rs::mistral_base_carries_v1_and_the_gateway_prefix_is_not_doubled",
@@ -1587,7 +1587,7 @@ dialects = ["openai-chat-completions"]
 auth = "bearer"
 primary_path = "/v1/chat/completions"
 conformance = "provider-profile"
-reviewed_at = "2026-10-27"
+reviewed_at = "2026-10-29"
 tests = [
   "crates/rolter-core/src/config.rs::every_kind_resolves_by_the_documented_rule",
   "crates/rolter-gateway/tests/provider_profiles.rs::groq_keeps_the_openai_prefix_of_its_base",
@@ -1745,7 +1745,7 @@ dialects = ["openai-chat-completions"]
 auth = "bearer"
 primary_path = "/v1/chat/completions"
 conformance = "provider-profile"
-reviewed_at = "2026-10-27"
+reviewed_at = "2026-10-29"
 tests = [
   "crates/rolter-core/src/config.rs::every_kind_resolves_by_the_documented_rule",
   "crates/rolter-gateway/tests/provider_profiles.rs::deepseek_base_has_no_version_segment",
@@ -1875,9 +1875,9 @@ url = "https://developers.sber.ru/docs/ru/gigachat/api/overview"
 dialects = ["openai-chat-completions"]
 auth = "bearer"
 primary_path = "/v1/chat/completions"
-conformance = "provider-profile"
-reviewed_at = "2026-10-27"
-notes = "GigaChat issues short-lived access tokens from an OAuth endpoint; rolter sends the configured key as the bearer and does not mint one"
+conformance = "transport-only"
+reviewed_at = "2026-10-29"
+notes = "the vendor's reference page prints no host, auth scheme or chat example, so the profile is not checked against it and does not claim provider-profile (transport-only is a temporary placeholder, since its only fixture is Recalled; #3488 restores provider-profile); its overview names https://api.giga.chat/v1 as the base, which the fixture does not use (#3445). GigaChat issues short-lived access tokens from an OAuth endpoint; rolter sends the configured key as the bearer and does not mint one"
 tests = [
   "crates/rolter-core/src/config.rs::every_kind_resolves_by_the_documented_rule",
   "crates/rolter-gateway/tests/provider_profiles.rs::gigachat_takes_an_oauth_access_token_as_a_bearer",
@@ -1916,7 +1916,7 @@ url = "https://mts.ai/product/cotype/"
 dialects = ["openai-chat-completions"]
 auth = "bearer"
 primary_path = "/v1/chat/completions"
-conformance = "provider-profile"
+conformance = "unverified"
 reviewed_at = "2026-10-27"
 notes = "product page; no public API reference was found at review. Unverified: whether it speaks an OpenAI-compatible API at a stable base URL is not established, so no conformance fixture is recorded and the profile rests on the walk-every-kind tests alone (#3336)"
 tests = [
@@ -1956,7 +1956,7 @@ url = "https://rinna.co.jp/"
 dialects = ["openai-chat-completions"]
 auth = "bearer"
 primary_path = "/v1/chat/completions"
-conformance = "provider-profile"
+conformance = "unverified"
 reviewed_at = "2026-10-27"
 notes = "company site; no public API reference was found at review. Unverified: whether it speaks an OpenAI-compatible API at a stable base URL is not established, so no conformance fixture is recorded and the profile rests on the walk-every-kind tests alone (#3336)"
 tests = [
@@ -1970,7 +1970,7 @@ url = "https://ai.rakuten.co.jp/"
 dialects = ["openai-chat-completions"]
 auth = "bearer"
 primary_path = "/v1/chat/completions"
-conformance = "provider-profile"
+conformance = "unverified"
 reviewed_at = "2026-10-27"
 notes = "product site; no public API reference was found at review. Unverified: whether it speaks an OpenAI-compatible API at a stable base URL is not established, so no conformance fixture is recorded and the profile rests on the walk-every-kind tests alone (#3336)"
 tests = [
@@ -1997,7 +1997,7 @@ url = "https://cloud.olakrutrim.com/"
 dialects = ["openai-chat-completions"]
 auth = "bearer"
 primary_path = "/v1/chat/completions"
-conformance = "provider-profile"
+conformance = "unverified"
 reviewed_at = "2026-10-27"
 notes = "console; no public API reference was found at review. Unverified: whether it speaks an OpenAI-compatible API at a stable base URL is not established, so no conformance fixture is recorded and the profile rests on the walk-every-kind tests alone (#3336)"
 tests = [
@@ -2011,7 +2011,7 @@ url = "https://falconllm.tii.ae/"
 dialects = ["openai-chat-completions"]
 auth = "bearer"
 primary_path = "/v1/chat/completions"
-conformance = "provider-profile"
+conformance = "unverified"
 reviewed_at = "2026-10-27"
 notes = "product site; no public API reference was found at review. Unverified: whether it speaks an OpenAI-compatible API at a stable base URL is not established, so no conformance fixture is recorded and the profile rests on the walk-every-kind tests alone (#3336)"
 tests = [

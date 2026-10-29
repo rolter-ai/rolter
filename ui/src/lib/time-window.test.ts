@@ -1,12 +1,21 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 
 import {
+  chartBucket,
+  customRange,
+  customWindow,
+  dayRangeProblem,
   DEFAULT_TIME_WINDOW,
   isTimeWindow,
+  isWindowSelection,
   previousWindowBounds,
   readTimeWindow,
+  readWindowSelection,
   TIME_WINDOWS,
+  windowAddress,
   windowBounds,
+  windowFilters,
+  windowFromFilters,
   windowSpan,
 } from "@/lib/time-window";
 
@@ -196,5 +205,134 @@ describe("windowSpan", () => {
     const span = windowSpan(windowBounds("last-month", at), at);
     expect(span.from.toISOString()).toBe("2026-08-01T00:00:00.000Z");
     expect(span.to.toISOString()).toBe("2026-08-31T23:59:59.999Z");
+  });
+});
+
+describe("custom range (#3407)", () => {
+  describe("in New York", () => {
+    inZone("America/New_York");
+
+    it("covers whole calendar days, the last one included", () => {
+      // the 1st to the 7th is seven days: from midnight on the 1st to midnight on the 8th
+      const w = customWindow("2026-10-01", "2026-10-07");
+      expect(w).not.toBeNull();
+      expect(windowBounds(w!)).toEqual({
+        since: local(2026, 10, 1).toISOString(),
+        until: local(2026, 10, 8).toISOString(),
+      });
+    });
+
+    it("is a day long when the two days are the same", () => {
+      const bounds = windowBounds(customWindow("2026-10-05", "2026-10-05")!);
+      expect(bounds).toEqual({
+        since: local(2026, 10, 5).toISOString(),
+        until: local(2026, 10, 6).toISOString(),
+      });
+    });
+
+    it("keeps its midnights across the autumn clock change", () => {
+      // 1 November 2026 is the 25-hour day: the end is still midnight on the 2nd
+      const bounds = windowBounds(customWindow("2026-10-31", "2026-11-01")!);
+      expect(bounds).toEqual({
+        since: local(2026, 10, 31).toISOString(),
+        until: local(2026, 11, 2).toISOString(),
+      });
+    });
+
+    it("compares a range with the same number of days straight before it", () => {
+      const previous = previousWindowBounds(customWindow("2026-10-04", "2026-10-06")!);
+      expect(previous).toEqual({
+        since: local(2026, 10, 1).toISOString(),
+        until: local(2026, 10, 4).toISOString(),
+      });
+    });
+
+    it("names the first and last day it covers in a caption", () => {
+      const bounds = windowBounds(customWindow("2026-10-01", "2026-10-07")!);
+      const { from, to } = windowSpan(bounds, new Date("2026-10-30T00:00:00Z"));
+      expect(from.getTime()).toBe(local(2026, 10, 1).getTime());
+      // an exclusive end closes a millisecond early: still the 7th
+      expect(to.getTime()).toBe(local(2026, 10, 8).getTime() - 1);
+    });
+  });
+
+  it("refuses an end before the start", () => {
+    expect(dayRangeProblem({ since: "2026-10-07", until: "2026-10-01" })).toBe("order");
+    expect(customWindow("2026-10-07", "2026-10-01")).toBeNull();
+  });
+
+  it("refuses a day that is not on the calendar", () => {
+    expect(dayRangeProblem({ since: "2026-02-31", until: "2026-03-02" })).toBe("invalid");
+    expect(dayRangeProblem({ since: "2026-10-01", until: "" })).toBe("invalid");
+    expect(dayRangeProblem({ since: "10/01/2026", until: "2026-10-02" })).toBe("invalid");
+    // before the year 2000 is not a day, as the server holds a saved view to
+    expect(dayRangeProblem({ since: "0001-01-01", until: "2026-10-02" })).toBe("invalid");
+    expect(dayRangeProblem({ since: "1999-12-31", until: "2026-10-02" })).toBe("invalid");
+    expect(dayRangeProblem({ since: "2000-01-01", until: "2000-01-02" })).toBeNull();
+    expect(customWindow(null, "2026-10-02")).toBeNull();
+  });
+
+  it("round-trips through its string form", () => {
+    const w = customWindow("2026-10-01", "2026-10-07")!;
+    expect(customRange(w)).toEqual({ since: "2026-10-01", until: "2026-10-07" });
+    expect(customRange("7d")).toBeNull();
+    expect(isWindowSelection(w)).toBe(true);
+    expect(isWindowSelection("custom:2026-10-07:2026-10-01")).toBe(false);
+    expect(isWindowSelection("custom")).toBe(false);
+    expect(isWindowSelection("7d")).toBe(true);
+  });
+
+  it("is read from the address, and a broken range reads as the default", () => {
+    const read = (query: string, fallback?: "7d") =>
+      readWindowSelection(new URLSearchParams(query), fallback);
+    expect(read("window=custom&since=2026-10-01&until=2026-10-07")).toBe(
+      "custom:2026-10-01:2026-10-07",
+    );
+    expect(read("window=custom&since=2026-10-07&until=2026-10-01")).toBe(DEFAULT_TIME_WINDOW);
+    expect(read("window=custom&since=2026-10-01")).toBe(DEFAULT_TIME_WINDOW);
+    expect(read("window=30d&since=2026-10-01&until=2026-10-07")).toBe("30d");
+    // no window at all is the screen's own default, an unknown one is the global default
+    expect(read("", "7d")).toBe("7d");
+    expect(read("window=fortnight", "7d")).toBe(DEFAULT_TIME_WINDOW);
+  });
+
+  it("writes the three address parameters together", () => {
+    expect(windowAddress("custom:2026-10-01:2026-10-07")).toEqual({
+      window: "custom",
+      since: "2026-10-01",
+      until: "2026-10-07",
+    });
+    // a named window drops the days a range left behind
+    expect(windowAddress("7d")).toEqual({ window: "7d", since: "", until: "" });
+    expect(windowAddress(DEFAULT_TIME_WINDOW)).toEqual({ window: "", since: "", until: "" });
+    expect(windowAddress("7d", "7d")).toEqual({ window: "", since: "", until: "" });
+  });
+
+  it("is saved as its days, so a view reads the same whenever it is applied", () => {
+    const w = customWindow("2026-10-01", "2026-10-07")!;
+    expect(windowFilters(w)).toEqual({
+      window: "custom",
+      since: "2026-10-01",
+      until: "2026-10-07",
+    });
+    expect(windowFilters("30d")).toEqual({ window: "30d" });
+    expect(windowFromFilters(windowFilters(w))).toBe(w);
+    expect(windowFromFilters({ window: "custom", since: "2026-10-07", until: "2026-10-01" })).toBe(
+      DEFAULT_TIME_WINDOW,
+    );
+    expect(windowFromFilters({})).toBe(DEFAULT_TIME_WINDOW);
+  });
+});
+
+describe("chartBucket (#3407)", () => {
+  it("keeps the named windows hourly, as they always were", () => {
+    for (const w of TIME_WINDOWS) expect(chartBucket(w)).toBe("hour");
+  });
+
+  it("draws up to three days an hour at a time and anything longer a day at a time", () => {
+    expect(chartBucket(customWindow("2026-10-05", "2026-10-05")!)).toBe("hour");
+    expect(chartBucket(customWindow("2026-10-01", "2026-10-03")!)).toBe("hour");
+    expect(chartBucket(customWindow("2026-10-01", "2026-10-04")!)).toBe("day");
+    expect(chartBucket(customWindow("2026-01-01", "2026-10-29")!)).toBe("day");
   });
 });

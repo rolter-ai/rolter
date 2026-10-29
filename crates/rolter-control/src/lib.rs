@@ -2393,6 +2393,10 @@ struct ProviderKindInfo {
     /// the `api_base` a hosted kind is pinned to unless the provider sets
     /// `allow_custom_api_base`, or `null` for a kind with no pin (#1133)
     pinned_api_base: Option<&'static str>,
+    /// whether the specification registry records no located API reference for
+    /// the kind, so that it speaks an OpenAI-compatible API at a stable base is
+    /// unverified (#3428)
+    unverified: bool,
 }
 
 /// The per-kind facts the dashboard states instead of guessing: the `api_base`
@@ -2416,6 +2420,7 @@ async fn get_provider_kinds(_: session_guard::AnySession) -> Json<Vec<ProviderKi
                 request_path: kind.primary_upstream_path(),
                 auth_header: kind.auth_header("").0,
                 pinned_api_base: kind.pinned_api_base(),
+                unverified: rolter_core::spec_registry::is_unverified(*kind),
             })
             .collect(),
     )
@@ -3819,6 +3824,18 @@ mod tests {
         assert!(rule("mistral"));
         assert!(rule("openrouter"));
         assert!(rule("azure_openai"));
+
+        // the kinds the specification registry records as unverified (#3428)
+        let mut unverified: Vec<&str> = kinds
+            .iter()
+            .filter(|k| k["unverified"] == true)
+            .filter_map(|k| k["kind"].as_str())
+            .collect();
+        unverified.sort_unstable();
+        assert_eq!(
+            unverified,
+            ["falcon", "krutrim", "mts_ai", "rakuten", "rinna"]
+        );
     }
 
     /// #2811: the sheet previews the address a request goes to, so the

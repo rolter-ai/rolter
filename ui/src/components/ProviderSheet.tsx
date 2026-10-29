@@ -199,6 +199,8 @@ export function ProviderSheet({
     return known.includes(draft.kind) || !draft.kind ? known : [draft.kind, ...known];
   }, [kinds.data, draft.kind]);
   const kindInfo = kinds.data?.find((k) => k.kind === draft.kind);
+  // from the specification registry via the kinds list, not a list of ours (#3428)
+  const unverifiedKinds = new Set(kinds.data?.filter((k) => k.unverified).map((k) => k.kind));
   // default to the openai-shaped rule: it is the default kind, and it is the
   // one the old static ".../v1" placeholder got wrong
   const baseIncludesV1 = kindInfo?.base_includes_v1 ?? false;
@@ -468,6 +470,14 @@ export function ProviderSheet({
             <>
               {kindDescription(draft.kind) && <>{kindDescription(draft.kind)} · </>}
               <span className="font-mono">{draft.kind}</span>
+              {unverifiedKinds.has(draft.kind) && (
+                <>
+                  {" · "}
+                  <span className="text-[color:var(--status-warning-text)]">
+                    {t("providerSheet.unverified.note")}
+                  </span>
+                </>
+              )}
             </>
           }
         >
@@ -478,7 +488,10 @@ export function ProviderSheet({
               value: k,
               label: kindName(k),
               icon: <ProviderLogo kind={k} name={kindName(k)} />,
-              description: kindDescription(k) || undefined,
+              description:
+                [kindDescription(k), unverifiedKinds.has(k) && t("providerSheet.unverified.option")]
+                  .filter(Boolean)
+                  .join(" · ") || undefined,
             }))}
           />
         </Field>

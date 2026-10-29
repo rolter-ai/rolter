@@ -102,6 +102,12 @@ gen-rbac:
     ROLTER_TEST_UPDATE_RBAC_MATRIX=1 cargo test -p rolter-control --features postgres --lib the_checked_in_matrix_artifact
     cd ui && bun run gen:rbac
 
+# rewrite crates/rolter-control/savings-reasons.json, the list of reasons the savings advisor
+# leaves a request out under, which the dashboard's catalog test reads (#3423); run after
+# changing EXCLUSION_REASONS in crates/rolter-control/src/savings.rs
+gen-savings-reasons:
+    ROLTER_TEST_UPDATE_SAVINGS_REASONS=1 cargo test -p rolter-control --features postgres --lib the_checked_in_reasons
+
 # bring up postgres, redis, clickhouse and rolter
 up:
     docker compose -f docker/docker-compose.yml up -d

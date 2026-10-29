@@ -1122,13 +1122,10 @@ impl PostgresConfigStore {
             );
             // a route left with only restricted targets could never dial
             // anything, and one such route would fail validation of the whole
-            // snapshot, so it is left out instead (#1584). the classic pool and
-            // every variant count together, as validation counts them
-            let mut every_target = targets
-                .iter()
-                .chain(variants.iter().flat_map(|v| v.targets.iter()))
-                .peekable();
-            let stranded = every_target.peek().is_some() && every_target.all(Target::is_restricted);
+            // snapshot, so it is left out instead (#1584). a route with
+            // variants dials only them, so its pool does not count (#3430)
+            let stranded =
+                rolter_core::config::only_restricted_targets_dialled(&targets, &variants);
             if stranded {
                 let problem = format!(
                     "route '{}' omitted from the snapshot: {}",
@@ -5983,7 +5980,7 @@ mod tests {
         // guarded variant, a variant whose only readable target is ordinary,
         // and `split-stranded` only a restricted target across its variants
         type VariantTargets<'a> = &'a [(&'a str, &'a [(&'a str, &'a [&'a str])])];
-        let variant_routes: [(&str, VariantTargets); 2] = [
+        let variant_routes: [(&str, VariantTargets); 3] = [
             (
                 "split",
                 &[
@@ -5992,6 +5989,9 @@ mod tests {
                 ],
             ),
             ("split-stranded", &[("a", &[("premium", &["refusal"])])]),
+            // an ordinary pool target the data plane never dials beside
+            // variants that hold only a fallback (#3430)
+            ("split-pooled", &[("a", &[("premium", &["refusal"])])]),
         ];
         for (model, variants) in variant_routes {
             let route_id: Uuid = sqlx::query_scalar(
@@ -6003,6 +6003,17 @@ mod tests {
             .fetch_one(&pool)
             .await
             .unwrap();
+            if model == "split-pooled" {
+                sqlx::query(
+                    "insert into route_targets (route_id, provider_id, weight, takes_over)
+                     values ($1, $2, 1, '{}')",
+                )
+                .bind(route_id)
+                .bind(providers["cheap"])
+                .execute(&pool)
+                .await
+                .unwrap();
+            }
             for (position, (name, targets)) in variants.iter().enumerate() {
                 let variant_id: Uuid = sqlx::query_scalar(
                     "insert into route_variants (route_id, name, weight, position)
@@ -6086,6 +6097,14 @@ mod tests {
         assert!(
             !problems.iter().any(|p| p.message.contains("'guarded'")),
             "{problems:?}"
+        );
+        assert!(
+            problems
+                .iter()
+                .any(|p| p.message.contains("route 'split-pooled'")
+                    && p.message
+                        .contains(rolter_core::failover::ALL_TARGETS_RESTRICTED)),
+            "an ordinary pool target does not rescue all-restricted variants: {problems:?}"
         );
         let variant_dropped = problems
             .iter()

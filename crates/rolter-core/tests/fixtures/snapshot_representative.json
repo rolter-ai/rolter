@@ -188,6 +188,7 @@
       "allow_unlisted_tools": false
     }
   ],
+  "mcp_manifest_enforcement": [{ "org": "acme", "enforce": true }],
   "mcp_tool_groups": [
     {
       "id": "grp-1",

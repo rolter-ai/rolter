@@ -107,11 +107,11 @@ export function wholeWeight(weight: string): boolean {
 }
 
 /**
- * A variant weight the control plane accepts: 1 or more. A 0 means "fallback
- * only" to the gateway, but only an import from `rolter.toml` writes one.
+ * A variant weight the control plane accepts: a whole number, 0 or more. A 0
+ * means "fallback only" to the gateway (#3341, #3427).
  */
 export function variantWeightValid(weight: string): boolean {
-  return wholeWeight(weight) && Number(weight) >= 1;
+  return wholeWeight(weight);
 }
 
 /**
@@ -120,7 +120,7 @@ export function variantWeightValid(weight: string): boolean {
  * The gateway never samples a weight of 0 as a primary while another variant
  * has a positive weight (it is still tried as a fallback), and samples a set
  * whose weights are all 0 uniformly (`weighted_index` in `rolter-core`). The
- * sheet refuses a 0, but a variant imported from `rolter.toml` can carry one.
+ * sheet and the control plane accept a 0 (#3427).
  */
 export function trafficSplit(weights: number[]): number[] {
   if (weights.length === 0) return [];

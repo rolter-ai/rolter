@@ -161,6 +161,12 @@ export interface Formatters {
    * the day only on the rows where the clock alone would read as today's
    */
   dayUnlessToday: (value: Date | string | number, now?: Date | string | number) => string;
+  /**
+   * A calendar day written `YYYY-MM-DD` (a custom range's start or end), as a
+   * date. It names a day, not an instant, so the chart zone does not move it
+   * to its neighbour; an unreadable value comes back as it was
+   */
+  calendarDay: (value: string) => string;
   /** `3m ago` / `in 2h`, relative to `now` (defaults to the current time) */
   relative: (value: Date | string | number, now?: Date | string | number) => string;
 }
@@ -227,6 +233,13 @@ export function formattersFor(locale: Locale): Formatters {
       // the same calendar day *in the chart zone*, not in the browser's
       if (stamp(date, DAY_KEY) === stamp(today, DAY_KEY)) return "";
       return stamp(date, DAY);
+    },
+    calendarDay: (value) => {
+      const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+      if (!match) return value;
+      // noon UTC, formatted in UTC: the day reads the same in every zone
+      const noon = Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]), 12);
+      return dateFormat(locale, { ...DATE, timeZone: "UTC" }).format(noon);
     },
     relative: (value, now) => {
       const date = toDate(value);

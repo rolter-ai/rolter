@@ -1025,11 +1025,11 @@ mod tests {
     fn cloud_openai_compatible_bases_do_not_duplicate_v1() {
         let bedrock = provider(
             ProviderKind::Bedrock,
-            "https://bedrock-runtime.us-east-1.amazonaws.com/v1".to_string(),
+            "https://bedrock-runtime.us-east-1.amazonaws.com/openai/v1".to_string(),
         );
         assert_eq!(
             provider_url(&bedrock, "/v1/chat/completions"),
-            "https://bedrock-runtime.us-east-1.amazonaws.com/v1/chat/completions"
+            "https://bedrock-runtime.us-east-1.amazonaws.com/openai/v1/chat/completions"
         );
     }
 

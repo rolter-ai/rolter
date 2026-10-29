@@ -89,6 +89,12 @@ pub struct GatewayConfig {
     /// organization with no entry has never saved any and gets the defaults
     #[serde(default)]
     pub mcp_settings: Vec<McpOrgSettingsConfig>,
+    /// Whether an organization that never saved MCP settings enforces its
+    /// servers' tool manifests (#3398). Read by `rolter-seed --import` and
+    /// written by `rolter config export`; the control plane never ships it in
+    /// the snapshot, which carries the marker inside each server instead.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mcp_manifest_enforcement: Vec<McpManifestEnforcementConfig>,
     #[serde(default)]
     pub model_prices: Vec<ModelPriceConfig>,
     /// settlement currency and rate table. Budgets and accumulated spend are
@@ -1850,17 +1856,37 @@ impl ModelRoute {
         )
     }
 
+    /// The targets the data plane dials first: the variants' targets when the
+    /// route has variants, because `forward_variants` never consults the
+    /// classic pool then, and the pool otherwise (#3430).
+    pub fn dialled_targets(&self) -> Box<dyn Iterator<Item = &Target> + '_> {
+        dialled_targets(&self.targets, &self.variants)
+    }
+
+    /// Whether this route has targets to dial and every one of them is
+    /// restricted, so it could never serve a first dial.
+    pub fn only_restricted_targets_dialled(&self) -> bool {
+        only_restricted_targets_dialled(&self.targets, &self.variants)
+    }
+
     /// Every problem with the `takes_over` sets of this route's targets, the
     /// classic pool's and every variant's together: a class listed twice on a
-    /// target, and a route whose every target is restricted, which is refused
-    /// by name ([`crate::failover::ALL_TARGETS_RESTRICTED`]) because it could
-    /// never dial anything.
+    /// target, and a route whose every dialled target is restricted
+    /// ([`dialled_targets`](Self::dialled_targets)), which is refused by name
+    /// ([`crate::failover::ALL_TARGETS_RESTRICTED`]) because it could never
+    /// dial anything.
     pub fn takes_over_problems(&self) -> Vec<String> {
-        crate::failover::takes_over_problems(
+        // a class listed twice is judged over every target, but a route with
+        // variants dials only them, so "nothing to dial" is judged apart
+        let mut problems = crate::failover::duplicate_class_problems(
             &self.model,
             self.every_target()
                 .map(|t| (t.provider.as_str(), t.takes_over.as_slice())),
-        )
+        );
+        if self.only_restricted_targets_dialled() {
+            problems.push(crate::failover::all_targets_restricted(&self.model));
+        }
+        problems
     }
 
     /// Whether this route has a target that takes refusals over, which is
@@ -1911,6 +1937,27 @@ impl ModelRoute {
         order.extend((0..n).filter(|&i| i != primary));
         order
     }
+}
+
+/// The targets the data plane dials first for a route with this pool and
+/// these variants: the variants' targets when there are any, the pool
+/// otherwise (#3430). The store's snapshot assembly applies the same rule
+/// before the route is built.
+pub fn dialled_targets<'a>(
+    pool: &'a [Target],
+    variants: &'a [Variant],
+) -> Box<dyn Iterator<Item = &'a Target> + 'a> {
+    if variants.is_empty() {
+        Box::new(pool.iter())
+    } else {
+        Box::new(variants.iter().flat_map(|v| v.targets.iter()))
+    }
+}
+
+/// Whether there are targets to dial and every one is restricted.
+pub fn only_restricted_targets_dialled(pool: &[Target], variants: &[Variant]) -> bool {
+    let mut dialled = dialled_targets(pool, variants).peekable();
+    dialled.peek().is_some() && dialled.all(Target::is_restricted)
 }
 
 /// A weighted routing variant: a named, weighted bundle of ordered targets plus
@@ -2298,6 +2345,19 @@ pub struct McpOrgSettingsConfig {
     /// whether a call may name a tool the server's manifest does not declare
     #[serde(default)]
     pub allow_unlisted_tools: bool,
+}
+
+/// One organization's `orgs.mcp_enforce_manifests` marker in a bootstrap file
+/// (#3398): the organization by slug, and whether it enforces manifests until it
+/// saves MCP settings of its own.
+///
+/// An import never makes an existing organization stricter, so `enforce = true`
+/// is what a new organization already has and `enforce = false` is the only
+/// value that changes a row.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+pub struct McpManifestEnforcementConfig {
+    pub org: String,
+    pub enforce: bool,
 }
 
 /// One tool of one server, as a tool group names it.
@@ -5204,6 +5264,15 @@ impl GatewayConfig {
                     idx,
                     route.model.clone(),
                     "it has no target that references a known provider with a positive weight",
+                ));
+            } else if route.only_restricted_targets_dialled() {
+                // what is left to dial is only fallbacks, which `validate_snapshot`
+                // refuses the whole snapshot over (#3431)
+                drops.push((
+                    idx,
+                    route.model.clone(),
+                    "every target it dials sets takes_over, so it could never serve a request \
+                     (all_targets_restricted)",
                 ));
             }
         }
@@ -9789,6 +9858,89 @@ mod tests {
         assert!(cfg.routes.is_empty());
     }
 
+    /// two providers; `pool` and `variant` are TOML target tables for the
+    /// route `m`, so a case states only what differs
+    fn restricted_route_config(pool: &str, variant: &str) -> GatewayConfig {
+        toml::from_str(&format!(
+            r#"
+            [[providers]]
+            name = "a"
+            kind = "openai"
+            api_base = "https://api.openai.com/v1"
+            [[providers]]
+            name = "b"
+            kind = "openai"
+            api_base = "https://api.openai.com/v1"
+
+            [[routes]]
+            model = "m"
+            {pool}
+            {variant}
+
+            [[routes]]
+            model = "ok"
+            [[routes.targets]]
+            provider = "a"
+            "#
+        ))
+        .unwrap()
+    }
+
+    const ORDINARY_POOL: &str = r#"[[routes.targets]]
+            provider = "a""#;
+    const RESTRICTED_VARIANT: &str = r#"[[routes.variants]]
+            name = "v"
+            [[routes.variants.targets]]
+            provider = "b"
+            takes_over = ["throttled"]"#;
+    const ORDINARY_VARIANT: &str = r#"[[routes.variants]]
+            name = "v"
+            [[routes.variants.targets]]
+            provider = "b""#;
+
+    #[test]
+    fn a_route_with_variants_dials_only_them_when_checking_for_restricted_targets() {
+        // the pool has an ordinary target but the data plane never consults it
+        let stranded = restricted_route_config(ORDINARY_POOL, RESTRICTED_VARIANT);
+        let problems = stranded.validate().unwrap_err();
+        assert!(
+            problems
+                .iter()
+                .any(|p| p.contains(crate::failover::ALL_TARGETS_RESTRICTED)),
+            "{problems:?}"
+        );
+        // an ordinary variant target serves, whatever the pool holds
+        let served = restricted_route_config(ORDINARY_POOL, ORDINARY_VARIANT);
+        assert!(served.validate().is_ok(), "{:?}", served.validate());
+        // with no variants the pool is what is dialled
+        let pool_only = restricted_route_config(
+            r#"[[routes.targets]]
+            provider = "b"
+            takes_over = ["throttled"]"#,
+            "",
+        );
+        assert!(pool_only.validate().is_err());
+    }
+
+    #[test]
+    fn sanitize_drops_a_route_left_with_only_restricted_targets() {
+        let mut cfg = restricted_route_config(ORDINARY_POOL, RESTRICTED_VARIANT);
+        let report = cfg.sanitize_for_snapshot_report();
+        let models: Vec<_> = cfg.routes.iter().map(|r| r.model.as_str()).collect();
+        assert_eq!(models, ["ok"]);
+        assert!(
+            report
+                .problems
+                .iter()
+                .any(|p| p.contains("route 'm'") && p.contains("all_targets_restricted")),
+            "{:?}",
+            report.problems
+        );
+        // the rest of the snapshot still validates and applies
+        assert_eq!(cfg.validate_snapshot(), Ok(()));
+        assert!(cfg.validate().is_ok(), "{:?}", cfg.validate());
+    }
+
     #[test]
     fn sanitize_keeps_a_servable_duplicate_of_a_dropped_model() {
         // pruning is by index, so an unservable row must not take its servable
@@ -9959,6 +10111,42 @@ mod tests {
             "{:?}",
             cfg.validate_snapshot()
         );
+    }
+
+    /// #3431: pruning the omitted provider's ordinary target can leave a pool of
+    /// only fallbacks, which `validate_snapshot` would refuse for every tenant
+    #[test]
+    fn sanitize_drops_a_route_whose_ordinary_target_was_pruned_with_its_provider() {
+        let mut cfg = fleet_with_an_omitted_provider(
+            r#"
+            [[routes]]
+            model = "m"
+            [[routes.targets]]
+            provider = "bad"
+            [[routes.targets]]
+            provider = "openai"
+            takes_over = ["throttled"]
+
+            [[routes]]
+            model = "ok"
+            [[routes.targets]]
+            provider = "openai"
+            "#,
+        );
+        assert!(cfg.validate_snapshot().is_err(), "precondition");
+
+        let warnings = cfg.sanitize_for_snapshot();
+
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains("route 'm'") && w.contains("all_targets_restricted")),
+            "{warnings:?}"
+        );
+        let models: Vec<_> = cfg.routes.iter().map(|r| r.model.as_str()).collect();
+        assert_eq!(models, ["ok"]);
+        assert_eq!(cfg.validate_snapshot(), Ok(()));
+        assert!(cfg.validate().is_ok(), "{:?}", cfg.validate());
     }
 
     /// #2950: the loader left the provider out before the sanitizer ever saw

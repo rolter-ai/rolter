@@ -44,6 +44,57 @@ The migration chain selects steps with `MIGRATIONS.iter().filter(|m| m.from >= f
 
 Emitting both tiers is also what keeps the export lossless. The flat array _is_ the readonly tier — it cannot express `providers.default` at all — so exporting a deployment with seeded defaults used to drop them silently. `the_default_tier_round_trips` covers that direction.
 
+## One organization per file (#3440)
+
+Names are per org (#1857, ADR-0039) and the file format carries no org, so two
+orgs that share a route or provider name cannot be one valid file. The decision
+was one org per file rather than an `org` key on every row, which would need an
+importer spanning orgs that nothing asks for. `ExportOptions::org` (`rolter
+config export --org <slug>`, `?org=<slug>`) runs `scope_to_org` over the loaded
+config before the clash check: providers, groups and routes owned by that org
+or by none, the org's prompt templates (the `{org_id}:` half of their ids), the
+caps `ScopeRefs::in_org` places in it (owner slugs are recorded for every
+entity by `insert_owned`; a person with no `within` by `OrgView::members`; a key
+by `OrgView::key_orgs`; an unknown scope in no file). Prices, currency and
+logging are deployment-wide and stay, with one exception: the importer applies
+a `[logging.payload_capture]` table to the whole deployment, so a capture
+limited to keys (which spans orgs) is left out of a per-org file with a
+comment (`scope_to_org` returns that, `render_document` omits it), and the
+re-import then leaves capture alone (`declares_payload_capture`). Anything read by name must be keyed by the org too:
+`with_stored_variants` keys by (project, model), because a model name alone
+hands one org the other's variants. The clash check then runs on what is
+left, so an unscoped export of such a deployment still refuses and names the
+option. Test: `config_export::tests::round_trip::two_orgs_sharing_names_export_one_file_each`.
+
+## Leaving person caps out (#3396)
+
+A cap on a person names the account by email (#3311), and #1312 kept addresses
+out of committed files on purpose. `ExportOptions::without_person_caps`
+(`--without-person-caps`, `?without_person_caps=true`) makes `load_scope_refs`
+skip the `users` query, so no address is read, and `render_caps` then counts
+those caps in its trailing comment because they have no portable name, as it
+counts key caps. The default stays as decided on #3305. Test:
+`config_export::tests::round_trip::no_address_is_exported_when_person_caps_are_left_out`.
+
+## The MCP manifest marker (#3398)
+
+`orgs.mcp_enforce_manifests` decides for an org with no `mcp_gateway_settings`
+row (migration `0152`), and no saved setting carries it, so the export reads it
+straight from `orgs` (`load_mcp_manifest_enforcement`) into
+`GatewayConfig::mcp_manifest_enforcement` and writes
+`[[mcp_manifest_enforcement]]` (`org` slug, `enforce`). The field is bootstrap
+only: the store never fills it, so the snapshot does not carry it, and the
+representative snapshot fixture holds one entry only so the shape guard sees it.
+`import_mcp_manifest_enforcement` writes only `enforce = false`, only to the org
+the import targets and only when it is still strict, because an import never
+makes an org stricter; entries naming another org are skipped with a warning.
+`MergedConfigStore::load` clears the field, so a control plane started with an
+exported file does not ship it. It
+looks before it writes, since the `0153` trigger is a statement trigger that
+bumps `config_version` even for an update that matches no row. Tests:
+`config_export::tests::round_trip::the_mcp_manifest_marker_is_exported_for_an_org_without_settings`
+and `seed::tests::the_mcp_manifest_marker_never_makes_an_org_stricter`.
+
 ## Budgets and rate limits (#1312)
 
 `BudgetConfig::id` is a database id, which the one identity rule of the format

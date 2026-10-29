@@ -43,7 +43,7 @@ use rolter_core::{
 use serde::Serialize;
 
 #[cfg(feature = "postgres")]
-use axum::extract::State;
+use axum::extract::{Query, State};
 #[cfg(feature = "postgres")]
 use axum::response::{IntoResponse, Response};
 #[cfg(feature = "postgres")]
@@ -80,15 +80,21 @@ const HEADER: &str = "\
 # prices, published prompt templates, the payload-capture policy and the
 # dashboard UX-event opt-out.
 #
+# `[[mcp_manifest_enforcement]]` records, for each org that never saved MCP
+# settings, whether it enforces its servers' tool manifests. An import only
+# ever relaxes the org it targets with `enforce = false`; it never makes one
+# stricter.
+#
 # Budgets and rate limits round-trip too, and name what they cap the way the
 # importer finds it, never by database id: `scope = \"team\"` with `id =
 # \"acme/platform\"` is the team called `platform` of the org with slug `acme`
 # (`org`, `org/team`, `org/team/project`, `org/slug` for a business unit or a
 # customer). A cap whose scope does not resolve on the receiving deployment is
 # left alone, not half applied. A cap on a person is named by the account's
-# email (`scope = \"user\"`, `id = \"alice@example.com\"`), narrowed to an org or a
+# email (`scope = \"user\"`, `id = \"<account email>\"`), narrowed to an org or a
 # project by the same slug path, `within = { org = \"acme\" }`. The import finds
-# an existing account by that email and never creates one. A cap on a virtual
+# an existing account by that email and never creates one; `--without-person-caps`
+# leaves these caps, and with them every address, out of the file. A cap on a virtual
 # key is not exported: keys are never exported, so it would name nothing.
 #
 # Deliberately not exported, because the importer does not consume them and a
@@ -120,6 +126,10 @@ pub fn render(config: &GatewayConfig) -> String {
 #[derive(Debug, Default, Clone)]
 pub struct ScopeRefs {
     names: std::collections::HashMap<(rolter_core::BudgetScope, String), String>,
+    /// the slug of the org each tenancy entity belongs to, whether or not it has
+    /// a portable name, so a per-org export (#3440) can tell whose a cap is
+    #[cfg(feature = "postgres")]
+    owners: std::collections::HashMap<(rolter_core::BudgetScope, String), String>,
 }
 
 impl ScopeRefs {
@@ -155,6 +165,59 @@ impl ScopeRefs {
         self.names.get(&(scope, id.to_string())).map(String::as_str)
     }
 
+    /// Record that `scope` entity `id` belongs to the org with slug `org`, and
+    /// what it is called in a portable file, as [`ScopeRefs::insert`].
+    #[cfg(feature = "postgres")]
+    fn insert_owned(
+        &mut self,
+        scope: rolter_core::BudgetScope,
+        id: &str,
+        org: &str,
+        reference: String,
+    ) {
+        self.owners.insert((scope, id.to_string()), org.to_string());
+        self.insert(scope, id, reference);
+    }
+
+    #[cfg(feature = "postgres")]
+    fn owner(&self, scope: rolter_core::BudgetScope, id: &str) -> Option<&str> {
+        self.owners
+            .get(&(scope, id.to_string()))
+            .map(String::as_str)
+    }
+
+    /// Whether a cap belongs in the export of `org` (#3440).
+    ///
+    /// A cap is the org's when the entity it caps is: a team, project, business
+    /// unit or customer of the org, the org itself, or a key minted in it. A cap
+    /// on a person is the org's when its `within` names the org or one of its
+    /// projects, or, with no `within`, when the person is a member of the org. A
+    /// cap on a scope this build does not know cannot be placed, so it is in no
+    /// org's file. A key owned by no org (the gateway's own file) is placed in
+    /// every file, as the unscoped export places it.
+    #[cfg(feature = "postgres")]
+    fn in_org(
+        &self,
+        org: &OrgView,
+        scope: rolter_core::BudgetScope,
+        id: &str,
+        within: Option<&rolter_core::ScopeWithin>,
+    ) -> bool {
+        use rolter_core::{BudgetScope, ScopeWithin};
+        match scope {
+            BudgetScope::Unknown => false,
+            BudgetScope::Key => org.key_orgs.get(id).is_none_or(|owner| *owner == org.id),
+            BudgetScope::User => match within {
+                Some(ScopeWithin::Org(of)) => self.owner(BudgetScope::Org, of) == Some(&org.slug),
+                Some(ScopeWithin::Project(of)) => {
+                    self.owner(BudgetScope::Project, of) == Some(&org.slug)
+                }
+                _ => org.members.contains(id),
+            },
+            _ => self.owner(scope, id) == Some(&org.slug),
+        }
+    }
+
     /// A cap's `within`, as the slug path the importer resolves (#3311): `None`
     /// when the cap has none, `Some(None)` when it has one that names nothing
     /// portable, which keeps the cap out of the file.
@@ -179,6 +242,12 @@ impl ScopeRefs {
 
 /// [`render`], with the names the caps' scopes go by (#1312).
 pub fn render_with(config: &GatewayConfig, refs: &ScopeRefs) -> String {
+    render_document(config, refs, false)
+}
+
+/// [`render_with`], optionally leaving the payload-capture table out because it
+/// is limited to keys and so cannot be split per org (#3440).
+fn render_document(config: &GatewayConfig, refs: &ScopeRefs, omit_capture: bool) -> String {
     let mut out = String::from(HEADER);
     // the stamp goes before any table header, and is sourced from the constant
     // rather than written as a literal so it cannot drift from the chain. it is
@@ -194,8 +263,9 @@ pub fn render_with(config: &GatewayConfig, refs: &ScopeRefs) -> String {
     render_routes(&mut out, config);
     render_model_prices(&mut out, config);
     render_caps(&mut out, config, refs);
+    render_mcp_manifest_enforcement(&mut out, config);
     render_prompt_templates(&mut out, config);
-    render_logging(&mut out, config);
+    render_logging(&mut out, config, omit_capture);
     out
 }
 
@@ -545,9 +615,24 @@ fn render_caps(out: &mut String, config: &GatewayConfig, refs: &ScopeRefs) {
     if skipped_budgets + skipped_limits > 0 {
         out.push_str(&format!(
             "\n# not exported: {skipped_budgets} budget(s) and {skipped_limits} rate limit(s) on a \
-             virtual key (keys are never exported), on an account or place with no portable \
-             name, or on another scope with no name that survives a move\n"
+             virtual key (keys are never exported), on an account (or any account, when person \
+             caps are left out) or place with no portable name, or on another scope with no \
+             name that survives a move\n"
         ));
+    }
+}
+
+/// `[[mcp_manifest_enforcement]]`: the marker of each org that never saved MCP
+/// settings (#3398). Without it a strict org reads back as unconfigured, and a
+/// re-import that creates the org anew would give a grandfathered one the
+/// strict default.
+fn render_mcp_manifest_enforcement(out: &mut String, config: &GatewayConfig) {
+    let mut rows: Vec<_> = config.mcp_manifest_enforcement.iter().collect();
+    rows.sort_by(|a, b| a.org.cmp(&b.org));
+    for row in rows {
+        out.push_str("\n[[mcp_manifest_enforcement]]\n");
+        key(out, "org", &row.org);
+        key(out, "enforce", &row.enforce);
     }
 }
 
@@ -617,12 +702,22 @@ fn template_slug(id: &str) -> &str {
     id.rsplit_once(':').map_or(id, |(_, slug)| slug)
 }
 
-fn render_logging(out: &mut String, config: &GatewayConfig) {
+fn render_logging(out: &mut String, config: &GatewayConfig, omit_capture: bool) {
     // always written, even at the default: the importer applies ui_events only
     // when the file names it, so an omitted key would let a re-import onto a
     // deployment with the stream off leave it off where this one had it on
     out.push_str("\n[logging]\n");
     key(out, "ui_events", &config.logging.ui_events);
+    if omit_capture {
+        // the importer applies a capture table the file declares to the whole
+        // deployment, so a file without one leaves capture as it is
+        out.push_str(
+            "\n# [logging.payload_capture] is not exported: this deployment limits capture to \
+             virtual keys across organizations, which a per-organization file cannot \
+             split. Export the whole deployment to carry it.\n",
+        );
+        return;
+    }
     let capture = &config.logging.payload_capture;
     out.push_str("\n[logging.payload_capture]\n");
     key(out, "enabled", &capture.enabled);
@@ -684,7 +779,10 @@ fn key<T: Serialize + ?Sized>(out: &mut String, name: &str, value: &T) {
 /// Read from the tables directly, since the snapshot a [`GatewayConfig`] is
 /// built from carries ids and nothing that names them (#1312).
 #[cfg(feature = "postgres")]
-pub async fn load_scope_refs(pool: &sqlx::PgPool) -> rolter_core::Result<ScopeRefs> {
+pub async fn load_scope_refs(
+    pool: &sqlx::PgPool,
+    with_people: bool,
+) -> rolter_core::Result<ScopeRefs> {
     use rolter_core::BudgetScope;
     use rolter_store::postgres::store_err;
     let mut refs = ScopeRefs::default();
@@ -693,7 +791,7 @@ pub async fn load_scope_refs(pool: &sqlx::PgPool) -> rolter_core::Result<ScopeRe
         .await
         .map_err(store_err)?;
     for (id, slug) in rows {
-        refs.insert(BudgetScope::Org, &id.to_string(), slug);
+        refs.insert_owned(BudgetScope::Org, &id.to_string(), &slug.clone(), slug);
     }
     let rows: Vec<(uuid::Uuid, String, String)> =
         sqlx::query_as("select t.id, o.slug, t.name from teams t join orgs o on o.id = t.org_id")
@@ -701,7 +799,12 @@ pub async fn load_scope_refs(pool: &sqlx::PgPool) -> rolter_core::Result<ScopeRe
             .await
             .map_err(store_err)?;
     for (id, org, team) in rows {
-        refs.insert(BudgetScope::Team, &id.to_string(), format!("{org}/{team}"));
+        refs.insert_owned(
+            BudgetScope::Team,
+            &id.to_string(),
+            &org,
+            format!("{org}/{team}"),
+        );
     }
     let rows: Vec<(uuid::Uuid, String, String, String)> = sqlx::query_as(
         "select p.id, o.slug, t.name, p.name from projects p
@@ -711,25 +814,28 @@ pub async fn load_scope_refs(pool: &sqlx::PgPool) -> rolter_core::Result<ScopeRe
     .await
     .map_err(store_err)?;
     for (id, org, team, project) in rows {
-        refs.insert(
+        refs.insert_owned(
             BudgetScope::Project,
             &id.to_string(),
+            &org,
             format!("{org}/{team}/{project}"),
         );
     }
     // a person is named by the account's email, so only the accounts that hold
     // a cap are read: a deployment's whole user table has no business in a
     // configuration file (#3311)
-    let rows: Vec<(uuid::Uuid, String)> = sqlx::query_as(
-        "select id, email from users where id in (
-             select scope_id from budgets where scope_type = 'user'
-             union select scope_id from rate_limits where scope_type = 'user')",
-    )
-    .fetch_all(pool)
-    .await
-    .map_err(store_err)?;
-    for (id, email) in rows {
-        refs.insert(BudgetScope::User, &id.to_string(), email);
+    if with_people {
+        let rows: Vec<(uuid::Uuid, String)> = sqlx::query_as(
+            "select id, email from users where id in (
+                 select scope_id from budgets where scope_type = 'user'
+                 union select scope_id from rate_limits where scope_type = 'user')",
+        )
+        .fetch_all(pool)
+        .await
+        .map_err(store_err)?;
+        for (id, email) in rows {
+            refs.insert(BudgetScope::User, &id.to_string(), email);
+        }
     }
     for (table, scope) in [
         ("business_units", BudgetScope::BusinessUnit),
@@ -742,10 +848,26 @@ pub async fn load_scope_refs(pool: &sqlx::PgPool) -> rolter_core::Result<ScopeRe
         .await
         .map_err(store_err)?;
         for (id, org, slug) in rows {
-            refs.insert(scope, &id.to_string(), format!("{org}/{slug}"));
+            refs.insert_owned(scope, &id.to_string(), &org, format!("{org}/{slug}"));
         }
     }
     Ok(refs)
+}
+
+/// What an export covers. The default is the whole deployment.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct ExportOptions {
+    /// Export this organization's rows only (#3440), by slug. Names are per org
+    /// (#1857) and a file carries none, so a deployment whose orgs share a
+    /// route or provider name is exported one org per file. Rows owned by no
+    /// org (those of the gateway's own config file) are written as they are in
+    /// the unscoped export.
+    pub org: Option<String>,
+    /// Leave caps on a person out (#3396). Such a cap names the account by its
+    /// email, and a team that commits `rolter.toml` may keep addresses out of
+    /// it (#1312). The caps are counted in the trailing comment as key caps are,
+    /// and no address is read from the database at all.
+    pub without_person_caps: bool,
 }
 
 /// The deployment's configuration as an importable document, caps included.
@@ -755,19 +877,151 @@ pub async fn load_scope_refs(pool: &sqlx::PgPool) -> rolter_core::Result<ScopeRe
 pub async fn export_document(
     pool: &sqlx::PgPool,
     config: &GatewayConfig,
+    options: &ExportOptions,
 ) -> rolter_core::Result<String> {
-    let clashes = clashing_names(config);
+    let mut config = config.clone();
+    let refs = load_scope_refs(pool, !options.without_person_caps).await?;
+    let mut omit_capture = false;
+    if let Some(slug) = &options.org {
+        let view = load_org_view(pool, slug, &config).await?;
+        omit_capture = scope_to_org(&mut config, &view, &refs);
+    }
+    let clashes = clashing_names(&config);
     if !clashes.is_empty() {
+        // only a clash between organizations is one `--org` separates: a row
+        // owned by no organization lands in every organization's file
+        let across_orgs = {
+            let mut tenanted = config.clone();
+            tenanted.providers.retain(|p| p.tenancy.is_some());
+            tenanted.provider_groups.retain(|g| g.tenancy.is_some());
+            tenanted.routes.retain(|r| r.tenancy.is_some());
+            clashing_names(&tenanted) == clashes
+        };
+        let hint = if options.org.is_none() && across_orgs {
+            format!(
+                "two or more organizations use the same {}, and a file carries no \
+                 organization, so it would not load; export one organization at a time with \
+                 `--org <slug>` (`?org=<slug>` on the endpoint)",
+                clashes.join(", ")
+            )
+        } else {
+            format!(
+                "{} is used by a row owned by no organization (the gateway's own config file) \
+                 and by another row, so it would not load; rename one of them, since `--org` \
+                 keeps the rows no organization owns",
+                clashes.join(", ")
+            )
+        };
         return Err(rolter_core::Error::Config(format!(
-            "this deployment cannot be exported as one file yet: two or more organizations \
-             use the same {}, and a file carries no organization, so it would not load \
-             (#3440)",
-            clashes.join(", ")
+            "this deployment cannot be exported as one file: {hint} (#3440)"
         )));
     }
-    let mut config = config.clone();
     with_stored_variants(pool, &mut config).await?;
-    Ok(render_with(&config, &load_scope_refs(pool).await?))
+    config.mcp_manifest_enforcement = load_mcp_manifest_enforcement(pool, options).await?;
+    Ok(render_document(&config, &refs, omit_capture))
+}
+
+/// The marker of each org that has not saved MCP settings, which is the only
+/// org the marker decides for (#3398): one with a saved row follows that row.
+#[cfg(feature = "postgres")]
+async fn load_mcp_manifest_enforcement(
+    pool: &sqlx::PgPool,
+    options: &ExportOptions,
+) -> rolter_core::Result<Vec<rolter_core::McpManifestEnforcementConfig>> {
+    use rolter_store::postgres::store_err;
+    let rows: Vec<(String, bool)> = sqlx::query_as(
+        "select o.slug, o.mcp_enforce_manifests from orgs o
+         where not exists (select 1 from mcp_gateway_settings s where s.org_id = o.id)
+           and ($1::text is null or o.slug = $1)
+         order by o.slug",
+    )
+    .bind(&options.org)
+    .fetch_all(pool)
+    .await
+    .map_err(store_err)?;
+    Ok(rows
+        .into_iter()
+        .map(|(org, enforce)| rolter_core::McpManifestEnforcementConfig { org, enforce })
+        .collect())
+}
+
+/// An org as a per-org export needs to know it (#3440): which people are
+/// members and which virtual keys were minted in it.
+#[cfg(feature = "postgres")]
+struct OrgView {
+    id: String,
+    slug: String,
+    /// ids of the accounts holding a membership of the org, or of one of its
+    /// teams or projects
+    members: std::collections::HashSet<String>,
+    /// virtual key id to the id of the org it was minted in
+    key_orgs: std::collections::HashMap<String, String>,
+}
+
+#[cfg(feature = "postgres")]
+async fn load_org_view(
+    pool: &sqlx::PgPool,
+    slug: &str,
+    config: &GatewayConfig,
+) -> rolter_core::Result<OrgView> {
+    use rolter_store::postgres::store_err;
+    let org_id: Option<uuid::Uuid> = sqlx::query_scalar("select id from orgs where slug = $1")
+        .bind(slug)
+        .fetch_optional(pool)
+        .await
+        .map_err(store_err)?;
+    let org_id = org_id.ok_or_else(|| {
+        rolter_core::Error::Config(format!("no organization has the slug '{slug}'"))
+    })?;
+    let members: Vec<uuid::Uuid> = sqlx::query_scalar(
+        "select distinct m.user_id from memberships m
+         left join teams t on t.id = m.team_id
+         left join projects p on p.id = m.project_id
+         left join teams pt on pt.id = p.team_id
+         where coalesce(m.org_id, t.org_id, pt.org_id) = $1",
+    )
+    .bind(org_id)
+    .fetch_all(pool)
+    .await
+    .map_err(store_err)?;
+    Ok(OrgView {
+        id: org_id.to_string(),
+        slug: slug.to_string(),
+        members: members.into_iter().map(|id| id.to_string()).collect(),
+        key_orgs: config
+            .db_virtual_keys
+            .iter()
+            .map(|key| (key.id.clone(), key.org_id.clone()))
+            .collect(),
+    })
+}
+
+/// Leave in `config` what belongs in the file of `org` (#3440): its providers,
+/// groups, routes, prompt templates and caps, and the rows no org owns. Prices,
+/// currency and logging are deployment-wide and stay. Returns whether the
+/// payload-capture policy is limited to keys, in which case the file omits it.
+#[cfg(feature = "postgres")]
+fn scope_to_org(config: &mut GatewayConfig, org: &OrgView, refs: &ScopeRefs) -> bool {
+    let owned = |tenancy: &Option<rolter_core::Tenancy>| {
+        tenancy.as_ref().is_none_or(|owner| owner.org_id == org.id)
+    };
+    config.providers.retain(|p| owned(&p.tenancy));
+    config.provider_groups.retain(|g| owned(&g.tenancy));
+    config.routes.retain(|r| owned(&r.tenancy));
+    // a stored template's id is `{org_id}:{slug}`; one from a file has no org
+    config.prompt_templates.templates.retain(|t| {
+        t.id.rsplit_once(':')
+            .is_none_or(|(owner, _)| owner == org.id)
+    });
+    config
+        .budgets
+        .retain(|b| refs.in_org(org, b.scope, &b.id, b.within.as_ref()));
+    config
+        .rate_limits
+        .retain(|l| refs.in_org(org, l.scope, &l.id, l.within.as_ref()));
+    // capture is one deployment-wide policy, which the importer applies whole.
+    // one limited to keys spans orgs, so a per-org file leaves it out
+    !config.logging.payload_capture.virtual_key_ids.is_empty()
 }
 
 /// The names two rows share in `config`, which a flat file cannot carry.
@@ -810,6 +1064,17 @@ fn clashing_names(config: &GatewayConfig) -> Vec<String> {
         }))
         .collect();
     repeated("slug", slugs.iter().map(String::as_str), &mut clashes);
+    // two orgs publishing the same template slug would be one template in a
+    // flat file, which the importer merges into a single org's row
+    repeated(
+        "prompt template",
+        config
+            .prompt_templates
+            .templates
+            .iter()
+            .map(|t| template_slug(&t.id)),
+        &mut clashes,
+    );
     clashes.into_iter().collect()
 }
 
@@ -827,14 +1092,18 @@ async fn with_stored_variants(
 ) -> rolter_core::Result<()> {
     use rolter_store::postgres::store_err;
 
-    let variants: Vec<(String, uuid::Uuid, String, i32, serde_json::Value)> = sqlx::query_as(
-        "select r.model, v.id, v.name, v.weight, v.params
+    // keyed by the route's project as well as its model: two orgs can each have a
+    // `gpt-4o` (#1857), and a model name alone would hand one org the other's
+    // variants (#3440)
+    let variants: Vec<(String, String, uuid::Uuid, String, i32, serde_json::Value)> =
+        sqlx::query_as(
+            "select r.project_id::text, r.model, v.id, v.name, v.weight, v.params
          from route_variants v join routes r on r.id = v.route_id
          where r.enabled order by r.model, v.position",
-    )
-    .fetch_all(pool)
-    .await
-    .map_err(store_err)?;
+        )
+        .fetch_all(pool)
+        .await
+        .map_err(store_err)?;
     type TargetRow = (uuid::Uuid, String, Option<String>, i32, Vec<String>);
     let targets: Vec<TargetRow> = sqlx::query_as(
         "select vt.variant_id, p.name, vt.upstream_model, vt.weight, vt.takes_over
@@ -844,11 +1113,11 @@ async fn with_stored_variants(
     .fetch_all(pool)
     .await
     .map_err(store_err)?;
-    let mut by_route: std::collections::HashMap<String, Vec<rolter_core::Variant>> =
+    let mut by_route: std::collections::HashMap<(String, String), Vec<rolter_core::Variant>> =
         std::collections::HashMap::new();
-    for (model, id, name, weight, params) in variants {
+    for (project, model, id, name, weight, params) in variants {
         by_route
-            .entry(model)
+            .entry((project, model))
             .or_default()
             .push(rolter_core::Variant {
                 name,
@@ -885,8 +1154,10 @@ async fn with_stored_variants(
     }
     for route in &mut config.routes {
         // only a database route has a tenancy; a file route keeps its own
-        if route.tenancy.is_some() {
-            route.variants = by_route.remove(&route.model).unwrap_or_default();
+        if let Some(project) = route.tenancy.as_ref().and_then(|t| t.project_id.clone()) {
+            route.variants = by_route
+                .remove(&(project, route.model.clone()))
+                .unwrap_or_default();
         }
     }
     Ok(())
@@ -897,7 +1168,19 @@ pub(crate) fn router() -> Router<ControlState> {
     Router::new().route("/api/v1/config/export", get(export_config))
 }
 
-/// The whole deployment's configuration as an importable `rolter.toml`.
+/// Query of `GET /api/v1/config/export`.
+#[cfg(feature = "postgres")]
+#[derive(serde::Deserialize)]
+struct ExportQuery {
+    /// export this organization's rows only, by slug (#3440)
+    org: Option<String>,
+    /// leave caps on a person, which name an account by email, out (#3396)
+    #[serde(default)]
+    without_person_caps: bool,
+}
+
+/// The whole deployment's configuration as an importable `rolter.toml`, or one
+/// organization's with `?org=<slug>`.
 ///
 /// Superadmin-only and whole-deployment: the document spans every org's
 /// providers and groups, so there is no tenancy scope narrow enough to
@@ -907,10 +1190,15 @@ pub(crate) fn router() -> Router<ControlState> {
 async fn export_config(
     principal: Principal,
     State(state): State<ControlState>,
+    Query(query): Query<ExportQuery>,
 ) -> ApiResult<Response> {
     authorize_superadmin(&principal, superadmin_cap!("config_export", Read))?;
     let config = state.store.load().await?;
-    let document = export_document(crate::crud::pool(&state), &config).await?;
+    let options = ExportOptions {
+        org: query.org,
+        without_person_caps: query.without_person_caps,
+    };
+    let document = export_document(crate::crud::pool(&state), &config, &options).await?;
     Ok((
         [
             (
@@ -967,6 +1255,41 @@ mod tests {
         config.providers[1].slug = Some("openai-b".to_string());
         config.routes[1].model = "gpt-4o-b".to_string();
         assert!(clashing_names(&config).is_empty());
+    }
+
+    /// Two orgs publishing the same template slug are one template in a flat
+    /// file, which the importer would merge into a single org's row (#3440).
+    #[test]
+    fn a_prompt_template_slug_two_orgs_share_is_a_clash() {
+        let mut config = GatewayConfig::default();
+        for org in ["org-a", "org-b"] {
+            config.prompt_templates.templates.push(
+                serde_json::from_value(serde_json::json!({
+                    "id": format!("{org}:greet"),
+                    "version": 1,
+                }))
+                .unwrap(),
+            );
+        }
+        assert_eq!(clashing_names(&config), ["prompt template 'greet'"]);
+    }
+
+    /// A capture policy limited to keys is left out of a per-org file, one not
+    /// limited stays, as the rest of logging does (#3440).
+    #[test]
+    fn the_capture_table_is_left_out_only_when_asked() {
+        let mut config = GatewayConfig::default();
+        config.logging.payload_capture.enabled = true;
+        let refs = ScopeRefs::default();
+        let whole = render_document(&config, &refs, false);
+        assert!(whole.contains("\n[logging.payload_capture]\n"), "{whole}");
+        let omitted = render_document(&config, &refs, true);
+        assert!(
+            !omitted.contains("\n[logging.payload_capture]"),
+            "{omitted}"
+        );
+        assert!(omitted.contains("[logging]\nui_events"), "{omitted}");
+        assert!(omitted.contains("is not exported"), "{omitted}");
     }
 
     /// Everything the export claims to round-trip, in one file.
@@ -1707,9 +2030,10 @@ period = "monthly"
             .unwrap();
 
             let store = PostgresConfigStore::with_kek(pool.clone(), Some(kek));
-            let first = super::export_document(&pool, &store.load().await.unwrap())
-                .await
-                .unwrap();
+            let first =
+                super::export_document(&pool, &store.load().await.unwrap(), &Default::default())
+                    .await
+                    .unwrap();
 
             // the decrypted key is in the loaded config; it must not be in the
             // document built from it
@@ -1777,9 +2101,10 @@ period = "monthly"
             crate::seed::import_bootstrap_toml(&pool, org_id, project_id, &path)
                 .await
                 .unwrap();
-            let second = super::export_document(&pool, &store.load().await.unwrap())
-                .await
-                .unwrap();
+            let second =
+                super::export_document(&pool, &store.load().await.unwrap(), &Default::default())
+                    .await
+                    .unwrap();
 
             assert_eq!(
                 first, second,
@@ -1796,16 +2121,18 @@ period = "monthly"
                 .execute(&pool)
                 .await
                 .unwrap();
-            let wiped = super::export_document(&pool, &store.load().await.unwrap())
-                .await
-                .unwrap();
+            let wiped =
+                super::export_document(&pool, &store.load().await.unwrap(), &Default::default())
+                    .await
+                    .unwrap();
             assert!(!wiped.contains("[[budgets]]"), "the wipe left a budget");
             crate::seed::import_bootstrap_toml(&pool, org_id, project_id, &path)
                 .await
                 .unwrap();
-            let third = super::export_document(&pool, &store.load().await.unwrap())
-                .await
-                .unwrap();
+            let third =
+                super::export_document(&pool, &store.load().await.unwrap(), &Default::default())
+                    .await
+                    .unwrap();
             assert_eq!(first, third, "export, wipe, import changed the caps");
             // a second import of the same file writes nothing: the person's
             // three caps are still three rows
@@ -1820,6 +2147,413 @@ period = "monthly"
             // a database id never stands in for a name
             let org_uuid = org_id.to_string();
             assert!(!third.contains(&org_uuid), "{third}");
+        }
+
+        /// Two orgs each with an `openai` provider and a `gpt-4o` route (#3440):
+        /// the unscoped export refuses and names the option, and each org's own
+        /// export carries that org's rows and nothing of the other's, then
+        /// imports back into it unchanged.
+        #[tokio::test]
+        async fn two_orgs_sharing_names_export_one_file_each() {
+            use super::ExportOptions;
+
+            let Some(db) = scratch_db().await else {
+                return;
+            };
+            let pool = db.pool().clone();
+            let dir = tempdir("per-org");
+            let store = PostgresConfigStore::new(pool.clone());
+
+            let mut orgs = Vec::new();
+            for slug in ["org-a", "org-b"] {
+                orgs.push((slug, bootstrap_named_org(&pool, slug).await));
+            }
+            let (_, (org_a, project_a)) = orgs[0];
+            let (_, (org_b, project_b)) = orgs[1];
+
+            // three accounts: a member of each org, and one of neither
+            let mut people = Vec::new();
+            for email in [
+                "alice.a@corp.example",
+                "bob.b@corp.example",
+                "carol.none@corp.example",
+            ] {
+                let id: Uuid = sqlx::query_scalar(
+                    "insert into users (email, password_hash, is_superadmin)
+                     values ($1, null, false) returning id",
+                )
+                .bind(email)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+                people.push(id);
+            }
+            for (user, org) in [(people[0], org_a), (people[1], org_b)] {
+                sqlx::query(
+                    "insert into memberships (user_id, org_id, role) values ($1, $2, 'member')",
+                )
+                .bind(user)
+                .bind(org)
+                .execute(&pool)
+                .await
+                .unwrap();
+            }
+            // a virtual key minted in each org
+            let mut keys = Vec::new();
+            for (n, project) in [project_a, project_b].into_iter().enumerate() {
+                let key = rolter_store::postgres::repo::VirtualKeyRepo(&pool)
+                    .create(
+                        project,
+                        rolter_store::postgres::repo::NewVirtualKey {
+                            key_hash: &format!("hash-{n}"),
+                            key_prefix: &format!("rk-{n}"),
+                            name: None,
+                            models: &[],
+                            providers: &[],
+                            cache_enabled: None,
+                            created_by: None,
+                            expires_at: None,
+                            purpose: None,
+                        },
+                    )
+                    .await
+                    .unwrap();
+                keys.push(key.id);
+            }
+
+            // each org's file: the shared names, then what only it has
+            for (n, (slug, (org_id, project_id))) in orgs.iter().enumerate() {
+                let (variant, group, template, team_cap, project_cap, person) = if n == 0 {
+                    (
+                        "canary",
+                        "cluster-a",
+                        "greet-a",
+                        6.5,
+                        8.5,
+                        "alice.a@corp.example",
+                    )
+                } else {
+                    (
+                        "ab-test",
+                        "cluster-b",
+                        "greet-b",
+                        7.5,
+                        9.5,
+                        "bob.b@corp.example",
+                    )
+                };
+                let capture = if n == 1 {
+                    format!(
+                        "[logging.payload_capture]\nenabled = true\nvirtual_key_ids = [\"{}\", \"{}\"]\n",
+                        keys[0], keys[1]
+                    )
+                } else {
+                    String::new()
+                };
+                let path = dir.join(format!("{slug}.toml"));
+                std::fs::write(
+                    &path,
+                    format!(
+                        r#"
+[[providers]]
+name = "openai"
+slug = "openai"
+kind = "openai"
+api_base = "https://{slug}.example.com"
+api_key_env = "OPENAI_API_KEY"
+
+[[provider_groups]]
+name = "{group}"
+slug = "{group}"
+strategy = "round_robin"
+[[provider_groups.members]]
+provider = "openai"
+model = "gpt-4o"
+
+[[routes]]
+model = "gpt-4o"
+[[routes.targets]]
+provider = "openai"
+model = "gpt-4o"
+[[routes.variants]]
+name = "{variant}"
+weight = 1
+[[routes.variants.targets]]
+provider = "openai"
+model = "gpt-4o"
+weight = 1
+
+[prompt_templates]
+enabled = true
+[[prompt_templates.templates]]
+id = "{template}"
+version = 1
+[[prompt_templates.templates.decorators]]
+role = "system"
+position = "prepend"
+content = "hello from {slug}"
+
+[[budgets]]
+scope = "team"
+id = "{slug}/default"
+limit_usd = {team_cap}
+period = "daily"
+[[budgets]]
+scope = "project"
+id = "{slug}/default/default"
+limit_usd = {project_cap}
+period = "daily"
+[[budgets]]
+scope = "user"
+id = "{person}"
+limit_usd = 3.5
+period = "daily"
+{extra}
+{capture}
+"#,
+                        extra = if n == 1 {
+                            "[[budgets]]\nscope = \"user\"\nid = \"carol.none@corp.example\"\nlimit_usd = 4.5\nperiod = \"daily\"\n"
+                        } else {
+                            ""
+                        },
+                    ),
+                )
+                .unwrap();
+                crate::seed::import_bootstrap_toml(&pool, *org_id, *project_id, &path)
+                    .await
+                    .unwrap();
+            }
+
+            let served = store.load().await.unwrap();
+            let refused = super::export_document(&pool, &served, &ExportOptions::default())
+                .await
+                .unwrap_err()
+                .to_string();
+            assert!(refused.contains("route 'gpt-4o'"), "{refused}");
+            assert!(
+                refused.contains("--org <slug>"),
+                "the error names no option: {refused}"
+            );
+
+            // what only one org has, and what must therefore stay in its file
+            let own: [&[&str]; 2] = [
+                &[
+                    "https://org-a.example.com",
+                    "cluster-a",
+                    "greet-a",
+                    "canary",
+                    "id = \"org-a/default\"",
+                    "id = \"org-a/default/default\"",
+                    "limit_usd = \"6.5000\"",
+                    "limit_usd = \"8.5000\"",
+                    "alice.a@corp.example",
+                ],
+                &[
+                    "https://org-b.example.com",
+                    "cluster-b",
+                    "greet-b",
+                    "ab-test",
+                    "id = \"org-b/default\"",
+                    "id = \"org-b/default/default\"",
+                    "limit_usd = \"7.5000\"",
+                    "limit_usd = \"9.5000\"",
+                    "bob.b@corp.example",
+                ],
+            ];
+            for (n, (slug, (org_id, project_id))) in orgs.iter().enumerate() {
+                let options = ExportOptions {
+                    org: Some(slug.to_string()),
+                    ..Default::default()
+                };
+                let first = super::export_document(&pool, &served, &options)
+                    .await
+                    .unwrap();
+                for token in own[n] {
+                    assert!(
+                        first.contains(token),
+                        "{slug}: {token} is missing:\n{first}"
+                    );
+                }
+                for token in own[1 - n] {
+                    assert!(!first.contains(token), "{slug}: carries {token}:\n{first}");
+                }
+                // a person of neither org is in neither file; the other org's
+                // key ids stay out, and so does its mention in any comment
+                assert!(!first.contains("carol.none@corp.example"), "{first}");
+                assert!(
+                    !first.contains(&format!("org-{}", if n == 0 { 'b' } else { 'a' })),
+                    "{first}"
+                );
+                // capture is limited to keys across both orgs, so no per-org file
+                // declares it (a re-import would apply it to everyone), and the
+                // file says why
+                for key in &keys {
+                    assert!(!first.contains(&key.to_string()), "{first}");
+                }
+                assert!(!first.contains("\n[logging.payload_capture]"), "{first}");
+                assert!(
+                    first.contains("# [logging.payload_capture] is not exported"),
+                    "{first}"
+                );
+                // the stored variants are the org's own: one variant, not both
+                assert_eq!(first.matches("[[routes.variants]]").count(), 1, "{first}");
+
+                // the file loads on its own, and imports back into the org
+                let path = dir.join(format!("{slug}-export.toml"));
+                std::fs::write(&path, &first).unwrap();
+                rolter_core::GatewayConfig::from_toml_str(&first)
+                    .unwrap()
+                    .validate()
+                    .unwrap();
+                crate::seed::import_bootstrap_toml(&pool, *org_id, *project_id, &path)
+                    .await
+                    .unwrap();
+                let served = store.load().await.unwrap();
+                let second = super::export_document(&pool, &served, &options)
+                    .await
+                    .unwrap();
+                assert_eq!(first, second, "re-importing the {slug} export changed it");
+            }
+
+            // the re-imports left the deployment's capture policy as it was
+            let limited: Option<i32> = sqlx::query_scalar(
+                "select cardinality(payload_capture_virtual_key_ids) from logging_settings limit 1",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            assert_eq!(
+                limited,
+                Some(2),
+                "a per-org import changed the capture policy"
+            );
+
+            let unknown = ExportOptions {
+                org: Some("nobody".to_string()),
+                ..Default::default()
+            };
+            let err = super::export_document(&pool, &served, &unknown)
+                .await
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains("'nobody'"), "{err}");
+        }
+
+        /// With person caps left out the file names no account, and the trailing
+        /// comment counts them (#3396). The default still writes them (#3305).
+        #[tokio::test]
+        async fn no_address_is_exported_when_person_caps_are_left_out() {
+            use super::ExportOptions;
+
+            let Some(db) = scratch_db().await else {
+                return;
+            };
+            let pool = db.pool().clone();
+            let (org_id, project_id) = bootstrap_org(&pool).await;
+            let dir = tempdir("no-people");
+            let path = dir.join("rolter.toml");
+            let address = "carol.cap@corp.example";
+            sqlx::query(
+                "insert into users (email, password_hash, is_superadmin)
+                 values ($1, null, false)",
+            )
+            .bind(address)
+            .execute(&pool)
+            .await
+            .unwrap();
+            std::fs::write(&path, FIXTURE.replace("alice@example.com", address)).unwrap();
+            crate::seed::import_bootstrap_toml(&pool, org_id, project_id, &path)
+                .await
+                .unwrap();
+
+            let served = PostgresConfigStore::new(pool.clone()).load().await.unwrap();
+            let with = super::export_document(&pool, &served, &ExportOptions::default())
+                .await
+                .unwrap();
+            assert!(with.contains(&format!("id = \"{address}\"")), "{with}");
+
+            let without = super::export_document(
+                &pool,
+                &served,
+                &ExportOptions {
+                    without_person_caps: true,
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+            assert!(
+                !without.contains(address),
+                "an address was exported:\n{without}"
+            );
+            assert!(
+                !without.contains('@'),
+                "an address-shaped string was exported:\n{without}"
+            );
+            // (the header's own example names a user, so look for a table)
+            assert!(!without.contains("\nscope = \"user\""), "{without}");
+            // the other caps are still there, and the person's are counted
+            assert!(without.contains("scope = \"team\""), "{without}");
+            assert!(
+                without.contains("# not exported: 2 budget(s) and 1 rate limit(s)"),
+                "{without}"
+            );
+            // a file without the addresses still loads
+            rolter_core::GatewayConfig::from_toml_str(&without).unwrap();
+        }
+
+        /// The marker is exported for an org that never saved MCP settings, in
+        /// both values, and not for one that did (#3398).
+        #[tokio::test]
+        async fn the_mcp_manifest_marker_is_exported_for_an_org_without_settings() {
+            let Some(db) = scratch_db().await else {
+                return;
+            };
+            let pool = db.pool().clone();
+            let (strict, _) = bootstrap_named_org(&pool, "strict").await;
+            let (lax, _) = bootstrap_named_org(&pool, "lax").await;
+            let (saved, _) = bootstrap_named_org(&pool, "saved").await;
+            sqlx::query("update orgs set mcp_enforce_manifests = false where id = $1")
+                .bind(lax)
+                .execute(&pool)
+                .await
+                .unwrap();
+            sqlx::query("insert into mcp_gateway_settings (org_id) values ($1)")
+                .bind(saved)
+                .execute(&pool)
+                .await
+                .unwrap();
+            let _ = strict;
+
+            let store = PostgresConfigStore::new(pool.clone());
+            let served = store.load().await.unwrap();
+            let all = super::export_document(&pool, &served, &Default::default())
+                .await
+                .unwrap();
+            assert!(
+                all.contains("[[mcp_manifest_enforcement]]\norg = \"lax\"\nenforce = false\n"),
+                "{all}"
+            );
+            assert!(
+                all.contains("[[mcp_manifest_enforcement]]\norg = \"strict\"\nenforce = true\n"),
+                "{all}"
+            );
+            assert!(
+                !all.contains("org = \"saved\""),
+                "an org with saved settings follows them, not the marker:\n{all}"
+            );
+            let one = super::export_document(
+                &pool,
+                &served,
+                &super::ExportOptions {
+                    org: Some("lax".to_string()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+            assert!(one.contains("org = \"lax\""), "{one}");
+            assert!(!one.contains("org = \"strict\""), "{one}");
         }
 
         /// A cap whose scope does not resolve is left alone rather than
@@ -2000,13 +2734,17 @@ rpm = 10
         }
 
         async fn bootstrap_org(pool: &sqlx::PgPool) -> (Uuid, Uuid) {
+            bootstrap_named_org(pool, "acme").await
+        }
+
+        async fn bootstrap_named_org(pool: &sqlx::PgPool, slug: &str) -> (Uuid, Uuid) {
             use rolter_store::postgres::repo::{ProjectRepo, TeamRepo};
-            let org_id: Uuid = sqlx::query_scalar(
-                "insert into orgs (name, slug) values ('acme', 'acme') returning id",
-            )
-            .fetch_one(pool)
-            .await
-            .unwrap();
+            let org_id: Uuid =
+                sqlx::query_scalar("insert into orgs (name, slug) values ($1, $1) returning id")
+                    .bind(slug)
+                    .fetch_one(pool)
+                    .await
+                    .unwrap();
             let team = TeamRepo(pool).create(org_id, "default").await.unwrap();
             let project = ProjectRepo(pool).create(team.id, "default").await.unwrap();
             (org_id, project.id)

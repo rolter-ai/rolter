@@ -1,6 +1,6 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { focusManager } from "@tanstack/react-query";
-import { MemoryRouter, useLocation } from "react-router";
+import { MemoryRouter } from "react-router";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import Logs from "./Logs";
@@ -20,11 +20,15 @@ import {
   recordUxEvents,
   recording,
   routes,
+  savedText,
   scoped,
+  stubSavePicker,
   uxEvents,
   type FetchStub,
   type Recorder,
   withSampleRate,
+  AddressProbe,
+  addressOf,
 } from "./story-harness";
 import type { BusinessUnitRow, CustomerRow, InvocationRow, VirtualKeyRow } from "@/lib/api";
 import { formattersFor } from "@/lib/i18n/format";
@@ -983,6 +987,33 @@ export const TimeStatusAndCostStayInFrameInRussian: Story = {
 };
 
 /**
+ * Every column header is drawn the same way (#3448): a column's body colour
+ * (the muted Provider, Latency, Tokens and Cost cells) stays off its header,
+ * which keeps the header's own, so the row of headers reads as one.
+ */
+export const EveryColumnHeaderHasTheHeaderColour: Story = {
+  render: () => (
+    <Harness fetchStub={withLogs(ROWS)}>
+      <Logs />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByText(fmt.timeMs(ROWS[0].ts));
+    // the rail and the drawer are closed, so every column has room
+    const headers = Array.from(canvasElement.querySelectorAll("thead th")).filter(
+      (th) => getComputedStyle(th).display !== "none",
+    );
+    await expect(headers.length).toBeGreaterThanOrEqual(6);
+    const colours = new Set(headers.map((th) => getComputedStyle(th).color));
+    await expect(Array.from(colours)).toHaveLength(1);
+    // and it is the header's muted colour, not the body text's
+    const body = getComputedStyle(canvasElement.querySelector("tbody td")!).color;
+    await expect(Array.from(colours)[0]).not.toBe(body);
+  },
+};
+
+/**
  * #1986: the table is narrower than the window once the filter rail and the
  * detail drawer are open beside it, and it gives up columns to the width it
  * actually has, widest need first, never Status or Cost. With both panels open
@@ -1156,14 +1187,6 @@ export const TheAttributionFilterIsSentToTheServer: Story = {
  * wrote to the address (#1985). It rides on a data attribute with no text, so
  * no `getByText` can match it.
  */
-function AddressProbe() {
-  const { search } = useLocation();
-  return <span data-testid="address" data-search={search} hidden />;
-}
-
-const addressOf = (canvasElement: HTMLElement) =>
-  new URLSearchParams(within(canvasElement).getByTestId("address").dataset.search ?? "");
-
 /** the query string of the screen's latest read of the log */
 const lastLogQuery = (recorder: Recorder) => {
   const reads = recorder.calls.filter((c) => c.url.includes("/analytics/invocations"));
@@ -3422,11 +3445,13 @@ const withSavedView = recording(
  * counted, not named. The log is then read with the view's window, key and
  * attribution, and with no cursor or request id. The Cost checks are not part
  * of a view, so each one ticked beforehand is cleared with the rest instead of
- * narrowing the log beyond what the view says (#3346).
+ * narrowing the log beyond what the view says (#3346); so are the guardrail and
+ * plugin outcomes (#3405).
  */
 export const ApplyingASavedViewSetsTheAddress: Story = {
   parameters: {
-    address: "/logs?request_id=req-ok&unpriced=true&withheld=true&usage_unknown=true",
+    address:
+      "/logs?request_id=req-ok&unpriced=true&withheld=true&usage_unknown=true&guardrail=pii-block&plugin=redact",
   },
   render: () => (
     <Harness fetchStub={withSavedView.stub}>
@@ -3448,7 +3473,7 @@ export const ApplyingASavedViewSetsTheAddress: Story = {
     // the lookup would have masked the filters, so it is gone, and so is every
     // Cost check the view does not name
     await expect(address.has("request_id")).toBe(false);
-    for (const flag of ["unpriced", "withheld", "usage_unknown"]) {
+    for (const flag of ["unpriced", "withheld", "usage_unknown", "guardrail", "plugin"]) {
       await expect(address.has(flag)).toBe(false);
     }
     await expect(await canvas.findByRole("status")).toHaveTextContent(
@@ -3460,11 +3485,82 @@ export const ApplyingASavedViewSetsTheAddress: Story = {
       expect(sent.get("customer")).toBe("cust-1");
       expect(sent.get("status")).toBe("error");
       expect(sent.has("request_id")).toBe(false);
-      for (const flag of ["unpriced", "withheld", "usage_unknown"])
+      for (const flag of ["unpriced", "withheld", "usage_unknown", "guardrail", "plugin"])
         expect(sent.has(flag)).toBe(false);
       const span = Date.now() - Date.parse(sent.get("since") ?? "");
       expect(span).toBeGreaterThan(6.9 * 24 * 3600_000);
     });
+  },
+};
+
+const CUSTOM_VIEW = {
+  ...SAVED_VIEW,
+  id: "55555555-5555-4555-8555-555555555555",
+  name: "October incident",
+  filters: { window: "custom", since: "2026-10-01", until: "2026-10-07" },
+  effective_filters: { window: "custom", since: "2026-10-01", until: "2026-10-07" },
+  unavailable: [],
+};
+
+const withCustomView = recording(
+  scoped(async (input, init) => {
+    const path = new URL(String(input), "http://localhost").pathname;
+    if (path === "/api/v1/me/saved-views") return json([CUSTOM_VIEW]);
+    return serverFiltered(MIXED)(input, init);
+  }),
+);
+
+/**
+ * A saved view can hold a custom range (#3407): applying it writes the window
+ * and both days to the address, the log is read over exactly those days, and
+ * applying a view with a named window afterwards takes the days out again.
+ */
+export const ApplyingASavedCustomRangeSetsTheDays: Story = {
+  parameters: { address: "/logs?window=30d" },
+  render: () => (
+    <Harness fetchStub={withCustomView.stub}>
+      <Logs />
+      <AddressProbe />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByRole("button", { name: "Saved views" }));
+    await userEvent.click(await screen().findByRole("button", { name: "Apply October incident" }));
+    await waitFor(() => expect(addressOf(canvasElement).get("window")).toBe("custom"));
+    const address = addressOf(canvasElement);
+    await expect(address.get("since")).toBe("2026-10-01");
+    await expect(address.get("until")).toBe("2026-10-07");
+    await waitFor(() => {
+      const sent = lastLogQuery(withCustomView);
+      expect(sent.get("since")).toBe(new Date(2026, 9, 1).toISOString());
+      expect(sent.get("until")).toBe(new Date(2026, 9, 8).toISOString());
+    });
+  },
+};
+
+const readingACustomRange = recording(
+  scoped(async (input, init) => serverFiltered(MIXED)(input, init)),
+);
+
+/** An address that names a custom range reads the log over those days, and the rail shows them. */
+export const ACustomRangeInTheAddressIsReadAsTheWindow: Story = {
+  parameters: { address: "/logs?window=custom&since=2026-10-01&until=2026-10-07" },
+  render: () => (
+    <Harness fetchStub={readingACustomRange.stub}>
+      <Logs />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => {
+      const sent = lastLogQuery(readingACustomRange);
+      expect(sent.get("since")).toBe(new Date(2026, 9, 1).toISOString());
+      expect(sent.get("until")).toBe(new Date(2026, 9, 8).toISOString());
+    });
+    await userEvent.click(await canvas.findByRole("button", { name: /Filters/ }));
+    await expect(await canvas.findByLabelText("From")).toHaveValue("2026-10-01");
+    await expect(canvas.getByLabelText("To")).toHaveValue("2026-10-07");
   },
 };
 
@@ -3974,10 +4070,15 @@ export const ExportSendsTheFiltersOnScreenAndKeepsTheServersFileName: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     const names: string[] = [];
-    await captureDownload(names, async () => {
-      await userEvent.click(await canvas.findByRole("button", { name: "Export CSV" }));
-      await waitFor(() => expect(names).toHaveLength(1));
-    });
+    // no save dialog in this browser: the file is gathered and downloaded whole
+    await stubSavePicker().within(
+      () =>
+        captureDownload(names, async () => {
+          await userEvent.click(await canvas.findByRole("button", { name: "Export CSV" }));
+          await waitFor(() => expect(names).toHaveLength(1));
+        }),
+      false,
+    );
     await expect(names[0]).toBe("request-log_2026-10-01_to_now_EUR.csv");
     await expectToast(canvasElement, /Export downloaded/, "success");
     const call = logExport.calls.find((c) => c.url.includes("/invocations/export"))!;
@@ -4014,10 +4115,236 @@ export const AFailedExportIsAToastNotAHalfDownload: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     const names: string[] = [];
-    await captureDownload(names, async () => {
-      await userEvent.click(await canvas.findByRole("button", { name: "Export CSV" }));
-      await expectToast(canvasElement, /Could not export request log export/, "error");
-    });
+    await stubSavePicker().within(
+      () =>
+        captureDownload(names, async () => {
+          await userEvent.click(await canvas.findByRole("button", { name: "Export CSV" }));
+          await expectToast(canvasElement, /Could not export request log export/, "error");
+        }),
+      false,
+    );
     await expect(names).toHaveLength(0);
+  },
+};
+
+const MIB = 1_048_576;
+
+/**
+ * A CSV body that arrives in pieces: `chunks` first, then it either ends
+ * (`end`), is cut short the way a dropped connection or the server's row cap
+ * cuts it (`cut`), or stays open (`hang`) until something aborts the request.
+ */
+function chunkedCsv(chunks: Uint8Array[], then: "end" | "cut" | "hang"): Response {
+  let sent = 0;
+  const body = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      const next = chunks[sent];
+      if (next) {
+        sent += 1;
+        controller.enqueue(next);
+      } else if (then === "end") controller.close();
+      else if (then === "cut") controller.error(new TypeError("network error"));
+      else return new Promise<void>(() => undefined);
+    },
+  });
+  return new Response(body, {
+    headers: {
+      "content-type": "text/csv; charset=utf-8",
+      "content-disposition": 'attachment; filename="request-log_server-name.csv"',
+    },
+  });
+}
+
+const exportStub = (answer: () => Response) =>
+  recording(
+    scoped(async (input) =>
+      String(input).includes("/analytics/invocations/export")
+        ? answer()
+        : ((await withLogs(ROWS)(input)) as Response),
+    ),
+  );
+
+/**
+ * Where the browser can write to a chosen file, the export streams there as it
+ * arrives (#3434): the person is asked where to save before anything is
+ * requested, the body is written in the chunks it came in, and the file is
+ * closed once it ended whole. Nothing goes through the Blob download.
+ */
+export const ExportStreamsToTheFileThePersonChose: Story = {
+  render: () => {
+    const stub = exportStub(() =>
+      chunkedCsv(
+        [new TextEncoder().encode("ts,model\r\n"), new TextEncoder().encode("1,a\r\n")],
+        "end",
+      ),
+    );
+    return (
+      <Harness fetchStub={stub.stub}>
+        <Toasted>
+          <Logs />
+        </Toasted>
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const dialog = stubSavePicker();
+    const names: string[] = [];
+    await dialog.within(() =>
+      captureDownload(names, async () => {
+        await userEvent.click(await canvas.findByRole("button", { name: "Export CSV" }));
+        await expectToast(canvasElement, /Export saved to the file you chose/, "success");
+      }),
+    );
+    await expect(dialog.files).toHaveLength(1);
+    const [file] = dialog.files;
+    await expect(file!.suggestedName).toBe("request-log.csv");
+    await expect(savedText(file!)).toBe("ts,model\r\n1,a\r\n");
+    await expect(file!.chunks).toHaveLength(2);
+    await expect(file!.closed).toBe(true);
+    await expect(file!.aborted).toBe(false);
+    // written to the file, not offered as a download
+    await expect(names).toHaveLength(0);
+  },
+};
+
+/** Closing the save dialog is a no: nothing is requested and nothing is said. */
+export const ClosingTheSaveDialogSendsNoExport: Story = {
+  render: () => {
+    const stub = exportStub(() => chunkedCsv([], "end"));
+    return (
+      <Harness fetchStub={stub.stub}>
+        <Toasted>
+          <Logs />
+        </Toasted>
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const dialog = stubSavePicker({ reject: true });
+    await dialog.within(async () => {
+      await userEvent.click(await canvas.findByRole("button", { name: "Export CSV" }));
+      await waitFor(() => expect(canvas.getByRole("button", { name: "Export CSV" })).toBeEnabled());
+    });
+    await expect(dialog.files).toHaveLength(0);
+    await expect(canvas.queryByRole("alert", { name: /export/i })).toBeNull();
+    await expect(canvas.queryByText(/Export downloaded/)).toBeNull();
+    // closing the dialog is a no, not a cancelled export: nothing to announce
+    await expect(canvas.queryByText(/Export cancelled/)).toBeNull();
+  },
+};
+
+/**
+ * A long export shows how much has arrived and can be stopped. Cancel ends the
+ * request and discards the half-written file, and says so.
+ */
+export const ACancelledExportKeepsNoPartialFile: Story = {
+  render: () => {
+    const stub = exportStub(() => chunkedCsv([new Uint8Array(Math.round(1.5 * MIB))], "hang"));
+    return (
+      <Harness fetchStub={stub.stub}>
+        <Toasted>
+          <Logs />
+        </Toasted>
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const dialog = stubSavePicker();
+    await dialog.within(async () => {
+      await userEvent.click(await canvas.findByRole("button", { name: "Export CSV" }));
+      await waitFor(() => expect(canvas.getByText("1.5 MB received")).toBeVisible());
+      await userEvent.click(canvas.getByRole("button", { name: /Cancel the request log export/ }));
+      await expectToast(canvasElement, /Export cancelled/, "success");
+    });
+    const [file] = dialog.files;
+    await expect(file!.aborted).toBe(true);
+    await expect(file!.closed).toBe(false);
+    // and the empty file the dialog made is not left behind
+    await expect(file!.removed).toBe(true);
+    await expect(await canvas.findByRole("button", { name: "Export CSV" })).toBeEnabled();
+  },
+};
+
+/**
+ * A body cut short, at the row or time cap or by a dropped connection (#3434),
+ * is its own message and never a finished file: the half-written file is
+ * discarded, in the Blob path too.
+ */
+export const ATruncatedExportSaysSoAndKeepsNoFile: Story = {
+  render: () => {
+    const stub = exportStub(() => chunkedCsv([new TextEncoder().encode("ts,model\r\n")], "cut"));
+    return (
+      <Harness fetchStub={stub.stub}>
+        <Toasted>
+          <Logs />
+        </Toasted>
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const dialog = stubSavePicker();
+    const names: string[] = [];
+    await dialog.within(() =>
+      captureDownload(names, async () => {
+        await userEvent.click(await canvas.findByRole("button", { name: "Export CSV" }));
+        await expectToast(canvasElement, /The export stopped before its last row/, "error");
+      }),
+    );
+    await expect(dialog.files[0]!.aborted).toBe(true);
+    await expect(dialog.files[0]!.closed).toBe(false);
+    await expect(dialog.files[0]!.removed).toBe(true);
+    await expect(names).toHaveLength(0);
+    // and the Blob path, which must not hand over what it gathered
+    await stubSavePicker().within(
+      () =>
+        captureDownload(names, async () => {
+          await userEvent.click(canvas.getByRole("button", { name: "Export CSV" }));
+          await waitFor(() =>
+            expect(canvas.getAllByText(/The export stopped before its last row/)).toHaveLength(2),
+          );
+        }),
+      false,
+    );
+    await expect(names).toHaveLength(0);
+  },
+};
+
+/**
+ * The export gate refuses an export past its concurrency bound with `429` and
+ * `Retry-After` (#3360, #3434): the toast says to wait, and for how long, in
+ * words and not as a bare failure.
+ */
+export const ABusyExportGateAsksToWait: Story = {
+  render: () => {
+    const stub = exportStub(
+      () =>
+        new Response(
+          JSON.stringify({ error: { message: "you already have a request log export running" } }),
+          { status: 429, headers: { "content-type": "application/json", "retry-after": "15" } },
+        ),
+    );
+    return (
+      <Harness fetchStub={stub.stub}>
+        <Toasted>
+          <Logs />
+        </Toasted>
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const dialog = stubSavePicker();
+    await dialog.within(async () => {
+      await userEvent.click(await canvas.findByRole("button", { name: "Export CSV" }));
+      await expectToast(canvasElement, /Try again in about 15 seconds/, "error");
+    });
+    await expectToast(canvasElement, /Could not export request log export/, "error");
+    // the file chosen for an export that never started is not left behind
+    await expect(dialog.files[0]!.aborted).toBe(true);
+    await expect(dialog.files[0]!.removed).toBe(true);
   },
 };

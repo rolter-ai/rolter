@@ -66,9 +66,14 @@ describe("validateVariants", () => {
     expect(result.tooMany).toBe(false);
   });
 
-  it("refuses a variant weight of 0 (only an import writes one), negative or not whole", () => {
-    const zero = { ...newVariant("a", "p"), weight: "0" };
-    expect(validateVariants([zero]).byVariant.get(zero.key)?.weight).toBe("weight");
+  it("accepts a variant weight of 0, and a set of only zeroes (#3427)", () => {
+    const a = { ...newVariant("a", "p"), weight: "0" };
+    const b = { ...newVariant("b", "p"), weight: "0" };
+    expect(validateVariants([a]).count).toBe(0);
+    expect(validateVariants([a, b]).count).toBe(0);
+  });
+
+  it("refuses a negative or fractional variant weight", () => {
     const negative = { ...newVariant("c", "p"), weight: "-1" };
     expect(validateVariants([negative]).byVariant.get(negative.key)?.weight).toBe("weight");
     const fraction = { ...newVariant("d", "p"), weight: "1.5" };
