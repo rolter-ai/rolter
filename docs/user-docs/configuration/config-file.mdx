@@ -1856,7 +1856,7 @@ A vendor-neutral hook to a self-hosted semantic guardrail service, such as Guard
 </ParamField>
 
 <ParamField path="max_body_bytes" default="65536" type="integer">
-  The most content forwarded to the service, in bytes. Oversized content is sent as a truncated preview with `truncated: true`. It must be greater than zero.
+  The most content forwarded to the service, in bytes. Oversized content is sent as a truncated preview with `truncated: true`. It must be greater than zero. With `kind = "local"`, it is the most text the local classifier reads: the first quarter and the last three quarters of a longer one.
 </ParamField>
 
 <ParamField path="auth" type="table">
@@ -1885,6 +1885,10 @@ Several guardrail providers side by side, and the scoped policies that pick whic
 
 <ParamField path="local_concurrency" type="integer">
   How many [local classifier](/security/semantic-guard-policies#local-classifier) calls one gateway runs at once, across all its `local` providers, from 1 to 4096. Unset, it is half the CPUs the gateway process may use, at least one. Under a control plane the gateways take it from the control plane's file. A call that waits longer than its provider's `timeout_ms` for a slot follows that provider's `failure_mode`, counted as `overloaded`.
+</ParamField>
+
+<ParamField path="model_root" type="string">
+  An absolute directory every `local` provider's `model_path` must lie under. When it is set, the gateway resolves `model_path` in full (`..` and every symlink, in the file or in a directory on the way) and reads it only if the result is a regular file under the resolved root; anything else is not loaded, is logged with the reason, and its provider follows its `failure_mode`. Unset, a path may point anywhere on the gateway host. It is the gateway's own setting: read from the gateway's file at start (a change takes a restart), never sent by a control plane, so set it on each gateway. See [local classifier](/security/semantic-guard-policies#local-classifier).
 </ParamField>
 
 <ParamField path="policies" type="array of tables">
@@ -1936,7 +1940,7 @@ The same keys as [`[guardrail_webhook]`](#guardrail_webhook), one table per prov
 </ParamField>
 
 <ParamField path="max_body_bytes" default="65536" type="integer">
-  The most content forwarded, in bytes.
+  The most content forwarded, in bytes. A `local` provider reads at most this much text: the first quarter and the last three quarters of a longer one.
 </ParamField>
 
 <ParamField path="auth" type="table">

@@ -301,6 +301,8 @@ Variants let you run **A/B tests**, **canary deployments**, and **per-key traffi
   </Step>
 </Steps>
 
+Variants apply to every request that names the route, audio uploads to `/v1/audio/transcriptions` and `/v1/audio/translations` included: an upload samples a variant the same way and is logged with it. The upload is forwarded as it came, so a variant's `params` do not reach it.
+
 Each variant can carry its own `params` table. Variant params **layer over** the route-level params (variant wins on collision), and the route's `param_policy` governs both.
 
 ```toml rolter.toml
