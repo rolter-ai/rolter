@@ -32,6 +32,8 @@ pub fn boundary(content_type: &str) -> Option<String> {
 /// Extract the value of a named text field from a multipart body. Returns
 /// `None` when the field is absent, has a `filename` (i.e. is a file part, not
 /// a text field), or the body is malformed. Values are decoded as UTF-8.
+/// The handler reads its fields together through [`text_fields`].
+#[cfg(test)]
 pub fn text_field(body: &[u8], boundary: &str, name: &str) -> Option<String> {
     let [value] = text_fields(body, boundary, [name]);
     value
