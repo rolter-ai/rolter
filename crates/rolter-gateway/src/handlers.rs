@@ -1729,6 +1729,63 @@ impl<'a> RequestCtx<'a> {
         ))
     }
 
+    /// Consult the request-stage plugins of `stage` (`pre_route` or
+    /// `pre_upstream`) for this key's org and project, in position order
+    /// (#509). Block rejects; transform rewrites `parsed` in place, and the
+    /// stage passes on whether it changed. `route` is the resolved route's
+    /// model, empty before one is resolved. The calls made are noted for
+    /// every row the request leaves (#2243).
+    async fn request_plugins(
+        &self,
+        stage: rolter_core::PluginStage,
+        route: &str,
+        parsed: &mut Value,
+    ) -> Stage<bool> {
+        let scope = self.scope();
+        let plugins = self.snap.plugins.for_stage(
+            stage,
+            &scope.org,
+            (!scope.project.is_empty()).then_some(scope.project.as_str()),
+        );
+        if plugins.is_empty() {
+            return Stage::Next(false);
+        }
+        let state = self.state();
+        let tenant = plugin_tenant(scope);
+        let mut events = Vec::new();
+        let outcome = crate::plugin_dispatch::dispatch(
+            &plugins,
+            stage,
+            &state.metrics,
+            &state.side_client,
+            self.model(),
+            route,
+            self.refuse.request_id,
+            &tenant,
+            &mut events,
+            parsed,
+        )
+        .await;
+        self.refuse.note_plugin_events(events);
+        match outcome {
+            crate::plugin_dispatch::DispatchOutcome::Allow(content) => {
+                let transformed = content != *parsed;
+                *parsed = content;
+                Stage::Next(transformed)
+            }
+            crate::plugin_dispatch::DispatchOutcome::Block(reason) => Stage::Answer(
+                self.refused(
+                    crate::error::ApiError::new(
+                        StatusCode::BAD_REQUEST,
+                        reason.unwrap_or_else(|| "request blocked by plugin".to_string()),
+                    )
+                    .with_code("plugin_blocked")
+                    .into_response(),
+                ),
+            ),
+        }
+    }
+
     /// Answer with `refusal`, logged, when there is one; else go on.
     fn refuse_if(&self, refusal: Option<Response>) -> Stage<()> {
         match refusal {
@@ -1805,49 +1862,12 @@ async fn proxy(
     proceed!(req.admit_budget().await);
 
     // pre_route plugins: consult before the route is resolved, while only the
-    // key's scope and raw request are known. Block rejects; transform rewrites
-    // `parsed` in place. Org/project-scoped, ordered by position (#509)
+    // key's scope and raw request are known (#509)
     let trace_id = request_id.as_str();
-    let pre_route_plugins = snap.plugins.for_stage(
-        rolter_core::PluginStage::PreRoute,
-        &scope.org,
-        (!scope.project.is_empty()).then_some(scope.project.as_str()),
+    let pre_route_transformed = proceed!(
+        req.request_plugins(rolter_core::PluginStage::PreRoute, "", &mut parsed)
+            .await
     );
-    let mut pre_route_transformed = false;
-    if !pre_route_plugins.is_empty() {
-        let tenant = plugin_tenant(&scope);
-        let mut events = Vec::new();
-        let outcome = crate::plugin_dispatch::dispatch(
-            &pre_route_plugins,
-            rolter_core::PluginStage::PreRoute,
-            &state.metrics,
-            &state.side_client,
-            &model,
-            "", // no route resolved yet at this stage
-            trace_id,
-            &tenant,
-            &mut events,
-            &parsed,
-        )
-        .await;
-        refuse.note_plugin_events(events);
-        match outcome {
-            crate::plugin_dispatch::DispatchOutcome::Allow(content) => {
-                pre_route_transformed = content != parsed;
-                parsed = content;
-            }
-            crate::plugin_dispatch::DispatchOutcome::Block(reason) => {
-                return refuse.log(
-                    crate::error::ApiError::new(
-                        StatusCode::BAD_REQUEST,
-                        reason.unwrap_or_else(|| "request blocked by plugin".to_string()),
-                    )
-                    .with_code("plugin_blocked")
-                    .into_response(),
-                );
-            }
-        }
-    }
 
     // throughput cap: reject before forwarding when a matching request/token
     // window is already at capacity (admission also counts the request)
@@ -2208,46 +2228,14 @@ async fn proxy(
     // forwarding. Same block/transform/fail-open-or-closed contract as
     // pre_route, run in the same stage as the guardrail webhook above so a
     // slow plugin shows up here rather than inside the upstream leg (#509)
-    let mut plugin_transformed = false;
-    let pre_upstream_plugins = snap.plugins.for_stage(
-        rolter_core::PluginStage::PreUpstream,
-        &scope.org,
-        (!scope.project.is_empty()).then_some(scope.project.as_str()),
-    );
-    if !pre_upstream_plugins.is_empty() {
-        let tenant = plugin_tenant(&scope);
-        let mut events = Vec::new();
-        let outcome = crate::plugin_dispatch::dispatch(
-            &pre_upstream_plugins,
+    let plugin_transformed = proceed!(
+        req.request_plugins(
             rolter_core::PluginStage::PreUpstream,
-            &state.metrics,
-            &state.side_client,
-            &model,
             &entry.route.model,
-            trace_id,
-            &tenant,
-            &mut events,
-            &parsed,
+            &mut parsed,
         )
-        .await;
-        refuse.note_plugin_events(events);
-        match outcome {
-            crate::plugin_dispatch::DispatchOutcome::Allow(content) => {
-                plugin_transformed = content != parsed;
-                parsed = content;
-            }
-            crate::plugin_dispatch::DispatchOutcome::Block(reason) => {
-                return refuse.log(
-                    crate::error::ApiError::new(
-                        StatusCode::BAD_REQUEST,
-                        reason.unwrap_or_else(|| "request blocked by plugin".to_string()),
-                    )
-                    .with_code("plugin_blocked")
-                    .into_response(),
-                );
-            }
-        }
-    }
+        .await
+    );
     // what the plugin stages did, for the rows this request leaves (#2243)
     let plugin_events = refuse.plugin_events();
     guardrails_pre_stage.record(
