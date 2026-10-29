@@ -3374,16 +3374,9 @@ async fn proxy_multipart(
 
     let request_id = request_id.as_str().to_string();
     let trace_id = crate::trace::request_trace_id(&headers);
-    let (vk_id, org_id, team_id, project_id) = (
-        scope.key.clone(),
-        scope.org.clone(),
-        scope.team.clone(),
-        scope.project.clone(),
-    );
     // the trace backend needs the same tenant identity the request log carries,
     // so a collector can route this org's spans to this org's destination (#836)
-    crate::trace::record_tenant(&org_id, &team_id, &project_id);
-    let (business_unit_id, customer_id) = key_attribution(vk.as_ref());
+    crate::trace::record_tenant(&scope.org, &scope.team, &scope.project);
     let token_recorder = TokenRecorder::new(
         state.rate_limiter.clone(),
         snap.rate_limits.clone(),
@@ -3444,7 +3437,26 @@ async fn proxy_multipart(
         capture: payload_capture_enabled(&snap.logging.payload_capture, &model, &scope.key),
     });
 
+    // who asked for what, as on the chat path; an upload's rows carry no
+    // request-stage guardrail or plugin events, since none ran
+    let ident = RequestLogCtx {
+        request_id,
+        trace_id,
+        vk_id: scope.key.clone(),
+        org_id: scope.org.clone(),
+        team_id: scope.team.clone(),
+        project_id: scope.project.clone(),
+        business_unit_id: scope.business_unit.clone(),
+        customer_id: scope.customer.clone(),
+        model,
+        route_namespace: Some(route_namespace),
+        sample_rate: snap.logging.sample_rate,
+        started,
+        guardrail_events: Vec::new(),
+        plugin_events: Vec::new(),
+    };
     let recorder = SpendRecorder::new(state.budgets.clone(), snap.budgets.clone(), scope);
+    let model = ident.model.as_str();
 
     let token_ids = parse_vllm_token_ids(&headers);
     let ctx = RouteContext::new()
@@ -3452,7 +3464,7 @@ async fn proxy_multipart(
         .with_token_ids(token_ids.as_deref())
         // see the chat path: an adapter only exists when the request addresses
         // something other than the route's own model
-        .with_adapter((model != entry.route.model).then_some(model.as_str()));
+        .with_adapter((model != entry.route.model).then_some(model));
     // trace context plus any client headers the operator allowlisted (#564)
     let trace_ctx =
         crate::trace::outbound_headers(&headers, &state.forwarder.forwarded_header_names());
@@ -3467,21 +3479,8 @@ async fn proxy_multipart(
         state.log.clone(),
         started,
         RequestLog {
-            ts: crate::logging::started_at(started),
-            seq: crate::logging::start_seq(started),
-            request_id: request_id.clone(),
-            trace_id: trace_id.clone(),
-            virtual_key_id: vk_id.clone(),
-            org_id: org_id.clone(),
-            team_id: team_id.clone(),
-            project_id: project_id.clone(),
-            business_unit_id: business_unit_id.clone(),
-            customer_id: customer_id.clone(),
-            model: model.clone(),
             stream: u8::from(stream),
-            route_namespace: Some(route_namespace.clone()),
-            sample_rate: snap.logging.sample_rate,
-            ..Default::default()
+            ..ident.clone().row()
         },
     );
 
@@ -3493,7 +3492,7 @@ async fn proxy_multipart(
         state: &state,
         snap: &snap,
         entry,
-        model: &model,
+        model,
         ctx: &ctx,
         payload: ForwardPayload::Multipart {
             body: &body,
@@ -3504,193 +3503,91 @@ async fn proxy_multipart(
         trace_headers: &trace_headers,
         key_meta: vk.as_ref(),
     };
-    let ForwardOutcome {
-        outcome,
-        last_provider,
-        last_target,
-        last_attempt_recorded,
-        last_error,
-        last_status,
-        mut inflight_guard,
-        variant: chosen_variant,
-        attempts,
-        fallback_reason,
-        ..
-    } = if entry.route.has_variants() {
-        forward_variants(&fwd, &mut cancel).await
-    } else {
-        forward_classic(&fwd, &mut cancel).await
-    };
+    let mut out = forward(&fwd, &mut cancel).await;
     // the slot rides on the guard, as on the chat path
-    if let Some(guard) = inflight_guard.as_mut() {
+    if let Some(guard) = out.inflight_guard.as_mut() {
         guard.hold_route_permit(route_permit.take());
     }
 
-    let capture_payloads = payload_capture_enabled(&snap.logging.payload_capture, &model, &vk_id);
+    let capture_payloads =
+        payload_capture_enabled(&snap.logging.payload_capture, model, &ident.vk_id);
     // as on the chat path: from here every arm answers the caller and logs its
     // own row, so the guard must not add a phantom disconnect on top
     cancel.disarm();
-    match outcome {
-        Some((response, status, is_sse)) => {
-            // the stream the caller asked for came back as one: the legs that
-            // cannot read it are those the operator let a stream pass (the
-            // rejecting settings refused it before dialling), as on the chat
-            // path. an event stream the request did not announce keeps them,
-            // and `stream_response` withholds it (#3471)
-            let (output_guard, post_response_plugins, pii_leg) = if is_sse && stream {
-                (None, None, None)
-            } else {
-                (output_guard, post_response_plugins, pii_leg)
-            };
-            let log = RequestLog {
-                ts: crate::logging::started_at(started),
-                seq: crate::logging::start_seq(started),
-                request_id,
-                trace_id,
-                virtual_key_id: vk_id,
-                org_id,
-                team_id,
-                project_id,
-                business_unit_id,
-                customer_id,
-                model,
-                route_namespace: Some(route_namespace.clone()),
-                // the org that owns the provider in the snapshot that served
-                // the request; the row keeps the runtime id until it is queued
-                provider_org_id: snap.provider_label(&last_provider).1.to_string(),
-                provider: last_provider,
-                target: last_target,
-                variant: chosen_variant.clone(),
-                status,
-                upstream_status: status,
-                attempts,
-                fallback_reason,
-                stream: u8::from(stream),
-                unit_basis: crate::unit_billing::UnitBasis::for_multipart(path),
-                capture_payloads,
-                payload_max_bytes: snap.logging.payload_capture.max_bytes,
-                payload_redactor: snap.payload_redactor.clone(),
-                request_payload: if capture_payloads {
-                    crate::logging::capture_payload(
-                        &body,
-                        snap.logging.payload_capture.max_bytes,
-                        &snap.payload_redactor,
-                    )
-                } else {
-                    String::new()
-                },
-                sample_rate: snap.logging.sample_rate,
-                ..Default::default()
-            };
-            stream_response(
-                response,
-                is_sse,
-                rolter_proxy::TranslationPlan::passthrough(),
-                Accounting {
-                    started,
-                    sink: state.log.clone(),
-                    price,
-                    log,
-                    recorder,
-                    token_recorder,
-                    inflight_guard,
-                    genai_span: None,
-                },
-                None,
-                DeliveryPolicy {
-                    output: output_guard.as_ref(),
-                    semantic: semantic_leg,
-                    plugins: post_response_plugins.as_ref(),
-                    pii: pii_leg.as_ref(),
-                    transcript: true,
-                },
-                None,
+    let Some((response, status, is_sse)) = out.outcome.take() else {
+        return unanswered(&state, &snap, ident, out, stream);
+    };
+    // the stream the caller asked for came back as one: the legs that cannot
+    // read it are those the operator let a stream pass (the rejecting
+    // settings refused it before dialling), as on the chat path. an event
+    // stream the request did not announce keeps them, and `stream_response`
+    // withholds it (#3471)
+    let (output_guard, post_response_plugins, pii_leg) = if is_sse && stream {
+        (None, None, None)
+    } else {
+        (output_guard, post_response_plugins, pii_leg)
+    };
+    let ForwardOutcome {
+        last_provider,
+        last_target,
+        variant,
+        attempts,
+        fallback_reason,
+        inflight_guard,
+        ..
+    } = out;
+    let log = RequestLog {
+        // the org that owns the provider in the snapshot that served the
+        // request; the row keeps the runtime id until it is queued
+        provider_org_id: snap.provider_label(&last_provider).1.to_string(),
+        provider: last_provider,
+        target: last_target,
+        variant,
+        status,
+        upstream_status: status,
+        attempts,
+        fallback_reason,
+        stream: u8::from(stream),
+        unit_basis: crate::unit_billing::UnitBasis::for_multipart(path),
+        capture_payloads,
+        payload_max_bytes: snap.logging.payload_capture.max_bytes,
+        payload_redactor: snap.payload_redactor.clone(),
+        request_payload: if capture_payloads {
+            crate::logging::capture_payload(
+                &body,
+                snap.logging.payload_capture.max_bytes,
+                &snap.payload_redactor,
             )
-            .await
-        }
-        None => {
-            // as on the chat path: one row on every arm (#2807)
-            let no_target = last_error.is_none() && last_status.is_none();
-            let (response, status, error, upstream_status) = match (last_error, last_status) {
-                (Some(message), _) => {
-                    let response = upstream_error_response(&message);
-                    // what the caller was given, which is not always a 502: a
-                    // full provider queue answers 429 or 503
-                    let status = response.status().as_u16();
-                    (
-                        response,
-                        status,
-                        rolter_core::redact::redact_urls_in_text(&message),
-                        0,
-                    )
-                }
-                (None, Some(failed)) => {
-                    let answer = upstream_failure::exhausted(
-                        &model,
-                        &failed,
-                        attempts,
-                        snap.cooldown.enabled(),
-                    );
-                    (answer.response, answer.status, answer.error, failed.status)
-                }
-                (None, None) => (
-                    error_json(StatusCode::SERVICE_UNAVAILABLE, "no target selected"),
-                    StatusCode::SERVICE_UNAVAILABLE.as_u16(),
-                    "no target selected".to_string(),
-                    0,
-                ),
-            };
-            let row = RequestLog {
-                ts: crate::logging::started_at(started),
-                seq: crate::logging::start_seq(started),
-                request_id,
-                trace_id,
-                virtual_key_id: vk_id,
-                org_id,
-                team_id,
-                project_id,
-                business_unit_id,
-                customer_id,
-                model,
-                route_namespace: Some(route_namespace.clone()),
-                provider_org_id: if no_target {
-                    String::new()
-                } else {
-                    snap.provider_label(&last_provider).1.to_string()
-                },
-                provider: if no_target {
-                    String::new()
-                } else {
-                    last_provider
-                },
-                target: if no_target {
-                    String::new()
-                } else {
-                    last_target
-                },
-                variant: chosen_variant,
-                status,
-                upstream_status,
-                attempts,
-                fallback_reason,
-                stream: u8::from(stream),
-                latency_ms: started.elapsed().as_millis() as u32,
-                error,
-                sample_rate: snap.logging.sample_rate,
-                ..Default::default()
-            };
-            if no_target {
-                state.log.log_refusal(row);
-            } else if last_attempt_recorded {
-                // as on the chat path: a superseded attempt is already counted
-                state.log.log_recorded_attempt(row);
-            } else {
-                state.metrics.upstream_errors_total.fetch_add(1, Relaxed);
-                state.log.log(row);
-            }
-            response
-        }
-    }
+        } else {
+            String::new()
+        },
+        ..ident.row()
+    };
+    stream_response(
+        response,
+        is_sse,
+        rolter_proxy::TranslationPlan::passthrough(),
+        Accounting {
+            started,
+            sink: state.log.clone(),
+            price,
+            log,
+            recorder,
+            token_recorder,
+            inflight_guard,
+            genai_span: None,
+        },
+        None,
+        DeliveryPolicy {
+            output: output_guard.as_ref(),
+            semantic: semantic_leg,
+            plugins: post_response_plugins.as_ref(),
+            pii: pii_leg.as_ref(),
+            transcript: true,
+        },
+        None,
+    )
+    .await
 }
 
 /// The result of a forward loop, threaded back into the shared logging/response
@@ -5823,6 +5720,11 @@ pub(crate) fn unpriced_admission(
 /// Governance attribution (`business_unit_id`, `customer_id`) carried by the
 /// authenticated key. Config-defined and anonymous keys report neither, so the
 /// log row falls back to tenancy attribution alone (#539).
+///
+/// The pipelines read the same pair off the request's [`ScopeIds`], which
+/// [`request_scope`] fills from the key; this stays for the unit tests that
+/// pin what a key reports.
+#[cfg(test)]
 fn key_attribution(vk: Option<&crate::state::KeyMeta>) -> (String, String) {
     vk.map(|v| (v.business_unit_id.clone(), v.customer_id.clone()))
         .unwrap_or_default()
