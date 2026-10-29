@@ -398,6 +398,81 @@ export const ACustomRangeInTheAddressIsRead: Story = {
   },
 };
 
+const NAMED_CALLERS: SavingsReport = {
+  ...REPORT,
+  spend: {
+    ...REPORT.spend,
+    by_caller: [
+      {
+        project_id: "project-1",
+        virtual_key_id: "vk-1",
+        requests: 9000,
+        cost_usd: 400,
+        unpriced_requests: 0,
+      },
+      // a project and a key the account's lists do not hold: deleted, or not readable
+      {
+        project_id: "project-gone",
+        virtual_key_id: "vk-gone",
+        requests: 3000,
+        cost_usd: 80.25,
+        unpriced_requests: 300,
+      },
+    ],
+  },
+};
+
+/**
+ * The spend-by-caller table names the project and the key from the lists the
+ * pickers already load (#3408), and a caller those lists do not hold stays an
+ * id, so a deleted key or a project the account cannot read is still shown.
+ */
+export const SpendByCallerNamesTheProjectAndKey: Story = {
+  render: () => (
+    <Harness
+      fetchStub={routes([
+        ["/analytics/savings", () => NAMED_CALLERS],
+        [
+          "/virtual-keys",
+          () => [
+            {
+              id: "vk-1",
+              project_id: "project-1",
+              name: "ci-runner",
+              key_prefix: "rk_live_ab12",
+              models: [],
+              providers: [],
+              disabled: false,
+            },
+          ],
+        ],
+        ["/models", () => [{ model: "chat", strategy: "weighted", targets: 1 }]],
+      ])}
+    >
+      <Savings />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByTestId("savings-limits");
+    await expectListTable(canvasElement, "Spend by caller (50 costliest)");
+    const table = canvas.getByRole("table", { name: "Spend by caller (50 costliest)" });
+    const rows = within(table).getAllByRole("row");
+    // header, then one row per caller
+    const [named, unnamed] = [rows[1]!, rows[2]!];
+    // the names arrive with the pickers' lists, a step after the report
+    await expect(await within(named).findByRole("cell", { name: "Gateway" })).toBeVisible();
+    await expect(
+      await within(named).findByRole("cell", { name: "ci-runner (rk_live_ab12…)" }),
+    ).toBeVisible();
+    await expect(within(named).queryByText("project-1")).toBeNull();
+    await expect(within(named).queryByText("vk-1")).toBeNull();
+    // the fallback is the id as the report sent it
+    await expect(within(unnamed).getByRole("cell", { name: "project-gone" })).toBeVisible();
+    await expect(within(unnamed).getByRole("cell", { name: "vk-gone" })).toBeVisible();
+  },
+};
+
 /** a route name is unique per project only: the picker offers it once, not once per project */
 export const ARouteNameSharedByTwoProjectsIsOfferedOnce: Story = {
   render: () => (

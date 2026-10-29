@@ -181,6 +181,11 @@ export default function Savings() {
     return all.map((name) => ({ value: name, label: name }));
   };
   const projects = orgScope.byTeam.flatMap((entry) => entry.projects);
+  // the lists the pickers above are drawn from also name the callers in the
+  // spend table. a caller outside them (a project or key the account cannot
+  // read, or one since deleted) stays an id there (#3408)
+  const projectNames = new Map(projects.map((project) => [project.id, project.name]));
+  const keyNames = new Map((keys.data ?? []).map((k) => [k.id, keyLabel(k)]));
   const unavailable = report.error instanceof AnalyticsUnavailableError ? report.error : null;
 
   return (
@@ -251,7 +256,7 @@ export default function Savings() {
               { value: "", label: t("pages.savings.allKeys") },
               ...(keys.data ?? []).map((k) => ({
                 value: k.id,
-                label: k.name ? `${k.name} (${k.key_prefix}…)` : `${k.key_prefix}…`,
+                label: keyLabel(k),
               })),
               ...(filters.key && !(keys.data ?? []).some((k) => k.id === filters.key)
                 ? [{ value: filters.key, label: filters.key }]
@@ -302,7 +307,7 @@ export default function Savings() {
           }
         />
       ) : report.data ? (
-        <Report report={report.data} />
+        <Report report={report.data} projectNames={projectNames} keyNames={keyNames} />
       ) : null}
     </PageBody>
   );
@@ -438,7 +443,36 @@ function ThresholdsForm({
   );
 }
 
-function Report({ report }: { report: SavingsReport }) {
+/** a key as the picker and the spend table name it: its name with the prefix, or the prefix alone */
+function keyLabel(k: { name?: string | null; key_prefix: string }): string {
+  return k.name ? `${k.name} (${k.key_prefix}…)` : `${k.key_prefix}…`;
+}
+
+/**
+ * A caller's project or key: its name when the screen's lists hold it, else
+ * the id as it came, in the id's own mono type. The id stays in the title of a
+ * named cell, so the row can still be matched to the log.
+ */
+function CallerCell({ id, names }: { id: string; names: ReadonlyMap<string, string> }) {
+  const name = names.get(id);
+  return name ? (
+    <ListCell className="truncate text-sm" title={id}>
+      {name}
+    </ListCell>
+  ) : (
+    <ListCell className="truncate font-mono text-xs">{id || "—"}</ListCell>
+  );
+}
+
+function Report({
+  report,
+  projectNames,
+  keyNames,
+}: {
+  report: SavingsReport;
+  projectNames: ReadonlyMap<string, string>;
+  keyNames: ReadonlyMap<string, string>;
+}) {
   const { t } = useTranslation();
   const fmt = useFormat();
   const money = (v: number) => fmt.currency(v, report.currency);
@@ -506,8 +540,8 @@ function Report({ report }: { report: SavingsReport }) {
             </ListHeader>
             {spend.by_caller.map((row) => (
               <ListRow key={`${row.project_id}/${row.virtual_key_id}`} grid={CALLER_GRID}>
-                <ListCell className="truncate font-mono text-xs">{row.project_id}</ListCell>
-                <ListCell className="truncate font-mono text-xs">{row.virtual_key_id}</ListCell>
+                <CallerCell id={row.project_id} names={projectNames} />
+                <CallerCell id={row.virtual_key_id} names={keyNames} />
                 <ListCell className="text-right font-mono text-xs">{count(row.requests)}</ListCell>
                 <ListCell className="text-right font-mono text-xs">{money(row.cost_usd)}</ListCell>
                 <ListCell className="text-right font-mono text-xs">
