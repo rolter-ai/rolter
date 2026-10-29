@@ -30,6 +30,11 @@
 //!   stale value in a file must not clobber it.
 //! - a provider's **slug**, its stable identity once assigned.
 //!
+//! One exception goes the other way: an import never makes an existing org
+//! stricter. `[[mcp_manifest_enforcement]]` with `enforce = false` relaxes the
+//! org the import targets, and `enforce = true` never raises one that exists
+//! (#3398).
+//!
 //! Rows present in the database but absent from the file are not deleted: the
 //! file is the desired state for what it names, not an exhaustive inventory.
 //! The one exception is a route's weighted variants (#391): a route whose file
@@ -96,7 +101,9 @@ pub struct SeedArgs {
     /// bootstrap rolter.toml to import providers/routes from. The file is the
     /// desired state: re-importing an edited file updates the rows it already
     /// created. Never overwrites a credential sealed through the dashboard,
-    /// and never deletes rows the file no longer mentions
+    /// and never deletes rows the file no longer mentions. The one thing it never
+    /// does is make an existing org stricter: `[[mcp_manifest_enforcement]]`
+    /// relaxes the target org with `enforce = false` and never raises it
     #[arg(long)]
     pub import: Option<PathBuf>,
 }
@@ -945,7 +952,7 @@ async fn import_config(
     import_provider_groups(pool, org_id, project_id, config, &provider_ids).await?;
     import_model_prices(pool, config).await?;
     import_caps(pool, config).await?;
-    import_mcp_manifest_enforcement(pool, config).await?;
+    import_mcp_manifest_enforcement(pool, org_id, config).await?;
     import_prompt_templates(pool, org_id, project_id, config).await?;
 
     Ok(())
@@ -1268,6 +1275,52 @@ async fn resolve_within(
     })
 }
 
+/// Apply the `[[mcp_manifest_enforcement]]` markers of the file (#3398).
+///
+/// An exception to "the file is the desired state": an import never makes an
+/// existing organization stricter. Only `enforce = false` writes anything, and
+/// it relaxes the organization the import targets (`--org-slug`), never another
+/// one the file happens to name, so a staging file cannot loosen the same-named
+/// organization of a database it was not aimed at. `enforce = true` is what a
+/// new organization already has and is left alone on one that exists. Every
+/// entry for another organization is skipped with a warning, and a relaxation is
+/// logged. A repeated import writes nothing, so it bumps no config version.
+async fn import_mcp_manifest_enforcement(
+    pool: &PgPool,
+    org_id: Uuid,
+    config: &GatewayConfig,
+) -> anyhow::Result<()> {
+    let entries = &config.mcp_manifest_enforcement;
+    if entries.is_empty() {
+        return Ok(());
+    }
+    let (slug, strict): (String, bool) =
+        sqlx::query_as("select slug, mcp_enforce_manifests from orgs where id = $1")
+            .bind(org_id)
+            .fetch_one(pool)
+            .await?;
+    for entry in entries.iter().filter(|entry| entry.org != slug) {
+        tracing::warn!(
+            org = %entry.org,
+            target = %slug,
+            "skipping an mcp_manifest_enforcement entry for an organization this import does not target"
+        );
+    }
+    let relax = entries
+        .iter()
+        .any(|entry| entry.org == slug && !entry.enforce);
+    // the update trigger is a statement trigger, so it fires for an update that
+    // matches no row: write only when something changes
+    if relax && strict {
+        sqlx::query("update orgs set mcp_enforce_manifests = false where id = $1")
+            .bind(org_id)
+            .execute(pool)
+            .await?;
+        tracing::info!(org = %slug, "relaxed MCP manifest enforcement as the import file says");
+    }
+    Ok(())
+}
+
 /// Upsert `[[budgets]]` and `[[rate_limits]]` (#1312).
 ///
 /// A cap's identity is its scope plus, for a budget, its window; two caps that
@@ -1280,41 +1333,6 @@ async fn resolve_within(
 /// file does not mention are not deleted. A value outside what the column or
 /// the gateway can hold fails the import before it writes anything, as a
 /// negative price does.
-/// Apply the `[[mcp_manifest_enforcement]]` markers of the file (#3398).
-///
-/// An import never makes an existing organization stricter, so only
-/// `enforce = false` writes anything: it relaxes the organization the entry
-/// names, which is how a re-import into a database whose organizations are
-/// created anew keeps the ones that were grandfathered. `enforce = true` is the
-/// default of a new organization and is left alone on an existing one. An
-/// organization the database does not have is skipped, as an unresolved cap is,
-/// and a repeated import writes nothing, so it bumps no config version.
-async fn import_mcp_manifest_enforcement(
-    pool: &PgPool,
-    config: &GatewayConfig,
-) -> anyhow::Result<()> {
-    let entries = &config.mcp_manifest_enforcement;
-    let relax: Vec<&str> = entries
-        .iter()
-        .filter(|entry| !entry.enforce)
-        .map(|entry| entry.org.as_str())
-        .collect();
-    // the update trigger is a statement trigger, so it fires for an update that
-    // matches no row: look first, and write only when something changes
-    let strict: Vec<String> =
-        sqlx::query_scalar("select slug from orgs where slug = any($1) and mcp_enforce_manifests")
-            .bind(&relax)
-            .fetch_all(pool)
-            .await?;
-    if !strict.is_empty() {
-        sqlx::query("update orgs set mcp_enforce_manifests = false where slug = any($1)")
-            .bind(&strict)
-            .execute(pool)
-            .await?;
-    }
-    Ok(())
-}
-
 async fn import_caps(pool: &PgPool, config: &GatewayConfig) -> anyhow::Result<()> {
     use rust_decimal::Decimal;
     let ceiling: Decimal = "99999999.9999".parse()?;
@@ -3233,7 +3251,6 @@ takes_over = ["throttled", "refusal:violence"]
         );
     }
 
-    /// A scratch directory for the bootstrap toml a test writes.
     /// The marker in the file follows the organization it names, and an import
     /// never makes an existing organization stricter (#3398).
     #[tokio::test]
@@ -3311,6 +3328,22 @@ takes_over = ["throttled", "refusal:violence"]
             "a repeated import bumped the config version"
         );
 
+        // an entry for an org the import does not target is skipped
+        seed_into("other", write("empty2.toml", "")).await;
+        assert!(enforcing("other").await);
+        seed_into(
+            "grandfathered",
+            write(
+                "elsewhere.toml",
+                "[[mcp_manifest_enforcement]]\norg = \"other\"\nenforce = false\n",
+            ),
+        )
+        .await;
+        assert!(
+            enforcing("other").await,
+            "the import relaxed an org it did not target"
+        );
+
         // `enforce = true` never tightens an org that exists
         let strict = write(
             "strict.toml",
@@ -3334,6 +3367,7 @@ takes_over = ["throttled", "refusal:violence"]
         assert!(!enforcing("fresh").await);
     }
 
+    /// A scratch directory for the bootstrap toml a test writes.
     fn tempdir(label: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!("rolter-seed-{label}-{}", Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();

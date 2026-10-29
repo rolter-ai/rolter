@@ -492,8 +492,9 @@ disabled = false # revoke without deleting
 # --- mcp manifest enforcement (imported by rolter-seed, written by config export) ---
 # whether an organization that never saved mcp settings enforces its servers'
 # tool manifests. `org` is the slug. an import never makes an existing
-# organization stricter: `enforce = false` relaxes the one it names, and
-# `enforce = true` changes nothing on an organization that exists.
+# organization stricter: `enforce = false` relaxes the organization the import
+# targets (other entries are skipped), and `enforce = true` changes nothing on
+# an organization that exists.
 # [[mcp_manifest_enforcement]]
 # org = "acme"
 # enforce = true

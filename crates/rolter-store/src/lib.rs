@@ -347,6 +347,9 @@ impl ConfigStore for MergedConfigStore {
         merged.mcp_oauth_sessions = db.mcp_oauth_sessions;
         merged.mcp_tool_groups = db.mcp_tool_groups;
         merged.mcp_settings = db.mcp_settings;
+        // a bootstrap-only marker (an exported file carries it): the snapshot
+        // carries the same fact inside each server, never this table (#3398)
+        merged.mcp_manifest_enforcement = db.mcp_manifest_enforcement;
         merged
             .model_prices
             .extend(db.model_prices.into_iter().filter(|p| {
@@ -799,6 +802,27 @@ mod tests {
     // snapshot has to carry what the store holds, not the file's copy.
     fn merged_with(file: GatewayConfig, db: GatewayConfig) -> MergedConfigStore {
         MergedConfigStore::new(file, Arc::new(InMemoryConfigStore::new(db)))
+    }
+
+    /// `[[mcp_manifest_enforcement]]` is read by the importer only (#3398): the
+    /// snapshot carries the same fact inside each MCP server.
+    #[tokio::test(flavor = "current_thread")]
+    async fn merged_store_never_ships_the_bootstrap_mcp_manifest_marker() {
+        let file = GatewayConfig {
+            mcp_manifest_enforcement: vec![rolter_core::McpManifestEnforcementConfig {
+                org: "acme".to_string(),
+                enforce: false,
+            }],
+            ..Default::default()
+        };
+        let merged = merged_with(file, GatewayConfig::default())
+            .load()
+            .await
+            .unwrap();
+        assert!(
+            merged.mcp_manifest_enforcement.is_empty(),
+            "a bootstrap-only table reached the snapshot"
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]
