@@ -1176,28 +1176,15 @@ function privilegeChange(user: UserRow, draft: AccountDraft, own: boolean): Priv
 }
 
 /**
- * The line under a 409 `last_superadmin` refusal: the change would leave no
- * active superadmin, and the way out is to promote another account first. The
- * list is org-scoped, so the screen cannot warn before the click (#2471).
- */
-function lastSuperadminHint(t: TFunction, error: unknown): string | null {
-  return error instanceof ApiError && error.status === 409 && error.code === "last_superadmin"
-    ? t("pages.users.confirm.lastSuperadmin")
-    : null;
-}
-
-/**
  * What the control plane's refusal of an account change means here, under the
  * message it sent. A 403 is a caller who is not a superadmin, which a gate
  * that answered for another scope can still let through; a 404 is an account
- * that was deleted in the meantime; a 409 `last_superadmin` is a change that
- * would leave no active superadmin.
+ * that was deleted in the meantime; a 409 `last_superadmin` reads from the shared
+ * catalog sentence the dialog already shows.
  */
 function AccountErrorHint({ error }: { error: unknown }) {
   const { t } = useTranslation();
   if (!(error instanceof ApiError)) return null;
-  const lastSuperadmin = lastSuperadminHint(t, error);
-  if (lastSuperadmin) return <p className="text-xs text-muted-foreground">{lastSuperadmin}</p>;
   if (error.status !== 403 && error.status !== 404) return null;
   return (
     <p className="text-xs text-muted-foreground">
@@ -1296,13 +1283,7 @@ function EditUserDialog({
           key={user.id}
           user={user}
           saving={save.isPending}
-          errorMessage={
-            save.isError
-              ? [errorText(save.error, t), lastSuperadminHint(t, save.error)]
-                  .filter(Boolean)
-                  .join(" ")
-              : undefined
-          }
+          errorMessage={save.isError ? errorText(save.error, t) : undefined}
           onSave={requestSave}
           onClose={onClose}
           onDelete={onDelete}

@@ -317,6 +317,33 @@ fn refuse_unacknowledged_open_mode(args: &EasyUpArgs, db_mode: bool) -> anyhow::
     )
 }
 
+/// Refuse the `--admin-*` flags without a database (#3478).
+///
+/// They only act in database mode, where easy-up seeds the admin user. Without
+/// `--database-url` they used to be accepted and ignored, so an operator who
+/// forgot it started a deployment with no admin and no hint why.
+#[cfg(feature = "postgres")]
+fn refuse_admin_flags_without_database(args: &EasyUpArgs) -> anyhow::Result<()> {
+    if args.database_url.is_some() {
+        return Ok(());
+    }
+    let flag = [
+        ("--admin-email", args.admin_email.is_some()),
+        ("--admin-password", args.admin_password.is_some()),
+        ("--admin-password-stdin", args.admin_password_stdin),
+        ("--admin-password-file", args.admin_password_file.is_some()),
+    ]
+    .into_iter()
+    .find_map(|(name, set)| set.then_some(name));
+    match flag {
+        Some(flag) => anyhow::bail!(
+            "{flag} needs --database-url (or ROLTER_DATABASE_URL): the admin user is created \
+             when easy-up seeds a database, and without one the flag would be ignored"
+        ),
+        None => Ok(()),
+    }
+}
+
 /// Run `easy-up` to completion: bootstrap config, optionally migrate+seed the
 /// database, print a startup summary, then supervise the control plane and
 /// gateway together.
@@ -326,6 +353,8 @@ pub async fn run(args: EasyUpArgs) -> anyhow::Result<()> {
     #[cfg(not(feature = "postgres"))]
     let database_url: Option<String> = None;
 
+    #[cfg(feature = "postgres")]
+    refuse_admin_flags_without_database(&args)?;
     refuse_unacknowledged_open_mode(&args, database_url.is_some())?;
     let created = ensure_config(&args.config)?;
     if created {
@@ -763,6 +792,36 @@ models = ["fake-llm"]
             #[cfg(feature = "postgres")]
             import: None,
         }
+    }
+
+    #[cfg(feature = "postgres")]
+    #[test]
+    fn an_admin_flag_without_a_database_url_is_refused_naming_it() {
+        let ok = |args: &EasyUpArgs| refuse_admin_flags_without_database(args).is_ok();
+        assert!(ok(&args_on("127.0.0.1")));
+
+        let refused = |mut args: EasyUpArgs, flag: &str| {
+            let error = refuse_admin_flags_without_database(&args)
+                .expect_err("an admin flag with no database was accepted")
+                .to_string();
+            assert!(error.contains(flag), "{error}");
+            assert!(error.contains("--database-url"), "{error}");
+            // and the database url is what makes it valid
+            args.database_url = Some("postgres://db/rolter".to_string());
+            assert!(ok(&args));
+        };
+        let mut args = args_on("127.0.0.1");
+        args.admin_email = Some("admin@example.com".to_string());
+        refused(args, "--admin-email");
+        let mut args = args_on("127.0.0.1");
+        args.admin_password = Some("a-password".to_string());
+        refused(args, "--admin-password");
+        let mut args = args_on("127.0.0.1");
+        args.admin_password_stdin = true;
+        refused(args, "--admin-password-stdin");
+        let mut args = args_on("127.0.0.1");
+        args.admin_password_file = Some(PathBuf::from("password.txt"));
+        refused(args, "--admin-password-file");
     }
 
     #[test]

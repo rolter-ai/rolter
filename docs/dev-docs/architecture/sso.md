@@ -51,7 +51,9 @@ Authorization code with PKCE, no implicit grant, no client-side tokens:
 
 6. The callback answers on `Accept` (#2297). A caller that is not a browser
    gets the session as JSON, as it always did. A browser is sent a `303` to the
-   dashboard; see [Ending a browser sign-in](#ending-a-browser-sign-in).
+   dashboard; see [Ending a browser sign-in](#ending-a-browser-sign-in). A
+   refusal answered as JSON carries the same code a browser is sent, see
+   [JSON refusals](#json-refusals).
 
 Rules that hold on every path:
 
@@ -126,6 +128,24 @@ in the URL.
 | `idp_verification_failed` | the provider was unreachable, or the token or id token did not check               |
 | `not_configured`          | the deployment cannot finish a sign-in, e.g. no `ROLTER_KEK`                       |
 | `internal_error`          | anything else                                                                      |
+
+#### JSON refusals
+
+A caller that does not ask for `text/html` is answered with
+`{"error": {"code": "<code>", "message": "…"}}` (#3468), where `code` is the
+same `SsoFailure` code as the table above and the HTTP status is the one the
+failure always had (`403` for `sso_disabled`, `no_mapped_group`,
+`account_deactivated` and `account_outside_org`, `400` for `idp_error`,
+`state_expired`, `unknown_provider` (at `/start`) and `idp_verification_failed`, `500` for `internal_error`).
+Before this, a cross-org adoption refusal was a bare `403` "insufficient role
+for this resource", indistinguishable from any other forbidden response. The
+message is a fixed sentence per code (`SsoFailure::message`): it never repeats
+what the identity provider said and never names the account, so the refusal
+tells a caller who has just authenticated nothing the browser path does not.
+The detail an operator acts on is logged. The dashboard translates the codes
+that name one failure (`KNOWN_ERROR_CODES`); `not_configured` and
+`internal_error` are left out, because other endpoints answer the same names
+with other meanings.
 
 **What the dashboard's `/login` screen handles:** `sso_code` (call the exchange,
 store the token as a local sign-in does, clear the query string, route on) and
