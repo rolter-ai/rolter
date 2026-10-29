@@ -524,6 +524,15 @@ export const EmptySubmitIsRefused: Story = {
     await expect(form.getByLabelText("Model name")).toBeValid();
     await expect(form.getByLabelText("Input price per Mtok")).toBeValid();
     await expect(form.queryByText("Choose a model to price.")).toBeNull();
+    // the mandatory ones are announced up front without the native `required`,
+    // which would flag the pristine form (#3451)
+    for (const name of ["Model name", "Input price per Mtok", "Output price per Mtok"]) {
+      const field = form.getByLabelText(name);
+      await expect(field).toHaveAttribute("aria-required", "true");
+      await expect(field).not.toHaveAttribute("required");
+    }
+    await expect(form.getByLabelText("Cached input price per Mtok (optional)")).not.toBeRequired();
+    await expect(form.getAllByText("*")).toHaveLength(3);
     await userEvent.click(form.getByRole("button", { name: "Save" }));
 
     await expect(form.getByLabelText("Model name")).toBeInvalid();
