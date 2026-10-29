@@ -639,10 +639,11 @@ function AttributionScreen<T extends BusinessUnitRow | CustomerRow>({
             what={t("errors.resources.attributionExport")}
             fallbackName="cost-attribution.csv"
             disabled={disabled}
-            run={() =>
+            run={(signal) =>
               exportAttributionCsv(
                 windowBounds(spendWindow),
                 kind === "unit" ? "business_unit" : "customer",
+                { signal },
               )
             }
           />

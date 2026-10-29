@@ -6259,7 +6259,13 @@
     "export": {
       "csv": "Export CSV",
       "pending": "Exporting…",
-      "downloaded": "Export downloaded. Its name gives the window and currency; a row marked partial holds unpriced requests."
+      "downloaded": "Export downloaded. Its name gives the window and currency; a row marked partial holds unpriced requests.",
+      "cancelled": "Export cancelled. Nothing was saved.",
+      "received": "{{size}} MB received",
+      "cancel": "Cancel the {{what}}",
+      "busy": "Too many exports are running, or you already have one running. Wait for it to finish and try again.",
+      "busyRetry": "Too many exports are running, or you already have one running. Try again in about {{seconds}} seconds.",
+      "truncated": "The export stopped before its last row: it reached the row or time limit, or the connection dropped. Nothing was saved, because the file would be incomplete. Narrow the window or the filters and try again."
     },
     "withheld": "withheld",
     "withheldHint": "The provider answered and billed for this response, but an output guardrail or plugin refused to deliver it: the caller received a 403. The cost is real; the policy that refused is named in the error.",

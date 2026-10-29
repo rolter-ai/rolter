@@ -503,6 +503,73 @@ export function stubClipboard(writeText: (value: string) => Promise<void>): () =
   };
 }
 
+/** a file a stubbed save dialog handed out, as the page left it */
+export interface SavedFile {
+  suggestedName?: string;
+  /** what was written, in order */
+  chunks: Uint8Array[];
+  closed: boolean;
+  aborted: boolean;
+}
+
+/**
+ * Stand in for the browser's save dialog (`showSaveFilePicker`, #3434), which
+ * a story cannot answer. Each `files` entry is one file the page opened for
+ * writing. Pass `reject` to answer as a person who closed the dialog.
+ */
+export function stubSavePicker(options: { reject?: boolean } = {}) {
+  const files: SavedFile[] = [];
+  const picker = async (opts: { suggestedName?: string }) => {
+    if (options.reject) throw new DOMException("closed", "AbortError");
+    const file: SavedFile = {
+      suggestedName: opts.suggestedName,
+      chunks: [],
+      closed: false,
+      aborted: false,
+    };
+    files.push(file);
+    return {
+      createWritable: async () => ({
+        write: async (chunk: Uint8Array) => {
+          file.chunks.push(chunk);
+        },
+        close: async () => {
+          file.closed = true;
+        },
+        abort: async () => {
+          file.aborted = true;
+        },
+      }),
+    };
+  };
+  return {
+    files,
+    /** run `body` with the dialog in the page, or without it when `picker` is `false` */
+    async within(body: () => Promise<void>, installed = true) {
+      const w = window as { showSaveFilePicker?: unknown };
+      const original = Object.getOwnPropertyDescriptor(w, "showSaveFilePicker");
+      // the browser's own sits on the prototype, so "absent" is an own property
+      // that hides it rather than a delete
+      Object.defineProperty(w, "showSaveFilePicker", {
+        value: installed ? picker : undefined,
+        configurable: true,
+      });
+      try {
+        await body();
+      } finally {
+        if (original) Object.defineProperty(w, "showSaveFilePicker", original);
+        else Reflect.deleteProperty(w, "showSaveFilePicker");
+      }
+    },
+  };
+}
+
+/** the text a stubbed file received */
+export function savedText(file: SavedFile): string {
+  const decoder = new TextDecoder();
+  return file.chunks.map((c) => decoder.decode(c, { stream: true })).join("");
+}
+
 /**
  * Click a button once it is actually clickable.
  *

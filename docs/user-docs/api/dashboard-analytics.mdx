@@ -164,6 +164,8 @@ The file name says what it holds: `<what>_<from>_to_<to>_<CURRENCY>.csv`, such a
 
 A row or time limit ends the body with the same error a failed page does, so the download fails instead of passing for a complete file: the status line was already `200` by then, and a client that checks only the status would keep a short file. Narrow the window (`since`, `until`) or the filters and export again. A caller is an account or an API token; the admin token and open mode share one. The concurrency counts are per control-plane process, so with several replicas each holds its own.
 
+**The dashboard saves the log export straight to a file.** In a browser that can write to a file the person picks (Chromium-based ones), **Export CSV** on LLM Logs asks where to save, then copies the body to that file as it arrives, so a million rows never sit in the tab's memory. It shows how much has arrived and offers **Cancel**, which stops the request and discards the half-written file. Other browsers gather the body and download it when it ends, under the name the control plane gave it, which is the one place the whole file is held. Either way, a `429` from the limits above and a body cut short each get their own message, and a file that did not end whole is never kept.
+
 **Cells are safe to open.** A value a spreadsheet would run as a formula (one starting with `=`, `+`, `-`, `@`, a tab or a carriage return, such as a business unit someone named `=Payments`) is written with a leading `'`. Numbers are written as they are.
 
 ## The savings advisor

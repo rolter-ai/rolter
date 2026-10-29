@@ -20,7 +20,9 @@ import {
   recordUxEvents,
   recording,
   routes,
+  savedText,
   scoped,
+  stubSavePicker,
   uxEvents,
   type FetchStub,
   type Recorder,
@@ -3976,10 +3978,15 @@ export const ExportSendsTheFiltersOnScreenAndKeepsTheServersFileName: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     const names: string[] = [];
-    await captureDownload(names, async () => {
-      await userEvent.click(await canvas.findByRole("button", { name: "Export CSV" }));
-      await waitFor(() => expect(names).toHaveLength(1));
-    });
+    // no save dialog in this browser: the file is gathered and downloaded whole
+    await stubSavePicker().within(
+      () =>
+        captureDownload(names, async () => {
+          await userEvent.click(await canvas.findByRole("button", { name: "Export CSV" }));
+          await waitFor(() => expect(names).toHaveLength(1));
+        }),
+      false,
+    );
     await expect(names[0]).toBe("request-log_2026-10-01_to_now_EUR.csv");
     await expectToast(canvasElement, /Export downloaded/, "success");
     const call = logExport.calls.find((c) => c.url.includes("/invocations/export"))!;
@@ -4016,10 +4023,230 @@ export const AFailedExportIsAToastNotAHalfDownload: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     const names: string[] = [];
-    await captureDownload(names, async () => {
-      await userEvent.click(await canvas.findByRole("button", { name: "Export CSV" }));
-      await expectToast(canvasElement, /Could not export request log export/, "error");
-    });
+    await stubSavePicker().within(
+      () =>
+        captureDownload(names, async () => {
+          await userEvent.click(await canvas.findByRole("button", { name: "Export CSV" }));
+          await expectToast(canvasElement, /Could not export request log export/, "error");
+        }),
+      false,
+    );
     await expect(names).toHaveLength(0);
+  },
+};
+
+const MIB = 1_048_576;
+
+/**
+ * A CSV body that arrives in pieces: `chunks` first, then it either ends
+ * (`end`), is cut short the way a dropped connection or the server's row cap
+ * cuts it (`cut`), or stays open (`hang`) until something aborts the request.
+ */
+function chunkedCsv(chunks: Uint8Array[], then: "end" | "cut" | "hang"): Response {
+  let sent = 0;
+  const body = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      const next = chunks[sent];
+      if (next) {
+        sent += 1;
+        controller.enqueue(next);
+      } else if (then === "end") controller.close();
+      else if (then === "cut") controller.error(new TypeError("network error"));
+      else return new Promise<void>(() => undefined);
+    },
+  });
+  return new Response(body, {
+    headers: {
+      "content-type": "text/csv; charset=utf-8",
+      "content-disposition": 'attachment; filename="request-log_server-name.csv"',
+    },
+  });
+}
+
+const exportStub = (answer: () => Response) =>
+  recording(
+    scoped(async (input) =>
+      String(input).includes("/analytics/invocations/export")
+        ? answer()
+        : ((await withLogs(ROWS)(input)) as Response),
+    ),
+  );
+
+/**
+ * Where the browser can write to a chosen file, the export streams there as it
+ * arrives (#3434): the person is asked where to save before anything is
+ * requested, the body is written in the chunks it came in, and the file is
+ * closed once it ended whole. Nothing goes through the Blob download.
+ */
+export const ExportStreamsToTheFileThePersonChose: Story = {
+  render: () => {
+    const stub = exportStub(() =>
+      chunkedCsv(
+        [new TextEncoder().encode("ts,model\r\n"), new TextEncoder().encode("1,a\r\n")],
+        "end",
+      ),
+    );
+    return (
+      <Harness fetchStub={stub.stub}>
+        <Toasted>
+          <Logs />
+        </Toasted>
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const dialog = stubSavePicker();
+    const names: string[] = [];
+    await dialog.within(() =>
+      captureDownload(names, async () => {
+        await userEvent.click(await canvas.findByRole("button", { name: "Export CSV" }));
+        await expectToast(canvasElement, /Export downloaded/, "success");
+      }),
+    );
+    await expect(dialog.files).toHaveLength(1);
+    const [file] = dialog.files;
+    await expect(file!.suggestedName).toBe("request-log.csv");
+    await expect(savedText(file!)).toBe("ts,model\r\n1,a\r\n");
+    await expect(file!.chunks).toHaveLength(2);
+    await expect(file!.closed).toBe(true);
+    await expect(file!.aborted).toBe(false);
+    // written to the file, not offered as a download
+    await expect(names).toHaveLength(0);
+  },
+};
+
+/** Closing the save dialog is a no: nothing is requested and nothing is said. */
+export const ClosingTheSaveDialogSendsNoExport: Story = {
+  render: () => {
+    const stub = exportStub(() => chunkedCsv([], "end"));
+    return (
+      <Harness fetchStub={stub.stub}>
+        <Toasted>
+          <Logs />
+        </Toasted>
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const dialog = stubSavePicker({ reject: true });
+    await dialog.within(async () => {
+      await userEvent.click(await canvas.findByRole("button", { name: "Export CSV" }));
+      await waitFor(() => expect(canvas.getByRole("button", { name: "Export CSV" })).toBeEnabled());
+    });
+    await expect(dialog.files).toHaveLength(0);
+    await expect(canvas.queryByRole("alert", { name: /export/i })).toBeNull();
+    await expect(canvas.queryByText(/Export downloaded/)).toBeNull();
+  },
+};
+
+/**
+ * A long export shows how much has arrived and can be stopped. Cancel ends the
+ * request and discards the half-written file, and says so.
+ */
+export const ACancelledExportKeepsNoPartialFile: Story = {
+  render: () => {
+    const stub = exportStub(() => chunkedCsv([new Uint8Array(Math.round(1.5 * MIB))], "hang"));
+    return (
+      <Harness fetchStub={stub.stub}>
+        <Toasted>
+          <Logs />
+        </Toasted>
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const dialog = stubSavePicker();
+    await dialog.within(async () => {
+      await userEvent.click(await canvas.findByRole("button", { name: "Export CSV" }));
+      await waitFor(() => expect(canvas.getByText("1.5 MB received")).toBeVisible());
+      await userEvent.click(canvas.getByRole("button", { name: /Cancel the request log export/ }));
+      await expectToast(canvasElement, /Export cancelled/, "success");
+    });
+    const [file] = dialog.files;
+    await expect(file!.aborted).toBe(true);
+    await expect(file!.closed).toBe(false);
+    await expect(await canvas.findByRole("button", { name: "Export CSV" })).toBeEnabled();
+  },
+};
+
+/**
+ * A body cut short, at the row or time cap or by a dropped connection (#3434),
+ * is its own message and never a finished file: the half-written file is
+ * discarded, in the Blob path too.
+ */
+export const ATruncatedExportSaysSoAndKeepsNoFile: Story = {
+  render: () => {
+    const stub = exportStub(() => chunkedCsv([new TextEncoder().encode("ts,model\r\n")], "cut"));
+    return (
+      <Harness fetchStub={stub.stub}>
+        <Toasted>
+          <Logs />
+        </Toasted>
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const dialog = stubSavePicker();
+    const names: string[] = [];
+    await dialog.within(() =>
+      captureDownload(names, async () => {
+        await userEvent.click(await canvas.findByRole("button", { name: "Export CSV" }));
+        await expectToast(canvasElement, /The export stopped before its last row/, "error");
+      }),
+    );
+    await expect(dialog.files[0]!.aborted).toBe(true);
+    await expect(dialog.files[0]!.closed).toBe(false);
+    await expect(names).toHaveLength(0);
+    // and the Blob path, which must not hand over what it gathered
+    await stubSavePicker().within(
+      () =>
+        captureDownload(names, async () => {
+          await userEvent.click(canvas.getByRole("button", { name: "Export CSV" }));
+          await waitFor(() =>
+            expect(canvas.getAllByText(/The export stopped before its last row/)).toHaveLength(2),
+          );
+        }),
+      false,
+    );
+    await expect(names).toHaveLength(0);
+  },
+};
+
+/**
+ * The export gate refuses an export past its concurrency bound with `429` and
+ * `Retry-After` (#3360, #3434): the toast says to wait, and for how long, in
+ * words and not as a bare failure.
+ */
+export const ABusyExportGateAsksToWait: Story = {
+  render: () => {
+    const stub = exportStub(
+      () =>
+        new Response(
+          JSON.stringify({ error: { message: "you already have a request log export running" } }),
+          { status: 429, headers: { "content-type": "application/json", "retry-after": "15" } },
+        ),
+    );
+    return (
+      <Harness fetchStub={stub.stub}>
+        <Toasted>
+          <Logs />
+        </Toasted>
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const dialog = stubSavePicker();
+    await dialog.within(async () => {
+      await userEvent.click(await canvas.findByRole("button", { name: "Export CSV" }));
+      await expectToast(canvasElement, /Try again in about 15 seconds/, "error");
+    });
+    await expectToast(canvasElement, /Could not export request log export/, "error");
+    // the file chosen for an export that never started is not left behind
+    await expect(dialog.files[0]!.aborted).toBe(true);
   },
 };
