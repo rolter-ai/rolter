@@ -712,10 +712,18 @@ async fn response_lifecycle(
     let Some(route) = state.response_registry.get(&tenant, &response_id) else {
         return call.log(None, UpstreamLeg::NotReached, response_not_found());
     };
+    // the stored provider is its stable `(org, name)` (#3461), found again by
+    // its runtime id in this snapshot, which may have qualified it since
+    let provider_id = route.provider_id(&snap);
     // the registry proves the caller created this response, not that it may
     // still reach the route it came from: access revoked since then must stop
     // the retrieve, cancel, delete and input-items calls too (#1779)
-    if let Err(denial) = authorize_lifecycle(&snap, vk.as_ref(), &route) {
+    if let Err(denial) = authorize_lifecycle(
+        &snap,
+        vk.as_ref(),
+        &route,
+        provider_id.unwrap_or(&route.provider),
+    ) {
         return call.log(
             Some(&route),
             UpstreamLeg::NotReached,
@@ -734,7 +742,7 @@ async fn response_lifecycle(
             .into_response(),
         );
     }
-    let Some(provider) = snap.providers.get(&route.provider) else {
+    let Some(provider) = provider_id.and_then(|id| snap.providers.get(id)) else {
         return call.log(Some(&route), UpstreamLeg::NotReached, response_not_found());
     };
     if provider.kind != rolter_core::ProviderKind::Openai {
@@ -785,7 +793,7 @@ async fn response_lifecycle(
             call.log(
                 Some(&route),
                 UpstreamLeg::Answered(upstream_status),
-                lifecycle_response(response, &route, snap.provider_name(&route.provider)),
+                lifecycle_response(response, &route, snap.provider_name(&provider.name)),
             )
         }
         Err(err) => {
@@ -865,9 +873,17 @@ impl LifecycleLog<'_> {
             lifecycle_operation: self.operation.to_string(),
             ..ctx.into_log()
         };
+        // a stored identity is the row's display name and org as they are; a
+        // runtime id is turned into both as the row is queued
+        let provider = |row: &mut RequestLog, route: &crate::response_registry::ResponseRoute| {
+            row.provider = route.provider.clone();
+            if let Some(org) = &route.provider_org {
+                row.provider_org_id = org.clone();
+            }
+        };
         match (leg, route) {
             (UpstreamLeg::Answered(status), Some(route)) => {
-                row.provider = route.provider.clone();
+                provider(&mut row, route);
                 row.target = route.target.clone();
                 row.upstream_status = status;
                 row.attempts = 1;
@@ -876,7 +892,7 @@ impl LifecycleLog<'_> {
                 }
             }
             (UpstreamLeg::Failed(message), Some(route)) => {
-                row.provider = route.provider.clone();
+                provider(&mut row, route);
                 row.target = route.target.clone();
                 row.attempts = 1;
                 row.error = rolter_core::redact::redact_urls_in_text(message);
@@ -907,17 +923,21 @@ impl LifecycleLog<'_> {
 /// with the route gone there is nothing left to check visibility and policy
 /// against, and allowing it would let a deleted route keep serving calls for
 /// the registry's lifetime.
+///
+/// `provider_id` is the runtime id the stored provider has in `snap`, which a
+/// key's provider allow-list is checked against.
 fn authorize_lifecycle(
     snap: &crate::state::Snapshot,
     key: Option<&KeyMeta>,
     route: &crate::response_registry::ResponseRoute,
+    provider_id: &str,
 ) -> Result<(), AccessDenial> {
     authorize_model(key, &route.model)?;
     let entry = snap
         .resolve_for(&route.route, key)
         .ok_or(AccessDenial::RouteRemoved)?;
     authorize_route(key, &entry)?;
-    if key.is_some_and(|key| !key.provider_allowed(&route.provider)) {
+    if key.is_some_and(|key| !key.provider_allowed(provider_id)) {
         return Err(AccessDenial::ProviderNotAllowed);
     }
     Ok(())
@@ -3130,7 +3150,13 @@ async fn proxy(
                             },
                         )
                         .map(|template| {
-                            let template = template.with_route(entry.route.model.clone());
+                            // the provider's stable identity, not its runtime
+                            // id, which changes once another org shares the
+                            // name (#3461)
+                            let (name, org) = snap.provider_label(&last_provider);
+                            let template = template
+                                .with_route(entry.route.model.clone())
+                                .with_provider_identity(name.to_string(), org.to_string());
                             let registry = state.response_registry.clone();
                             Box::new(move |body: &[u8]| {
                                 registry.record_body(template, is_sse, body);

@@ -453,6 +453,15 @@ rotated away, the record becomes unavailable. Unknown, expired, deleted,
 cross-key, and unavailable records all return the same `404 response_not_found`
 error so route ownership is not leaked.
 
+The record names its provider by its stable identity, the owning org and the
+display name, not by the runtime id that served the request (#3461). A
+provider's runtime id changes from `openai` to `openai@<org>` once a second org
+creates a provider of the same name (ADR-0040), and a response created before
+that still reaches the provider that holds it: each lifecycle call finds the
+provider's runtime id in the current snapshot again (`Snapshot::provider_id`).
+A record that carries a runtime id instead (`provider_org` unset) is looked up
+by that id, as records always were.
+
 Each lifecycle call is also re-authorized against the current configuration,
 exactly as a new request would be: the model the caller named, the route that
 served the response (visibility, route policy, provider list) and the provider
