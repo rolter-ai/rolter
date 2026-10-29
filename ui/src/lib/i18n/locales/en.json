@@ -19,18 +19,6 @@
     },
     "sso": {
       "exchangeExpired": "That sign-in expired before it finished. Try signing in again.",
-      "errors": {
-        "idp_error": "Your identity provider declined the sign-in. Try again, or contact your administrator.",
-        "state_expired": "This sign-in took too long or was already used. Start it again.",
-        "sso_disabled": "Single sign-on is turned off for this organization.",
-        "unknown_provider": "That single sign-on option is no longer available. Pick another way to sign in, or contact your administrator.",
-        "no_mapped_group": "Your account is not in any group that grants access here. Ask an administrator to add you to one.",
-        "account_deactivated": "This account has been deactivated. Contact your administrator.",
-        "account_outside_org": "This account cannot sign in through this organization's single sign-on. Sign in with your password, or with your own organization's provider.",
-        "idp_verification_failed": "Your identity provider could not be reached or its response could not be verified. Try again in a moment.",
-        "not_configured": "This deployment cannot finish a single sign-on yet. An administrator needs to finish setting it up.",
-        "internal_error": "Single sign-on failed on our side. Try again, or contact your administrator."
-      },
       "provider": "Identity provider: {{name}}"
     },
     "errors": {
@@ -373,6 +361,8 @@
         "account_outside_org": "This account cannot sign in through this organization's single sign-on. Sign in with your password, or with your own organization's provider.",
         "idp_error": "Your identity provider declined the sign-in. Try again, or contact your administrator.",
         "idp_verification_failed": "Your identity provider could not be reached or its response could not be verified. Try again in a moment.",
+        "not_configured": "This deployment cannot finish a single sign-on yet. An administrator needs to finish setting it up.",
+        "internal_error": "Single sign-on failed on our side. Try again, or contact your administrator.",
         "no_mapped_group": "Your account is not in any group that grants access here. Ask an administrator to add you to one.",
         "sso_disabled": "Single sign-on is turned off for this organization.",
         "state_expired": "This sign-in took too long or was already used. Start it again.",
@@ -393,7 +383,7 @@
         "invalid_time_bound": "The time range is not valid.",
         "time_bound_out_of_range": "The time range must fall between the year 2000 and tomorrow.",
         "too_many_buckets": "The time range is too long to chart at this detail. Pick a shorter range.",
-        "last_org_admin": "This is the organization's last admin, so the grant cannot be revoked. Make someone else an admin first, or ask a superadmin.",
+        "last_org_admin": "This is the organization's last admin grant, so it cannot be revoked or changed. Grant admin to another person first, or ask a superadmin.",
         "last_superadmin": "This is the last active superadmin, so the change was refused. Make another account superadmin first, then try again.",
         "mfa_enrolment_required": "Your organization requires a second factor, and this control plane cannot enrol one. Ask an operator.",
         "name_taken": "That name is already taken. Choose another.",
@@ -470,7 +460,8 @@
     },
     "routing": {
       "strategy": "Strategy",
-      "strategyInfo": "How the gateway picks a target for each request. The load-balancing docs describe what each strategy does."
+      "strategyInfo": "How the gateway picks a target for each request. The load-balancing docs describe what each strategy does.",
+      "editVariants": "Edit the variants on Routing Rules"
     },
     "targets": {
       "title": "Targets",
@@ -638,6 +629,7 @@
         "variant": "Variant",
         "configured": "Configured",
         "assigned": "Assigned",
+        "sampled": "Sampled",
         "share": "Observed",
         "requests": "Requests",
         "errors": "Errors",
@@ -648,6 +640,7 @@
         "firstAttempt": "First attempt",
         "noteWithFirstAttempt": "Observed is each variant's share of the requests it answered, counting failovers, so a variant that others fail over to reads higher than its weight. First attempt is the share of requests answered on the first attempt, with no failover. A request first sent to one variant that failed over is logged under the variant that answered, with a reason, so it counts for neither: a variant that often fails over reads below its weight there.",
         "noteWithAssigned": "Assigned is each variant's share of the requests it was dialled to first, whether it answered them or they failed over. It is not the sampled split: a variant skipped while its breaker is open or its targets are parked is dialled first by none of the requests sampled for it. Observed is its share of the requests it answered, counting failovers, and First attempt the share it answered with no failover. Requests logged before the gateway recorded the first variant count under Assigned only when they did not fail over.",
+        "noteSampled": "Sampled is each variant's share of the requests the weighted split picked it for, before the gateway skipped a variant whose breaker is open or whose targets are parked, so it is the share to compare with Configured. Where Sampled is above Assigned, the gateway routed requests around the variant. Requests logged before the gateway recorded the sample are not counted there. A realtime session is not sampled by weight yet: it leads with the first variant with a non-zero weight, and each of its turns counts for that variant.",
         "unattributed_one": "{{requests}} request in this window was served without a variant.",
         "unattributed_other": "{{requests}} requests in this window were served without a variant.",
         "noAnalytics": {
@@ -730,6 +723,8 @@
     "errors": {
       "category": "A category is 1 to 64 lowercase letters, digits, _ or -.",
       "allRestricted": "Every target is a fallback, so the route could never dial anything. Leave at least one target ordinary.",
+      "variantsAllRestricted": "Every target is a fallback: a route with variants dials only the variants' targets, so this one could never dial anything. Leave at least one variant target ordinary.",
+      "variantsAllRestrictedElsewhere": "Every target is a fallback: a route with variants dials only the variants' targets, and every one of this route's is a fallback, so it could never dial anything. Give a variant an ordinary target on Routing Rules.",
       "refused": "The control plane refused this set: a class it does not know, or one listed twice."
     }
   },
@@ -3724,8 +3719,8 @@
       "export": {
         "csv": "Export CSV",
         "json": "Export JSON",
-        "pending": "Exporting…",
         "downloaded": "Export downloaded",
+        "saved": "Audit log saved to the file you chose.",
         "done_one": "Exported {{count}} entry",
         "done_other": "Exported {{count}} entries",
         "truncated_one": "Exported the newest {{count}} entry. Narrow the filters to export the rest.",
@@ -4548,7 +4543,6 @@
         "revokeSelf": "It is your own role, so you may lose access you are using right now.",
         "revokeConfirm": "Revoke role",
         "revokeRefused": "Revoking a role on {{scope}} takes Admin there or on a scope above it.",
-        "lastAdminRefused": "This is the organization's last admin grant. Grant admin to another person first, or ask a superadmin.",
         "changeTitle": "Change {{email}}'s role on {{scope}}?",
         "changeBody": "They hold {{role}} there now. The role you pick replaces it in one step, so they are never left without a role there.",
         "changeFromSso": "{{role}} came from an SSO group mapping, which grants it again the next time they sign in; change the mapping for the new role to stick.",
@@ -6375,6 +6369,8 @@
       "rows_one": "{{rows}} row written",
       "rows_other": "{{rows}} rows written",
       "truncatedDownload": "The export stopped before its last row: it reached the row or time limit, or the connection dropped. The browser's download of it is incomplete, so delete it rather than use it. Narrow the window or the filters and try again.",
+      "truncatedUnbounded": "The export stopped before its last row: the connection dropped or the control plane failed part way. Nothing was saved, because the file would be incomplete. Try again.",
+      "truncatedDownloadUnbounded": "The export stopped before its last row: the connection dropped or the control plane failed part way. The browser's download of it is incomplete, so delete it rather than use it. Try again.",
       "refused": "The control plane refused the download (HTTP {{status}}). If you signed out or your session ended, sign in again; otherwise try again.",
       "notStarted": "The browser did not start the download before its link expired. Try again, and allow downloads from this page if the browser asks.",
       "stopWatching": "Stop watching",

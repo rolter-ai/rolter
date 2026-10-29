@@ -195,6 +195,12 @@ The gateway's environment, for the same reason.
        api.github.com on every gateway pod start (#2382) */}}
 - name: ROLTER_UPDATE_CHECK
   value: {{ .Values.control.updateCheck | quote }}
+{{- /* the gateways' own model root, fixed at start; a snapshot never
+       carries one, so it is set per gateway rather than in the dashboard */}}
+{{- if .Values.gateway.semanticModelRoot }}
+- name: ROLTER_SEMANTIC_MODEL_ROOT
+  value: {{ .Values.gateway.semanticModelRoot | quote }}
+{{- end }}
 {{- with .Values.secretEnv }}
 {{ toYaml . }}
 {{- end }}

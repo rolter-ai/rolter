@@ -44,6 +44,7 @@ import {
   windowAddress,
   windowBounds,
   type TimeWindow,
+  useWindowQueryKey,
 } from "@/lib/time-window";
 import { useScreenReady } from "@/lib/ux-react";
 
@@ -82,6 +83,8 @@ export default function Savings() {
   const can = useCan();
 
   const timeWindow = readWindowSelection(params, DEFAULT_WINDOW);
+  // the window's days are the chart zone's, so a zone change reads it again (#3519)
+  const windowKey = useWindowQueryKey(timeWindow);
   const value = (name: string) => params.get(name) ?? "";
   const filters = {
     org: value("org"),
@@ -123,7 +126,7 @@ export default function Savings() {
   const report = useQuery({
     queryKey: [
       "savings",
-      timeWindow,
+      ...windowKey,
       filters.org,
       filters.project,
       filters.route,

@@ -199,8 +199,10 @@ after the caller is authenticated and before anything is forwarded.
   project and team and returns at once when nothing is assigned anywhere; with
   none the organization-wide set applies, otherwise the allowed tools on a
   governed server are the union of those groups' tools there, which is empty
-  when none names it. An assignment therefore only narrows, and an empty table
-  changes nothing. The same set drives the `tools/list` filter. API:
+  when none names it. The union stays within the organization's enabled groups,
+  but adding another assignment can grant an already-assigned caller more tools;
+  it is not a monotonic restriction. An empty table changes nothing. The same
+  set drives the `tools/list` filter. API:
   `GET /api/v1/orgs/{org_id}/mcp/tool-group-assignments` and
   `PUT /api/v1/mcp/tool-groups/{id}/assignments` (replaces the group's whole set
   in one transaction; a stored row whose subject is gone, which the `0200` sweep
@@ -762,6 +764,8 @@ The gateway records every proxied JSON-RPC `tools/call` in ClickHouse's
   every call as awaited. `POST /api/v1/mcp/events` accepts an `outcome` from
   `MCP_OUTCOMES` beside a `success` status, and an empty `tool` only on an
   `unread` row.
+  `ui/scripts/mcp-log-vocabulary.test.ts` holds the dashboard's not-awaited
+  vocabulary and every catalog to the shared status and outcome names.
 - **Write path.** `McpEventSink` (`crates/rolter-gateway/src/mcp_log.rs`) is a
   bounded channel and a batch writer, built like the request-log and
   health-event writers and sharing their `[logging]` `batch_max`, `flush_ms`

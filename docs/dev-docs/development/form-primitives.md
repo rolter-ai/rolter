@@ -513,7 +513,14 @@ it; a range that has not ended yet sends no `until` (#3506). The month windows
 and `previousWindowBounds` count in the same zone: each function takes the
 zone as its last argument, the chart zone by default, and does its wall-clock
 arithmetic through `Intl` (`wallClock` / `zonedInstant`) rather than the
-browser-local `Date` getters. Where the chart zone is not the browser's, the
+browser-local `Date` getters. Because those bounds move with the zone, a
+read over the window is keyed through `useWindowQueryKey(selection)` (#3519),
+spread into the query key where the window's name went: it adds the chart zone
+for a window of calendar days (`null` for a rolling one) and re-renders when
+the zone changes, so a change of **Time zone** in Preferences is a new read
+over the new zone's midnights rather than a cached answer over the old one's.
+Savings, the Dashboard, LLM Logs, MCP Logs and Cost Attribution use it; a new
+screen that reads over the picker's selection does too. Where the chart zone is not the browser's, the
 picker names it under the list, as the list's description. Placed in a
 `Field`, the picker forwards the `id`, `aria-describedby`, `aria-invalid` and
 `aria-required` the field clones onto it to the list (#3507), so the field's

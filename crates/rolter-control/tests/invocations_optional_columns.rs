@@ -637,3 +637,163 @@ async fn the_invocation_list_returns_the_first_variant() {
         assert_eq!(listed["first_variant"], expected, "{body}");
     }
 }
+
+/// A by-variant row's `(requests, assigned_requests, sampled_requests)` per
+/// variant, sorted by variant.
+fn sampled_by_variant(body: &Value) -> Vec<(String, f64, f64, Option<f64>)> {
+    let mut rows: Vec<_> = body["data"]
+        .as_array()
+        .expect("a data array")
+        .iter()
+        .map(|row| {
+            (
+                row["variant"].as_str().unwrap_or_default().to_string(),
+                number(&row["requests"]),
+                number(&row["assigned_requests"]),
+                (!row["sampled_requests"].is_null()).then(|| number(&row["sampled_requests"])),
+            )
+        })
+        .collect();
+    rows.sort_by(|a, b| a.0.cmp(&b.0));
+    rows
+}
+
+/// #3547: requests on one route as a gateway with `sampled_variant` writes
+/// them. The split sampled `parked` three times, but its breaker was open for
+/// two of them, which the gateway dialled to `spare` first; `spare` was
+/// sampled once and answered it. A classic row counts under the empty string,
+/// and a variant row written before the column (no `sampled_variant`) is
+/// left out of the sampled count.
+fn sampled_rows(route: &str) -> Vec<Value> {
+    let ts = chrono::Utc::now()
+        .format("%Y-%m-%d %H:%M:%S%.3f")
+        .to_string();
+    let row = |sampled: &str, first: &str, variant: &str| {
+        let mut row = json!({
+            "ts": ts, "request_id": format!("sampled-{}", Uuid::new_v4().simple()),
+            "model": route, "variant": variant, "status": 200, "latency_ms": 100,
+        });
+        if !first.is_empty() {
+            row["first_variant"] = json!(first);
+        }
+        if !sampled.is_empty() {
+            row["sampled_variant"] = json!(sampled);
+        }
+        row
+    };
+    vec![
+        row("parked", "parked", "parked"),
+        // sampled `parked`, skipped while its breaker was open
+        row("parked", "spare", "spare"),
+        row("parked", "spare", "spare"),
+        row("spare", "spare", "spare"),
+        // the classic pool
+        row("", "", ""),
+        // written before the column
+        row("", "spare", "spare"),
+    ]
+}
+
+#[tokio::test]
+async fn by_variant_counts_the_sampled_primary_beside_the_variant_first_dialled() {
+    let _ = skip_without_stack!();
+    let route = format!("variant-route-{}", Uuid::new_v4().simple());
+    let (status, body) = read_after(
+        u32::MAX,
+        &sampled_rows(&route),
+        &format!("/api/v1/analytics/by-variant?model={route}"),
+    )
+    .await
+    .expect("a configured stack");
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(
+        sampled_by_variant(&body),
+        vec![
+            ("".to_string(), 1.0, 1.0, Some(1.0)),
+            // answered 1, dialled first 1, sampled 3
+            ("parked".to_string(), 1.0, 1.0, Some(3.0)),
+            // answered 4, dialled first 4, sampled 1: the old row has no sample
+            ("spare".to_string(), 4.0, 4.0, Some(1.0)),
+        ],
+        "{body}"
+    );
+}
+
+/// On a ClickHouse without `050` by-variant still answers, `sampled_requests`
+/// is `null` rather than a guess, and the other counts are the full table's.
+#[tokio::test]
+async fn by_variant_on_a_clickhouse_without_050_reports_no_sampled_count() {
+    let _ = skip_without_stack!();
+    let route = format!("variant-route-{}", Uuid::new_v4().simple());
+    let path = format!("/api/v1/analytics/by-variant?model={route}");
+    let rows = sampled_rows(&route);
+    // 048 is the last file this count does not need
+    let (status, before) = read_after(48, &rows, &path)
+        .await
+        .expect("a configured stack");
+    assert_eq!(status, 200, "{before}");
+    let (status, dropped) = read_without(u32::MAX, &["sampled_variant"], &rows, &path)
+        .await
+        .expect("a configured stack");
+    assert_eq!(status, 200, "{dropped}");
+    for body in [&before, &dropped] {
+        assert_eq!(
+            sampled_by_variant(body),
+            vec![
+                ("".to_string(), 1.0, 1.0, None),
+                ("parked".to_string(), 1.0, 1.0, None),
+                ("spare".to_string(), 4.0, 4.0, None),
+            ],
+            "{body}"
+        );
+    }
+    // and a table with `050` but not `048` counts the samples, not the assignments
+    let (status, body) = read_without(u32::MAX, &["first_variant"], &rows, &path)
+        .await
+        .expect("a configured stack");
+    assert_eq!(status, 200, "{body}");
+    let mut unassigned: Vec<_> = body["data"]
+        .as_array()
+        .expect("a data array")
+        .iter()
+        .map(|row| {
+            (
+                row["variant"].as_str().unwrap_or_default().to_string(),
+                row["assigned_requests"].is_null(),
+                number(&row["sampled_requests"]) as u32,
+            )
+        })
+        .collect();
+    unassigned.sort();
+    assert_eq!(
+        unassigned,
+        vec![
+            ("".to_string(), true, 1),
+            ("parked".to_string(), true, 3),
+            ("spare".to_string(), true, 1),
+        ],
+        "{body}"
+    );
+}
+
+/// The invocation list returns `sampled_variant` beside `first_variant`, and
+/// an empty string on a table without the column.
+#[tokio::test]
+async fn the_invocation_list_returns_the_sampled_variant() {
+    let _ = skip_without_stack!();
+    let request_id = format!("sampled-variant-{}", Uuid::new_v4().simple());
+    let mut row = full_row(&request_id);
+    row["variant"] = json!("spare");
+    row["first_variant"] = json!("spare");
+    row["sampled_variant"] = json!("parked");
+    let path = format!("/api/v1/analytics/invocations?request_id={request_id}");
+    for (last, expected) in [(u32::MAX, "parked"), (48, "")] {
+        let (status, body) = read_after(last, std::slice::from_ref(&row), &path)
+            .await
+            .expect("a configured stack");
+        assert_eq!(status, 200, "{body}");
+        let listed = &body["data"][0];
+        assert_eq!(listed["first_variant"], "spare", "{body}");
+        assert_eq!(listed["sampled_variant"], expected, "{body}");
+    }
+}

@@ -1967,7 +1967,8 @@ export const SuperadminMayRevokeTheLastAdminGrant: Story = {
 /**
  * The list was stale: someone else's admin grant went away meanwhile, so the
  * control plane refuses with `last_org_admin`. The dialog stays open and says
- * why in the dashboard's words, branching on the code and not the message.
+ * why in the catalog's sentence for the code, the shared path every coded
+ * refusal takes (#3522), branching on the code and not the message.
  */
 export const RevokeRefusedAsTheLastAdmin: Story = {
   render: () => (
@@ -1981,9 +1982,7 @@ export const RevokeRefusedAsTheLastAdmin: Story = {
     const dialog = within(await confirmation());
     await userEvent.click(dialog.getByRole("button", { name: "Revoke role" }));
     await waitFor(() =>
-      expect(dialog.getByRole("alert")).toHaveTextContent(
-        "This is the organization's last admin grant. Grant admin to another person first, or ask a superadmin.",
-      ),
+      expect(dialog.getByRole("alert")).toHaveTextContent(en.errors.api.codes.last_org_admin),
     );
     await expect(within(document.body).getByRole("dialog")).toBeInTheDocument();
   },
@@ -1991,8 +1990,8 @@ export const RevokeRefusedAsTheLastAdmin: Story = {
 
 /**
  * Demoting the last admin grant is refused with the stable `last_org_admin`
- * code: the dialog stays open and says why in the dashboard's words, and the
- * row keeps its role.
+ * code: the dialog stays open and says why in the catalog's sentence for the
+ * code (#3522), and the row keeps its role.
  */
 export const ChangeOfTheLastAdminIsRefused: Story = {
   render: () => (
@@ -2007,9 +2006,7 @@ export const ChangeOfTheLastAdminIsRefused: Story = {
     await pickOption(dialog.getByLabelText("New role"), "Member");
     await userEvent.click(dialog.getByRole("button", { name: "Change role" }));
     await waitFor(() =>
-      expect(dialog.getByRole("alert")).toHaveTextContent(
-        "This is the organization's last admin grant. Grant admin to another person first, or ask a superadmin.",
-      ),
+      expect(dialog.getByRole("alert")).toHaveTextContent(en.errors.api.codes.last_org_admin),
     );
     await expect(within(document.body).getByRole("dialog")).toBeInTheDocument();
     await expect(canvas.getByRole("button", { name: CHANGE_ADA })).toBeInTheDocument();

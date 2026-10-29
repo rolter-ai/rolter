@@ -62,6 +62,15 @@ impl CancelGuard {
         }
     }
 
+    /// Name the variant the route's weighted split sampled (#3547), once, before
+    /// the first pick, so a request abandoned at any point records it.
+    pub fn sampled(&mut self, variant: &str) {
+        if let Some(row) = self.row.as_mut() {
+            row.sampled_variant.clear();
+            row.sampled_variant.push_str(variant);
+        }
+    }
+
     /// Name the target the forward loop just picked, so a request abandoned
     /// while it waits on that upstream is logged against it (#1816).
     ///
@@ -206,6 +215,19 @@ mod tests {
         let row = guard.row.as_ref().unwrap();
         assert_eq!(row.variant, "spare");
         assert_eq!(row.first_variant, "primary");
+    }
+
+    #[test]
+    fn the_row_keeps_the_sampled_variant_beside_the_one_dialled_first() {
+        // #3547: the split sampled "parked", which the loop skipped
+        let metrics = Arc::new(Metrics::default());
+        let mut guard = CancelGuard::new(LogSink::disabled(metrics), Instant::now(), row());
+        guard.sampled("parked");
+        guard.attribute("up", "m", "spare");
+        let row = guard.row.as_ref().unwrap();
+        assert_eq!(row.sampled_variant, "parked");
+        assert_eq!(row.first_variant, "spare");
+        assert_eq!(row.variant, "spare");
     }
 
     #[test]

@@ -89,6 +89,15 @@ const HEADER: &str = "\
 # marker it is the desired state: an import sets the org it targets to exactly
 # these values, and no other org.
 #
+# `[[mcp_gateway_tool_groups]]` records each org's MCP tool groups: the tools
+# each allows, by server slug, and the teams, projects and virtual keys it is
+# assigned to. A key is named by its project and its name, or the prefix the
+# dashboard shows when it has none, never by its secret. Keys are not exported,
+# so a key assignment survives a round trip only where the key exists; an
+# import skips, with a warning, an assignment it cannot resolve. A name or
+# prefix matching several keys refuses the import before any write; give
+# those keys distinct names before importing.
+#
 # Budgets and rate limits round-trip too, and name what they cap the way the
 # importer finds it, never by database id: `scope = \"team\"` with `id =
 # \"acme/platform\"` is the team called `platform` of the org with slug `acme`
@@ -277,6 +286,7 @@ fn render_document(
     render_caps(&mut out, config, refs);
     render_mcp_manifest_enforcement(&mut out, config);
     render_mcp_gateway_settings(&mut out, config);
+    render_mcp_gateway_tool_groups(&mut out, config);
     render_prompt_templates(&mut out, config);
     render_logging(&mut out, config, omit_capture);
     out
@@ -683,6 +693,44 @@ fn render_mcp_gateway_settings(out: &mut String, config: &GatewayConfig) {
     }
 }
 
+/// `[[mcp_gateway_tool_groups]]`: each org's MCP tool groups with their
+/// assignments (#3514). Without them a round trip drops every tool
+/// restriction, and the org's keys can call every tool its servers expose.
+fn render_mcp_gateway_tool_groups(out: &mut String, config: &GatewayConfig) {
+    let mut rows: Vec<_> = config.mcp_gateway_tool_groups.iter().collect();
+    rows.sort_by(|a, b| (&a.org, &a.slug).cmp(&(&b.org, &b.slug)));
+    for row in rows {
+        out.push_str("\n[[mcp_gateway_tool_groups]]\n");
+        key(out, "org", &row.org);
+        key(out, "slug", &row.slug);
+        key(out, "name", &row.name);
+        if !row.description.is_empty() {
+            key(out, "description", &row.description);
+        }
+        key(out, "enabled", &row.enabled);
+        let mut tools = row.tools.clone();
+        tools.sort_by(|a, b| (&a.server, &a.tool).cmp(&(&b.server, &b.tool)));
+        key(out, "tools", &tools);
+        for (name, list) in [("teams", &row.teams), ("projects", &row.projects)] {
+            if !list.is_empty() {
+                let mut list = list.clone();
+                list.sort();
+                key(out, name, &list);
+            }
+        }
+        if !row.keys.is_empty() {
+            let mut keys = row.keys.clone();
+            keys.sort_by(|a, b| {
+                (&a.project, &a.name, &a.prefix).cmp(&(&b.project, &b.name, &b.prefix))
+            });
+            // duplicate public references are written once; an import refuses
+            // one that matches several keys rather than guessing its subject
+            keys.dedup();
+            key(out, "keys", &keys);
+        }
+    }
+}
+
 fn period_rank(period: rolter_core::BudgetPeriod) -> u8 {
     match period {
         rolter_core::BudgetPeriod::Daily => 0,
@@ -1014,6 +1062,7 @@ pub(crate) async fn export_document_typed(
     with_stored_variants(pool, &mut config).await?;
     config.mcp_manifest_enforcement = load_mcp_manifest_enforcement(pool, options).await?;
     config.mcp_gateway_settings = load_mcp_gateway_settings(pool, options).await?;
+    config.mcp_gateway_tool_groups = load_mcp_gateway_tool_groups(pool, options, &refs).await?;
     Ok(render_document(
         &config,
         &refs,
@@ -1086,6 +1135,127 @@ async fn load_mcp_gateway_settings(
                 allow_unlisted_tools,
             },
         )
+        .collect())
+}
+
+/// Each org's MCP tool groups with their assignments (#3514), every reference
+/// by the name an import resolves: a server by its slug, a team or project by
+/// its slug path, a key by its project and its name or prefix. A reference
+/// that has no such name (a tool of a deleted server, a team whose name holds
+/// a `/`) is left out, since it would name nothing on another deployment.
+#[cfg(feature = "postgres")]
+async fn load_mcp_gateway_tool_groups(
+    pool: &sqlx::PgPool,
+    options: &ExportOptions,
+    refs: &ScopeRefs,
+) -> rolter_core::Result<Vec<rolter_core::McpGatewayToolGroupConfig>> {
+    use rolter_core::{BudgetScope, McpGatewayKeyRefConfig, McpGatewayToolRefConfig};
+    use rolter_store::postgres::store_err;
+    let groups: Vec<(
+        uuid::Uuid,
+        String,
+        String,
+        String,
+        String,
+        bool,
+        serde_json::Value,
+    )> = sqlx::query_as(
+        "select g.id, o.slug, g.slug, g.name, g.description, g.enabled, g.tools
+             from mcp_tool_groups g join orgs o on o.id = g.org_id
+             where $1::text is null or o.slug = $1
+             order by o.slug, g.slug",
+    )
+    .bind(&options.org)
+    .fetch_all(pool)
+    .await
+    .map_err(store_err)?;
+    if groups.is_empty() {
+        return Ok(Vec::new());
+    }
+    let servers: std::collections::HashMap<uuid::Uuid, String> =
+        sqlx::query_as::<_, (uuid::Uuid, String)>("select id, slug from mcp_servers")
+            .fetch_all(pool)
+            .await
+            .map_err(store_err)?
+            .into_iter()
+            .collect();
+    let assignments: Vec<(uuid::Uuid, String, uuid::Uuid)> =
+        sqlx::query_as("select group_id, subject_kind, subject_id from mcp_tool_group_assignments")
+            .fetch_all(pool)
+            .await
+            .map_err(store_err)?;
+    let keys: std::collections::HashMap<uuid::Uuid, (uuid::Uuid, Option<String>, String)> =
+        sqlx::query_as::<_, (uuid::Uuid, uuid::Uuid, Option<String>, String)>(
+            "select k.id, k.project_id, k.name, k.key_prefix from virtual_keys k
+             where k.id in (select subject_id from mcp_tool_group_assignments
+                            where subject_kind = 'virtual_key')",
+        )
+        .fetch_all(pool)
+        .await
+        .map_err(store_err)?
+        .into_iter()
+        .map(|(id, project, name, prefix)| (id, (project, name, prefix)))
+        .collect();
+    Ok(groups
+        .into_iter()
+        .map(|(id, org, slug, name, description, enabled, tools)| {
+            // the store only ever holds the API's `{server_id, tool}` pairs;
+            // one written around it is left out, as the snapshot leaves it out
+            let tools = serde_json::from_value::<Vec<rolter_core::McpToolRefConfig>>(tools)
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(|tool| {
+                    let server = servers.get(&uuid::Uuid::parse_str(&tool.server_id).ok()?)?;
+                    Some(McpGatewayToolRefConfig {
+                        server: server.clone(),
+                        tool: tool.tool,
+                    })
+                })
+                .collect();
+            let mut group = rolter_core::McpGatewayToolGroupConfig {
+                org,
+                slug,
+                name,
+                description,
+                enabled,
+                tools,
+                ..Default::default()
+            };
+            for (_, kind, subject) in assignments.iter().filter(|(group, _, _)| *group == id) {
+                let named = match kind.as_str() {
+                    "team" => refs
+                        .get(BudgetScope::Team, &subject.to_string())
+                        .map(|team| group.teams.push(team.to_string())),
+                    "project" => refs
+                        .get(BudgetScope::Project, &subject.to_string())
+                        .map(|project| group.projects.push(project.to_string())),
+                    "virtual_key" => keys.get(subject).and_then(|(project, key_name, prefix)| {
+                        let project = refs.get(BudgetScope::Project, &project.to_string())?;
+                        // the key's public identifier: its name, else the
+                        // prefix the dashboard shows
+                        let key_name = key_name.clone().filter(|name| !name.trim().is_empty());
+                        group.keys.push(McpGatewayKeyRefConfig {
+                            project: project.to_string(),
+                            prefix: key_name.is_none().then(|| prefix.clone()),
+                            name: key_name,
+                        });
+                        Some(())
+                    }),
+                    _ => None,
+                };
+                if named.is_none() {
+                    // the file would name nothing an import can find, so the
+                    // operator hears that the assignment does not travel
+                    tracing::warn!(
+                        org = %group.org,
+                        group = %group.slug,
+                        kind = %kind,
+                        "an MCP tool group assignment has no portable name and is not exported"
+                    );
+                }
+            }
+            group
+        })
         .collect())
 }
 
@@ -3447,6 +3617,606 @@ model = "gpt-4o"
                     .await
                     .unwrap();
             assert_eq!(b, 0, "an import wrote another org's settings");
+        }
+
+        /// An org's MCP tool groups, a team, project and key assignment each,
+        /// survive export, wipe, import, export byte for byte, and a repeat
+        /// import writes nothing (#3514).
+        #[tokio::test]
+        async fn mcp_tool_groups_round_trip_with_their_assignments() {
+            use super::ExportOptions;
+
+            let Some(db) = scratch_db().await else {
+                return;
+            };
+            let pool = db.pool().clone();
+            let dir = tempdir("mcp-tool-groups");
+            let world = tool_group_world(&pool).await;
+            let store = PostgresConfigStore::new(pool.clone());
+            let options = ExportOptions {
+                org: Some("org-a".to_string()),
+                ..Default::default()
+            };
+            let export = || async {
+                super::export_document(&pool, &store.load().await.unwrap(), &options)
+                    .await
+                    .unwrap()
+            };
+            let first = export().await;
+            let unnamed = concat!("sk-", "rolter-ab");
+            assert!(
+                first.contains(&format!(
+                    "[[mcp_gateway_tool_groups]]\norg = \"org-a\"\nslug = \"off\"\n\
+                     name = \"Switched off\"\nenabled = false\ntools = []\n\n\
+                     [[mcp_gateway_tool_groups]]\norg = \"org-a\"\nslug = \"read-only\"\n\
+                     name = \"Read only\"\ndescription = \"no writes\"\nenabled = true\n\
+                     tools = [{{ server = \"github\", tool = \"fetch\" }}, \
+                     {{ server = \"github\", tool = \"search\" }}]\n\
+                     teams = [\"org-a/default\"]\nprojects = [\"org-a/default/default\"]\n\
+                     keys = [{{ project = \"org-a/default/default\", prefix = \"{unnamed}\" }}, \
+                     {{ project = \"org-a/default/default\", name = \"ci\" }}]\n"
+                )),
+                "{first}"
+            );
+            // no row id, server id, key digest or secret is written
+            for id in [world.group, world.server, world.ci_key] {
+                assert!(!first.contains(&id.to_string()), "{first}");
+            }
+            assert!(!first.contains("key_hash"), "{first}");
+            // the other org's group is not in this org's file
+            assert!(!first.contains("org-b"), "{first}");
+            let file = dir.join("org-a.toml");
+            std::fs::write(&file, &first).unwrap();
+
+            sqlx::query("delete from mcp_tool_groups where org_id = $1")
+                .bind(world.org_a)
+                .execute(&pool)
+                .await
+                .unwrap();
+            crate::seed::import_bootstrap_toml(&pool, world.org_a, world.project_a, &file)
+                .await
+                .unwrap();
+            assert_eq!(
+                first,
+                export().await,
+                "export, wipe, import changed the groups"
+            );
+            // org-b's group is untouched
+            let b: i64 =
+                sqlx::query_scalar("select count(*) from mcp_tool_groups where org_id = $1")
+                    .bind(world.org_b)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            assert_eq!(b, 1);
+
+            // a repeat import of the same groups writes nothing
+            let only = dir.join("only.toml");
+            std::fs::write(
+                &only,
+                &first[first.find("\n[[mcp_gateway_tool_groups]]\n").unwrap()
+                    ..first.find("\n[logging]\n").unwrap()],
+            )
+            .unwrap();
+            let version = || async {
+                sqlx::query_scalar::<_, i64>("select version from config_version")
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap()
+            };
+            let before = version().await;
+            crate::seed::import_bootstrap_toml(&pool, world.org_a, world.project_a, &only)
+                .await
+                .unwrap();
+            assert_eq!(version().await, before, "an unchanged group bumped config");
+
+            // an edited file is applied: a tool and an assignment dropped
+            let edited = dir.join("edited.toml");
+            std::fs::write(
+                &edited,
+                std::fs::read_to_string(&only)
+                    .unwrap()
+                    .replace(", { server = \"github\", tool = \"search\" }", "")
+                    .replace("teams = [\"org-a/default\"]\n", ""),
+            )
+            .unwrap();
+            crate::seed::import_bootstrap_toml(&pool, world.org_a, world.project_a, &edited)
+                .await
+                .unwrap();
+            let after = export().await;
+            assert!(!after.contains("tool = \"search\""), "{after}");
+            assert!(!after.contains("teams = "), "{after}");
+            assert!(
+                after.contains("projects = [\"org-a/default/default\"]"),
+                "{after}"
+            );
+        }
+
+        /// Into a deployment missing one key the group is still created with
+        /// its other assignments, and the missing one is skipped with a
+        /// warning that names it (#3514).
+        #[tokio::test]
+        async fn an_mcp_tool_group_keeps_its_group_when_a_key_is_missing() {
+            use super::ExportOptions;
+
+            let Some(db) = scratch_db().await else {
+                return;
+            };
+            let pool = db.pool().clone();
+            let dir = tempdir("mcp-tool-groups-missing");
+            let world = tool_group_world(&pool).await;
+            let store = PostgresConfigStore::new(pool.clone());
+            let options = ExportOptions {
+                org: Some("org-a".to_string()),
+                ..Default::default()
+            };
+            let first = super::export_document(&pool, &store.load().await.unwrap(), &options)
+                .await
+                .unwrap();
+            let file = dir.join("org-a.toml");
+            std::fs::write(&file, &first).unwrap();
+
+            // the receiving deployment has no `ci` key
+            sqlx::query("delete from mcp_tool_groups where org_id = $1")
+                .bind(world.org_a)
+                .execute(&pool)
+                .await
+                .unwrap();
+            sqlx::query("delete from virtual_keys where id = $1")
+                .bind(world.ci_key)
+                .execute(&pool)
+                .await
+                .unwrap();
+            let output = std::sync::Arc::new(parking_lot::Mutex::new(Vec::new()));
+            #[derive(Clone)]
+            struct Capture(std::sync::Arc<parking_lot::Mutex<Vec<u8>>>);
+            impl std::io::Write for Capture {
+                fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                    self.0.lock().extend_from_slice(bytes);
+                    Ok(bytes.len())
+                }
+                fn flush(&mut self) -> std::io::Result<()> {
+                    Ok(())
+                }
+            }
+            let captured = output.clone();
+            let subscriber = tracing_subscriber::fmt()
+                .without_time()
+                .with_ansi(false)
+                .with_max_level(tracing::Level::WARN)
+                .with_writer(move || Capture(captured.clone()))
+                .finish();
+            {
+                let _guard = tracing::subscriber::set_default(subscriber);
+                crate::seed::import_bootstrap_toml(&pool, world.org_a, world.project_a, &file)
+                    .await
+                    .unwrap();
+            }
+            let log = String::from_utf8(output.lock().clone()).unwrap();
+            assert!(
+                log.contains("skipping an MCP tool group assignment")
+                    && log.contains("key=ci")
+                    && log.contains("group=\"read-only\""),
+                "{log}"
+            );
+
+            let assigned: Vec<String> = sqlx::query_scalar(
+                "select a.subject_kind from mcp_tool_group_assignments a
+                 join mcp_tool_groups g on g.id = a.group_id
+                 where g.org_id = $1 and g.slug = 'read-only' order by a.subject_kind",
+            )
+            .bind(world.org_a)
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+            assert_eq!(assigned, ["project", "team", "virtual_key"]);
+            let again = super::export_document(&pool, &store.load().await.unwrap(), &options)
+                .await
+                .unwrap();
+            assert!(!again.contains("name = \"ci\""), "{again}");
+            assert!(again.contains("tool = \"search\""), "{again}");
+        }
+
+        /// A tool on a server the organization does not have fails the import
+        /// for the organization before any group is written, naming the group,
+        /// the server and the tool: a server created later under that slug
+        /// would otherwise start ungoverned (#3514).
+        #[tokio::test]
+        async fn a_tool_on_a_missing_server_fails_the_orgs_tool_group_import() {
+            use super::ExportOptions;
+
+            let Some(db) = scratch_db().await else {
+                return;
+            };
+            let pool = db.pool().clone();
+            let dir = tempdir("mcp-tool-groups-server");
+            let world = tool_group_world(&pool).await;
+            let store = PostgresConfigStore::new(pool.clone());
+            let options = ExportOptions {
+                org: Some("org-a".to_string()),
+                ..Default::default()
+            };
+            // the file also loosens the org's saved MCP settings, which the
+            // refusal must not let through either
+            sqlx::query(
+                "insert into mcp_gateway_settings (org_id, allow_unlisted_tools) values ($1, false)",
+            )
+            .bind(world.org_a)
+            .execute(&pool)
+            .await
+            .unwrap();
+            let first = super::export_document(&pool, &store.load().await.unwrap(), &options)
+                .await
+                .unwrap();
+            assert!(first.contains("allow_unlisted_tools = false"), "{first}");
+            let file = dir.join("org-a.toml");
+            std::fs::write(
+                &file,
+                first
+                    .replace(
+                        "{ server = \"github\", tool = \"fetch\" }",
+                        "{ server = \"gitlab\", tool = \"fetch\" }",
+                    )
+                    .replace(
+                        "allow_unlisted_tools = false",
+                        "allow_unlisted_tools = true",
+                    ),
+            )
+            .unwrap();
+            sqlx::query("delete from mcp_tool_groups where org_id = $1")
+                .bind(world.org_a)
+                .execute(&pool)
+                .await
+                .unwrap();
+            let refused =
+                crate::seed::import_bootstrap_toml(&pool, world.org_a, world.project_a, &file)
+                    .await
+                    .unwrap_err()
+                    .to_string();
+            for named in ["read-only", "gitlab", "fetch"] {
+                assert!(refused.contains(named), "{refused}");
+            }
+            // not even the group without that tool was written, and nothing
+            // else of the file was either
+            let groups: i64 =
+                sqlx::query_scalar("select count(*) from mcp_tool_groups where org_id = $1")
+                    .bind(world.org_a)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            assert_eq!(groups, 0);
+            let allow: bool = sqlx::query_scalar(
+                "select allow_unlisted_tools from mcp_gateway_settings where org_id = $1",
+            )
+            .bind(world.org_a)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            assert!(!allow, "a refused file loosened the org's MCP settings");
+        }
+
+        /// An assignment whose team has no portable name (`A/B`) is not in the
+        /// file, and a re-import of that file into the same deployment keeps
+        /// it rather than handing the team the organization-wide set (#3514).
+        #[tokio::test]
+        async fn a_re_import_keeps_an_assignment_the_file_cannot_name() {
+            use super::ExportOptions;
+            use rolter_store::postgres::repo::TeamRepo;
+
+            let db = scratch_db()
+                .await
+                .expect("this test needs ROLTER_TEST_DATABASE_URL");
+            let pool = db.pool().clone();
+            let dir = tempdir("mcp-tool-groups-unportable");
+            let world = tool_group_world(&pool).await;
+            let team = TeamRepo(&pool).create(world.org_a, "A/B").await.unwrap();
+            sqlx::query(
+                "insert into mcp_tool_group_assignments (group_id, subject_kind, subject_id)
+                 values ($1, 'team', $2)",
+            )
+            .bind(world.group)
+            .bind(team.id)
+            .execute(&pool)
+            .await
+            .unwrap();
+            let store = PostgresConfigStore::new(pool.clone());
+            let options = ExportOptions {
+                org: Some("org-a".to_string()),
+                ..Default::default()
+            };
+            let first = super::export_document(&pool, &store.load().await.unwrap(), &options)
+                .await
+                .unwrap();
+            assert!(!first.contains("A/B"), "{first}");
+            let file = dir.join("org-a.toml");
+            std::fs::write(&file, &first).unwrap();
+
+            crate::seed::import_bootstrap_toml(&pool, world.org_a, world.project_a, &file)
+                .await
+                .unwrap();
+            let kept: i64 = sqlx::query_scalar(
+                "select count(*) from mcp_tool_group_assignments
+                 where group_id = $1 and subject_kind = 'team' and subject_id = $2",
+            )
+            .bind(world.group)
+            .bind(team.id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            assert_eq!(
+                kept, 1,
+                "the re-import dropped an assignment it could not name"
+            );
+        }
+
+        #[tokio::test]
+        async fn an_ambiguous_key_prefix_cannot_grant_another_keys_tools() {
+            ambiguous_key_import_is_refused(false).await;
+        }
+
+        #[tokio::test]
+        async fn an_ambiguous_key_name_cannot_grant_another_keys_tools() {
+            ambiguous_key_import_is_refused(true).await;
+        }
+
+        async fn ambiguous_key_import_is_refused(named: bool) {
+            use super::ExportOptions;
+
+            let Some(db) = scratch_db().await else {
+                return;
+            };
+            let pool = db.pool().clone();
+            let dir = tempdir("mcp-tool-groups-ambiguous");
+            let world = tool_group_world(&pool).await;
+            let intended: Uuid = if named {
+                world.ci_key
+            } else {
+                sqlx::query_scalar(
+                    "select id from virtual_keys where project_id = $1 and name is null",
+                )
+                .bind(world.project_a)
+                .fetch_one(&pool)
+                .await
+                .unwrap()
+            };
+            let write_group: Uuid = sqlx::query_scalar(
+                "insert into mcp_tool_groups (org_id, name, slug, tools)
+                 values ($1, 'Write only', 'write-only', $2) returning id",
+            )
+            .bind(world.org_a)
+            .bind(serde_json::json!([{"server_id": world.server, "tool": "write"}]))
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            sqlx::query(
+                "insert into mcp_tool_group_assignments (group_id, subject_kind, subject_id)
+                 values ($1, 'virtual_key', $2)",
+            )
+            .bind(write_group)
+            .bind(intended)
+            .execute(&pool)
+            .await
+            .unwrap();
+            sqlx::query(
+                "insert into mcp_gateway_settings (org_id, allow_unlisted_tools) values ($1, false)",
+            )
+            .bind(world.org_a)
+            .execute(&pool)
+            .await
+            .unwrap();
+            let store = PostgresConfigStore::new(pool.clone());
+            let options = ExportOptions {
+                org: Some("org-a".to_string()),
+                ..Default::default()
+            };
+            let first = super::export_document(&pool, &store.load().await.unwrap(), &options)
+                .await
+                .unwrap();
+            let file = dir.join("org-a.toml");
+            assert!(first.contains("allow_unlisted_tools = false"));
+            // keep the no-op assertion about MCP policy; unchanged logging
+            // sections still write on import independently of this fix (#3577)
+            let policy = &first[first.find("\n[[mcp_gateway_settings]]\n").unwrap()
+                ..first.find("\n[logging]\n").unwrap()];
+            std::fs::write(
+                &file,
+                policy.replace(
+                    "allow_unlisted_tools = false",
+                    "allow_unlisted_tools = true",
+                ),
+            )
+            .unwrap();
+            // the target already holds another key with the same public reference
+            let other: Uuid = sqlx::query_scalar(
+                "insert into virtual_keys (project_id, key_hash, key_prefix, name)
+                 values ($1, $2, $3, $4) returning id",
+            )
+            .bind(world.project_a)
+            .bind(format!("digest-{}", Uuid::new_v4()))
+            .bind(concat!("sk-", "rolter-ab"))
+            .bind(named.then_some("ci"))
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            sqlx::query(
+                "insert into mcp_tool_group_assignments (group_id, subject_kind, subject_id)
+                 values ($1, 'virtual_key', $2)",
+            )
+            .bind(world.group)
+            .bind(other)
+            .execute(&pool)
+            .await
+            .unwrap();
+            let team: Uuid = sqlx::query_scalar("select team_id from projects where id = $1")
+                .bind(world.project_a)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+            let caller = [
+                ("virtual_key", other.to_string()),
+                ("project", world.project_a.to_string()),
+                ("team", team.to_string()),
+            ];
+            // policy unions all three subjects: adding write-only would grant write
+            let tools = || async {
+                let config = store.load().await.unwrap();
+                config
+                    .mcp_tool_groups
+                    .iter()
+                    .filter(|group| {
+                        !group.disabled
+                            && group.assignments.iter().any(|subject| {
+                                caller
+                                    .iter()
+                                    .any(|(kind, id)| subject.kind == *kind && &subject.id == id)
+                            })
+                    })
+                    .flat_map(|group| group.tools.iter().map(|tool| tool.tool.clone()))
+                    .collect::<std::collections::BTreeSet<_>>()
+            };
+            let read_only =
+                std::collections::BTreeSet::from(["fetch".to_string(), "search".to_string()]);
+            assert_eq!(tools().await, read_only);
+            let version = || async {
+                sqlx::query_scalar::<_, i64>("select version from config_version")
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap()
+            };
+            let before = version().await;
+            for _ in 0..2 {
+                let result =
+                    crate::seed::import_bootstrap_toml(&pool, world.org_a, world.project_a, &file)
+                        .await;
+                assert_eq!(
+                    tools().await,
+                    read_only,
+                    "a refused import widened another key's tools"
+                );
+                let refused = result.unwrap_err().to_string();
+                for named in ["org-a/", "org-a/default/default", "2 keys"] {
+                    assert!(refused.contains(named), "{refused}");
+                }
+                assert_eq!(
+                    version().await,
+                    before,
+                    "a refused import wrote configuration"
+                );
+            }
+            // a distinct name resolves either collision; valid repeated imports are no-ops
+            sqlx::query("update virtual_keys set name = 'another-key' where id = $1")
+                .bind(other)
+                .execute(&pool)
+                .await
+                .unwrap();
+            crate::seed::import_bootstrap_toml(&pool, world.org_a, world.project_a, &file)
+                .await
+                .unwrap();
+            assert_eq!(tools().await, read_only);
+            let before = version().await;
+            crate::seed::import_bootstrap_toml(&pool, world.org_a, world.project_a, &file)
+                .await
+                .unwrap();
+            assert_eq!(version().await, before);
+        }
+
+        /// What the tool-group tests export: two orgs, org-a with a `github`
+        /// server, a named and an unnamed key in its default project, a group
+        /// assigned to its team, project and both keys, and a disabled one.
+        struct ToolGroupWorld {
+            org_a: Uuid,
+            org_b: Uuid,
+            project_a: Uuid,
+            server: Uuid,
+            group: Uuid,
+            ci_key: Uuid,
+        }
+
+        async fn tool_group_world(pool: &sqlx::PgPool) -> ToolGroupWorld {
+            let (org_a, project_a) = bootstrap_named_org(pool, "org-a").await;
+            let (org_b, _) = bootstrap_named_org(pool, "org-b").await;
+            let team_a: Uuid = sqlx::query_scalar("select team_id from projects where id = $1")
+                .bind(project_a)
+                .fetch_one(pool)
+                .await
+                .unwrap();
+            let server: Uuid = sqlx::query_scalar(
+                "insert into mcp_servers (org_id, name, slug, url)
+                 values ($1, 'GitHub', 'github', 'https://mcp.example/github') returning id",
+            )
+            .bind(org_a)
+            .fetch_one(pool)
+            .await
+            .unwrap();
+            let key = |name: Option<&'static str>| async move {
+                sqlx::query_scalar::<_, Uuid>(
+                    "insert into virtual_keys (project_id, key_hash, key_prefix, name)
+                     values ($1, $2, $3, $4) returning id",
+                )
+                .bind(project_a)
+                .bind(format!("digest-{}", Uuid::new_v4()))
+                .bind(concat!("sk-", "rolter-ab"))
+                .bind(name)
+                .fetch_one(pool)
+                .await
+                .unwrap()
+            };
+            let ci_key = key(Some("ci")).await;
+            let unnamed = key(None).await;
+            let tools = serde_json::json!([
+                {"server_id": server, "tool": "search"},
+                {"server_id": server, "tool": "fetch"},
+            ]);
+            let group: Uuid = sqlx::query_scalar(
+                "insert into mcp_tool_groups (org_id, name, slug, description, tools)
+                 values ($1, 'Read only', 'read-only', 'no writes', $2) returning id",
+            )
+            .bind(org_a)
+            .bind(&tools)
+            .fetch_one(pool)
+            .await
+            .unwrap();
+            for (kind, subject) in [
+                ("team", team_a),
+                ("project", project_a),
+                ("virtual_key", ci_key),
+                ("virtual_key", unnamed),
+            ] {
+                sqlx::query(
+                    "insert into mcp_tool_group_assignments (group_id, subject_kind, subject_id)
+                     values ($1, $2, $3)",
+                )
+                .bind(group)
+                .bind(kind)
+                .bind(subject)
+                .execute(pool)
+                .await
+                .unwrap();
+            }
+            for (org, slug, name, enabled) in [
+                (org_a, "off", "Switched off", false),
+                (org_b, "elsewhere", "Elsewhere", true),
+            ] {
+                sqlx::query(
+                    "insert into mcp_tool_groups (org_id, name, slug, enabled)
+                     values ($1, $2, $3, $4)",
+                )
+                .bind(org)
+                .bind(name)
+                .bind(slug)
+                .bind(enabled)
+                .execute(pool)
+                .await
+                .unwrap();
+            }
+            ToolGroupWorld {
+                org_a,
+                org_b,
+                project_a,
+                server,
+                group,
+                ci_key,
+            }
         }
 
         /// A cap whose scope does not resolve is left alone rather than

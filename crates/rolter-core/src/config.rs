@@ -101,6 +101,12 @@ pub struct GatewayConfig {
     /// values per organization as `mcp_settings`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub mcp_gateway_settings: Vec<McpGatewaySettingsConfig>,
+    /// The MCP tool groups an organization defined, with the teams, projects
+    /// and keys each is assigned to (#3514). Read by `rolter-seed --import`
+    /// and written by `rolter config export`; the control plane never ships it
+    /// in the snapshot, which carries the groups as `mcp_tool_groups`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mcp_gateway_tool_groups: Vec<McpGatewayToolGroupConfig>,
     #[serde(default)]
     pub model_prices: Vec<ModelPriceConfig>,
     /// settlement currency and rate table. Budgets and accumulated spend are
@@ -2436,6 +2442,64 @@ pub struct McpGatewaySettingsConfig {
     pub allow_unlisted_tools: bool,
 }
 
+/// One organization's MCP tool group in a bootstrap file (#3514): the group by
+/// its slug, the tools it allows and whom it is assigned to, every one of them
+/// named the way the file names it rather than by a database id.
+///
+/// The import is the desired state for the groups the file names, for the
+/// organization it targets only. An assignment whose team, project or key does
+/// not exist on the receiving deployment is skipped with a warning; the group
+/// is still created, so its other assignments still narrow their callers.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+pub struct McpGatewayToolGroupConfig {
+    /// the organization's slug
+    pub org: String,
+    /// the group's slug, unique within the organization
+    pub slug: String,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub description: String,
+    /// a disabled group governs no one but the callers assigned to it, who get
+    /// none of its tools
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// the tools the group allows, each on a server of the organization
+    #[serde(default)]
+    pub tools: Vec<McpGatewayToolRefConfig>,
+    /// teams the group is assigned to, as `org/team`
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub teams: Vec<String>,
+    /// projects the group is assigned to, as `org/team/project`
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub projects: Vec<String>,
+    /// virtual keys the group is assigned to
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub keys: Vec<McpGatewayKeyRefConfig>,
+}
+
+/// One tool of an [`McpGatewayToolGroupConfig`]: the server by its slug in the
+/// group's organization, and the tool by name.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+pub struct McpGatewayToolRefConfig {
+    pub server: String,
+    pub tool: String,
+}
+
+/// A virtual key an [`McpGatewayToolGroupConfig`] is assigned to, named by its
+/// project and its public identifier, never by its secret or digest: its
+/// `name` when it has one, else the `prefix` the dashboard shows. A reference
+/// that matches no key of the project, or more than one, is skipped by the
+/// import with a warning.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+pub struct McpGatewayKeyRefConfig {
+    /// the key's project, as `org/team/project`
+    pub project: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prefix: Option<String>,
+}
+
 /// One tool of one server, as a tool group names it.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
 pub struct McpToolRefConfig {
@@ -4259,6 +4323,7 @@ mod known_values {
     use super::*;
     use crate::guardrail_webhook::FailureMode;
     use crate::guardrail_webhook::GuardProviderKind;
+    use crate::guardrail_webhook::OnTruncated;
     use crate::guardrails::{GuardAction, StreamingPostCall};
     use crate::pii_sanitizer::{RestorationPolicy, SanitizeDirection, StreamingResponse};
     use crate::semantic_guards::{StreamingStrategy, ViolationAction};
@@ -4309,6 +4374,7 @@ mod known_values {
         FailOpen,
         FailClosed
     });
+    known_values!(OnTruncated { Score, FailClosed });
     known_values!(GuardAction {
         Annotate,
         Block,
@@ -4516,7 +4582,7 @@ impl GatewayConfig {
     /// [`fail_closed_unknown_values`](Self::fail_closed_unknown_values), also
     /// run first by the sanitizer so a control plane serves the same reading.
     fn resolve_unknown_settings(&mut self, problems: &mut UnknownValues) {
-        use crate::guardrail_webhook::FailureMode;
+        use crate::guardrail_webhook::{FailureMode, OnTruncated};
         use crate::guardrails::{GuardAction, StreamingPostCall};
         use crate::pii_sanitizer::{RestorationPolicy, SanitizeDirection, StreamingResponse};
         use crate::semantic_guards::{StreamingStrategy, ViolationAction};
@@ -4636,6 +4702,14 @@ impl GatewayConfig {
             "failure_mode",
             || "guardrail_webhook.failure_mode".to_string(),
         );
+        resolve_unknown(
+            &mut self.guardrail_webhook.on_truncated,
+            OnTruncated::Unknown,
+            OnTruncated::FailClosed,
+            problems,
+            "on_truncated",
+            || "guardrail_webhook.on_truncated".to_string(),
+        );
         for provider in &mut self.semantic_guards.providers {
             let name = provider.name.clone();
             resolve_unknown(
@@ -4645,6 +4719,14 @@ impl GatewayConfig {
                 problems,
                 "failure_mode",
                 || format!("semantic guard provider '{name}' failure_mode"),
+            );
+            resolve_unknown(
+                &mut provider.on_truncated,
+                OnTruncated::Unknown,
+                OnTruncated::FailClosed,
+                problems,
+                "on_truncated",
+                || format!("semantic guard provider '{name}' on_truncated"),
             );
         }
         for policy in &mut self.semantic_guards.policies {
@@ -4819,12 +4901,18 @@ impl GatewayConfig {
         unknown_value(&mut p, &self.guardrail_webhook.kind, || {
             "guardrail_webhook.kind".to_string()
         });
+        unknown_value(&mut p, &self.guardrail_webhook.on_truncated, || {
+            "guardrail_webhook.on_truncated".to_string()
+        });
         for provider in &self.semantic_guards.providers {
             unknown_value(&mut p, &provider.kind, || {
                 format!("semantic guard provider '{}' kind", provider.name)
             });
             unknown_value(&mut p, &provider.failure_mode, || {
                 format!("semantic guard provider '{}' failure_mode", provider.name)
+            });
+            unknown_value(&mut p, &provider.on_truncated, || {
+                format!("semantic guard provider '{}' on_truncated", provider.name)
             });
         }
         for policy in &self.semantic_guards.policies {
@@ -12054,7 +12142,8 @@ mod tests {
             "guardrail_webhook": {"failure_mode": "fail_sideways"},
             "semantic_guards": {
                 "providers": [{"name": "p", "url": "https://g.example",
-                               "failure_mode": "fail_sideways"}],
+                               "failure_mode": "fail_sideways",
+                               "on_truncated": "ask_a_human"}],
                 "policies": [{"name": "pol", "on_violation": "scold", "streaming": "trickle"}]
             },
             "pii_sanitizer": {
@@ -12089,6 +12178,7 @@ mod tests {
         assert_eq!(count("unpriced_policy"), 2, "{:?}", report.kinds);
         assert_eq!(count("role_profile"), 2, "{:?}", report.kinds);
         assert_eq!(count("failure_mode"), 4, "{:?}", report.kinds);
+        assert_eq!(count("on_truncated"), 1, "{:?}", report.kinds);
         assert_eq!(count("mcp_auth_kind"), 1, "{:?}", report.kinds);
         for kind in report.kinds.keys() {
             assert!(
@@ -12157,6 +12247,10 @@ mod tests {
         assert_eq!(
             cfg.semantic_guards.providers[0].failure_mode,
             FailureMode::FailClosed
+        );
+        assert_eq!(
+            cfg.semantic_guards.providers[0].on_truncated,
+            crate::guardrail_webhook::OnTruncated::FailClosed
         );
         let policy = &cfg.semantic_guards.policies[0];
         assert_eq!(policy.on_violation, ViolationAction::Block);

@@ -28,6 +28,7 @@ const LABELLED_LOCAL_MODELS: &str = "rolter_local_classifier_models";
 const LABELLED_GUARD_DECISIONS: &str = "rolter_guardrail_policy_decisions_total";
 const LABELLED_GUARD_VIOLATIONS: &str = "rolter_guardrail_policy_violations_total";
 const GUARD_PROVIDER_LATENCY: &str = "rolter_guardrail_provider_latency_ms";
+const LABELLED_LOCAL_TRUNCATED: &str = "rolter_semantic_local_truncated_total";
 const LABELLED_MCP_UNREAD: &str = "rolter_mcp_unread_bodies_total";
 
 /// Why the MCP relay forwarded a body without reading it, the `reason` label
@@ -82,6 +83,10 @@ pub const LABELLED_FAMILIES: &[rolter_core::telemetry::LabelledFamily] = &[
     (
         LABELLED_MCP_UNREAD,
         "mcp request bodies forwarded to an ungoverned server without being read, so their calls are not itemised, by reason",
+    ),
+    (
+        LABELLED_LOCAL_TRUNCATED,
+        "local semantic guard calls whose text was longer than the provider's max_scored_bytes, so part of it was not read, by provider",
     ),
 ];
 
@@ -534,6 +539,9 @@ pub struct Metrics {
     /// how long each semantic guardrail provider took to answer, failures
     /// included, keyed by provider name
     by_guard_latency: DashMap<String, Histogram>,
+    /// local classifier calls that could not read all of their text, keyed
+    /// by provider name (#3513)
+    by_local_truncated: DashMap<String, AtomicU64>,
 }
 
 /// One scalar metric: its Prometheus type, name, help text, and current value.
@@ -657,6 +665,19 @@ impl Metrics {
     pub fn observe_guard_violation(&self, policy: &str, category: &str, action: &'static str) {
         self.by_guard_violation
             .entry((policy.to_string(), category.to_string(), action))
+            .or_default()
+            .fetch_add(1, Relaxed);
+    }
+
+    /// Count one local classifier call whose text was longer than its
+    /// provider's `max_scored_bytes` (#3513).
+    pub fn observe_local_truncated(&self, provider: &str) {
+        if let Some(count) = self.by_local_truncated.get(provider) {
+            count.fetch_add(1, Relaxed);
+            return;
+        }
+        self.by_local_truncated
+            .entry(provider.to_string())
             .or_default()
             .fetch_add(1, Relaxed);
     }
@@ -1237,6 +1258,13 @@ impl Metrics {
                 entry.value().load(Relaxed),
             ));
         }
+        for entry in self.by_local_truncated.iter() {
+            out.push((
+                LABELLED_LOCAL_TRUNCATED,
+                vec![("provider", entry.key().clone())],
+                entry.value().load(Relaxed),
+            ));
+        }
         for entry in self.by_route_limit.iter() {
             let (route, kind) = entry.key();
             out.push((
@@ -1583,6 +1611,17 @@ impl Metrics {
                 entry.value().load(Relaxed)
             );
         }
+        let name = LABELLED_LOCAL_TRUNCATED;
+        let _ = writeln!(out, "# HELP {name} {}", family_help(name));
+        let _ = writeln!(out, "# TYPE {name} counter");
+        for entry in self.by_local_truncated.iter() {
+            let _ = writeln!(
+                out,
+                "{name}{{provider=\"{}\"}} {}",
+                escape_label(entry.key()),
+                entry.value().load(Relaxed)
+            );
+        }
         let name = GUARD_PROVIDER_LATENCY;
         let _ = writeln!(
             out,
@@ -1919,6 +1958,7 @@ mod tests {
         m.observe_route_limit("gpt-4o", "concurrency");
         m.observe_guard_decision("support", "toxicity", "post_call", "allow");
         m.observe_guard_violation("support", "violence", "block");
+        m.observe_local_truncated("injection");
         m.observe_rejection("missing_key");
         let _load = m.provider_load("vllm");
         watch_all_redis_consumers(&m);

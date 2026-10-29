@@ -54,6 +54,11 @@ gateway:
   podDisruptionBudget:
     enabled: true
     maxUnavailable: 1
+  # directory every local guardrail model must resolve under, set as
+  # ROLTER_SEMANTIC_MODEL_ROOT (#3511), where the models' volume is mounted.
+  # Empty leaves the gateway unconfined unless its config file sets
+  # `[semantic_guards] model_root`
+  semanticModelRoot: ""
   extraEnv: []
 
 control:

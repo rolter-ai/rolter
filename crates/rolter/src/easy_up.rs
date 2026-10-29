@@ -147,7 +147,7 @@ fn ensure_config(path: &Path) -> anyhow::Result<bool> {
 /// control plane's snapshot endpoint; in file mode it runs from the local toml.
 fn gateway_args(args: &EasyUpArgs, db_mode: bool) -> rolter_gateway::Args {
     rolter_gateway::Args {
-        config: args.config.clone(),
+        config: Some(args.config.clone()),
         host: Some(args.host.clone()),
         port: Some(args.gateway_port),
         snapshot_url: db_mode
@@ -162,6 +162,8 @@ fn gateway_args(args: &EasyUpArgs, db_mode: bool) -> rolter_gateway::Args {
         // snapshot channel never crosses a network boundary and there is
         // nothing to separate it from (see docs/dev-docs/architecture/security.md)
         internal_token: None,
+        // the gateway reads ROLTER_SEMANTIC_MODEL_ROOT itself, below the flag
+        semantic_model_root: None,
     }
 }
 
@@ -317,28 +319,38 @@ fn refuse_unacknowledged_open_mode(args: &EasyUpArgs, db_mode: bool) -> anyhow::
     )
 }
 
-/// Refuse the `--admin-*` flags without a database (#3478).
+/// Refuse the seed flags without a database (#3478, #3523).
 ///
-/// They only act in database mode, where easy-up seeds the admin user. Without
-/// `--database-url` they used to be accepted and ignored, so an operator who
-/// forgot it started a deployment with no admin and no hint why.
+/// `--admin-*` and `--import` only act in database mode, where easy-up seeds
+/// the admin user and imports providers and routes. Without `--database-url`
+/// they used to be accepted and ignored, so an operator who forgot it started a
+/// deployment with no admin, or without the file's providers and routes, and no
+/// hint why.
 #[cfg(feature = "postgres")]
-fn refuse_admin_flags_without_database(args: &EasyUpArgs) -> anyhow::Result<()> {
+fn refuse_seed_flags_without_database(args: &EasyUpArgs) -> anyhow::Result<()> {
     if args.database_url.is_some() {
         return Ok(());
     }
+    const ADMIN: &str = "the admin user is created when easy-up seeds a database";
+    const IMPORT: &str =
+        "the file's providers and routes are imported when easy-up seeds a database";
     let flag = [
-        ("--admin-email", args.admin_email.is_some()),
-        ("--admin-password", args.admin_password.is_some()),
-        ("--admin-password-stdin", args.admin_password_stdin),
-        ("--admin-password-file", args.admin_password_file.is_some()),
+        ("--admin-email", args.admin_email.is_some(), ADMIN),
+        ("--admin-password", args.admin_password.is_some(), ADMIN),
+        ("--admin-password-stdin", args.admin_password_stdin, ADMIN),
+        (
+            "--admin-password-file",
+            args.admin_password_file.is_some(),
+            ADMIN,
+        ),
+        ("--import", args.import.is_some(), IMPORT),
     ]
     .into_iter()
-    .find_map(|(name, set)| set.then_some(name));
+    .find_map(|(name, set, why)| set.then_some((name, why)));
     match flag {
-        Some(flag) => anyhow::bail!(
-            "{flag} needs --database-url (or ROLTER_DATABASE_URL): the admin user is created \
-             when easy-up seeds a database, and without one the flag would be ignored"
+        Some((flag, why)) => anyhow::bail!(
+            "{flag} needs --database-url (or ROLTER_DATABASE_URL): {why}, and without one the \
+             flag would be ignored"
         ),
         None => Ok(()),
     }
@@ -354,7 +366,7 @@ pub async fn run(args: EasyUpArgs) -> anyhow::Result<()> {
     let database_url: Option<String> = None;
 
     #[cfg(feature = "postgres")]
-    refuse_admin_flags_without_database(&args)?;
+    refuse_seed_flags_without_database(&args)?;
     refuse_unacknowledged_open_mode(&args, database_url.is_some())?;
     let created = ensure_config(&args.config)?;
     if created {
@@ -796,13 +808,13 @@ models = ["fake-llm"]
 
     #[cfg(feature = "postgres")]
     #[test]
-    fn an_admin_flag_without_a_database_url_is_refused_naming_it() {
-        let ok = |args: &EasyUpArgs| refuse_admin_flags_without_database(args).is_ok();
+    fn a_seed_flag_without_a_database_url_is_refused_naming_it() {
+        let ok = |args: &EasyUpArgs| refuse_seed_flags_without_database(args).is_ok();
         assert!(ok(&args_on("127.0.0.1")));
 
         let refused = |mut args: EasyUpArgs, flag: &str| {
-            let error = refuse_admin_flags_without_database(&args)
-                .expect_err("an admin flag with no database was accepted")
+            let error = refuse_seed_flags_without_database(&args)
+                .expect_err("a seed flag with no database was accepted")
                 .to_string();
             assert!(error.contains(flag), "{error}");
             assert!(error.contains("--database-url"), "{error}");
@@ -822,6 +834,10 @@ models = ["fake-llm"]
         let mut args = args_on("127.0.0.1");
         args.admin_password_file = Some(PathBuf::from("password.txt"));
         refused(args, "--admin-password-file");
+        // the import file is seeded too, so it is refused the same way (#3523)
+        let mut args = args_on("127.0.0.1");
+        args.import = Some(PathBuf::from("rolter.toml"));
+        refused(args, "--import");
     }
 
     #[test]

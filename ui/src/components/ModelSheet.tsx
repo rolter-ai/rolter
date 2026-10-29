@@ -1114,7 +1114,8 @@ type FieldKey =
   | "speech"
   | "audioInputTokens"
   | "audioOutputTokens"
-  | "cachedAudio";
+  | "cachedAudio"
+  | "variants";
 
 export interface ModelSheetProps {
   open: boolean;
@@ -1424,18 +1425,26 @@ export function ModelSheet({
   const variantTargetSets = (Array.isArray(variants.data) ? variants.data : []).map((v) =>
     (v.targets ?? []).map((tg) => tg.takes_over ?? []),
   );
-  const onlyFallbacks =
+  const stranded =
     onlyRestrictedDialled(
       draft.targets.map((tg) => tg.takesOver),
       variantTargetSets,
     ) || !!refusal?.allRestricted;
+  // with variants the list is not what strands the route, so the message sits
+  // beside the variants instead; this sheet does not edit them, so it says
+  // where they are edited (#3510)
+  const variantsStranded = !readonly && stranded && variantTargetSets.length > 0;
+  const onlyFallbacks = stranded && !variantsStranded;
   const errTargets = readonly
     ? ""
     : onlyFallbacks
       ? t("fallbackTargets.errors.allRestricted")
-      : draft.targets.length === 0 || refusal?.field === "targets"
+      : draft.targets.length === 0 || (refusal?.field === "targets" && !refusal.allRestricted)
         ? t("modelSheet.errors.targets")
         : "";
+  const errVariants = variantsStranded
+    ? t("fallbackTargets.errors.variantsAllRestrictedElsewhere")
+    : "";
   // a set the control plane refused, said under that target's own set
   const takesOverError = (tg: DraftTarget) =>
     refusal?.field === "takesOver" && refusal.key === tg.key
@@ -1541,6 +1550,7 @@ export function ModelSheet({
     audioInputTokens: errAudioInputTokens,
     audioOutputTokens: errAudioOutputTokens,
     cachedAudio: errCachedAudio,
+    variants: errVariants,
   };
   const problems = (Object.keys(found) as FieldKey[]).filter((key) => found[key]);
   // what the sheet says under each field: its error, once it may be shown
@@ -1548,6 +1558,10 @@ export function ModelSheet({
   // for the field to be visited
   const shownError = (key: FieldKey) =>
     visibility.shows(key) || refusal?.field === key ? found[key] : "";
+  // the list's refusal for holding only fallbacks is the variants' news when
+  // the route has them
+  const variantsMessage =
+    visibility.shows("variants") || refusal?.allRestricted ? found.variants : "";
   const rowNumber = (key?: string) => draft.targets.findIndex((tg) => tg.key === key) + 1;
   const weightMessage =
     refusal?.field === "weight" && !draft.targets.some((tg) => !weightValid(tg.weight))
@@ -1565,6 +1579,8 @@ export function ModelSheet({
     targetsErr: `${fid}-targets-err`,
     providerErr: `${fid}-provider-err`,
     weightErr: `${fid}-weight-err`,
+    variantsLabel: `${fid}-variants-label`,
+    variantsErr: `${fid}-variants-err`,
     timeoutHint: `${fid}-timeout-hint`,
     retriesHint: `${fid}-retries-hint`,
     retriesErr: `${fid}-retries-err`,
@@ -2169,6 +2185,22 @@ export function ModelSheet({
           <FieldError id={ids.targetsErr} error={shownError("targets")} />
           <FieldError id={ids.providerErr} error={shownError("provider")} />
           <FieldError id={ids.weightErr} error={weightMessage} />
+          {variantsMessage && (
+            <div className="space-y-1.5">
+              <FieldLabel label={t("routeSheet.variants.title")} id={ids.variantsLabel} />
+              <FieldError id={ids.variantsErr} error={variantsMessage} />
+              {/* the variants are edited in the route sheet, so the way there
+                  is what takes focus when the save is refused for them */}
+              <Link
+                to="/routing-rules"
+                data-error-anchor="true"
+                aria-describedby={describedBy(ids.variantsLabel, ids.variantsErr)}
+                className="text-xs text-foreground underline underline-offset-2 hover:no-underline focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              >
+                {t("modelSheet.routing.editVariants")}
+              </Link>
+            </div>
+          )}
         </FormSection>
 
         {/* a config route's parameters, caps, prices, headers and access are

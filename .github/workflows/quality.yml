@@ -300,8 +300,11 @@ jobs:
         if: ${{ !cancelled() && steps.smoke-build.outcome == 'success' }}
         run: |
           set -euo pipefail
-          # no config file: the gateway starts open with the built-in fake-llm
-          ./target/debug/rolter-gateway --config /nonexistent.toml &
+          # no config file: the gateway starts open with the built-in fake-llm.
+          # only the default path (rolter.toml, absent from the checkout) may be
+          # missing; a --config that names a missing file refuses to start (#3511)
+          test ! -e rolter.toml
+          env -u ROLTER_CONFIG ./target/debug/rolter-gateway &
           pid=$!
           trap 'kill "$pid" 2>/dev/null || true' EXIT
           # wait for the listener
@@ -548,7 +551,7 @@ jobs:
             "uvx --from \"\$(bash scripts/tool-pin.sh maturin)\" maturin sdist --out target/sdist"
           row "gateway smoke (fake-llm)" "build gateway" "${OUTCOME_SMOKE_BUILD}" "cargo build -p rolter-gateway"
           row "gateway smoke (fake-llm)" "boot + probe" "${OUTCOME_SMOKE_PROBE}" \
-            "./target/debug/rolter-gateway --config /nonexistent.toml, then the curl probes of this step in quality.yml"
+            "./target/debug/rolter-gateway (no rolter.toml in the checkout), then the curl probes of this step in quality.yml"
           row "image smoke (published ports)" "set up bun" "${OUTCOME_SETUP_BUN}" "${setup}"
           row "image smoke (published ports)" "build the dashboard for the image" "${OUTCOME_IMAGE_UI}" \
             "cd ui && bun install --frozen-lockfile && bun run build"

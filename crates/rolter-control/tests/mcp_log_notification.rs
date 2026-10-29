@@ -303,6 +303,60 @@ async fn the_list_and_detail_carry_the_notification_flag_and_the_outcome() {
     }
 }
 
+/// Independently applied `051` must not make any read depend on `047`.
+#[tokio::test]
+async fn a_table_with_051_but_without_047_reads_outcomes_and_defaults_notifications() {
+    let _ = skip_without_stack!();
+    let stack = Stack::migrated_through(51)
+        .await
+        .expect("a configured stack");
+    // model a deployment with `051` but no `047`, before its first read
+    let response = stack
+        .http
+        .post(format!("{}/", stack._scratch.base))
+        .query(&[("database", stack._scratch.name.as_str())])
+        .body("alter table mcp_tool_call_logs drop column notification")
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        response.status().is_success(),
+        "remove notification: {}",
+        response.text().await.unwrap_or_default()
+    );
+
+    let empty = stack.summary().await;
+    assert_eq!(empty["success_rate"], Value::Null, "{empty}");
+    assert_eq!(empty["failure_rate"], Value::Null, "{empty}");
+    for fields in [
+        json!({"transport": "sse", "outcome": "accepted"}),
+        json!({"outcome": "unread", "tool": ""}),
+        json!({"notification": true}),
+        json!({"status": "error"}),
+    ] {
+        let expected_outcome = fields["outcome"].as_str().unwrap_or("");
+        let (event_id, status) = stack.ingest(fields.clone()).await;
+        assert_eq!(status, StatusCode::ACCEPTED);
+        // repeated list/detail reads neither need the absent column nor change the row
+        for _ in 0..2 {
+            for row in [stack.listed(&event_id).await, stack.detail(&event_id).await] {
+                assert_eq!(row["notification"], json!(0), "{row}");
+                assert_eq!(row["outcome"], json!(expected_outcome), "{row}");
+            }
+        }
+    }
+    for _ in 0..2 {
+        let summary = stack.summary().await;
+        let count = |name: &str| summary[name].to_string().trim_matches('"').to_string();
+        assert_eq!(count("calls"), "4", "{summary}");
+        assert_eq!(count("not_awaited"), "2", "{summary}");
+        assert_eq!(count("successes"), "1", "{summary}");
+        assert_eq!(count("failures"), "1", "{summary}");
+        assert_eq!(summary["success_rate"], json!(0.5), "{summary}");
+        assert_eq!(summary["failure_rate"], json!(0.5), "{summary}");
+    }
+}
+
 /// #3526: a notification the upstream accepted, an `accepted` call and an
 /// `unread` body (#3528) say nothing about the tool, so the summary counts them
 /// apart and leaves them out of both rates; a notification that failed is a

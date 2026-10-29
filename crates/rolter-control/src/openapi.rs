@@ -2194,17 +2194,20 @@ fn operations() -> Vec<Op> {
                 "Attach a custom label to a model: `model`, `key`, an optional `value`, and an \
                  optional `org_id` naming the organization whose model it is (a 404 when that \
                  organization serves no route of that name); without `org_id` the label is \
-                 deployment-wide",
+                 deployment-wide. A label naming an organization takes that organization's \
+                 `label:create`; a deployment-wide one is superadmin-only",
             ),
             Op::put(
                 "/api/v1/model-labels/{id}",
                 "updateModelLabel",
-                "Change a custom model label's value",
+                "Change a custom model label's value. Takes `label:update` in the label's \
+                 organization, or superadmin for a deployment-wide label",
             ),
             Op::delete(
                 "/api/v1/model-labels/{id}",
                 "deleteModelLabel",
-                "Remove a custom model label",
+                "Remove a custom model label. Takes `label:delete` in the label's organization, \
+                 or superadmin for a deployment-wide label",
             ),
         ],
     ));
@@ -2500,8 +2503,10 @@ fn operations() -> Vec<Op> {
             Op::get(
                 "/api/v1/analytics/by-variant",
                 "getAnalyticsByVariant",
-                "Spend and usage grouped by route and the weighted variant that served it (`model` \
-                 narrows to one route); requests served without a variant come back under the empty string. \
+                "Spend and usage grouped by organization, route and the weighted variant that served it \
+                 (`model` narrows to one route): a row carries `org_id` (an empty string for a request no \
+                 organization owns) beside `model` and `variant`, since two organizations may each have a \
+                 route of one name; requests served without a variant come back under the empty string. \
                  `requests` counts every request the variant answered, failovers included; \
                  `first_attempt_requests` counts those it served on the first attempt (no \
                  `fallback_reason`, `clickhouse/023`), the closer comparison with the configured \
@@ -2514,7 +2519,13 @@ fn operations() -> Vec<Op> {
                  requests sampled for it; requests \
                  served without a variant count under the empty string. A row written before `048` \
                  counts for the variant that answered it when it has no `fallback_reason`, and for no \
-                 variant otherwise. It is `null` on a ClickHouse that has not applied `048`",
+                 variant otherwise. It is `null` on a ClickHouse that has not applied `048`. \
+                 `sampled_requests` counts the requests the weighted split sampled each variant for \
+                 (`sampled_variant`, `clickhouse/050`), before the gateway skips a variant whose \
+                 breaker is open or whose targets are parked or unhealthy, so it is the comparison \
+                 with the configured weights; a variant row written before `050` counts for no \
+                 variant, requests served without a variant count under the empty string, and it is \
+                 `null` on a ClickHouse that has not applied `050`",
             )
             .clickhouse_read()
             .query(DASHBOARD_QUERY),
@@ -2547,6 +2558,12 @@ fn operations() -> Vec<Op> {
                  dialled to, which differs from `variant` when it failed over to another variant, and \
                  an empty string on the classic pool, for a row older than the column, or on a table \
                  that lacks it. \
+                 `sampled_variant` (`clickhouse/050`) is the variant the route's weighted split picked \
+                 as primary before the gateway skipped one whose breaker is open or whose targets are \
+                 parked or unhealthy, which differs from `first_variant` when the request was routed \
+                 around it; on a realtime turn row it is the variant the session's dial walk led with, \
+                 the route's first variant with a non-zero weight (#3553). An empty string on the \
+                 classic pool, for a row older than the column, or on a table that lacks it. \
                  `outcome` (a string, `clickhouse/030`) names what happened to the request: `served`, \
                  `upstream_error`, `withheld`, `cancelled` or a `refused_*` reason, and `unknown` for a \
                  row written before the gateway recorded one or on a table without the column. \
@@ -2587,7 +2604,7 @@ fn operations() -> Vec<Op> {
             Op::post(
                 "/api/v1/analytics/exports/tickets",
                 "mintExportTicket",
-                "Mint a single-use download ticket for one CSV export, for a browser that cannot stream the file to disk itself (#3504). The body names `path` (one of the three `.../export` routes above; any other is a `400`) and `query`, the query string that export would be sent, which is checked as the export checks it. The export's own credential and scope checks run here, and the request log export is refused with `429` at once when its concurrency bound is full. Answers `id`, `download_url` (the secret is in it: hand it to the browser, never log it), `status_url` and `expires_at`, 60 seconds out",
+                "Mint a single-use download ticket for one export, for a browser that cannot stream the file to disk itself (#3504). The body names `path` (one of the three `.../export` routes above, or on a control plane with a database the audit log's `/api/v1/audit-log/export` or `/api/v1/orgs/{org_id}/audit-log/export` with the org's id, #3545; any other is a `400`) and `query`, the query string that export would be sent, which is checked as the export checks it. The export's own credential and scope checks run here (the audit log's `audit_log:read` or `deployment_audit_log:read` for its exports, again at redemption), and the request log export is refused with `429` at once when its concurrency bound is full. Answers `id`, `download_url` (the secret is in it: hand it to the browser, never log it), `status_url` and `expires_at`, 60 seconds out",
             )
             .body(Payload::Ref("ExportTicketRequest"))
             .ok(Payload::Ref("ExportTicket"))
@@ -2603,7 +2620,7 @@ fn operations() -> Vec<Op> {
             Op::get(
                 "/api/v1/analytics/exports/download/{ticket}",
                 "downloadExport",
-                "Redeem a download ticket and send its export as the bearer route would, under the principal that minted it, re-checked now. The ticket in the path is the credential, and it is spent by the first request whatever its outcome; an unknown, used or expired ticket is one uniform `410`, and any method but `GET` (a `HEAD` from a link checker included) is a `405` that leaves the ticket unspent. Answers `Cache-Control: no-store` and `Referrer-Policy: no-referrer`. The body is CSV, not JSON",
+                "Redeem a download ticket and send its export as the bearer route would, under the principal that minted it, re-checked now. The ticket in the path is the credential, and it is spent by the first request whatever its outcome; an unknown, used or expired ticket is one uniform `410`, and any method but `GET` (a `HEAD` from a link checker included) is a `405` that leaves the ticket unspent. Answers `Cache-Control: no-store` and `Referrer-Policy: no-referrer`. The body is CSV, or the audit log's CSV or JSON, not a JSON answer",
             )
             .public()
             .clickhouse_read(),
@@ -3429,12 +3446,7 @@ fn export_ticket_schemas(p: &Prim) -> Value {
             "properties": {
                 "path": {
                     "type": "string",
-                    "enum": [
-                        "/api/v1/analytics/by-attribution/export",
-                        "/api/v1/analytics/timeseries/export",
-                        "/api/v1/analytics/invocations/export"
-                    ],
-                    "description": "the export, by the exact path of its bearer route"
+                    "description": "the export, by the exact path of its bearer route: `/api/v1/analytics/by-attribution/export`, `/api/v1/analytics/timeseries/export`, `/api/v1/analytics/invocations/export`, and on a control plane with a database `/api/v1/audit-log/export` or `/api/v1/orgs/{org_id}/audit-log/export` with the org's hyphenated id"
                 },
                 "query": {
                     "type": "string",
@@ -3460,7 +3472,7 @@ fn export_ticket_schemas(p: &Prim) -> Value {
             "required": ["id", "export", "expires_at", "done", "state"],
             "properties": {
                 "id": uuid,
-                "export": {"type": "string", "enum": ["attribution", "timeseries", "invocations"]},
+                "export": {"type": "string", "enum": ["attribution", "timeseries", "invocations", "audit_log", "org_audit_log"]},
                 "expires_at": timestamp,
                 "done": {"type": "boolean", "description": "the state can no longer change"},
                 "state": {
@@ -4396,7 +4408,6 @@ fn virtual_key_schemas(p: &Prim) -> Value {
             "required": ["id", "project_id", "key_prefix", "models", "providers", "disabled", "created_at"],
             "properties": {
                 "id": uuid, "project_id": uuid,
-                "key_hash": {"type": "string", "description": "peppered digest; never the plaintext"},
                 "key_prefix": string,
                 "name": nullable_string,
                 "models": string_list,
