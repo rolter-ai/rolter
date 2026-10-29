@@ -318,6 +318,60 @@ export const NoProviderReportingCachedTokensReadsUnmeasured: Story = {
   },
 };
 
+/**
+ * #3410: a fleet that mixes providers which state their cache reads with ones
+ * that do not. The share is over the prompt tokens of the requests that
+ * reported it, 360k of 600k is 60%, and the line says how many requests it
+ * could not measure.
+ */
+export const ThePromptCacheReadShareLeavesOutProvidersThatDoNotReportIt: Story = {
+  render: () =>
+    render(
+      loadedWith({
+        ...SUMMARY,
+        cache_reported_prompt_tokens: 600_000,
+        cache_unmeasured_requests: 12,
+      } as typeof SUMMARY),
+    ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const share = await waitFor(() => {
+      const found = canvas.getByTestId("dashboard-prompt-cache");
+      expect(found).toHaveTextContent(`${fmt.number(60, { minimumFractionDigits: 1 })}%`);
+      return found;
+    });
+    await expect(share).toHaveTextContent("360K of 600K prompt tokens");
+    await expect(share).toHaveTextContent("12 requests could not be measured");
+  },
+};
+
+/**
+ * #3410: providers that state their cache reads and never hit are a measured
+ * 0.0%, not the "—" a window with no report at all reads.
+ */
+export const ReportingProvidersThatNeverHitReadZero: Story = {
+  render: () =>
+    render(
+      loadedWith({
+        ...SUMMARY,
+        cache_read_tokens: 0,
+        cache_reported_prompt_tokens: 900_000,
+        cache_unmeasured_requests: 0,
+      } as typeof SUMMARY),
+    ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const share = await waitFor(() => {
+      const found = canvas.getByTestId("dashboard-prompt-cache");
+      expect(found).toHaveTextContent(`${fmt.number(0, { minimumFractionDigits: 1 })}%`);
+      return found;
+    });
+    await expect(share).toHaveTextContent("0 of 900K prompt tokens");
+    await expect(share).not.toHaveTextContent(en.pages.dashboard.promptCacheNone);
+    await expect(share).not.toHaveTextContent(en.pages.dashboard.notMeasured);
+  },
+};
+
 /** An older control plane sends no `cache_read_tokens`, and the tile says it is not measured. */
 export const AnOlderControlPlaneLeavesThePromptCacheShareUnmeasured: Story = {
   render: () => {

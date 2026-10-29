@@ -446,11 +446,13 @@ fn realtime_usage(response: &Value) -> Usage {
         total => total,
     };
     let (audio_input, audio_output, audio_cache_read) = crate::logging::audio_usage(usage);
+    let cached = usage.pointer("/input_token_details/cached_tokens");
     Usage {
         prompt,
         completion,
         total,
-        cache_read: count(usage.pointer("/input_token_details/cached_tokens")),
+        cache_read: count(cached),
+        cache_reported: cached.is_some_and(Value::is_u64),
         cache_write: 0,
         cache_write_1h: 0,
         audio_input,
@@ -1006,6 +1008,7 @@ impl Runner {
         row.completion_tokens = usage.completion;
         row.total_tokens = usage.total;
         row.cache_read_tokens = usage.cache_read;
+        row.cache_usage_reported = u8::from(usage.cache_reported);
         row.cost_usd = cost.to_f64().unwrap_or(0.0);
         // a failed response reports no usage because nothing was billed, the
         // same reading the HTTP path gives an upstream error (#1478)
@@ -1177,6 +1180,7 @@ mod tests {
                 audio_output: 200,
                 audio_cache_read: 0,
                 reported: true,
+                cache_reported: true,
             }
         );
         assert_eq!((turn.latency_ms, turn.ttft_ms), (900, 40));

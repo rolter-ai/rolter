@@ -273,6 +273,9 @@ async fn an_image_request_is_priced_by_the_images_returned() {
     assert_eq!(row["cost_usd"], 0.12, "{row}");
     assert_eq!(row["unpriced"], 0, "{row}");
     assert_eq!(row["usage_unknown"], 0, "{row}");
+    // no prompt-cache figure was stated, so the row leaves the column out and
+    // a ClickHouse without it accepts the row (#3410)
+    assert!(row.get("cache_usage_reported").is_none(), "{row}");
 }
 
 #[tokio::test]
@@ -597,4 +600,61 @@ async fn unit_priced_requests_advance_the_budget() {
     };
     // three images at fifty cents
     assert_eq!(spend, 1.5);
+}
+
+/// A cached image route whose `post_response` plugin blocks the reply still
+/// bills the images the upstream returned: the count is read from the
+/// upstream body on the cache-miss path, not from the refusal the caller
+/// receives (#3404). Needs redis for the response cache.
+#[tokio::test]
+async fn a_withheld_cache_miss_bills_its_images() {
+    use rolter_core::{FailureMode, PluginInstanceConfig, PluginStage, PluginsConfig};
+    let Some(redis) = redis_url() else {
+        eprintln!("ROLTER_TEST_REDIS_URL unset; skipping");
+        return;
+    };
+    let upstream = upstream("application/json", THREE_IMAGES.body).await;
+    let hook = serve(Router::new().route(
+        "/hook",
+        post(|| async { axum::Json(json!({"action": "block"})) }),
+    ))
+    .await;
+    let rows = Rows::default();
+    let clickhouse = rows.serve().await;
+    let org = "org-unit-pricing-cached";
+    let mut config = config(upstream, clickhouse, org, IMAGE_RATE());
+    config.cache.enabled = true;
+    // a namespace of its own so an entry from an earlier run is never a hit
+    config.cache.namespace = format!("rolter-test-3404-{}", uuid::Uuid::new_v4());
+    config.routes[0].cache = Some(serde_json::from_value(json!({"enabled": true})).unwrap());
+    config.plugins = PluginsConfig {
+        instances: vec![PluginInstanceConfig {
+            slug: "veto".to_string(),
+            org_id: org.to_string(),
+            project_id: None,
+            stage: PluginStage::PostResponse,
+            position: 0,
+            failure_mode: FailureMode::FailOpen,
+            endpoint: format!("http://{hook}/hook"),
+            auth: None,
+        }],
+    };
+    let gw = gateway_for(&config, Some(&redis)).await;
+    // asked for one, got three: a refusal body carries no `data`, so reading
+    // it would bill the one asked for
+    let response = reqwest::Client::new()
+        .post(format!("http://{gw}/v1/images/generations"))
+        .bearer_auth(key())
+        .header("x-request-id", "up-images-cached-withheld")
+        .json(&json!({"model": "test-model", "prompt": "a cat", "n": 1}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 403);
+    let _ = response.bytes().await.unwrap();
+    let row = rows.row_for("up-images-cached-withheld").await;
+    assert_eq!(row["withheld"], 1, "{row}");
+    assert_eq!(row["cache_hit"], 0, "{row}");
+    assert_eq!(row["cost_usd"], 0.12, "{row}");
+    assert_eq!(row["usage_unknown"], 0, "{row}");
 }

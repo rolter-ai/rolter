@@ -240,9 +240,13 @@ modules = [
 ]
 supported = [
   "speech: JSON request forwarded, binary audio streamed back",
-  "transcriptions and translations: the multipart body is forwarded verbatim; the gateway reads only the `model` field",
+  "transcriptions and translations: the multipart body is forwarded verbatim; the gateway reads only the `model`, `response_format` and `stream` fields",
+  "transcriptions with `stream=true` (#3432): `transcript.text.delta` / `transcript.text.done` events are relayed; under response guardrails the stream is refused before the upstream call or buffered, judged on the joined transcript text and replayed, as the policy's `streaming` setting says",
 ]
 tests = [
+  "crates/rolter-gateway/tests/semantic_guards.rs::a_streamed_transcription_streams_through",
+  "crates/rolter-gateway/tests/semantic_guards.rs::a_streamed_transcription_follows_the_policy_streaming_setting",
+  "crates/rolter-gateway/tests/semantic_guards.rs::a_streamed_transcription_under_output_rules_is_refused",
   "crates/rolter-gateway/tests/integration.rs::builtin_fake_llm_serves_audio_speech",
   "crates/rolter-gateway/tests/integration.rs::builtin_fake_llm_serves_audio_transcriptions",
   "crates/rolter-gateway/tests/integration.rs::audio_translations_rejects_non_multipart",

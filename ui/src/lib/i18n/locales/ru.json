@@ -877,6 +877,10 @@
       "statPromptCache": "Доля токенов из кэша промптов",
       "promptCacheTokens": "{{read}} из {{prompt}} токенов промпта",
       "promptCacheNone": "Ни один провайдер не сообщил о токенах из кэша",
+      "promptCacheUnmeasured_one": "{{count}} запрос не измерен",
+      "promptCacheUnmeasured_few": "{{count}} запроса не измерены",
+      "promptCacheUnmeasured_many": "{{count}} запросов не измерено",
+      "promptCacheUnmeasured_other": "{{count}} запроса не измерено",
       "statFleet": "Шлюзы",
       "statProviders": "Провайдеры",
       "providers": {

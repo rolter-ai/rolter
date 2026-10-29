@@ -288,6 +288,36 @@ async fn a_pre_call_block_keeps_the_redactions_applied_before_it() {
     );
 }
 
+/// A response-stage block keeps the redactions of the output rules that ran
+/// before it, as the request stage does (#3403).
+#[tokio::test]
+async fn a_post_call_block_keeps_the_redactions_applied_before_it() {
+    let rows = Rows::default();
+    let clickhouse = rows.serve().await;
+    let up = upstream().await;
+    let mut config = config(up, clickhouse, GuardStage::PostCall, GuardAction::Redact);
+    // the upstream answers "write to ops@corp.com": the address is redacted
+    // first, then the verb withholds the masked answer
+    config.guardrails.rules.push(GuardrailRule {
+        name: "verb".to_string(),
+        builtin: None,
+        pattern: Some("write".to_string()),
+        stage: GuardStage::PostCall,
+        action: GuardAction::Block,
+        replacement: None,
+        include_system: false,
+    });
+    let (status, row) = run_with(config, &rows, "ping").await;
+    assert_eq!(status, 403);
+    assert_eq!(row["withheld"], 1, "{row}");
+    assert_eq!(
+        row["guardrail_events"],
+        json!(["redacted:email", "blocked:verb"]),
+        "{row}"
+    );
+    assert!(!row.to_string().contains("ops@corp.com"), "{row}");
+}
+
 async fn webhook(decision: Value) -> SocketAddr {
     serve(Router::new().route(
         "/check",
@@ -356,4 +386,68 @@ async fn a_provider_without_a_name_records_the_bare_action() {
         json!(["provider_blocked"]),
         "{row}"
     );
+}
+
+/// An upstream that streams `text` whatever the request asked for.
+async fn sse_upstream(text: &'static str) -> SocketAddr {
+    serve(Router::new().route(
+        "/v1/chat/completions",
+        post(move || async move {
+            let chunk = json!({
+                "id": "c", "object": "chat.completion.chunk",
+                "choices": [{"index": 0, "delta": {"content": text}}]
+            });
+            let usage = json!({
+                "id": "c", "object": "chat.completion.chunk",
+                "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 3, "completion_tokens": 4, "total_tokens": 7}
+            });
+            (
+                [(axum::http::header::CONTENT_TYPE, "text/event-stream")],
+                format!("data: {chunk}\n\ndata: {usage}\n\ndata: [DONE]\n\n"),
+            )
+        }),
+    ))
+    .await
+}
+
+/// #3471: a request that did not ask for a stream keeps the whole-body
+/// response guardrails, which cannot read an event stream. An upstream that
+/// streams anyway has its answer withheld, still billed, rather than relayed
+/// past the output rules; with no such rule the stream is served as it came.
+#[tokio::test]
+async fn an_unrequested_stream_is_withheld_under_output_rules() {
+    let rows = Rows::default();
+    let clickhouse = rows.serve().await;
+    let up = sse_upstream("write to ops@corp.com").await;
+    let guarded = config(up, clickhouse, GuardStage::PostCall, GuardAction::Redact);
+    let response = ask(&guarded, "ping").await;
+    assert_eq!(response.status(), 403);
+    let body = response.text().await.unwrap();
+    assert!(body.contains("guardrail_blocked"), "{body}");
+    assert!(
+        !body.contains("ops@corp.com"),
+        "the answer must not leak: {body}"
+    );
+    let row = rows.only_row().await;
+    assert_eq!(row["withheld"], 1, "{row}");
+    assert_eq!(
+        row["total_tokens"], 7,
+        "billed from the stream it sent: {row}"
+    );
+    assert_eq!(
+        row["guardrail_events"],
+        json!(["blocked:unrequested_stream"]),
+        "{row}"
+    );
+
+    // the same answer on a route without response rules streams through
+    let rows = Rows::default();
+    let clickhouse = rows.serve().await;
+    let up = sse_upstream("hello").await;
+    let mut open = config(up, clickhouse, GuardStage::PreCall, GuardAction::Redact);
+    open.guardrails.rules.clear();
+    let response = ask(&open, "ping").await;
+    assert_eq!(response.status(), 200);
+    assert!(response.text().await.unwrap().contains("hello"));
 }

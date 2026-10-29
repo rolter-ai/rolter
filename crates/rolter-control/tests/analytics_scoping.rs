@@ -1529,6 +1529,70 @@ async fn summary_reports_weighted_cache_hits_and_an_overall_p95() {
     assert_eq!(row["p95_latency_ms"].as_f64(), Some(300.0));
 }
 
+/// #3410: the prompt-cache read share is over the prompt tokens of the
+/// requests whose provider stated its cache reads, so a provider that says
+/// nothing is counted apart, as unmeasured, and does not dilute the share.
+#[tokio::test]
+async fn summary_measures_the_prompt_cache_over_the_requests_that_reported_it() {
+    let ch = skip_without_stack!();
+    let http = reqwest::Client::new();
+    ensure_schema(&http, &ch).await;
+
+    let db = TestSchema::create(&test_database::url().await.unwrap()).await;
+    let app = rolter_control::test_app_with_clickhouse_and_admin_token(
+        db.pool().clone(),
+        &ch,
+        Some(ADMIN_TOKEN.to_string()),
+    )
+    .await
+    .unwrap();
+    let addr = serve(app).await;
+
+    let model = format!("cache-share-{}", Uuid::new_v4().simple());
+    let ts = chrono::Utc::now()
+        .format("%Y-%m-%d %H:%M:%S%.3f")
+        .to_string();
+    // weight 2 each: a reporting provider read 40 of its 100 prompt tokens,
+    // one that says nothing sent 300, and a request with no prompt is neither
+    let rows: Vec<Value> = [(100, 40, 1), (300, 0, 0), (0, 0, 0)]
+        .iter()
+        .enumerate()
+        .map(|(i, (prompt, read, reported))| {
+            json!({
+                "ts": ts, "request_id": format!("pc-{i}-{}", Uuid::new_v4().simple()),
+                "model": model, "status": 200, "latency_ms": 10,
+                "prompt_tokens": prompt, "cache_read_tokens": read,
+                "cache_usage_reported": reported, "sample_weight": 2.0,
+            })
+        })
+        .collect();
+    insert_rows(&http, &ch, "request_logs", &rows).await;
+
+    let response = http
+        .get(format!(
+            "http://{addr}/api/v1/analytics/summary?model={model}"
+        ))
+        .bearer_auth(ADMIN_TOKEN)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let body: Value = response.json().await.unwrap();
+    let row = &body["data"][0];
+    assert_eq!(row["prompt_tokens"].as_f64(), Some(800.0), "{row}");
+    assert_eq!(row["cache_read_tokens"].as_f64(), Some(80.0), "{row}");
+    assert_eq!(
+        row["cache_reported_prompt_tokens"].as_f64(),
+        Some(200.0),
+        "{row}"
+    );
+    assert_eq!(
+        row["cache_unmeasured_requests"].as_f64(),
+        Some(2.0),
+        "{row}"
+    );
+}
+
 /// A request that never got a status (`status = 0`) is an error in the totals
 /// and in the LLM Logs `error` filter alike (#3294): the two screens must agree
 /// about how many requests failed.

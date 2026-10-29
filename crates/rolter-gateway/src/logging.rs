@@ -167,6 +167,10 @@ fn is_zero(n: &u32) -> bool {
     *n == 0
 }
 
+fn is_zero_u8(n: &u8) -> bool {
+    *n == 0
+}
+
 fn serialize_param_adjustments<S: serde::Serializer>(
     adjustments: &rolter_proxy::ParamAdjustments,
     serializer: S,
@@ -235,6 +239,13 @@ pub struct RequestLog {
     /// provider-native prompt-cache input tokens reused by the upstream; this
     /// is distinct from `cache_hit`, which means a Rolter response-cache hit
     pub cache_read_tokens: u32,
+    /// `1` when the upstream stated its prompt-cache reads, zero included
+    /// (`Usage::cache_reported`), so a read share can leave out the requests
+    /// of a provider that does not report them (#3410). Not serialized when
+    /// `0`, which is also the column default, so a ClickHouse without
+    /// `clickhouse/045_cache_usage_reported.sql` keeps accepting every row
+    #[serde(skip_serializing_if = "is_zero_u8")]
+    pub cache_usage_reported: u8,
     /// provider-native prompt-cache tokens written/created for this request
     pub cache_write_tokens: u32,
     /// the part of `cache_write_tokens` that went to the provider's 1 hour
@@ -453,6 +464,7 @@ impl Default for RequestLog {
             stream: 0,
             cache_hit: 0,
             cache_read_tokens: 0,
+            cache_usage_reported: 0,
             cache_write_tokens: 0,
             cache_write_1h_tokens: 0,
             prompt_tokens: 0,
@@ -734,6 +746,11 @@ pub struct Usage {
     /// whether the body carried a usage object at all. Without it an all-zero
     /// usage is indistinguishable from an upstream that said nothing (#1478)
     pub reported: bool,
+    /// whether the upstream stated its prompt-cache reads at all, zero
+    /// included, in the body or a response header. Without it a `cache_read`
+    /// of `0` cannot tell a provider that never hits from one that does not
+    /// report, and the dashboard's read share leaves the request out (#3410)
+    pub cache_reported: bool,
 }
 
 /// [`parse_usage_with`] for a provider whose usage is read as stated, which is
@@ -866,6 +883,7 @@ fn merge_usage(usage: &mut Usage, value: &Value, thinking: rolter_proxy::Thinkin
             .or_else(|| rolter_proxy::cached_prompt_tokens(u).map(|n| n as u32))
         {
             usage.cache_read = usage.cache_read.max(read);
+            usage.cache_reported = true;
         }
         // the write count has no OpenAI field; anthropic's own, or one of the
         // spellings that count it inside the prompt total, which the
@@ -903,6 +921,7 @@ impl Usage {
         if let (0, Some(read)) = (self.cache_read, header) {
             self.cache_read = read;
         }
+        self.cache_reported |= header.is_some();
     }
 
     /// The audio share of these tokens, as [`rolter_core::ModelPriceConfig::cost_with_audio`]
@@ -1274,6 +1293,7 @@ impl UsageLoggingStream {
         log.completion_tokens = usage.completion;
         log.total_tokens = usage.total;
         log.cache_read_tokens = usage.cache_read;
+        log.cache_usage_reported = u8::from(usage.cache_reported);
         log.cache_write_tokens = usage.cache_write;
         // a share of the writes, never more than them
         log.cache_write_1h_tokens = usage.cache_write_1h.min(usage.cache_write);
@@ -2360,6 +2380,7 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"usage\"
                 completion: 45,
                 total: 165,
                 reported: true,
+                cache_reported: true,
                 ..Usage::default()
             }
         );
@@ -2384,6 +2405,7 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"usage\"
                 total: 2051,
                 cache_read: 1920,
                 reported: true,
+                cache_reported: true,
                 ..Usage::default()
             }
         );
@@ -2403,6 +2425,7 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"
                 total: 2051,
                 cache_read: 1920,
                 reported: true,
+                cache_reported: true,
                 ..Usage::default()
             }
         );
@@ -2453,6 +2476,7 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"
                 total: 95,
                 cache_read: 80,
                 reported: true,
+                cache_reported: true,
                 ..Usage::default()
             }
         );
@@ -2471,6 +2495,7 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"
                 total: 95,
                 cache_read: 80,
                 reported: true,
+                cache_reported: true,
                 ..Usage::default()
             }
         );
@@ -2496,6 +2521,27 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"
         let mut absent = Usage::default();
         absent.fill_cache_read(None);
         assert_eq!(absent.cache_read, 0);
+        assert!(!absent.cache_reported);
+        assert!(usage.cache_reported, "the header stated it");
+    }
+
+    /// A stated zero is a measurement and an absent field is not: only the
+    /// first counts towards the read share (#3410)
+    #[test]
+    fn a_stated_zero_cache_read_is_reported_and_an_absent_one_is_not() {
+        let zero = parse_usage(
+            false,
+            br#"{"usage":{"prompt_tokens":10,"prompt_tokens_details":{"cached_tokens":0}}}"#,
+        );
+        assert!(zero.cache_reported);
+        assert_eq!(zero.cache_read, 0);
+        let anthropic = parse_usage(
+            false,
+            br#"{"usage":{"input_tokens":10,"output_tokens":1,"cache_read_input_tokens":0}}"#,
+        );
+        assert!(anthropic.cache_reported);
+        let silent = parse_usage(false, br#"{"usage":{"prompt_tokens":10}}"#);
+        assert!(silent.reported && !silent.cache_reported);
     }
 
     /// Databricks' Claude endpoints: a flat `cache_read_input_tokens` beside
@@ -2588,6 +2634,7 @@ data: [DONE]\n\n";
                 cache_read: 80,
                 cache_write: 30,
                 reported: true,
+                cache_reported: true,
                 ..Usage::default()
             }
         );
@@ -2951,6 +2998,7 @@ data: {\"type\":\"message_delta\",\"usage\":{\"input_tokens\":10,\"cache_creatio
                 cache_write: 248,
                 cache_write_1h: 100,
                 reported: true,
+                cache_reported: true,
                 ..Usage::default()
             }
         );
@@ -3021,6 +3069,7 @@ data: {\"type\":\"message_delta\",\"usage\":{\"input_tokens\":2048,\"cache_creat
             cache_write: 248,
             cache_write_1h: 100,
             reported: true,
+            cache_reported: true,
             ..Usage::default()
         };
         assert_eq!(parse_usage(false, chat), expected);

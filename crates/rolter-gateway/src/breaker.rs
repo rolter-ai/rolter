@@ -16,6 +16,15 @@
 //!   first result (#3248). A success closes the breaker (reset), a failure
 //!   re-opens it for another `open_secs` window.
 //!
+//! The breaker only steers target selection; routing's fail-open rule still
+//! wins over it. When every target of a route is skipped (parked, unhealthy,
+//! open, or half-open with its probe in flight), the request is forwarded to an
+//! untried target anyway rather than refused. A route with a single target, or
+//! whose every target is probing, therefore gets no stampede protection from
+//! the one-probe rule: every concurrent request reaches the probing target.
+//! That is the maintainer's decision on #3389, which keeps a single-target
+//! route answering while its upstream recovers rather than returning `503`.
+//!
 //! A probe holds its slot on a lease, not forever. A probe that never reports
 //! back (the caller went away, the request was cancelled, or it ended on a path
 //! that records neither outcome) would otherwise wedge the target half-open with

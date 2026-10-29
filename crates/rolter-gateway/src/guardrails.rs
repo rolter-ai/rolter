@@ -270,10 +270,20 @@ pub fn apply_input(
     }
 }
 
+/// A post-call block: the rule that withheld the response, and what the rules
+/// that ran before it had done to the same body, so the row records those too
+/// (#3403).
+#[derive(Debug)]
+pub struct OutputBlocked {
+    pub rule: String,
+    pub report: GuardrailReport,
+}
+
 /// Apply post-call guardrails to a buffered, non-streaming response body.
 ///
-/// Same contract as [`apply_input`], one stage later: `Err(rule_name)` means the
-/// completion must not be delivered, and a mutated `body` with
+/// Same contract as [`apply_input`], one stage later: `Err` means the
+/// completion must not be delivered and carries the blocking rule with the
+/// report gathered up to it, and a mutated `body` with
 /// `report.redactions > 0` must be re-serialized before it goes to the client.
 ///
 /// Assistant text and tool-call payloads are both walked. Tool arguments are a
@@ -285,9 +295,19 @@ pub fn apply_output(
     selection: &RuleSelection,
     path: &str,
     body: &mut Value,
-) -> Result<GuardrailReport, String> {
+) -> Result<GuardrailReport, Box<OutputBlocked>> {
     let mut scan = Scan::new(guardrails, selection, GuardStage::PostCall);
+    match scan_output(&mut scan, path, body) {
+        Ok(()) => Ok(scan.report),
+        Err(rule) => Err(Box::new(OutputBlocked {
+            rule,
+            report: scan.report,
+        })),
+    }
+}
 
+/// Walk the fields of a response of `path` that [`apply_output`] scans.
+fn scan_output(scan: &mut Scan<'_>, path: &str, body: &mut Value) -> Result<(), String> {
     match path {
         // OpenAI chat + legacy completions: one message/text per choice
         "/v1/chat/completions" | "/v1/completions" => scan.choices(body)?,
@@ -345,8 +365,7 @@ pub fn apply_output(
         }
         _ => {}
     }
-
-    Ok(scan.report)
+    Ok(())
 }
 
 /// The output stage resolved on the request path, carried to whichever delivery
@@ -394,9 +413,10 @@ impl<'a> OutputGuard<'a> {
     /// Callers apply this to successful responses only, so this is not the path
     /// an upstream error body takes.
     ///
-    /// The `redacted:<rule>` and `annotated:<rule>` outcomes of a body that is
-    /// delivered are appended to `events` for its log row (#3330); a withheld
-    /// body is recorded through its withheld reason instead.
+    /// The `redacted:<rule>` and `annotated:<rule>` outcomes are appended to
+    /// `events` for the log row (#3330), on a withheld body too: there the
+    /// rules that ran before the blocking one are kept (#3403), and the block
+    /// itself is recorded through the withheld reason.
     pub fn apply(&self, bytes: &bytes::Bytes, events: &mut Vec<String>) -> OutputDecision {
         // response-side scanning is its own attributable stage: masking a large
         // body costs real time, and it lands after the upstream leg (#805)
@@ -405,8 +425,17 @@ impl<'a> OutputGuard<'a> {
             return OutputDecision::Unchanged;
         };
         let report = apply_output(self.guardrails, self.selection, self.path, &mut parsed);
-        if let Ok(report) = &report {
-            events.extend(report.events());
+        match &report {
+            Ok(report) => events.extend(report.events()),
+            // the withheld reason records the block itself, so only the
+            // earlier rules' outcomes come from the report
+            Err(blocked) => events.extend(
+                blocked
+                    .report
+                    .events()
+                    .into_iter()
+                    .filter(|event| !event.starts_with("blocked:")),
+            ),
         }
         match report {
             Ok(report) if report.redactions > 0 => {
@@ -423,11 +452,11 @@ impl<'a> OutputGuard<'a> {
                 }
             }
             Ok(_) => OutputDecision::Unchanged,
-            Err(rule) => {
+            Err(blocked) => {
                 self.metrics
                     .guardrail_output_blocks_total
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                OutputDecision::Blocked(rule)
+                OutputDecision::Blocked(blocked.rule)
             }
         }
     }
@@ -824,9 +853,35 @@ mod tests {
                 &RuleSelection::default(),
                 "/v1/audio/transcriptions",
                 &mut body
-            ),
+            )
+            .map_err(|blocked| blocked.rule),
             Err("card".to_string())
         );
+    }
+
+    /// A block keeps what the rules before it did, as the request stage does
+    /// (#3403).
+    #[test]
+    fn a_blocking_output_rule_keeps_the_earlier_rules_report() {
+        let g = engine(vec![
+            out(redact("email", BuiltinRule::Email)),
+            out(block("card", BuiltinRule::PaymentCard)),
+        ]);
+        let mut body = json!({
+            "choices": [{"message": {
+                "role": "assistant",
+                "content": "mail a@b.com, card 4111 1111 1111 1111"
+            }}]
+        });
+        let blocked = apply_output(
+            &g,
+            &RuleSelection::default(),
+            "/v1/chat/completions",
+            &mut body,
+        )
+        .unwrap_err();
+        assert_eq!(blocked.rule, "card");
+        assert_eq!(blocked.report.redacted_by, vec!["email".to_string()]);
     }
 
     #[test]
@@ -841,7 +896,8 @@ mod tests {
                 &RuleSelection::default(),
                 "/v1/chat/completions",
                 &mut body
-            ),
+            )
+            .map_err(|blocked| blocked.rule),
             Err("card".to_string())
         );
     }
@@ -909,7 +965,8 @@ mod tests {
                 &RuleSelection::default(),
                 "/v1/chat/completions",
                 &mut body
-            ),
+            )
+            .map_err(|blocked| blocked.rule),
             Err("card".to_string())
         );
     }

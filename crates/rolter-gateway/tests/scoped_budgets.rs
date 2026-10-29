@@ -233,3 +233,24 @@ async fn a_narrowed_user_cap_counts_only_its_own_org_or_project() {
         assert_eq!(chat(gw, "sk-n").await.status(), expected, "{within}");
     }
 }
+
+/// #3470: a budget on a scope this gateway does not know, as an older control
+/// plane now serves one it cannot read (or a newer one sends), is binding: it
+/// counts every request, so a frozen cap refuses a key it does not name.
+#[tokio::test]
+async fn a_cap_on_an_unknown_scope_refuses_every_request() {
+    let Some(redis) = redis_url() else {
+        eprintln!("ROLTER_TEST_REDIS_URL unset; skipping");
+        return;
+    };
+    let mut config = base_config(upstream().await);
+    let key = unique("vk-anyone");
+    config
+        .db_virtual_keys
+        .push(key_record(&config, "sk-anyone", &key, ""));
+    let galaxy = budget("galaxy", &unique("galaxy"), 0);
+    assert_eq!(galaxy.scope, rolter_core::BudgetScope::Unknown);
+    config.budgets.push(galaxy);
+    let gw = gateway(&config, &redis).await;
+    assert_eq!(chat(gw, "sk-anyone").await.status(), 402);
+}

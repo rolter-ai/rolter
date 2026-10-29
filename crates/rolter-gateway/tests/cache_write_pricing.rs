@@ -363,6 +363,9 @@ async fn exchange_with_rates(
 fn assert_row(row: &Value, cost: f64) {
     assert_eq!(row["prompt_tokens"], 2000, "request-log row");
     assert_eq!(row["cache_read_tokens"], 1500, "request-log row");
+    // the provider stated its reads, so they count towards the read share
+    // (#3410)
+    assert_eq!(row["cache_usage_reported"], 1, "request-log row");
     assert_eq!(row["cache_write_tokens"], 100, "request-log row");
     assert_eq!(row["completion_tokens"], 3, "request-log row");
     assert_eq!(row["cost_usd"], cost, "request-log row");
