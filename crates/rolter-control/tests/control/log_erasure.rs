@@ -431,7 +431,7 @@ async fn the_subject_picker_finds_named_keys_users_and_orgs_for_a_superadmin() {
     }
 
     // a list past the cap says it was cut, and `q` still reaches the rest
-    assert_eq!(body_truncated(&find("kind=org".to_string()).await.1), false);
+    assert!(!body_truncated(&find("kind=org".to_string()).await.1));
     sqlx::query(
         "insert into orgs (name, slug) select 'bulk ' || g, 'bulk-' || g \
          from generate_series(1, 520) g",
