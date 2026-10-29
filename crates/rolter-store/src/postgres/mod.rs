@@ -881,8 +881,8 @@ impl PostgresConfigStore {
     /// (#3446). Since #3347 such a value no longer fails the snapshot, so
     /// without these lines the row would simply stop being served: a route on
     /// an unknown strategy and a provider of an unknown kind (#3469) are left
-    /// out by the sanitizer, and a budget or rate limit on an unknown scope is
-    /// skipped by the loader and not enforced.
+    /// out by the sanitizer, and a budget or rate limit on an unknown scope
+    /// (#3470) is enforced against every request.
     async fn unknown_value_problems(
         &self,
         budgets: &[Budget],
@@ -928,17 +928,17 @@ impl PostgresConfigStore {
                 });
             }
         }
-        // the loader skips these rather than mis-enforce them, so the cap they
-        // set is not applied at all; no known scope names a tenant to own them
+        // the loader keeps these as `Unknown`, which the gateway enforces on
+        // every request it serves; no known scope names a tenant to own them
         problems.extend(
             budgets
                 .iter()
                 .filter(|row| BudgetScope::from_scope_type(&row.scope_type).is_none())
                 .map(|row| {
                     ConfigProblem::deployment(format!(
-                        "budget '{}' has scope '{}', which this build does not know; it is \
-                         left out of the snapshot and not enforced until the control plane is \
-                         upgraded or the budget is recreated on a known scope",
+                        "budget '{}' has scope '{}', which this build does not know; until the \
+                         control plane is upgraded or the budget is recreated on a known scope, \
+                         every request the gateways serve, every tenant's, counts against it",
                         row.id, row.scope_type
                     ))
                 }),
@@ -955,8 +955,9 @@ impl PostgresConfigStore {
                 .map(|(id, scope)| {
                     ConfigProblem::deployment(format!(
                         "rate limit '{id}' has scope '{scope}', which this build does not know; \
-                         it is left out of the snapshot and not enforced until the control plane \
-                         is upgraded or the limit is recreated on a known scope"
+                         until the control plane is upgraded or the limit is recreated on a known \
+                         scope, every request the gateways serve, every tenant's, counts against \
+                         it"
                     ))
                 }),
         );
@@ -1587,7 +1588,7 @@ impl PostgresConfigStore {
         .map_err(store_err)?;
         Ok(rows
             .into_iter()
-            .filter_map(|r| {
+            .map(|r| {
                 let scope = match r.scope_type.as_str() {
                     "org" => BudgetScope::Org,
                     "team" => BudgetScope::Team,
@@ -1596,10 +1597,13 @@ impl PostgresConfigStore {
                     "business_unit" => BudgetScope::BusinessUnit,
                     "customer" => BudgetScope::Customer,
                     "user" => BudgetScope::User,
-                    // unknown scope: skip rather than mis-enforce
-                    _ => return None,
+                    // a scope from a newer release, a downgrade or a hand edit
+                    // (#3470): kept as `Unknown`, which the gateway enforces as
+                    // binding on every request, rather than skipped, which
+                    // would not enforce the cap at all (#3347)
+                    _ => BudgetScope::Unknown,
                 };
-                Some(BudgetConfig {
+                BudgetConfig {
                     scope,
                     id: r.scope_id.to_string(),
                     // decimal stored as text; a malformed value disables the cap
@@ -1610,7 +1614,7 @@ impl PostgresConfigStore {
                     period: parse_period(&r.period),
                     unpriced_policy: r.unpriced_policy.as_deref().and_then(parse_unpriced_policy),
                     within: scope_within(r.within_org_id, r.within_project_id),
-                })
+                }
             })
             .collect())
     }
@@ -1625,7 +1629,7 @@ impl PostgresConfigStore {
         .map_err(store_err)?;
         Ok(rows
             .into_iter()
-            .filter_map(|r| {
+            .map(|r| {
                 let scope = match r.scope_type.as_str() {
                     "org" => BudgetScope::Org,
                     "team" => BudgetScope::Team,
@@ -1634,17 +1638,20 @@ impl PostgresConfigStore {
                     "business_unit" => BudgetScope::BusinessUnit,
                     "customer" => BudgetScope::Customer,
                     "user" => BudgetScope::User,
-                    // unknown scope: skip rather than mis-enforce
-                    _ => return None,
+                    // a scope from a newer release, a downgrade or a hand edit
+                    // (#3470): kept as `Unknown`, which the gateway enforces as
+                    // binding on every request, rather than skipped, which
+                    // would not enforce the cap at all (#3347)
+                    _ => BudgetScope::Unknown,
                 };
-                Some(RateLimitConfig {
+                RateLimitConfig {
                     scope,
                     id: r.scope_id.to_string(),
                     // non-positive caps are meaningless; treat them as unset
                     rpm: r.rpm.filter(|v| *v > 0).map(|v| v as u32),
                     tpm: r.tpm.filter(|v| *v > 0).map(|v| v as u32),
                     within: scope_within(r.within_org_id, r.within_project_id),
-                })
+                }
             })
             .collect())
     }
@@ -5015,9 +5022,8 @@ mod tests {
             })
         );
 
-        let scope = find("scope 'galaxy', which this build does not know; it is left out");
-        assert!(scope.message.contains(&galaxy.to_string()), "{scope:?}");
-        assert!(scope.message.contains("not enforced"), "{scope:?}");
+        let scope = find(&format!("budget '{galaxy}' has scope 'galaxy'"));
+        assert!(scope.message.contains("every request"), "{scope:?}");
         let rate = find(&format!("rate limit '{limit}'"));
         assert!(rate.message.contains("scope 'galaxy'"), "{rate:?}");
 
@@ -5109,6 +5115,63 @@ mod tests {
         config
             .validate_snapshot()
             .expect("the rest of the config is servable");
+    }
+
+    /// #3470: a budget or rate limit on a scope this build does not know was
+    /// skipped, which left its cap unenforced. It is now loaded as
+    /// `BudgetScope::Unknown`, the reading the gateway enforces as binding on
+    /// every request (#3347), and the snapshot still validates.
+    #[tokio::test]
+    async fn a_cap_on_an_unknown_scope_loads_as_binding() {
+        if !test_database::is_configured() {
+            eprintln!("skipping: {} not set", test_database::URL_ENV);
+            return;
+        }
+        let db = fresh_db().await;
+        let pool = db.pool().clone();
+        sqlx::query(
+            "do $$ declare c record; begin
+               for c in select conname, conrelid::regclass::text as t from pg_constraint
+                        where contype = 'c'
+                          and conrelid::regclass::text in ('budgets', 'rate_limits')
+               loop execute format('alter table %s drop constraint %I', c.t, c.conname);
+               end loop; end $$",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let scope_id = Uuid::new_v4();
+        sqlx::query(
+            "insert into budgets (scope_type, scope_id, limit_usd, period)
+             values ('galaxy', $1, 5, 'monthly')",
+        )
+        .bind(scope_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query("insert into rate_limits (scope_type, scope_id, rpm) values ('galaxy', $1, 1)")
+            .bind(scope_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let mut config = PostgresConfigStore::new(pool).load().await.unwrap();
+        assert_eq!(config.budgets.len(), 1, "{:?}", config.budgets);
+        assert_eq!(config.budgets[0].scope, BudgetScope::Unknown);
+        assert_eq!(config.budgets[0].id, scope_id.to_string());
+        assert_eq!(config.rate_limits.len(), 1, "{:?}", config.rate_limits);
+        assert_eq!(config.rate_limits[0].scope, BudgetScope::Unknown);
+        assert_eq!(config.rate_limits[0].rpm, Some(1));
+        let unknown = config.fail_closed_unknown_report();
+        assert_eq!(unknown.kinds.get("budget_scope"), Some(&1), "{unknown:?}");
+        assert_eq!(
+            unknown.kinds.get("rate_limit_scope"),
+            Some(&1),
+            "{unknown:?}"
+        );
+        config
+            .validate_snapshot()
+            .expect("the caps travel in the snapshot");
     }
 
     // the adaptive-routing kill switch and blend weights are control-plane

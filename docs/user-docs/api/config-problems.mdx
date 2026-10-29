@@ -57,7 +57,7 @@ value and what happens to it:
 
 - a route whose balancing strategy is unknown is left out of the snapshot;
 - a provider whose kind is unknown is left out of the snapshot, with the route targets and group members that named it;
-- a budget or rate limit whose scope is unknown is left out and not enforced;
+- a budget or rate limit whose scope is unknown counts every request the gateways serve, every tenant's, so it binds well beyond the scope it was set for;
 - a budget whose period is unknown is enforced as a monthly cap;
 - a fallback target whose `takes_over` class is unknown is left out of its route.
 
