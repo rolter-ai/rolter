@@ -2062,6 +2062,10 @@ async fn by_variant_groups_one_route_inside_the_callers_scope() {
             "sample_weight": weight,
         })
     };
+    let failed_over = |mut row: Value, reason: &str| {
+        row["fallback_reason"] = json!(reason);
+        row
+    };
     insert_rows(
         &http,
         &ch,
@@ -2070,9 +2074,17 @@ async fn by_variant_groups_one_route_inside_the_callers_scope() {
             // acme project a: variant "canary" is sampled one in two, one of its two
             // kept rows failed; "stable" and the classic path ("") are unsampled
             row(&acme, acme.project_a, &route, "stable", 200, 100, 1.0, 1.0),
-            row(&acme, acme.project_a, &route, "stable", 200, 300, 1.0, 1.0),
+            // answered after another target failed over to it (#3409): counted in
+            // `requests` and left out of the first attempts
+            failed_over(
+                row(&acme, acme.project_a, &route, "stable", 200, 300, 1.0, 1.0),
+                "timeout",
+            ),
             row(&acme, acme.project_a, &route, "canary", 200, 200, 0.5, 2.0),
-            row(&acme, acme.project_a, &route, "canary", 500, 200, 0.0, 2.0),
+            failed_over(
+                row(&acme, acme.project_a, &route, "canary", 500, 200, 0.0, 2.0),
+                "refusal:content_filter",
+            ),
             row(&acme, acme.project_a, &route, "", 200, 100, 2.0, 1.0),
             // another project of the same org, and another org, call the route too
             row(&acme, acme.project_b, &route, "stable", 200, 100, 4.0, 1.0),
@@ -2143,6 +2155,32 @@ async fn by_variant_groups_one_route_inside_the_callers_scope() {
             ("stable".to_string(), 4.0, 0.0, 14.0),
         ]
     );
+    // the first attempts leave out the requests another target failed over to
+    // the variant, weighted like every count (#3409): canary's failed row stands
+    // for 2 of its 4, and one of stable's four rows is a failover
+    let first_attempts = |body: &Value| -> Vec<(String, f64)> {
+        let mut out: Vec<_> = body["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| {
+                (
+                    r["variant"].as_str().unwrap().to_string(),
+                    number(&r["first_attempt_requests"]),
+                )
+            })
+            .collect();
+        out.sort_by(|a, b| a.0.cmp(&b.0));
+        out
+    };
+    assert_eq!(
+        first_attempts(&body),
+        vec![
+            ("".to_string(), 1.0),
+            ("canary".to_string(), 2.0),
+            ("stable".to_string(), 3.0),
+        ]
+    );
     // the percentiles are read off the kept rows, not scaled
     let stable = body["data"]
         .as_array()
@@ -2167,6 +2205,15 @@ async fn by_variant_groups_one_route_inside_the_callers_scope() {
             ("".to_string(), 1.0, 0.0, 2.0),
             ("canary".to_string(), 4.0, 2.0, 1.0),
             ("stable".to_string(), 2.0, 0.0, 2.0),
+        ]
+    );
+    // the member's first attempts are their own project's, not the route's
+    assert_eq!(
+        first_attempts(&body),
+        vec![
+            ("".to_string(), 1.0),
+            ("canary".to_string(), 2.0),
+            ("stable".to_string(), 1.0),
         ]
     );
     // and a project filter cannot reach past what the member already reads
@@ -2195,6 +2242,77 @@ async fn by_variant_groups_one_route_inside_the_callers_scope() {
         .await
         .unwrap();
     assert_eq!(anonymous.status(), 401);
+}
+
+/// The summary's mean latency is weighted by the row's sample weight like its
+/// percentiles (#3420): a kept row counts as the requests it stands for, so a
+/// slow request that was sampled one in four pulls the mean four times as hard
+/// as an unsampled one, and a window with no rows reads 0 and not nan.
+#[tokio::test]
+async fn summary_mean_latency_is_weighted_by_the_row_weight() {
+    let ch = skip_without_stack!();
+    let http = reqwest::Client::new();
+    ensure_schema(&http, &ch).await;
+
+    let db = TestSchema::create(&test_database::url().await.unwrap()).await;
+    let app = rolter_control::test_app_with_clickhouse_and_admin_token(
+        db.pool().clone(),
+        &ch,
+        Some(ADMIN_TOKEN.to_string()),
+    )
+    .await
+    .unwrap();
+    let addr = serve(app).await;
+
+    let model = format!("mean-latency-{}", Uuid::new_v4().simple());
+    let ts = chrono::Utc::now()
+        .format("%Y-%m-%d %H:%M:%S%.3f")
+        .to_string();
+    let row = |latency: u32, weight: f64| {
+        json!({
+            "ts": ts, "request_id": format!("mean-{}", Uuid::new_v4().simple()),
+            "org_id": Uuid::new_v4().to_string(),
+            "model": model, "status": 200, "latency_ms": latency,
+            "total_tokens": 10, "cost_usd": 0.0, "sample_weight": weight,
+        })
+    };
+    // 100 ms once and 400 ms three times over: the weighted mean is
+    // (100 + 3 * 400) / 4 = 325, where the mean of the two kept rows is 250
+    insert_rows(&http, &ch, "request_logs", &[row(100, 1.0), row(400, 3.0)]).await;
+
+    let read = |model: String| {
+        let http = http.clone();
+        async move {
+            let response = http
+                .get(format!(
+                    "http://{addr}/api/v1/analytics/summary?model={model}"
+                ))
+                .bearer_auth(ADMIN_TOKEN)
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), 200);
+            let body: Value = response.json().await.unwrap();
+            body["data"][0].clone()
+        }
+    };
+    let summary = read(model.clone()).await;
+    assert_eq!(number(&summary["requests"]), 4.0, "{summary}");
+    assert_eq!(number(&summary["avg_latency_ms"]), 325.0, "{summary}");
+
+    // equal weights are the plain mean
+    let even = format!("mean-even-{}", Uuid::new_v4().simple());
+    let even_row = |latency: u32| {
+        let mut r = row(latency, 2.0);
+        r["model"] = json!(even);
+        r
+    };
+    insert_rows(&http, &ch, "request_logs", &[even_row(100), even_row(300)]).await;
+    assert_eq!(number(&read(even).await["avg_latency_ms"]), 200.0);
+
+    // no rows at all: a zero, not nan
+    let none = read(format!("mean-none-{}", Uuid::new_v4().simple())).await;
+    assert_eq!(number(&none["avg_latency_ms"]), 0.0, "{none}");
 }
 
 /// The summary carries the weighted prompt-cache read tokens beside the prompt

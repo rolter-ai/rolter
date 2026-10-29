@@ -171,15 +171,15 @@ fn full_row(request_id: &str) -> Value {
 }
 
 /// A deployment whose `request_logs` was migrated through `last` and nothing
-/// after, holding one full row, read through the control plane. Returns the
-/// row as the list answered it.
-async fn list_after(last: u32) -> Option<Value> {
+/// after, holding `rows` inserted the way a gateway inserts them, read through
+/// the control plane at `path`. Returns the status and body of the answer.
+async fn read_after(last: u32, rows: &[Value], path: &str) -> Option<(StatusCode, Value)> {
     let base = clickhouse_url().filter(|_| test_database::is_configured())?;
     let http = reqwest::Client::new();
     let scratch = ScratchDatabase::create(&http, &base).await;
     clickhouse_ddl::apply_schema_through(&http, &base, Some(&scratch.name), last).await;
 
-    let request_id = format!("optional-columns-{}", Uuid::new_v4().simple());
+    let body: String = rows.iter().map(|row| format!("{row}\n")).collect();
     let insert = http
         .post(format!("{base}/"))
         .query(&[
@@ -188,7 +188,7 @@ async fn list_after(last: u32) -> Option<Value> {
             ("date_time_input_format", "best_effort"),
             ("input_format_skip_unknown_fields", "1"),
         ])
-        .body(format!("{}\n", full_row(&request_id)))
+        .body(body)
         .send()
         .await
         .expect("reach clickhouse");
@@ -219,23 +219,35 @@ async fn list_after(last: u32) -> Option<Value> {
     let addr = serve(app).await;
 
     let response = http
-        .get(format!(
-            "http://{addr}/api/v1/analytics/invocations?request_id={request_id}"
-        ))
+        .get(format!("http://{addr}{path}"))
         .bearer_auth(ADMIN_TOKEN)
         .send()
         .await
         .unwrap();
     let status = response.status();
     let body: Value = response.json().await.unwrap();
+    drop(schema);
+    drop(scratch);
+    Some((status, body))
+}
+
+/// A deployment whose `request_logs` was migrated through `last` and nothing
+/// after, holding one full row, read through the control plane. Returns the
+/// row as the list answered it.
+async fn list_after(last: u32) -> Option<Value> {
+    let request_id = format!("optional-columns-{}", Uuid::new_v4().simple());
+    let (status, body) = read_after(
+        last,
+        &[full_row(&request_id)],
+        &format!("/api/v1/analytics/invocations?request_id={request_id}"),
+    )
+    .await?;
     assert_eq!(
         status, 200,
         "the list failed after migration {last}: {body}"
     );
     let rows = body["data"].as_array().expect("a data array");
     assert_eq!(rows.len(), 1, "{body}");
-    drop(schema);
-    drop(scratch);
     Some(rows[0].clone())
 }
 
@@ -287,4 +299,76 @@ async fn a_clickhouse_with_015_and_016_but_not_017_defaults_only_the_share() {
     assert_eq!(row["upstream_status"], 429, "{row}");
     assert_eq!(row["lifecycle_operation"], "retrieve", "{row}");
     assert_eq!(row["cache_write_1h_tokens"], 0, "{row}");
+}
+
+/// A figure ClickHouse sends as a number or, for a wide integer, as a string.
+fn number(value: &Value) -> f64 {
+    match value {
+        Value::String(text) => text.parse().unwrap_or_else(|_| panic!("{text} parses")),
+        other => other
+            .as_f64()
+            .unwrap_or_else(|| panic!("{other} is a number")),
+    }
+}
+
+/// Two requests answered by one variant, one of them after a failover, as a
+/// current gateway writes them (the second carries `fallback_reason`).
+fn variant_rows(route: &str) -> Vec<Value> {
+    let ts = chrono::Utc::now()
+        .format("%Y-%m-%d %H:%M:%S%.3f")
+        .to_string();
+    let row = |reason: &str| {
+        let mut row = json!({
+            "ts": ts, "request_id": format!("variant-{}", Uuid::new_v4().simple()),
+            "model": route, "variant": "canary", "status": 200, "latency_ms": 100,
+        });
+        if !reason.is_empty() {
+            row["fallback_reason"] = json!(reason);
+        }
+        row
+    };
+    vec![row(""), row("timeout")]
+}
+
+/// #3409: a ClickHouse from before `023` cannot tell a first attempt from a
+/// failover. The select must not name the column (it would fail), the answer
+/// is still a `200` with the variant's requests, and `first_attempt_requests`
+/// is `null` rather than a claim that every request was a first attempt.
+#[tokio::test]
+async fn by_variant_on_a_clickhouse_without_023_reports_no_first_attempt_count() {
+    let _ = skip_without_stack!();
+    let route = format!("variant-route-{}", Uuid::new_v4().simple());
+    // 022 is the last file before the fallback reason
+    let (status, body) = read_after(
+        22,
+        &variant_rows(&route),
+        &format!("/api/v1/analytics/by-variant?model={route}"),
+    )
+    .await
+    .expect("a configured stack");
+    assert_eq!(status, 200, "{body}");
+    let rows = body["data"].as_array().expect("a data array");
+    assert_eq!(rows.len(), 1, "{body}");
+    assert_eq!(rows[0]["variant"], "canary", "{body}");
+    assert_eq!(number(&rows[0]["requests"]), 2.0, "{body}");
+    assert!(rows[0]["first_attempt_requests"].is_null(), "{body}");
+}
+
+/// With `023` applied the same two requests split: one first attempt, one failover.
+#[tokio::test]
+async fn by_variant_on_a_clickhouse_with_023_counts_the_first_attempts() {
+    let _ = skip_without_stack!();
+    let route = format!("variant-route-{}", Uuid::new_v4().simple());
+    let (status, body) = read_after(
+        23,
+        &variant_rows(&route),
+        &format!("/api/v1/analytics/by-variant?model={route}"),
+    )
+    .await
+    .expect("a configured stack");
+    assert_eq!(status, 200, "{body}");
+    let rows = body["data"].as_array().expect("a data array");
+    assert_eq!(rows.len(), 1, "{body}");
+    assert_eq!(number(&rows[0]["requests"]), 2.0, "{body}");
+    assert_eq!(number(&rows[0]["first_attempt_requests"]), 1.0, "{body}");
 }

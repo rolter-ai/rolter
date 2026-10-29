@@ -2416,7 +2416,12 @@ fn operations() -> Vec<Op> {
                 "/api/v1/analytics/by-variant",
                 "getAnalyticsByVariant",
                 "Spend and usage grouped by route and the weighted variant that served it (`model` \
-                 narrows to one route); requests served without a variant come back under the empty string",
+                 narrows to one route); requests served without a variant come back under the empty string. \
+                 `requests` counts every request the variant answered, failovers included; \
+                 `first_attempt_requests` counts those it served on the first attempt (no \
+                 `fallback_reason`, `clickhouse/023`), the closer comparison with the configured \
+                 weights; a request that failed over from another variant counts for neither. It is `null` on a ClickHouse that has not applied \
+                 `023`, which cannot tell the two apart",
             )
             .clickhouse_read()
             .query(DASHBOARD_QUERY),
