@@ -2555,6 +2555,12 @@ fn operations() -> Vec<Op> {
                  dialled to, which differs from `variant` when it failed over to another variant, and \
                  an empty string on the classic pool, for a row older than the column, or on a table \
                  that lacks it. \
+                 `sampled_variant` (`clickhouse/050`) is the variant the route's weighted split picked \
+                 as primary before the gateway skipped one whose breaker is open or whose targets are \
+                 parked or unhealthy, which differs from `first_variant` when the request was routed \
+                 around it; on a realtime turn row it is the variant the session's dial walk led with, \
+                 the route's first variant with a non-zero weight (#3553). An empty string on the \
+                 classic pool, for a row older than the column, or on a table that lacks it. \
                  `outcome` (a string, `clickhouse/030`) names what happened to the request: `served`, \
                  `upstream_error`, `withheld`, `cancelled` or a `refused_*` reason, and `unknown` for a \
                  row written before the gateway recorded one or on a table without the column. \

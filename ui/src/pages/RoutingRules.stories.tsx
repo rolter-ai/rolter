@@ -1646,6 +1646,11 @@ export const SampledSharesShowTheTrafficRoutedAroundAVariant: Story = {
     const table = within(await dialog.findByRole("table", { name: "Observed traffic" }));
     await expect(await table.findByRole("columnheader", { name: "Sampled" })).toBeVisible();
     await expect(table.getAllByRole("columnheader")).toHaveLength(9);
+    // the widest grid fits the table's own floor: no row runs past it
+    const tableEl = dialog.getByRole("table", { name: "Observed traffic" });
+    for (const group of Array.from(tableEl.children) as HTMLElement[]) {
+      await expect(group.scrollWidth).toBeLessThanOrEqual(group.clientWidth);
+    }
     const row = (name: string) => table.getByText(name).closest('[role="row"]') as HTMLElement;
     const cells = (name: string) =>
       Array.from(row(name).querySelectorAll('[role="cell"]')).map((c) => c.textContent);

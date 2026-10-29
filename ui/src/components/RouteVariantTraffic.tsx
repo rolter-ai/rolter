@@ -39,6 +39,16 @@ const grid = (sampled: boolean, assigned: boolean, first: boolean) =>
     "84px 70px 112px",
   ].join(" ");
 
+// the width the grid above needs before it squeezes a column: the primary
+// column's floor (11rem), the fixed columns, a 12px gap between columns and
+// the row's 16px side padding. the list table's default floor (760px) is
+// narrower than the six-column grid, so every case passes its own
+const minWidth = (sampled: boolean, assigned: boolean, first: boolean) => {
+  const shares = 2 + Number(sampled) + Number(assigned) + Number(first);
+  const columns = 1 + shares + 3;
+  return 176 + shares * 84 + 84 + 70 + 112 + (columns - 1) * 12 + 32;
+};
+
 /** one row of the table: a configured variant, or traffic no configured variant explains */
 interface TrafficLine {
   name: string;
@@ -112,10 +122,11 @@ export function RouteVariantTraffic({
   if (saved.length === 0) return null;
 
   const all = read.data ?? [];
-  // rows are keyed on the organization too (#3548). the read is narrowed to the
-  // route's project, so they name one organization; the busiest one's (the
-  // first row's) are the route's, and a control plane older than the field
-  // sends none, which keys every row on the empty string
+  // rows are keyed on the organization too (#3548). taking the first row's
+  // org is right only because the read is narrowed by `project: projectId`
+  // and a project belongs to exactly one org, so every row names the route's
+  // own; a control plane older than the field sends none, which keys every
+  // row on the empty string
   const orgId = all[0]?.org_id ?? "";
   const rows = all.filter((row) => (row.org_id ?? "") === orgId);
   const byKey = new Map(rows.map((row) => [rowKey(orgId, row.variant), row]));
@@ -139,6 +150,7 @@ export function RouteVariantTraffic({
   const sampledKnown = carries(lines, "sampled_requests");
   const sampledTotal = lines.reduce((sum, line) => sum + num(line.row?.sampled_requests), 0);
   const gridColumns = grid(sampledKnown, assignedKnown, splitKnown);
+  const tableWidth = minWidth(sampledKnown, assignedKnown, splitKnown);
   const firstServed = lines.reduce((sum, line) => sum + num(line.row?.first_attempt_requests), 0);
   const unattributed = num(byKey.get(rowKey(orgId, ""))?.requests);
   const unavailable = read.error instanceof AnalyticsUnavailableError ? read.error : null;
@@ -179,7 +191,7 @@ export function RouteVariantTraffic({
         />
       ) : (
         <>
-          <ListTable label={t("routeSheet.variants.observed.title")}>
+          <ListTable label={t("routeSheet.variants.observed.title")} minWidth={tableWidth}>
             <ListHeader grid={gridColumns}>
               <ListHeaderCell>{t("routeSheet.variants.observed.variant")}</ListHeaderCell>
               <ListHeaderCell className="text-right">
