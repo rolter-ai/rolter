@@ -1048,7 +1048,7 @@ async fn guardrails(
     state: State<crate::ControlState>,
     q: Query<WindowQuery>,
 ) -> Response {
-    events_rollup(access, state, q, "guardrail_events", guardrails_sql()).await
+    events_rollup(access, state, q, "guardrail_events", |_| guardrails_sql()).await
 }
 
 /// What each plugin did to requests in the window (#2243): one row per
@@ -1073,7 +1073,7 @@ async fn plugins(
     state: State<crate::ControlState>,
     q: Query<WindowQuery>,
 ) -> Response {
-    events_rollup(access, state, q, "plugin_events", plugins_sql()).await
+    events_rollup(access, state, q, "plugin_events", |_| plugins_sql()).await
 }
 
 /// Which request parameters dialect translation did not forward as sent, per
@@ -1091,14 +1091,7 @@ async fn param_adjustments(
     state: State<crate::ControlState>,
     q: Query<WindowQuery>,
 ) -> Response {
-    events_rollup(
-        access,
-        state,
-        q,
-        "param_adjustments",
-        param_adjustments_sql(),
-    )
-    .await
+    events_rollup(access, state, q, "param_adjustments", param_adjustments_sql).await
 }
 
 /// The rollup behind [`param_adjustments`]. One scan: each `(route, provider)`
@@ -1107,33 +1100,42 @@ async fn param_adjustments(
 /// into a row per entry. The gateway records a parameter once per request, so
 /// an entry's weight is the requests it touched. The disposition never holds a
 /// `:`, so the first one splits the entry.
-fn param_adjustments_sql() -> String {
+///
+/// A provider is `(provider_org_id, provider)`: two orgs may each have an
+/// `openai` (#1857), and a caller who sees both gets a row for each (#3441).
+/// A table without `clickhouse/037_request_log_provider_org.sql` reads every
+/// row's org as empty, which is what a row written before it holds.
+fn param_adjustments_sql(columns: &Columns) -> String {
+    let provider_org_id = columns.expr("provider_org_id");
     format!(
-        "select route, provider, \
+        "select route, provider_org_id, provider, \
             substring(event, 1, position(event, ':') - 1) as disposition, \
             substring(event, position(event, ':') + 1) as param, \
             round(weight) as requests, \
             round(total) as route_requests, \
             round(weight / total, 4) as share \
          from (\
-            select model as route, provider, sum(sample_weight) as total, \
+            select model as route, {provider_org_id} as provider_org_id, provider, \
+                sum(sample_weight) as total, \
                 sumMap(param_adjustments, arrayMap(entry -> sample_weight, param_adjustments)) as adjusted \
             from request_logs where {WHERE_WINDOW} and {ROW_VISIBLE} \
-            group by route, provider) \
+            group by route, provider_org_id, provider) \
          array join adjusted.1 as event, adjusted.2 as weight \
          where position(event, ':') > 0 \
-         order by requests desc, route, provider, disposition, param format JSON"
+         order by requests desc, route, provider, provider_org_id, disposition, param format JSON"
     )
 }
 
 /// Run an event-array rollup over `column`, answering `recorded: false` while
-/// the table lacks the column.
+/// the table lacks the column. `sql` builds the query from the columns the
+/// table has, so it can read another optional column through
+/// [`Columns::expr`].
 async fn events_rollup(
     access: AnalyticsAccess,
     State(state): State<crate::ControlState>,
     Query(q): Query<WindowQuery>,
     column: &str,
-    sql: String,
+    sql: impl FnOnce(&Columns) -> String,
 ) -> Response {
     let ch = match client_or_503(&state) {
         Ok(ch) => ch,
@@ -1146,6 +1148,7 @@ async fn events_rollup(
     if !columns.has(column) {
         return Json(json!({"data": [], "recorded": false})).into_response();
     }
+    let sql = sql(&columns);
     match ch
         .query(&sql, &with_access(window_params(&q), &access))
         .await
@@ -1370,10 +1373,12 @@ pub(crate) fn invocations_sql(status_expr: &str, columns: &Columns) -> String {
     let has_audio_input = columns.select("has_audio_input");
     let has_response_schema = columns.select("has_response_schema");
     let turns = columns.select("turns");
+    // the org that owns the provider (#1857), beside its name
+    let provider_org_id = columns.select("provider_org_id");
     format!(
         "select ts, request_id, trace_id, org_id, team_id, project_id, virtual_key_id, \
                 business_unit_id, customer_id, \
-                model, provider, target, variant, status, stream, cache_hit, cache_read_tokens, cache_write_tokens, \
+                model, provider, {provider_org_id}, target, variant, status, stream, cache_hit, cache_read_tokens, cache_write_tokens, \
                 {cache_write_1h_tokens}, \
                 prompt_tokens, completion_tokens, total_tokens, cost_usd, unpriced, withheld, usage_unknown, latency_ms, ttft_ms, error, \
                 {upstream_status}, {attempts}, {lifecycle_operation}, {guardrail_events}, {plugin_events}, {seq}, \
@@ -1974,7 +1979,7 @@ mod tests {
 
     #[test]
     fn the_param_adjustment_rollup_is_scoped_and_weighted() {
-        let sql = param_adjustments_sql();
+        let sql = param_adjustments_sql(&Columns::default());
         assert!(
             sql.contains(&format!("where {WHERE_WINDOW} and {ROW_VISIBLE}")),
             "{sql}"
@@ -1984,9 +1989,30 @@ mod tests {
             sql.contains("arrayMap(entry -> sample_weight, param_adjustments)"),
             "{sql}"
         );
-        assert!(sql.contains("group by route, provider"), "{sql}");
+        assert!(
+            sql.contains("group by route, provider_org_id, provider"),
+            "{sql}"
+        );
         assert!(sql.contains("as share"), "{sql}");
         assert!(!sql.contains("count()"), "an unweighted count: {sql}");
+    }
+
+    /// #3441: two orgs' `openai` are two providers in the rollup, and a table
+    /// without `037` reads every row's org as empty rather than failing.
+    #[test]
+    fn the_param_adjustment_rollup_keys_a_provider_by_its_org() {
+        let sql = param_adjustments_sql(&Columns::default());
+        assert!(
+            sql.contains("provider_org_id as provider_org_id, provider,"),
+            "{sql}"
+        );
+        assert!(sql.starts_with("select route, provider_org_id, provider,"));
+        let old = param_adjustments_sql(&Columns::lacking(&["provider_org_id"]));
+        assert!(old.contains("'' as provider_org_id, provider,"), "{old}");
+        assert!(
+            old.contains("group by route, provider_org_id, provider"),
+            "{old}"
+        );
     }
 
     #[test]
