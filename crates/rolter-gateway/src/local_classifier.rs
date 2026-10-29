@@ -32,6 +32,11 @@
 //! (`[semantic_guards] local_concurrency`). A call that gets no slot within its
 //! provider's `timeout_ms` is the overload case, and like every call that
 //! produces no verdict it resolves through the provider's `failure_mode`.
+//!
+//! A model that fails to load is read again in the background with capped
+//! exponential backoff until it loads or no configuration names it (#3452),
+//! and [`ModelStates`] reports every local provider's model as loaded or
+//! failed for the `rolter_local_classifier_models` gauge.
 
 use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap};
@@ -46,7 +51,7 @@ use rolter_core::{ScoredDecision, SemanticGuardsConfig};
 use serde::Deserialize;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use tokio::sync::Semaphore;
+use tokio::sync::{Notify, Semaphore};
 
 use crate::guardrail_webhook::CallFailure;
 
@@ -63,6 +68,14 @@ pub const MAX_CATEGORIES: usize = 32;
 pub const MAX_WEIGHTS: usize = 1 << 22;
 /// The longest word n-gram a model may use.
 pub const MAX_NGRAMS: usize = 3;
+/// The first wait before a model that failed to load is read again.
+pub const RETRY_FIRST: Duration = Duration::from_secs(1);
+/// The longest wait between two reads of a model that keeps failing.
+pub const RETRY_CAP: Duration = Duration::from_secs(60);
+
+/// Whether each local provider's model is loaded, by provider name: what the
+/// `rolter_local_classifier_models` gauge reports. Never holds a path.
+pub type ModelStates = parking_lot::Mutex<BTreeMap<String, bool>>;
 
 /// Object keys whose string values are structure, not content: model and role
 /// names, ids, enum-like fields and image urls. Everything else a request or
@@ -390,9 +403,28 @@ struct Registry {
     previous: HashMap<String, Arc<LinearModel>>,
     permits: Arc<Semaphore>,
     cap: usize,
+    /// the local providers of the applied configuration, which the
+    /// background retry reads the missing models of
+    wanted: Vec<Wanted>,
+}
+
+impl Registry {
+    /// The wanted models that are not loaded, one per digest.
+    fn missing(&self) -> Vec<Wanted> {
+        let mut missing: Vec<Wanted> = Vec::new();
+        for want in &self.wanted {
+            if !self.models.contains_key(&want.digest)
+                && !missing.iter().any(|m| m.digest == want.digest)
+            {
+                missing.push(want.clone());
+            }
+        }
+        missing
+    }
 }
 
 /// One local provider's model, as a configuration names it.
+#[derive(Clone)]
 struct Wanted {
     provider: String,
     path: String,
@@ -419,6 +451,12 @@ pub struct LocalClassifiers {
     /// models read by [`preload`](Self::preload) for the next
     /// [`apply`](Self::apply)
     staged: Arc<parking_lot::Mutex<HashMap<String, Arc<LinearModel>>>>,
+    /// serialises the writers of `registry`: an apply and a retry that
+    /// loaded a model
+    writing: Arc<parking_lot::Mutex<()>>,
+    /// woken when an install leaves a wanted model missing
+    retry: Arc<Notify>,
+    states: Arc<ModelStates>,
 }
 
 impl Default for LocalClassifiers {
@@ -430,8 +468,12 @@ impl Default for LocalClassifiers {
                 previous: HashMap::new(),
                 permits: Arc::new(Semaphore::new(cap)),
                 cap,
+                wanted: Vec::new(),
             })),
             staged: Default::default(),
+            writing: Default::default(),
+            retry: Default::default(),
+            states: Default::default(),
         }
     }
 }
@@ -518,11 +560,13 @@ impl LocalClassifiers {
     /// [`preload`](Self::preload) could not load is simply absent, so its
     /// provider resolves through its failure mode until a later apply.
     pub fn apply(&self, semantic_guards: &SemanticGuardsConfig, legacy: &GuardrailWebhookConfig) {
+        let _writing = self.writing.lock();
         let current = self.registry.load_full();
+        let wanted = wanted(semantic_guards, legacy);
         let mut models = HashMap::new();
-        for want in wanted(semantic_guards, legacy) {
+        for want in &wanted {
             if let Some(model) = self.loaded(&want.digest) {
-                models.insert(want.digest, model);
+                models.insert(want.digest.clone(), model);
             }
         }
         self.staged.lock().clear();
@@ -537,12 +581,116 @@ impl LocalClassifiers {
         } else {
             Arc::new(Semaphore::new(cap))
         };
-        self.registry.store(Arc::new(Registry {
+        self.publish(Registry {
             models,
             previous: current.models.clone(),
             permits,
             cap,
-        }));
+            wanted,
+        });
+    }
+
+    /// Store `registry`, report its providers' states, and wake the retry
+    /// when a model it wants is missing. The caller holds `writing`.
+    fn publish(&self, registry: Registry) {
+        let mut states = BTreeMap::new();
+        for want in &registry.wanted {
+            let loaded = registry.models.contains_key(&want.digest);
+            // two providers of one name: the gauge says failed if either is
+            *states.entry(want.provider.clone()).or_insert(true) &= loaded;
+        }
+        let missing = states.values().any(|loaded| !loaded);
+        *self.states.lock() = states;
+        self.registry.store(Arc::new(registry));
+        if missing {
+            self.retry.notify_one();
+        }
+    }
+
+    /// Every local provider's model as loaded or failed, for the metrics.
+    pub fn states(&self) -> Arc<ModelStates> {
+        self.states.clone()
+    }
+
+    /// Read the models of the applied configuration that failed to load
+    /// again, in the background, with capped exponential backoff from
+    /// [`RETRY_FIRST`] to [`RETRY_CAP`], until each loads or no applied
+    /// configuration names it (#3452). Runs for the life of the gateway.
+    pub fn spawn_retries(&self) -> tokio::task::JoinHandle<()> {
+        let this = self.clone();
+        tokio::spawn(async move {
+            let mut delay = RETRY_FIRST;
+            loop {
+                if this.registry.load().missing().is_empty() {
+                    delay = RETRY_FIRST;
+                    this.retry.notified().await;
+                    continue;
+                }
+                tokio::time::sleep(delay).await;
+                delay = (delay * 2).min(RETRY_CAP);
+                this.retry_missing(delay).await;
+            }
+        })
+    }
+
+    /// Read every missing model once on the blocking pool and install those
+    /// that load. `next` is the wait before the following attempt, for the
+    /// log line.
+    async fn retry_missing(&self, next: Duration) {
+        let missing = self.registry.load().missing();
+        if missing.is_empty() {
+            return;
+        }
+        let read = tokio::task::spawn_blocking(move || {
+            let mut read = Vec::new();
+            for want in missing {
+                match LinearModel::load(&want.path, &want.digest) {
+                    Ok(model) => {
+                        tracing::info!(
+                            provider = want.provider,
+                            path = want.path,
+                            categories = model.names.len(),
+                            "local guardrail model loaded on retry"
+                        );
+                        read.push((want.digest, Arc::new(model)));
+                    }
+                    Err(error) => tracing::warn!(
+                        provider = want.provider,
+                        path = want.path,
+                        %error,
+                        retry_in_secs = next.as_secs(),
+                        "local guardrail model still not loaded; the provider follows its failure_mode"
+                    ),
+                }
+            }
+            read
+        })
+        .await;
+        match read {
+            Ok(read) if !read.is_empty() => self.install(read),
+            Ok(_) => {}
+            Err(error) => tracing::error!(%error, "retrying local guardrail models failed"),
+        }
+    }
+
+    /// Add models a retry loaded to the applied configuration, keeping only
+    /// those it still names: an apply may have moved on while they were read.
+    fn install(&self, read: Vec<(String, Arc<LinearModel>)>) {
+        let _writing = self.writing.lock();
+        let current = self.registry.load_full();
+        let mut models = current.models.clone();
+        for (digest, model) in read {
+            if current.wanted.iter().any(|want| want.digest == digest) {
+                models.entry(digest).or_insert(model);
+            }
+        }
+        self.publish(Registry {
+            models,
+            previous: current.previous.clone(),
+            permits: current.permits.clone(),
+            cap: current.cap,
+            wanted: current.wanted.clone(),
+        });
     }
 
     /// Classify `content` with `provider`'s model. The wait for a slot and the
@@ -972,6 +1120,124 @@ pub(crate) mod tests {
         let directory = env!("CARGO_MANIFEST_DIR");
         let error = LinearModel::load(directory, &fixture_sha256()).unwrap_err();
         assert!(error.to_string().contains("not a regular file"), "{error}");
+    }
+
+    /// A fresh directory under the system temp dir, removed on drop.
+    pub(crate) struct TempDir(pub(crate) std::path::PathBuf);
+
+    impl TempDir {
+        pub(crate) fn new(name: &str) -> Self {
+            use std::sync::atomic::{AtomicU64, Ordering};
+            static NEXT: AtomicU64 = AtomicU64::new(0);
+            let path = std::env::temp_dir().join(format!(
+                "rolter-local-classifier-{name}-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            ));
+            std::fs::create_dir_all(&path).unwrap();
+            Self(path)
+        }
+
+        pub(crate) fn path(&self, file: &str) -> String {
+            self.0.join(file).to_string_lossy().into_owned()
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn states(classifiers: &LocalClassifiers) -> Vec<(String, bool)> {
+        classifiers
+            .states()
+            .lock()
+            .iter()
+            .map(|(provider, loaded)| (provider.clone(), *loaded))
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn a_model_that_failed_to_load_is_read_again_and_the_states_follow() {
+        let dir = TempDir::new("retry");
+        let mut provider = local_provider(&fixture_sha256(), 2_000);
+        provider.model_path = dir.path("late.json");
+        let classifiers = configured(&provider, None);
+        let metrics = crate::metrics::Metrics::default();
+        metrics.watch_local_classifiers(classifiers.states());
+        assert_eq!(states(&classifiers), [("local".to_string(), false)]);
+        let rendered = metrics.render();
+        assert!(
+            rendered
+                .contains("rolter_local_classifier_models{provider=\"local\",state=\"failed\"} 1"),
+            "{rendered}"
+        );
+        assert!(
+            !rendered.contains(&provider.model_path),
+            "no path is a label"
+        );
+
+        // still missing: a retry changes nothing
+        classifiers.retry_missing(Duration::ZERO).await;
+        assert_eq!(states(&classifiers), [("local".to_string(), false)]);
+
+        // the volume is mounted: the next retry loads it, no apply needed
+        std::fs::write(&provider.model_path, fixture_bytes()).unwrap();
+        classifiers.retry_missing(Duration::ZERO).await;
+        assert_eq!(states(&classifiers), [("local".to_string(), true)]);
+        assert!(classifiers.classify(&provider, &json!("x")).await.is_ok());
+        let rendered = metrics.render();
+        assert!(
+            rendered
+                .contains("rolter_local_classifier_models{provider=\"local\",state=\"loaded\"} 1"),
+            "{rendered}"
+        );
+        assert!(
+            rendered
+                .contains("rolter_local_classifier_models{provider=\"local\",state=\"failed\"} 0"),
+            "{rendered}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_model_no_configuration_names_is_not_retried_or_installed() {
+        let dir = TempDir::new("dropped");
+        let mut provider = local_provider(&fixture_sha256(), 2_000);
+        provider.model_path = dir.path("late.json");
+        let legacy = GuardrailWebhookConfig::default();
+        let classifiers = configured(&provider, None);
+        classifiers.apply(&guards_with(None), &legacy);
+        assert!(classifiers.registry.load().missing().is_empty());
+        assert!(states(&classifiers).is_empty());
+        std::fs::write(&provider.model_path, fixture_bytes()).unwrap();
+        classifiers.retry_missing(Duration::ZERO).await;
+        assert!(classifiers.registry.load().models.is_empty());
+        // a read that finishes after the apply moved on is dropped
+        let model = Arc::new(fixture());
+        classifiers.install(vec![(fixture_sha256(), model)]);
+        assert!(classifiers.registry.load().models.is_empty());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_background_retry_backs_off_until_the_model_loads() {
+        let dir = TempDir::new("loop");
+        let mut provider = local_provider(&fixture_sha256(), 2_000);
+        provider.model_path = dir.path("late.json");
+        let classifiers = configured(&provider, None);
+        let retries = classifiers.spawn_retries();
+        // a few attempts fail first, each wait twice the last
+        tokio::time::sleep(RETRY_FIRST * 4).await;
+        assert_eq!(states(&classifiers), [("local".to_string(), false)]);
+        std::fs::write(&provider.model_path, fixture_bytes()).unwrap();
+        let mut waited = Duration::ZERO;
+        while !states(&classifiers)[0].1 {
+            assert!(waited < RETRY_CAP * 4, "the model was never retried");
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            waited += Duration::from_millis(500);
+        }
+        assert!(classifiers.classify(&provider, &json!("x")).await.is_ok());
+        retries.abort();
     }
 
     #[test]
