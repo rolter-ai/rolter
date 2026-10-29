@@ -92,6 +92,22 @@ export function describeError(error: unknown, t: TFunction): ErrorCopy {
 }
 
 /**
+ * The translated copy for a refusal the dashboard has a sentence for, or `null`
+ * for everything else (#3484).
+ *
+ * A confirmation dialog shows the control plane's own words by design, so a
+ * thrown value that is not a coded `ApiError`, and one whose code is not in
+ * {@link KNOWN_ERROR_CODES}, stays exactly as it was thrown. A known code is
+ * translated; the server's message follows as `detail` only where
+ * {@link describeError} keeps it, because the sentence cannot say which input
+ * was wrong.
+ */
+export function describeCodedError(error: unknown, t: TFunction): ErrorCopy | null {
+  if (!(error instanceof ApiError) || !error.code || !known.has(error.code)) return null;
+  return describeError(error, t);
+}
+
+/**
  * `describeError` as one line, for a toast's detail or a banner: the translated
  * sentence, followed by the server's own words wherever they say something the
  * sentence cannot (which field, which rule).

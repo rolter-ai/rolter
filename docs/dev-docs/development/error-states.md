@@ -407,6 +407,20 @@ credentials and MFA enrolment share this contract. Existing sign-in and policy
 lockout guards retain their specific refusals. The MCP editor checks the code
 first, falling back to `ROLTER_KEK` in the message only for older uncoded servers.
 
+### Coded refusals in a confirmation (#3484)
+
+`ConfirmDialog` prints the failed action's error under its buttons. A thrown
+`ApiError` whose `code` is in `KNOWN_ERROR_CODES` is translated through
+`describeCodedError` (the same `errors.api.codes.<code>` sentence
+`describeError` uses), with the server's words as secondary text only for the
+codes `describeError` keeps a detail for. Everything else stays verbatim, as
+before: an uncoded `Error`, a string, and an `ApiError` with a code the
+dashboard has no sentence for, whose English message is then the only
+explanation there is. A screen never maps a code to a sentence of its own
+before handing the error to the dialog; the `api_token_inactive` mapping in
+`ApiTokens.tsx` is gone for that reason. The `ConfirmDialog` stories show a
+coded refusal in `en` and `ru`.
+
 `invalid_field` is the one
 known code whose server message `describeError` keeps as `detail`, because the
 translated line cannot say which field was wrong.
