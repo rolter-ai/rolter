@@ -388,37 +388,39 @@ no-ops.
 
 ## The examples tests
 
-The reference services under `examples/` carry their own tests, which `quality.yml`'s
-`examples (pytest)` job runs (#3429), so a release of one of their dependencies cannot break
-them unseen. The job installs the example's pinned `requirements-dev.txt` through `uv` and runs
-`pytest`; reproduce it with
+The reference services under `examples/` carry their own tests (#3429), so a release of one of
+their dependencies cannot break them unseen. Two steps of the `static checks` job in `quality.yml`
+run them, which makes them part of `quality`, so `ci-ok` waits on them. Each installs its example's
+pinned `requirements-dev.txt` through `uv` and runs `pytest`; reproduce one with
 
 ```sh
 cd examples/presidio-restore-shim
 uv run --no-project --python 3.13 --with-requirements requirements-dev.txt pytest
 ```
 
-`examples/rolter-linear-trainer/` holds no service, only a test (#3455): it runs the
-scikit-learn trainer printed on the semantic guard policies page over the golden vectors in
-`crates/rolter-gateway/tests/fixtures/local_classifier/golden_features.json`, and the gateway's
-`local_classifier` unit test holds the same file against the Rust tokenizer and FNV-1a hash. Change
-the vectors with `ROLTER_TEST_REGENERATE_GOLDEN=1 pytest` in that directory, then run the Rust test: both
-sides have to agree.
+dependabot's `pip` ecosystem covers each example's directory, so a new example with a
+`requirements.txt` needs its own entry in `.github/dependabot.yml`.
 
-It is part of `quality`, so `ci-ok` waits on it. dependabot's `pip` ecosystem covers each
-example's directory, so a new example with a `requirements.txt` needs its own entry in
-`.github/dependabot.yml`.
+- **`examples/presidio-restore-shim/`** has its own suite, which drives the shim with a hand-written
+  client. The gateway's `presidio_shim` test (#3444) additionally runs the real shim under uvicorn
+  behind a real gateway route. It reads `ROLTER_TEST_SHIM_PYTHON`, the interpreter to start the
+  shim with; the `nextest / doctests` job builds a virtualenv from the shim's `requirements.txt` and
+  sets it, and a value that cannot import the shim's dependencies fails the test. Left unset, the
+  test tries `python3` and skips with the reason when it cannot import them, so a machine without
+  Python still runs the suite. Locally:
 
-The gateway's `presidio_shim` test (#3444) runs the real reference shim from `examples/`. It
-reads `ROLTER_TEST_SHIM_PYTHON`, the interpreter to start it with; CI builds a virtualenv from the
-shim's `requirements.txt` and sets it, and a value that cannot import the shim's dependencies fails
-the test. Left unset, the test tries `python3` and skips with the reason when it cannot import them,
-so a machine without Python still runs the suite. Locally:
+  ```sh
+  uv venv /tmp/shim-venv && uv pip install --python /tmp/shim-venv -r examples/presidio-restore-shim/requirements.txt
+  ROLTER_TEST_SHIM_PYTHON=/tmp/shim-venv/bin/python cargo test -p rolter-gateway --test presidio_shim
+  ```
 
-```sh
-uv venv /tmp/shim-venv && uv pip install --python /tmp/shim-venv -r examples/presidio-restore-shim/requirements.txt
-ROLTER_TEST_SHIM_PYTHON=/tmp/shim-venv/bin/python cargo test -p rolter-gateway --test presidio_shim
-```
+- **`examples/rolter-linear-trainer/`** holds no service, only a test (#3455). It runs the
+  scikit-learn trainer printed on the semantic guard policies page over the golden vectors in
+  `crates/rolter-gateway/tests/fixtures/local_classifier/golden_features.json`, and the gateway's
+  `local_classifier` unit test holds the same file against the Rust tokenizer and FNV-1a hash. Change
+  the vectors with `ROLTER_TEST_REGENERATE_GOLDEN=1 pytest` in that directory, then run the Rust
+  test: both sides have to agree. The file is written with `json.dumps`, so `.prettierignore` lists
+  it.
 
 ## Layout
 

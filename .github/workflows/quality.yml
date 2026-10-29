@@ -688,33 +688,6 @@ jobs:
           cargo build -p rolter
           ROLTER_BIN="$PWD/target/debug/rolter" bash scripts/check-helm-chart.sh preflight
 
-  # ── examples: the reference services under examples/ ────────────────────────
-  # `examples/presidio-restore-shim/` has its own pytest suite, which nothing
-  # ran until #3429, so it could rot unseen when presidio or starlette moved.
-  # the requirements it installs are the example's own pinned files, so
-  # dependabot's pip entry for the directory is what bumps them. it takes no
-  # secrets and needs no service
-  examples:
-    name: examples (pytest)
-    runs-on: ubuntu-26.04
-    timeout-minutes: 10
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: set up uv
-        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
-      - name: presidio restore shim
-        working-directory: examples/presidio-restore-shim
-        run: uv run --no-project --python 3.13 --with-requirements requirements-dev.txt pytest -q
-      # the trainer printed on the semantic guard policies page, held to the
-      # golden vectors the gateway's local classifier is also tested against
-      - name: rolter-linear/1 trainer vectors
-        working-directory: examples/rolter-linear-trainer
-        run: uv run --no-project --python 3.13 --with-requirements requirements-dev.txt pytest -q
-
   # ── static checks: everything that reads the tree and builds nothing ────────
   # twelve checks that used to be twelve jobs. each did 0-15 s of work and then
   # waited a median 86-200 s for a runner: a pr push started 36 jobs at once
@@ -1066,6 +1039,25 @@ jobs:
           uvx --from "$ruff" ruff check scripts integration
           uvx --from "$ruff" ruff format --check scripts integration
 
+      # ── examples: the reference services under examples/ ──────────────────
+      # `examples/presidio-restore-shim/` has its own pytest suite, which
+      # nothing ran until #3429, so it could rot unseen when presidio or
+      # starlette moved. each example installs its own pinned
+      # requirements-dev.txt, which dependabot's pip entry for the directory
+      # bumps. the trainer printed on the semantic guard policies page is held
+      # to the golden vectors the gateway's local classifier is also tested
+      # against (#3455)
+      - name: examples (presidio restore shim, pytest)
+        id: examples-shim
+        if: ${{ !cancelled() && steps.uv.outcome == 'success' }}
+        working-directory: examples/presidio-restore-shim
+        run: uv run --no-project --python 3.13 --with-requirements requirements-dev.txt pytest -q
+      - name: examples (rolter-linear/1 trainer vectors, pytest)
+        id: examples-trainer
+        if: ${{ !cancelled() && steps.uv.outcome == 'success' }}
+        working-directory: examples/rolter-linear-trainer
+        run: uv run --no-project --python 3.13 --with-requirements requirements-dev.txt pytest -q
+
       # ── board automation: the add-to-board retry policy ───────────────────
       # project-automation.yml decides which GitHub API failures to wait out and
       # which to report, and it only runs on master when an issue or PR is
@@ -1198,6 +1190,8 @@ jobs:
           OUTCOME_RELEASE_HANDOFF_SELF_TEST: ${{ steps.release-handoff-self-test.outcome }}
           OUTCOME_RELEASE_GATE: ${{ steps.release-gate.outcome }}
           OUTCOME_RUFF: ${{ steps.ruff.outcome }}
+          OUTCOME_EXAMPLES_SHIM: ${{ steps.examples-shim.outcome }}
+          OUTCOME_EXAMPLES_TRAINER: ${{ steps.examples-trainer.outcome }}
           OUTCOME_PROJECT_AUTOMATION: ${{ steps.project-automation.outcome }}
           OUTCOME_DOGFOOD_SCRIPTS: ${{ steps.dogfood-scripts.outcome }}
           OUTCOME_SHELLCHECK: ${{ steps.shellcheck.outcome }}
@@ -1289,6 +1283,10 @@ jobs:
           row "release handoff wired" "release gate scripts against a fake gh" "${OUTCOME_RELEASE_GATE}" yes \
             "prek run release-gate --all-files"
           row "ruff" "ruff (python)" "${OUTCOME_RUFF}" yes "prek run ruff --all-files"
+          row "examples" "presidio restore shim (pytest)" "${OUTCOME_EXAMPLES_SHIM}" yes \
+            "cd examples/presidio-restore-shim && uv run --no-project --python 3.13 --with-requirements requirements-dev.txt pytest"
+          row "examples" "rolter-linear/1 trainer vectors (pytest)" "${OUTCOME_EXAMPLES_TRAINER}" yes \
+            "cd examples/rolter-linear-trainer && uv run --no-project --python 3.13 --with-requirements requirements-dev.txt pytest"
           row "board automation retry policy" "board automation retry policy" "${OUTCOME_PROJECT_AUTOMATION}" yes \
             "prek run project-automation --all-files"
           row "dogfood scripts" "dogfood scripts against a stub server" "${OUTCOME_DOGFOOD_SCRIPTS}" yes \
