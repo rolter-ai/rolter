@@ -297,6 +297,45 @@ A route target may carry `takes_over` (#1584), a set of `rolter_core::failover::
 
 Tests: `rolter_core::failover` unit tests (vocabulary, classification, `may_dial`, the all-restricted rule), `handlers::tests::a_restricted_target_*` and `a_refusal_moves_only_*`, `failover::tests` in the gateway (the rebuilt body), `crates/rolter-gateway/tests/conditional_failover.rs` (end to end, including the recorded reason), the store snapshot test `takes_over_reaches_the_snapshot_and_fails_closed`, the CRUD test `a_target_takes_over_failure_classes_and_a_route_is_never_left_only_restricted` and the seed test `the_import_applies_takes_over_and_refuses_an_all_restricted_route`.
 
+## Variant analytics
+
+`GET /api/v1/analytics/by-variant` (`by_variant_sql` in
+`crates/rolter-control/src/analytics.rs`) gives each weighted variant of a route
+three counts, which the route sheet (`ui/src/components/RouteVariantTraffic.tsx`)
+sets beside the configured weights:
+
+- `requests`: every request the variant answered (`request_logs.variant`),
+  failovers included, so a variant others fail over to reads above its weight.
+- `first_attempt_requests` (#3409): the part of `requests` with no
+  `fallback_reason`, the requests it answered on the first dial. A request that
+  failed over from another variant counts for neither variant, so a flaky
+  variant reads below its weight here.
+- `assigned_requests` (#3505): the requests the split assigned the variant,
+  grouped by `request_logs.first_variant`, which the gateway records once per
+  request. `forward_variants` names the candidate's variant in
+  `ForwardOutcome::variant` before it dials, and `ForwardLoop::begin_attempt`
+  copies it to `first_variant` while `attempts` is still `0`; the cancel guard's
+  row keeps the first variant it is attributed (`CancelGuard::attribute`). The
+  classic pool has no variant and copies nothing, and an empty field is left out
+  of the row, so a ClickHouse without `clickhouse/048_first_variant.sql` takes
+  every row as before.
+
+The assigned count needs rows grouped by another key than the answered ones,
+and a variant that only failed over has no answered row at all, so the select
+is a `union all` of the answered rollup and an assigned rollup over the same
+window and filters, summed per `(model, variant)`. A row without
+`first_variant` (written before `048`, or by an older gateway) counts for the
+variant that answered it when it has no `fallback_reason`, for no variant when
+it failed over, and a classic row counts under the empty variant. Without
+`fallback_reason` (`023`) such an old variant row is never counted. Without
+`048` the count is `null` and the sheet leaves its column out. Realtime turn
+rows do not record a first variant yet, so they count by the old-row rule.
+Tests: `by_variant_*` in `analytics.rs`; the `by_variant_*048*`,
+`by_variant_counts_a_failover_*` and `by_variant_lists_a_variant_*` cases of
+`crates/rolter-control/tests/invocations_optional_columns.rs` (real
+ClickHouse); `a_variant_failover_records_the_variant_first_dialled` in
+`crates/rolter-gateway/tests/upstream_failure_log.rs`.
+
 ## Selecting a strategy from the dashboard
 
 The route and provider-group editors offer every strategy in this table except `adaptive`, which is governed by the deployment-wide `[adaptive_routing]` policy and has its own screen — a per-route dropdown would misrepresent how it is controlled. `precise_cache_aware` and `lmcache_aware` are offered with a hint that they need a telemetry source on the target providers, since without one they fall back to least-load silently rather than failing.

@@ -136,6 +136,12 @@ pub(crate) const OPTIONAL_COLUMNS: &[OptionalColumn] = &[
         name: "cache_usage_reported",
         default: "toUInt8(0)",
     },
+    // 048_first_variant.sql: the variant the split assigned the request,
+    // read by by-variant's assigned count (#3505)
+    OptionalColumn {
+        name: "first_variant",
+        default: "''",
+    },
 ];
 
 /// The probe: every column `request_logs` has in the database the client reads
@@ -450,6 +456,7 @@ mod tests {
             "turns",
             "provider_org_id",
             "cache_usage_reported",
+            "first_variant",
         ]))
         .expect("the table is visible");
         assert_eq!(columns.missing(), ["cache_write_1h_tokens"]);

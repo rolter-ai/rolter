@@ -1511,8 +1511,16 @@ export const FirstAttemptsAreComparedWithTheConfiguredSplit: Story = {
  * the column is left out rather than drawn as a guess.
  */
 const unsplit = observing([
-  { ...variantTraffic("stable", 880, 8, 420), first_attempt_requests: null },
-  { ...variantTraffic("canary", 120, 24, 900), first_attempt_requests: null },
+  {
+    ...variantTraffic("stable", 880, 8, 420),
+    first_attempt_requests: null,
+    assigned_requests: null,
+  },
+  {
+    ...variantTraffic("canary", 120, 24, 900),
+    first_attempt_requests: null,
+    assigned_requests: null,
+  },
 ]);
 export const NoFirstAttemptColumnWhenTheSplitIsUnknown: Story = {
   render: () => (
@@ -1528,6 +1536,77 @@ export const NoFirstAttemptColumnWhenTheSplitIsUnknown: Story = {
     await waitFor(() => expect(table.getAllByRole("columnheader")).toHaveLength(6));
     await expect(table.queryByRole("columnheader", { name: "First attempt" })).toBeNull();
     await expect(dialog.getByText(/counting failovers as well as first attempts/)).toBeVisible();
+  },
+};
+
+/**
+ * The assigned column counts the requests the split sent each variant first,
+ * failed over or not (#3505), so it is the one that reads at the weights: here
+ * 40 of the canary's 100 assigned requests failed over to stable, which reads
+ * high in Observed and First attempt and at 90 / 10 in Assigned.
+ */
+const assigned = observing([
+  {
+    ...variantTraffic("stable", 940, 8, 420),
+    first_attempt_requests: 900,
+    assigned_requests: 900,
+  },
+  { ...variantTraffic("canary", 60, 24, 900), first_attempt_requests: 60, assigned_requests: 100 },
+]);
+export const AssignedSharesAreComparedWithTheConfiguredSplit: Story = {
+  render: () => (
+    <Harness fetchStub={assigned.stub} role="admin">
+      <Toasted>
+        <RoutingRules />
+      </Toasted>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const dialog = await openRouteSheet(canvasElement);
+    const table = within(await dialog.findByRole("table", { name: "Observed traffic" }));
+    await expect(await table.findByRole("columnheader", { name: "Assigned" })).toBeVisible();
+    await expect(table.getAllByRole("columnheader")).toHaveLength(8);
+    const row = (name: string) => table.getByText(name).closest('[role="row"]') as HTMLElement;
+    const cells = (name: string) =>
+      Array.from(row(name).querySelectorAll('[role="cell"]')).map((c) => c.textContent);
+    // configured, assigned, observed, first attempt
+    await waitFor(() =>
+      expect(cells("stable").slice(0, 5)).toEqual(["stable", "90%", "90%", "94%", "94%"]),
+    );
+    await expect(cells("canary").slice(0, 5)).toEqual(["canary", "10%", "10%", "6%", "6%"]);
+    await expect(dialog.getByText(/share of the requests the split sent it first/)).toBeVisible();
+  },
+};
+
+/**
+ * A variant whose every assigned request failed over answered nothing, and
+ * still has its line: its assigned share is there, its error rate is not.
+ */
+const answeredNothing = observing([
+  {
+    ...variantTraffic("stable", 1000, 8, 420),
+    first_attempt_requests: 900,
+    assigned_requests: 900,
+  },
+  { ...variantTraffic("canary", 0, 0, 0), first_attempt_requests: 0, assigned_requests: 100 },
+]);
+export const AVariantThatAnsweredNothingKeepsItsAssignedShare: Story = {
+  render: () => (
+    <Harness fetchStub={answeredNothing.stub} role="admin">
+      <Toasted>
+        <RoutingRules />
+      </Toasted>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const dialog = await openRouteSheet(canvasElement);
+    const table = within(await dialog.findByRole("table", { name: "Observed traffic" }));
+    const row = (name: string) => table.getByText(name).closest('[role="row"]') as HTMLElement;
+    const cells = (name: string) =>
+      Array.from(row(name).querySelectorAll('[role="cell"]')).map((c) => c.textContent);
+    await waitFor(() =>
+      expect(cells("canary").slice(0, 7)).toEqual(["canary", "10%", "10%", "0%", "0%", "0", "—"]),
+    );
   },
 };
 

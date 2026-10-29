@@ -202,6 +202,16 @@ export interface AnalyticsByVariantRow {
    * plane older than the field.
    */
   first_attempt_requests?: number | string | null;
+  /**
+   * The requests the weighted split assigned the variant (#3505), by the
+   * variant the gateway dialled first, so a request that failed over counts
+   * for the variant it was assigned and a variant that answered nothing still
+   * has a row (with `requests` at 0). A row from before `clickhouse/048`
+   * counts for the variant that answered it when it did not fail over, and for
+   * none otherwise. `null` from a ClickHouse without that file; absent from a
+   * control plane older than the field.
+   */
+  assigned_requests?: number | string | null;
   tokens: number | string;
   cost_usd: number | string;
   /** requests recorded with no price for their model; see AnalyticsSummary */
