@@ -68,6 +68,17 @@ pub struct McpEvent {
     /// covers the one that does
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub error_scopes: Vec<String>,
+    /// the call was a JSON-RPC notification, so it has no `id` and no reply
+    /// was awaited: `status` then says only what the HTTP layer answered, never
+    /// what the tool did (#3466). Left out of the row while `false`, for the
+    /// same reason as `error_scopes`: a ClickHouse that has not applied
+    /// migration `047` drops it under `input_format_skip_unknown_fields`
+    #[serde(skip_serializing_if = "is_false")]
+    pub notification: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 /// Handle the proxy uses to record tool calls. Cheap to clone.
@@ -293,6 +304,9 @@ pub(crate) const INSUFFICIENT_SCOPE_ERROR: &str = "insufficient scope";
 /// What a finished call amounts to, before it is rendered into a row.
 struct Outcome {
     status: &'static str,
+    /// the call was a notification: nothing answered it, so the status is the
+    /// HTTP layer's
+    notification: bool,
     /// a fixed category that replaces the one `status` implies
     error: Option<&'static str>,
     /// the JSON-RPC `result` or `error` object, when one was seen
@@ -304,6 +318,7 @@ pub(crate) struct PendingCall {
     sink: McpEventSink,
     started: Instant,
     ts: DateTime<Utc>,
+    /// `Null` for a notification
     rpc_id: Value,
     arguments: Option<Value>,
     event: McpEvent,
@@ -352,6 +367,7 @@ impl PendingCall {
             result: String::new(),
             error: String::new(),
             error_scopes: Vec::new(),
+            notification: false,
         };
         let capturing = context.capture.enabled && context.capture.max_bytes > 0;
         Some(Self {
@@ -376,6 +392,7 @@ impl PendingCall {
     pub(crate) fn fail(self, status: &'static str) {
         self.finish(Outcome {
             status,
+            notification: false,
             error: None,
             payload: None,
         });
@@ -388,6 +405,7 @@ impl PendingCall {
         self.event.error_scopes = scopes;
         self.finish(Outcome {
             status: "auth_denied",
+            notification: false,
             error: Some(INSUFFICIENT_SCOPE_ERROR),
             payload: None,
         });
@@ -404,26 +422,26 @@ impl PendingCall {
         self.fail(status);
     }
 
-    /// Wrap the upstream body so the call is recorded once it has been read,
-    /// without altering a byte of it or waiting on the write.
-    pub(crate) fn observe<S>(self, http_status: u16, is_sse: bool, inner: S) -> ObservedBody<S> {
-        ObservedBody {
-            inner,
-            call: Some(self),
-            buf: Vec::new(),
-            overflow: false,
-            http_status,
-            is_sse,
-            stream_failed: false,
-        }
+    /// Record a call whose reply the relay did not read, because it rewrote
+    /// the reply (a batch holding a `tools/list` is narrowed): the status is the
+    /// HTTP layer's and no result is kept.
+    pub(crate) fn finish_unobserved(self, http_status: u16) {
+        let outcome = by_http_status(http_status, true, self.notification());
+        self.finish(outcome);
+    }
+
+    fn notification(&self) -> bool {
+        self.rpc_id.is_null()
     }
 
     fn finish(mut self, outcome: Outcome) {
         let Outcome {
             status,
+            notification,
             error,
             payload,
         } = outcome;
+        self.event.notification = notification;
         self.event.ts = self.ts;
         self.event.status = status;
         self.event.latency_ms =
@@ -454,73 +472,100 @@ impl PendingCall {
     }
 }
 
-/// The JSON-RPC reply answering `rpc_id` in a buffered response body.
-fn find_response(buf: &[u8], is_sse: bool, rpc_id: &Value) -> Option<Value> {
-    let answers = |value: &Value| {
-        value.get("id") == Some(rpc_id)
-            && (value.get("result").is_some() || value.get("error").is_some())
-    };
-    let matching = |value: Value| match value {
-        Value::Array(items) => items.into_iter().find(|item| answers(item)),
-        other => answers(&other).then_some(other),
-    };
-    if !is_sse {
-        return serde_json::from_slice(buf).ok().and_then(matching);
+/// The JSON-RPC replies in a buffered response body, parsed once for every call
+/// the request held, each handed to the call it answers by `id`.
+struct Replies(Vec<Value>);
+
+impl Replies {
+    fn of(buf: &[u8], is_sse: bool) -> Self {
+        let answers = |value: &Value| {
+            value.get("id").is_some_and(|id| !id.is_null())
+                && (value.get("result").is_some() || value.get("error").is_some())
+        };
+        let mut replies = Vec::new();
+        let mut collect = |value: Value| match value {
+            Value::Array(items) => replies.extend(items.into_iter().filter(answers)),
+            other => {
+                if answers(&other) {
+                    replies.push(other);
+                }
+            }
+        };
+        if !is_sse {
+            if let Ok(value) = serde_json::from_slice(buf) {
+                collect(value);
+            }
+        } else {
+            // an SSE event carries its JSON-RPC message on `data:` lines; the
+            // replies are the events answering a call, among any progress
+            // notifications
+            buf.split(|b| *b == b'\n')
+                .filter_map(|line| line.strip_prefix(b"data:"))
+                .filter_map(|data| serde_json::from_slice::<Value>(data.trim_ascii()).ok())
+                .for_each(collect);
+        }
+        Self(replies)
     }
-    // an SSE event carries its JSON-RPC message on `data:` lines; the reply is
-    // the one event answering this call, among any progress notifications
-    buf.split(|b| *b == b'\n')
-        .filter_map(|line| line.strip_prefix(b"data:"))
-        .filter_map(|data| serde_json::from_slice::<Value>(data.trim_ascii()).ok())
-        .find_map(matching)
+
+    /// The reply answering `rpc_id`. Each reply answers one call, so two calls
+    /// sharing an id (which JSON-RPC forbids) are not both given the first one.
+    fn take(&mut self, rpc_id: &Value) -> Option<Value> {
+        let at = self
+            .0
+            .iter()
+            .position(|reply| reply.get("id") == Some(rpc_id))?;
+        Some(self.0.remove(at))
+    }
 }
 
-fn outcome(
-    buf: &[u8],
-    overflow: bool,
-    is_sse: bool,
-    http_status: u16,
-    stream_failed: bool,
-    rpc_id: &Value,
-) -> Outcome {
-    let none = |status| Outcome {
+/// What the HTTP status alone says about a call. `delivered` is for a call
+/// whose reply cannot be read, a body too large to hold, a notification (which
+/// has none) or a reply the relay rewrote: a `2xx` is then a call that completed.
+fn by_http_status(http_status: u16, delivered: bool, notification: bool) -> Outcome {
+    let status = match http_status {
+        401 | 403 => "auth_denied",
+        200..=299 if delivered => "success",
+        408 | 504 => "timeout",
+        400..=499 => "error",
+        _ => "transport_error",
+    };
+    Outcome {
         status,
+        notification,
         error: None,
         payload: None,
-    };
-    if matches!(http_status, 401 | 403) {
-        return none("auth_denied");
     }
-    if !overflow {
-        if let Some(mut reply) = find_response(buf, is_sse, rpc_id) {
-            if let Some(error) = reply.get_mut("error").map(Value::take) {
-                return Outcome {
-                    status: "error",
-                    error: None,
-                    payload: Some(error),
-                };
-            }
-            let result = reply.get_mut("result").map(Value::take);
-            let is_error = result
-                .as_ref()
-                .and_then(|r| r.get("isError"))
-                .and_then(Value::as_bool)
-                .unwrap_or(false);
+}
+
+/// What an awaited call amounts to, from the reply found for it, if any.
+fn outcome(reply: Option<Value>, overflow: bool, http_status: u16, stream_failed: bool) -> Outcome {
+    if matches!(http_status, 401 | 403) {
+        return by_http_status(http_status, false, false);
+    }
+    if let Some(mut reply) = reply {
+        if let Some(error) = reply.get_mut("error").map(Value::take) {
             return Outcome {
-                status: if is_error { "error" } else { "success" },
+                status: "error",
+                notification: false,
                 error: None,
-                payload: result,
+                payload: Some(error),
             };
         }
+        let result = reply.get_mut("result").map(Value::take);
+        let is_error = result
+            .as_ref()
+            .and_then(|r| r.get("isError"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        return Outcome {
+            status: if is_error { "error" } else { "success" },
+            notification: false,
+            error: None,
+            payload: result,
+        };
     }
-    match http_status {
-        // a body too large to hold was still delivered: the call completed
-        200..=299 if overflow => none("success"),
-        408 | 504 => none("timeout"),
-        400..=499 => none("error"),
-        _ => none("transport_error"),
-    }
-    .tap(stream_failed)
+    // a body too large to hold was still delivered: the call completed
+    by_http_status(http_status, overflow, false).tap(stream_failed)
 }
 
 impl Outcome {
@@ -530,6 +575,7 @@ impl Outcome {
         if stream_failed && self.payload.is_none() && !matches!(self.status, "auth_denied") {
             Self {
                 status: "transport_error",
+                notification: false,
                 error: None,
                 payload: None,
             }
@@ -539,11 +585,34 @@ impl Outcome {
     }
 }
 
+/// Wrap the upstream body so every call the request held is recorded once the
+/// body has been read, without altering a byte of it or waiting on the write.
+pub(crate) fn observe<S>(
+    calls: Vec<PendingCall>,
+    http_status: u16,
+    is_sse: bool,
+    inner: S,
+) -> ObservedBody<S> {
+    ObservedBody {
+        inner,
+        // a notification is answered by nothing, so a body that only they await
+        // is not worth buffering
+        awaiting: calls.iter().any(|call| !call.notification()),
+        calls,
+        buf: Vec::new(),
+        overflow: false,
+        http_status,
+        is_sse,
+        stream_failed: false,
+    }
+}
+
 /// An upstream body that is recorded when it ends. Passes every chunk through
-/// unchanged; holds a bounded copy only to read the reply from.
+/// unchanged; holds a bounded copy only to read the replies from.
 pub(crate) struct ObservedBody<S> {
     inner: S,
-    call: Option<PendingCall>,
+    calls: Vec<PendingCall>,
+    awaiting: bool,
     buf: Vec<u8>,
     overflow: bool,
     http_status: u16,
@@ -553,15 +622,25 @@ pub(crate) struct ObservedBody<S> {
 
 impl<S> ObservedBody<S> {
     fn complete(&mut self) {
-        if let Some(call) = self.call.take() {
-            let outcome = outcome(
-                &self.buf,
-                self.overflow,
-                self.is_sse,
-                self.http_status,
-                self.stream_failed,
-                &call.rpc_id,
-            );
+        let calls = std::mem::take(&mut self.calls);
+        if calls.is_empty() {
+            return;
+        }
+        // the body is parsed once, whatever the number of calls it answers
+        let mut replies = if self.awaiting && !self.overflow {
+            Replies::of(&self.buf, self.is_sse)
+        } else {
+            Replies(Vec::new())
+        };
+        for call in calls {
+            let outcome = if call.notification() {
+                // headers came back, so the notification was delivered whatever
+                // happened to the body afterwards
+                by_http_status(self.http_status, true, true)
+            } else {
+                let reply = replies.take(&call.rpc_id);
+                outcome(reply, self.overflow, self.http_status, self.stream_failed)
+            };
             call.finish(outcome);
         }
     }
@@ -580,7 +659,7 @@ where
         let next = std::pin::Pin::new(&mut self.inner).poll_next(cx);
         match &next {
             Poll::Ready(Some(Ok(chunk))) => {
-                if !self.overflow {
+                if self.awaiting && !self.overflow {
                     if self.buf.len() + chunk.len() > MAX_OBSERVED_BYTES {
                         self.overflow = true;
                         self.buf = Vec::new();
@@ -604,7 +683,7 @@ impl<S> Drop for ObservedBody<S> {
     /// A caller that hangs up mid-response still leaves a row, from whatever
     /// had arrived.
     fn drop(&mut self) {
-        if self.call.is_some() {
+        if !self.calls.is_empty() {
             self.stream_failed = true;
             self.complete();
         }
@@ -656,7 +735,20 @@ mod tests {
     /// policy's reader, then taken as a single call
     fn parse(sink: &McpEventSink, body: &[u8], ctx: &CallContext<'_>) -> Option<PendingCall> {
         let read = crate::mcp_policy::Read::of(body, false, sink.enabled());
-        PendingCall::from_request(sink, read.single_call(true)?, ctx)
+        PendingCall::from_request(sink, read.into_calls(true).into_iter().next()?, ctx)
+    }
+
+    /// the outcome of one awaited call, the way a finished body reads it
+    fn outcome_of(
+        buf: &[u8],
+        overflow: bool,
+        is_sse: bool,
+        http_status: u16,
+        stream_failed: bool,
+        id: &Value,
+    ) -> Outcome {
+        let reply = Replies::of(buf, is_sse).take(id);
+        outcome(reply, overflow, http_status, stream_failed)
     }
 
     fn request(method: &str, id: Option<i64>) -> Vec<u8> {
@@ -709,7 +801,7 @@ mod tests {
     }
 
     #[test]
-    fn only_a_tools_call_request_with_an_id_is_recorded() {
+    fn only_a_tools_call_request_is_recorded() {
         let (sink, _rx) = sink();
         let capture = rolter_core::PayloadCaptureConfig::default();
         let redactor = redactor(&capture);
@@ -717,21 +809,7 @@ mod tests {
         assert!(parse(&sink, &request("tools/call", Some(1)), &ctx).is_some());
         assert!(parse(&sink, &request("tools/list", Some(1)), &ctx).is_none());
         assert!(parse(&sink, &request("initialize", Some(1)), &ctx).is_none());
-        // a notification has no response to record
-        assert!(parse(&sink, &request("tools/call", None), &ctx).is_none());
         assert!(parse(&sink, b"not json tools/call", &ctx).is_none());
-        // a batch is not followed, however it is spelled
-        assert!(parse(
-            &sink,
-            &serde_json::to_vec(&json!([serde_json::from_slice::<Value>(&request(
-                "tools/call",
-                Some(1)
-            ))
-            .unwrap()]))
-            .unwrap(),
-            &ctx
-        )
-        .is_none());
         let disabled = McpEventSink::disabled(Arc::new(Metrics::default()));
         assert!(parse(&disabled, &request("tools/call", Some(1)), &ctx).is_none());
     }
@@ -740,7 +818,7 @@ mod tests {
     fn a_json_rpc_error_and_an_is_error_result_are_tool_errors() {
         let id = json!(7);
         let reply = |v: Value| serde_json::to_vec(&v).unwrap();
-        let ok = outcome(
+        let ok = outcome_of(
             &reply(json!({"id": 7, "result": {"content": []}})),
             false,
             false,
@@ -749,7 +827,7 @@ mod tests {
             &id,
         );
         assert_eq!(ok.status, "success");
-        let flagged = outcome(
+        let flagged = outcome_of(
             &reply(json!({"id": 7, "result": {"isError": true}})),
             false,
             false,
@@ -758,7 +836,7 @@ mod tests {
             &id,
         );
         assert_eq!(flagged.status, "error");
-        let rpc = outcome(
+        let rpc = outcome_of(
             &reply(json!({"id": 7, "error": {"code": -32602}})),
             false,
             false,
@@ -774,11 +852,14 @@ mod tests {
     fn an_sse_reply_is_found_among_progress_events() {
         let id = json!(3);
         let sse = b"event: message\ndata: {\"method\":\"notifications/progress\"}\n\nevent: message\ndata: {\"id\":3,\"result\":{\"isError\":true}}\n\n";
-        assert_eq!(outcome(sse, false, true, 200, false, &id).status, "error");
+        assert_eq!(
+            outcome_of(sse, false, true, 200, false, &id).status,
+            "error"
+        );
         let other = b"data: {\"id\":9,\"result\":{}}\n\n";
         // a reply to some other call is not this call's reply
         assert_eq!(
-            outcome(other, false, true, 200, false, &id).status,
+            outcome_of(other, false, true, 200, false, &id).status,
             "transport_error"
         );
     }
@@ -787,21 +868,27 @@ mod tests {
     fn transport_failures_map_onto_the_closed_status_set() {
         let id = json!(1);
         assert_eq!(
-            outcome(b"", false, false, 403, false, &id).status,
+            outcome_of(b"", false, false, 403, false, &id).status,
             "auth_denied"
         );
         assert_eq!(
-            outcome(b"", false, false, 504, false, &id).status,
+            outcome_of(b"", false, false, 504, false, &id).status,
             "timeout"
         );
         assert_eq!(
-            outcome(b"", false, false, 502, false, &id).status,
+            outcome_of(b"", false, false, 502, false, &id).status,
             "transport_error"
         );
-        assert_eq!(outcome(b"", false, false, 404, false, &id).status, "error");
-        assert_eq!(outcome(b"", true, false, 200, false, &id).status, "success");
         assert_eq!(
-            outcome(b"{", false, false, 200, true, &id).status,
+            outcome_of(b"", false, false, 404, false, &id).status,
+            "error"
+        );
+        assert_eq!(
+            outcome_of(b"", true, false, 200, false, &id).status,
+            "success"
+        );
+        assert_eq!(
+            outcome_of(b"{", false, false, 200, true, &id).status,
             "transport_error"
         );
         for status in [
@@ -833,7 +920,7 @@ mod tests {
         let body = futures_util::stream::iter([Ok::<_, std::io::Error>(Bytes::from_static(
             br#"{"jsonrpc":"2.0","id":1,"result":{"content":[]}}"#,
         ))]);
-        let mut observed = call.observe(200, false, body);
+        let mut observed = observe(vec![call], 200, false, body);
         while observed.next().await.is_some() {}
         let event = rx.try_recv().unwrap();
         assert_eq!(event.status, "success");
@@ -874,13 +961,70 @@ mod tests {
         }))
         .unwrap();
         let body = futures_util::stream::iter([Ok::<_, std::io::Error>(Bytes::from(reply))]);
-        let mut observed = call.observe(200, false, body);
+        let mut observed = observe(vec![call], 200, false, body);
         while observed.next().await.is_some() {}
         let event = rx.try_recv().unwrap();
         for stored in [&event.arguments, &event.result] {
             assert!(!stored.contains(&key), "{stored}");
             assert!(stored.contains("[redacted:anthropic_key]"), "{stored}");
         }
+    }
+
+    /// #3466: the flag rides in the row only for a notification, so a writer
+    /// against a table without the column sends nothing it would have to drop.
+    #[test]
+    fn the_notification_flag_is_sent_only_when_set() {
+        let (sink, mut rx) = sink();
+        let capture = rolter_core::PayloadCaptureConfig::default();
+        let redactor = redactor(&capture);
+        let ctx = context(&capture, &redactor);
+        let call = parse(&sink, &request("tools/call", None), &ctx).unwrap();
+        assert!(call.notification());
+        call.finish(by_http_status(202, true, true));
+        let note = serde_json::to_value(rx.try_recv().unwrap()).unwrap();
+        assert_eq!(
+            (&note["status"], &note["notification"]),
+            (&json!("success"), &json!(true))
+        );
+        let call = parse(&sink, &request("tools/call", Some(1)), &ctx).unwrap();
+        assert!(!call.notification());
+        call.fail("error");
+        let plain = serde_json::to_value(rx.try_recv().unwrap()).unwrap();
+        assert!(plain.get("notification").is_none(), "{plain}");
+    }
+
+    /// a notification the upstream refused is not a success, whatever it awaited
+    #[test]
+    fn a_notification_ends_with_the_status_the_http_layer_gave() {
+        for (http, status) in [
+            (202, "success"),
+            (200, "success"),
+            (401, "auth_denied"),
+            (404, "error"),
+            (504, "timeout"),
+            (502, "transport_error"),
+        ] {
+            let outcome = by_http_status(http, true, true);
+            assert_eq!(
+                (outcome.status, outcome.notification),
+                (status, true),
+                "{http}"
+            );
+        }
+    }
+
+    #[test]
+    fn replies_are_handed_out_by_id_once_each() {
+        let mut replies = Replies::of(
+            br#"[{"id":2,"result":{"n":2}},{"id":1,"error":{"code":1}},{"id":2,"result":{"n":3}},{"method":"x"},{"id":null,"result":{}}]"#,
+            false,
+        );
+        assert_eq!(replies.take(&json!(1)).unwrap()["error"]["code"], 1);
+        assert_eq!(replies.take(&json!(2)).unwrap()["result"]["n"], 2);
+        // a second call under the same id gets the second reply, not the first again
+        assert_eq!(replies.take(&json!(2)).unwrap()["result"]["n"], 3);
+        assert!(replies.take(&json!(2)).is_none());
+        assert!(replies.take(&json!("1")).is_none());
     }
 
     #[tokio::test]

@@ -301,29 +301,70 @@ impl ColumnCache {
     }
 }
 
+/// Which of the optional columns `mcp_tool_call_logs` has: the ones a
+/// hand-applied migration adds (`042`, `047`).
+#[cfg_attr(not(feature = "postgres"), allow(dead_code))]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct McpColumns {
+    /// `042_mcp_log_error_scopes.sql`
+    pub error_scopes: bool,
+    /// `047_mcp_log_notification.sql`
+    pub notification: bool,
+}
+
+#[cfg_attr(not(feature = "postgres"), allow(dead_code))]
+impl McpColumns {
+    /// Every column present: also what a probe that could not tell reads as,
+    /// the behaviour before the probe existed.
+    pub(crate) const ALL: Self = Self {
+        error_scopes: true,
+        notification: true,
+    };
+
+    pub(crate) fn from_names<'a>(names: impl Iterator<Item = &'a str>) -> Self {
+        let mut found = Self::default();
+        for name in names {
+            match name {
+                "error_scopes" => found.error_scopes = true,
+                "notification" => found.notification = true,
+                _ => {}
+            }
+        }
+        found
+    }
+
+    pub(crate) fn complete(self) -> bool {
+        self == Self::ALL
+    }
+}
+
 /// Whether `mcp_tool_call_logs` has the columns a hand-applied migration adds
-/// (#3375), remembered per client so a detail read does not probe each time.
-/// Applying `042` is an operator's step on an existing deployment and may come
-/// after the control plane is upgraded, so a select that names the column
-/// unconditionally would fail every detail read until then, as the invocation
-/// list's optional columns once did (#2903, see this module).
+/// (#3375, #3466), remembered per client so a detail read does not probe each
+/// time. Applying `042` or `047` is an operator's step on an existing deployment
+/// and may come after the control plane is upgraded, so a select that names a
+/// column unconditionally would fail every detail read until then, as the
+/// invocation list's optional columns once did (#2903, see this module).
 // read only by the postgres-gated MCP log routes
 #[cfg_attr(not(feature = "postgres"), allow(dead_code))]
 #[derive(Default)]
 pub(crate) struct McpColumnCache {
-    entry: Mutex<Option<(bool, Instant)>>,
+    entry: Mutex<Option<(McpColumns, Instant)>>,
 }
 
 #[cfg_attr(not(feature = "postgres"), allow(dead_code))]
 impl McpColumnCache {
-    pub(crate) fn fresh(&self, now: Instant) -> Option<bool> {
-        let (present, at) = (*self.entry.lock())?;
-        let lifetime = if present { SETTLED_FOR } else { UNSETTLED_FOR };
-        (now.saturating_duration_since(at) < lifetime).then_some(present)
+    pub(crate) fn fresh(&self, now: Instant) -> Option<McpColumns> {
+        let (columns, at) = (*self.entry.lock())?;
+        let lifetime = if columns.complete() {
+            SETTLED_FOR
+        } else {
+            UNSETTLED_FOR
+        };
+        (now.saturating_duration_since(at) < lifetime).then_some(columns)
     }
 
-    pub(crate) fn store(&self, now: Instant, present: bool) {
-        *self.entry.lock() = Some((present, now));
+    pub(crate) fn store(&self, now: Instant, columns: McpColumns) {
+        *self.entry.lock() = Some((columns, now));
     }
 
     pub(crate) fn forget(&self) {

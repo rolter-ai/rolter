@@ -650,9 +650,21 @@ The gateway records every proxied JSON-RPC `tools/call` in ClickHouse's
   parse and the log takes its `PendingCall` from it, so both look keys up the
   way a Go decoder does (case-folded): a `tools/call` written `Method` or
   `Params` that the policy allows is recorded under the tool it was judged as.
-  Only a single request whose `method` is `tools/call` and that carries an `id`
-  is recorded when allowed; `initialize`, `tools/list`, notifications and
-  JSON-RPC batches are not (a refused call is recorded whatever its shape). The
+  Every allowed `tools/call` is recorded (#3466): a single request, each call of
+  a JSON-RPC batch and a notification; `initialize`, `tools/list` and the other
+  methods are not. The calls are moved out of the parsed body
+  (`Read::into_calls`) only once they are needed, by a refusal before the
+  request is forwarded or by the forward itself, so a request refused for
+  another reason pays nothing for the log and nothing in the body is cloned but
+  `arguments`, and only when payload capture keeps them. The reply is parsed
+  once (`Replies`) and each call takes the reply with its own `id`, whatever
+  order a batch's replies come in; two calls sharing an id get one reply each.
+  A batch the policy refuses is refused whole and forwarded nowhere, so only its
+  refused calls are recorded (`auth_denied`); an allowed call beside them never
+  reached the server and has no row. A batch whose reply is rewritten (it holds a
+  `tools/list`, so the reply is narrowed) cannot be read for its calls, which are
+  recorded with the HTTP layer's status and no result. A refused call is recorded
+  whatever its shape. The
   body is not parsed at all unless a rule applies to the caller or the sink is
   enabled and the bytes hold `tools/call` or an escape that could spell it; with
   no `clickhouse_url` the sink is disabled and nothing is parsed for the log.
@@ -666,6 +678,19 @@ The gateway records every proxied JSON-RPC `tools/call` in ClickHouse's
   accepting rows. The control plane's detail read probes `system.columns` for
   the column (`McpColumnCache`, the lifetimes of the request-log probe) and
   selects an empty array in its place until the migration is applied.
+- **Notifications (#3466).** A `tools/call` without an `id` (or with a `null`
+  one) is answered by nothing, so there is no reply to read its outcome from. It
+  is recorded when the upstream's response arrives, with the status the HTTP
+  layer gave (`success` for a `2xx`, `auth_denied` for `401`/`403`, and so on) and
+  `notification = 1` (`clickhouse/047_mcp_log_notification.sql`, `UInt8`), which
+  says that status is not what the tool did. The field is left out of every other
+  row and the writer sends `input_format_skip_unknown_fields=1`, so an
+  un-migrated ClickHouse keeps accepting rows and records a notification as an
+  ordinary `success` row. A notification the policy refuses is a refusal like
+  any other and carries no flag. The control plane's detail read probes for the
+  column with the one that probes `error_scopes` (`McpColumns`) and selects
+  `0` in its place until the migration is applied; `POST /api/v1/mcp/events`
+  accepts `notification` and stores it only when true.
 - **Write path.** `McpEventSink` (`crates/rolter-gateway/src/mcp_log.rs`) is a
   bounded channel and a batch writer, built like the request-log and
   health-event writers and sharing their `[logging]` `batch_max`, `flush_ms`

@@ -166,31 +166,26 @@ async fn proxy(
     } else {
         crate::mcp_policy::Read::Skipped
     };
-    // a `tools/call` is recorded in the MCP tool-call log (#2395). `None` for
-    // every other request
+    // the calls the body holds are recorded in the MCP tool-call log (#2395):
+    // by the refusal that stops the request, or by the reply once it is
+    // forwarded. they are taken out of the parsed body at that point, so a
+    // request that is refused for something else never pays for them
     let capture = &snapshot.logging.payload_capture;
-    let call = read
-        .single_call(capture.enabled && capture.max_bytes > 0)
-        .and_then(|request| {
-            PendingCall::from_request(
-                &state.mcp_events,
-                request,
-                &CallContext {
-                    server: &server.slug,
-                    transport: &server.transport,
-                    org_id: &key.org_id,
-                    team_id: &key.team_id,
-                    project_id: &key.project_id,
-                    virtual_key_id: &key.id,
-                    // the session is looked up by this id below, so on a per-user
-                    // OAuth server it is the session owner
-                    user_id: &key.user_id,
-                    request_id: request_id.as_str(),
-                    capture: &snapshot.logging.payload_capture,
-                    redactor: &snapshot.payload_redactor,
-                },
-            )
-        });
+    let keep_arguments = capture.enabled && capture.max_bytes > 0;
+    let context = CallContext {
+        server: &server.slug,
+        transport: &server.transport,
+        org_id: &key.org_id,
+        team_id: &key.team_id,
+        project_id: &key.project_id,
+        virtual_key_id: &key.id,
+        // the session is looked up by this id below, so on a per-user OAuth
+        // server it is the session owner
+        user_id: &key.user_id,
+        request_id: request_id.as_str(),
+        capture,
+        redactor: &snapshot.payload_redactor,
+    };
     // the credential is chosen by what the server row says it is. only `oauth`
     // consults the per-user session; the static kinds are a deployment-wide
     // credential and deliberately do not require one, which is the whole point
@@ -202,9 +197,10 @@ async fn proxy(
                 .mcp_oauth_sessions
                 .get(&(server.id.clone(), key.user_id.clone()))
             else {
-                if let Some(call) = call {
-                    call.fail("auth_denied");
-                }
+                fail_all(
+                    pending_calls(&state, read, keep_arguments, &context),
+                    "auth_denied",
+                );
                 return error(
                     StatusCode::FORBIDDEN,
                     "no live MCP OAuth session authorizes this user and server",
@@ -212,9 +208,10 @@ async fn proxy(
                 );
             };
             if chrono::Utc::now() >= session.expires_at {
-                if let Some(call) = call {
-                    call.fail("auth_denied");
-                }
+                fail_all(
+                    pending_calls(&state, read, keep_arguments, &context),
+                    "auth_denied",
+                );
                 return error(
                     StatusCode::FORBIDDEN,
                     "MCP OAuth session has expired",
@@ -226,9 +223,10 @@ async fn proxy(
                 .iter()
                 .any(|scope| !session.scopes.contains(scope))
             {
-                if let Some(call) = call {
-                    call.fail("auth_denied");
-                }
+                fail_all(
+                    pending_calls(&state, read, keep_arguments, &context),
+                    "auth_denied",
+                );
                 return error(
                     StatusCode::FORBIDDEN,
                     "MCP OAuth session does not cover the server's required scopes",
@@ -318,18 +316,6 @@ async fn proxy(
             }
         };
         if let Some(refused) = refused {
-            let context = CallContext {
-                server: &server.slug,
-                transport: &server.transport,
-                org_id: &key.org_id,
-                team_id: &key.team_id,
-                project_id: &key.project_id,
-                virtual_key_id: &key.id,
-                user_id: &key.user_id,
-                request_id: request_id.as_str(),
-                capture: &snapshot.logging.payload_capture,
-                redactor: &snapshot.payload_redactor,
-            };
             for call in refused {
                 if let Some(call) =
                     PendingCall::from_request(&state.mcp_events, call.request, &context)
@@ -341,9 +327,10 @@ async fn proxy(
         }
     }
 
-    // the parsed body can be many times the size of the bytes. the log row has
-    // taken what it needs, so it is released before the wait on the upstream
-    drop(read);
+    // the parsed body can be many times the size of the bytes, so what the
+    // log needs is taken out of it and the rest is released before the wait on
+    // the upstream
+    let calls = pending_calls(&state, read, keep_arguments, &context);
 
     let Some(url) = downstream_url(&server.url, tail.as_deref(), query) else {
         return error(
@@ -377,13 +364,11 @@ async fn proxy(
             // gets the step-up answer, not a bare 403 (#1417)
             if matches!(server.auth_kind, McpAuthKind::Oauth) {
                 if let Some((step_up, scopes)) = insufficient_scope(&response, &server.slug) {
-                    if let Some(call) = call {
-                        call.fail_insufficient_scope(scopes);
-                    }
+                    fail_all_insufficient_scope(calls, scopes);
                     return step_up;
                 }
             }
-            upstream_response(response, call, list_filter, is_post).await
+            upstream_response(response, calls, list_filter, is_post).await
         }
         Err(upstream) => {
             let detail = upstream.to_string();
@@ -400,7 +385,7 @@ async fn proxy(
                 error = %rolter_core::redact::redact_urls_in_text(&detail),
                 "mcp upstream request failed"
             );
-            if let Some(call) = call {
+            for call in calls {
                 call.fail_upstream(&detail);
             }
             error(
@@ -544,6 +529,37 @@ fn downstream_url(base: &str, tail: Option<&str>, query: Option<&str>) -> Option
     Some(url.into())
 }
 
+/// A log row for every `tools/call` the body holds, taking them out of `read`.
+/// Empty when the log is off or the body held none. A call sent as a
+/// notification is recorded too: it has no reply, so it ends with the HTTP
+/// layer's answer (#3466).
+fn pending_calls(
+    state: &AppState,
+    read: crate::mcp_policy::Read,
+    keep_arguments: bool,
+    context: &CallContext<'_>,
+) -> Vec<PendingCall> {
+    if !state.mcp_events.enabled() {
+        return Vec::new();
+    }
+    read.into_calls(keep_arguments)
+        .into_iter()
+        .filter_map(|request| PendingCall::from_request(&state.mcp_events, request, context))
+        .collect()
+}
+
+fn fail_all(calls: Vec<PendingCall>, status: &'static str) {
+    for call in calls {
+        call.fail(status);
+    }
+}
+
+fn fail_all_insufficient_scope(calls: Vec<PendingCall>, scopes: Vec<String>) {
+    for call in calls {
+        call.fail_insufficient_scope(scopes.clone());
+    }
+}
+
 // spec-ref: http-semantics
 fn end_to_end_headers(mut headers: HeaderMap) -> HeaderMap {
     rolter_proxy::hop_by_hop::strip(&mut headers);
@@ -562,7 +578,7 @@ fn end_to_end_headers(mut headers: HeaderMap) -> HeaderMap {
 
 async fn upstream_response(
     response: reqwest::Response,
-    call: Option<PendingCall>,
+    calls: Vec<PendingCall>,
     list_filter: Option<Arc<ListFilter>>,
     method_is_post: bool,
 ) -> Response {
@@ -597,6 +613,11 @@ async fn upstream_response(
     // `sse` server answers the POST that way and sends the list on its stream
     let carries_body = status.is_success() && !matches!(status.as_u16(), 202 | 204);
     if let Some(filter) = list_filter.filter(|_| carries_body) {
+        // a reply that is rewritten cannot be read for the calls it answers (a
+        // batch can hold a `tools/list` beside `tools/call`s)
+        for call in calls {
+            call.finish_unobserved(status.as_u16());
+        }
         if encoded {
             return unfilterable_list();
         }
@@ -628,12 +649,16 @@ async fn upstream_response(
                 .unwrap_or_else(|_| unfilterable_list());
         }
     }
-    let body = match call {
+    let body = if calls.is_empty() {
+        Body::from_stream(response.bytes_stream())
+    } else {
         // recorded when the body has been read, without touching a byte of it
-        Some(call) => {
-            Body::from_stream(call.observe(status.as_u16(), is_sse, response.bytes_stream()))
-        }
-        None => Body::from_stream(response.bytes_stream()),
+        Body::from_stream(crate::mcp_log::observe(
+            calls,
+            status.as_u16(),
+            is_sse,
+            response.bytes_stream(),
+        ))
     };
     builder.body(body).unwrap_or_else(|_| {
         error(
@@ -970,6 +995,143 @@ mod tests {
         let event = events.try_recv().expect("the allowed call is recorded");
         assert_eq!(event.tool, "get_issue");
         assert_ne!(event.status, "auth_denied");
+    }
+
+    /// an upstream that answers every request with `body`
+    async fn replying(status: u16, body: &'static str) -> String {
+        use axum::routing::any;
+        use axum::Router;
+
+        let app = Router::new().route(
+            "/{*path}",
+            any(move || async move {
+                axum::http::Response::builder()
+                    .status(status)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(body))
+                    .unwrap()
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        format!("http://{addr}/rpc")
+    }
+
+    /// the rows recorded for `body` sent to an upstream answering with
+    /// `status` and `reply`, in the order they were written
+    async fn recorded(
+        tools: &[&str],
+        status: u16,
+        reply: &'static str,
+        body: &str,
+    ) -> (StatusCode, Vec<crate::mcp_log::McpEvent>) {
+        let mut config = with_group(tools);
+        config.mcp_servers[0].url = replying(status, reply).await;
+        let mut state = AppState::new(&config);
+        let (sink, mut events) =
+            crate::mcp_log::McpEventSink::capturing(std::sync::Arc::new(Default::default()));
+        state.mcp_events = sink;
+        let response = post(state, Bytes::from(body.to_string())).await;
+        let status = response.status();
+        // the rows are written when the reply has been read
+        let _ = axum::body::to_bytes(response.into_body(), 4096).await;
+        let mut rows = Vec::new();
+        while let Ok(event) = events.try_recv() {
+            rows.push(event);
+        }
+        (status, rows)
+    }
+
+    /// #3466: every allowed call in a batch has a row of its own, matched to its
+    /// reply by `id` whatever order the replies come in.
+    #[tokio::test]
+    async fn each_allowed_call_in_a_batch_is_recorded_with_its_own_outcome() {
+        let batch = format!(
+            "[{},{}]",
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_issue"}}"#,
+            r#"{"jsonrpc":"2.0","id":"b","method":"tools/call","params":{"name":"list_issues"}}"#,
+        );
+        let reply = r#"[{"jsonrpc":"2.0","id":"b","result":{"content":[]}},{"jsonrpc":"2.0","id":1,"result":{"isError":true}}]"#;
+        let (status, rows) = recorded(&["get_issue", "list_issues"], 200, reply, &batch).await;
+        assert_eq!(status, StatusCode::OK);
+        let seen: Vec<_> = rows
+            .iter()
+            .map(|row| (row.tool.as_str(), row.status, row.notification))
+            .collect();
+        assert_eq!(
+            seen,
+            [
+                ("get_issue", "error", false),
+                ("list_issues", "success", false)
+            ]
+        );
+        assert_ne!(rows[0].event_id, rows[1].event_id);
+    }
+
+    /// #3466: one refused call refuses the batch whole. Only the refusal is a
+    /// row: the allowed call beside it never reached the server, so there is no
+    /// call to record.
+    #[tokio::test]
+    async fn a_batch_with_one_allowed_and_one_refused_call_records_the_refusal() {
+        let batch = format!(
+            "[{},{}]",
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_issue"}}"#,
+            r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"drop"}}"#,
+        );
+        let reply = r#"[{"jsonrpc":"2.0","id":1,"result":{}}]"#;
+        let (status, rows) = recorded(&["get_issue"], 200, reply, &batch).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        let seen: Vec<_> = rows
+            .iter()
+            .map(|row| (row.tool.as_str(), row.status))
+            .collect();
+        assert_eq!(seen, [("drop", "auth_denied")]);
+    }
+
+    /// #3466: an allowed notification has no id and so no reply. It is recorded
+    /// with the status the HTTP layer gave and the flag that says no reply was
+    /// awaited, in a batch as well as alone.
+    #[tokio::test]
+    async fn an_allowed_notification_is_recorded_as_one_that_awaited_no_reply() {
+        let note = r#"{"jsonrpc":"2.0","method":"tools/call","params":{"name":"get_issue"}}"#;
+        let (status, rows) = recorded(&["get_issue"], 202, "", note).await;
+        assert_eq!(status, StatusCode::ACCEPTED);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            (rows[0].tool.as_str(), rows[0].status, rows[0].notification),
+            ("get_issue", "success", true)
+        );
+        assert_eq!(
+            serde_json::to_value(&rows[0]).unwrap()["notification"],
+            true
+        );
+
+        // beside a call that has one: each ends as its own kind of call
+        let batch = format!(
+            "[{note},{}]",
+            r#"{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"get_issue"}}"#
+        );
+        let reply = r#"[{"jsonrpc":"2.0","id":7,"result":{}}]"#;
+        let (_, rows) = recorded(&["get_issue"], 200, reply, &batch).await;
+        let seen: Vec<_> = rows
+            .iter()
+            .map(|row| (row.status, row.notification))
+            .collect();
+        assert_eq!(seen, [("success", true), ("success", false)]);
+        // and a refused notification is a refusal, not a notification
+        let (status, rows) = recorded(
+            &["get_issue"],
+            202,
+            "",
+            r#"{"jsonrpc":"2.0","method":"tools/call","params":{"name":"drop"}}"#,
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(
+            (rows[0].status, rows[0].notification),
+            ("auth_denied", false)
+        );
     }
 
     /// #1403: a tool outside the organization's groups is refused before
