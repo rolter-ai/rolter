@@ -76,8 +76,8 @@ pub use config_migrate::{
 pub use currency::{CurrencyConfig, CurrencyConverter, StaticRates, DEFAULT_BASE_CURRENCY};
 pub use error::{Error, Result};
 pub use guardrail_webhook::{
-    FailureMode, GuardProviderKind, GuardrailWebhookConfig, WebhookAuth, WebhookDecision,
-    WebhookRequest, WebhookStage, WebhookTenant,
+    FailureMode, GuardProviderKind, GuardrailWebhookConfig, OnTruncated, WebhookAuth,
+    WebhookDecision, WebhookRequest, WebhookStage, WebhookTenant,
 };
 pub use guardrails::{
     dry_run_policy, dry_run_rule, BuiltinRule, CompiledGuardrails, DryRun, DryRunOutcome,

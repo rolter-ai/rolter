@@ -4323,6 +4323,7 @@ mod known_values {
     use super::*;
     use crate::guardrail_webhook::FailureMode;
     use crate::guardrail_webhook::GuardProviderKind;
+    use crate::guardrail_webhook::OnTruncated;
     use crate::guardrails::{GuardAction, StreamingPostCall};
     use crate::pii_sanitizer::{RestorationPolicy, SanitizeDirection, StreamingResponse};
     use crate::semantic_guards::{StreamingStrategy, ViolationAction};
@@ -4373,6 +4374,7 @@ mod known_values {
         FailOpen,
         FailClosed
     });
+    known_values!(OnTruncated { Score, FailClosed });
     known_values!(GuardAction {
         Annotate,
         Block,
@@ -4580,7 +4582,7 @@ impl GatewayConfig {
     /// [`fail_closed_unknown_values`](Self::fail_closed_unknown_values), also
     /// run first by the sanitizer so a control plane serves the same reading.
     fn resolve_unknown_settings(&mut self, problems: &mut UnknownValues) {
-        use crate::guardrail_webhook::FailureMode;
+        use crate::guardrail_webhook::{FailureMode, OnTruncated};
         use crate::guardrails::{GuardAction, StreamingPostCall};
         use crate::pii_sanitizer::{RestorationPolicy, SanitizeDirection, StreamingResponse};
         use crate::semantic_guards::{StreamingStrategy, ViolationAction};
@@ -4700,6 +4702,14 @@ impl GatewayConfig {
             "failure_mode",
             || "guardrail_webhook.failure_mode".to_string(),
         );
+        resolve_unknown(
+            &mut self.guardrail_webhook.on_truncated,
+            OnTruncated::Unknown,
+            OnTruncated::FailClosed,
+            problems,
+            "on_truncated",
+            || "guardrail_webhook.on_truncated".to_string(),
+        );
         for provider in &mut self.semantic_guards.providers {
             let name = provider.name.clone();
             resolve_unknown(
@@ -4709,6 +4719,14 @@ impl GatewayConfig {
                 problems,
                 "failure_mode",
                 || format!("semantic guard provider '{name}' failure_mode"),
+            );
+            resolve_unknown(
+                &mut provider.on_truncated,
+                OnTruncated::Unknown,
+                OnTruncated::FailClosed,
+                problems,
+                "on_truncated",
+                || format!("semantic guard provider '{name}' on_truncated"),
             );
         }
         for policy in &mut self.semantic_guards.policies {
@@ -4883,12 +4901,18 @@ impl GatewayConfig {
         unknown_value(&mut p, &self.guardrail_webhook.kind, || {
             "guardrail_webhook.kind".to_string()
         });
+        unknown_value(&mut p, &self.guardrail_webhook.on_truncated, || {
+            "guardrail_webhook.on_truncated".to_string()
+        });
         for provider in &self.semantic_guards.providers {
             unknown_value(&mut p, &provider.kind, || {
                 format!("semantic guard provider '{}' kind", provider.name)
             });
             unknown_value(&mut p, &provider.failure_mode, || {
                 format!("semantic guard provider '{}' failure_mode", provider.name)
+            });
+            unknown_value(&mut p, &provider.on_truncated, || {
+                format!("semantic guard provider '{}' on_truncated", provider.name)
             });
         }
         for policy in &self.semantic_guards.policies {
@@ -12118,7 +12142,8 @@ mod tests {
             "guardrail_webhook": {"failure_mode": "fail_sideways"},
             "semantic_guards": {
                 "providers": [{"name": "p", "url": "https://g.example",
-                               "failure_mode": "fail_sideways"}],
+                               "failure_mode": "fail_sideways",
+                               "on_truncated": "ask_a_human"}],
                 "policies": [{"name": "pol", "on_violation": "scold", "streaming": "trickle"}]
             },
             "pii_sanitizer": {
@@ -12153,6 +12178,7 @@ mod tests {
         assert_eq!(count("unpriced_policy"), 2, "{:?}", report.kinds);
         assert_eq!(count("role_profile"), 2, "{:?}", report.kinds);
         assert_eq!(count("failure_mode"), 4, "{:?}", report.kinds);
+        assert_eq!(count("on_truncated"), 1, "{:?}", report.kinds);
         assert_eq!(count("mcp_auth_kind"), 1, "{:?}", report.kinds);
         for kind in report.kinds.keys() {
             assert!(
@@ -12221,6 +12247,10 @@ mod tests {
         assert_eq!(
             cfg.semantic_guards.providers[0].failure_mode,
             FailureMode::FailClosed
+        );
+        assert_eq!(
+            cfg.semantic_guards.providers[0].on_truncated,
+            crate::guardrail_webhook::OnTruncated::FailClosed
         );
         let policy = &cfg.semantic_guards.policies[0];
         assert_eq!(policy.on_violation, ViolationAction::Block);

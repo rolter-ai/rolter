@@ -147,7 +147,7 @@ fn ensure_config(path: &Path) -> anyhow::Result<bool> {
 /// control plane's snapshot endpoint; in file mode it runs from the local toml.
 fn gateway_args(args: &EasyUpArgs, db_mode: bool) -> rolter_gateway::Args {
     rolter_gateway::Args {
-        config: args.config.clone(),
+        config: Some(args.config.clone()),
         host: Some(args.host.clone()),
         port: Some(args.gateway_port),
         snapshot_url: db_mode
@@ -162,6 +162,8 @@ fn gateway_args(args: &EasyUpArgs, db_mode: bool) -> rolter_gateway::Args {
         // snapshot channel never crosses a network boundary and there is
         // nothing to separate it from (see docs/dev-docs/architecture/security.md)
         internal_token: None,
+        // the gateway reads ROLTER_SEMANTIC_MODEL_ROOT itself, below the flag
+        semantic_model_root: None,
     }
 }
 

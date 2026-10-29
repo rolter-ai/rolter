@@ -132,6 +132,7 @@ One span per stage, so a slow request is attributable rather than merely slow:
 | `upstream.request`  | `attempt`, `gen_ai.system`, `gen_ai.request.model`, `gen_ai.response.id`, `http.response.status_code` (embeddings also carry `gen_ai.request.encoding_formats` and `gen_ai.embeddings.dimension.count`) |
 | `translate.request` | —                                                                                                                                                                                                       |
 | `guardrails.post`   | —                                                                                                                                                                                                       |
+| `guardrails.local`  | `provider`, `truncated` (one per [local classifier](semantic-guards.md#local-providers-adr-0039) call, at either stage; `truncated` when the text was longer than `max_scored_bytes`, #3513)            |
 
 `queue.wait` spans enqueue→dequeue only: the span travels with the queued job and
 the worker closes it the moment it picks the job up, so it measures the wait and

@@ -331,6 +331,14 @@ Organizations created from this release on start the other way round: until they
 
 A [log erasure](/observability/log-erasure) now also deletes (or, for `include_logs: false`, blanks the bodies of) the subject's rows in `mcp_tool_call_logs`. A ClickHouse that was never given `clickhouse/007_mcp_tool_call_logs.sql` has no such table, so the erasure fails at its MCP statement with the usual `failed` record after the request-log statements were already submitted. Apply the migration before the first erasure after upgrading; submitting the erasure again is safe.
 
+## A config path that does not exist
+
+A gateway started with `--config` or `ROLTER_CONFIG` naming a file that does not exist now refuses to start and names the path ([#3511](https://github.com/rolter-ai/rolter/issues/3511)). It used to log `config file not found, starting with empty config` and start anyway, which silently dropped every setting the file held, a `[semantic_guards] model_root` among them. Only the default path, `rolter.toml` in the working directory with neither set, may still be missing; the gateway then starts empty with that warning, as before.
+
+Before you upgrade, check that every gateway's `--config` or `ROLTER_CONFIG` names a file that is there. A gateway fed only by a control plane, which used to point at a missing file on purpose, drops the flag and the variable instead. The published image points `ROLTER_CONFIG` at the bundled `/app/rolter.toml`, and the Helm chart at the file it mounts, so neither needs a change.
+
+The gateway's local classifier [model root](/security/semantic-guard-policies#local-classifier) can now also come from `--semantic-model-root` or `ROLTER_SEMANTIC_MODEL_ROOT`, which take precedence over the file's key in that order, so a gateway with no file can confine its models too.
+
 ## Virtual key responses no longer carry `key_hash`
 
 The virtual-key endpoints of the control-plane API no longer return `key_hash` from any endpoint that returns a key (the per-project listing, create, rotate, disable, the cache, provider and attribution settings, and the self-service keys under `/api/v1/me`), the peppered digest of the key's secret ([#3525](https://github.com/rolter-ai/rolter/issues/3525)). The digest of a retired secret was already withheld, and the organization-wide listing never returned either. Nothing in the dashboard read the field. A script that used it to tell keys apart should use `id` or `key_prefix` instead; the gateway still receives the digest through its config snapshot, so authentication is unchanged.

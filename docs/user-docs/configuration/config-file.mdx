@@ -1900,7 +1900,15 @@ A vendor-neutral hook to a self-hosted semantic guardrail service, such as Guard
 </ParamField>
 
 <ParamField path="max_body_bytes" default="65536" type="integer">
-  The most content forwarded to the service, in bytes. Oversized content is sent as a truncated preview with `truncated: true`. It must be greater than zero. With `kind = "local"`, it is the most text the local classifier reads: the first quarter and the last three quarters of a longer one.
+  The most content forwarded to the service, in bytes. Oversized content is sent as a truncated preview with `truncated: true`. It must be greater than zero. With `kind = "local"`, it is the size of the window the local classifier scores at once: a longer text is scored in overlapping windows of this size, up to `max_scored_bytes`.
+</ParamField>
+
+<ParamField path="max_scored_bytes" type="integer">
+  With `kind = "local"`, the most text the classifier reads in all, in bytes, from `max_body_bytes` to 16777216 or 64 × `max_body_bytes`, whichever is less. Unset, it is 8 × `max_body_bytes`. A longer text keeps the first quarter and the last three quarters of this budget, and the cut is flagged; see [Long texts](/security/semantic-guard-policies#long-texts). A webhook ignores it.
+</ParamField>
+
+<ParamField path="on_truncated" default="score" type="string">
+  With `kind = "local"`, what to do with a text longer than `max_scored_bytes`: `score` scores what fits and flags the cut, `fail_closed` refuses the request whatever `failure_mode` says. A webhook ignores it.
 </ParamField>
 
 <ParamField path="auth" type="table">
@@ -1932,7 +1940,7 @@ Several guardrail providers side by side, and the scoped policies that pick whic
 </ParamField>
 
 <ParamField path="model_root" type="string">
-  An absolute directory every `local` provider's `model_path` must lie under. When it is set, the gateway resolves `model_path` in full (`..` and every symlink, in the file or in a directory on the way) and reads it only if the result is a regular file under the resolved root; anything else is not loaded, is logged with the reason, and its provider follows its `failure_mode`. Unset, a path may point anywhere on the gateway host. It is the gateway's own setting: read from the gateway's file at start (a change takes a restart), never sent by a control plane, so set it on each gateway. See [local classifier](/security/semantic-guard-policies#local-classifier).
+  An absolute directory every `local` provider's `model_path` must lie under. When it is set, the gateway resolves `model_path` in full (`..` and every symlink, in the file or in a directory on the way) and reads it only if the result is a regular file under the resolved root; anything else is not loaded, is logged with the reason, and its provider follows its `failure_mode`. Unset, a path may point anywhere on the gateway host. It is the gateway's own setting: read from the gateway's file at start (a change takes a restart), never sent by a control plane, so set it on each gateway. See [local classifier](/security/semantic-guard-policies#local-classifier). The gateway's `--semantic-model-root` flag and the `ROLTER_SEMANTIC_MODEL_ROOT` environment variable take precedence over this key, in that order.
 </ParamField>
 
 <ParamField path="policies" type="array of tables">
@@ -1984,7 +1992,15 @@ The same keys as [`[guardrail_webhook]`](#guardrail_webhook), one table per prov
 </ParamField>
 
 <ParamField path="max_body_bytes" default="65536" type="integer">
-  The most content forwarded, in bytes. A `local` provider reads at most this much text: the first quarter and the last three quarters of a longer one.
+  The most content forwarded, in bytes. A `local` provider scores a longer text in overlapping windows of this size, up to `max_scored_bytes`.
+</ParamField>
+
+<ParamField path="max_scored_bytes" type="integer">
+  A `local` provider's budget over the whole text, in bytes, from `max_body_bytes` to 16777216 or 64 × `max_body_bytes`, whichever is less; unset, 8 × `max_body_bytes`. Text past it is cut, and the cut flagged ([Long texts](/security/semantic-guard-policies#long-texts)).
+</ParamField>
+
+<ParamField path="on_truncated" default="score" type="string">
+  What a `local` provider does with a text longer than `max_scored_bytes`: `score` (what fits, flagging the cut) or `fail_closed` (refuse the request, whatever `failure_mode` says).
 </ParamField>
 
 <ParamField path="auth" type="table">

@@ -787,7 +787,9 @@
         "timeout_ms": 50,
         "max_retries": 0,
         "failure_mode": "fail_closed",
-        "max_body_bytes": 65536
+        "max_body_bytes": 65536,
+        "max_scored_bytes": 524288,
+        "on_truncated": "fail_closed"
       }
     ],
     "policies": [

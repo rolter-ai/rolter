@@ -929,6 +929,11 @@ disabled = false # revoke without deleting
 # max_retries = 0                 # extra attempts on a transient failure
 # failure_mode = "fail_open"      # fail_open | fail_closed
 # max_body_bytes = 65536          # oversized content is sent as a truncated preview
+# max_scored_bytes = 524288       # kind = "local" only: scored in overlapping
+#                                 # max_body_bytes windows up to this; unset =
+#                                 # 8 x max_body_bytes (#3513)
+# on_truncated = "score"          # kind = "local" only: score | fail_closed for
+#                                 # text longer than max_scored_bytes
 # auth = { bearer = { token_env = "GUARD_TOKEN" } }
 #                                 # or: { shared_secret = { secret_env = "GUARD_SECRET" } }
 
@@ -945,7 +950,9 @@ disabled = false # revoke without deleting
 #                                 # once; unset = half its CPUs (#3329)
 # model_root = "/etc/rolter/models"  # local models must resolve under it,
 #                                 # symlinks included; this gateway's own
-#                                 # setting, never from a snapshot (#3454)
+#                                 # setting, never from a snapshot (#3454);
+#                                 # --semantic-model-root, then
+#                                 # ROLTER_SEMANTIC_MODEL_ROOT, override it
 # [[semantic_guards.providers]]   # the same keys as [guardrail_webhook]
 # name = "toxicity"               # required, unique; policies list it by name
 # enabled = true
@@ -955,6 +962,8 @@ disabled = false # revoke without deleting
 # max_retries = 0
 # failure_mode = "fail_open"      # also applies to an answer that is not a decision
 # max_body_bytes = 65536
+# max_scored_bytes = 524288       # local only; unset = 8 x max_body_bytes
+# on_truncated = "score"          # local only: score | fail_closed
 # auth = { bearer = { token_env = "GUARD_TOKEN" } }
 # [[semantic_guards.policies]]
 # name = "support-bot"
