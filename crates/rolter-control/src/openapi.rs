@@ -962,7 +962,8 @@ const INVOCATIONS_QUERY: &[QueryParam] = &[
         "string",
         "only requests a guardrail acted on, named as the guardrails rollup does: \
          `blocked:<rule>`, `redacted:<rule>`, `annotated:<rule>`, `provider_blocked:<provider>`, \
-         `provider_transformed:<provider>` (the bare forms for unnamed rows); omit for every request",
+         `provider_transformed:<provider>` or `semantic_truncated:<provider>` (the bare forms for \
+         unnamed rows); omit for every request",
     ),
     QueryParam::new(
         "plugin",
@@ -2083,12 +2084,12 @@ fn operations() -> Vec<Op> {
             Op::post(
                 "/api/v1/guardrails/providers",
                 "createGuardrailProvider",
-                "Register a guardrail provider: a webhook, or a local classifier the gateways run in process",
+                "Register a guardrail provider: a webhook, or a local classifier the gateways run in process. A local provider accepts nullable `max_scored_bytes` (from `max_body_bytes` through 16 MiB) and `on_truncated` (`score` or `fail_closed`)",
             ),
             Op::put(
                 "/api/v1/guardrails/providers/{id}",
                 "updateGuardrailProvider",
-                "Update a guardrail provider",
+                "Update a guardrail provider, including a local provider's nullable `max_scored_bytes` and `on_truncated` (`score` or `fail_closed`)",
             ),
             Op::delete(
                 "/api/v1/guardrails/providers/{id}",
@@ -2629,9 +2630,9 @@ fn operations() -> Vec<Op> {
                 "getAnalyticsGuardrails",
                 "What each guardrail did to requests in the window: one row per `action` and `rule` \
                  with the number of `requests` it acted on. `action` is `blocked`, `redacted` or \
-                 `annotated` for a rule (named in `rule`), and `provider_blocked` or \
-                 `provider_transformed` for a guardrail provider, with its name in `rule` (empty \
-                 for rows written before the name was recorded). \
+                 `annotated` for a rule (named in `rule`), and `provider_blocked`, \
+                 `provider_transformed` or `semantic_truncated` for a guardrail provider, with its \
+                 name in `rule` (empty for rows written before the name was recorded). \
                  `recorded` is `false` when the ClickHouse table lacks \
                  `clickhouse/018_guardrail_events.sql`, in which case `data` is empty",
             )
@@ -5017,6 +5018,18 @@ mod tests {
             .into_iter()
             .map(|op| (op.path.to_string(), op.method.to_string()))
             .collect()
+    }
+
+    #[test]
+    fn guardrail_truncation_settings_and_outcome_are_documented() {
+        let doc = document().to_string();
+        for field in ["max_scored_bytes", "on_truncated"] {
+            assert!(doc.contains(field), "OpenAPI omits {field}");
+        }
+        assert!(
+            doc.contains("semantic_truncated"),
+            "OpenAPI omits the semantic truncation outcome"
+        );
     }
 
     #[test]

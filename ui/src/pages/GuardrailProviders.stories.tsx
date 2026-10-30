@@ -45,6 +45,8 @@ const PROVIDERS: GuardrailProviderRow[] = [
     max_retries: 1,
     failure_mode: "fail_closed",
     max_body_bytes: 65536,
+    max_scored_bytes: null,
+    on_truncated: "score",
     auth_kind: "bearer",
     auth_env: "ROLTER_GUARDRAIL_TOKEN",
     created_at: "2026-08-02T00:00:00Z",
@@ -63,6 +65,8 @@ const PROVIDERS: GuardrailProviderRow[] = [
     max_retries: 0,
     failure_mode: "fail_open",
     max_body_bytes: 32768,
+    max_scored_bytes: null,
+    on_truncated: "score",
     auth_kind: "none",
     auth_env: null,
     created_at: "2026-08-02T00:00:00Z",
@@ -84,6 +88,8 @@ const OUTPUT_EVALUATOR: GuardrailProviderRow = {
   max_retries: 0,
   failure_mode: "fail_closed",
   max_body_bytes: 65536,
+  max_scored_bytes: null,
+  on_truncated: "score",
   auth_kind: "none",
   auth_env: null,
   created_at: "2026-08-03T00:00:00Z",
@@ -587,6 +593,13 @@ function explainsEveryField(locale: "en" | "ru"): Story {
         [p.fieldRetries, p.retriesInfo],
         [p.fieldBodyCap, p.bodyCapInfo],
         [p.fieldAuth, p.authInfo],
+      ] as const) {
+        await expectFieldHint(dialog, about(label), says);
+      }
+      await userEvent.click(within(dialog).getByRole("radio", { name: p.kind.local }));
+      for (const [label, says] of [
+        [p.fieldScoredBytes, p.scoredBytesInfo],
+        [p.fieldOnTruncated, p.onTruncatedInfo],
       ] as const) {
         await expectFieldHint(dialog, about(label), says);
       }
@@ -1295,28 +1308,35 @@ export const SmallPhoneInRussian: Story = providersFit("small", "ru");
 export const ShowsWhatTheActiveProviderDid: Story = {
   render: () => (
     <Harness
-      fetchStub={withOutcomes(registry(PROVIDERS), () =>
-        json({
-          recorded: true,
-          data: [
-            { action: "provider_blocked", rule: "Production LLM Guard", requests: "4" },
-            { action: "provider_transformed", rule: "Production LLM Guard", requests: "9" },
-          ],
-        }),
+      fetchStub={withOutcomes(
+        registry([PROVIDERS[1], { ...LOCAL_CLASSIFIER, enabled: true }]),
+        () =>
+          json({
+            recorded: true,
+            data: [
+              { action: "provider_blocked", rule: "Local toxicity model", requests: "4" },
+              { action: "provider_transformed", rule: "Local toxicity model", requests: "9" },
+              { action: "semantic_truncated", rule: "Local toxicity model", requests: "6" },
+            ],
+          }),
       )}
     />
   ),
   play: async ({ canvasElement }) => {
-    await within(canvasElement).findByRole("heading", { name: "Production LLM Guard" });
-    const active = card(canvasElement, "Production LLM Guard");
+    await within(canvasElement).findByRole("heading", { name: "Local toxicity model" });
+    const active = card(canvasElement, "Local toxicity model");
     await expect(await active.findByText("Matches in the last 7 days")).toBeVisible();
     await expect(active.getByRole("link", { name: /4 requests Blocked/ })).toHaveAttribute(
       "href",
-      "/logs?window=7d&guardrail=provider_blocked%3AProduction%20LLM%20Guard",
+      "/logs?window=7d&guardrail=provider_blocked%3ALocal%20toxicity%20model",
     );
     await expect(active.getByRole("link", { name: /9 requests Transformed/ })).toHaveAttribute(
       "href",
-      "/logs?window=7d&guardrail=provider_transformed%3AProduction%20LLM%20Guard",
+      "/logs?window=7d&guardrail=provider_transformed%3ALocal%20toxicity%20model",
+    );
+    await expect(active.getByRole("link", { name: /6 requests Text truncated/ })).toHaveAttribute(
+      "href",
+      "/logs?window=7d&guardrail=semantic_truncated%3ALocal%20toxicity%20model",
     );
     const paused = card(canvasElement, "Staging evaluator");
     await expect(paused.queryByText("Matches in the last 7 days")).toBeNull();
@@ -1551,6 +1571,8 @@ const LOCAL_CLASSIFIER: GuardrailProviderRow = {
   model_sha256: LOCAL_SHA,
   failure_mode: "fail_closed",
   max_retries: 0,
+  max_scored_bytes: 1048576,
+  on_truncated: "fail_closed",
 };
 
 /** a local row shows its kind and model path where a webhook shows its URL */
@@ -1606,6 +1628,14 @@ export const RegistersALocalClassifier: Story = {
     await userEvent.clear(sha);
     await userEvent.type(sha, LOCAL_SHA);
     await expect(sha).not.toHaveAttribute("aria-invalid", "true");
+    const budget = dialog.getByLabelText("Scoring budget (bytes)");
+    await userEvent.type(budget, "1024");
+    await userEvent.tab();
+    await expect(budget).toHaveAttribute("aria-invalid", "true");
+    await userEvent.clear(budget);
+    await userEvent.type(budget, "1048576");
+    await expect(budget).not.toHaveAttribute("aria-invalid", "true");
+    await pickOption(dialog.getByLabelText("Truncation policy"), "Refuse truncated requests");
     await userEvent.click(save);
     await expect(
       await savesLocal.expectSentBody<GuardrailProviderInput>("POST", "/guardrails/providers"),
@@ -1617,6 +1647,8 @@ export const RegistersALocalClassifier: Story = {
       max_retries: 0,
       model_path: "/etc/rolter/models/toxicity.json",
       model_sha256: LOCAL_SHA,
+      max_scored_bytes: 1048576,
+      on_truncated: "fail_closed",
     });
     await expectSheetClosed();
   },
@@ -1637,5 +1669,9 @@ export const EditsALocalClassifier: Story = {
       "/etc/rolter/models/toxicity.json",
     );
     await expect(dialog.getByLabelText("Model SHA-256")).toHaveValue(LOCAL_SHA);
+    await expect(dialog.getByLabelText("Scoring budget (bytes)")).toHaveValue(1048576);
+    await expect(dialog.getByLabelText("Truncation policy")).toHaveValue(
+      "Refuse truncated requests",
+    );
   },
 };

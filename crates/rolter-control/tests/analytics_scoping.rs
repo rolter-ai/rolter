@@ -2609,3 +2609,62 @@ async fn by_variant_keeps_two_orgs_same_named_routes_as_two_sets_of_rows() {
         "nor a member of umbrella acme's"
     );
 }
+
+#[tokio::test]
+async fn semantic_truncation_outcomes_are_counted_per_provider() {
+    let ch = skip_without_stack!();
+    let http = reqwest::Client::new();
+    ensure_schema(&http, &ch).await;
+    let db = TestSchema::create(&test_database::url().await.unwrap()).await;
+    let app = rolter_control::test_app_with_clickhouse_and_admin_token(
+        db.pool().clone(),
+        &ch,
+        Some(ADMIN_TOKEN.to_string()),
+    )
+    .await
+    .unwrap();
+    let addr = serve(app).await;
+
+    let tag = Uuid::new_v4().simple().to_string();
+    let first = format!("injection-{tag}");
+    let second = format!("toxicity-{tag}");
+    let ts = chrono::Utc::now()
+        .format("%Y-%m-%d %H:%M:%S%.3f")
+        .to_string();
+    let row = |suffix: &str, provider: &str| {
+        json!({
+            "ts": ts,
+            "request_id": format!("semantic-truncation-{tag}-{suffix}"),
+            "model": "fake-llm",
+            "status": 200,
+            "guardrail_events": [format!("semantic_truncated:{provider}")],
+        })
+    };
+    insert_rows(
+        &http,
+        &ch,
+        "request_logs",
+        &[row("a", &first), row("b", &first), row("c", &second)],
+    )
+    .await;
+
+    let response = http
+        .get(format!("http://{addr}/api/v1/analytics/guardrails"))
+        .bearer_auth(ADMIN_TOKEN)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let body: Value = response.json().await.unwrap();
+    assert_eq!(body["recorded"], true);
+    let rows = body["data"].as_array().expect("outcome rows");
+    let count = |provider: &str| {
+        rows.iter()
+            .find(|row| row["action"] == "semantic_truncated" && row["rule"] == provider)
+            .unwrap_or_else(|| panic!("no semantic_truncated row for {provider}: {body}"))
+            ["requests"]
+            .clone()
+    };
+    assert_eq!(count(&first), json!(2));
+    assert_eq!(count(&second), json!(1));
+}

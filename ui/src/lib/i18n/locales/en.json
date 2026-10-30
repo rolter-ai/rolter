@@ -2930,7 +2930,8 @@
         "redacted": "Redacted",
         "annotated": "Annotated",
         "provider_blocked": "Blocked",
-        "provider_transformed": "Transformed"
+        "provider_transformed": "Transformed",
+        "semantic_truncated": "Text truncated"
       },
       "noAnalytics": {
         "title": "Match counts need an analytics store",
@@ -3049,6 +3050,13 @@
       "retriesInfo": "Extra attempts after a connection failure, a timeout or a 5xx answer. 0 means one attempt, so a slow service costs at most one timeout.",
       "fieldBodyCap": "Body cap (bytes)",
       "bodyCapInfo": "The most content, in bytes, sent to this service. Longer content is cut and flagged as truncated. The default is 65536 (64 KiB).",
+      "fieldScoredBytes": "Scoring budget (bytes)",
+      "scoredBytesInfo": "Total bytes the local classifier may read across overlapping windows. Leave blank for 8 times the body cap; the maximum is 16777216 (16 MiB).",
+      "scoredBytesInvalid": "Enter a value from the body cap through 16777216 (16 MiB), or leave it blank.",
+      "fieldOnTruncated": "Truncation policy",
+      "onTruncatedInfo": "What happens when text exceeds the scoring budget. Scoring what fits records semantic_truncated; refusing rejects the request before scoring.",
+      "truncatedScore": "Score what fits",
+      "truncatedFailClosed": "Refuse truncated requests",
       "fieldAuth": "Authentication",
       "authInfo": "How the gateway identifies itself to this service. A bearer token goes in the Authorization header, a shared secret in a header of its own. The secret itself is read from an environment variable.",
       "authNone": "None",

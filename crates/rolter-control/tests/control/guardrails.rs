@@ -804,3 +804,60 @@ async fn a_local_provider_is_stored_validated_and_reaches_the_snapshot() {
     .await;
     assert!(raw.is_err(), "a local row with a url breaks the kind check");
 }
+
+#[tokio::test]
+async fn local_truncation_settings_round_trip_and_bump_the_snapshot_version() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let app = rolter_control::test_app(db.pool().clone())
+        .await
+        .expect("build app");
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let url = format!("http://{addr}/api/v1/guardrails/providers");
+    let local = json!({
+        "name": "injection", "enabled": true, "kind": "local", "url": "",
+        "model_path": "/etc/rolter/models/injection.json", "model_sha256": "ab".repeat(32),
+        "stage": "pre_call", "timeout_ms": 50, "max_retries": 0,
+        "failure_mode": "fail_closed", "max_body_bytes": 65536,
+        "max_scored_bytes": 1048576, "on_truncated": "fail_closed", "auth_kind": "none"
+    });
+
+    let before = config_version(db.pool()).await;
+    let created = client.post(&url).json(&local).send().await.unwrap();
+    assert_eq!(created.status(), 201);
+    let created: Value = created.json().await.unwrap();
+    assert_eq!(created["max_scored_bytes"], 1_048_576);
+    assert_eq!(created["on_truncated"], "fail_closed");
+    assert_eq!(config_version(db.pool()).await, before + 1);
+
+    let provider_id = created["id"].as_str().expect("provider id");
+    let updated = client
+        .put(format!("{url}/{provider_id}"))
+        .json(&json!({
+            "name": "injection", "enabled": true, "kind": "local", "url": "",
+            "model_path": "/etc/rolter/models/injection.json", "model_sha256": "ab".repeat(32),
+            "stage": "pre_call", "timeout_ms": 50, "max_retries": 0,
+            "failure_mode": "fail_closed", "max_body_bytes": 65536,
+            "max_scored_bytes": 2097152, "on_truncated": "score", "auth_kind": "none"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(updated.status(), 200);
+    let updated: Value = updated.json().await.unwrap();
+    assert_eq!(updated["max_scored_bytes"], 2_097_152);
+    assert_eq!(updated["on_truncated"], "score");
+    assert_eq!(config_version(db.pool()).await, before + 2);
+
+    let store = rolter_store::postgres::PostgresConfigStore::new(db.pool().clone());
+    let config = rolter_store::ConfigStore::load(&store).await.unwrap();
+    let loaded = config
+        .semantic_guards
+        .providers
+        .iter()
+        .find(|provider| provider.name == "injection")
+        .expect("the local provider reaches the snapshot");
+    assert_eq!(loaded.max_scored_bytes, Some(2_097_152));
+    assert_eq!(loaded.on_truncated, rolter_core::OnTruncated::Score);
+}

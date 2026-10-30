@@ -9,7 +9,8 @@ use uuid::Uuid;
 
 use rolter_core::{
     BuiltinRule, FailureMode, GatewayConfig, GuardAction, GuardProviderKind, GuardStage,
-    GuardrailRule, GuardrailWebhookConfig, GuardrailsConfig, WebhookAuth, WebhookStage,
+    GuardrailRule, GuardrailWebhookConfig, GuardrailsConfig, OnTruncated, WebhookAuth,
+    WebhookStage,
 };
 use rolter_store::postgres::models::{
     GuardrailPolicyRow, GuardrailProvider, GuardrailRule as GuardrailRuleRow,
@@ -75,12 +76,20 @@ struct ProviderBody {
     max_retries: i32,
     failure_mode: String,
     max_body_bytes: i32,
+    #[serde(default)]
+    max_scored_bytes: Option<i32>,
+    #[serde(default = "default_on_truncated")]
+    on_truncated: String,
     auth_kind: String,
     auth_env: Option<String>,
 }
 
 fn default_kind() -> String {
     "webhook".to_string()
+}
+
+fn default_on_truncated() -> String {
+    "score".to_string()
 }
 
 impl RuleBody {
@@ -133,6 +142,8 @@ impl ProviderBody {
             max_retries: self.max_retries,
             failure_mode: &self.failure_mode,
             max_body_bytes: self.max_body_bytes,
+            max_scored_bytes: self.max_scored_bytes.filter(|_| is_local),
+            on_truncated: &self.on_truncated,
             auth_kind: &self.auth_kind,
             auth_env: self.auth_env.as_deref(),
         }
@@ -310,9 +321,20 @@ fn validate_provider(body: &ProviderBody) -> ApiResult<()> {
             ))
         }
     };
+    let on_truncated = match body.on_truncated.as_str() {
+        "score" => OnTruncated::Score,
+        "fail_closed" => OnTruncated::FailClosed,
+        _ => {
+            return Err(invalid_field(
+                "on_truncated",
+                "on_truncated must be score or fail_closed",
+            ))
+        }
+    };
     let auth = parse_webhook_auth(&body.auth_kind, body.auth_env.as_deref())?;
     let problems = GuardrailWebhookConfig {
         enabled: body.enabled,
+        name: body.name.clone(),
         kind,
         url: body.url.clone(),
         model_path: body.model_path.clone().unwrap_or_default(),
@@ -322,8 +344,9 @@ fn validate_provider(body: &ProviderBody) -> ApiResult<()> {
         max_retries: body.max_retries as u32,
         failure_mode,
         max_body_bytes: body.max_body_bytes as usize,
+        max_scored_bytes: body.max_scored_bytes.map(|value| value as usize),
+        on_truncated,
         auth,
-        ..Default::default()
     }
     .validate();
     // as above: the joined text cannot name one field, so the endpoint stands in
@@ -855,6 +878,8 @@ mod tests {
             max_retries: 0,
             failure_mode: "fail_open".into(),
             max_body_bytes: 65_536,
+            max_scored_bytes: None,
+            on_truncated: "score".into(),
             auth_kind: "none".into(),
             auth_env: None,
             created_at: chrono::Utc::now(),
@@ -984,6 +1009,8 @@ mod tests {
             max_retries: 0,
             failure_mode: "fail_open".into(),
             max_body_bytes: 65_536,
+            max_scored_bytes: None,
+            on_truncated: "score".into(),
             auth_kind: "none".into(),
             auth_env: None,
         };
@@ -1004,6 +1031,8 @@ mod tests {
             max_retries: 0,
             failure_mode: "fail_closed".into(),
             max_body_bytes: 65_536,
+            max_scored_bytes: None,
+            on_truncated: "score".into(),
             auth_kind: "none".into(),
             auth_env: Some("secret".into()),
         };
@@ -1023,6 +1052,8 @@ mod tests {
             max_retries: 0,
             failure_mode: "fail_closed".into(),
             max_body_bytes: 65_536,
+            max_scored_bytes: None,
+            on_truncated: "score".into(),
             auth_kind: "none".into(),
             auth_env: None,
         }
@@ -1067,6 +1098,39 @@ mod tests {
         webhook.kind = "webhook".into();
         webhook.url = "https://guard.internal/check".into();
         assert!(refused_field(&webhook).contains("model_path"));
+    }
+
+    #[test]
+    fn a_local_scored_budget_must_cover_the_body_window() {
+        let body: ProviderBody = serde_json::from_value(serde_json::json!({
+            "name": "injection", "enabled": true, "kind": "local", "url": "",
+            "model_path": "/models/injection.json", "model_sha256": "ab".repeat(32),
+            "stage": "pre_call", "timeout_ms": 50, "max_retries": 0,
+            "failure_mode": "fail_closed", "max_body_bytes": 65536,
+            "max_scored_bytes": 1024, "on_truncated": "fail_closed", "auth_kind": "none"
+        }))
+        .unwrap();
+        assert!(refused_field(&body).contains("max_scored_bytes"));
+    }
+
+    #[test]
+    fn a_local_scored_budget_is_capped_at_sixteen_mib() {
+        let mut body = local_body();
+        body.max_scored_bytes = Some(16 * 1024 * 1024 + 1);
+        assert!(refused_field(&body).contains("max_scored_bytes"));
+    }
+
+    #[test]
+    fn a_local_truncation_mode_is_checked() {
+        let body: ProviderBody = serde_json::from_value(serde_json::json!({
+            "name": "injection", "enabled": true, "kind": "local", "url": "",
+            "model_path": "/models/injection.json", "model_sha256": "ab".repeat(32),
+            "stage": "pre_call", "timeout_ms": 50, "max_retries": 0,
+            "failure_mode": "fail_closed", "max_body_bytes": 65536,
+            "max_scored_bytes": 65536, "on_truncated": "ignore", "auth_kind": "none"
+        }))
+        .unwrap();
+        assert!(refused_field(&body).contains("on_truncated"));
     }
 
     #[test]
