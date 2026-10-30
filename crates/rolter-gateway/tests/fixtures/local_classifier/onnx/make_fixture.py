@@ -19,8 +19,7 @@ then run `just fmt-docs` (it reformats tokenizer.json) and update the two
 import json
 import pathlib
 
-import onnx
-from onnx import TensorProto, helper
+from onnx import ModelProto, TensorProto, checker, helper
 
 HERE = pathlib.Path(__file__).parent
 JAILBREAK = 10
@@ -49,16 +48,16 @@ graph = helper.make_graph(
 )
 model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 13)], producer_name="rolter")
 model.ir_version = 8
-onnx.checker.check_model(model)
+checker.check_model(model)
 (HERE / "model.onnx").write_bytes(model.SerializeToString())
 
 # a valid graph whose selected output cannot be extracted as f32
-wide = onnx.ModelProto()
+wide = ModelProto()
 wide.CopyFrom(model)
 wide.graph.node[-1].output[0] = "float_logits"
 wide.graph.node.append(helper.make_node("Cast", ["float_logits"], ["logits"], to=TensorProto.DOUBLE))
 wide.graph.output[0].type.tensor_type.elem_type = TensorProto.DOUBLE
-onnx.checker.check_model(wide)
+checker.check_model(wide)
 (HERE / "model-f64.onnx").write_bytes(wide.SerializeToString())
 
 # the empty-sequence graph uses ReduceSum's identity, unlike the needle model's max
@@ -80,7 +79,7 @@ empty_graph = helper.make_graph(
 )
 empty = helper.make_model(empty_graph, opset_imports=[helper.make_opsetid("", 13)], producer_name="rolter")
 empty.ir_version = 8
-onnx.checker.check_model(empty)
+checker.check_model(empty)
 (HERE / "model-empty.onnx").write_bytes(empty.SerializeToString())
 
 special = lambda token, id_: {
