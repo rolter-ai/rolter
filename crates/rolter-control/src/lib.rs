@@ -685,6 +685,8 @@ struct ControlState {
     /// OTLP histograms for snapshot generation and API latency (#845). Inert,
     /// and free, on every deployment without an OTLP endpoint
     metrics: rolter_core::telemetry::ControlHistograms,
+    /// process-local single-flight lifecycle for config-problem sampling
+    config_problem_sampler: Arc<ConfigProblemSampler>,
     /// the bounds on a request log CSV export and the count of those running
     /// (#3360). Process-local on purpose: it protects this process's
     /// connections and ClickHouse queries, so replicas each hold their own
@@ -936,6 +938,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         public_url: public_url_from_env(),
         cors: Arc::default(),
         metrics: metrics.clone(),
+        config_problem_sampler: Arc::default(),
         export_gate: export_gate.clone(),
         export_tickets: Arc::default(),
         mail_check_gap: Arc::default(),
@@ -963,6 +966,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         public_url: public_url_from_env(),
         cors: Arc::default(),
         metrics: metrics.clone(),
+        config_problem_sampler: Arc::default(),
         export_gate: export_gate.clone(),
         export_tickets: Arc::default(),
         mail_check_gap: Arc::default(),
@@ -1743,6 +1747,7 @@ fn test_state(
         public_url: Arc::new(normalize_public_url(public_url)),
         cors: Arc::default(),
         metrics: Default::default(),
+        config_problem_sampler: Arc::default(),
         // real, with production defaults: the wiring is part of what these
         // tests cover, and no test signs in wrongly five times by accident
         export_gate: Default::default(),
@@ -2618,54 +2623,150 @@ fn snapshot_problems(
     (problems, omitted)
 }
 
-/// Sample `rolter_config_problems{kind}` for `version`, once per version (#3542).
-///
-/// The counts are those of every line `GET /api/v1/config/problems` lists for
-/// the whole deployment, classified by where the line comes from rather than
-/// by its wording: the sanitizer's records and lines and the structural
-/// problems for `config` as the store loaded it, before any format's
-/// down-step, and the store's own records, which say whether a line is a
-/// misread row or a bootstrap shadow. With no `config` (the store refused to
-/// load) only the store's records count, as only they are listed.
-///
-/// It runs beside the snapshot rather than in it, so no gateway waits on the
-/// store's second read. A sample that cannot read the store's records gives
-/// its claim back, so the next build of the same version tries again.
-fn sample_config_problems(state: &ControlState, version: i64, config: Option<&GatewayConfig>) {
-    if !state.metrics.config_problems().claim(version) {
-        return;
+const CONFIG_PROBLEM_RETRY_BACKOFF: std::time::Duration = std::time::Duration::from_secs(30);
+
+#[derive(Default)]
+struct ConfigProblemSampler {
+    state: std::sync::Mutex<ConfigProblemSampling>,
+}
+
+#[derive(Default)]
+struct ConfigProblemSampling {
+    running: bool,
+    claimed: i64,
+    sampled: i64,
+    pending: Option<ConfigProblemSample>,
+    retry_after: Option<(i64, std::time::Instant)>,
+}
+
+#[derive(Clone)]
+struct ConfigProblemSample {
+    version: i64,
+    config: Option<GatewayConfig>,
+}
+
+impl ConfigProblemSampler {
+    fn lock(&self) -> std::sync::MutexGuard<'_, ConfigProblemSampling> {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
-    let config = config.cloned();
+
+    /// Whether a 304 needs a config read to feed the sampler.
+    fn needs_sample(&self, version: i64) -> bool {
+        let state = self.lock();
+        if version <= state.sampled || (state.running && version <= state.claimed) {
+            return false;
+        }
+        !state
+            .retry_after
+            .is_some_and(|(failed, at)| version <= failed && std::time::Instant::now() < at)
+    }
+
+    fn request(&self, sample: ConfigProblemSample) -> Option<ConfigProblemSample> {
+        let mut state = self.lock();
+        if sample.version <= state.sampled {
+            return None;
+        }
+        if state
+            .retry_after
+            .is_some_and(|(failed, at)| sample.version <= failed && std::time::Instant::now() < at)
+        {
+            return None;
+        }
+        if state.running {
+            if sample.version > state.claimed {
+                state.claimed = sample.version;
+                state.pending = Some(sample);
+            }
+            return None;
+        }
+        state.running = true;
+        state.claimed = sample.version;
+        Some(sample)
+    }
+
+    fn complete(&self, version: i64, succeeded: bool) -> Option<ConfigProblemSample> {
+        let mut state = self.lock();
+        if succeeded {
+            state.sampled = state.sampled.max(version);
+            state.retry_after = None;
+        } else {
+            state.retry_after = Some((
+                version,
+                std::time::Instant::now() + CONFIG_PROBLEM_RETRY_BACKOFF,
+            ));
+        }
+        match state.pending.take_if(|sample| sample.version > version) {
+            Some(sample) => {
+                state.claimed = sample.version;
+                Some(sample)
+            }
+            None => {
+                state.running = false;
+                state.pending = None;
+                None
+            }
+        }
+    }
+}
+
+/// Sample `rolter_config_problems{kind}` beside snapshot generation (#3542).
+/// One task runs at a time, a newer version replaces its pending sample, and a
+/// failed store read backs off instead of retrying on every gateway poll.
+fn sample_config_problems(state: &ControlState, version: i64, config: Option<&GatewayConfig>) {
+    let Some(mut sample) = state.config_problem_sampler.request(ConfigProblemSample {
+        version,
+        config: config.cloned(),
+    }) else {
+        return;
+    };
     let state = state.clone();
     tokio::spawn(async move {
-        use rolter_core::telemetry::{ConfigProblemCounts, ConfigProblemKind};
-        let gauge = state.metrics.config_problems();
-        let mut counts = ConfigProblemCounts::default();
-        if let Some(mut config) = config {
-            let report = sanitize_snapshot(&state, &mut config);
-            counts.add(ConfigProblemKind::Omitted, report.omitted.len());
-            // every omitted record has its line among the problems
-            counts.add(
-                ConfigProblemKind::Sanitized,
-                report.problems.len().saturating_sub(report.omitted.len()),
-            );
-            if let Err(fatal) = config.validate_snapshot() {
-                counts.add(ConfigProblemKind::Invalid, fatal.len());
-            }
-        }
-        match state.store.load_problem_records().await {
-            Ok(records) => {
-                for record in records {
-                    counts.add(record.kind, 1);
-                }
-                gauge.record(version, counts);
-            }
-            Err(error) => {
-                tracing::warn!(%error, "could not sample the config problems");
-                gauge.release(version);
-            }
+        loop {
+            let succeeded = record_config_problem_sample(&state, &sample).await;
+            let Some(next) = state
+                .config_problem_sampler
+                .complete(sample.version, succeeded)
+            else {
+                break;
+            };
+            sample = next;
         }
     });
+}
+
+async fn record_config_problem_sample(state: &ControlState, sample: &ConfigProblemSample) -> bool {
+    use rolter_core::telemetry::{ConfigProblemCounts, ConfigProblemKind};
+
+    let mut counts = ConfigProblemCounts::default();
+    if let Some(mut config) = sample.config.clone() {
+        let report = sanitize_snapshot(state, &mut config);
+        counts.add(ConfigProblemKind::Omitted, report.omitted.len());
+        counts.add(
+            ConfigProblemKind::Sanitized,
+            report.problems.len().saturating_sub(report.omitted.len()),
+        );
+        if let Err(fatal) = config.validate_snapshot() {
+            counts.add(ConfigProblemKind::Invalid, fatal.len());
+        }
+    }
+    match state.store.load_problem_records().await {
+        Ok(records) => {
+            for record in records {
+                counts.add(record.kind, 1);
+            }
+            state
+                .metrics
+                .config_problems()
+                .record(sample.version, counts);
+            true
+        }
+        Err(error) => {
+            tracing::warn!(%error, "could not sample the config problems");
+            false
+        }
+    }
 }
 
 /// The lines of `all` that `seen` also has, with multiplicity and in the order
@@ -2972,7 +3073,8 @@ async fn build_snapshot(
             );
         }
     };
-    if query.version.is_some_and(|requested| requested >= version) {
+    let not_modified = query.version.is_some_and(|requested| requested >= version);
+    if not_modified && !state.config_problem_sampler.needs_sample(version) {
         return BuiltSnapshot {
             // every format is built from the same config_version, so one
             // counter serves them all
@@ -2984,6 +3086,14 @@ async fn build_snapshot(
     }
     let loaded = state.store.load().await;
     sample_config_problems(&state, version, loaded.as_ref().ok());
+    if not_modified {
+        return BuiltSnapshot {
+            response: finish(StatusCode::NOT_MODIFIED.into_response()),
+            outcome: "not_modified",
+            version,
+            bytes: 0,
+        };
+    }
     match loaded {
         Ok(mut config) => {
             // an older gateway gets what its format can express: the omitting
@@ -3848,6 +3958,7 @@ mod tests {
             public_url: Arc::new(normalize_public_url(None)),
             cors: Arc::default(),
             metrics: Default::default(),
+            config_problem_sampler: Arc::default(),
             export_gate: Default::default(),
             export_tickets: Default::default(),
             mail_check_gap: Default::default(),
@@ -4592,6 +4703,118 @@ mod tests {
         assert!(body.get("problems").is_none(), "{body}");
     }
 
+    struct ControlledProblemStore {
+        inner: InMemoryConfigStore,
+        reads: Arc<std::sync::atomic::AtomicUsize>,
+        fail_reads: Arc<std::sync::atomic::AtomicBool>,
+        entered: Arc<tokio::sync::Notify>,
+        release: Arc<tokio::sync::Notify>,
+        block_first: bool,
+    }
+
+    impl ControlledProblemStore {
+        fn new(block_first: bool) -> Arc<Self> {
+            Arc::new(Self {
+                inner: InMemoryConfigStore::new(GatewayConfig::default()),
+                reads: Arc::default(),
+                fail_reads: Arc::default(),
+                entered: Arc::default(),
+                release: Arc::default(),
+                block_first,
+            })
+        }
+
+        fn reads(&self) -> usize {
+            self.reads.load(std::sync::atomic::Ordering::SeqCst)
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl rolter_store::ConfigStore for ControlledProblemStore {
+        async fn load(&self) -> rolter_core::Result<GatewayConfig> {
+            self.inner.load().await
+        }
+
+        async fn save(&self, config: GatewayConfig) -> rolter_core::Result<()> {
+            self.inner.save(config).await
+        }
+
+        async fn current_version(&self) -> rolter_core::Result<i64> {
+            self.inner.current_version().await
+        }
+
+        async fn load_problem_records(
+            &self,
+        ) -> rolter_core::Result<Vec<rolter_store::ConfigProblem>> {
+            let read = self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if self.block_first && read == 0 {
+                self.entered.notify_one();
+                self.release.notified().await;
+            }
+            if self.fail_reads.load(std::sync::atomic::Ordering::SeqCst) {
+                return Err(rolter_core::Error::Store("problem read failed".into()));
+            }
+            Ok(Vec::new())
+        }
+    }
+
+    #[tokio::test]
+    async fn a_newer_version_coalesces_into_the_running_config_problem_sample() {
+        let store = ControlledProblemStore::new(true);
+        let mut state = state_with_token(None);
+        state.store = store.clone();
+        let metrics = state.metrics.clone();
+        let config = GatewayConfig::default();
+
+        sample_config_problems(&state, 1, Some(&config));
+        store.entered.notified().await;
+        store.inner.save(GatewayConfig::default()).await.unwrap();
+        sample_config_problems(&state, 2, Some(&config));
+        for _ in 0..20 {
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(store.reads(), 1, "a second sample ran beside the first");
+
+        store.release.notify_one();
+        for _ in 0..200 {
+            if metrics
+                .config_problems()
+                .sampled()
+                .is_some_and(|(version, _)| version == 2)
+            {
+                assert_eq!(store.reads(), 2);
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+        panic!("the coalesced version was not sampled");
+    }
+
+    #[tokio::test]
+    async fn a_failed_config_problem_sample_retries_only_after_backoff() {
+        let store = ControlledProblemStore::new(false);
+        store
+            .fail_reads
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let mut state = state_with_token(None);
+        state.store = store.clone();
+        let config = GatewayConfig::default();
+
+        sample_config_problems(&state, 1, Some(&config));
+        for _ in 0..200 {
+            if store.reads() == 1 {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        tokio::task::yield_now().await;
+        for _ in 0..10 {
+            sample_config_problems(&state, 1, Some(&config));
+        }
+        tokio::task::yield_now().await;
+        assert_eq!(store.reads(), 1, "every poll retried the failed sample");
+    }
+
     /// `rolter_config_problems{kind}` follows the config: a problem counts
     /// from the first snapshot built after it appears, and stops counting
     /// from the first one built after it is gone (#3542).
@@ -4652,6 +4875,33 @@ mod tests {
         for kind in ConfigProblemKind::ALL {
             assert_eq!(counts.get(kind), 0, "{} {counts:?}", kind.label());
         }
+    }
+
+    #[tokio::test]
+    async fn the_first_not_modified_after_a_restart_samples_config_problems() {
+        let mut state = state_with_token(None);
+        state.store = Arc::new(rolter_store::InMemoryConfigStore::new(
+            GatewayConfig::default(),
+        ));
+        let metrics = state.metrics.clone();
+        let addr = serve(build_app_with_internal(state)).await;
+
+        let response = reqwest::get(format!("http://{addr}/internal/snapshot?version=1"))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 304);
+
+        for _ in 0..200 {
+            if metrics
+                .config_problems()
+                .sampled()
+                .is_some_and(|(version, _)| version == 1)
+            {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        panic!("a current fleet left the restarted control plane unsampled");
     }
 
     #[tokio::test]
@@ -4848,6 +5098,7 @@ mod tests {
             gateway_url: Arc::new(format!("http://{up_addr}")),
             cors: Arc::default(),
             metrics: Default::default(),
+            config_problem_sampler: Arc::default(),
             ..state_with_token(None)
         };
         let addr = serve(build_app_with(state, true)).await;
