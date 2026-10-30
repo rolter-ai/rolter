@@ -6541,6 +6541,7 @@
     "notes": {
       "labels": "Labels are display and filter only: no route can select its targets by label yet, and making them selectable turns them into configuration the data plane consumes",
       "realtime": "Guardrails, the guardrail webhook and pre_upstream plugins run on /v1/realtime text events and function-call arguments, but the PII sanitizer and pre_route / post_response plugins do not; a fail_closed PII sanitizer refuses the session, a fail_open one admits it unsanitized",
+      "semantic_onnx": "The onnx/1 manifest and runtime compatibility contract may change; source builds only, with a separately installed ONNX Runtime library",
       "skills_repository": "A skill resolves only through the control-plane API; the gateway serves no skill surface, so how a client addresses and fetches one is not settled"
     }
   },

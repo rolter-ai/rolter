@@ -60,7 +60,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
 
 use arc_swap::{ArcSwap, ArcSwapOption};
@@ -78,7 +78,10 @@ use crate::guardrail_webhook::CallFailure;
 
 /// The weights format this build reads.
 pub const MODEL_FORMAT: &str = "rolter-linear/1";
-/// The largest model file loaded.
+/// The format of a manifest naming an ONNX model and its tokenizer (#3443),
+/// which only a build with the `onnx` cargo feature runs.
+pub const ONNX_FORMAT: &str = "onnx/1";
+/// The largest model file loaded (for `onnx/1`, the manifest).
 pub const MAX_MODEL_FILE_BYTES: u64 = 64 * 1024 * 1024;
 /// The most hash buckets a model may use.
 pub const MAX_BUCKETS: usize = 1 << 20;
@@ -144,7 +147,7 @@ const STRUCTURAL_KEYS: &[&str] = &[
 #[derive(Debug)]
 pub enum ModelError {
     Read(std::io::Error),
-    TooLarge,
+    TooLarge(u64),
     Digest {
         pinned: String,
         actual: String,
@@ -165,16 +168,26 @@ pub enum ModelError {
     /// an earlier, abandoned read of the same path has not returned yet, or
     /// [`MAX_IN_FLIGHT_READS`] reads are running
     InFlight,
+    /// a format this build cannot run, such as `onnx/1` without the `onnx`
+    /// cargo feature
+    #[cfg(not(feature = "onnx"))]
+    Unsupported(String),
+    /// the ONNX runtime could not be loaded or refused the model
+    #[cfg(feature = "onnx")]
+    Runtime(String),
+    /// a file an `onnx/1` manifest names
+    #[cfg(feature = "onnx")]
+    Part {
+        part: &'static str,
+        error: Box<ModelError>,
+    },
 }
 
 impl std::fmt::Display for ModelError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Read(error) => write!(f, "cannot read the model file: {error}"),
-            Self::TooLarge => write!(
-                f,
-                "the model file is larger than {MAX_MODEL_FILE_BYTES} bytes"
-            ),
+            Self::TooLarge(max) => write!(f, "the model file is larger than {max} bytes"),
             Self::Digest { pinned, actual } => {
                 write!(
                     f,
@@ -182,11 +195,17 @@ impl std::fmt::Display for ModelError {
                 )
             }
             Self::Malformed(why) => {
-                write!(f, "the model file is not a {MODEL_FORMAT} model: {why}")
+                write!(f, "the local classifier model is malformed: {why}")
             }
             Self::Root { root, error } => {
                 write!(f, "model_root {root} cannot be resolved: {error}")
             }
+            #[cfg(not(feature = "onnx"))]
+            Self::Unsupported(why) => f.write_str(why),
+            #[cfg(feature = "onnx")]
+            Self::Runtime(why) => write!(f, "the onnx runtime: {why}"),
+            #[cfg(feature = "onnx")]
+            Self::Part { part, error } => write!(f, "{part}: {error}"),
             Self::OutsideRoot { resolved, root } => write!(
                 f,
                 "the model file resolves to {resolved}, outside model_root {root}; it is not read"
@@ -214,6 +233,12 @@ impl ModelError {
     /// same answer until the configuration changes, so they are not retried
     /// in the background.
     pub fn is_transient(&self) -> bool {
+        #[cfg(feature = "onnx")]
+        match self {
+            Self::Runtime(_) => return true,
+            Self::Part { error, .. } => return error.is_transient(),
+            _ => {}
+        }
         matches!(
             self,
             Self::Read(_) | Self::Root { .. } | Self::Deadline(_) | Self::InFlight
@@ -322,34 +347,17 @@ impl LinearModel {
 
     /// [`load`](Self::load), refusing a `path` that does not resolve to a
     /// file under `root` when one is set (#3454).
+    #[cfg(test)]
     pub fn load_confined(
         path: &str,
         sha256: &str,
         root: Option<&Path>,
     ) -> Result<Self, ModelError> {
-        let (target, root) = confine(path, root)?;
-        let file = open_checked(&target, root.as_deref())?;
-        // checked on the handle that is read, never on the path again
-        let len = file.metadata()?.len();
-        if len > MAX_MODEL_FILE_BYTES {
-            return Err(ModelError::TooLarge);
+        match Model::load(path, sha256, root)? {
+            Model::Linear(model) => Ok(model),
+            #[cfg(feature = "onnx")]
+            Model::Onnx(_) => Err(ModelError::Malformed("an onnx model".into())),
         }
-        let mut bytes = Vec::with_capacity(len as usize);
-        // the size is checked again while reading: the file may grow between
-        // the two
-        file.take(MAX_MODEL_FILE_BYTES + 1)
-            .read_to_end(&mut bytes)?;
-        if bytes.len() as u64 > MAX_MODEL_FILE_BYTES {
-            return Err(ModelError::TooLarge);
-        }
-        let actual = hex(&Sha256::digest(&bytes));
-        if !actual.eq_ignore_ascii_case(sha256.trim()) {
-            return Err(ModelError::Digest {
-                pinned: sha256.trim().to_ascii_lowercase(),
-                actual,
-            });
-        }
-        Self::from_bytes(&bytes)
     }
 
     /// Score `text` in overlapping windows of `window` bytes (see
@@ -387,12 +395,181 @@ impl LinearModel {
     }
 }
 
-/// The path to open for `path` and the canonical root it must stay under:
-/// `path` itself without a root, else its canonical form, which must lie
-/// under the canonical `root`. Every `..` and every symlink, in the last
-/// component or any directory before it, is resolved before the check. A
-/// relative `path` resolves against the process's working directory.
-fn confine(path: &str, root: Option<&Path>) -> Result<(PathBuf, Option<PathBuf>), ModelError> {
+/// A loaded model, in one of the formats this build runs.
+#[derive(Debug)]
+pub enum Model {
+    Linear(LinearModel),
+    #[cfg(feature = "onnx")]
+    Onnx(Box<crate::local_onnx::OnnxModel>),
+}
+
+/// Keeps the one native environment alive across empty gateway configurations.
+#[derive(Default)]
+pub(crate) struct RuntimeOwner {
+    #[cfg(feature = "onnx")]
+    pub(crate) environment: parking_lot::Mutex<Option<Arc<ort::environment::Environment>>>,
+}
+
+/// Scores or an inference error, preserving a known context cut in either case.
+#[derive(Debug)]
+pub struct ModelScores {
+    pub categories: Result<BTreeMap<String, f64>, ScoreError>,
+    pub truncated: bool,
+}
+
+/// Why a loaded model produced no scores. A `rolter-linear/1` model always
+/// scores, so a build without the `onnx` feature has no such reason.
+#[derive(Debug)]
+pub enum ScoreError {
+    /// the model stayed busy with other calls until the deadline
+    #[cfg(feature = "onnx")]
+    Busy,
+    #[cfg(feature = "onnx")]
+    Timeout,
+    #[cfg(feature = "onnx")]
+    Truncated,
+    #[cfg(feature = "onnx")]
+    Failed(String),
+}
+
+impl ScoreError {
+    fn into_failure(self, _provider: &str) -> CallFailure {
+        match self {
+            // the model's one session stayed busy for the rest of the budget
+            #[cfg(feature = "onnx")]
+            Self::Busy => CallFailure::Overloaded,
+            #[cfg(feature = "onnx")]
+            Self::Timeout => CallFailure::Timeout,
+            #[cfg(feature = "onnx")]
+            Self::Truncated => CallFailure::Truncated,
+            #[cfg(feature = "onnx")]
+            Self::Failed(error) => {
+                tracing::warn!(provider = _provider, %error, "local guardrail inference failed");
+                CallFailure::Model
+            }
+        }
+    }
+}
+
+impl Model {
+    /// Read the model file at `path`, check it against `sha256` and parse it
+    /// in the format it names, refusing a path that does not resolve under
+    /// `root` when one is set (#3454).
+    #[cfg(any(test, not(feature = "onnx")))]
+    pub fn load(path: &str, sha256: &str, root: Option<&Path>) -> Result<Self, ModelError> {
+        Self::load_owned(path, sha256, root, None)
+    }
+
+    fn load_owned(
+        path: &str,
+        sha256: &str,
+        root: Option<&Path>,
+        runtime_owner: Option<Weak<RuntimeOwner>>,
+    ) -> Result<Self, ModelError> {
+        #[derive(Deserialize)]
+        struct Header {
+            format: String,
+        }
+        let (resolved, bytes) = read_pinned(Path::new(path), sha256, MAX_MODEL_FILE_BYTES, root)?;
+        let header: Header = serde_json::from_slice(&bytes)
+            .map_err(|error| ModelError::Malformed(error.to_string()))?;
+        if header.format == ONNX_FORMAT {
+            return Self::onnx(&resolved, &bytes, root, runtime_owner);
+        }
+        LinearModel::from_bytes(&bytes).map(Self::Linear)
+    }
+
+    #[cfg(feature = "onnx")]
+    fn onnx(
+        manifest: &Path,
+        bytes: &[u8],
+        root: Option<&Path>,
+        runtime_owner: Option<Weak<RuntimeOwner>>,
+    ) -> Result<Self, ModelError> {
+        crate::local_onnx::OnnxModel::from_manifest_owned(manifest, bytes, root, runtime_owner)
+            .map(|model| Self::Onnx(Box::new(model)))
+    }
+
+    #[cfg(not(feature = "onnx"))]
+    fn onnx(
+        _manifest: &Path,
+        _bytes: &[u8],
+        _root: Option<&Path>,
+        _runtime_owner: Option<Weak<RuntimeOwner>>,
+    ) -> Result<Self, ModelError> {
+        Err(ModelError::Unsupported(format!(
+            "this gateway was built without the `onnx` cargo feature, so it cannot run an \
+             {ONNX_FORMAT} model; use a build with `--features onnx`"
+        )))
+    }
+
+    /// How many categories the model scores.
+    pub fn categories(&self) -> usize {
+        match self {
+            Self::Linear(model) => model.names.len(),
+            #[cfg(feature = "onnx")]
+            Self::Onnx(model) => model.categories(),
+        }
+    }
+
+    /// Score byte windows for a linear model or token windows for a native model.
+    pub fn score_windows(
+        &self,
+        text: &str,
+        window: usize,
+        deadline: Instant,
+        on_truncated: OnTruncated,
+    ) -> ModelScores {
+        match self {
+            Self::Linear(model) => {
+                let _ = (deadline, on_truncated);
+                ModelScores {
+                    categories: Ok(model.score_windows(text, window)),
+                    truncated: false,
+                }
+            }
+            #[cfg(feature = "onnx")]
+            Self::Onnx(model) => model.score(text, deadline, on_truncated),
+        }
+    }
+}
+
+/// Read the file at `path`, at most `max` bytes, and check it against
+/// `sha256`. With a `root`, the path is confined under it first, and the
+/// path returned is the canonical one that was read.
+pub(crate) fn read_pinned(
+    path: &Path,
+    sha256: &str,
+    max: u64,
+    root: Option<&Path>,
+) -> Result<(PathBuf, Vec<u8>), ModelError> {
+    let (path, root) = confine(path, root)?;
+    let file = open_checked(&path, root.as_deref())?;
+    // validate the handle that will be read, not the path a second time
+    let len = file.metadata()?.len();
+    if len > max {
+        return Err(ModelError::TooLarge(max));
+    }
+    let mut bytes = Vec::with_capacity(len as usize);
+    // the size is checked again while reading: the file may grow between
+    // the two
+    file.take(max + 1).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > max {
+        return Err(ModelError::TooLarge(max));
+    }
+    let actual = hex(&Sha256::digest(&bytes));
+    if !actual.eq_ignore_ascii_case(sha256.trim()) {
+        return Err(ModelError::Digest {
+            pinned: sha256.trim().to_ascii_lowercase(),
+            actual,
+        });
+    }
+    Ok((path, bytes))
+}
+
+/// The path to open and the canonical root it must stay under. Every `..`
+/// and symlink is resolved before the check, and the open rechecks the handle.
+fn confine(path: &Path, root: Option<&Path>) -> Result<(PathBuf, Option<PathBuf>), ModelError> {
     let Some(root) = root else {
         return Ok((PathBuf::from(path), None));
     };
@@ -700,10 +877,10 @@ fn is_binary_data(fields: &serde_json::Map<String, Value>) -> bool {
 /// What one configuration apply produced: the models by digest and the
 /// gateway's concurrency cap.
 struct Registry {
-    models: HashMap<String, Arc<LinearModel>>,
+    models: HashMap<String, Arc<Model>>,
     /// the models of the apply before this one, kept until the next: a
     /// request still on the previous snapshot may name one this apply dropped
-    previous: HashMap<String, Arc<LinearModel>>,
+    previous: HashMap<String, Arc<Model>>,
     permits: Arc<Semaphore>,
     cap: usize,
     /// the local providers of the applied configuration, which the
@@ -740,20 +917,34 @@ pub struct Classified {
 }
 
 /// What reads one model file: `(path, sha256, root)`.
-type ReadFn = dyn Fn(&str, &str, Option<&Path>) -> Result<LinearModel, ModelError> + Send + Sync;
+type ReadFn = dyn Fn(&str, &str, Option<&Path>) -> Result<Model, ModelError> + Send + Sync;
 
-/// How model files are read: [`LinearModel::load_confined`] under
+/// How model files are read under
 /// [`MODEL_READ_DEADLINE`], unless a test swaps either.
 struct Reader {
     deadline: Duration,
     read: Arc<ReadFn>,
+    #[cfg(feature = "onnx")]
+    _runtime_owner: Arc<RuntimeOwner>,
 }
 
 impl Default for Reader {
     fn default() -> Self {
+        #[cfg(feature = "onnx")]
+        let runtime_owner = Arc::new(RuntimeOwner::default());
+        #[cfg(feature = "onnx")]
+        let weak_owner = Arc::downgrade(&runtime_owner);
+        #[cfg(feature = "onnx")]
+        let read: Arc<ReadFn> = Arc::new(move |path, digest, root| {
+            Model::load_owned(path, digest, root, Some(weak_owner.clone()))
+        });
+        #[cfg(not(feature = "onnx"))]
+        let read: Arc<ReadFn> = Arc::new(Model::load);
         Self {
             deadline: MODEL_READ_DEADLINE,
-            read: Arc::new(LinearModel::load_confined),
+            read,
+            #[cfg(feature = "onnx")]
+            _runtime_owner: runtime_owner,
         }
     }
 }
@@ -778,7 +969,7 @@ pub struct LocalClassifiers {
     registry: Arc<ArcSwap<Registry>>,
     /// models read by [`preload`](Self::preload) for the next
     /// [`apply`](Self::apply)
-    staged: Arc<parking_lot::Mutex<HashMap<String, Arc<LinearModel>>>>,
+    staged: Arc<parking_lot::Mutex<HashMap<String, Arc<Model>>>>,
     /// serialises the writers of `registry`: an apply and a retry that
     /// loaded a model
     writing: Arc<parking_lot::Mutex<()>>,
@@ -805,7 +996,7 @@ pub struct LocalClassifiers {
     /// completed reads not yet accepted by their batch, by digest: kept before
     /// sending the answer, so even a successful buffered send after timeout
     /// cannot discard the model when its receiver is dropped (#3578)
-    late: Arc<parking_lot::Mutex<HashMap<String, Arc<LinearModel>>>>,
+    late: Arc<parking_lot::Mutex<HashMap<String, Arc<Model>>>>,
 }
 
 impl Default for LocalClassifiers {
@@ -899,7 +1090,7 @@ impl LocalClassifiers {
     /// A read that returns after it was abandoned is not lost: a model it
     /// loaded is kept in `late` and the retry is woken, so a mount that is
     /// always slower than the deadline still loads on the following retry.
-    fn read_all(&self, wanted: Vec<Wanted>) -> Vec<(Wanted, Result<Arc<LinearModel>, ModelError>)> {
+    fn read_all(&self, wanted: Vec<Wanted>) -> Vec<(Wanted, Result<Arc<Model>, ModelError>)> {
         let reader = self.reader.load_full();
         let root = self.root.load_full();
         let deadline = Instant::now() + reader.deadline;
@@ -951,7 +1142,7 @@ impl LocalClassifiers {
         reader: &Reader,
         want: &Wanted,
         root: Option<Arc<PathBuf>>,
-    ) -> Result<std::sync::mpsc::Receiver<Result<Arc<LinearModel>, ModelError>>, ModelError> {
+    ) -> Result<std::sync::mpsc::Receiver<Result<Arc<Model>, ModelError>>, ModelError> {
         {
             let mut in_flight = self.in_flight.lock();
             if in_flight.len() >= MAX_IN_FLIGHT_READS || !in_flight.insert(want.path.clone()) {
@@ -1023,11 +1214,13 @@ impl LocalClassifiers {
     ) {
         self.reader.store(Arc::new(Reader {
             deadline,
-            read: Arc::new(read),
+            read: Arc::new(move |path, digest, root| read(path, digest, root).map(Model::Linear)),
+            #[cfg(feature = "onnx")]
+            _runtime_owner: Arc::default(),
         }));
     }
 
-    fn loaded(&self, digest: &str) -> Option<Arc<LinearModel>> {
+    fn loaded(&self, digest: &str) -> Option<Arc<Model>> {
         let registry = self.registry.load();
         registry
             .models
@@ -1055,7 +1248,7 @@ impl LocalClassifiers {
                     tracing::info!(
                         provider = want.provider,
                         path = want.path,
-                        categories = model.names.len(),
+                        categories = model.categories(),
                         "local guardrail model loaded"
                     );
                     self.staged.lock().insert(want.digest.clone(), model);
@@ -1220,7 +1413,7 @@ impl LocalClassifiers {
                         tracing::info!(
                             provider = want.provider,
                             path = want.path,
-                            categories = model.names.len(),
+                            categories = model.categories(),
                             "local guardrail model loaded on retry"
                         );
                         read.push((want.digest, model));
@@ -1256,7 +1449,7 @@ impl LocalClassifiers {
 
     /// Add models a retry loaded to the applied configuration, keeping only
     /// those it still names: an apply may have moved on while they were read.
-    fn install(&self, read: Vec<(String, Arc<LinearModel>)>) {
+    fn install(&self, read: Vec<(String, Arc<Model>)>) {
         let _writing = self.writing.lock();
         let current = self.registry.load_full();
         let mut models = current.models.clone();
@@ -1293,12 +1486,24 @@ impl LocalClassifiers {
         provider: &GuardrailWebhookConfig,
         content: &Value,
     ) -> Classified {
-        let (text, truncated) = bounded_text(content, provider.scored_bytes());
+        let (text, mut truncated) = bounded_text(content, provider.scored_bytes());
         let answer = if truncated && provider.on_truncated != OnTruncated::Score {
             // an unknown value reads as the stricter one
             Err(CallFailure::Truncated)
         } else {
-            self.score(provider, text).await
+            match self.score(provider, text).await {
+                Ok(scored) => {
+                    truncated |= scored.truncated;
+                    scored
+                        .categories
+                        .map(|categories| ScoredDecision {
+                            decision: WebhookDecision::Allow,
+                            categories,
+                        })
+                        .map_err(|error| error.into_failure(provider.name.trim()))
+                }
+                Err(error) => Err(error),
+            }
         };
         Classified { answer, truncated }
     }
@@ -1307,7 +1512,7 @@ impl LocalClassifiers {
         &self,
         provider: &GuardrailWebhookConfig,
         text: String,
-    ) -> Result<ScoredDecision, CallFailure> {
+    ) -> Result<ModelScores, CallFailure> {
         let registry = self.registry.load_full();
         let digest = provider.model_sha256.trim();
         let digest: Cow<'_, str> = if digest.bytes().any(|b| b.is_ascii_uppercase()) {
@@ -1323,27 +1528,38 @@ impl LocalClassifiers {
             .ok_or(CallFailure::Model)?;
         let budget = Duration::from_millis(provider.timeout_ms);
         let started = Instant::now();
+        // queue on the serialized native model before occupying a gateway-wide slot
+        #[cfg(feature = "onnx")]
+        let model_permit = if let Model::Onnx(native) = model.as_ref() {
+            match tokio::time::timeout(budget, native.admission.clone().acquire_owned()).await {
+                Ok(Ok(permit)) => Some(permit),
+                _ => return Err(CallFailure::Overloaded),
+            }
+        } else {
+            None
+        };
+        let remaining = budget.saturating_sub(started.elapsed());
         let permit =
-            match tokio::time::timeout(budget, registry.permits.clone().acquire_owned()).await {
+            match tokio::time::timeout(remaining, registry.permits.clone().acquire_owned()).await {
                 Ok(Ok(permit)) => permit,
                 // every slot stayed busy for the whole budget: the overload case
                 _ => return Err(CallFailure::Overloaded),
             };
         let window = provider.max_body_bytes;
+        let deadline = started + budget;
+        let on_truncated = provider.on_truncated;
         let inference = tokio::task::spawn_blocking(move || {
             let _permit = permit;
-            model.score_windows(&text, window)
+            #[cfg(feature = "onnx")]
+            let _model_permit = model_permit;
+            model.score_windows(&text, window, deadline, on_truncated)
         });
         let remaining = budget.saturating_sub(started.elapsed());
-        let categories = match tokio::time::timeout(remaining, inference).await {
-            Ok(Ok(categories)) => categories,
-            Ok(Err(_)) => return Err(CallFailure::Model),
-            Err(_) => return Err(CallFailure::Timeout),
-        };
-        Ok(ScoredDecision {
-            decision: WebhookDecision::Allow,
-            categories,
-        })
+        match tokio::time::timeout(remaining, inference).await {
+            Ok(Ok(scores)) => Ok(scores),
+            Ok(Err(_)) => Err(CallFailure::Model),
+            Err(_) => Err(CallFailure::Timeout),
+        }
     }
 
     /// The configured concurrency cap.
@@ -1855,6 +2071,79 @@ pub(crate) mod tests {
         assert!(configured(&off, None).registry.load().models.is_empty());
     }
 
+    #[cfg(feature = "onnx")]
+    #[tokio::test]
+    #[expect(
+        clippy::await_holding_lock,
+        reason = "freeze the native session while checking unrelated queue admission"
+    )]
+    async fn callers_queued_on_one_native_model_leave_a_slot_for_a_linear_provider() {
+        use std::future::Future;
+        let manifest = Path::new(FIXTURE)
+            .parent()
+            .unwrap()
+            .join("onnx/manifest.json");
+        let digest = hex(&Sha256::digest(std::fs::read(&manifest).unwrap()));
+        let path = manifest.to_str().unwrap();
+        let _probe = match Model::load(path, &digest, None) {
+            Ok(model) => model,
+            Err(ModelError::Runtime(why)) => {
+                assert!(
+                    std::env::var_os("ROLTER_TEST_REQUIRE_ORT").is_none(),
+                    "{why}"
+                );
+                eprintln!("skipped: {why}");
+                return;
+            }
+            Err(error) => panic!("the native fixture failed: {error}"),
+        };
+        let mut native = local_provider(&digest, 5_000);
+        native.name = "native".into();
+        native.model_path = path.into();
+        let mut linear = local_provider(&fixture_sha256(), 200);
+        linear.name = "linear".into();
+        let classifiers = LocalClassifiers::default();
+        classifiers.configure(
+            &SemanticGuardsConfig {
+                providers: vec![native.clone(), linear.clone()],
+                local_concurrency: Some(2),
+                ..Default::default()
+            },
+            &Default::default(),
+        );
+        let model = classifiers.loaded(&digest).unwrap();
+        let Model::Onnx(model) = model.as_ref() else {
+            panic!("expected the native model")
+        };
+        let held = model.occupy_session();
+        let active = {
+            let classifiers = classifiers.clone();
+            let native = native.clone();
+            tokio::spawn(async move { classifiers.classify(&native, &json!("hello")).await })
+        };
+        let permits = classifiers.registry.load_full().permits.clone();
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while permits.available_permits() != 1 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the active native call takes one gateway slot");
+        let content = json!("hello");
+        let mut queued = Box::pin(classifiers.classify(&native, &content));
+        let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+        assert!(queued.as_mut().poll(&mut context).is_pending());
+        let cheap = classifiers.classify(&linear, &content).await;
+        assert!(
+            cheap.is_ok(),
+            "a queued native call consumed the other slot: {cheap:?}"
+        );
+        drop(held);
+        assert!(active.await.unwrap().is_ok());
+        assert!(queued.await.is_ok());
+        assert!(classifiers.classify(&linear, &content).await.is_ok());
+    }
+
     #[tokio::test]
     async fn an_exhausted_cap_is_the_overload_case() {
         let provider = local_provider(&fixture_sha256(), 50);
@@ -2185,7 +2474,7 @@ pub(crate) mod tests {
         classifiers.retry_missing(Duration::ZERO).await;
         assert!(classifiers.registry.load().models.is_empty());
         // a read that finishes after the apply moved on is dropped
-        let model = Arc::new(fixture());
+        let model = Arc::new(Model::Linear(fixture()));
         classifiers.install(vec![(fixture_sha256(), model)]);
         assert!(classifiers.registry.load().models.is_empty());
     }
@@ -2585,6 +2874,33 @@ pub(crate) mod tests {
             classifiers.classify(provider, &json!("x")).await,
             Err(CallFailure::Model)
         );
+    }
+
+    #[cfg(not(feature = "onnx"))]
+    #[tokio::test]
+    async fn an_onnx_model_is_refused_without_the_feature() {
+        let manifest = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/local_classifier/onnx/manifest.json"
+        );
+        let digest = hex(&Sha256::digest(std::fs::read(manifest).unwrap()));
+        let error = Model::load(manifest, &digest, None).unwrap_err();
+        assert!(matches!(error, ModelError::Unsupported(_)), "{error}");
+        assert!(
+            error
+                .to_string()
+                .contains("built without the `onnx` cargo feature"),
+            "{error}"
+        );
+        // its provider has no model, so it follows its failure_mode
+        let mut provider = local_provider(&digest, 2_000);
+        provider.model_path = manifest.to_string();
+        let classifiers = configured(&provider, None);
+        assert_eq!(
+            classifiers.classify(&provider, &json!("jailbreak")).await,
+            Err(CallFailure::Model)
+        );
+        assert_eq!(states(&classifiers), [("local".to_string(), false)]);
     }
 
     #[test]
