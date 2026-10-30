@@ -401,6 +401,15 @@ fn validate_local_fields(body: &ProviderBody) -> ApiResult<()> {
             "a local provider takes no credential; auth_kind must be none",
         ));
     }
+    if body
+        .max_scored_bytes
+        .is_some_and(|budget| budget < body.max_body_bytes || budget > 16 * 1024 * 1024)
+    {
+        return Err(invalid_field(
+            "max_scored_bytes",
+            "max_scored_bytes must be between max_body_bytes and 16777216",
+        ));
+    }
     Ok(())
 }
 
@@ -1110,6 +1119,14 @@ mod tests {
             "max_scored_bytes": 1024, "on_truncated": "fail_closed", "auth_kind": "none"
         }))
         .unwrap();
+        assert!(refused_field(&body).contains("max_scored_bytes"));
+    }
+
+    #[test]
+    fn a_disabled_local_scored_budget_is_still_checked() {
+        let mut body = local_body();
+        body.enabled = false;
+        body.max_scored_bytes = Some(1024);
         assert!(refused_field(&body).contains("max_scored_bytes"));
     }
 

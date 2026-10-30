@@ -860,4 +860,25 @@ async fn local_truncation_settings_round_trip_and_bump_the_snapshot_version() {
         .expect("the local provider reaches the snapshot");
     assert_eq!(loaded.max_scored_bytes, Some(2_097_152));
     assert_eq!(loaded.on_truncated, rolter_core::OnTruncated::Score);
+
+    let mut cleared = local.clone();
+    cleared["max_scored_bytes"] = Value::Null;
+    cleared["on_truncated"] = json!("score");
+    let cleared_response = client
+        .put(format!("{url}/{provider_id}"))
+        .json(&cleared)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(cleared_response.status(), 200);
+    assert_eq!(config_version(db.pool()).await, before + 3);
+    let config = rolter_store::ConfigStore::load(&store).await.unwrap();
+    let loaded = config
+        .semantic_guards
+        .providers
+        .iter()
+        .find(|provider| provider.name == "injection")
+        .expect("the local provider stays in the snapshot");
+    assert_eq!(loaded.max_scored_bytes, None);
+    assert_eq!(loaded.on_truncated, rolter_core::OnTruncated::Score);
 }
