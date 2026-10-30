@@ -5026,7 +5026,7 @@ fn is_retryable_status(status: u16) -> bool {
 
 /// Cheap, dependency-free jitter source in `[0, 1)` derived from the request
 /// clock — good enough to decorrelate concurrent retriers.
-fn jitter(started: Instant) -> f64 {
+pub(crate) fn jitter(started: Instant) -> f64 {
     (started.elapsed().subsec_nanos() % 1000) as f64 / 1000.0
 }
 

@@ -19,7 +19,7 @@
 // spec-ref: openai-realtime, websocket
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use axum::extract::{
     ws::{close_code, CloseFrame, Message, Utf8Bytes, WebSocket, WebSocketUpgrade},
@@ -483,6 +483,7 @@ impl<'w, 'a> CandidateWalk<'w, 'a> {
         context: &'w RouteContext<'w>,
         key_meta: Option<&'w crate::state::KeyMeta>,
     ) -> Self {
+        let started = Instant::now();
         let mut walk = Self {
             state,
             entry,
@@ -505,7 +506,10 @@ impl<'w, 'a> CandidateWalk<'w, 'a> {
             }
             return walk;
         }
-        let primary = entry.route.sample_variant(0.0).unwrap_or(0);
+        let primary = entry
+            .route
+            .sample_variant(crate::handlers::jitter(started))
+            .unwrap_or(0);
         walk.sampled = entry
             .route
             .variants

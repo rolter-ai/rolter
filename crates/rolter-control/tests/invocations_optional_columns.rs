@@ -23,6 +23,7 @@
 mod clickhouse_ddl;
 
 use std::net::SocketAddr;
+use std::sync::{Arc, Mutex};
 
 use axum::body::Bytes;
 use axum::extract::{Query, State};
@@ -118,6 +119,7 @@ struct Target {
     base: String,
     database: String,
     client: reqwest::Client,
+    queries: Arc<Mutex<Vec<(Vec<(String, String)>, String)>>>,
 }
 
 /// The incoming query pairs are re-attached as query parameters of a request to
@@ -128,6 +130,11 @@ async fn forward(
     Query(pairs): Query<Vec<(String, String)>>,
     body: Bytes,
 ) -> Response {
+    target
+        .queries
+        .lock()
+        .unwrap()
+        .push((pairs.clone(), String::from_utf8_lossy(&body).into_owned()));
     let upstream = match target
         .client
         .post(format!("{}/", target.base))
@@ -186,6 +193,18 @@ async fn read_without(
     rows: &[Value],
     path: &str,
 ) -> Option<(StatusCode, Value)> {
+    read_without_captured(last, dropped, rows, path, false)
+        .await
+        .map(|(status, body, _)| (status, body))
+}
+
+async fn read_without_captured(
+    last: u32,
+    dropped: &[&str],
+    rows: &[Value],
+    path: &str,
+    explain: bool,
+) -> Option<(StatusCode, Value, Option<String>)> {
     let base = clickhouse_url().filter(|_| test_database::is_configured())?;
     let http = reqwest::Client::new();
     let scratch = ScratchDatabase::create(&http, &base).await;
@@ -224,6 +243,7 @@ async fn read_without(
         insert.text().await.unwrap_or_default()
     );
 
+    let queries = Arc::new(Mutex::new(Vec::new()));
     let proxy = serve(
         Router::new()
             .fallback(axum::routing::post(forward))
@@ -231,6 +251,7 @@ async fn read_without(
                 base: base.clone(),
                 database: scratch.name.clone(),
                 client: http.clone(),
+                queries: Arc::clone(&queries),
             }),
     )
     .await;
@@ -252,9 +273,35 @@ async fn read_without(
         .unwrap();
     let status = response.status();
     let body: Value = response.json().await.unwrap();
+    let plan = if explain {
+        let captured = queries
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|(_, sql)| sql.contains("from request_logs array join"))
+            .cloned();
+        let (params, sql) = captured.expect("the by-variant query reached ClickHouse");
+        let sql = sql.strip_suffix(" format JSON").expect("a JSON query");
+        let response = http
+            .post(format!("{base}/"))
+            .query(&params)
+            .query(&[("database", scratch.name.as_str())])
+            .body(format!("EXPLAIN PLAN {sql}"))
+            .send()
+            .await
+            .expect("reach clickhouse");
+        assert!(
+            response.status().is_success(),
+            "explain: {}",
+            response.text().await.unwrap_or_default()
+        );
+        Some(response.text().await.unwrap())
+    } else {
+        None
+    };
     drop(schema);
     drop(scratch);
-    Some((status, body))
+    Some((status, body, plan))
 }
 
 /// A deployment whose `request_logs` was migrated through `last` and nothing
@@ -717,6 +764,25 @@ async fn by_variant_counts_the_sampled_primary_beside_the_variant_first_dialled(
         ],
         "{body}"
     );
+}
+
+/// #3561: all three variant roles share one table read in the executed plan.
+#[tokio::test]
+async fn by_variant_query_plan_reads_request_logs_once() {
+    let _ = skip_without_stack!();
+    let route = format!("variant-route-{}", Uuid::new_v4().simple());
+    let (status, body, plan) = read_without_captured(
+        u32::MAX,
+        &[],
+        &sampled_rows(&route),
+        &format!("/api/v1/analytics/by-variant?model={route}"),
+        true,
+    )
+    .await
+    .expect("a configured stack");
+    assert_eq!(status, 200, "{body}");
+    let plan = plan.expect("the query was explained");
+    assert_eq!(plan.matches("ReadFromMergeTree").count(), 1, "{plan}");
 }
 
 /// On a ClickHouse without `050` by-variant still answers, `sampled_requests`

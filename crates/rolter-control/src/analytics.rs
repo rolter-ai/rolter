@@ -1067,16 +1067,6 @@ async fn by_variant(
     }
 }
 
-/// The requests a variant served on the first attempt (#3409): those the log
-/// records with no `fallback_reason`, which is empty when the first dial
-/// answered. Counted beside `requests`, which is every request the variant
-/// answered, so the share a variant took in by-variant can be told apart from
-/// the share the router gave it: a variant others fail over to reads higher
-/// than its weight in `requests` and at its weight here. Weighted by
-/// `sample_weight` like every count. The column is qualified with the table.
-pub(crate) const FIRST_ATTEMPT_REQUESTS: &str =
-    "round(sumIf(sample_weight, request_logs.fallback_reason = ''))";
-
 /// The variant a row counts for in the assigned count (#3505): the one the
 /// gateway first dialled (`first_variant`, `clickhouse/048`), or, for a row
 /// that records none, the one that answered it. Which of those rows count at
@@ -1137,104 +1127,60 @@ const UNKNOWN_COUNT: &str = "CAST(NULL AS Nullable(Float64))";
 /// requests) and its assigned share. `sampled_requests` (#3547) counts the
 /// requests the weighted split sampled each variant for, before the gateway
 /// skipped a parked, unhealthy or open-breaker one, so a variant the gateway
-/// routes around keeps its sampled share while its assigned share falls. Each
-/// is a half over the same window and filters, grouped by its own variant,
-/// beside the answered half grouped by the answering one; the halves are
-/// summed per `(org_id, model, variant)`. Each half holds a key at most once,
-/// so a sum (and a `max` for the percentiles) adds a figure to zero and is
-/// exact. A count is `null` on a table without its column, and its half is
-/// left out.
+/// routes around keeps its sampled share while its assigned share falls. One
+/// scan expands each source row into the answered, assigned and sampled roles
+/// it can prove; conditional aggregates fold the roles back together per
+/// `(org_id, model, variant)`. A count is `null` on a table without its
+/// column, and that role is left out of the expansion.
 pub(crate) fn by_variant_sql(columns: &Columns) -> String {
     let has_first_attempt = columns.has("fallback_reason");
     let has_assigned = columns.has("first_variant");
     let has_sampled = columns.has("sampled_variant");
     let first_attempt = if has_first_attempt {
-        FIRST_ATTEMPT_REQUESTS
+        "round(sumIf(sample_weight, role.1 = 'answered' and request_logs.fallback_reason = ''))"
     } else {
         UNKNOWN_COUNT
     };
-    // without its column a count is not claimed; with it, every half but its
-    // own contributes nothing to it
-    let zero_unless = |known: bool| if known { "toFloat64(0)" } else { UNKNOWN_COUNT };
-    let (assigned_zero, sampled_zero) = (zero_unless(has_assigned), zero_unless(has_sampled));
-    // `org_id`, `model` and `variant` are selected under their own names, so
-    // all three are qualified with the table: ClickHouse resolves a bare name
-    // to the alias before the column. the sums alias other names, which carry
-    // their own qualifiers where they need them
-    let answered = format!(
-        "select request_logs.org_id as org_id, request_logs.model as model, \
-                request_logs.variant as variant, \
-                {REQUESTS} as requests, \
-                {first_attempt} as first_attempt_requests, \
-                {assigned_zero} as assigned_requests, \
-                {sampled_zero} as sampled_requests, \
-                {TOKENS} as tokens, \
-                {COST} as cost_usd, \
-                {UNPRICED} as unpriced_requests, \
-                {ERRORS} as errors, \
-                {P50_LATENCY} as p50_latency_ms, \
-                {P95_LATENCY} as p95_latency_ms \
-         from request_logs where {WHERE_WINDOW} and {ROW_VISIBLE} and {ROW_FILTERS} \
-         group by request_logs.org_id, request_logs.model, request_logs.variant"
-    );
-    // a union matches its halves by position and takes the first one's names,
-    // so the other halves' columns carry names no column of `request_logs`
-    // has (an alias such as `cost_usd` would shadow the column). typed as the
-    // answered half's figures, or as their common supertype
-    let first_attempt_zero = zero_unless(has_first_attempt);
-    let half = |variant: &str, rows: &str, assigned: &str, sampled: &str| {
-        format!(
-            " union all \
-             select request_logs.org_id as org_id, request_logs.model as model, \
-                    {variant} as counted_variant, \
-                    toFloat64(0) as zero_requests, {first_attempt_zero} as zero_first_attempts, \
-                    {assigned} as counted_assigned, {sampled} as counted_sampled, \
-                    toFloat64(0) as zero_tokens, \
-                    toFloat64(0) as zero_cost, toFloat64(0) as zero_unpriced, \
-                    toFloat64(0) as zero_errors, toFloat64(0) as zero_p50, \
-                    toFloat64(0) as zero_p95 \
-             from request_logs \
-             where {WHERE_WINDOW} and {ROW_VISIBLE} and {ROW_FILTERS} and {rows} \
-             group by request_logs.org_id, request_logs.model, {variant}"
-        )
+    let assigned = if has_assigned {
+        "round(sumIf(sample_weight, role.1 = 'assigned'))"
+    } else {
+        UNKNOWN_COUNT
     };
-    let mut halves = String::new();
+    let sampled = if has_sampled {
+        "round(sumIf(sample_weight, role.1 = 'sampled'))"
+    } else {
+        UNKNOWN_COUNT
+    };
+    let mut roles = vec!["('answered', request_logs.variant, true)".to_string()];
     if has_assigned {
-        halves.push_str(&half(
-            ASSIGNED_VARIANT,
-            assigned_rows(columns),
-            REQUESTS,
-            sampled_zero,
+        roles.push(format!(
+            "('assigned', {ASSIGNED_VARIANT}, {assigned_rows})",
+            assigned_rows = assigned_rows(columns)
         ));
     }
     if has_sampled {
-        halves.push_str(&half(
-            SAMPLED_VARIANT,
-            SAMPLED_ROWS,
-            assigned_zero,
-            REQUESTS,
-        ));
+        roles.push(format!("('sampled', {SAMPLED_VARIANT}, {SAMPLED_ROWS})"));
     }
-    if halves.is_empty() {
-        return format!("{answered} order by requests desc, org_id, model, variant format JSON");
-    }
-    // the outer sums read the union through its alias, since a bare
-    // `requests` inside `sum(...) as requests` would name the sum itself
+    let roles = roles.join(", ");
+    // one source row expands to the roles it can prove; conditional aggregates
+    // fold those roles back into one row per tenant, route and variant
     format!(
-        "select by_role.org_id as org_id, by_role.model as model, \
-                by_role.variant as variant, \
-                sum(by_role.requests) as requests, \
-                sum(by_role.first_attempt_requests) as first_attempt_requests, \
-                sum(by_role.assigned_requests) as assigned_requests, \
-                sum(by_role.sampled_requests) as sampled_requests, \
-                sum(by_role.tokens) as tokens, \
-                sum(by_role.cost_usd) as cost_usd, \
-                sum(by_role.unpriced_requests) as unpriced_requests, \
-                sum(by_role.errors) as errors, \
-                max(by_role.p50_latency_ms) as p50_latency_ms, \
-                max(by_role.p95_latency_ms) as p95_latency_ms \
-         from ({answered}{halves}) as by_role \
-         group by by_role.org_id, by_role.model, by_role.variant \
+        "select request_logs.org_id as org_id, request_logs.model as model, \
+                role.2 as variant, \
+                round(sumIf(sample_weight, role.1 = 'answered')) as requests, \
+                {first_attempt} as first_attempt_requests, \
+                {assigned} as assigned_requests, \
+                {sampled} as sampled_requests, \
+                round(sumIf(total_tokens * sample_weight, role.1 = 'answered')) as tokens, \
+                round(sumIf(cost_usd * sample_weight, role.1 = 'answered'), 6) as cost_usd, \
+                round(sumIf(sample_weight, role.1 = 'answered' and unpriced = 1)) as unpriced_requests, \
+                round(sumIf(sample_weight, role.1 = 'answered' and (status = 0 or status >= 400))) as errors, \
+                round(quantileExactWeightedIf(0.5)(latency_ms, toUInt64(round(sample_weight * 1000)), role.1 = 'answered'), 1) as p50_latency_ms, \
+                round(quantileExactWeightedIf(0.95)(latency_ms, toUInt64(round(sample_weight * 1000)), role.1 = 'answered'), 1) as p95_latency_ms \
+         from request_logs \
+         array join arrayFilter(candidate -> candidate.3, [{roles}]) as role \
+         where {WHERE_WINDOW} and {ROW_VISIBLE} and {ROW_FILTERS} \
+         group by request_logs.org_id, request_logs.model, role.2 \
          order by requests desc, org_id, model, variant format JSON"
     )
 }
@@ -2151,12 +2097,28 @@ mod tests {
     }
 
     #[test]
+    fn by_variant_reads_request_logs_once_for_every_optional_column_combination() {
+        // #3561: answered, assigned and sampled are roles in one scan, not
+        // separate unioned reads of the same window
+        for missing in [
+            &[][..],
+            &["first_variant"][..],
+            &["sampled_variant"][..],
+            &["first_variant", "sampled_variant"][..],
+        ] {
+            let sql = by_variant_sql(&Columns::lacking(missing));
+            assert_eq!(sql.matches("from request_logs").count(), 1, "{sql}");
+            assert!(!sql.contains("union all"), "{sql}");
+        }
+    }
+
+    #[test]
     fn by_variant_counts_first_attempts_beside_the_requests_that_answered() {
         // #3409: `requests` is every request the variant answered; the first
         // attempt count leaves out those another target failed over to it
         let sql = by_variant_sql(&Columns::default());
         assert!(
-            sql.contains("round(sumIf(sample_weight, request_logs.fallback_reason = ''))"),
+            sql.contains("role.1 = 'answered' and request_logs.fallback_reason = ''"),
             "{sql}"
         );
         assert!(sql.contains("as first_attempt_requests"), "{sql}");
@@ -2164,10 +2126,13 @@ mod tests {
         assert!(!sql.contains("count()"), "{sql}");
         // the counts and the grouping are still the by-model ones
         assert!(
-            sql.contains("group by request_logs.org_id, request_logs.model, request_logs.variant"),
+            sql.contains("group by request_logs.org_id, request_logs.model, role.2"),
             "{sql}"
         );
-        assert!(sql.contains(&format!("{REQUESTS} as requests")), "{sql}");
+        assert!(
+            sql.contains("round(sumIf(sample_weight, role.1 = 'answered')) as requests"),
+            "{sql}"
+        );
     }
 
     #[test]
@@ -2177,9 +2142,7 @@ mod tests {
         let sql = by_variant_sql(&Columns::default());
         assert!(sql.contains("as assigned_requests"), "{sql}");
         assert!(
-            sql.contains(&format!(
-                "group by request_logs.org_id, request_logs.model, {ASSIGNED_VARIANT}"
-            )),
+            sql.contains(&format!("('assigned', {ASSIGNED_VARIANT},")),
             "{sql}"
         );
         // a row from before `048` counts only when it never failed over, and
@@ -2196,19 +2159,21 @@ mod tests {
                 "{WHERE_WINDOW} and {ROW_VISIBLE} and {ROW_FILTERS}"
             ))
             .count(),
-            3,
-            "every half reads the same window and filters: {sql}"
+            1,
+            "every role reads the same window and filters: {sql}"
         );
-        // the figures are summed per key, so the answered half is unchanged
-        assert!(sql.contains("sum(by_role.requests) as requests"), "{sql}");
-        assert!(sql.contains("max(by_role.p95_latency_ms)"), "{sql}");
+        assert!(
+            sql.contains("round(sumIf(sample_weight, role.1 = 'assigned')) as assigned_requests"),
+            "{sql}"
+        );
+        assert!(sql.contains("quantileExactWeightedIf(0.95)"), "{sql}");
         assert!(sql.ends_with("order by requests desc, org_id, model, variant format JSON"));
     }
 
     #[test]
     fn by_variant_keeps_two_orgs_same_named_routes_apart() {
-        // #3548: as by-model since #3486, every half is keyed on the org too,
-        // with or without the assigned half
+        // #3548: as by-model since #3486, every role is keyed on the org too,
+        // with or without the assigned role
         for columns in [
             Columns::default(),
             Columns::lacking(&["first_variant", "sampled_variant"]),
@@ -2218,11 +2183,7 @@ mod tests {
             assert!(sql.contains("as org_id"), "{sql}");
             assert!(!sql.contains("group by request_logs.model"), "{sql}");
             for group in sql.split("group by ").skip(1) {
-                assert!(
-                    group.starts_with("request_logs.org_id, ")
-                        || group.starts_with("by_role.org_id, "),
-                    "{group}"
-                );
+                assert!(group.starts_with("request_logs.org_id, "), "{group}");
             }
         }
     }
@@ -2236,17 +2197,17 @@ mod tests {
         );
         assert!(!sql.contains("first_variant"), "{sql}");
         assert!(!sql.contains("union all"), "{sql}");
-        // with `050` but not `048` the sampled half still reads, and the
-        // assigned count is null in every half
+        // with `050` but not `048` the sampled role still reads, and the
+        // assigned count is null
         let sql = by_variant_sql(&Columns::lacking(&["first_variant"]));
         assert!(!sql.contains("first_variant"), "{sql}");
-        assert_eq!(sql.matches("union all").count(), 1, "{sql}");
+        assert!(sql.contains("('sampled',"), "{sql}");
         assert!(
-            sql.contains("CAST(NULL AS Nullable(Float64)) as counted_assigned"),
+            sql.contains("CAST(NULL AS Nullable(Float64)) as assigned_requests"),
             "{sql}"
         );
         // the first-attempt count is still read
-        assert!(sql.contains(FIRST_ATTEMPT_REQUESTS), "{sql}");
+        assert!(sql.contains("request_logs.fallback_reason = ''"), "{sql}");
     }
 
     #[test]
@@ -2256,19 +2217,15 @@ mod tests {
         // that records no sample is left out
         let sql = by_variant_sql(&Columns::default());
         assert!(
-            sql.contains("sum(by_role.sampled_requests) as sampled_requests"),
+            sql.contains("round(sumIf(sample_weight, role.1 = 'sampled')) as sampled_requests"),
             "{sql}"
         );
         assert!(
-            sql.contains(&format!(
-                "group by request_logs.org_id, request_logs.model, {SAMPLED_VARIANT}"
-            )),
+            sql.contains(&format!("('sampled', {SAMPLED_VARIANT},")),
             "{sql}"
         );
         assert!(sql.contains(SAMPLED_ROWS), "{sql}");
-        // the answered and assigned halves contribute nothing to it
-        assert!(sql.contains("toFloat64(0) as sampled_requests"), "{sql}");
-        assert!(sql.contains("toFloat64(0) as counted_sampled"), "{sql}");
+        assert!(!sql.contains("counted_sampled"), "{sql}");
     }
 
     #[test]
@@ -2279,8 +2236,8 @@ mod tests {
             "{sql}"
         );
         assert!(!sql.contains("sampled_variant"), "{sql}");
-        // the assigned half is still read
-        assert_eq!(sql.matches("union all").count(), 1, "{sql}");
+        // the assigned role is still read
+        assert!(sql.contains("('assigned',"), "{sql}");
         assert!(sql.contains(ASSIGNED_VARIANT), "{sql}");
     }
 
@@ -2309,7 +2266,10 @@ mod tests {
         );
         assert!(!sql.contains("fallback_reason"), "{sql}");
         // and the rest of the select is unchanged
-        assert!(sql.contains(&format!("{REQUESTS} as requests")), "{sql}");
+        assert!(
+            sql.contains("round(sumIf(sample_weight, role.1 = 'answered')) as requests"),
+            "{sql}"
+        );
     }
 
     #[test]
@@ -2556,7 +2516,15 @@ mod tests {
                 "from {table} where {{WHERE_WINDOW}} and {{ROW_VISIBLE}} and {{ROW_FILTERS}}"
             ))
             .count();
-        assert_eq!(filtered, 4, "summary, timeseries, by-model, by-variant");
+        assert_eq!(filtered, 3, "summary, timeseries, by-model");
+        let by_variant = by_variant_sql(&Columns::default());
+        assert_eq!(
+            by_variant
+                .matches("where {WHERE_WINDOW} and {ROW_VISIBLE} and {ROW_FILTERS}")
+                .count(),
+            1,
+            "{by_variant}"
+        );
     }
 
     #[test]
