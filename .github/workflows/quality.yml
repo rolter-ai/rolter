@@ -1062,6 +1062,12 @@ jobs:
           uvx --from "$ruff" ruff check scripts integration
           uvx --from "$ruff" ruff format --check scripts integration
 
+      # ── spec drift: recorded sources only; never contact a live vendor ──────
+      - name: spec drift (recorded fixtures)
+        id: spec-drift
+        if: ${{ !cancelled() && steps.uv.outcome == 'success' }}
+        run: uv run --no-project --python 3.13 python -m unittest -v scripts/test_spec_drift.py
+
       # ── examples: the reference services under examples/ ──────────────────
       # `examples/presidio-restore-shim/` has its own pytest suite, which
       # nothing ran until #3429, so it could rot unseen when presidio or
@@ -1213,6 +1219,7 @@ jobs:
           OUTCOME_RELEASE_HANDOFF_SELF_TEST: ${{ steps.release-handoff-self-test.outcome }}
           OUTCOME_RELEASE_GATE: ${{ steps.release-gate.outcome }}
           OUTCOME_RUFF: ${{ steps.ruff.outcome }}
+          OUTCOME_SPEC_DRIFT: ${{ steps.spec-drift.outcome }}
           OUTCOME_EXAMPLES_SHIM: ${{ steps.examples-shim.outcome }}
           OUTCOME_EXAMPLES_TRAINER: ${{ steps.examples-trainer.outcome }}
           OUTCOME_PROJECT_AUTOMATION: ${{ steps.project-automation.outcome }}
@@ -1306,6 +1313,8 @@ jobs:
           row "release handoff wired" "release gate scripts against a fake gh" "${OUTCOME_RELEASE_GATE}" yes \
             "prek run release-gate --all-files"
           row "ruff" "ruff (python)" "${OUTCOME_RUFF}" yes "prek run ruff --all-files"
+          row "spec drift" "recorded fixtures" "${OUTCOME_SPEC_DRIFT}" yes \
+            "uv run --no-project --python 3.13 python -m unittest -v scripts/test_spec_drift.py"
           row "examples" "presidio restore shim (pytest)" "${OUTCOME_EXAMPLES_SHIM}" yes \
             "cd examples/presidio-restore-shim && uv run --no-project --python 3.13 --with-requirements requirements-dev.txt pytest"
           row "examples" "rolter-linear/1 trainer vectors (pytest)" "${OUTCOME_EXAMPLES_TRAINER}" yes \

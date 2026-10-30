@@ -1,0 +1,23 @@
+{
+  "https://github.com/example/pinned-spec": {
+    "git": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\tHEAD\n"
+  },
+  "https://example.test/versioning": {
+    "body": "<main><h1>Versions</h1><p>2025-12-01</p><p>2026-02-03</p></main>"
+  },
+  "https://example.test/changelog": {
+    "body": "<main><h1>Changelog</h1><h2>2026-02-04</h2><p>New field</p><h2>2026-01-15</h2></main>"
+  },
+  "https://www.rfc-editor.org/rfc/rfc6455": {
+    "body": "<pre>RFC 6455\nObsoleted by: 9999\nUpdated by: 8888, 7777\n</pre>"
+  },
+  "https://www.rfc-editor.org/rfc/rfc0000": {
+    "body": "<pre>RFC 0000\nA current protocol\n</pre>"
+  },
+  "https://example.test/living": {
+    "body": "<html><script>navigation noise</script><nav>More noise</nav><main><h1>API</h1><p>New contract</p><time>2026-10-31</time></main></html>"
+  },
+  "https://example.test/unavailable": {
+    "error": "recorded outage"
+  }
+}
