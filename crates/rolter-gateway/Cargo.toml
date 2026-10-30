@@ -49,7 +49,7 @@ libc.workspace = true
 # time (`load-dynamic`), so it is not linked or downloaded by the build
 # use the CPU-only API path: api-22 in this ort release enables automatic
 # device selection, which crashes with the tested ONNX Runtime 1.22.0
-# custom tokenizer patterns are restricted to the linear regex subset at load
+# custom tokenizer patterns propagate runtime regex resource-limit errors
 ort = { version = "=2.0.0-rc.15", default-features = false, features = [
   "std",
   "load-dynamic",
@@ -58,13 +58,14 @@ ort = { version = "=2.0.0-rc.15", default-features = false, features = [
 tokenizers = { version = "0.22.2", default-features = false, features = [
   "fancy-regex",
 ], optional = true }
+fancy-regex = { version = "0.14", optional = true }
 regex = { workspace = true, optional = true }
 
 [features]
 default = []
 # run `onnx/1` local guardrail models (#3443); off by default, see
 # docs/user-docs/security/semantic-guard-policies.mdx for the runtime library
-onnx = ["dep:ort", "dep:tokenizers", "dep:regex"]
+onnx = ["dep:ort", "dep:tokenizers", "dep:fancy-regex", "dep:regex"]
 
 [dev-dependencies]
 # keep the canonical tokenizer snapshot compressed without changing its digest
