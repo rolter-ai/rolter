@@ -1876,7 +1876,7 @@ A vendor-neutral hook to a self-hosted semantic guardrail service, such as Guard
 </ParamField>
 
 <ParamField path="model_path" type="string">
-  For `kind = "local"` only, and required there: the path of the `rolter-linear/1` weights file on the gateway's file system. The gateway reads it when the configuration is applied and never downloads one.
+  For `kind = "local"` only, and required there: the path of the `rolter-linear/1` weights file, or of an `onnx/1` manifest on a gateway built with the `onnx` feature, on the gateway's file system. The gateway reads it when the configuration is applied and never downloads one.
 </ParamField>
 
 <ParamField path="model_sha256" type="string">
