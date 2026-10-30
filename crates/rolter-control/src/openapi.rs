@@ -561,7 +561,7 @@ const MCP_LOGS_QUERY: &[QueryParam] = &[
     QueryParam::new(
         "status",
         "string",
-        "exact call status; omit for every status",
+        "call status, or `not_awaited` for accepted, unread and successful-notification rows; `success` means awaited success; omit for every status",
     ),
     QueryParam::new("key", "string", "exact virtual key id; omit for every key"),
     QueryParam::new("user", "string", "exact user id; omit for every user"),
