@@ -83,3 +83,8 @@
 
 **Learning:** Hand-rolled icon delete controls (`<Button size="icon" variant="ghost">` or `<button>`) for column, attachment, and list-row removals miss standard design system hover border states (`hover:border-[color:var(--status-danger)]` / `hover:text-[color:var(--status-danger-text)]`) and focus indicators.
 **Action:** Replace custom icon delete buttons in complex form and workspace surfaces with `DeleteIconButton` from `@/components/ui/delete-icon-button`.
+
+## 2026-10-22 - TeamSheet CSS Token and Pending Spinner State
+
+**Learning:** `TeamSheet.tsx` and `Teams.tsx` used the non-existent CSS token `var(--status-error-text)` instead of the design system token `var(--status-danger-text)`. Additionally, inline form submit buttons (such as team rename) that disable during async operations without rendering `<Loader2 className="mr-2 h-4 w-4 motion-safe:animate-spin" aria-hidden />` leave operators without visual feedback while the operation is in flight.
+**Action:** Always verify status text tokens against `index.css` (using `var(--status-danger-text)`) and ensure async submit buttons pair `disabled={pending}` with an inline `<Loader2 className="mr-2 h-4 w-4 motion-safe:animate-spin" aria-hidden />`.
