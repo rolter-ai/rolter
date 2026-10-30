@@ -549,10 +549,10 @@ impl ConfigProblemCounts {
 
 /// The control plane's config problems by kind, as last sampled.
 ///
-/// Sampled when the control plane builds a snapshot for a config version it
-/// has not sampled yet, so the many gateways polling one version cost one
-/// sample. Labelled by kind only: a row's name or org would make a series per
-/// row and put tenant names into the metrics pipeline.
+/// Sampled for a new config version on the first snapshot build or 304, so a
+/// current fleet after a restart still produces a sample. Labelled by kind only:
+/// a row's name or org would make a series per row and put tenant names into the
+/// metrics pipeline.
 #[derive(Debug, Default)]
 pub struct ConfigProblemGauge {
     /// the highest version a sample was started for, so concurrent builds of
@@ -750,7 +750,7 @@ impl ControlHistograms {
         meter
             .u64_observable_gauge("rolter_config_problems")
             .with_description(
-                "config problems the control plane found when it last built a snapshot, by kind \
+                "config problems the control plane found in its last sample, by kind \
                  (omitted, sanitized, invalid, misread, bootstrap_shadow)",
             )
             .with_callback(move |observer| {

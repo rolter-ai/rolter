@@ -2633,6 +2633,7 @@ struct ConfigProblemSampler {
 #[derive(Default)]
 struct ConfigProblemSampling {
     running: bool,
+    reserved: i64,
     claimed: i64,
     sampled: i64,
     pending: Option<ConfigProblemSample>,
@@ -2645,6 +2646,20 @@ struct ConfigProblemSample {
     config: Option<GatewayConfig>,
 }
 
+struct ConfigProblemReservation {
+    sampler: Arc<ConfigProblemSampler>,
+    version: i64,
+}
+
+impl Drop for ConfigProblemReservation {
+    fn drop(&mut self) {
+        let mut state = self.sampler.lock();
+        if state.reserved == self.version {
+            state.reserved = 0;
+        }
+    }
+}
+
 impl ConfigProblemSampler {
     fn lock(&self) -> std::sync::MutexGuard<'_, ConfigProblemSampling> {
         self.state
@@ -2652,20 +2667,32 @@ impl ConfigProblemSampler {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// Whether a 304 needs a config read to feed the sampler.
-    fn needs_sample(&self, version: i64) -> bool {
-        let state = self.lock();
-        if version <= state.sampled || (state.running && version <= state.claimed) {
-            return false;
+    /// Reserve the one config read a first 304 needs. The guard releases the
+    /// reservation if the request is cancelled before it reaches the sampler.
+    fn reserve_sample(self: &Arc<Self>, version: i64) -> Option<ConfigProblemReservation> {
+        let mut state = self.lock();
+        if version <= state.sampled
+            || (state.running && version <= state.claimed)
+            || (state.reserved > 0 && version <= state.reserved)
+        {
+            return None;
         }
-        !state
+        if state
             .retry_after
             .is_some_and(|(failed, at)| version <= failed && std::time::Instant::now() < at)
+        {
+            return None;
+        }
+        state.reserved = version;
+        Some(ConfigProblemReservation {
+            sampler: self.clone(),
+            version,
+        })
     }
 
     fn request(&self, sample: ConfigProblemSample) -> Option<ConfigProblemSample> {
         let mut state = self.lock();
-        if sample.version <= state.sampled {
+        if sample.version <= state.sampled || sample.version < state.reserved {
             return None;
         }
         if state
@@ -2674,6 +2701,7 @@ impl ConfigProblemSampler {
         {
             return None;
         }
+        state.reserved = 0;
         if state.running {
             if sample.version > state.claimed {
                 state.claimed = sample.version;
@@ -3074,7 +3102,12 @@ async fn build_snapshot(
         }
     };
     let not_modified = query.version.is_some_and(|requested| requested >= version);
-    if not_modified && !state.config_problem_sampler.needs_sample(version) {
+    let reservation = if not_modified {
+        state.config_problem_sampler.reserve_sample(version)
+    } else {
+        None
+    };
+    if not_modified && reservation.is_none() {
         return BuiltSnapshot {
             // every format is built from the same config_version, so one
             // counter serves them all
@@ -4706,10 +4739,14 @@ mod tests {
     struct ControlledProblemStore {
         inner: InMemoryConfigStore,
         reads: Arc<std::sync::atomic::AtomicUsize>,
+        loads: Arc<std::sync::atomic::AtomicUsize>,
         fail_reads: Arc<std::sync::atomic::AtomicBool>,
         entered: Arc<tokio::sync::Notify>,
         release: Arc<tokio::sync::Notify>,
+        load_entered: Arc<tokio::sync::Notify>,
+        load_release: Arc<tokio::sync::Notify>,
         block_first: bool,
+        block_first_load: std::sync::atomic::AtomicBool,
     }
 
     impl ControlledProblemStore {
@@ -4717,21 +4754,38 @@ mod tests {
             Arc::new(Self {
                 inner: InMemoryConfigStore::new(GatewayConfig::default()),
                 reads: Arc::default(),
+                loads: Arc::default(),
                 fail_reads: Arc::default(),
                 entered: Arc::default(),
                 release: Arc::default(),
+                load_entered: Arc::default(),
+                load_release: Arc::default(),
                 block_first,
+                block_first_load: false.into(),
             })
         }
 
         fn reads(&self) -> usize {
             self.reads.load(std::sync::atomic::Ordering::SeqCst)
         }
+
+        fn loads(&self) -> usize {
+            self.loads.load(std::sync::atomic::Ordering::SeqCst)
+        }
     }
 
     #[async_trait::async_trait]
     impl rolter_store::ConfigStore for ControlledProblemStore {
         async fn load(&self) -> rolter_core::Result<GatewayConfig> {
+            let load = self.loads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if self
+                .block_first_load
+                .load(std::sync::atomic::Ordering::SeqCst)
+                && load == 0
+            {
+                self.load_entered.notify_one();
+                self.load_release.notified().await;
+            }
             self.inner.load().await
         }
 
@@ -4813,6 +4867,32 @@ mod tests {
         }
         tokio::task::yield_now().await;
         assert_eq!(store.reads(), 1, "every poll retried the failed sample");
+    }
+
+    #[tokio::test]
+    async fn concurrent_first_not_modified_requests_share_one_config_read() {
+        let store = ControlledProblemStore::new(false);
+        store
+            .block_first_load
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let mut state = state_with_token(None);
+        state.store = store.clone();
+        let addr = serve(build_app_with_internal(state)).await;
+        let url = format!("http://{addr}/internal/snapshot?version=1");
+        let client = reqwest::Client::new();
+
+        let first = tokio::spawn({
+            let client = client.clone();
+            let url = url.clone();
+            async move { client.get(url).send().await.unwrap() }
+        });
+        store.load_entered.notified().await;
+        let second = client.get(url).send().await.unwrap();
+        assert_eq!(second.status(), 304);
+        assert_eq!(store.loads(), 1, "the second 304 read the config too");
+
+        store.load_release.notify_one();
+        assert_eq!(first.await.unwrap().status(), 304);
     }
 
     /// `rolter_config_problems{kind}` follows the config: a problem counts
