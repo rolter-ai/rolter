@@ -13,7 +13,8 @@ use rolter_store::postgres::repo::{ProviderGroupRepo, ProviderRepo};
 
 use super::{
     explicit_null, invalid_field, log_audit, name_taken, pool, publish_config_change,
-    require_non_empty, resolve_new_slug, resolve_slug_change, ApiError, ApiResult, SafeJson,
+    require_non_empty, require_not_config_owned, require_row_not_config_owned, resolve_new_slug,
+    resolve_slug_change, ApiError, ApiResult, SafeJson,
 };
 use crate::rbac::{authorize, Principal, ScopeChain};
 use crate::rbac_matrix::cap;
@@ -158,12 +159,7 @@ pub(super) fn validate_strategy(strategy: &str) -> ApiResult<()> {
 
 /// Reject a mutation against a readonly (config-owned) group slug (ADR-0022).
 fn require_group_not_config_owned(state: &ControlState, slug: &str) -> ApiResult<()> {
-    if state.config_owned.groups.contains(slug) {
-        return Err(ApiError::Core(Error::Config(format!(
-            "provider group '{slug}' is config-owned and cannot be modified via the API"
-        ))));
-    }
-    Ok(())
+    require_not_config_owned(&state.config_owned.groups, slug, "provider group")
 }
 
 /// [`require_group_not_config_owned`] for a stored group of `org`: refused only
@@ -174,16 +170,7 @@ fn require_group_row_not_config_owned(
     org: Uuid,
     slug: &str,
 ) -> ApiResult<()> {
-    if state
-        .config_owned
-        .group_rows
-        .contains(&(org.to_string(), slug.to_string()))
-    {
-        return Err(ApiError::Core(Error::Config(format!(
-            "provider group '{slug}' is config-owned and cannot be modified via the API"
-        ))));
-    }
-    Ok(())
+    require_row_not_config_owned(&state.config_owned.group_rows, org, slug, "provider group")
 }
 
 async fn view_of(state: &ControlState, group: ProviderGroup) -> ApiResult<ProviderGroupView> {
