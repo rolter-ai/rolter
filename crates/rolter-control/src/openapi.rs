@@ -4418,6 +4418,7 @@ fn virtual_key_schemas(p: &Prim) -> Value {
                 "created_by": nullable_uuid,
                 "business_unit_id": nullable_uuid,
                 "customer_id": nullable_uuid,
+                "purpose": {"type": ["string", "null"], "description": "why the key exists: playground for a short-lived dashboard-minted key, null for an operator-created key"},
                 "created_at": timestamp,
                 "previous_key_prefix": {"type": ["string", "null"], "description": "first characters of the secret an admin rotation replaced, while its overlap is open"},
                 "previous_expires_at": {"type": ["string", "null"], "format": "date-time", "description": "when the replaced secret stops authenticating; null when no overlap is running"}
@@ -4439,7 +4440,7 @@ fn virtual_key_schemas(p: &Prim) -> Value {
                 "created_by": nullable_uuid,
                 "business_unit_id": nullable_uuid,
                 "customer_id": nullable_uuid,
-                "purpose": {"type": ["string", "null"]},
+                "purpose": {"type": ["string", "null"], "description": "why the key exists: playground for a short-lived dashboard-minted key, null for an operator-created key"},
                 "created_at": timestamp
             }
         },
@@ -5350,6 +5351,55 @@ mod tests {
             .expect("cursor is documented");
         assert_eq!(cursor["in"], "query");
         assert_eq!(cursor["schema"]["type"], "string");
+    }
+
+    #[cfg(feature = "postgres")]
+    #[test]
+    fn the_virtual_key_schema_covers_every_serialized_field() {
+        let key = rolter_store::postgres::models::VirtualKey {
+            id: uuid::Uuid::nil(),
+            project_id: uuid::Uuid::nil(),
+            key_hash: String::new(),
+            key_prefix: String::new(),
+            name: None,
+            models: Vec::new(),
+            providers: Vec::new(),
+            disabled: false,
+            expires_at: None,
+            cache_enabled: None,
+            created_by: None,
+            business_unit_id: None,
+            customer_id: None,
+            purpose: None,
+            created_at: chrono::DateTime::<chrono::Utc>::UNIX_EPOCH,
+            previous_key_hash: None,
+            previous_key_prefix: None,
+            previous_expires_at: None,
+        };
+        let serialized = serde_json::to_value(key).unwrap();
+        let serialized_fields: BTreeSet<&str> = serialized
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        let schema = &document()["components"]["schemas"]["VirtualKey"];
+        let schema_fields: BTreeSet<&str> = schema["properties"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(schema_fields, serialized_fields);
+        assert_eq!(
+            schema["properties"]["purpose"]["type"],
+            json!(["string", "null"])
+        );
+        assert_eq!(
+            schema["properties"]["purpose"]["description"],
+            document()["components"]["schemas"]["OrgVirtualKey"]["properties"]["purpose"]
+                ["description"]
+        );
     }
 
     #[test]

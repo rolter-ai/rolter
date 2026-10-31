@@ -185,6 +185,8 @@ second key and disables the first.
 
 ### After the key is minted
 
+A newly minted or rotated key's display prefix is `sk-rolter-` plus eight random characters, so keys remain distinguishable in lists, audit views and MCP tool-group exports. Existing keys keep their stored, shorter prefixes: the full secret is never retained, so an old prefix cannot be recomputed.
+
 The key is shown in a dialog, once, with a **Copy** button. Under it the dialog
 shows the gateway URL and a first request written for that key: a `curl` call to
 `/v1/chat/completions` on the gateway address, naming the first model the key may
