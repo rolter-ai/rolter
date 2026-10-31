@@ -35,9 +35,10 @@ Regenerate with `uv run --python 3.12 --script make_tokenizer_vectors.py`, then
 The vectors cover Unicode, contractions, punctuation, long whitespace and a
 million-space prefix. They check tokenization parity, not classifier quality.
 
-A separate native regression uses a custom backtracking Split pattern. With
-fancy-regex it silently lost the late injection and returned a benign score;
-onig reported a retry-limit panic instead. The shipped Rust backend rejects
-backtracking custom patterns at load, accepts linear patterns, and checks that
-repeated calls still detect the fixture's needle. Parity on the real RoBERTa
-tokenizer alone would not have caught that custom-pattern failure.
+A separate native regression uses custom backtracking Split and nested Replace
+patterns. The stock `SysRegex` iterator silently lost the late injection and
+returned a benign score; onig reported a retry-limit panic instead. The shipped
+Rust backend accepts those patterns at load, propagates runtime resource-limit
+errors on repeated calls, and still detects the fixture's needle with a linear
+Split. Parity on the real RoBERTa tokenizer alone would not have caught that
+custom-pattern failure.
