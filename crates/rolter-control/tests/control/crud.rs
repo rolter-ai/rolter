@@ -338,16 +338,15 @@ async fn a_bootstrap_slug_is_refused_to_every_database_row() {
     }
     let (status, own) = provider("mine", "mine").await;
     assert_eq!(status, 200, "{own}");
-    // a readonly group's own slug meets the older config-owned guard first,
-    // which answers 400; a readonly provider's slug meets the namespace check
-    for (slug, refused) in [("edge-cluster", 409), ("shared-pool", 400)] {
+    // a readonly group or provider slug meets the config-owned/namespace guard and answers 409
+    for slug in ["edge-cluster", "shared-pool"] {
         let (status, body) = post(
             format!("{base}/api/v1/orgs/{org}/provider-groups"),
             json!({"name": format!("group-{slug}"), "slug": slug, "strategy": "round_robin",
                    "members": [{"provider_id": own["id"]}]}),
         )
         .await;
-        assert_eq!(status, refused, "group on bootstrap slug {slug}: {body}");
+        assert_eq!(status, 409, "group on bootstrap slug {slug}: {body}");
     }
     let (status, group) = post(
         format!("{base}/api/v1/orgs/{org}/provider-groups"),

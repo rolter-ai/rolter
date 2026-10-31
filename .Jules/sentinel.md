@@ -67,3 +67,8 @@
 
 **Learning:** `proxy_ws` in `crates/rolter-control/src/proxy.rs` previously logged raw `tungstenite` error messages with `tracing::warn!(%error, ...)` when WebSocket client requests failed URL parsing. Because `tungstenite` quotes the entire URL in its error message, any sensitive query parameters (like virtual keys or session tokens) were logged unredacted in server log streams.
 **Prevention:** Always run error strings generated from client or upstream URL parsing through `rolter_core::redact::redact_urls_in_text` before logging them with `tracing`.
+
+## 2026-10-25 - Consistent 409 Conflict Errors for Config-Owned Provider Groups
+
+**Learning:** `require_group_not_config_owned` and `require_group_row_not_config_owned` in `crates/rolter-control/src/crud/provider_groups.rs` previously returned `ApiError::Core(Error::Config(...))` which rendered as HTTP 400 Bad Request, whereas mutating other config-owned resources (providers, routes, models) returned HTTP 409 Conflict.
+**Prevention:** Use shared `require_not_config_owned` and `require_row_not_config_owned` helpers across all CRUD handlers to ensure mutations targeting bootstrap config-owned entities consistently answer with HTTP 409 Conflict.
