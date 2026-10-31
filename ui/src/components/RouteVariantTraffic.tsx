@@ -24,7 +24,12 @@ import {
 } from "@/lib/api";
 import { useFormat } from "@/lib/i18n/format";
 import { trafficSplit } from "@/lib/route-variants";
-import { useTimeWindowOptions, windowBounds, type TimeWindow } from "@/lib/time-window";
+import {
+  useTimeWindowOptions,
+  useWindowQueryKey,
+  windowBounds,
+  type TimeWindow,
+} from "@/lib/time-window";
 
 // the sampled, assigned and first-attempt shares each add a column when the
 // read carries them
@@ -109,10 +114,11 @@ export function RouteVariantTraffic({
   const fmt = useFormat();
   const [timeWindow, setTimeWindow] = React.useState<TimeWindow>("7d");
   const windowOptions = useTimeWindowOptions();
+  const windowKey = useWindowQueryKey(timeWindow);
   const fid = React.useId();
 
   const read = useQuery({
-    queryKey: ["analytics-by-variant", projectId, model, timeWindow],
+    queryKey: ["analytics-by-variant", projectId, model, ...windowKey],
     // the bounds are worked out as the read leaves, so a sheet left open reads the window as it is now
     queryFn: () =>
       fetchAnalyticsByVariant(model, { ...windowBounds(timeWindow), project: projectId }),

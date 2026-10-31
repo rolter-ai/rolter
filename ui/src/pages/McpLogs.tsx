@@ -154,6 +154,8 @@ function McpLogsScreen() {
   const [timeWindow, pickWindow] = useAddressSelection();
   // the window's days are the chart zone's, so a zone change reads it again (#3519)
   const windowKey = useWindowQueryKey(timeWindow);
+  // a cursor walks the window it was read over, which a zone change moves (#3559)
+  React.useEffect(() => setCursors([]), [windowKey[1]]);
   const [selected, setSelected] = React.useState<string | null>(null);
 
   const summary = useQuery({
