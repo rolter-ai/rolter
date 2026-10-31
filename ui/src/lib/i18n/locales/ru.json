@@ -4469,6 +4469,7 @@
       "openDetails": "Открыть детали вызова {{tool}} на {{server}} от {{time}}",
       "statuses": {
         "success": "Успешно",
+        "not_awaited": "Без ожидания ответа",
         "error": "Ошибка",
         "timeout": "Тайм-аут",
         "auth_denied": "Доступ отклонён",

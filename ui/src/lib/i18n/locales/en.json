@@ -4223,6 +4223,7 @@
       "openDetails": "Open call details for {{tool}} on {{server}} at {{time}}",
       "statuses": {
         "success": "Success",
+        "not_awaited": "Not awaited",
         "error": "Error",
         "timeout": "Timed out",
         "auth_denied": "Auth denied",

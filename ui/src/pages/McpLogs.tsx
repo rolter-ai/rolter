@@ -300,6 +300,7 @@ function McpLogsScreen() {
           options={[
             { value: "", label: t("pages.mcpLogs.allStatuses") },
             ...MCP_STATUSES.map((s) => ({ value: s, label: mcpStatusLabel(s, t) })),
+            { value: "not_awaited", label: t("pages.mcpLogs.statuses.not_awaited") },
           ]}
         />
         <Combobox

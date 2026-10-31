@@ -308,7 +308,7 @@ async fn proxy(
     let mut list_filter = None;
     if method == Method::GET {
         // a stream the caller opens can carry the reply to a `tools/list`
-        // posted elsewhere: a legacy `sse` server answers every POST with 202
+        // posted elsewhere: a legacy `sse` server answers the POST with a 2xx
         // and delivers the reply here, and a streamable-HTTP stream can be
         // replayed (#3297)
         list_filter = crate::mcp_policy::stream_filter(&rules).map(Arc::new);
@@ -938,6 +938,28 @@ mod tests {
         assert_eq!(body["error"]["message"], MCP_UPSTREAM_FAILED);
     }
 
+    #[tokio::test]
+    async fn a_notification_whose_connection_fails_keeps_its_identity() {
+        let mut config = with_group(&["get_issue"]);
+        let closed = {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            listener.local_addr().unwrap()
+        };
+        config.mcp_servers[0].url = format!("http://{closed}/rpc");
+        let mut state = AppState::new(&config);
+        let (sink, mut events) =
+            crate::mcp_log::McpEventSink::capturing(std::sync::Arc::new(Default::default()));
+        state.mcp_events = sink;
+        let note = r#"{"jsonrpc":"2.0","method":"tools/call","params":{"name":"get_issue"}}"#;
+        let response = post(state, Bytes::from(note)).await;
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        let event = events.try_recv().expect("the connection failure is logged");
+        assert_eq!(
+            (event.status, event.notification),
+            ("transport_error", true)
+        );
+    }
+
     fn with_group(tools: &[&str]) -> GatewayConfig {
         let mut config = config("user-1", &["tools:execute"]);
         config
@@ -1376,7 +1398,7 @@ mod tests {
             .map(|row| (row.status, row.notification))
             .collect();
         assert_eq!(seen, [("success", true), ("success", false)]);
-        // and a refused notification is a refusal, not a notification
+        // a refused notification stays a failure and keeps its identity
         let (status, rows) = recorded(
             &["get_issue"],
             202,
@@ -1387,7 +1409,7 @@ mod tests {
         assert_eq!(status, StatusCode::FORBIDDEN);
         assert_eq!(
             (rows[0].status, rows[0].notification),
-            ("auth_denied", false)
+            ("auth_denied", true)
         );
     }
 
@@ -1421,6 +1443,26 @@ mod tests {
         // every other row leaves the field out, for a table without `051`
         let row = serde_json::to_value(&rows[0]).unwrap();
         assert!(row.get("outcome").is_none(), "{row}");
+    }
+
+    /// The Java MCP SDK's legacy-SSE servlet answers `200 OK` with an empty
+    /// body; other implementations use `204 No Content`. Both mean the reply is
+    /// on the stream, while a reply-bearing `200` is judged by that reply.
+    #[tokio::test]
+    async fn a_legacy_sse_empty_2xx_is_accepted_with_its_reply_on_the_stream() {
+        let call =
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_issue"}}"#;
+        for http_status in [200, 204] {
+            let (_, rows) = recorded_on("sse", &["get_issue"], http_status, "", call).await;
+            assert_eq!(
+                (rows[0].status, rows[0].outcome),
+                ("success", "accepted"),
+                "{http_status}"
+            );
+        }
+        let reply = r#"{"jsonrpc":"2.0","id":1,"result":{"content":[]}}"#;
+        let (_, rows) = recorded_on("sse", &["get_issue"], 200, reply, call).await;
+        assert_eq!((rows[0].status, rows[0].outcome), ("success", ""));
     }
 
     /// #1403: a tool outside the organization's groups is refused before
@@ -2098,6 +2140,18 @@ mod tests {
         // the row says why, and which scopes the upstream asked for (#3375)
         assert_eq!(event.error, "insufficient scope");
         assert_eq!(event.error_scopes, ["repo", "read:org"]);
+
+        let mut state = AppState::new(&config);
+        let (sink, mut events) =
+            crate::mcp_log::McpEventSink::capturing(std::sync::Arc::new(Default::default()));
+        state.mcp_events = sink;
+        let note = r#"{"jsonrpc":"2.0","method":"tools/call","params":{"name":"anything"}}"#;
+        let response = post(state, Bytes::from(note)).await;
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let event = events
+            .try_recv()
+            .expect("the notification refusal is logged");
+        assert_eq!((event.status, event.notification), ("auth_denied", true));
     }
 
     #[tokio::test]
