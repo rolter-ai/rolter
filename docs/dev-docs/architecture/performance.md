@@ -23,8 +23,9 @@ Goal: beat the reference Python proxy (LiteLLM cites ~8ms P95 added latency at 1
 Three layers. Only the third is on the per-PR gate:
 
 - **Micro-benches** (`just bench`) — criterion, covering balancer `pick` across
-  every strategy and the prefix trie. Compiled on every PR via clippy so they
-  cannot bit-rot, but not run (timings are noisy on shared runners).
+  every strategy and the prefix trie, the breaker and cooldown registries, and
+  the hot-path bench below. Compiled on every PR via clippy so they cannot
+  bit-rot, but not run (timings are noisy on shared runners).
 - **End-to-end load** (`just bench-sim` / `bench-vllm` / `bench-sglang`) —
   `integration/engines/bench.py` against a real engine, measuring rolter's added
   latency directly and its behaviour under sustained concurrency.
@@ -65,6 +66,42 @@ Two details worth knowing before extending it:
 To extend it to another hot-path component, add a test that warms any lazily
 built internals first — otherwise you measure first-call setup — then wraps the
 steady-state operation in `counting(...)` and asserts zero.
+
+### Hot-path bench (#1054)
+
+`crates/rolter-gateway/benches/hot_path.rs` (`just bench-hot-path`) measures the
+path a request takes to a target, and prints an **allocs/op table before the
+timings**. It installs the same per-thread counting allocator as
+`hot_path_allocations.rs`, but only for the bench binary, so it reports counts
+for paths too large to assert zero on (a pick over 128 targets, a pool past the
+one-word eligibility mask) and a regression shows up as a number that moved.
+A pipeline pick up to 64 targets allocates nothing since #3249 and is asserted
+in `hot_path_allocations.rs`, beside the key-pool mask read. It covers:
+
+- `admission` — `Breaker::allows`, `Cooldowns::is_parked` and `Health::is_healthy`
+  for an 8-target route, all healthy.
+- `eligible_pick/<strategy>/<variant>/<targets>` — one `pick_eligible` the way
+  `TargetPool::pick` makes it, over 4, 24, 64 and 128 targets, with one target
+  parked, one unhealthy, both at load 0 so a strategy that ignores eligibility
+  reads them as the emptiest.
+- `snapshot_read` — `AppState.snapshot.load()` plus the route lookup, over 10 and
+  1000 routes.
+- `key_pool` — a multi-key provider's key pick asking which of its 8 keys are
+  parked, once per key and as one mask read (#3249).
+
+The load harness is not duplicated: `just load-sim` (above) already drives
+`fake-llm`-style traffic through `/v1/*` for throughput and p50/p99, and is the
+place to look at end-to-end numbers. The bench here is for the pieces that run
+inside one request.
+
+**Regression signal.** Nothing gates on timings. To compare a branch with
+`master`, run the `bench-hot-path` workflow (Actions, _Run workflow_): it is
+`workflow_dispatch`-only and not part of `ci-ok`, it benches the base ref with
+`--save-baseline base` and then the dispatched ref with `--baseline base`, and
+prints criterion's change report and the allocs/op table in the job summary.
+Locally, the same two commands on two checkouts do it. Read the allocs/op column
+first: a count is exact where a shared-runner duration swings by tens of
+percent.
 
 ### Tool decision (#847, closing #455)
 
@@ -129,6 +166,12 @@ levels takes minutes, and silently making the added-latency run that much slower
 would be a bad trade. Tune with `LOAD_LEVELS`, `LOAD_REQUESTS`, `LOAD_WARMUP`
 and `LOAD_MAX_TOKENS`.
 
+The benchmark uses the public `rolter-dummy` route, pinned to `engine-1`, so
+direct and gateway phases hit the same upstream. The `dummy-<strategy>` routes
+remain two-target pools for the compatibility smoke. A harness regression test
+checks that the model sent by `bench.py` names exactly that single-target route;
+otherwise the smoke can pass while the measured gateway requests all return 404.
+
 Two measurement rules worth knowing when reading the JSON:
 
 - **Failed requests are counted, never timed.** A connection refused in 0.1 ms
@@ -139,11 +182,107 @@ Two measurement rules worth knowing when reading the JSON:
 
 ### Baseline
 
-No baseline snapshot is recorded yet. It needs a run on fixed, documented
-hardware, and a number taken on a laptop under thermal throttling would be worse
-than none — an unreproducible baseline invites false regressions. Record
-hardware, engine version and rolter version alongside the numbers when one is
-taken.
+**Hot-path bench, a development VM (not the fixed-hardware baseline).** Measured
+on a cloud VM: 4 vCPU Intel Xeon @ 2.8 GHz, 16 GB, shared host, `release`
+profile, `--warm-up-time 1 --measurement-time 2`, one run. Treat the timings as
+an order of magnitude; the allocation counts are exact. The numbers below are the
+state before the eligibility change of #1942; the same bench after it, with
+the per-target and snapshot variants side by side, is in
+[Load balancing](load-balancing.md#eligibility-cost).
+
+| path                                                   | time (median)           | allocs/op    |
+| ------------------------------------------------------ | ----------------------- | ------------ |
+| `admission`, 8 targets, three registries               | 0.99 µs                 | 0            |
+| `snapshot_read`, 1000 routes                           | 37 ns                   | 0            |
+| `eligible_pick/round_robin`, 4 to 128 targets          | 18 to 19 ns             | 0            |
+| `eligible_pick/power_of_two`, 4 to 128 targets         | 19 to 20 ns             | 0            |
+| `eligible_pick/cache_aware`, 4 targets / 24 / 64 / 128 | 7.7 / 82 / 288 / 578 µs | 0, 0, 0, 1   |
+| `eligible_pick/pipeline`, 4 targets / 24 / 64 / 128    | 15 / 95 / 292 / 572 µs  | 6, 9, 10, 11 |
+
+`cache_aware` and `pipeline` are dominated by their own work, not the
+eligibility closure: the bench has every target hold the same prompt, so the
+prefix trie match runs in full per target. Both scale linearly with the pool.
+
+#### Fixed-hardware load snapshot (#894)
+
+Recorded on **rtx**, October 28, 2026. These are observations of the default
+development-profile harness, **not release-build capacity or a regression gate**.
+
+- **Hardware:** bare-metal AMD Ryzen 9 5900X, 12 physical cores / 24 threads,
+  62.71 GiB RAM; NVIDIA RTX 3090 at 0% compute utilization (desktop display
+  allocations remained). CPU governor `performance`; no other builds or inference
+  engines running. The existing idle Postgres container was left untouched.
+- **Host:** CachyOS Linux `7.3.0-4-cachyos`, Docker Engine `29.9.2`,
+  Python `3.14.8`, Rust `1.99.1`.
+- **Engine:** `ghcr.io/llm-d/llm-d-inference-sim:v0.12.0`, image digest
+  `sha256:c6838d8616c9818f4cdb0e9ef7597e483a71c081b869d34c7eafac1481d76c60`,
+  default `--mode random`. Two simulator containers run; the benchmark route
+  deliberately uses only `engine-1` so both phases measure that same upstream.
+- **Code:** rolter `1.0.0`, clean checkout
+  `d3565b3ff658b675b70349a5cdecfa14a7c4f747` (base
+  `9bf2d713de9ab25f07382e8c21bdff8d79815f95` plus the #3400 route correction).
+  `just load-sim` builds `rolter-gateway` in the **dev** profile, not `--release`.
+- **Default sweep:** `LOAD_LEVELS=1,2,4,8,16`, `LOAD_REQUESTS=200`,
+  `LOAD_WARMUP=10`, `LOAD_MAX_TOKENS=16` for streaming. Non-streaming requests
+  use the harness default of **1 token**. The p99 knee factor is 2.
+
+Both complete default runs had **zero errors** at every level, directly and
+through rolter. The added median latency below is the gateway p50 minus the
+direct p50 at concurrency 1; sweep JSON does not itself emit an
+`added_latency_p50_ms` key. ITL is also reported at concurrency 1, in milliseconds.
+
+| Run | Mode          | `added_latency_p50_ms` | Max sustainable RPS, direct | Max sustainable RPS, rolter | `sustainable_rps_retained` | ITL p50, direct / rolter |
+| --- | ------------- | ---------------------- | --------------------------- | --------------------------- | -------------------------- | ------------------------ |
+| 1   | non-streaming | 0.902                  | 2395.440                    | 1237.896                    | 0.5168                     | not measured             |
+| 2   | non-streaming | 0.938                  | 2690.994                    | 1730.669                    | 0.6431                     | not measured             |
+| 1   | streaming     | 0.800                  | 2530.995                    | 1887.192                    | 0.7456                     | 0.008 / 0.022            |
+| 2   | streaming     | 0.790                  | 2177.161                    | 1307.300                    | 0.6005                     | 0.008 / 0.023            |
+
+Raw artifacts, with every concurrency level retained:
+
+- Run 1: [non-streaming](load-baseline-rtx/run-1/load-non-streaming.json),
+  [streaming](load-baseline-rtx/run-1/load-streaming.json).
+- Run 2: [non-streaming](load-baseline-rtx/run-2/load-non-streaming.json),
+  [streaming](load-baseline-rtx/run-2/load-streaming.json).
+
+**Why the throughput figures differ by more than 5%.** The default sample is
+short: 200 successful requests and sub-millisecond direct responses. The p99
+ceiling is twice the concurrency-1 p99, and a small tail change can admit or
+reject an entire concurrency level. In the non-streaming runs the gateway's
+winning level moved from 2 to 4; for streaming it moved from 4 to 2. This is
+not evidence of changing engine capacity. The Python stdlib client and
+simulator share the host with a dev-profile gateway, so the figures describe
+this harness as well as the gateway.
+
+To check sampling sensitivity rather than select a favourable default run,
+two additional sweeps used `LOAD_REQUESTS=2000`, with every other setting
+unchanged and no competing builds or engines. These ran on the same base with
+the identical #3400 route correction before it was committed; their tree was
+not clean, unlike the two default runs above. Both longer sweeps selected
+concurrency 2 directly and 4 through rolter, for both modes:
+
+| Diagnostic | Mode          | Added p50 ms | Direct RPS | Rolter RPS | Retained | ITL p50, direct / rolter |
+| ---------- | ------------- | ------------ | ---------- | ---------- | -------- | ------------------------ |
+| 1          | non-streaming | 0.857        | 2576.701   | 1882.290   | 0.7305   | not measured             |
+| 2          | non-streaming | 0.853        | 2643.711   | 1855.856   | 0.7020   | not measured             |
+| 1          | streaming     | 0.756        | 2652.206   | 1910.481   | 0.7203   | 0.008 / 0.021            |
+| 2          | streaming     | 0.760        | 2514.988   | 1902.405   | 0.7564   | 0.009 / 0.021            |
+
+- Diagnostic 1: [non-streaming](load-baseline-rtx/diagnostic-1/load-non-streaming.json),
+  [streaming](load-baseline-rtx/diagnostic-1/load-streaming.json).
+- Diagnostic 2: [non-streaming](load-baseline-rtx/diagnostic-2/load-non-streaming.json),
+  [streaming](load-baseline-rtx/diagnostic-2/load-streaming.json).
+
+This supports a sampling-sensitive knee, not a 5%-stable capacity claim.
+Do not compare a future single default run to one selected number here as a
+regression threshold; keep repeated runs, error rates and the accepted
+concurrency level together.
+
+**Dispatch recommendation:** use an opt-in `workflow_dispatch` on an isolated,
+fixed-hardware runner with exclusive concurrency, pinned code/image provenance
+and repeated artifacts. Keep it outside `ci-ok`; shared hosted runners are
+useful for harness smoke tests, not absolute capacity comparisons. Track the
+job and its sampling policy in #3401 rather than adding infrastructure here.
 
 ## Inference engines
 
@@ -170,6 +309,12 @@ just integration-sim
 just integration-vllm
 just integration-sglang
 ```
+
+The SGLang profile in `docker/docker-compose.engines.yml` is a **Xeon CPU**
+build, not a portable x86 smoke. It remains intentionally pinned to v0.5.21:
+the v0.5.22 kernels target AVX-512/BF16 and AMX, which the Ryzen 5900X on rtx
+does not expose. No SGLang runtime success on that host is claimed, for either
+version. #3414 tracks validation and the next bump on compatible hardware.
 
 Each command boots routes for every balancing strategy (round-robin, random,
 power-of-two, consistent-hash, cache-aware, weighted, pipeline, cheapest, and

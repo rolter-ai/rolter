@@ -84,6 +84,33 @@ export const AllTones: Story = {
 };
 
 /**
+ * #2230: a badge may carry data (a price, a cap), so its text is held to the
+ * dashboard's 11px floor in every tone, and a long label still sits on one line
+ * inside the 20px pill.
+ */
+export const TextIsAtTheElevenPixelFloor: Story = {
+  render: () => (
+    <div className="flex flex-wrap gap-2">
+      {(["neutral", "outline", "success", "warning", "danger", "info", "accent"] as const).map(
+        (tone) => (
+          <Badge key={tone} tone={tone} dot>
+            {`${tone} $0.0000025`}
+          </Badge>
+        ),
+      )}
+    </div>
+  ),
+  play: async ({ canvasElement }) => {
+    const badges = [...canvasElement.querySelectorAll<HTMLElement>("span.inline-flex")];
+    await expect(badges).toHaveLength(7);
+    for (const badge of badges) {
+      await expect(getComputedStyle(badge).fontSize).toBe("11px");
+      await expect(badge.getBoundingClientRect().height).toBe(20);
+    }
+  },
+};
+
+/**
  * #1989: the Dashboard and LLM Logs share one HTTP-status pill. A 4xx is the
  * caller's to fix, a 5xx or no answer at all is the gateway's, and each takes
  * its label from the same token a `Badge` of that tone does.

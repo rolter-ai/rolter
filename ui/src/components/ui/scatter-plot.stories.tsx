@@ -2,6 +2,7 @@ import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import { ScatterPlot, type ScatterPoint } from "./scatter-plot";
+import { CHART_WIDTHS, expectLabelsAtTheFloor } from "@/lib/story-charts";
 
 // latency against cost, one point per model — the shape the Playground plots
 const POINTS: ScatterPoint[] = [
@@ -34,6 +35,25 @@ export const Default: Story = {
       canvas.getByRole("img", { name: "Latency against cost per thousand tokens" }),
     ).toBeVisible();
     await expect(canvasElement.querySelectorAll("circle")).toHaveLength(POINTS.length);
+  },
+};
+
+/**
+ * The plot is drawn at the width it is given, so its axis and point labels stay
+ * at 11px on a phone-width card (#3457).
+ */
+export const LabelsKeepTheFloorOnANarrowCard: Story = {
+  render: (args) => (
+    <div className="flex flex-col gap-4">
+      {CHART_WIDTHS.map((w) => (
+        <div key={w} style={{ width: w }}>
+          <ScatterPlot {...args} />
+        </div>
+      ))}
+    </div>
+  ),
+  play: async ({ canvasElement }) => {
+    await expectLabelsAtTheFloor(canvasElement, CHART_WIDTHS.length);
   },
 };
 

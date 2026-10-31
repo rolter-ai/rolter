@@ -4,6 +4,7 @@ import { Boxes, ChevronRight, Lock, Tag } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 
+import { CacheReportingBadge } from "@/components/CacheReportingBadge";
 import { GatedButton } from "@/components/GatedButton";
 import { LoadError } from "@/components/LoadError";
 import { ListSkeleton } from "@/components/LoadingState";
@@ -34,8 +35,9 @@ import { Button } from "@/components/ui/button";
 import { DeleteIconButton } from "@/components/ui/delete-icon-button";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Segmented } from "@/components/ui/segmented";
+import { BreakerBadge } from "@/components/BreakerBadge";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
-import { LabelChips, LabelFilterSelect, LabelSheet, useSubjectLabels } from "@/components/Labels";
+import { LabelChips, LabelFilterSelect, LabelSheet, useModelLabels } from "@/components/Labels";
 import {
   deleteModel,
   fetchModelPrices,
@@ -44,16 +46,20 @@ import {
   fetchRoutes,
   fetchHealthTimeline,
   fetchUptime,
+  useBreakerState,
   type EffectiveModelDto,
   type RouteRow,
 } from "@/lib/api";
 import { errorText } from "@/lib/error-copy";
 import { useFormat } from "@/lib/i18n/format";
 import { HEALTH_SLA, targetViews, type RouteTargetView } from "@/lib/route-targets";
+import { summarizeCacheReporting, type CacheReporting } from "@/lib/cache-reporting";
+import { RowCapabilityScope } from "@/lib/can";
 import { useScope } from "@/lib/scope";
 import { strategyHintKey } from "@/lib/strategies";
 import { useToast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
+import { useProviderCacheProbes } from "@/lib/use-provider-cache-probes";
 import { useScreenReady } from "@/lib/ux-react";
 
 // model · provider · strategy · targets · origin · price · actions. strategy
@@ -86,6 +92,12 @@ interface CatalogRow {
    * second provider used to be invisible to both (#1202)
    */
   providerNames: string[];
+  /**
+   * whether those providers report prompt-cache metrics, by the rule of
+   * `summarizeCacheReporting`. `null` when the verdicts could not be read or
+   * the route's providers are unknown, so the column shows nothing
+   */
+  cache: CacheReporting | null;
   /**
    * where the route's traffic goes, carried by the catalog entry itself
    * (#2210). `null` only when the control plane predates that field, and then
@@ -139,6 +151,11 @@ export default function Models() {
     queryFn: () => fetchProviders(scope.orgId as string),
     enabled: !!scope.orgId,
   });
+  const cacheProbes = useProviderCacheProbes(scope.orgId);
+  // a target names its provider; the verdicts are keyed by id. a name this
+  // org's provider list does not hold (or a list not read yet) maps to no id,
+  // which is "never probed" once the verdicts themselves have been read
+  const providerIdByName = new Map((providers.data ?? []).map((p) => [p.name, p.id]));
   const prices = useQuery({
     queryKey: ["model-prices"],
     queryFn: fetchModelPrices,
@@ -167,6 +184,9 @@ export default function Models() {
     enabled: hasModels && healthKnown,
     retry: false,
   });
+  // the gateways' live breakers, drawn beside each target's health where one is
+  // tripped; a failed read leaves the rows as they were
+  const breakers = useBreakerState();
   const [expanded, setExpanded] = React.useState<ReadonlySet<string>>(() => new Set());
   const toggleTargets = (model: string) =>
     setExpanded((open) => {
@@ -178,10 +198,12 @@ export default function Models() {
 
   const [search, setSearch] = React.useState("");
   const [labelFilter, setLabelFilter] = React.useState("");
-  const [labelling, setLabelling] = React.useState<string | null>(null);
+  // the model whose labels are open, with the organization that owns it
+  // (#3476): two organizations' `gpt-4o` carry labels of their own
+  const [labelling, setLabelling] = React.useState<{ orgId: string; model: string } | null>(null);
   // a model label is keyed by the model's name, not by a row id: the catalog is
   // deployment-wide and has no row of its own to point at
-  const labels = useSubjectLabels(undefined, "model");
+  const labels = useModelLabels();
   const [origin, setOrigin] = React.useState<Origin>("all");
   const [unpricedOnly, setUnpricedOnly] = React.useState(false);
   const { sort, cycle, apply } = useSort<"name" | "provider" | "strategy" | "targets" | "origin">();
@@ -205,12 +227,25 @@ export default function Models() {
   const pricesKnown = prices.isSuccess;
 
   const rows: CatalogRow[] = (models.data ?? []).map((entry) => {
-    const route = routeByModel.get(entry.model) ?? null;
+    // the scope's routes are one project's, and another organization may
+    // serve the same name (#1857): only an entry of that project is its row
+    const route =
+      entry.project_id && entry.project_id === scope.projectId
+        ? (routeByModel.get(entry.model) ?? null)
+        : null;
+    // likewise the provider ids are the scope organization's: another
+    // organization's row is not judged on them (a config-file row, which has
+    // no organization, reads as not probed, as before)
+    const ownOrg = !entry.org_id || entry.org_id === scope.orgId;
     const targets = entry.route_targets
       ? targetViews(
           { model: entry.model, targets: entry.route_targets },
           healthKnown ? uptime.data : undefined,
           timeline.data,
+          breakers.data,
+          // the entry's own organization's breakers and providers, never
+          // those of another organization's route of the same name (#3460)
+          entry.org_id ?? "",
         )
       : null;
     // the first provider names the column; a route spread over several says so
@@ -233,6 +268,16 @@ export default function Models() {
             })
           : (providerNames[0] ?? "—"),
       providerNames,
+      // the verdicts are read per org, so a row is judged only on the scope's
+      // own providers, and not before the provider list that maps names to ids
+      // has been read
+      cache:
+        providers.isSuccess && ownOrg
+          ? summarizeCacheReporting(
+              providerNames.map((n) => providerIdByName.get(n)),
+              cacheProbes.byProvider,
+            )
+          : null,
       targets,
       targetCount: targets?.length ?? entry.targets,
       strategy: entry.strategy,
@@ -252,7 +297,7 @@ export default function Models() {
     (r) =>
       (origin === "all" || r.origin === origin) &&
       (!unpricedOnly || r.priced === false) &&
-      labels.matches(r.name, labelFilter) &&
+      labels.matches(r.entry.org_id ?? "", r.name, labelFilter) &&
       (!q ||
         r.name.toLowerCase().includes(q) ||
         r.providerNames.some((n) => n.toLowerCase().includes(q))),
@@ -280,7 +325,7 @@ export default function Models() {
   };
 
   const removeModel = useMutation({
-    mutationFn: (model: string) => deleteModel(model),
+    mutationFn: (entry: EffectiveModelDto) => deleteModel(entry.model, entry.org_id),
     onSuccess: invalidate,
   });
 
@@ -435,6 +480,8 @@ export default function Models() {
           const withHealth = (r.targets ?? []).filter((tg) => tg.health);
           const failing = withHealth.filter((tg) => tg.health?.state === "breaching").length;
           const atRisk = withHealth.filter((tg) => tg.health?.state === "atRisk").length;
+          const tripped = (r.targets ?? []).filter((tg) => tg.breaker);
+          const openBreaker = tripped.find((tg) => tg.breaker?.state === "open")?.breaker;
           return (
             <React.Fragment key={r.id}>
               <ListRow grid={GRID} className={open ? "border-b-0" : undefined}>
@@ -442,7 +489,7 @@ export default function Models() {
                   <StatusDot color={r.enabled ? "var(--status-success)" : "var(--text-subtle)"} />
                   <span className="flex min-w-0 flex-col gap-1">
                     <span className="truncate font-mono text-sm">{r.name}</span>
-                    <LabelChips labels={labels.bySubject(r.name)} />
+                    <LabelChips labels={labels.forModel(r.entry.org_id ?? "", r.name)} />
                   </span>
                   {r.locked && (
                     <span
@@ -453,14 +500,17 @@ export default function Models() {
                     </span>
                   )}
                 </ListCell>
-                <ListCell
-                  className={cn(
-                    "truncate font-mono text-xs text-[color:var(--text-secondary)]",
-                    r.providerNames.length > 1 && "cursor-help",
-                  )}
-                  title={r.providerNames.length > 1 ? r.providerNames.join(", ") : undefined}
-                >
-                  {r.providerName}
+                <ListCell className="flex min-w-0 flex-col items-start gap-1">
+                  <span
+                    className={cn(
+                      "max-w-full truncate font-mono text-xs text-[color:var(--text-secondary)]",
+                      r.providerNames.length > 1 && "cursor-help",
+                    )}
+                    title={r.providerNames.length > 1 ? r.providerNames.join(", ") : undefined}
+                  >
+                    {r.providerName}
+                  </span>
+                  <CacheReportingBadge state={r.cache} />
                 </ListCell>
                 <ListCell className="flex min-w-0 flex-col items-start gap-0.5">
                   <StrategyBadge strategy={r.strategy} />
@@ -514,6 +564,9 @@ export default function Models() {
                   )}
                   {/* health where the rollup has it: a failing target is named in
                   the row, a clean bill is a dot, and no data says nothing */}
+                  {tripped.length > 0 && (
+                    <BreakerBadge breaker={openBreaker ?? tripped[0].breaker} />
+                  )}
                   {failing > 0 ? (
                     <span className="inline-flex items-center gap-1 text-2xs text-[color:var(--status-danger-text)]">
                       <StatusDot color="var(--status-danger)" className="h-1.5 w-1.5" />
@@ -589,7 +642,7 @@ export default function Models() {
                     variant="outline"
                     className="h-[30px]"
                     aria-label={t("labels.labelsOf", { name: r.name })}
-                    onClick={() => setLabelling(r.name)}
+                    onClick={() => setLabelling({ orgId: r.entry.org_id ?? "", model: r.name })}
                   >
                     <Tag className="h-3.5 w-3.5" />
                   </Button>
@@ -600,7 +653,7 @@ export default function Models() {
                       gate="model:delete"
                       control="model-delete"
                       label={t("pages.models.deleteAria", { model: r.name })}
-                      pending={removeModel.isPending && deleteTarget?.model === r.entry.model}
+                      pending={removeModel.isPending && deleteTarget === r.entry}
                       onClick={() => {
                         removeModel.reset();
                         setDeleteTarget(r.entry);
@@ -665,14 +718,21 @@ export default function Models() {
       </ListTable>
 
       {labelling && (
-        <LabelSheet
-          open
-          onOpenChange={(open) => !open && setLabelling(null)}
-          orgId=""
-          subjectType="model"
-          subjectId={labelling}
-          subjectName={labelling}
-        />
+        // an organization's model is labelled under that organization's own
+        // `label` capability (#3520), so the sheet asks at the row's org rather
+        // than the switcher's; a deployment-wide one keeps the page's answer
+        <RowCapabilityScope
+          at={labelling.orgId ? { orgId: labelling.orgId, projectId: null } : undefined}
+        >
+          <LabelSheet
+            open
+            onOpenChange={(open) => !open && setLabelling(null)}
+            orgId={labelling.orgId}
+            subjectType="model"
+            subjectId={labelling.model}
+            subjectName={labelling.model}
+          />
+        </RowCapabilityScope>
       )}
 
       <ModelSheet
@@ -707,7 +767,7 @@ export default function Models() {
         onConfirm={() => {
           if (!deleteTarget) return;
           const what = deleteTarget.model;
-          removeModel.mutate(what, {
+          removeModel.mutate(deleteTarget, {
             onSuccess: () => {
               setDeleteTarget(null);
               toast.push({ tone: "success", title: t("toast.deleted", { what }) });

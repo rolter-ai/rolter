@@ -79,6 +79,13 @@ pub(crate) const PUBLIC_ROUTES: &[PublicRoute] = &[
     ),
     route(
         "get",
+        "/api/v1/analytics/exports/download/{ticket}",
+        "the browser's download manager follows this link and cannot send a bearer header; \
+         the single-use, 60-second ticket in the path is the credential, and the principal \
+         that minted it is re-checked before the export runs under its own row scope",
+    ),
+    route(
+        "get",
         "/api/v1/auth/methods",
         "the login screen asks which sign-in methods exist before anyone can sign in; \
          reveals only method names and the SSO providers shown as login buttons",

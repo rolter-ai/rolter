@@ -105,29 +105,39 @@ export type LabelSubject = "provider" | "provider_group" | "route" | "model";
  *
  * A provider, group or route belongs to an org and is addressed by its row id;
  * a model belongs to the deployment-wide pricing catalog and is addressed by
- * its name, which is also why writing one is a superadmin's act. Everything
- * above this line is the same for both, so the difference lives here.
+ * its name. A label on an organization's model is that organization's act and
+ * takes its `label` capability, like its provider and route labels (#3520); a
+ * deployment-wide one is a superadmin's (`model_label`). Everything above this
+ * line is the same for both, so the difference lives here.
  */
 function endpoints(subjectType: LabelSubject, orgId: string) {
   const model = subjectType === "model";
+  // a model of an organization is labelled as that organization's (#3476); a
+  // config-file model has no organization and its labels are deployment-wide
+  const modelOrg = orgId || undefined;
+  const gated = model && !modelOrg ? "model_label" : "label";
   return {
-    list: (filter: LabelFilter) => (model ? fetchModelLabels(filter) : fetchLabels(orgId, filter)),
+    list: (filter: LabelFilter) =>
+      model ? fetchModelLabels({ ...filter, org_id: modelOrg }) : fetchLabels(orgId, filter),
     create: (subjectId: string, key: string, value?: string) =>
       model
-        ? createModelLabel({ model: subjectId, key, value })
+        ? createModelLabel({ model: subjectId, org_id: modelOrg, key, value })
         : createLabel(orgId, { subject_type: subjectType, subject_id: subjectId, key, value }),
     update: (id: string, value?: string) =>
       model ? updateModelLabel(id, value) : updateLabel(orgId, id, value),
     remove: (id: string) => (model ? deleteModelLabel(id) : deleteLabel(orgId, id)),
-    createGate: (model ? "model_label:create" : "label:create") as Capability,
-    deleteGate: (model ? "model_label:delete" : "label:delete") as Capability,
+    createGate: `${gated}:create` as Capability,
+    deleteGate: `${gated}:delete` as Capability,
   };
 }
 
 export interface LabelSheetProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  /** unused for a model, which is deployment-wide */
+  /**
+   * the organization that owns the subject. For a model, the organization whose
+   * model it is, or `""` for a deployment-wide one from the config file (#3476)
+   */
   orgId: string;
   subjectType: LabelSubject;
   /** the row id, or the model's name */
@@ -211,8 +221,17 @@ export function LabelSheet({
       }),
   });
 
-  const rows = labels.data ?? [];
-  const custom = rows.filter((l) => l.source === "custom");
+  // a model with no organization (one from the config file) reads the
+  // deployment-wide labels alone: asked without `org_id`, the control plane
+  // lists every organization's labels on that name too, which are theirs to
+  // edit, never this row's
+  const rows = (labels.data ?? []).filter((l) => subjectType !== "model" || !!orgId || !l.org_id);
+  // on an organization's model, a deployment-wide label applies until the
+  // organization sets its own of that key (#3476). it is every organization's,
+  // so it is shown apart and cannot be edited from one organization's sheet
+  const inherited =
+    subjectType === "model" && orgId ? rows.filter((l) => l.source === "custom" && !l.org_id) : [];
+  const custom = rows.filter((l) => l.source === "custom" && !inherited.includes(l));
   const auto = rows.filter((l) => l.source === "auto");
   // the API's own 409: that key is already set on this subject. Named here
   // because "conflict" is not a sentence an operator can act on
@@ -253,7 +272,7 @@ export function LabelSheet({
               {custom.map((row) => (
                 <div
                   key={row.id}
-                  className="flex items-center gap-2 rounded-[10px] border border-[color:var(--border-default)] px-3 py-2"
+                  className="flex items-center gap-2 rounded-lg border border-[color:var(--border-default)] px-3 py-2"
                 >
                   <span className="w-40 flex-none truncate font-mono text-xs">{row.key}</span>
                   <Input
@@ -277,6 +296,18 @@ export function LabelSheet({
             </div>
           )}
 
+          {inherited.length > 0 && (
+            <div className="flex flex-col gap-2" data-testid="labels-inherited">
+              <p className="text-xs uppercase tracking-wide text-muted-foreground">
+                {t("labels.inheritedHeading")}
+              </p>
+              <p className="text-xs leading-snug text-muted-foreground">
+                {t("labels.inheritedExplainer", { name: subjectName })}
+              </p>
+              <LabelChips labels={inherited} />
+            </div>
+          )}
+
           {auto.length > 0 && (
             <div className="flex flex-col gap-2">
               <p className="text-xs uppercase tracking-wide text-muted-foreground">
@@ -290,7 +321,7 @@ export function LabelSheet({
               {auto.map((row) => (
                 <div
                   key={row.id}
-                  className="flex flex-col gap-1 rounded-[10px] border border-dashed border-[color:var(--border-default)] px-3 py-2"
+                  className="flex flex-col gap-1 rounded-lg border border-dashed border-[color:var(--border-default)] px-3 py-2"
                 >
                   <LabelChips labels={[row]} />
                   <p className="text-xs text-muted-foreground">
@@ -382,15 +413,13 @@ export interface SubjectLabels {
  */
 export function useSubjectLabels(
   orgId: string | undefined,
-  subjectType: LabelSubject,
+  // a model's labels are keyed by its organization too: `useModelLabels`
+  subjectType: Exclude<LabelSubject, "model">,
 ): SubjectLabels {
   const labels = useQuery({
     queryKey: [...LABELS_QUERY_KEY, orgId, subjectType],
-    queryFn: () =>
-      subjectType === "model"
-        ? fetchModelLabels()
-        : fetchLabels(orgId as string, { subject_type: subjectType }),
-    enabled: subjectType === "model" || !!orgId,
+    queryFn: () => fetchLabels(orgId as string, { subject_type: subjectType }),
+    enabled: !!orgId,
     retry: false,
   });
   const map = React.useMemo(() => {
@@ -405,6 +434,58 @@ export function useSubjectLabels(
     bySubject,
     options: labelOptions(labels.data ?? []),
     matches: (id, filter) => !filter || bySubject(id).some((l) => labelText(l) === filter),
+  };
+}
+
+export interface ModelLabels {
+  /**
+   * the labels on one organization's model (#3476): its own, and each
+   * deployment-wide label whose source and key it has not set itself. `orgId`
+   * is `""` for a config-file model, which reads the deployment-wide ones only
+   */
+  forModel: (orgId: string, model: string) => LabelRow[];
+  /** the `key=value` pairs present, for the filter control */
+  options: string[];
+  /** whether that model carries the chosen `key=value`; "" matches everything */
+  matches: (orgId: string, model: string, filter: string) => boolean;
+}
+
+/**
+ * Every model label the caller may read, in one request, keyed by the model's
+ * organization as well as its name (#3476): two organizations may each serve a
+ * `gpt-4o` (#1857), and a label on one must not show on the other's row. The
+ * lookup is the control plane's own (`GET /api/v1/model-labels?org_id=`), done
+ * here over the whole catalog so a screen of several organizations' models
+ * costs one request.
+ */
+export function useModelLabels(): ModelLabels {
+  const labels = useQuery({
+    queryKey: [...LABELS_QUERY_KEY, undefined, "model"],
+    queryFn: () => fetchModelLabels(),
+    retry: false,
+  });
+  const byName = React.useMemo(() => {
+    const out = new Map<string, LabelRow[]>();
+    for (const label of labels.data ?? []) {
+      out.set(label.subject_id, [...(out.get(label.subject_id) ?? []), label]);
+    }
+    return out;
+  }, [labels.data]);
+  const forModel = React.useCallback(
+    (orgId: string, model: string) => {
+      const all = byName.get(model) ?? [];
+      const own = orgId ? all.filter((l) => l.org_id === orgId) : [];
+      const set = new Set(own.map((l) => `${l.source}:${l.key}`));
+      const shared = all.filter((l) => !l.org_id && !set.has(`${l.source}:${l.key}`));
+      return [...own, ...shared];
+    },
+    [byName],
+  );
+  return {
+    forModel,
+    options: labelOptions(labels.data ?? []),
+    matches: (orgId, model, filter) =>
+      !filter || forModel(orgId, model).some((l) => labelText(l) === filter),
   };
 }
 

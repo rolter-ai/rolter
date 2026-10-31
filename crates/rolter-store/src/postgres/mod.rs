@@ -7,15 +7,18 @@ pub mod repo;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
+use rolter_core::failover::FailureClass;
 use rolter_core::{
     AdvancedModelConfig, BackpressurePolicy, BalancingStrategy, BudgetConfig, BudgetPeriod,
     BudgetScope, BuiltinRule, Decorator, Error, FailureMode, FeatureFlagsConfig, GatewayConfig,
-    GroupMember, GuardAction, GuardStage, GuardrailRule, GuardrailWebhookConfig, GuardrailsConfig,
-    McpAuthKind, McpOAuthSessionConfig, McpServerConfig, ModelPolicy, ModelPriceConfig, ModelRoute,
-    ParamPolicy, PluginInstanceConfig, PluginStage, PluginsConfig, PromptTemplate,
-    PromptTemplateActivationScope, PromptTemplatesConfig, ProviderConfig, ProviderGroupConfig,
-    ProviderKind, RateLimitConfig, Result, Target, TemplateVariable, Tenancy, UnpricedPolicy,
-    VirtualKeyRecord, WebhookAuth, WebhookStage,
+    GroupMember, GuardAction, GuardProviderKind, GuardStage, GuardrailPolicy, GuardrailRule,
+    GuardrailWebhookConfig, GuardrailsConfig, McpAuthKind, McpOAuthSessionConfig,
+    McpOrgSettingsConfig, McpServerConfig, McpToolGroupConfig, McpToolGroupSubjectConfig,
+    McpToolRefConfig, ModelPolicy, ModelPriceConfig, ModelRoute, ParamPolicy, PluginInstanceConfig,
+    PluginStage, PluginsConfig, PolicyScope, PromptTemplate, PromptTemplateActivationScope,
+    PromptTemplatesConfig, ProviderConfig, ProviderGroupConfig, ProviderKind, RateLimitConfig,
+    Result, ScopeWithin, SemanticGuardsConfig, StreamingStrategy, Target, TemplateVariable,
+    Tenancy, UnpricedPolicy, ViolationAction, VirtualKeyRecord, WebhookAuth, WebhookStage,
 };
 use rust_decimal::Decimal;
 use sqlx::postgres::PgPoolOptions;
@@ -209,6 +212,16 @@ pub mod test_schema;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_database;
 
+/// Providers the loader left out, as `(owning org, name)`.
+type LeftOut = HashSet<(Uuid, String)>;
+
+/// Whether the provider `name` of `org` was left out. A stored target or
+/// member names its provider by id, so the org it reaches is exactly the
+/// provider's own, with no resolution to do.
+fn is_left_out(left_out: &LeftOut, org: Uuid, name: &str) -> bool {
+    !left_out.is_empty() && left_out.contains(&(org, name.to_string()))
+}
+
 #[derive(FromRow)]
 struct ProviderRow {
     org_id: Uuid,
@@ -295,7 +308,16 @@ impl ProviderRow {
             "krutrim" => ProviderKind::Krutrim,
             "falcon" => ProviderKind::Falcon,
             "system_one" => ProviderKind::SystemOne,
-            other => return Err(Error::Store(format!("unknown provider kind '{other}'"))),
+            "infinity" => ProviderKind::Infinity,
+            // a kind from a newer release, a downgrade or a hand-written row
+            // (#3469): read fail-closed as `Unknown`, which the snapshot
+            // sanitizer omits with everything that named it, rather than
+            // failing every tenant's config load over one row (#3347)
+            other => {
+                tracing::warn!(provider = %row.name, kind = other,
+                    "provider kind this build does not know; the provider is not served");
+                ProviderKind::Unknown
+            }
         };
         let api_key = match (row.ciphertext.as_deref(), row.nonce.as_deref(), kek) {
             (Some(ciphertext), Some(nonce), Some(kek)) => match kek.decrypt(ciphertext, nonce) {
@@ -365,6 +387,26 @@ struct TargetRow {
     provider_name: String,
     upstream_model: Option<String>,
     weight: i32,
+    takes_over: Vec<String>,
+}
+
+#[derive(FromRow)]
+struct VariantRow {
+    id: Uuid,
+    route_id: Uuid,
+    name: String,
+    weight: i32,
+    params: serde_json::Value,
+}
+
+#[derive(FromRow)]
+struct VariantTargetRow {
+    variant_id: Uuid,
+    provider_org_id: Uuid,
+    provider_name: String,
+    upstream_model: Option<String>,
+    weight: i32,
+    takes_over: Vec<String>,
 }
 
 #[derive(FromRow)]
@@ -401,6 +443,8 @@ struct VirtualKeyRow {
     created_by: Option<Uuid>,
     business_unit_id: Option<Uuid>,
     customer_id: Option<Uuid>,
+    previous_key_hash: Option<String>,
+    previous_expires_at: Option<DateTime<Utc>>,
 }
 
 /// One access-profile policy row, tagged with the user it reaches. A user
@@ -447,6 +491,26 @@ struct McpServerSnapshotRow {
     connect_timeout_ms: Option<i32>,
     request_timeout_ms: Option<i32>,
     max_retries: Option<i32>,
+    tools: Vec<String>,
+    enforce_manifest_by_default: bool,
+}
+
+#[derive(FromRow)]
+struct McpSettingsSnapshotRow {
+    org_id: Uuid,
+    connect_timeout_ms: i32,
+    request_timeout_ms: i32,
+    max_retries: i32,
+    allow_unlisted_tools: bool,
+}
+
+#[derive(FromRow)]
+struct McpToolGroupSnapshotRow {
+    id: Uuid,
+    org_id: Uuid,
+    slug: String,
+    enabled: bool,
+    tools: serde_json::Value,
 }
 
 #[derive(FromRow)]
@@ -494,6 +558,10 @@ struct RouteScopeRow {
 /// still rejected them, and because every route loads through one query, a
 /// single route on a new strategy failed `/internal/snapshot` outright. The
 /// whole fleet then held its last good config with nothing but a 500 to say why.
+///
+/// A value this build does not know, one a newer release wrote, reads as
+/// [`BalancingStrategy::Unknown`] (#3347): the snapshot sanitizer then omits
+/// that route and names it, and the rest of the config still loads.
 fn parse_strategy(s: &str) -> Result<BalancingStrategy> {
     serde_json::from_value(serde_json::Value::String(s.to_string()))
         .map_err(|_| Error::Store(format!("unknown balancing strategy '{s}'")))
@@ -529,12 +597,14 @@ impl PostgresConfigStore {
         Self { pool, kek }
     }
 
-    /// The providers to serve, and the names of the ones left out because their
-    /// `egress_proxies` could not be read (#2943). A caller that goes on to
-    /// build route targets or group members from the provider rows must skip
-    /// those names, or the snapshot ends up naming a provider it does not
-    /// carry.
-    async fn load_providers(&self) -> Result<(Vec<ProviderConfig>, HashSet<String>)> {
+    /// The providers to serve, and the `(org, name)` of the ones left out
+    /// because their `egress_proxies` could not be read (#2943). A caller that
+    /// goes on to build route targets or group members from the provider rows
+    /// must skip those providers, or the snapshot ends up naming a provider it
+    /// does not carry. Two orgs may each have a provider of one name (#1857),
+    /// so the set is keyed by the owning org too: one org's unreadable row
+    /// must not take another org's namesake out of its routes (#3464).
+    async fn load_providers(&self) -> Result<(Vec<ProviderConfig>, LeftOut)> {
         let rows: Vec<ProviderRow> = sqlx::query_as(
             "select p.org_id, p.name, p.slug, p.kind, p.api_base, p.api_key_env, p.egress_proxy,
                     p.egress_proxies, p.kv_events, p.lmcache, p.project_id,
@@ -547,13 +617,13 @@ impl PostgresConfigStore {
         .await
         .map_err(store_err)?;
         let mut providers = Vec::with_capacity(rows.len());
-        let mut left_out = HashSet::new();
+        let mut left_out = LeftOut::new();
         for row in rows {
             match egress_proxies_from_value(&row.name, &row.egress_proxies) {
                 Ok(proxies) => providers.push(row.into_config(self.kek.as_ref(), proxies)?),
                 Err(problem) => {
                     tracing::warn!("{problem}");
-                    left_out.insert(row.name);
+                    left_out.insert((row.org_id, row.name));
                 }
             }
         }
@@ -685,41 +755,72 @@ impl PostgresConfigStore {
         })
     }
 
-    async fn load_guardrail_webhook(&self) -> Result<GuardrailWebhookConfig> {
-        let row: Option<GuardrailProvider> = sqlx::query_as(
-            "select id, name, enabled, url, stage, timeout_ms, max_retries, failure_mode, \
-                    max_body_bytes, auth_kind, auth_env, created_at, updated_at \
-             from guardrail_providers where enabled limit 1",
-        )
-        .fetch_optional(&self.pool)
+    /// Every registry guardrail provider and policy, for the gateway's
+    /// semantic guards (#459). Disabled providers are carried too, so a policy
+    /// that names one still validates; the gateway runs enabled ones only.
+    /// Disabled policies are carried for the same reason, and because a
+    /// provider any policy lists is confined to policies.
+    async fn load_semantic_guards(&self) -> Result<SemanticGuardsConfig> {
+        let rows: Vec<GuardrailProvider> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "select {} from guardrail_providers order by name",
+            repo::GUARDRAIL_PROVIDER_COLUMNS
+        )))
+        .fetch_all(&self.pool)
         .await
         .map_err(store_err)?;
-        let Some(row) = row else {
-            return Ok(GuardrailWebhookConfig::default());
-        };
-        let auth = match (row.auth_kind.as_str(), row.auth_env) {
-            ("bearer", Some(token_env)) => Some(WebhookAuth::Bearer { token_env }),
-            ("shared_secret", Some(secret_env)) => Some(WebhookAuth::SharedSecret { secret_env }),
-            _ => None,
-        };
-        Ok(GuardrailWebhookConfig {
-            enabled: true,
-            name: row.name,
-            url: row.url,
-            stage: if row.stage == "post_call" {
-                WebhookStage::PostCall
-            } else {
-                WebhookStage::PreCall
-            },
-            timeout_ms: row.timeout_ms.max(1) as u64,
-            max_retries: row.max_retries.max(0) as u32,
-            failure_mode: if row.failure_mode == "fail_closed" {
-                FailureMode::FailClosed
-            } else {
-                FailureMode::FailOpen
-            },
-            max_body_bytes: row.max_body_bytes.max(1) as usize,
-            auth,
+        let names: std::collections::HashMap<Uuid, String> =
+            rows.iter().map(|row| (row.id, row.name.clone())).collect();
+        let providers = rows.into_iter().map(provider_from_row).collect();
+        let policies = repo::GuardrailRepo(&self.pool)
+            .list_policies()
+            .await?
+            .into_iter()
+            .map(|row| GuardrailPolicy {
+                name: row.name,
+                enabled: row.enabled,
+                scope: PolicyScope::parse(&row.scope_kind).unwrap_or_default(),
+                scope_id: row.scope_id,
+                providers: row
+                    .provider_ids
+                    .iter()
+                    .filter_map(|id| names.get(id).cloned())
+                    .collect(),
+                // the control plane validated these on the way in; a value
+                // that is not a number in range is left out rather than read
+                // as some other threshold
+                thresholds: row
+                    .thresholds
+                    .as_object()
+                    .map(|map| {
+                        map.iter()
+                            .filter_map(|(category, value)| {
+                                let value = value.as_f64()?;
+                                (value.is_finite() && (0.0..=1.0).contains(&value))
+                                    .then(|| (category.clone(), value))
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+                on_violation: if row.on_violation == "annotate" {
+                    ViolationAction::Annotate
+                } else {
+                    ViolationAction::Block
+                },
+                streaming: if row.streaming == "buffer" {
+                    StreamingStrategy::Buffer
+                } else {
+                    StreamingStrategy::Reject
+                },
+            })
+            .collect();
+        Ok(SemanticGuardsConfig {
+            providers,
+            policies,
+            // a per-gateway resource knob, set in the file only; the merge
+            // keeps the file's value
+            local_concurrency: None,
+            // gateway-side only, never in a snapshot (#3454)
+            model_root: None,
         })
     }
 
@@ -761,7 +862,8 @@ impl PostgresConfigStore {
     async fn load_logging_settings(&self) -> Result<LoggingSettings> {
         sqlx::query_as(
             "select sample_rate, payload_capture_enabled, payload_capture_max_bytes, \
-                    payload_capture_redact_fields, payload_capture_models, payload_capture_virtual_key_ids, \
+                    payload_capture_redact_fields, payload_capture_redact_detectors, \
+                    payload_capture_redact_patterns, payload_capture_models, payload_capture_virtual_key_ids, \
                     retention_days, payload_retention_hours, ui_events, updated_at \
              from logging_settings where id = true",
         )
@@ -787,13 +889,137 @@ impl PostgresConfigStore {
         .map_err(store_err)
     }
 
+    /// The rows whose stored enum value this build does not know, one
+    /// problem each, naming the entity, the value and what happens to the row
+    /// (#3446). Since #3347 such a value no longer fails the snapshot, so
+    /// without these lines the row would simply stop being served: a route on
+    /// an unknown strategy and a provider of an unknown kind (#3469) are left
+    /// out by the sanitizer, and a budget or rate limit on an unknown scope
+    /// (#3470) is enforced against every request.
+    async fn unknown_value_problems(
+        &self,
+        budgets: &[Budget],
+    ) -> Result<Vec<crate::ConfigProblem>> {
+        use crate::{ConfigProblem, ProblemOwner};
+        let mut problems = Vec::new();
+        for row in self.enabled_route_rows().await? {
+            if parse_strategy(&row.strategy)? == BalancingStrategy::Unknown {
+                problems.push(ConfigProblem {
+                    kind: crate::ConfigProblemKind::Misread,
+                    message: format!(
+                        "route '{}' has balancing strategy '{}', which this build does not \
+                         know; the route is left out of the snapshot until the control plane \
+                         is upgraded or the strategy is changed",
+                        row.model, row.strategy
+                    ),
+                    owner: ProblemOwner::Tenant(Tenancy {
+                        org_id: row.org_id.to_string(),
+                        project_id: Some(row.project_id.to_string()),
+                    }),
+                });
+            }
+        }
+        let providers: Vec<(String, Uuid, Option<Uuid>, String)> =
+            sqlx::query_as("select name, org_id, project_id, kind from providers order by name")
+                .fetch_all(&self.pool)
+                .await
+                .map_err(store_err)?;
+        for (name, org, project, kind) in providers {
+            let read: ProviderKind =
+                serde_json::from_value(serde_json::Value::String(kind.clone()))
+                    .unwrap_or(ProviderKind::Unknown);
+            if read == ProviderKind::Unknown {
+                problems.push(ConfigProblem {
+                    kind: crate::ConfigProblemKind::Misread,
+                    message: format!(
+                        "provider '{name}' has kind '{kind}', which this build does not know; \
+                         it is left out of the snapshot, and so is what named it, until the \
+                         control plane is upgraded or the kind is changed"
+                    ),
+                    owner: ProblemOwner::Tenant(Tenancy {
+                        org_id: org.to_string(),
+                        project_id: project.map(|p| p.to_string()),
+                    }),
+                });
+            }
+        }
+        // the loader keeps these as `Unknown`, which the gateway enforces on
+        // every request it serves; no known scope names a tenant to own them
+        problems.extend(
+            budgets
+                .iter()
+                .filter(|row| BudgetScope::from_scope_type(&row.scope_type).is_none())
+                .map(|row| {
+                    ConfigProblem::deployment(format!(
+                        "budget '{}' has scope '{}', which this build does not know; until the \
+                         control plane is upgraded or the budget is recreated on a known scope, \
+                         every request the gateways serve, every tenant's, counts against it",
+                        row.id, row.scope_type
+                    ))
+                }),
+        );
+        // the MCP proxy refuses every call through such a server (#3424)
+        let servers: Vec<(String, Uuid, String)> =
+            sqlx::query_as("select slug, org_id, auth_kind from mcp_servers order by slug")
+                .fetch_all(&self.pool)
+                .await
+                .map_err(store_err)?;
+        for (slug, org, auth_kind) in servers {
+            if parse_mcp_auth_kind(&auth_kind) == McpAuthKind::Unknown {
+                problems.push(ConfigProblem {
+                    kind: crate::ConfigProblemKind::Misread,
+                    message: format!(
+                        "mcp server '{slug}' has auth kind '{auth_kind}', which this build does \
+                         not know; every call through it is refused until the control plane is \
+                         upgraded or the auth kind is changed"
+                    ),
+                    owner: ProblemOwner::Tenant(Tenancy {
+                        org_id: org.to_string(),
+                        project_id: None,
+                    }),
+                });
+            }
+        }
+        let limits: Vec<(Uuid, String)> =
+            sqlx::query_as("select id, scope_type from rate_limits order by created_at")
+                .fetch_all(&self.pool)
+                .await
+                .map_err(store_err)?;
+        problems.extend(
+            limits
+                .into_iter()
+                .filter(|(_, scope)| BudgetScope::from_scope_type(scope).is_none())
+                .map(|(id, scope)| {
+                    ConfigProblem::deployment(format!(
+                        "rate limit '{id}' has scope '{scope}', which this build does not know; \
+                         until the control plane is upgraded or the limit is recreated on a known \
+                         scope, every request the gateways serve, every tenant's, counts against \
+                         it"
+                    ))
+                }),
+        );
+        Ok(problems)
+    }
+
     /// `left_out` names the providers [`Self::load_providers`] did not return.
-    async fn load_routes(&self, left_out: &HashSet<String>) -> Result<Vec<ModelRoute>> {
+    async fn load_routes(&self, left_out: &LeftOut) -> Result<Vec<ModelRoute>> {
+        Ok(self.assemble_routes(left_out).await?.0)
+    }
+
+    /// The routes [`Self::load_routes`] serves, and what it dropped from them
+    /// on the way: a target whose `takes_over` does not parse, and a route left
+    /// with only restricted targets (#3321). `load_problem_records` reports the
+    /// second half, so the two cannot disagree about what the snapshot left
+    /// out. Each problem is owned by its route's tenant.
+    async fn assemble_routes(
+        &self,
+        left_out: &LeftOut,
+    ) -> Result<(Vec<ModelRoute>, Vec<crate::ConfigProblem>)> {
         let route_rows = self.enabled_route_rows().await?;
 
         let target_rows: Vec<TargetRow> = sqlx::query_as(
             "select rt.route_id, p.org_id as provider_org_id, p.name as provider_name,
-                    rt.upstream_model, rt.weight
+                    rt.upstream_model, rt.weight, rt.takes_over
              from route_targets rt
              join providers p on p.id = rt.provider_id
              order by rt.route_id, rt.created_at, rt.id",
@@ -802,8 +1028,35 @@ impl PostgresConfigStore {
         .await
         .map_err(store_err)?;
 
+        // the weighted variants (#391), in declared order with their targets
+        // in routing order: the gateway samples by weight and falls back
+        // through the rest in that order, so the order is the routing
+        let variant_rows: Vec<VariantRow> = sqlx::query_as(
+            "select id, route_id, name, weight, params
+             from route_variants order by route_id, position",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(store_err)?;
+        let variant_target_rows: Vec<VariantTargetRow> = sqlx::query_as(
+            "select vt.variant_id, p.org_id as provider_org_id, p.name as provider_name,
+                    vt.upstream_model, vt.weight, vt.takes_over
+             from route_variant_targets vt
+             join providers p on p.id = vt.provider_id
+             order by vt.variant_id, vt.position",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(store_err)?;
+
         let mut routes = Vec::with_capacity(route_rows.len());
+        let mut problems = Vec::new();
         for r in route_rows {
+            let tenancy = Tenancy {
+                org_id: r.org_id.to_string(),
+                project_id: Some(r.project_id.to_string()),
+            };
+            let mut route_problems = Vec::new();
             let strategy = parse_strategy(&r.strategy)?;
             // a route whose settings do not parse is left out, not served on
             // the permissive defaults: those are public visibility, no
@@ -821,7 +1074,7 @@ impl PostgresConfigStore {
                 // a provider that was left out of the snapshot cannot be named
                 // by a target: the dangling name would fail validation of the
                 // whole snapshot, not just this route (#2943)
-                .filter(|t| !left_out.contains(&t.provider_name))
+                .filter(|t| !is_left_out(left_out, t.provider_org_id, &t.provider_name))
                 // a target on another org's provider would spend that
                 // org's credential; the write path refuses one now, and a
                 // row written before it did is dropped here (#1844)
@@ -833,12 +1086,69 @@ impl PostgresConfigStore {
                     }
                     same_org
                 })
-                .map(|t| Target {
-                    provider: t.provider_name.clone(),
-                    model: t.upstream_model.clone(),
-                    weight: t.weight.max(0) as u32,
+                .filter_map(|t| {
+                    // a class the gateway cannot read leaves the target out
+                    // rather than serving it as an ordinary member of the
+                    // pool: an expensive fallback must fail closed (#1584)
+                    let takes_over = match t
+                        .takes_over
+                        .iter()
+                        .map(|token| token.parse::<FailureClass>())
+                        .collect::<std::result::Result<Vec<_>, _>>()
+                    {
+                        Ok(classes) => classes,
+                        Err(problem) => {
+                            let problem = format!(
+                                "route '{}' target on provider '{}' omitted from the snapshot: {problem}",
+                                r.model, t.provider_name
+                            );
+                            tracing::warn!("{problem}");
+                            route_problems.push(problem);
+                            return None;
+                        }
+                    };
+                    Some(Target {
+                        provider: t.provider_name.clone(),
+                        model: t.upstream_model.clone(),
+                        weight: t.weight.max(0) as u32,
+                        takes_over,
+                    })
                 })
-                .collect();
+                .collect::<Vec<_>>();
+            let variants = route_variants(
+                &r,
+                &variant_rows,
+                &variant_target_rows,
+                left_out,
+                &mut route_problems,
+            );
+            // a route left with only restricted targets could never dial
+            // anything, and one such route would fail validation of the whole
+            // snapshot, so it is left out instead (#1584). a route with
+            // variants dials only them, so its pool does not count (#3430)
+            let stranded =
+                rolter_core::config::only_restricted_targets_dialled(&targets, &variants);
+            if stranded {
+                let problem = format!(
+                    "route '{}' omitted from the snapshot: {}",
+                    r.model,
+                    rolter_core::failover::all_targets_restricted(&r.model)
+                );
+                tracing::warn!("{problem}");
+                route_problems.push(problem);
+            }
+            problems.extend(
+                route_problems
+                    .into_iter()
+                    .map(|message| crate::ConfigProblem {
+                        kind: crate::ConfigProblemKind::Misread,
+                        message,
+                        owner: crate::ProblemOwner::Tenant(tenancy.clone()),
+                    }),
+            );
+            if stranded {
+                continue;
+            }
             routes.push(ModelRoute {
                 model: r.model,
                 strategy,
@@ -846,27 +1156,20 @@ impl PostgresConfigStore {
                 params: settings.params,
                 param_policy: settings.param_policy,
                 advanced: settings.advanced,
-                // db-backed variants land with their own store follow-up
-                variants: Default::default(),
+                variants,
                 // response-cache opt-in is config-only for now; a db-backed
                 // cache policy lands with its own store follow-up
                 cache: None,
-                tenancy: Some(Tenancy {
-                    org_id: r.org_id.to_string(),
-                    project_id: Some(r.project_id.to_string()),
-                }),
+                tenancy: Some(tenancy),
             });
         }
-        Ok(routes)
+        Ok((routes, problems))
     }
 
     /// Load provider groups and their members into `ProviderGroupConfig`
     /// (ADR-0017 addendum, ADR-0022). A member with a null `upstream_model`
     /// forwards the requested model as-is.
-    async fn load_provider_groups(
-        &self,
-        left_out: &HashSet<String>,
-    ) -> Result<Vec<ProviderGroupConfig>> {
+    async fn load_provider_groups(&self, left_out: &LeftOut) -> Result<Vec<ProviderGroupConfig>> {
         let group_rows: Vec<ProviderGroupRow> = sqlx::query_as(
             "select id, org_id, name, slug, strategy, project_id from provider_groups order by name",
         )
@@ -895,7 +1198,7 @@ impl PostgresConfigStore {
                     .filter(|m| m.group_id == g.id)
                     // same rule as a route target: never name a provider that
                     // was left out of the snapshot (#2943)
-                    .filter(|m| !left_out.contains(&m.provider_name))
+                    .filter(|m| !is_left_out(left_out, m.provider_org_id, &m.provider_name))
                     // and never another org's provider
                     .filter(|m| {
                         let same_org = m.provider_org_id == g.org_id;
@@ -944,7 +1247,8 @@ impl PostgresConfigStore {
         let rows: Vec<VirtualKeyRow> = sqlx::query_as(
             "select vk.id, vk.key_hash, vk.models, vk.providers, vk.disabled, vk.expires_at, \
                     vk.cache_enabled, vk.project_id, p.team_id, t.org_id, vk.created_by, \
-                    vk.business_unit_id, vk.customer_id \
+                    vk.business_unit_id, vk.customer_id, \
+                    vk.previous_key_hash, vk.previous_expires_at \
              from virtual_keys vk \
              join projects p on p.id = vk.project_id \
              join teams t on t.id = p.team_id \
@@ -1006,6 +1310,13 @@ impl PostgresConfigStore {
                     .map(|id| id.to_string())
                     .unwrap_or_default(),
                 customer_id: r.customer_id.map(|id| id.to_string()).unwrap_or_default(),
+                previous: match (r.previous_key_hash, r.previous_expires_at) {
+                    (Some(key_hash), Some(valid_until)) => Some(rolter_core::PreviousKeySecret {
+                        key_hash,
+                        valid_until,
+                    }),
+                    _ => None,
+                },
             })
             .collect())
     }
@@ -1081,7 +1392,10 @@ impl PostgresConfigStore {
         let rows: Vec<McpServerSnapshotRow> = sqlx::query_as(
             "select id, org_id, slug, url, transport, required_scopes, \
                     auth_kind, auth_header_name, credential_ciphertext, credential_nonce, \
-                    connect_timeout_ms, request_timeout_ms, max_retries \
+                    connect_timeout_ms, request_timeout_ms, max_retries, tools, \
+                    coalesce((select o.mcp_enforce_manifests from orgs o \
+                              where o.id = mcp_servers.org_id), false) \
+                        as enforce_manifest_by_default \
              from mcp_servers where enabled order by org_id, slug",
         )
         .fetch_all(&self.pool)
@@ -1134,7 +1448,98 @@ impl PostgresConfigStore {
                     connect_timeout_ms: row.connect_timeout_ms.map(|ms| ms.max(0) as u64),
                     request_timeout_ms: row.request_timeout_ms.map(|ms| ms.max(0) as u64),
                     max_retries: row.max_retries.map(|n| n.max(0) as u32),
+                    tools: row.tools,
+                    enforce_manifest_by_default: row.enforce_manifest_by_default,
                 }
+            })
+            .collect())
+    }
+
+    /// Enabled tool groups for the snapshot (#1403), and the disabled ones that
+    /// callers are assigned to, marked `disabled` (#3295). A reference that does not parse is left
+    /// out with a warning rather than failing the snapshot; the API only ever
+    /// writes well-formed ones, so this is a row written around it.
+    async fn load_mcp_tool_groups(&self) -> Result<Vec<McpToolGroupConfig>> {
+        let rows: Vec<McpToolGroupSnapshotRow> = sqlx::query_as(
+            "select id, org_id, slug, enabled, tools from mcp_tool_groups g where enabled \
+             or exists (select 1 from mcp_tool_group_assignments a where a.group_id = g.id) \
+             order by org_id, slug",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(store_err)?;
+        // a disabled group governs no one else, but the callers assigned to it
+        // stay narrowed (to none of its tools) on the servers it names, so it
+        // travels with its assignments, marked disabled, rather than handing
+        // them the organization-wide set or the whole server back
+        let assignments: Vec<(Uuid, String, Uuid)> = sqlx::query_as(
+            "select a.group_id, a.subject_kind, a.subject_id \
+             from mcp_tool_group_assignments a \
+             order by a.group_id, a.subject_kind, a.subject_id",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(store_err)?;
+        Ok(rows
+            .into_iter()
+            .map(|row| {
+                let assignments = assignments
+                    .iter()
+                    .filter(|(group_id, _, _)| *group_id == row.id)
+                    .map(|(_, kind, subject)| McpToolGroupSubjectConfig {
+                        kind: kind.clone(),
+                        id: subject.to_string(),
+                    })
+                    .collect();
+                let tools = match serde_json::from_value::<Vec<McpToolRefConfig>>(row.tools) {
+                    Ok(tools) => tools,
+                    Err(error) => {
+                        tracing::warn!(
+                            group_id = %row.id,
+                            error = %error,
+                            "MCP tool group holds references that do not parse; ignoring them"
+                        );
+                        Vec::new()
+                    }
+                };
+                McpToolGroupConfig {
+                    id: row.id.to_string(),
+                    org_id: row.org_id.to_string(),
+                    slug: row.slug,
+                    tools,
+                    assignments,
+                    disabled: !row.enabled,
+                }
+            })
+            .collect())
+    }
+
+    /// The organizations that have saved MCP settings. An organization with no
+    /// row is left out and is served the defaults by the gateway, exactly as
+    /// the settings endpoint reports it.
+    async fn load_mcp_settings(&self) -> Result<Vec<McpOrgSettingsConfig>> {
+        let rows: Vec<McpSettingsSnapshotRow> = sqlx::query_as(
+            "select org_id, connect_timeout_ms, request_timeout_ms, max_retries, \
+                    allow_unlisted_tools \
+             from mcp_gateway_settings order by org_id",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(store_err)?;
+        Ok(rows
+            .into_iter()
+            .map(|row| McpOrgSettingsConfig {
+                org_id: row.org_id.to_string(),
+                // bounded by check constraints; clamp a row written around them
+                connect_timeout_ms: row.connect_timeout_ms.max(0) as u64,
+                request_timeout_ms: row.request_timeout_ms.max(0) as u64,
+                max_retries: row.max_retries.max(0) as u32,
+                // deprecated (#3527): the stored `default_failure_mode` is
+                // still the API's and the export's, but the snapshot always
+                // says fail closed, so a gateway that predates the change
+                // refuses an unreadable body too during a rolling upgrade
+                fail_open: false,
+                allow_unlisted_tools: row.allow_unlisted_tools,
             })
             .collect())
     }
@@ -1211,7 +1616,7 @@ impl PostgresConfigStore {
             // String) or sqlx errors and the whole snapshot 500s — freezing every
             // polling gateway on its last config the moment any budget exists
             "select id, scope_type, scope_id, limit_usd::text as limit_usd, period,
-                    unpriced_policy, created_at
+                    unpriced_policy, created_at, within_org_id, within_project_id
              from budgets order by created_at",
         )
         .fetch_all(&self.pool)
@@ -1219,7 +1624,7 @@ impl PostgresConfigStore {
         .map_err(store_err)?;
         Ok(rows
             .into_iter()
-            .filter_map(|r| {
+            .map(|r| {
                 let scope = match r.scope_type.as_str() {
                     "org" => BudgetScope::Org,
                     "team" => BudgetScope::Team,
@@ -1227,10 +1632,14 @@ impl PostgresConfigStore {
                     "virtual_key" => BudgetScope::Key,
                     "business_unit" => BudgetScope::BusinessUnit,
                     "customer" => BudgetScope::Customer,
-                    // unknown scope: skip rather than mis-enforce
-                    _ => return None,
+                    "user" => BudgetScope::User,
+                    // a scope from a newer release, a downgrade or a hand edit
+                    // (#3470): kept as `Unknown`, which the gateway enforces as
+                    // binding on every request, rather than skipped, which
+                    // would not enforce the cap at all (#3347)
+                    _ => BudgetScope::Unknown,
                 };
-                Some(BudgetConfig {
+                BudgetConfig {
                     scope,
                     id: r.scope_id.to_string(),
                     // decimal stored as text; a malformed value disables the cap
@@ -1240,14 +1649,15 @@ impl PostgresConfigStore {
                     limit_usd: r.limit_usd.parse().unwrap_or(Decimal::MAX),
                     period: parse_period(&r.period),
                     unpriced_policy: r.unpriced_policy.as_deref().and_then(parse_unpriced_policy),
-                })
+                    within: scope_within(r.within_org_id, r.within_project_id),
+                }
             })
             .collect())
     }
 
     async fn load_rate_limits(&self) -> Result<Vec<RateLimitConfig>> {
         let rows: Vec<RateLimit> = sqlx::query_as(
-            "select id, scope_type, scope_id, rpm, tpm, created_at
+            "select id, scope_type, scope_id, rpm, tpm, created_at, within_org_id, within_project_id
              from rate_limits order by created_at",
         )
         .fetch_all(&self.pool)
@@ -1255,7 +1665,7 @@ impl PostgresConfigStore {
         .map_err(store_err)?;
         Ok(rows
             .into_iter()
-            .filter_map(|r| {
+            .map(|r| {
                 let scope = match r.scope_type.as_str() {
                     "org" => BudgetScope::Org,
                     "team" => BudgetScope::Team,
@@ -1263,16 +1673,21 @@ impl PostgresConfigStore {
                     "virtual_key" => BudgetScope::Key,
                     "business_unit" => BudgetScope::BusinessUnit,
                     "customer" => BudgetScope::Customer,
-                    // unknown scope: skip rather than mis-enforce
-                    _ => return None,
+                    "user" => BudgetScope::User,
+                    // a scope from a newer release, a downgrade or a hand edit
+                    // (#3470): kept as `Unknown`, which the gateway enforces as
+                    // binding on every request, rather than skipped, which
+                    // would not enforce the cap at all (#3347)
+                    _ => BudgetScope::Unknown,
                 };
-                Some(RateLimitConfig {
+                RateLimitConfig {
                     scope,
                     id: r.scope_id.to_string(),
                     // non-positive caps are meaningless; treat them as unset
                     rpm: r.rpm.filter(|v| *v > 0).map(|v| v as u32),
                     tpm: r.tpm.filter(|v| *v > 0).map(|v| v as u32),
-                })
+                    within: scope_within(r.within_org_id, r.within_project_id),
+                }
             })
             .collect())
     }
@@ -1487,11 +1902,105 @@ fn route_settings_from_row(row: &RouteRow) -> std::result::Result<RouteSettings,
             )
         })
     }
+    let param_policy: ParamPolicy = column(row, "param_policy", &row.param_policy)?;
+    // a mode this build does not know decodes as `Unknown` rather than failing
+    // (#3347); the store still reads it as a row it cannot read, so it is left
+    // out and named like any other
+    if param_policy.mode == rolter_core::OverrideMode::Unknown {
+        return Err(format!(
+            "route '{}' ({}) has a param_policy value that does not parse (a mode this build \
+             does not know), so the route is left out of the snapshot and its model is not \
+             served; repair the param_policy value or delete the route",
+            row.model, row.id
+        ));
+    }
     Ok(RouteSettings {
         params: column(row, "params", &row.params)?,
-        param_policy: column(row, "param_policy", &row.param_policy)?,
+        param_policy,
         advanced: column(row, "advanced", &row.advanced)?,
     })
+}
+
+/// The variants of route `r` as the gateway reads them (#391), built from the
+/// rows `load_routes` read for every route.
+///
+/// A variant target drops out on the same rules as a route target: a provider
+/// left out of the snapshot, or one of another org. A variant those rules
+/// leave with no target is dropped whole, as `GatewayConfig`'s own prune does,
+/// since validation reads a targetless variant as a defect of the snapshot.
+/// The params column is held to a json object by a check constraint
+/// (`0138`), and any object reads as a param map, so it cannot fail to parse.
+///
+/// A target whose stored `takes_over` does not parse is left out, as on the
+/// classic pool, with a line in `problems` (#3373).
+fn route_variants(
+    r: &RouteRow,
+    variant_rows: &[VariantRow],
+    target_rows: &[VariantTargetRow],
+    left_out: &LeftOut,
+    problems: &mut Vec<String>,
+) -> Vec<rolter_core::Variant> {
+    use serde::Deserialize;
+
+    let mut variants = Vec::new();
+    for v in variant_rows.iter().filter(|v| v.route_id == r.id) {
+        let params =
+            HashMap::<String, serde_json::Value>::deserialize(&v.params).unwrap_or_default();
+        let targets: Vec<Target> = target_rows
+            .iter()
+            .filter(|t| t.variant_id == v.id)
+            .filter(|t| !is_left_out(left_out, t.provider_org_id, &t.provider_name))
+            .filter(|t| {
+                let same_org = t.provider_org_id == r.org_id;
+                if !same_org {
+                    tracing::warn!(route = %r.model, variant = %v.name,
+                        provider = %t.provider_name,
+                        "dropping a variant target on another org's provider");
+                }
+                same_org
+            })
+            .filter_map(|t| {
+                // a class the gateway cannot read leaves the target out rather
+                // than serving it as an ordinary member (#1584, #3373)
+                let takes_over = match t
+                    .takes_over
+                    .iter()
+                    .map(|token| token.parse::<FailureClass>())
+                    .collect::<std::result::Result<Vec<_>, _>>()
+                {
+                    Ok(classes) => classes,
+                    Err(problem) => {
+                        let problem = format!(
+                            "route '{}' variant '{}' target on provider '{}' omitted from the \
+                             snapshot: {problem}",
+                            r.model, v.name, t.provider_name
+                        );
+                        tracing::warn!("{problem}");
+                        problems.push(problem);
+                        return None;
+                    }
+                };
+                Some(Target {
+                    provider: t.provider_name.clone(),
+                    model: t.upstream_model.clone(),
+                    weight: t.weight.max(0) as u32,
+                    takes_over,
+                })
+            })
+            .collect();
+        if targets.is_empty() {
+            tracing::warn!(route = %r.model, variant = %v.name,
+                "dropping a variant with no target the snapshot can serve");
+            continue;
+        }
+        variants.push(rolter_core::Variant {
+            name: v.name.clone(),
+            weight: v.weight.max(0) as u32,
+            targets,
+            params,
+        });
+    }
+    variants
 }
 
 /// What kind of JSON value this is, for a problem line that must not echo it:
@@ -1745,6 +2254,16 @@ fn price_from_row(row: &ModelPrice) -> std::result::Result<ModelPriceConfig, Str
 /// one row, and moving an existing budget onto another window is not a guess
 /// to make on the operator's behalf. [`unrecognised_budget_period`] is what
 /// says it happened.
+/// The place a `user` cap is narrowed to, as the gateway matches it (#1830).
+fn scope_within(org: Option<Uuid>, project: Option<Uuid>) -> Option<ScopeWithin> {
+    match (org, project) {
+        (Some(org), None) => Some(ScopeWithin::Org(org.to_string())),
+        (None, Some(project)) => Some(ScopeWithin::Project(project.to_string())),
+        // the table's check constraint refuses both, so this is "neither"
+        _ => None,
+    }
+}
+
 fn parse_period(period: &str) -> BudgetPeriod {
     BudgetPeriod::parse(period).unwrap_or(BudgetPeriod::Monthly)
 }
@@ -1784,6 +2303,44 @@ fn parse_unpriced_policy(value: &str) -> Option<UnpricedPolicy> {
     }
 }
 
+/// A registry provider row as the gateway's provider config.
+fn provider_from_row(row: GuardrailProvider) -> GuardrailWebhookConfig {
+    let auth = match (row.auth_kind.as_str(), row.auth_env) {
+        ("bearer", Some(token_env)) => Some(WebhookAuth::Bearer { token_env }),
+        ("shared_secret", Some(secret_env)) => Some(WebhookAuth::SharedSecret { secret_env }),
+        _ => None,
+    };
+    GuardrailWebhookConfig {
+        enabled: row.enabled,
+        name: row.name,
+        // a kind this build cannot parse reaches the gateway as one it does
+        // not know, which fails closed there (ADR-0039)
+        kind: GuardProviderKind::parse(&row.kind).unwrap_or(GuardProviderKind::Unknown),
+        url: row.url,
+        model_path: row.model_path.unwrap_or_default(),
+        model_sha256: row.model_sha256.unwrap_or_default(),
+        stage: if row.stage == "post_call" {
+            WebhookStage::PostCall
+        } else {
+            WebhookStage::PreCall
+        },
+        timeout_ms: row.timeout_ms.max(1) as u64,
+        max_retries: row.max_retries.max(0) as u32,
+        failure_mode: if row.failure_mode == "fail_closed" {
+            FailureMode::FailClosed
+        } else {
+            FailureMode::FailOpen
+        },
+        max_body_bytes: row.max_body_bytes.max(1) as usize,
+        // not stored: a registry provider scores the default budget and
+        // flags a cut without refusing it; only a config file sets these
+        // (#3513)
+        max_scored_bytes: None,
+        on_truncated: rolter_core::OnTruncated::default(),
+        auth,
+    }
+}
+
 /// Read the current global config version. Bumping happens in the database
 /// itself: migration 0003 installs triggers that increment the version
 /// atomically with any write to providers/routes/route_targets/virtual_keys.
@@ -1810,7 +2367,7 @@ impl ConfigStore for PostgresConfigStore {
         let model_defaults = self.load_model_defaults().await?;
         let adaptive = self.load_adaptive_routing_policy().await?;
         let guardrails = self.load_guardrails().await?;
-        let guardrail_webhook = self.load_guardrail_webhook().await?;
+        let semantic_guards = self.load_semantic_guards().await?;
         let (providers, left_out) = self.load_providers().await?;
         let routes = self.load_routes(&left_out).await?;
         let provider_groups = self.load_provider_groups(&left_out).await?;
@@ -1818,24 +2375,31 @@ impl ConfigStore for PostgresConfigStore {
         let db_virtual_keys = self.load_virtual_keys().await?;
         let mcp_servers = self.load_mcp_servers().await?;
         let mcp_oauth_sessions = self.load_mcp_oauth_sessions().await?;
+        let mcp_tool_groups = self.load_mcp_tool_groups().await?;
+        let mcp_settings = self.load_mcp_settings().await?;
         let budgets = self.load_budgets().await?;
         let rate_limits = self.load_rate_limits().await?;
         let prompt_templates = self.load_prompt_templates().await?;
         let plugins = self.load_plugins().await?;
         let mut config = GatewayConfig {
             providers,
-            left_out_providers: left_out,
+            left_out_providers: left_out
+                .into_iter()
+                .map(|(org, name)| (org.to_string(), name))
+                .collect(),
             routes,
             provider_groups,
             model_prices,
             db_virtual_keys,
             mcp_servers,
             mcp_oauth_sessions,
+            mcp_tool_groups,
+            mcp_settings,
             budgets,
             rate_limits,
             prompt_templates,
             guardrails,
-            guardrail_webhook,
+            semantic_guards,
             plugins,
             feature_flags: FeatureFlagsConfig {
                 response_cache: flags.response_cache,
@@ -1938,7 +2502,7 @@ impl ConfigStore for PostgresConfigStore {
         use crate::{ConfigProblem, ProblemOwner};
         let budgets: Vec<Budget> = sqlx::query_as(
             "select id, scope_type, scope_id, limit_usd::text as limit_usd, period,
-                    unpriced_policy, created_at
+                    unpriced_policy, created_at, within_org_id, within_project_id
              from budgets order by created_at",
         )
         .fetch_all(&self.pool)
@@ -1948,6 +2512,7 @@ impl ConfigStore for PostgresConfigStore {
             .iter()
             .filter(|row| BudgetPeriod::parse(&row.period).is_none())
             .map(|row| ConfigProblem {
+                kind: crate::ConfigProblemKind::Misread,
                 message: unrecognised_budget_period(row),
                 owner: match BudgetScope::from_scope_type(&row.scope_type) {
                     Some(scope) => ProblemOwner::Scope {
@@ -1973,6 +2538,7 @@ impl ConfigStore for PostgresConfigStore {
             route_settings_from_row(row)
                 .err()
                 .map(|message| ConfigProblem {
+                    kind: crate::ConfigProblemKind::Misread,
                     message,
                     owner: ProblemOwner::Tenant(rolter_core::Tenancy {
                         org_id: row.org_id.to_string(),
@@ -2000,17 +2566,38 @@ impl ConfigStore for PostgresConfigStore {
         .fetch_all(&self.pool)
         .await
         .map_err(store_err)?;
+        let mut left_out = LeftOut::new();
         problems.extend(proxies.iter().filter_map(|(name, org, project, value)| {
-            egress_proxies_from_value(name, value)
-                .err()
-                .map(|message| ConfigProblem {
+            egress_proxies_from_value(name, value).err().map(|message| {
+                // the provider `load_providers` leaves out for it
+                left_out.insert((*org, name.clone()));
+                ConfigProblem {
+                    kind: crate::ConfigProblemKind::Misread,
                     message,
                     owner: ProblemOwner::Tenant(rolter_core::Tenancy {
                         org_id: org.to_string(),
                         project_id: project.map(|p| p.to_string()),
                     }),
-                })
+                }
+            })
         }));
+        // a stored value from a newer release, a downgrade or a hand-written
+        // row that this build reads as `Unknown` (#3446). a `takes_over` class
+        // is reported with its target below, and a budget period above
+        problems.extend(self.unknown_value_problems(&budgets).await?);
+        // a target or route the snapshot drops for `takes_over` (#3321). a
+        // failure to read them is itself the problem to report: failing the
+        // whole list would hide every other explanation with it
+        match self.assemble_routes(&left_out).await {
+            Ok((_, dropped)) => problems.extend(dropped),
+            Err(error) => {
+                tracing::warn!("the routes could not be read for their problems: {error}");
+                problems.push(ConfigProblem::deployment(format!(
+                    "the routes could not be read, so a target or route left out of the \
+                     snapshot is not listed here: {error}"
+                )));
+            }
+        }
         Ok(problems)
     }
 }
@@ -2051,6 +2638,8 @@ mod tests {
             BalancingStrategy::Adaptive => "adaptive",
             BalancingStrategy::LoraAware => "lora_aware",
             BalancingStrategy::PredictedLatency => "predicted_latency",
+            // never stored: it stands for a value a newer release wrote (#3347)
+            BalancingStrategy::Unknown => unreachable!("Unknown has no column value"),
         }
     }
 
@@ -2093,12 +2682,13 @@ mod tests {
         }
     }
 
+    /// A strategy a newer release stored reads as `Unknown`, which the snapshot
+    /// sanitizer omits, rather than failing the whole load (#3347).
     #[test]
-    fn an_unknown_strategy_is_still_an_error() {
-        let err = parse_strategy("teleport").expect_err("unknown strategy must not parse");
-        assert!(
-            err.to_string().contains("teleport"),
-            "the message should name the offending value, got: {err}"
+    fn an_unknown_strategy_reads_as_unknown_rather_than_failing_the_load() {
+        assert_eq!(
+            parse_strategy("teleport").expect("a strategy from a newer release still loads"),
+            BalancingStrategy::Unknown
         );
     }
 
@@ -2752,17 +3342,19 @@ mod tests {
             let provider = repo::ProviderRepo(&pool)
                 .create(
                     org.id,
-                    name,
-                    name,
-                    "openai",
-                    "https://api.openai.com",
-                    Some("OPENAI_API_KEY"),
-                    None,
-                    &[],
-                    None,
-                    None,
-                    None,
-                    false,
+                    repo::NewProvider {
+                        name,
+                        slug: name,
+                        kind: "openai",
+                        api_base: "https://api.openai.com",
+                        api_key_env: Some("OPENAI_API_KEY"),
+                        egress_proxy: None,
+                        egress_proxies: &[],
+                        kv_events: None,
+                        lmcache: None,
+                        project_id: None,
+                        allow_custom_api_base: false,
+                    },
                 )
                 .await
                 .unwrap();
@@ -2797,6 +3389,112 @@ mod tests {
         .unwrap();
         let after = order(store.load_routes(&HashSet::new()).await.unwrap());
         assert_eq!(after, before, "a weight edit keeps the target order");
+    }
+
+    /// #391: a variant target drops out of the snapshot on the rules a route
+    /// target does, a provider of another org and a provider left out of the
+    /// snapshot, and a variant those rules leave with no target is dropped
+    /// whole rather than served empty. The variants keep their declared order.
+    #[tokio::test]
+    async fn variant_targets_load_on_the_route_target_rules() {
+        if !test_database::is_configured() {
+            eprintln!("skipping: {} not set", test_database::URL_ENV);
+            return;
+        }
+        let db = fresh_db().await;
+        let pool = db.pool().clone();
+        let store = PostgresConfigStore {
+            pool: pool.clone(),
+            kek: None,
+        };
+        let provider = |org_id: Uuid, name: &'static str| {
+            let pool = pool.clone();
+            async move {
+                repo::ProviderRepo(&pool)
+                    .create(
+                        org_id,
+                        repo::NewProvider {
+                            name,
+                            slug: name,
+                            kind: "openai",
+                            api_base: "https://api.openai.com",
+                            api_key_env: Some("OPENAI_API_KEY"),
+                            egress_proxy: None,
+                            egress_proxies: &[],
+                            kv_events: None,
+                            lmcache: None,
+                            project_id: None,
+                            allow_custom_api_base: false,
+                        },
+                    )
+                    .await
+                    .unwrap()
+                    .id
+            }
+        };
+        let org = repo::OrgRepo(&pool).create("acme", "acme").await.unwrap();
+        let other = repo::OrgRepo(&pool)
+            .create("globex", "globex")
+            .await
+            .unwrap();
+        let team = repo::TeamRepo(&pool).create(org.id, "core").await.unwrap();
+        let project = repo::ProjectRepo(&pool)
+            .create(team.id, "default")
+            .await
+            .unwrap();
+        let route = repo::RouteRepo(&pool)
+            .create(project.id, "split", "round_robin")
+            .await
+            .unwrap();
+        let own = provider(org.id, "own").await;
+        let dropped = provider(org.id, "dropped").await;
+        let foreign = provider(other.id, "foreign").await;
+        let target = |provider_id: Uuid| repo::RouteVariantTargetSpec {
+            provider_id,
+            upstream_model: None,
+            weight: 1,
+            takes_over: Vec::new(),
+        };
+        let variant =
+            |name: &str, targets: Vec<repo::RouteVariantTargetSpec>| repo::RouteVariantSpec {
+                name: name.to_string(),
+                weight: 1,
+                params: serde_json::json!({}),
+                targets,
+            };
+        // the write path refuses a foreign provider, so it is written here
+        // directly, as a row from before that check would be
+        repo::RouteVariantRepo(&pool)
+            .replace(
+                route.id,
+                &[
+                    variant("mixed", vec![target(foreign), target(own), target(dropped)]),
+                    variant("stranded", vec![target(foreign), target(dropped)]),
+                    variant("plain", vec![target(own)]),
+                ],
+            )
+            .await
+            .unwrap();
+
+        let left_out: LeftOut = [(org.id, "dropped".to_string())].into();
+        let routes = store.load_routes(&left_out).await.unwrap();
+        let split = routes.iter().find(|r| r.model == "split").unwrap();
+        let shape: Vec<(String, Vec<String>)> = split
+            .variants
+            .iter()
+            .map(|v| {
+                let providers = v.targets.iter().map(|t| t.provider.clone()).collect();
+                (v.name.clone(), providers)
+            })
+            .collect();
+        assert_eq!(
+            shape,
+            [
+                ("mixed".to_string(), vec!["own".to_string()]),
+                ("plain".to_string(), vec!["own".to_string()]),
+            ],
+            "a foreign or left-out target is dropped, and so is a variant left with none"
+        );
     }
 
     #[tokio::test]
@@ -3451,15 +4149,76 @@ mod tests {
         // a writer with no opinion on the column keeps what is stored
         let repo = repo::LoggingSettingsRepo(&pool);
         let row = repo
-            .update(1.0, false, 32768, &[], &[], &[], 90, 168, None)
+            .update(repo::LoggingSettingsUpdate {
+                sample_rate: 1.0,
+                payload_capture_enabled: false,
+                payload_capture_max_bytes: 32768,
+                payload_capture_redact_fields: &[],
+                payload_capture_redact_detectors: None,
+                payload_capture_redact_patterns: None,
+                payload_capture_models: &[],
+                payload_capture_virtual_key_ids: &[],
+                retention_days: 90,
+                payload_retention_hours: 168,
+                ui_events: None,
+            })
             .await
             .unwrap();
         assert!(!row.ui_events, "a None update re-enabled the stream");
         let row = repo
-            .update(1.0, false, 32768, &[], &[], &[], 90, 168, Some(true))
+            .update(repo::LoggingSettingsUpdate {
+                sample_rate: 1.0,
+                payload_capture_enabled: false,
+                payload_capture_max_bytes: 32768,
+                payload_capture_redact_fields: &[],
+                payload_capture_redact_detectors: None,
+                payload_capture_redact_patterns: None,
+                payload_capture_models: &[],
+                payload_capture_virtual_key_ids: &[],
+                retention_days: 90,
+                payload_retention_hours: 168,
+                ui_events: Some(true),
+            })
             .await
             .unwrap();
         assert!(row.ui_events);
+
+        // the value-redaction policy (#1835) defaults to every built-in
+        // detector, is replaced when given, kept when not, and reaches the
+        // snapshot through the same trigger as the other columns
+        assert_eq!(
+            row.payload_capture_redact_detectors,
+            rolter_core::payload_redaction::detector_names()
+        );
+        let patterns = [rolter_core::payload_redaction::RedactPattern {
+            name: "employee_id".to_string(),
+            pattern: r"EMP-\d{6}".to_string(),
+        }];
+        let detectors = ["aws_key".to_string()];
+        let before = current_version(&pool).await.unwrap();
+        let update = |detectors, patterns| repo::LoggingSettingsUpdate {
+            sample_rate: 1.0,
+            payload_capture_enabled: true,
+            payload_capture_max_bytes: 32768,
+            payload_capture_redact_fields: &[],
+            payload_capture_redact_detectors: detectors,
+            payload_capture_redact_patterns: patterns,
+            payload_capture_models: &[],
+            payload_capture_virtual_key_ids: &[],
+            retention_days: 90,
+            payload_retention_hours: 168,
+            ui_events: None,
+        };
+        repo.update(update(Some(&detectors[..]), Some(&patterns[..])))
+            .await
+            .unwrap();
+        assert!(current_version(&pool).await.unwrap() > before);
+        let row = repo.update(update(None, None)).await.unwrap();
+        assert_eq!(row.payload_capture_redact_detectors, detectors);
+        assert_eq!(row.payload_capture_redact_patterns.0, patterns);
+        let capture = store.load().await.unwrap().logging.payload_capture;
+        assert_eq!(capture.redact_detectors, detectors);
+        assert_eq!(capture.redact_patterns, patterns);
     }
 
     #[tokio::test]
@@ -4167,6 +4926,321 @@ mod tests {
         );
     }
 
+    /// #3446: a stored value this build reads as `Unknown` no longer fails the
+    /// snapshot, so the problems list is where the row is explained: each
+    /// kind names its entity, the value and what happens to the row, owned by
+    /// its tenant where it has one. The values are written with plain SQL past
+    /// the check constraints, as a newer release or a downgrade leaves them.
+    #[tokio::test]
+    async fn rows_read_as_unknown_are_listed_in_the_problems() {
+        if !test_database::is_configured() {
+            eprintln!("skipping: {} not set", test_database::URL_ENV);
+            return;
+        }
+        let db = fresh_db().await;
+        let pool = db.pool().clone();
+        // the constraints a newer release's migrations would have widened
+        sqlx::query(
+            "do $$ declare c record; begin
+               for c in select conname, conrelid::regclass::text as t from pg_constraint
+                        where contype = 'c'
+                          and conrelid::regclass::text in
+                              ('routes', 'providers', 'budgets', 'rate_limits', 'route_targets',
+                               'mcp_servers')
+               loop execute format('alter table %s drop constraint %I', c.t, c.conname);
+               end loop; end $$",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let org_id: Uuid = sqlx::query_scalar(
+            "insert into orgs (name, slug) values ('acme', 'acme') returning id",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let team_id: Uuid =
+            sqlx::query_scalar("insert into teams (org_id, name) values ($1, 'core') returning id")
+                .bind(org_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        let project_id: Uuid = sqlx::query_scalar(
+            "insert into projects (team_id, name) values ($1, 'api') returning id",
+        )
+        .bind(team_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let known: Uuid = sqlx::query_scalar(
+            "insert into providers (org_id, name, slug, kind, api_base)
+             values ($1, 'known', 'known', 'openai', 'https://a.example') returning id",
+        )
+        .bind(org_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "insert into providers (org_id, name, slug, kind, api_base)
+             values ($1, 'future', 'future', 'quantum', 'https://q.example')",
+        )
+        .bind(org_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "insert into routes (project_id, model, strategy)
+             values ($1, 'guessing', 'mind_reading')",
+        )
+        .bind(project_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let route: Uuid = sqlx::query_scalar(
+            "insert into routes (project_id, model, strategy)
+             values ($1, 'kept', 'round_robin') returning id",
+        )
+        .bind(project_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "insert into route_targets (route_id, provider_id, weight, takes_over)
+             values ($1, $2, 1, array['quantum_flux'])",
+        )
+        .bind(route)
+        .bind(known)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let galaxy: Uuid = sqlx::query_scalar(
+            "insert into budgets (scope_type, scope_id, limit_usd, period)
+             values ('galaxy', $1, 10, 'monthly') returning id",
+        )
+        .bind(org_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "insert into budgets (scope_type, scope_id, limit_usd, period)
+             values ('org', $1, 10, 'fortnightly')",
+        )
+        .bind(org_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let limit: Uuid = sqlx::query_scalar(
+            "insert into rate_limits (scope_type, scope_id, rpm)
+             values ('galaxy', $1, 10) returning id",
+        )
+        .bind(org_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "insert into mcp_servers (org_id, name, slug, url, transport, auth_kind)
+             values ($1, 'tools', 'tools', 'https://mcp.example', 'streamable_http', 'telepathy')",
+        )
+        .bind(org_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let store = PostgresConfigStore::new(pool);
+        let problems = store.load_problem_records().await.unwrap();
+        let find = |needle: &str| {
+            problems
+                .iter()
+                .find(|p| p.message.contains(needle))
+                .unwrap_or_else(|| panic!("no problem names {needle}: {problems:?}"))
+        };
+        let tenant = crate::ProblemOwner::Tenant(rolter_core::Tenancy {
+            org_id: org_id.to_string(),
+            project_id: Some(project_id.to_string()),
+        });
+
+        let strategy = find("balancing strategy 'mind_reading'");
+        assert!(
+            strategy.message.contains("route 'guessing'"),
+            "{strategy:?}"
+        );
+        assert!(strategy.message.contains("left out"), "{strategy:?}");
+        assert_eq!(strategy.owner, tenant);
+
+        let kind = find("has kind 'quantum'");
+        assert!(kind.message.contains("provider 'future'"), "{kind:?}");
+        assert!(kind.message.contains("left out"), "{kind:?}");
+        assert_eq!(
+            kind.owner,
+            crate::ProblemOwner::Tenant(rolter_core::Tenancy {
+                org_id: org_id.to_string(),
+                project_id: None,
+            })
+        );
+
+        let scope = find(&format!("budget '{galaxy}' has scope 'galaxy'"));
+        assert!(scope.message.contains("every request"), "{scope:?}");
+        let rate = find(&format!("rate limit '{limit}'"));
+        assert!(rate.message.contains("scope 'galaxy'"), "{rate:?}");
+
+        let mcp = find("auth kind 'telepathy'");
+        assert!(mcp.message.contains("mcp server 'tools'"), "{mcp:?}");
+        assert!(mcp.message.contains("refused"), "{mcp:?}");
+        assert_eq!(
+            mcp.owner,
+            crate::ProblemOwner::Tenant(rolter_core::Tenancy {
+                org_id: org_id.to_string(),
+                project_id: None,
+            })
+        );
+
+        let period = find("period 'fortnightly'");
+        assert!(period.message.contains("monthly"), "{period:?}");
+
+        let class = find("quantum_flux");
+        assert!(class.message.contains("route 'kept'"), "{class:?}");
+        assert!(class.message.contains("omitted"), "{class:?}");
+        assert_eq!(class.owner, tenant);
+    }
+
+    /// #3469: one org's provider row of a kind this build does not know used
+    /// to fail the whole load, so no tenant's config was published. It now
+    /// reads as `Unknown`, the sanitizer leaves out that provider and the route
+    /// that named it, and every other org's config loads and serves.
+    #[tokio::test]
+    async fn an_unknown_provider_kind_is_left_out_and_the_other_orgs_still_load() {
+        if !test_database::is_configured() {
+            eprintln!("skipping: {} not set", test_database::URL_ENV);
+            return;
+        }
+        let db = fresh_db().await;
+        let pool = db.pool().clone();
+        sqlx::query("alter table providers drop constraint if exists providers_kind_check")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let mut projects = Vec::new();
+        for (slug, provider, kind) in [("acme", "known", "openai"), ("newer", "future", "quantum")]
+        {
+            let org: Uuid =
+                sqlx::query_scalar("insert into orgs (name, slug) values ($1, $1) returning id")
+                    .bind(slug)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            let team: Uuid = sqlx::query_scalar(
+                "insert into teams (org_id, name) values ($1, 'core') returning id",
+            )
+            .bind(org)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            let project: Uuid = sqlx::query_scalar(
+                "insert into projects (team_id, name) values ($1, 'api') returning id",
+            )
+            .bind(team)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            let provider_id: Uuid = sqlx::query_scalar(
+                "insert into providers (org_id, name, slug, kind, api_base)
+                 values ($1, $2, $2, $3, 'https://a.example') returning id",
+            )
+            .bind(org)
+            .bind(provider)
+            .bind(kind)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            let route: Uuid = sqlx::query_scalar(
+                "insert into routes (project_id, model, strategy)
+                 values ($1, $2, 'round_robin') returning id",
+            )
+            .bind(project)
+            .bind(format!("{slug}-model"))
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            sqlx::query(
+                "insert into route_targets (route_id, provider_id, weight) values ($1, $2, 1)",
+            )
+            .bind(route)
+            .bind(provider_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+            projects.push(project);
+        }
+
+        let mut config = PostgresConfigStore::new(pool).load().await.unwrap();
+        let unknown = config.fail_closed_unknown_report();
+        assert_eq!(unknown.kinds.get("provider_kind"), Some(&1), "{unknown:?}");
+        let providers: Vec<&str> = config.providers.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(providers, ["known"]);
+        let routes: Vec<&str> = config.routes.iter().map(|r| r.model.as_str()).collect();
+        assert_eq!(routes, ["acme-model"]);
+        config
+            .validate_snapshot()
+            .expect("the rest of the config is servable");
+    }
+
+    /// #3470: a budget or rate limit on a scope this build does not know was
+    /// skipped, which left its cap unenforced. It is now loaded as
+    /// `BudgetScope::Unknown`, the reading the gateway enforces as binding on
+    /// every request (#3347), and the snapshot still validates.
+    #[tokio::test]
+    async fn a_cap_on_an_unknown_scope_loads_as_binding() {
+        if !test_database::is_configured() {
+            eprintln!("skipping: {} not set", test_database::URL_ENV);
+            return;
+        }
+        let db = fresh_db().await;
+        let pool = db.pool().clone();
+        sqlx::query(
+            "do $$ declare c record; begin
+               for c in select conname, conrelid::regclass::text as t from pg_constraint
+                        where contype = 'c'
+                          and conrelid::regclass::text in ('budgets', 'rate_limits')
+               loop execute format('alter table %s drop constraint %I', c.t, c.conname);
+               end loop; end $$",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let scope_id = Uuid::new_v4();
+        sqlx::query(
+            "insert into budgets (scope_type, scope_id, limit_usd, period)
+             values ('galaxy', $1, 5, 'monthly')",
+        )
+        .bind(scope_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query("insert into rate_limits (scope_type, scope_id, rpm) values ('galaxy', $1, 1)")
+            .bind(scope_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let mut config = PostgresConfigStore::new(pool).load().await.unwrap();
+        assert_eq!(config.budgets.len(), 1, "{:?}", config.budgets);
+        assert_eq!(config.budgets[0].scope, BudgetScope::Unknown);
+        assert_eq!(config.budgets[0].id, scope_id.to_string());
+        assert_eq!(config.rate_limits.len(), 1, "{:?}", config.rate_limits);
+        assert_eq!(config.rate_limits[0].scope, BudgetScope::Unknown);
+        assert_eq!(config.rate_limits[0].rpm, Some(1));
+        let unknown = config.fail_closed_unknown_report();
+        assert_eq!(unknown.kinds.get("budget_scope"), Some(&1), "{unknown:?}");
+        assert_eq!(
+            unknown.kinds.get("rate_limit_scope"),
+            Some(&1),
+            "{unknown:?}"
+        );
+        config
+            .validate_snapshot()
+            .expect("the caps travel in the snapshot");
+    }
+
     // the adaptive-routing kill switch and blend weights are control-plane
     // owned, so an operator change must reach the polling gateway (#544)
     #[tokio::test]
@@ -4235,17 +5309,16 @@ mod tests {
             config.guardrails.rules[0].builtin,
             Some(BuiltinRule::Email)
         ));
-        assert!(config.guardrail_webhook.enabled);
-        assert_eq!(
-            config.guardrail_webhook.url,
-            "https://guardrails.internal/evaluate"
-        );
+        // registry providers reach the gateway as semantic guard providers
+        // (#459); `[guardrail_webhook]` is the config file's alone
+        assert!(!config.guardrail_webhook.enabled);
+        let provider = &config.semantic_guards.providers[0];
+        assert!(provider.enabled);
+        assert_eq!(provider.name, "policy-service");
+        assert_eq!(provider.url, "https://guardrails.internal/evaluate");
+        assert!(matches!(provider.failure_mode, FailureMode::FailClosed));
         assert!(matches!(
-            config.guardrail_webhook.failure_mode,
-            FailureMode::FailClosed
-        ));
-        assert!(matches!(
-            config.guardrail_webhook.auth,
+            provider.auth,
             Some(WebhookAuth::Bearer { ref token_env }) if token_env == "ROLTER_GUARDRAIL_TOKEN"
         ));
     }
@@ -4841,6 +5914,310 @@ mod tests {
         assert_eq!(plugins, ["audit", "from-file"]);
     }
 
+    /// #1584: `takes_over` reaches the snapshot, a change to it bumps
+    /// `config_version`, and both ways a stored row could leave a route unable
+    /// to dial anything fail closed: a class the gateway cannot read drops its
+    /// target rather than serving it as an ordinary one, and a route whose
+    /// every remaining target is restricted is left out rather than failing
+    /// validation of the whole snapshot.
+    #[tokio::test]
+    async fn takes_over_reaches_the_snapshot_and_fails_closed() {
+        if !test_database::is_configured() {
+            eprintln!("skipping: {} not set", test_database::URL_ENV);
+            return;
+        }
+        let db = fresh_db().await;
+        let pool = db.pool().clone();
+        let org_id: Uuid = sqlx::query_scalar(
+            "insert into orgs (name, slug) values ('acme', 'acme') returning id",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let team_id: Uuid =
+            sqlx::query_scalar("insert into teams (org_id, name) values ($1, 'core') returning id")
+                .bind(org_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        let project_id: Uuid = sqlx::query_scalar(
+            "insert into projects (team_id, name) values ($1, 'api') returning id",
+        )
+        .bind(team_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let mut providers = HashMap::new();
+        for name in ["cheap", "premium"] {
+            let id: Uuid = sqlx::query_scalar(
+                "insert into providers (org_id, name, slug, kind, api_base)
+                 values ($1, $2, $2, 'openai', 'https://api.openai.com') returning id",
+            )
+            .bind(org_id)
+            .bind(name)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            providers.insert(name, id);
+        }
+        // (route, [(provider, takes_over)])
+        type Targets<'a> = &'a [(&'a str, &'a [&'a str])];
+        let routes: [(&str, Targets); 3] = [
+            ("guarded", &[("cheap", &[]), ("premium", &["refusal"])]),
+            ("bad-class", &[("cheap", &[]), ("premium", &["bogus"])]),
+            ("stranded", &[("premium", &["refusal"])]),
+        ];
+        for (model, targets) in routes {
+            let route_id: Uuid = sqlx::query_scalar(
+                "insert into routes (project_id, model, strategy) values ($1, $2, 'round_robin')
+                 returning id",
+            )
+            .bind(project_id)
+            .bind(model)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            for (provider, takes_over) in targets {
+                sqlx::query(
+                    "insert into route_targets (route_id, provider_id, weight, takes_over)
+                     values ($1, $2, 1, $3)",
+                )
+                .bind(route_id)
+                .bind(providers[provider])
+                .bind(takes_over)
+                .execute(&pool)
+                .await
+                .unwrap();
+            }
+        }
+
+        // a variant's targets carry the same classes (#3373): `split` has a
+        // guarded variant, a variant whose only readable target is ordinary,
+        // and `split-stranded` only a restricted target across its variants
+        type VariantTargets<'a> = &'a [(&'a str, &'a [(&'a str, &'a [&'a str])])];
+        let variant_routes: [(&str, VariantTargets); 3] = [
+            (
+                "split",
+                &[
+                    ("a", &[("cheap", &[]), ("premium", &["throttled"])]),
+                    ("b", &[("cheap", &[]), ("premium", &["bogus"])]),
+                ],
+            ),
+            ("split-stranded", &[("a", &[("premium", &["refusal"])])]),
+            // an ordinary pool target the data plane never dials beside
+            // variants that hold only a fallback (#3430)
+            ("split-pooled", &[("a", &[("premium", &["refusal"])])]),
+        ];
+        for (model, variants) in variant_routes {
+            let route_id: Uuid = sqlx::query_scalar(
+                "insert into routes (project_id, model, strategy) values ($1, $2, 'round_robin')
+                 returning id",
+            )
+            .bind(project_id)
+            .bind(model)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            if model == "split-pooled" {
+                sqlx::query(
+                    "insert into route_targets (route_id, provider_id, weight, takes_over)
+                     values ($1, $2, 1, '{}')",
+                )
+                .bind(route_id)
+                .bind(providers["cheap"])
+                .execute(&pool)
+                .await
+                .unwrap();
+            }
+            for (position, (name, targets)) in variants.iter().enumerate() {
+                let variant_id: Uuid = sqlx::query_scalar(
+                    "insert into route_variants (route_id, name, weight, position)
+                     values ($1, $2, 1, $3) returning id",
+                )
+                .bind(route_id)
+                .bind(name)
+                .bind(position as i32)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+                for (position, (provider, takes_over)) in targets.iter().enumerate() {
+                    sqlx::query(
+                        "insert into route_variant_targets
+                             (variant_id, provider_id, weight, position, takes_over)
+                         values ($1, $2, 1, $3, $4)",
+                    )
+                    .bind(variant_id)
+                    .bind(providers[provider])
+                    .bind(position as i32)
+                    .bind(takes_over)
+                    .execute(&pool)
+                    .await
+                    .unwrap();
+                }
+            }
+        }
+
+        let store = PostgresConfigStore::new(pool.clone());
+        let config = store.load().await.unwrap();
+        let models: Vec<&str> = config.routes.iter().map(|r| r.model.as_str()).collect();
+        assert_eq!(models, ["bad-class", "guarded", "split"]);
+        let split = &config.routes[2];
+        assert_eq!(
+            split.variants[0].targets[1].takes_over,
+            vec!["throttled".parse().unwrap()]
+        );
+        assert_eq!(
+            split.variants[1].targets.len(),
+            1,
+            "the unreadable variant target is dropped"
+        );
+        assert_eq!(config.validate_snapshot(), Ok(()));
+        let guarded = &config.routes[1];
+        assert_eq!(guarded.targets.len(), 2);
+        assert_eq!(
+            guarded.targets[1].takes_over,
+            vec!["refusal".parse().unwrap()]
+        );
+        let bad = &config.routes[0];
+        assert_eq!(bad.targets.len(), 1, "the unreadable target is dropped");
+        assert_eq!(bad.targets[0].provider, "cheap");
+
+        // both are reported, owned by the route's tenant (#3321)
+        let problems = store.load_problem_records().await.unwrap();
+        let tenant = crate::ProblemOwner::Tenant(Tenancy {
+            org_id: org_id.to_string(),
+            project_id: Some(project_id.to_string()),
+        });
+        let dropped = problems
+            .iter()
+            .find(|p| p.message.contains("route 'bad-class'"))
+            .unwrap_or_else(|| panic!("no problem for the dropped target: {problems:?}"));
+        assert!(
+            dropped.message.contains("provider 'premium'"),
+            "{dropped:?}"
+        );
+        assert!(dropped.message.contains("'bogus'"), "{dropped:?}");
+        assert_eq!(dropped.owner, tenant);
+        let stranded = problems
+            .iter()
+            .find(|p| p.message.contains("route 'stranded'"))
+            .unwrap_or_else(|| panic!("no problem for the left-out route: {problems:?}"));
+        assert!(
+            stranded
+                .message
+                .contains(rolter_core::failover::ALL_TARGETS_RESTRICTED),
+            "{stranded:?}"
+        );
+        assert_eq!(stranded.owner, tenant);
+        assert!(
+            !problems.iter().any(|p| p.message.contains("'guarded'")),
+            "{problems:?}"
+        );
+        assert!(
+            problems
+                .iter()
+                .any(|p| p.message.contains("route 'split-pooled'")
+                    && p.message
+                        .contains(rolter_core::failover::ALL_TARGETS_RESTRICTED)),
+            "an ordinary pool target does not rescue all-restricted variants: {problems:?}"
+        );
+        let variant_dropped = problems
+            .iter()
+            .find(|p| p.message.contains("route 'split' variant 'b'"))
+            .unwrap_or_else(|| panic!("no problem for the variant target: {problems:?}"));
+        assert!(
+            variant_dropped.message.contains("'bogus'"),
+            "{variant_dropped:?}"
+        );
+        assert_eq!(variant_dropped.owner, tenant);
+        assert!(
+            problems
+                .iter()
+                .any(|p| p.message.contains("route 'split-stranded'")
+                    && p.message
+                        .contains(rolter_core::failover::ALL_TARGETS_RESTRICTED)),
+            "{problems:?}"
+        );
+
+        let before = current_version(&pool).await.unwrap();
+        sqlx::query(
+            "update route_targets set takes_over = '{throttled}' where takes_over = '{refusal}'",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        assert!(current_version(&pool).await.unwrap() > before);
+        // the variant targets' existing trigger (0139) covers the new column
+        let before = current_version(&pool).await.unwrap();
+        sqlx::query("update route_variant_targets set takes_over = '{timeout}' where takes_over = '{throttled}'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert!(current_version(&pool).await.unwrap() > before);
+    }
+
+    /// #3321: when the assembly cannot read the routes at all, only the
+    /// routes' own part of the problem list fails, not the list: every other
+    /// explanation is still there, with a line saying the routes could not be
+    /// read. A strategy no build knows no longer fails the read since #3347 (it
+    /// loads as `Unknown`), so a table the assembly reads is taken away instead.
+    #[tokio::test]
+    async fn an_unreadable_route_keeps_the_other_problems() {
+        if !test_database::is_configured() {
+            eprintln!("skipping: {} not set", test_database::URL_ENV);
+            return;
+        }
+        let db = fresh_db().await;
+        let pool = db.pool().clone();
+        let org_id: Uuid = sqlx::query_scalar(
+            "insert into orgs (name, slug) values ('acme', 'acme') returning id",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let team_id: Uuid =
+            sqlx::query_scalar("insert into teams (org_id, name) values ($1, 'core') returning id")
+                .bind(org_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        let project_id: Uuid = sqlx::query_scalar(
+            "insert into projects (team_id, name) values ($1, 'api') returning id",
+        )
+        .bind(team_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "insert into routes (project_id, model, strategy, params)
+             values ($1, 'bad-params', 'round_robin', '[\"max_tokens\"]'::jsonb)",
+        )
+        .bind(project_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        // the assembly reads the variant targets, so without the table it
+        // cannot read the routes at all. the schema is this test's own
+        sqlx::query("drop table route_variant_targets")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let store = PostgresConfigStore::new(pool.clone());
+        let problems = store.load_problem_records().await.unwrap();
+        assert!(
+            problems.iter().any(|p| p.message.contains("bad-params")),
+            "{problems:?}"
+        );
+        assert!(
+            problems
+                .iter()
+                .any(|p| p.message.contains("the routes could not be read")
+                    && p.message.contains("route_variant_targets")),
+            "{problems:?}"
+        );
+    }
+
     /// #2938: a route whose jsonb settings do not parse used to load on the
     /// type's default, which is public, unrestricted and free to override. The
     /// control plane parses every write, so the rows here are written with
@@ -5380,6 +6757,112 @@ mod tests {
             assert!(line.contains("left out of the snapshot"), "{line}");
             assert!(!line.contains("proxy.example.com"), "{line}");
         }
+    }
+
+    /// #3464: two orgs each have an `openai`, and the store cannot read
+    /// org-a's. Only org-a's route and group lose their target: org-b's keep
+    /// their own `openai`, and the snapshot that is left is servable.
+    #[tokio::test]
+    async fn one_orgs_unreadable_provider_leaves_the_other_orgs_namesake_alone() {
+        if !test_database::is_configured() {
+            eprintln!("skipping: {} not set", test_database::URL_ENV);
+            return;
+        }
+        let db = fresh_db().await;
+        let pool = db.pool().clone();
+        drop_shape_checks(&pool).await;
+        let mut orgs = Vec::new();
+        for (slug, egress_proxies) in [("org-a", "[7]"), ("org-b", "[]")] {
+            let org = repo::OrgRepo(&pool).create(slug, slug).await.unwrap();
+            let team = repo::TeamRepo(&pool).create(org.id, "core").await.unwrap();
+            let project = repo::ProjectRepo(&pool)
+                .create(team.id, "app")
+                .await
+                .unwrap();
+            let provider: Uuid = sqlx::query_scalar(
+                "insert into providers (org_id, name, slug, kind, api_base, api_key_env,
+                                        egress_proxies)
+                 values ($1, 'openai', 'openai', 'openai_compatible',
+                         'https://llm.example.com/v1', 'UPSTREAM_KEY', $2::jsonb)
+                 returning id",
+            )
+            .bind(org.id)
+            .bind(egress_proxies)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            let route = repo::RouteRepo(&pool)
+                .create(project.id, "gpt-4o", "round_robin")
+                .await
+                .unwrap();
+            repo::RouteTargetRepo(&pool)
+                .create(route.id, provider, None, 1, &[])
+                .await
+                .unwrap();
+            let group: Uuid = sqlx::query_scalar(
+                "insert into provider_groups (org_id, name, slug, strategy)
+                 values ($1, 'pool', 'pool', 'round_robin') returning id",
+            )
+            .bind(org.id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            sqlx::query(
+                "insert into provider_group_members (group_id, provider_id, weight, position)
+                 values ($1, $2, 1, 0)",
+            )
+            .bind(group)
+            .bind(provider)
+            .execute(&pool)
+            .await
+            .unwrap();
+            orgs.push(org.id.to_string());
+        }
+        let (org_a, org_b) = (&orgs[0], &orgs[1]);
+
+        let mut config = PostgresConfigStore::new(pool).load().await.unwrap();
+        assert_eq!(
+            config.left_out_providers,
+            [(org_a.clone(), "openai".to_string())].into()
+        );
+        let org_of = |t: Option<&rolter_core::Tenancy>| t.map(|t| t.org_id.clone());
+        let served: Vec<_> = config
+            .providers
+            .iter()
+            .map(|p| org_of(p.tenancy.as_ref()))
+            .collect();
+        assert_eq!(served, [Some(org_b.clone())]);
+        let mut routes: Vec<_> = config
+            .routes
+            .iter()
+            .map(|r| (org_of(r.tenancy.as_ref()), r.targets.len()))
+            .collect();
+        routes.sort();
+        let mut expected = vec![(Some(org_a.clone()), 0), (Some(org_b.clone()), 1)];
+        expected.sort();
+        assert_eq!(routes, expected, "only org-a's target is left out");
+        let mut groups: Vec<_> = config
+            .provider_groups
+            .iter()
+            .map(|g| (org_of(g.tenancy.as_ref()), g.members.len()))
+            .collect();
+        groups.sort();
+        assert_eq!(groups, expected, "only org-a's member is left out");
+
+        let problems = config.sanitize_for_snapshot();
+        let kept: Vec<_> = config
+            .routes
+            .iter()
+            .map(|r| (org_of(r.tenancy.as_ref()), r.targets[0].provider.clone()))
+            .collect();
+        assert_eq!(
+            kept,
+            [(Some(org_b.clone()), "openai".to_string())],
+            "{problems:?}"
+        );
+        config
+            .validate_snapshot()
+            .expect("the remaining snapshot is servable");
     }
 
     /// #2943: injected headers gate nothing, so an unreadable entry costs the

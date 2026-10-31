@@ -217,7 +217,7 @@ function MemberEditor({
                 title={t("providerGroupSheet.members.remove")}
                 aria-label={t("providerGroupSheet.members.remove")}
                 onClick={() => remove(i)}
-                className="flex flex-none items-center justify-center rounded-[6px] border border-[color:var(--border-subtle)] p-1.5 text-[color:var(--text-secondary)] transition-colors hover:border-[color:var(--status-danger)] hover:text-[color:var(--status-danger-text)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                className="flex flex-none items-center justify-center rounded-sm border border-[color:var(--border-subtle)] p-1.5 text-[color:var(--text-secondary)] transition-colors hover:border-[color:var(--status-danger)] hover:text-[color:var(--status-danger-text)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
               >
                 <X className="h-3.5 w-3.5" />
               </button>
@@ -474,6 +474,7 @@ export function ProviderGroupSheet({
 
         <Field
           label={t("providerGroupSheet.fields.strategy")}
+          info={t("providerGroupSheet.fields.strategyInfo")}
           // several children, so Field cannot tell which one the label means
           htmlFor="provider-group-strategy"
         >

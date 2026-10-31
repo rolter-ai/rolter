@@ -138,6 +138,12 @@ services:
       # ROLTER_LOGIN_MAX_FAILURES: "5"
       # ROLTER_LOGIN_IP_MAX_FAILURES: "50"
       # ROLTER_LOGIN_LOCK_SECS: "60"
+      # request log CSV export bounds (#3360); 0 turns one off. the time bound
+      # also frees the place of a client that stops reading (#3433)
+      # ROLTER_EXPORT_MAX_ROWS: "1000000"
+      # ROLTER_EXPORT_MAX_SECS: "600"
+      # ROLTER_EXPORT_MAX_CONCURRENT: "4"
+      # ROLTER_EXPORT_MAX_CONCURRENT_PER_CALLER: "1"
       # ROLTER_DB_ACQUIRE_TIMEOUT_SECS: "30"
       # ROLTER_DB_LOCK_TIMEOUT_SECS: "10"
       # ROLTER_DB_STATEMENT_TIMEOUT_SECS: "30"

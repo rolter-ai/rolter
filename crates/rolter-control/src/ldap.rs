@@ -1,18 +1,16 @@
-//! LDAP bind + group mapping (#241).
+//! LDAP bind + group mapping (#241, wired to sign-in by #1826).
 //!
-//! **Not shipped: nothing signs a user in through this provider.** No
-//! configuration key, environment variable, route or dashboard screen
-//! constructs [`LdapIdentityProvider`], and `POST /api/v1/auth/login` resolves
-//! only local accounts. The module is kept, compiled and tested because its
-//! policy (two-phase bind, filter escaping, least-privilege group mapping,
-//! error normalization) is what wiring it will reuse; that work is tracked in
-//! #1826, and #2731 recorded the decision not to ship it before then. Until it
-//! lands, do not document LDAP sign-in as available.
+//! This is the directory half of LDAP sign-in: it authenticates a login against
+//! a directory and reports the entry it found. The control-plane half that
+//! stores a directory per org, reaches this provider from
+//! `POST /api/v1/auth/login` and turns the entry's groups into memberships is
+//! `crate::ldap_signin`.
 //!
-//! It is the intended third [`IdentityProvider`] after local password login
-//! and OIDC SSO. It resolves a [`Credential::Password`] by binding to a
-//! directory as that user, reading their attributes, and mapping their
-//! directory groups onto rolter roles.
+//! It is the third [`IdentityProvider`] after local password login and OIDC
+//! SSO. It resolves a [`Credential::Password`] by binding to a directory as
+//! that user and reading their attributes. Which rolter roles those directory
+//! groups grant is not decided here: group mapping goes through the same
+//! scoped-grant model SSO and SCIM use, so one rule set serves all three.
 //!
 //! ## Two-phase bind
 //!
@@ -23,27 +21,27 @@
 //!
 //! ## Least privilege
 //!
-//! Group mappings are explicit and additive. A user in no mapped group gets no
-//! role and is rejected, matching the SSO rule that authentication alone grants
-//! nothing. There is no implicit default role and no wildcard mapping.
+//! Authenticating proves who someone is, not what they may do. A user in no
+//! mapped group and with no directory default role is rejected by the caller,
+//! matching the SSO rule that authentication alone grants nothing, with the same
+//! [`IdentityError::NotVerified`] a wrong password gets.
 //!
 //! ## What never leaves this module
 //!
 //! Distinguished names, directory filters, bind credentials and raw LDAP result
 //! codes stay here. Everything a caller sees is an [`IdentityError`], and every
 //! authentication failure — unknown user, wrong password, user outside the
-//! search base, no mapped group — collapses to the same
+//! search base — collapses to the same
 //! [`IdentityError::NotVerified`]. A directory that enumerates its users
 //! through rolter's error messages would be worse than no LDAP at all.
 
-use std::collections::{BTreeMap, HashSet};
-
+// spec-ref: ldap
 use async_trait::async_trait;
 
 use rolter_auth::{Credential, Identity, IdentityError, IdentityProvider};
 
 /// How to reach and query the directory.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct LdapConfig {
     /// `ldap://` or `ldaps://` URL of the directory
     pub url: String,
@@ -61,11 +59,26 @@ pub struct LdapConfig {
     pub display_name_attr: String,
     /// attribute on the user entry listing their groups
     pub group_attr: String,
-    /// directory group DN (or name) -> rolter role. Explicit and additive; a
-    /// user in no listed group is rejected
-    pub group_role_map: BTreeMap<String, String>,
     /// require TLS. `ldaps://` satisfies this; plain `ldap://` does not
     pub require_tls: bool,
+}
+
+// by hand so the service-account password can never reach a log line through a
+// stray `{:?}` of a struct that carries it
+impl std::fmt::Debug for LdapConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LdapConfig")
+            .field("url", &self.url)
+            .field("bind_dn", &self.bind_dn)
+            .field("bind_password", &"<redacted>")
+            .field("base_dn", &self.base_dn)
+            .field("user_filter", &self.user_filter)
+            .field("email_attr", &self.email_attr)
+            .field("display_name_attr", &self.display_name_attr)
+            .field("group_attr", &self.group_attr)
+            .field("require_tls", &self.require_tls)
+            .finish()
+    }
 }
 
 impl LdapConfig {
@@ -88,13 +101,6 @@ impl LdapConfig {
         }
         if self.base_dn.trim().is_empty() {
             return Err("base_dn must not be empty".into());
-        }
-        if self.group_role_map.is_empty() {
-            return Err(
-                "group_role_map is empty, so no directory user could ever be granted a role; \
-                 map at least one group"
-                    .into(),
-            );
         }
         Ok(())
     }
@@ -134,6 +140,43 @@ pub trait Directory: Send + Sync {
         login: &str,
         password: &str,
     ) -> Result<DirectoryEntry, DirectoryError>;
+}
+
+/// Opens a [`Directory`] for a configured LDAP server.
+///
+/// The seam between the stored directory settings and the network: production
+/// installs [`Ldap3Factory`], the integration suite installs a stub that
+/// answers from a fixed list of entries, so sign-in is tested end to end
+/// without a directory server.
+pub trait DirectoryFactory: Send + Sync {
+    /// The directory for `config`, or `None` when this build cannot talk LDAP.
+    fn open(&self, config: LdapConfig) -> Option<Box<dyn Directory>>;
+
+    /// Whether this build can reach a directory at all. A control plane built
+    /// without the `ldap` cargo feature refuses to store a directory rather
+    /// than accept settings nothing could ever use.
+    fn available(&self) -> bool;
+}
+
+/// The production factory: `ldap3` when the `ldap` feature is compiled in, and
+/// nothing otherwise.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct Ldap3Factory;
+
+impl DirectoryFactory for Ldap3Factory {
+    #[cfg(feature = "ldap")]
+    fn open(&self, config: LdapConfig) -> Option<Box<dyn Directory>> {
+        Some(Box::new(Ldap3Directory::new(config)))
+    }
+
+    #[cfg(not(feature = "ldap"))]
+    fn open(&self, _config: LdapConfig) -> Option<Box<dyn Directory>> {
+        None
+    }
+
+    fn available(&self) -> bool {
+        cfg!(feature = "ldap")
+    }
 }
 
 /// Escape a value for use inside an LDAP search filter (RFC 4515).
@@ -178,21 +221,6 @@ impl LdapIdentityProvider {
             .user_filter
             .replace("{login}", &escape_filter(login))
     }
-
-    /// Roles granted by the user's directory groups.
-    ///
-    /// Matching is case-insensitive on the group name: directories are
-    /// inconsistent about DN case, and an operator who types a group in the
-    /// case their directory UI shows should not silently get no access.
-    pub fn roles_for(&self, groups: &[String]) -> HashSet<String> {
-        let held: HashSet<String> = groups.iter().map(|g| g.trim().to_lowercase()).collect();
-        self.config
-            .group_role_map
-            .iter()
-            .filter(|(group, _)| held.contains(&group.trim().to_lowercase()))
-            .map(|(_, role)| role.clone())
-            .collect()
-    }
 }
 
 #[async_trait]
@@ -218,17 +246,6 @@ impl IdentityProvider for LdapIdentityProvider {
             }
         };
 
-        let roles = self.roles_for(&entry.groups);
-        if roles.is_empty() {
-            // authenticated but granted nothing. Deliberately indistinguishable
-            // from a bad password to a client, and logged without the DN
-            tracing::info!(
-                target: "rolter::ldap",
-                "ldap bind succeeded but no directory group maps to a role; rejecting"
-            );
-            return Err(IdentityError::NotVerified);
-        }
-
         Ok(Identity {
             // the DN is the directory's own stable identifier for the account,
             // which is exactly what `subject` is specified to carry
@@ -241,6 +258,10 @@ impl IdentityProvider for LdapIdentityProvider {
         })
     }
 }
+
+/// How long one directory operation may take before the sign-in gives up.
+#[cfg(feature = "ldap")]
+const DIRECTORY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// The real directory, backed by `ldap3`.
 ///
@@ -268,7 +289,7 @@ impl Directory for Ldap3Directory {
         login: &str,
         password: &str,
     ) -> Result<DirectoryEntry, DirectoryError> {
-        use ldap3::{LdapConnAsync, Scope, SearchEntry};
+        use ldap3::{LdapConnAsync, LdapConnSettings, Scope, SearchEntry};
 
         // an empty password is an *unauthenticated* bind in LDAP: the server
         // accepts it and returns success without verifying anything. Rejecting
@@ -278,13 +299,17 @@ impl Directory for Ldap3Directory {
         }
 
         let unavailable = |e: ldap3::LdapError| DirectoryError::Unavailable(e.to_string());
+        // a directory that accepts the connection and then says nothing must
+        // not hold a sign-in request open
+        let settings = || LdapConnSettings::new().set_conn_timeout(DIRECTORY_TIMEOUT);
 
         // phase 1: find the user as the service account
-        let (conn, mut ldap) = LdapConnAsync::new(&self.config.url)
+        let (conn, mut ldap) = LdapConnAsync::with_settings(settings(), &self.config.url)
             .await
             .map_err(unavailable)?;
         ldap3::drive!(conn);
-        ldap.simple_bind(&self.config.bind_dn, &self.config.bind_password)
+        ldap.with_timeout(DIRECTORY_TIMEOUT)
+            .simple_bind(&self.config.bind_dn, &self.config.bind_password)
             .await
             .map_err(unavailable)?
             .success()
@@ -302,6 +327,7 @@ impl Directory for Ldap3Directory {
             self.config.group_attr.as_str(),
         ];
         let (results, _) = ldap
+            .with_timeout(DIRECTORY_TIMEOUT)
             .search(&self.config.base_dn, Scope::Subtree, &filter, attrs)
             .await
             .map_err(unavailable)?
@@ -324,11 +350,12 @@ impl Directory for Ldap3Directory {
         let entry = SearchEntry::construct(entry);
 
         // phase 2: the authentication itself — bind as the user we found
-        let (conn, mut user_ldap) = LdapConnAsync::new(&self.config.url)
+        let (conn, mut user_ldap) = LdapConnAsync::with_settings(settings(), &self.config.url)
             .await
             .map_err(unavailable)?;
         ldap3::drive!(conn);
         let bound = user_ldap
+            .with_timeout(DIRECTORY_TIMEOUT)
             .simple_bind(&entry.dn, password)
             .await
             .map_err(unavailable)?
@@ -366,16 +393,6 @@ mod tests {
             email_attr: "mail".into(),
             display_name_attr: "cn".into(),
             group_attr: "memberOf".into(),
-            group_role_map: BTreeMap::from([
-                (
-                    "cn=rolter-admins,ou=groups,dc=example,dc=com".into(),
-                    "admin".into(),
-                ),
-                (
-                    "cn=rolter-users,ou=groups,dc=example,dc=com".into(),
-                    "member".into(),
-                ),
-            ]),
             require_tls: true,
         }
     }
@@ -477,63 +494,17 @@ mod tests {
         }
     }
 
-    // ---- group mapping ---------------------------------------------------
-
-    #[test]
-    fn groups_map_to_configured_roles_only() {
-        let p = provider(Ok(ada()));
-        assert_eq!(
-            p.roles_for(&["cn=rolter-admins,ou=groups,dc=example,dc=com".into()]),
-            HashSet::from(["admin".to_string()])
-        );
-        // a real directory group that is simply not mapped grants nothing
-        assert!(p
-            .roles_for(&["cn=everyone,ou=groups,dc=example,dc=com".into()])
-            .is_empty());
-    }
-
-    #[test]
-    fn group_matching_ignores_case_and_surrounding_space() {
-        let p = provider(Ok(ada()));
-        assert_eq!(
-            p.roles_for(&["  CN=Rolter-Admins,OU=Groups,DC=example,DC=com  ".into()]),
-            HashSet::from(["admin".to_string()])
-        );
-    }
-
-    #[test]
-    fn multiple_groups_grant_the_union_of_their_roles() {
-        let p = provider(Ok(ada()));
-        let roles = p.roles_for(&[
-            "cn=rolter-admins,ou=groups,dc=example,dc=com".into(),
-            "cn=rolter-users,ou=groups,dc=example,dc=com".into(),
-        ]);
-        assert_eq!(
-            roles,
-            HashSet::from(["admin".to_string(), "member".to_string()])
-        );
-    }
-
     #[tokio::test]
-    async fn a_user_in_no_mapped_group_is_rejected_despite_a_valid_password() {
-        // least privilege: authenticating proves who you are, not what you may do
+    async fn the_directory_groups_are_reported_unfiltered() {
+        // which groups grant what is the caller's mapping model, not this
+        // provider's: it reports every group the entry carries
         let mut entry = ada();
         entry.groups = vec!["cn=everyone,ou=groups,dc=example,dc=com".into()];
-        let err = provider(Ok(entry)).resolve(password()).await.unwrap_err();
-        assert!(
-            matches!(err, IdentityError::NotVerified),
-            "must be indistinguishable from a bad password, got {err:?}"
+        let identity = provider(Ok(entry)).resolve(password()).await.unwrap();
+        assert_eq!(
+            identity.groups,
+            vec!["cn=everyone,ou=groups,dc=example,dc=com".to_string()]
         );
-    }
-
-    #[tokio::test]
-    async fn a_user_with_no_groups_at_all_is_rejected() {
-        let mut entry = ada();
-        entry.groups = vec![];
-        assert!(matches!(
-            provider(Ok(entry)).resolve(password()).await.unwrap_err(),
-            IdentityError::NotVerified
-        ));
     }
 
     // ---- filter injection -------------------------------------------------
@@ -606,17 +577,6 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_group_map_is_refused() {
-        let mut c = config();
-        c.group_role_map.clear();
-        let err = c.validate().unwrap_err();
-        assert!(
-            err.contains("no directory user could ever be granted a role"),
-            "{err}"
-        );
-    }
-
-    #[test]
     fn an_empty_base_dn_is_refused() {
         let mut c = config();
         c.base_dn = "  ".into();
@@ -626,8 +586,15 @@ mod tests {
     #[test]
     fn the_constructor_refuses_an_invalid_config() {
         let mut c = config();
-        c.group_role_map.clear();
+        c.base_dn.clear();
         assert!(LdapIdentityProvider::new(c, Box::new(FakeDirectory(Ok(ada())))).is_err());
+    }
+
+    #[test]
+    fn debug_output_never_carries_the_bind_password() {
+        let rendered = format!("{:?}", config());
+        assert!(!rendered.contains("svc-password"), "{rendered}");
+        assert!(rendered.contains("<redacted>"));
     }
 
     #[test]

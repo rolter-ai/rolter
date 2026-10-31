@@ -54,7 +54,7 @@ harness shipped. Tick the box, and name the file, job or issue that proves it.
 - [x] OAuth2/OIDC SSO (group→role mapping) (#240 — per-org providers, PKCE, `source`-tagged memberships, org login policy with superadmin break-glass)
 - [x] Invitation onboarding: one-time links, invitee-chosen password (#712)
 - [x] LDAP bind + group mapping provider (#241 — `crates/rolter-control/src/ldap.rs`; SCIM user and group provisioning shipped alongside it in `scim.rs` / `scim_groups.rs`)
-- [ ] LDAP sign-in: wire the provider to a configuration, the login route and a Governance screen (#1826; #2731 kept the provider marked as unwired until then)
+- [x] LDAP sign-in: wire the provider to a configuration, the login route and a Governance screen (#1826 backend; Governance › LDAP, #3261)
 - [x] Audit log writes + UI surface (`audit_log` table and repo methods, an RBAC capability, `ui/src/pages/AuditLog.tsx`)
 - [x] Virtual-key hardening (pepper, constant-time lookup, expiry/rotation, scopes)
 
@@ -110,6 +110,7 @@ harness shipped. Tick the box, and name the file, job or issue that proves it.
 - [x] `/v1/rerank` (Cohere/Jina-compatible passthrough; built-in `fake-llm` ranks deterministically)
 - [x] `/v1/systemone` System One typed decisions behind the `system_one` kind: TypeSafe Jev, vLLM Semantic Router, Ollama (#3150, #2535, ADR-0035; built-in `fake-llm` decides deterministically)
 - [x] Playground Decisions: text/JSON state, typed answers and OpenJev image_data uploads (#3153)
+- [x] `infinity` provider kind: self-hosted michaelfeil/infinity embeddings and rerank, documents reshaped to Cohere/Jina's form (#463; `crates/rolter-gateway/tests/infinity.rs`)
 - [ ] Pluggable custom AI APIs (generic passthrough + balancing) (#275)
 - [x] Served OpenAPI document (`GET /openapi.json`, hand-authored 3.1) + interactive Scalar reference (`GET /docs`, bundle embedded in the binary — air-gapped safe)
 
@@ -152,6 +153,7 @@ Full-featured hostable web control panel, not a read-only dashboard.
 - [x] Config schema validation + helpful startup errors (`GatewayConfig::validate`, plus `rolter check` for pre-boot validation)
 - [ ] Secret backends (Vault/cloud KMS) behind the encryption trait (#294)
 - [x] Guardrails (PII/content/prompt-injection) hooks (`crates/rolter-core/src/guardrails.rs`, `rolter-gateway/src/guardrails.rs`, guardrail screens in the dashboard)
+- [x] Scoped semantic guard policies over several providers, with thresholds and a streaming strategy (#459, ADR-0037), response-stage events on the request log (#3330) and the audio endpoints (#3331), and in-process `local` classifier providers (#3329, ADR-0039), including the source-build-only experimental `onnx/1` runtime (#3443)
 - [ ] A/B traffic mirroring (#296)
 
 ## MCP gateway

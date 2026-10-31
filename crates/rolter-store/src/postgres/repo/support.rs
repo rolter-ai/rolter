@@ -7,7 +7,7 @@
 //! resource name and nothing else.
 
 use sqlx::postgres::{PgArguments, PgRow};
-use sqlx::query::{Query, QueryAs};
+use sqlx::query::{Query, QueryAs, QueryScalar};
 use sqlx::{Executor, FromRow, Postgres};
 
 use rolter_core::{Error, Result};
@@ -48,6 +48,26 @@ where
     'q: 'e,
     E: 'e + Executor<'c, Database = Postgres>,
     T: for<'r> FromRow<'r, PgRow> + Send + Unpin + 'e,
+    R: FnOnce() -> String,
+{
+    query
+        .fetch_optional(executor)
+        .await
+        .map_err(store_err)?
+        .ok_or_else(|| Error::NotFound(resource()))
+}
+
+/// [`fetch_optional_or_not_found`] for a query that selects a single column.
+pub(super) async fn fetch_scalar_or_not_found<'q, 'e, 'c: 'e, O, E, R>(
+    query: QueryScalar<'q, Postgres, O, PgArguments>,
+    executor: E,
+    resource: R,
+) -> Result<O>
+where
+    'q: 'e,
+    E: 'e + Executor<'c, Database = Postgres>,
+    (O,): for<'r> FromRow<'r, PgRow>,
+    O: Send + Unpin + 'e,
     R: FnOnce() -> String,
 {
     query

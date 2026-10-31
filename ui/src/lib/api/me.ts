@@ -1,7 +1,8 @@
 import { type AnalyticsWindow, getAnalytics, windowParams } from "./analytics";
+import { type BudgetSpendRow, type BudgetSpendStatus } from "./budgets";
 import { type DataEnvelope, getJson, sendJson } from "./request";
 import { type MembershipRow, type UserRow } from "./users";
-import { type VirtualKeyRow } from "./virtual-keys";
+import { type KeyBudgetCap, type KeyRateCap, type VirtualKeyRow } from "./virtual-keys";
 
 /**
  * A membership as `/auth/me` serialises it (rolter-store `Membership`).
@@ -141,6 +142,10 @@ export interface MintKeyInput {
   /** key lifetime in days. omitted means "never expires" — a choice the
    *  operator makes deliberately, never the result of leaving a field alone */
   expires_in_days?: number;
+  /** optional spend cap, written with the key (#1171) */
+  budget?: KeyBudgetCap;
+  /** optional rate cap, written with the key (#1171) */
+  rate_limit?: KeyRateCap;
 }
 
 export interface MyUsageRow {
@@ -159,7 +164,12 @@ export type SavedViewSurface = "llm_logs" | "dashboard";
  * sends; the control plane refuses any it does not allow-list for the surface.
  */
 export interface SavedViewFilters {
+  /** a window's name, or `custom` with the days in `since` and `until` (#3407) */
   window?: string;
+  /** the first day of a `custom` window, `YYYY-MM-DD` */
+  since?: string;
+  /** the last day of a `custom` window, `YYYY-MM-DD`, itself included */
+  until?: string;
   status?: string;
   model?: string;
   key?: string;
@@ -256,4 +266,45 @@ export function fetchMyUsage(window: AnalyticsWindow = {}): Promise<MyUsageRow[]
   return getAnalytics<DataEnvelope<MyUsageRow>>(`/api/v1/me/usage${windowParams(window)}`).then(
     (r) => r.data,
   );
+}
+
+/** one of the signed-in account's own budgets, with what the gateway has counted (#1830) */
+export interface MyBudgetRow extends BudgetSpendRow {
+  /// decimal, returned as text
+  limit_usd: string;
+  /// as stored: `daily`, `monthly`, `total`, or a spelling such as `30d`
+  period: string;
+  within_org_id: string | null;
+  within_project_id: string | null;
+}
+
+export interface MyRateLimitRow {
+  id: string;
+  rpm: number | null;
+  tpm: number | null;
+  within_org_id: string | null;
+  within_project_id: string | null;
+}
+
+export interface MyBudgetReport {
+  status: BudgetSpendStatus;
+  budgets: MyBudgetRow[];
+  rate_limits: MyRateLimitRow[];
+}
+
+/**
+ * The budgets and rate limits that count every key the signed-in account
+ * minted, with the spend so far. A body that is not a report reads as
+ * unavailable, so a malformed answer never shows a budget as untouched.
+ */
+export async function fetchMyBudgets(): Promise<MyBudgetReport> {
+  const body = await getJson<Partial<MyBudgetReport> | null>("/api/v1/me/budgets");
+  if (!body || !Array.isArray(body.budgets)) {
+    return { status: "unavailable", budgets: [], rate_limits: [] };
+  }
+  return {
+    status: body.status ?? "unavailable",
+    budgets: body.budgets,
+    rate_limits: Array.isArray(body.rate_limits) ? body.rate_limits : [],
+  };
 }

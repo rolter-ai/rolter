@@ -22,6 +22,15 @@ describe("classifyLoadError", () => {
     expect(needsSignIn(classifyLoadError(new ApiError("nope", 401)))).toBe(true);
   });
 
+  // #1909: a control plane with no database answers the analytics and health
+  // routes with this coded 401, and signing in again is the loop it started from
+  it("reads the admin-token 401 apart from a plain one, and does not offer to sign in again", () => {
+    const missing = new ApiError("admin token required", 401, "admin_token_required");
+    expect(classifyLoadError(missing)).toBe("adminToken");
+    expect(needsSignIn("adminToken")).toBe(false);
+    expect(isRetryable("adminToken")).toBe(false);
+  });
+
   it("reads a 403 as a permission problem", () => {
     expect(classifyLoadError(new ApiError("forbidden", 403))).toBe("forbidden");
   });
@@ -117,6 +126,7 @@ describe("errors.load copy", () => {
     "unauthenticated",
     "forbidden",
     "openMode",
+    "adminToken",
     "noStore",
     "unreachable",
     "queryTimeout",

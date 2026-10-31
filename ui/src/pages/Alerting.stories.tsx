@@ -9,7 +9,7 @@ import {
   confirmDestructive,
   expectAllowed,
   expectClosesWithoutPrompting,
-  expectForbidden,
+  openOptions,
   expectSheetClosed,
   expectListTable,
   expectLoadError,
@@ -31,7 +31,9 @@ import {
 } from "./story-harness";
 import type { AlertChannelRow, AlertNotificationRow, AlertRuleRow } from "@/lib/api";
 import { formattersFor } from "@/lib/i18n/format";
+import en from "@/lib/i18n/locales/en.json";
 import ru from "@/lib/i18n/locales/ru.json";
+import { expectFieldHints } from "@/lib/story-hints";
 import { atMobile, atWide, expectInFrame, expectNoHorizontalOverflow } from "@/lib/story-viewport";
 
 const CHANNELS: AlertChannelRow[] = [
@@ -709,7 +711,7 @@ export const ThePercentThresholdRoundTrips: Story = {
     await userEvent.clear(threshold);
     await userEvent.type(threshold, "101");
     await waitFor(() => expect(threshold).toHaveAttribute("aria-invalid", "true"));
-    await expect(create).toBeDisabled();
+    await expect(create).toHaveAttribute("aria-disabled", "true");
     percentCreates.expectNotSent("POST", "/alert-rules");
 
     await userEvent.clear(threshold);
@@ -816,7 +818,7 @@ export const TheRuleWindowHoldsToTheApiBounds: Story = {
       await userEvent.clear(windowInput);
       await userEvent.type(windowInput, outside);
       await waitFor(() => expect(windowInput).toHaveAttribute("aria-invalid", "true"));
-      await expect(create).toBeDisabled();
+      await expect(create).toHaveAttribute("aria-disabled", "true");
       await waitFor(() =>
         expect(within(form).getByText("From 60 to 86400 seconds.")).toBeVisible(),
       );
@@ -961,9 +963,8 @@ export const AnUntouchedThresholdGoesBackAsStored: Story = {
   },
 };
 
-// the edit takes the authority the switch beside it does. alerting is
-// superadmin-only, so any lesser caller is refused the whole screen before a
-// row renders, and the superadmin is the one role that reaches the control
+// the edit takes the authority the switch beside it does. a superadmin reaches
+// every control
 export const EditIsOfferedToASuperadmin: Story = {
   render: () => (
     <Harness fetchStub={loaded} role="superadmin">
@@ -974,6 +975,23 @@ export const EditIsOfferedToASuperadmin: Story = {
   play: async ({ canvasElement }) => {
     await expectAllowed(canvasElement, "Edit channel ops-slack");
     await expectAllowed(canvasElement, "Edit rule high error rate");
+  },
+};
+
+// a deployment operator holds no membership anywhere, yet runs every rule and
+// channel; the capability table publishes that (#3362), so the controls are
+// enabled for them instead of read as a scoped admin's alone
+export const EditIsOfferedToADeploymentOperator: Story = {
+  render: () => (
+    <Harness fetchStub={loaded} role="operator">
+      <AlertChannels />
+      <AlertRules />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await expectAllowed(canvasElement, "Edit channel ops-slack");
+    await expectAllowed(canvasElement, "Edit rule high error rate");
+    await expectAllowed(canvasElement, "Delete rule high error rate");
   },
 };
 
@@ -2333,46 +2351,67 @@ export const RulesMobile: Story = {
 
 // The rules and the history refused before they ask (#1606).
 //
-// Every alerting resource is superadmin-only, so all three screens carry a
-// `superadminOnly` wrapper. The channels' wrapper is covered in
-// `CapabilityGating.stories.tsx`; these two are not, and their `Forbidden`
-// stories stub the 403 themselves — the old path — so they pass whether the
-// wrapper is there or not. These stubs answer with a good payload instead, so
-// the screen renders it and the story fails the moment the wrapper is dropped.
-export const RulesRefusedToAnAdmin: Story = {
+// Alerting is delegated (#1829): an org, team or project admin owns the rules
+// and channels of their own scope, so the screens are no longer behind a
+// superadmin-only wrapper. A caller who owns nothing is refused by the control
+// plane, which `Forbidden` above covers with the 403 it really answers.
+export const RulesAreAnAdminsToo: Story = {
   render: () => (
     <Harness fetchStub={loaded} role="admin">
       <AlertRules />
     </Harness>
   ),
-  play: async ({ canvasElement }) => expectForbidden(canvasElement),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByText("high error rate")).toBeVisible();
+    // a rule with no scope reads the whole deployment, and says so
+    await expect((await canvas.findAllByText("Whole deployment")).length).toBeGreaterThan(0);
+  },
 };
 
-export const RulesRefusedToAViewer: Story = {
-  render: () => (
-    <Harness fetchStub={loaded} role="viewer">
-      <AlertRules />
-    </Harness>
-  ),
-  play: async ({ canvasElement }) => expectForbidden(canvasElement),
-};
-
-export const HistoryRefusedToAnAdmin: Story = {
+export const HistoryIsAnAdminsToo: Story = {
   render: () => (
     <Harness fetchStub={loaded} role="admin" route="/alerting-history">
       <HistoryScreen />
     </Harness>
   ),
-  play: async ({ canvasElement }) => expectForbidden(canvasElement),
+  play: async ({ canvasElement }) => {
+    await expect(await within(canvasElement).findByRole("table")).toBeVisible();
+  },
 };
 
-export const HistoryRefusedToAViewer: Story = {
+// a scoped admin cannot create a deployment-wide rule, so the sheet does not
+// offer one and sends the scope it opened on
+const adminRuleCreates = recording(
+  scoped(async (input, init) => {
+    if (init?.method === "POST") return json(RULES[0], 201);
+    return String(input).includes("/alert-channels") ? json(CHANNELS) : json(RULES);
+  }),
+);
+
+export const AnAdminsRuleIsCreatedOnAScopeNotTheDeployment: Story = {
   render: () => (
-    <Harness fetchStub={loaded} role="viewer" route="/alerting-history">
-      <HistoryScreen />
+    <Harness fetchStub={adminRuleCreates.stub} role="admin">
+      <AlertRules />
     </Harness>
   ),
-  play: async ({ canvasElement }) => expectForbidden(canvasElement),
+  play: async ({ canvasElement }) => {
+    await clickWhenEnabled(canvasElement, /add rule/i);
+    const form = sheet();
+    await userEvent.type(within(form).getByLabelText("Name"), "team errors");
+    const offered = await openOptions(within(form).getByLabelText("Watches"));
+    await expect(within(offered).queryByRole("option", { name: "Whole deployment" })).toBeNull();
+    await expect(within(offered).getByRole("option", { name: "Team" })).toBeVisible();
+    await userEvent.click(within(offered).getByRole("option", { name: "Team" }));
+    await pickOption(within(form).getByLabelText("Scope"), /./);
+    await userEvent.click(within(form).getByRole("button", { name: "Create" }));
+    const body = await adminRuleCreates.expectSentBody<{ scope_type?: string; scope_id?: string }>(
+      "POST",
+      "/alert-rules",
+    );
+    await expect(body.scope_type).toBe("team");
+    await expect(typeof body.scope_id).toBe("string");
+  },
 };
 
 // the comparison and the no-data policy (#2423)
@@ -2525,5 +2564,41 @@ export const AnEditOpensOnTheStoredComparisonAndNoData: Story = {
     const body = await editsNoData.expectSentBody<RuleBody>("PUT", "/alert-rules/rule-7");
     await expect(body).toMatchObject({ comparison: "above", no_data: "ok" });
     await expectSheetClosed();
+  },
+};
+
+/** The channel's endpoint explains itself in an (i) (#3285). */
+export const ChannelEndpointIsExplainedInAHint: Story = {
+  render: () => (
+    <Harness fetchStub={loaded}>
+      <AlertChannels />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await clickWhenEnabled(canvasElement, /add channel/i);
+    const c = en.pages.alerting.channels;
+    await expectFieldHints(sheet(), en.common.aboutField, [[c.fieldEndpoint, c.fieldEndpointInfo]]);
+  },
+};
+
+/**
+ * What a rule does with an empty window, and where its changes are delivered,
+ * explain themselves in an (i) (#3285). The comparison is not one: its options
+ * read "Above or equal" and "Below or equal" and the line under it says the
+ * threshold is inclusive.
+ */
+export const RuleNoDataAndChannelAreExplainedInAHint: Story = {
+  render: () => (
+    <Harness fetchStub={loaded}>
+      <AlertRules />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await clickWhenEnabled(canvasElement, /add rule/i);
+    const r = en.pages.alerting.rules;
+    await expectFieldHints(sheet(), en.common.aboutField, [
+      [r.fieldNoData, r.fieldNoDataInfo],
+      [r.fieldChannel, r.fieldChannelInfo],
+    ]);
   },
 };

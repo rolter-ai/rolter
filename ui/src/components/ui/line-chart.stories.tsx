@@ -97,7 +97,7 @@ export const DrawnAtTheWidthItHas: Story = {
     await expect(scale).toBeLessThan(1.05);
     await expect(frame.height).toBeCloseTo(220, 0);
     for (const node of text) {
-      await expect(parseFloat(getComputedStyle(node).fontSize) * scale).toBeGreaterThanOrEqual(10);
+      await expect(parseFloat(getComputedStyle(node).fontSize) * scale).toBeGreaterThanOrEqual(11);
     }
     // nothing is clipped by the frame, and no two x labels touch
     for (const box of boxes) {

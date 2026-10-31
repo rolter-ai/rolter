@@ -53,28 +53,45 @@ pub(crate) struct Affinity {
 
 /// The routing context a JSON request is balanced on: the prompt's bounded
 /// text with the length and digest of the whole of it, or, for a body this
-/// module cannot read, the raw body.
+/// module cannot read, the raw body. `raw_body` is `None` when no balancer on
+/// the route reads the prompt (see [`affinity_for`]), which leaves the prompt
+/// unset.
 ///
 /// Every request path builds its context here, so a reader that needs the
 /// whole prompt (the latency predictor, `consistent_hash`) cannot be handed
 /// only its leading bytes by accident.
 pub(crate) fn route_context<'a>(
     affinity: Option<&'a Affinity>,
-    raw_body: &'a [u8],
+    raw_body: Option<&'a [u8]>,
     session_key: Option<&'a str>,
     token_ids: Option<&'a [u32]>,
     adapter: Option<&'a str>,
 ) -> rolter_balancer::RouteContext<'a> {
-    rolter_balancer::RouteContext {
-        session_key,
-        prompt: affinity
-            .map(|a| a.text.as_str())
-            .or_else(|| std::str::from_utf8(raw_body).ok()),
-        prompt_len: affinity.map(|a| a.len),
-        prompt_digest: affinity.map(|a| a.digest),
-        token_ids,
-        adapter,
-    }
+    rolter_balancer::RouteContext::new()
+        .with_session_key(session_key)
+        .with_prompt(
+            affinity
+                .map(|a| a.text.as_str())
+                .or_else(|| raw_body.and_then(|raw| std::str::from_utf8(raw).ok())),
+        )
+        .with_prompt_summary(affinity.map(|a| a.len), affinity.map(|a| a.digest))
+        .with_token_ids(token_ids)
+        .with_adapter(adapter)
+}
+
+/// The affinity of a JSON request to `path` on a route whose balancers read the
+/// prompt, or `None` without doing any work when none of them does (#1929).
+///
+/// Building it walks the conversation, copies up to 32 KiB of its text and
+/// hashes all of it, which a route on `round_robin`, `weighted`, `random`,
+/// `power_of_two`, `cheapest` or `fastest` would pay for on every request and
+/// never read.
+pub(crate) fn affinity_for(
+    entry: &crate::state::RouteEntry,
+    path: &str,
+    body: &Value,
+) -> Option<Affinity> {
+    entry.reads_prompt().then(|| affinity(path, body)).flatten()
 }
 
 /// The affinity of a JSON request to `path`, or `None` when the body has no
@@ -301,7 +318,7 @@ mod tests {
     /// The routing context the proxy builds from an affinity, through the
     /// same function it calls.
     fn context(a: &Affinity) -> RouteContext<'_> {
-        route_context(Some(a), b"{}", None, None, None)
+        route_context(Some(a), Some(b"{}"), None, None, None)
     }
 
     fn chat(messages: Value) -> String {
@@ -552,7 +569,12 @@ mod tests {
         let as_string = affinity("/v1/messages", &body(json!(result))).unwrap();
         assert!(as_string.len >= result.len(), "{}", as_string.len);
         let tokens = prompt_tokens(&context(&as_string));
-        assert!(tokens >= result.len() / 4, "{tokens}");
+        // the count is left out of the message: code scanning reads a value
+        // derived from a `RouteContext` as one that may carry its session key
+        assert!(
+            tokens >= result.len() / 4,
+            "the token estimate left the tool result out"
+        );
         // the text the trie matches on stays text
         assert!(!as_string.text.contains("rrrrrrrr"));
 
@@ -613,14 +635,14 @@ mod tests {
             &json!({"messages": [{"role": "user", "content": "hi"}]}),
         )
         .unwrap();
-        let ctx = route_context(Some(&a), b"{\"raw\":1}", Some("s"), None, None);
+        let ctx = route_context(Some(&a), Some(b"{\"raw\":1}"), Some("s"), None, None);
         assert_eq!(ctx.prompt, Some("user: hi\n"));
         assert_eq!(ctx.prompt_len, Some(a.len));
         assert_eq!(ctx.prompt_digest, Some(a.digest));
         assert_eq!(ctx.session_key, Some("s"));
 
         // a body this module cannot read is balanced on as a whole
-        let ctx = route_context(None, b"{\"raw\":1}", None, None, Some("lora"));
+        let ctx = route_context(None, Some(b"{\"raw\":1}"), None, None, Some("lora"));
         assert_eq!(ctx.prompt, Some("{\"raw\":1}"));
         assert_eq!(ctx.prompt_len, None);
         assert_eq!(ctx.prompt_digest, None);
@@ -640,7 +662,83 @@ mod tests {
         .unwrap();
         assert!(a.text.len() <= MAX_AFFINITY_BYTES);
         let tokens = prompt_tokens(&context(&a));
-        assert!(tokens > 8192, "{tokens}");
+        // assert_eq below reports the count if this fails
+        assert!(tokens > 8192);
         assert_eq!(tokens, a.len / 4);
+    }
+
+    /// A route entry on `strategy`, built the way the snapshot builds it.
+    fn entry(strategy: rolter_core::BalancingStrategy) -> crate::state::RouteEntry {
+        let route = rolter_core::ModelRoute {
+            model: "m".to_string(),
+            strategy,
+            targets: ["a", "b"]
+                .map(|provider| rolter_core::Target {
+                    provider: provider.to_string(),
+                    ..Default::default()
+                })
+                .to_vec(),
+            params: Default::default(),
+            param_policy: Default::default(),
+            advanced: Default::default(),
+            cache: None,
+            variants: Default::default(),
+            tenancy: None,
+        };
+        crate::state::RouteEntry {
+            namespace: route.model.clone().into(),
+            project_scope: None,
+            overrides: Default::default(),
+            throughput: None,
+            guardrails: Default::default(),
+            balancer: rolter_balancer::build(route.strategy, &[1, 1]).into(),
+            variant_balancers: Vec::new(),
+            route,
+        }
+    }
+
+    /// #1929: a route whose balancer never reads the prompt builds no affinity
+    /// text, and a route whose balancer does still builds it.
+    #[test]
+    fn only_a_route_that_reads_the_prompt_builds_an_affinity() {
+        let body = json!({"messages": [{"role": "user", "content": "hi"}]});
+        let path = "/v1/chat/completions";
+        for strategy in [
+            rolter_core::BalancingStrategy::RoundRobin,
+            rolter_core::BalancingStrategy::Weighted,
+            rolter_core::BalancingStrategy::PowerOfTwo,
+            rolter_core::BalancingStrategy::Cheapest,
+        ] {
+            assert!(
+                affinity_for(&entry(strategy), path, &body).is_none(),
+                "{strategy:?} built an affinity nothing reads"
+            );
+        }
+        let cache_aware = entry(rolter_core::BalancingStrategy::CacheAware);
+        let a = affinity_for(&cache_aware, path, &body).expect("cache_aware reads the prompt");
+        assert_eq!(a.text, "user: hi\n");
+    }
+
+    /// A variant's balancer counts: the pool's can ignore the prompt while a
+    /// variant's reads it.
+    #[test]
+    fn a_variant_balancer_that_reads_the_prompt_keeps_the_affinity() {
+        let mut routed = entry(rolter_core::BalancingStrategy::RoundRobin);
+        assert!(!routed.reads_prompt());
+        routed
+            .variant_balancers
+            .push(Box::new(rolter_balancer::CacheAware::new(2, 0.5)));
+        assert!(routed.reads_prompt());
+        let body = json!({"messages": [{"role": "user", "content": "hi"}]});
+        assert!(affinity_for(&routed, "/v1/chat/completions", &body).is_some());
+    }
+
+    /// With no balancer reading the prompt the raw-body fallback is skipped too.
+    #[test]
+    fn an_unread_prompt_leaves_the_context_prompt_unset() {
+        let ctx = route_context(None, None, Some("s"), None, None);
+        assert_eq!(ctx.prompt, None);
+        assert_eq!(ctx.prompt_len, None);
+        assert_eq!(ctx.session_key, Some("s"));
     }
 }

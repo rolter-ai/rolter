@@ -19,6 +19,7 @@ import {
   Harness as ScreenHarness,
   json,
   recording,
+  sheet,
   Toasted,
   type FetchStub,
   type StoryRole,
@@ -27,6 +28,7 @@ import type { ConnectorRow, PublicUrl } from "@/lib/api";
 import { formattersFor } from "@/lib/i18n/format";
 import en from "@/lib/i18n/locales/en.json";
 import ru from "@/lib/i18n/locales/ru.json";
+import { expectFieldHints } from "@/lib/story-hints";
 import {
   atMobile,
   atShort,
@@ -741,7 +743,10 @@ export const SamplingAbove100IsRefused: Story = {
     await expect(await form.findByText(copy.form.samplingRange)).toBeVisible();
     await expect(sampling).toHaveAttribute("aria-invalid", "true");
     await expect(sampling).toHaveAccessibleDescription(copy.form.samplingRange);
-    await expect(form.getByRole("button", { name: en.common.create })).toBeDisabled();
+    await expect(form.getByRole("button", { name: en.common.create })).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
     sentTooMuch.expectNotSent("POST", "/api/v1/connectors");
   },
 };
@@ -759,7 +764,10 @@ export const BlankSamplingIsRefused: Story = {
     await expect(await form.findByText(copy.form.samplingInvalid)).toBeVisible();
     await expect(sampling).toHaveAttribute("aria-invalid", "true");
     await expect(sampling).toHaveAccessibleDescription(copy.form.samplingInvalid);
-    await expect(form.getByRole("button", { name: en.common.create })).toBeDisabled();
+    await expect(form.getByRole("button", { name: en.common.create })).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
     sentBlank.expectNotSent("POST", "/api/v1/connectors");
 
     // and the same field accepts a value again once one is typed
@@ -1171,11 +1179,11 @@ export const EditRefusesASamplingRateOutsideZeroToOneHundred: Story = {
     await expect(await form.findByText(copy.samplingRange)).toBeVisible();
     await expect(sampling).toHaveAttribute("aria-invalid", "true");
     await expect(sampling).toHaveAccessibleDescription(copy.samplingRange);
-    await expect(save).toBeDisabled();
+    await expect(save).toHaveAttribute("aria-disabled", "true");
 
     await userEvent.clear(sampling);
     await expect(await form.findByText(copy.samplingInvalid)).toBeVisible();
-    await expect(save).toBeDisabled();
+    await expect(save).toHaveAttribute("aria-disabled", "true");
     refusedSampling.expectNotSent("PUT", "/connectors/c-1");
 
     await userEvent.type(sampling, "25");
@@ -1490,7 +1498,10 @@ export const SamplingErrorInRussianAtMobile: Story = {
     await userEvent.clear(sampling);
     await userEvent.type(sampling, "150");
     await expect(await form.findByText(copy.form.samplingRange)).toBeVisible();
-    await expect(form.getByRole("button", { name: ru.common.create })).toBeDisabled();
+    await expect(form.getByRole("button", { name: ru.common.create })).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
     await expectNoHorizontalOverflow();
     sentRussian.expectNotSent("POST", "/api/v1/connectors");
   },
@@ -1625,5 +1636,15 @@ export const EditSheetInRussianAtMobile: Story = {
     // nothing in the sheet is a start switch, and nothing left for Create
     await expect(form.queryByRole("switch", { name: copy.form.start })).toBeNull();
     editsInRussian.expectNotSent("PUT", "/connectors/c-1");
+  },
+};
+
+/** The endpoint explains itself in an (i) (#3285). */
+export const EndpointIsExplainedInAHint: Story = {
+  render: () => <Harness fetchStub={async () => json([])} />,
+  play: async ({ canvasElement }) => {
+    await clickWhenEnabled(canvasElement, /add connector/i);
+    const f = en.pages.connectors.form;
+    await expectFieldHints(sheet(), en.common.aboutField, [[f.endpoint, f.endpointInfo]]);
   },
 };

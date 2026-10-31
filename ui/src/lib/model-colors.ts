@@ -1,14 +1,14 @@
 // one colour per model across the cards that draw the same read
 
-// the shared categorical sequence (#1245), the same eight the donut and the
-// scatter plot walk, so a model is the same colour wherever it is drawn
+// the shared categorical sequence (#1245), the same eight the scatter
+// plot walks, so a model is the same colour wherever it is drawn
 const SEQUENCE = Array.from({ length: 8 }, (_, i) => `var(--chart-${i + 1})`);
 
 /**
  * The models ordered by requests, busiest first, the name breaking a tie.
  *
  * The control plane answers by cost, and a card that re-sorts for itself
- * (the bars) and one that keeps the order it was given (the donut) then colour
+ * (the bars) and one that keeps the order it was given then colour
  * the nth row differently, so one model was two colours in neighbouring cards
  * (#1994). Every card that colours models takes the colour from this order.
  */

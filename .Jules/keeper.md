@@ -59,3 +59,7 @@
 
 **Learning:** Top-level configuration structs like `PluginsConfig` (in `crates/rolter-core/src/plugin_dispatch.rs`) corresponding to top-level `GatewayConfig` fields can be omitted from `CHECKS` in `crates/rolter/tests/config_reference.rs` if `CHECKS` only covers file-configurable structs.
 **Action:** Ensure every struct for top-level `GatewayConfig` fields, including control-plane owned tables such as `PluginsConfig`, is explicitly registered in `CHECKS` in `crates/rolter/tests/config_reference.rs` with exemptions for control-plane owned fields.
+## 2026-11-01 - Provider key environment variables drifting from reference docs
+
+**Learning:** Provider key environment variables such as `OPENROUTER_API_KEY` configured in default provider templates or `api_key_env` fields in `crates/rolter-core/src/config.rs` can quietly drift from `docs/user-docs/configuration/environment-variables.mdx` if drift guard tests do not explicitly require them in `all_binary_cli_env_vars_are_documented_in_reference`.
+**Action:** Include common provider key variables like `OPENROUTER_API_KEY` in `all_binary_cli_env_vars_are_documented_in_reference` inside `crates/rolter/tests/env_var_names.rs` to assert completeness in reference documentation.

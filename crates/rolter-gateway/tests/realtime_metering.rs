@@ -484,6 +484,59 @@ async fn a_completed_turn_is_logged_with_its_usage_and_cost() {
         row["request_id"], "rt-logged-upgrade:1",
         "each turn's row carries the upgrade's id plus its ordinal"
     );
+    // a route without variants records none, and the empty fields are left
+    // out so a ClickHouse without `048` or `050` takes the row (#3543)
+    assert!(row.get("first_variant").is_none(), "{row}");
+    assert!(row.get("sampled_variant").is_none(), "{row}");
+}
+
+/// A session whose first variant refuses the socket is pinned to the next
+/// one, and every turn row records both (#3543): `first_variant` the variant
+/// first dialled, `variant` the one the session was pinned to, and
+/// `sampled_variant` the primary the walk led with (#3547). By-variant then
+/// counts the session's turns for the variant it was assigned, not only for
+/// the one that answered.
+#[tokio::test]
+async fn a_session_that_fails_over_to_another_variant_records_the_first_dialled() {
+    let org = unique("org-variant-failover");
+    let rows = Rows::default();
+    let clickhouse = rows.serve().await;
+    let (upstream, sessions) = realtime_upstream(true).await;
+    let mut config = config(upstream, Some(clickhouse), &org);
+    // port 1 on loopback refuses at once and no test can listen on it
+    config.providers.push(ProviderConfig {
+        name: "down".into(),
+        kind: ProviderKind::OpenaiCompatible,
+        api_base: "http://127.0.0.1:1".into(),
+        ..Default::default()
+    });
+    config.routes[0] = serde_json::from_value(json!({
+        "model": MODEL,
+        "strategy": "round_robin",
+        "targets": [],
+        "variants": [
+            {"name": "refusing", "weight": 1,
+             "targets": [{"provider": "down", "model": "gpt-realtime-upstream", "weight": 1}]},
+            {"name": "accepting", "weight": 0,
+             "targets": [{"provider": "up", "model": "gpt-realtime-upstream", "weight": 1}]}
+        ]
+    }))
+    .unwrap();
+    let gw = gateway(&config, None).await;
+
+    let mut client = open(gw, KEY).await;
+    run_turn(&mut client).await;
+    run_turn(&mut client).await;
+    let turns = rows.wait_for(2).await;
+    client.close(None).await.unwrap();
+
+    assert_eq!(sessions.load(Ordering::SeqCst), 1);
+    for row in &turns {
+        assert_eq!(row["provider"], "up", "{row}");
+        assert_eq!(row["variant"], "accepting", "{row}");
+        assert_eq!(row["first_variant"], "refusing", "{row}");
+        assert_eq!(row["sampled_variant"], "refusing", "{row}");
+    }
 }
 
 /// The metering model's point: a session that never closes is accounted as it

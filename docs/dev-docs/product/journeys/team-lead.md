@@ -52,11 +52,11 @@ offered, even when the refusal is correct.
 
 ## T5 — see what happened
 
-| #    | step                                             | where                                                                            | expect                                                                       | status      |
-| ---- | ------------------------------------------------ | -------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- | ----------- |
-| T5.1 | spend by model and by key over the month         | **Dashboard** filtered by model and key; **LLM Logs** filtered by key (24 hours) | the team's rows only                                                         | verified    |
-| T5.2 | is an upstream the reason the team's calls fail? | **Circuit Breaker**, health rollups                                              | provider health is readable only with an org-level role — the lead sees none | gap — #1833 |
-| T5.3 | an alert on the team's error rate                | —                                                                                | a rule the lead owns, over the team's traffic                                | gap — #1829 |
+| #    | step                                             | where                                                                            | expect                                                                              | status           |
+| ---- | ------------------------------------------------ | -------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------- | ---------------- |
+| T5.1 | spend by model and by key over the month         | **Dashboard** filtered by model and key; **LLM Logs** filtered by key (24 hours) | the team's rows only                                                                | verified         |
+| T5.2 | is an upstream the reason the team's calls fail? | **Provider Health**, health rollups                                              | a role on the team's projects reads the health of the providers their routes target | verified (#1833) |
+| T5.3 | an alert on the team's error rate                | **Alerting → Alert Rules**, scoped to the team                                   | a rule the lead owns, over the team's traffic                                       | verified (#1829) |
 
 ## T6 — someone leaves
 

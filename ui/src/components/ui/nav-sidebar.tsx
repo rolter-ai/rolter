@@ -506,6 +506,7 @@ export function NavSidebar({
     return (
       <React.Fragment key={it.key}>
         <button
+          type="button"
           ref={(el) => {
             if (el) triggers.current.set(it.key, el);
             else triggers.current.delete(it.key);
@@ -675,6 +676,7 @@ export function NavSidebar({
         )}
         {collapsible && !folded && !isDrawer && (
           <button
+            type="button"
             title={t("shell.collapseSidebar")}
             aria-label={t("shell.collapseSidebar")}
             onClick={() => setCollapsed(true)}
@@ -689,6 +691,7 @@ export function NavSidebar({
             stays icon-narrow. */}
         {collapsible && folded && !isDrawer && (
           <button
+            type="button"
             title={t("shell.expandSidebar")}
             aria-label={t("shell.expandSidebar")}
             onClick={() => setCollapsed(false)}
@@ -722,6 +725,7 @@ export function NavSidebar({
           {!query && <KbdChord chord={shortcutChord("navSearch")} className="-mr-0.5" />}
           {query && (
             <button
+              type="button"
               onClick={() => setQuery("")}
               title={t("common.clearSearch")}
               aria-label={t("common.clearSearch")}
@@ -767,6 +771,7 @@ export function NavSidebar({
                 </a>
               ) : (
                 <button
+                  type="button"
                   key={l.key}
                   onClick={l.onClick}
                   title={l.title}
@@ -806,7 +811,7 @@ export function NavSidebar({
                     rel="noreferrer"
                     title={updateHint}
                     aria-label={updateHint}
-                    className="inline-flex min-w-0 items-center gap-1 rounded-full border border-[color:var(--border-subtle)] bg-[color:var(--surface-subtle)] px-1.5 py-px font-mono text-3xs text-foreground transition-colors hover:border-[color:var(--border-default)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                    className="inline-flex min-w-0 items-center gap-1 rounded-full border border-[color:var(--border-subtle)] bg-[color:var(--surface-subtle)] px-1.5 py-px font-mono text-2xs text-foreground transition-colors hover:border-[color:var(--border-default)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                   >
                     <ArrowUpCircle aria-hidden="true" className="h-3 w-3 flex-none" />
                     <span className="truncate">

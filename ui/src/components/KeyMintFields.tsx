@@ -13,7 +13,10 @@ import { FilterCheckList } from "@/components/ui/filter-panel";
 import { Input } from "@/components/ui/input";
 import { Tag } from "@/components/ui/tag";
 import { fetchRoutes } from "@/lib/api";
+import { periodKind } from "@/lib/budget-period";
+import { useCurrencyCode } from "@/lib/currency";
 import { useFormat } from "@/lib/i18n/format";
+import { capProblems, type CapDraft } from "@/lib/key-caps";
 
 // the name + expiry + reach block shared by the two screens that mint a virtual
 // key: the admin one (Keys) and the self-service one (Account). #945 made both
@@ -56,11 +59,11 @@ export function KeyNameField({
   return (
     <Field
       label={t("keyMint.name")}
+      required
       error={tooLong ? t("keyMint.nameTooLong", { max: MAX_KEY_NAME_LEN }) : undefined}
       hint={tooLong ? undefined : t("keyMint.nameHint")}
     >
       <Input
-        required
         value={value}
         onChange={(e) => onChange(e.target.value)}
         placeholder={t("keyMint.namePlaceholder")}
@@ -339,12 +342,15 @@ export function KeyReachSummary({
   models,
   providers = [],
   ttl,
+  caps,
 }: {
   project: string;
   models: string[];
   /** provider slugs the key is narrowed to; empty is every provider */
   providers?: string[];
   ttl: string;
+  /** the spend and rate caps the sheet holds; absent where the sheet has none */
+  caps?: CapDraft;
 }) {
   const { t } = useTranslation();
   const format = useFormat();
@@ -377,7 +383,50 @@ export function KeyReachSummary({
             ? t("keyMint.reach.never")
             : t("keyMint.reach.until", { date: format.date(expiryDate) })}
         </li>
+        {caps && <CapSummaryLines caps={caps} />}
       </ul>
     </div>
+  );
+}
+
+/**
+ * the cap lines of the reach summary: what the key may spend and how fast. the
+ * currency is read here rather than by the summary, so a summary without caps
+ * needs no query client
+ */
+function CapSummaryLines({ caps }: { caps: CapDraft }) {
+  const { t } = useTranslation();
+  const format = useFormat();
+  const currency = useCurrencyCode();
+  const problems = capProblems(caps);
+  const kind = periodKind(caps.period);
+  const rate = [
+    caps.rpm.trim() !== "" && !problems.rpm
+      ? `${format.number(Number(caps.rpm))} ${t("pages.limits.units.rpm")}`
+      : null,
+    caps.tpm.trim() !== "" && !problems.tpm
+      ? `${format.number(Number(caps.tpm))} ${t("pages.limits.units.tpm")}`
+      : null,
+  ].filter(Boolean);
+  return (
+    <>
+      <li>
+        {!caps.budgetOn
+          ? t("keyMint.reach.noSpendCap")
+          : problems.limit
+            ? t("keyMint.reach.spendCapPending")
+            : t("keyMint.reach.spendCap", {
+                amount: format.currency(Number(caps.limit), currency),
+                period: kind ? t(`pages.limits.periods.${kind}`) : caps.period,
+              })}
+      </li>
+      <li>
+        {!caps.rateOn
+          ? t("keyMint.reach.noRateCap")
+          : rate.length === 0
+            ? t("keyMint.reach.rateCapPending")
+            : t("keyMint.reach.rateCap", { caps: rate.join(" · ") })}
+      </li>
+    </>
   );
 }

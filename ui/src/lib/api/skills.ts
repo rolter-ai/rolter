@@ -1,3 +1,4 @@
+// organization skills repository (crates/rolter-control/src/crud/skills.rs)
 import { getJson, sendJson } from "./request";
 
 export type SkillMinimumRole = "viewer" | "member" | "admin";
@@ -86,5 +87,3 @@ export function rollbackSkillVersion(id: string, version: number): Promise<Skill
     version,
   });
 }
-
-// --- budgets, rate limits, model pricing (crates/rolter-control/src/crud.rs) ---

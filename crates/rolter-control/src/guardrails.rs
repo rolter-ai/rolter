@@ -8,10 +8,12 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use rolter_core::{
-    BuiltinRule, FailureMode, GatewayConfig, GuardAction, GuardStage, GuardrailRule,
-    GuardrailWebhookConfig, GuardrailsConfig, WebhookAuth, WebhookStage,
+    BuiltinRule, FailureMode, GatewayConfig, GuardAction, GuardProviderKind, GuardStage,
+    GuardrailRule, GuardrailWebhookConfig, GuardrailsConfig, WebhookAuth, WebhookStage,
 };
-use rolter_store::postgres::models::{GuardrailProvider, GuardrailRule as GuardrailRuleRow};
+use rolter_store::postgres::models::{
+    GuardrailPolicyRow, GuardrailProvider, GuardrailRule as GuardrailRuleRow,
+};
 use rolter_store::postgres::repo::{GuardrailProviderInput, GuardrailRepo, GuardrailRuleInput};
 
 use crate::crud::{invalid_field, log_audit, pool, publish_config_change, ApiResult, SafeJson};
@@ -58,7 +60,16 @@ struct RuleBody {
 struct ProviderBody {
     name: String,
     enabled: bool,
+    /// `webhook` (the default) or `local` (#3329)
+    #[serde(default = "default_kind")]
+    kind: String,
+    /// empty for a local provider
+    #[serde(default)]
     url: String,
+    #[serde(default)]
+    model_path: Option<String>,
+    #[serde(default)]
+    model_sha256: Option<String>,
     stage: String,
     timeout_ms: i32,
     max_retries: i32,
@@ -66,6 +77,10 @@ struct ProviderBody {
     max_body_bytes: i32,
     auth_kind: String,
     auth_env: Option<String>,
+}
+
+fn default_kind() -> String {
+    "webhook".to_string()
 }
 
 impl RuleBody {
@@ -99,10 +114,20 @@ impl RuleBody {
 
 impl ProviderBody {
     fn as_input(&self) -> GuardrailProviderInput<'_> {
+        let is_local = self.kind == "local";
         GuardrailProviderInput {
             name: &self.name,
             enabled: self.enabled,
+            kind: &self.kind,
             url: &self.url,
+            // stored trimmed, the digest lowercased as the schema requires;
+            // a webhook stores neither
+            model_path: self
+                .model_path
+                .as_deref()
+                .map(str::trim)
+                .filter(|_| is_local),
+            model_sha256: self.model_sha256.as_deref().filter(|_| is_local),
             stage: &self.stage,
             timeout_ms: self.timeout_ms,
             max_retries: self.max_retries,
@@ -246,11 +271,24 @@ fn validate_provider(body: &ProviderBody) -> ApiResult<()> {
             "timeout_ms and max_body_bytes must be positive; max_retries must not be negative",
         ));
     }
-    if !(body.url.starts_with("http://") || body.url.starts_with("https://")) {
-        return Err(invalid_field(
-            "url",
-            "url must start with http:// or https://",
-        ));
+    let kind = GuardProviderKind::parse(&body.kind)
+        .ok_or_else(|| invalid_field("kind", "kind must be webhook or local"))?;
+    match kind {
+        GuardProviderKind::Local => validate_local_fields(body)?,
+        _ => {
+            if !(body.url.starts_with("http://") || body.url.starts_with("https://")) {
+                return Err(invalid_field(
+                    "url",
+                    "url must start with http:// or https://",
+                ));
+            }
+            if body.model_path.is_some() || body.model_sha256.is_some() {
+                return Err(invalid_field(
+                    "model_path",
+                    "model_path and model_sha256 apply to a local provider only",
+                ));
+            }
+        }
     }
     let stage = match body.stage.as_str() {
         "pre_call" => WebhookStage::PreCall,
@@ -275,7 +313,10 @@ fn validate_provider(body: &ProviderBody) -> ApiResult<()> {
     let auth = parse_webhook_auth(&body.auth_kind, body.auth_env.as_deref())?;
     let problems = GuardrailWebhookConfig {
         enabled: body.enabled,
+        kind,
         url: body.url.clone(),
+        model_path: body.model_path.clone().unwrap_or_default(),
+        model_sha256: body.model_sha256.clone().unwrap_or_default(),
         stage,
         timeout_ms: body.timeout_ms as u64,
         max_retries: body.max_retries as u32,
@@ -291,6 +332,53 @@ fn validate_provider(body: &ProviderBody) -> ApiResult<()> {
     } else {
         Err(invalid_field("url", problems.join("; ")))
     }
+}
+
+/// A local provider names a model and its pin, and no url or credential. The
+/// path is where every gateway reads the file; the control plane never opens
+/// it, so it is checked for shape only (ADR-0039).
+fn validate_local_fields(body: &ProviderBody) -> ApiResult<()> {
+    let path = body.model_path.as_deref().map(str::trim).unwrap_or("");
+    if path.is_empty() {
+        return Err(invalid_field(
+            "model_path",
+            "model_path is required for a local provider",
+        ));
+    }
+    if path.len() > 4096 || path.chars().any(char::is_control) {
+        return Err(invalid_field(
+            "model_path",
+            "model_path must be a file path of at most 4096 bytes",
+        ));
+    }
+    let digest = body.model_sha256.as_deref().unwrap_or("");
+    if !rolter_core::guardrail_webhook::is_sha256_hex(digest)
+        || digest.bytes().any(|b| b.is_ascii_uppercase())
+    {
+        return Err(invalid_field(
+            "model_sha256",
+            "model_sha256 must be the model file's SHA-256 as 64 lowercase hex digits",
+        ));
+    }
+    if !body.url.is_empty() {
+        return Err(invalid_field(
+            "url",
+            "url must be empty for a local provider",
+        ));
+    }
+    if body.max_retries != 0 {
+        return Err(invalid_field(
+            "max_retries",
+            "a local model gives the same answer twice; max_retries must be 0",
+        ));
+    }
+    if body.auth_kind != "none" || body.auth_env.is_some() {
+        return Err(invalid_field(
+            "auth_kind",
+            "a local provider takes no credential; auth_kind must be none",
+        ));
+    }
+    Ok(())
 }
 
 /// Where an effective guardrail setting comes from.
@@ -322,13 +410,52 @@ struct EffectiveGuardrails {
     guardrails: bool,
     streaming_post_call: rolter_core::StreamingPostCall,
     rules: Vec<EffectiveRule>,
-    /// the webhook the gateways run, `null` when none is on
+    /// a single-provider view kept for older clients: the file's
+    /// `[guardrail_webhook]` when it is on, else the first enabled registry
+    /// provider. Several providers can run since #459; `semantic` lists them
     webhook: Option<GuardrailWebhookConfig>,
     source: GuardrailSource,
     /// the registry provider in force, set when `source` is `registry`
     provider_id: Option<Uuid>,
-    /// the enabled registry provider an enabled config-file webhook displaced
+    /// always `null` since #459: an enabled config-file webhook runs beside
+    /// the registry's providers rather than displacing one
     overrides: Option<Uuid>,
+    /// every provider and policy the gateways run (#459)
+    semantic: SemanticView,
+}
+
+/// What the gateways' semantic guards are made of.
+#[derive(Debug, Serialize)]
+struct SemanticView {
+    /// every enabled provider, the file's first
+    providers: Vec<EffectiveProvider>,
+    /// every policy, enabled or not, narrowest scope first
+    policies: Vec<EffectivePolicy>,
+    /// enabled providers no policy lists, which run on every request no policy
+    /// matches
+    unattached: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct EffectiveProvider {
+    name: String,
+    kind: GuardProviderKind,
+    url: String,
+    stage: WebhookStage,
+    failure_mode: FailureMode,
+    timeout_ms: u64,
+    source: GuardrailSource,
+    /// the dashboard row behind a registry provider
+    provider_id: Option<Uuid>,
+}
+
+#[derive(Debug, Serialize)]
+struct EffectivePolicy {
+    #[serde(flatten)]
+    policy: rolter_core::GuardrailPolicy,
+    source: GuardrailSource,
+    /// the dashboard row behind a registry policy
+    policy_id: Option<Uuid>,
 }
 
 /// Work out where the effective rules and webhook come from.
@@ -342,6 +469,7 @@ fn describe_effective(
     owned: &crate::ConfigOwned,
     rules: &[GuardrailRuleRow],
     providers: &[GuardrailProvider],
+    policies: &[GuardrailPolicyRow],
 ) -> EffectiveGuardrails {
     let enabled_row = |name: &str| rules.iter().find(|row| row.enabled && row.name == name);
     let effective = config
@@ -368,21 +496,123 @@ fn describe_effective(
             }
         })
         .collect();
-    let active = providers.iter().find(|provider| provider.enabled);
-    let webhook = config.guardrail_webhook.enabled;
-    let (source, provider_id, overrides) = match (webhook, owned.guardrail_webhook) {
-        (false, _) => (GuardrailSource::None, None, None),
-        (true, true) => (GuardrailSource::File, None, active.map(|row| row.id)),
-        (true, false) => (GuardrailSource::Registry, active.map(|row| row.id), None),
+    let row_id = |name: &str| {
+        providers
+            .iter()
+            .find(|row| row.name.trim() == name)
+            .map(|row| row.id)
+    };
+    let file_owned = |name: &str| owned.semantic_providers.contains(name);
+    let compiled = rolter_core::CompiledSemanticGuards::from_config(
+        &config.semantic_guards,
+        &config.guardrail_webhook,
+    );
+    let unattached = compiled
+        .unattached()
+        .into_iter()
+        .map(|name| name.trim().to_string())
+        .collect();
+    let mut running: Vec<EffectiveProvider> = Vec::new();
+    if config.guardrail_webhook.enabled {
+        let webhook = &config.guardrail_webhook;
+        running.push(EffectiveProvider {
+            name: webhook.name.trim().to_string(),
+            kind: webhook.kind,
+            url: webhook.url.clone(),
+            stage: webhook.stage,
+            failure_mode: webhook.failure_mode,
+            timeout_ms: webhook.timeout_ms,
+            source: GuardrailSource::File,
+            provider_id: None,
+        });
+    }
+    for provider in config
+        .semantic_guards
+        .providers
+        .iter()
+        .filter(|p| p.enabled)
+    {
+        let name = provider.name.trim();
+        let from_file = file_owned(name);
+        running.push(EffectiveProvider {
+            name: name.to_string(),
+            kind: provider.kind,
+            url: provider.url.clone(),
+            stage: provider.stage,
+            failure_mode: provider.failure_mode,
+            timeout_ms: provider.timeout_ms,
+            source: if from_file {
+                GuardrailSource::File
+            } else {
+                GuardrailSource::Registry
+            },
+            provider_id: (!from_file).then(|| row_id(name)).flatten(),
+        });
+    }
+    let mut described: Vec<EffectivePolicy> = config
+        .semantic_guards
+        .policies
+        .iter()
+        .map(|policy| {
+            let from_file = owned.semantic_policies.contains(policy.name.trim());
+            EffectivePolicy {
+                policy: policy.clone(),
+                source: if from_file {
+                    GuardrailSource::File
+                } else {
+                    GuardrailSource::Registry
+                },
+                policy_id: (!from_file)
+                    .then(|| {
+                        policies
+                            .iter()
+                            .find(|row| row.name.trim() == policy.name.trim())
+                            .map(|row| row.id)
+                    })
+                    .flatten(),
+            }
+        })
+        .collect();
+    described.sort_by_key(|entry| {
+        let rank = rolter_core::PolicyScope::PRECEDENCE
+            .iter()
+            .position(|scope| *scope == entry.policy.scope)
+            .unwrap_or(usize::MAX);
+        (rank, entry.policy.name.clone())
+    });
+
+    // the legacy single-provider view
+    let legacy = if config.guardrail_webhook.enabled {
+        Some((
+            config.guardrail_webhook.clone(),
+            GuardrailSource::File,
+            None,
+        ))
+    } else {
+        config
+            .semantic_guards
+            .providers
+            .iter()
+            .find(|p| p.enabled && !file_owned(p.name.trim()))
+            .map(|p| (p.clone(), GuardrailSource::Registry, row_id(p.name.trim())))
+    };
+    let (webhook, source, provider_id) = match legacy {
+        Some((webhook, source, id)) => (Some(webhook), source, id),
+        None => (None, GuardrailSource::None, None),
     };
     EffectiveGuardrails {
         guardrails: config.feature_flags.guardrails,
         streaming_post_call: config.guardrails.streaming_post_call,
         rules: effective,
-        webhook: webhook.then_some(config.guardrail_webhook),
+        webhook,
         source,
         provider_id,
-        overrides,
+        overrides: None,
+        semantic: SemanticView {
+            providers: running,
+            policies: described,
+            unattached,
+        },
     }
 }
 
@@ -394,12 +624,14 @@ async fn get_effective(
     let repo = GuardrailRepo(pool(&state));
     let rules = repo.list_rules().await?;
     let providers = repo.list_providers().await?;
+    let policies = repo.list_policies().await?;
     let config = state.store.load().await?;
     Ok(Json(describe_effective(
         config,
         &state.config_owned,
         &rules,
         &providers,
+        &policies,
     )))
 }
 
@@ -496,7 +728,9 @@ async fn create_provider(
 ) -> ApiResult<(StatusCode, Json<GuardrailProvider>)> {
     authorize_superadmin(&principal, superadmin_cap!("guardrail_provider", Create))?;
     validate_provider(&body)?;
-    crate::crud::require_allowed_egress(&state, &body.url, "guardrail provider url")?;
+    if body.kind != "local" {
+        crate::crud::require_allowed_egress(&state, &body.url, "guardrail provider url")?;
+    }
     let row = GuardrailRepo(pool(&state))
         .create_provider(body.as_input())
         .await?;
@@ -522,7 +756,9 @@ async fn update_provider(
 ) -> ApiResult<Json<GuardrailProvider>> {
     authorize_superadmin(&principal, superadmin_cap!("guardrail_provider", Update))?;
     validate_provider(&body)?;
-    crate::crud::require_allowed_egress(&state, &body.url, "guardrail provider url")?;
+    if body.kind != "local" {
+        crate::crud::require_allowed_egress(&state, &body.url, "guardrail provider url")?;
+    }
     let row = GuardrailRepo(pool(&state))
         .update_provider(id, body.as_input())
         .await?;
@@ -546,7 +782,17 @@ async fn delete_provider(
     Path(id): Path<Uuid>,
 ) -> ApiResult<StatusCode> {
     authorize_superadmin(&principal, superadmin_cap!("guardrail_provider", Delete))?;
-    GuardrailRepo(pool(&state)).delete_provider(id).await?;
+    let repo = GuardrailRepo(pool(&state));
+    // a policy that lists the provider would silently stop checking with it,
+    // so the policy has to let go of it first (#459)
+    let listing = repo.policies_listing_provider(id).await?;
+    if !listing.is_empty() {
+        return Err(crate::crud::ApiError::Conflict(format!(
+            "guardrail provider is listed by the policies {}; remove it from them first",
+            listing.join(", ")
+        )));
+    }
+    repo.delete_provider(id).await?;
     publish_config_change(&state).await?;
     log_audit(
         &state,
@@ -600,7 +846,10 @@ mod tests {
             id: Uuid::new_v4(),
             name: "hook".into(),
             enabled,
+            kind: "webhook".into(),
             url: "https://guard.internal/check".into(),
+            model_path: None,
+            model_sha256: None,
             stage: "pre_call".into(),
             timeout_ms: 2_000,
             max_retries: 0,
@@ -629,7 +878,7 @@ mod tests {
         let mut owned = crate::ConfigOwned::default();
         owned.guardrail_rules.insert("email".into());
         let rows = [copy.clone(), row("dashboard-only", true)];
-        let out = describe_effective(config, &owned, &rows, &[]);
+        let out = describe_effective(config, &owned, &rows, &[], &[]);
         assert_eq!(out.rules[0].source, GuardrailSource::File);
         assert_eq!(out.rules[0].rule_id, None);
         assert_eq!(out.rules[0].overrides, Some(copy.id));
@@ -639,24 +888,48 @@ mod tests {
     }
 
     #[test]
-    fn the_webhook_source_follows_who_enabled_it() {
+    fn the_legacy_webhook_view_prefers_the_file_and_displaces_nothing() {
         let row = provider(true);
+        let registry = GuardrailWebhookConfig {
+            name: "hook".into(),
+            ..webhook()
+        };
         let config = GatewayConfig {
-            guardrail_webhook: webhook(),
+            semantic_guards: rolter_core::SemanticGuardsConfig {
+                providers: vec![registry],
+                policies: Vec::new(),
+                ..Default::default()
+            },
             ..GatewayConfig::default()
         };
-        let mut owned = crate::ConfigOwned::default();
-        let from_row = describe_effective(config.clone(), &owned, &[], std::slice::from_ref(&row));
+        let owned = crate::ConfigOwned::default();
+        let from_row =
+            describe_effective(config.clone(), &owned, &[], std::slice::from_ref(&row), &[]);
         assert_eq!(from_row.source, GuardrailSource::Registry);
         assert_eq!(from_row.provider_id, Some(row.id));
-        owned.guardrail_webhook = true;
-        let from_file = describe_effective(config, &owned, &[], std::slice::from_ref(&row));
+        assert_eq!(from_row.semantic.providers.len(), 1);
+        assert_eq!(from_row.semantic.unattached, ["hook"]);
+
+        let both = GatewayConfig {
+            guardrail_webhook: webhook(),
+            ..config
+        };
+        let from_file = describe_effective(both, &owned, &[], std::slice::from_ref(&row), &[]);
         assert_eq!(from_file.source, GuardrailSource::File);
         assert_eq!(from_file.provider_id, None);
-        assert_eq!(from_file.overrides, Some(row.id));
-        let none = describe_effective(GatewayConfig::default(), &owned, &[], &[]);
+        assert_eq!(from_file.overrides, None);
+        // both run: the file's webhook no longer displaces the registry's
+        let sources: Vec<GuardrailSource> = from_file
+            .semantic
+            .providers
+            .iter()
+            .map(|p| p.source)
+            .collect();
+        assert_eq!(sources, [GuardrailSource::File, GuardrailSource::Registry]);
+        let none = describe_effective(GatewayConfig::default(), &owned, &[], &[], &[]);
         assert_eq!(none.source, GuardrailSource::None);
         assert!(none.webhook.is_none());
+        assert!(none.semantic.providers.is_empty());
     }
 
     #[test]
@@ -702,7 +975,10 @@ mod tests {
         let body = ProviderBody {
             name: "paused".into(),
             enabled: false,
+            kind: "webhook".into(),
             url: String::new(),
+            model_path: None,
+            model_sha256: None,
             stage: "pre_call".into(),
             timeout_ms: 2_000,
             max_retries: 0,
@@ -719,7 +995,10 @@ mod tests {
         let body = ProviderBody {
             name: "provider".into(),
             enabled: true,
+            kind: "webhook".into(),
             url: "https://guardrails.internal/evaluate".into(),
+            model_path: None,
+            model_sha256: None,
             stage: "pre_call".into(),
             timeout_ms: 2_000,
             max_retries: 0,
@@ -729,5 +1008,77 @@ mod tests {
             auth_env: Some("secret".into()),
         };
         assert!(validate_provider(&body).is_err());
+    }
+
+    fn local_body() -> ProviderBody {
+        ProviderBody {
+            name: "injection".into(),
+            enabled: true,
+            kind: "local".into(),
+            url: String::new(),
+            model_path: Some(" /models/injection.json ".into()),
+            model_sha256: Some("ab".repeat(32)),
+            stage: "pre_call".into(),
+            timeout_ms: 50,
+            max_retries: 0,
+            failure_mode: "fail_closed".into(),
+            max_body_bytes: 65_536,
+            auth_kind: "none".into(),
+            auth_env: None,
+        }
+    }
+
+    fn refused_field(body: &ProviderBody) -> String {
+        match validate_provider(body) {
+            Err(error) => format!("{error:?}"),
+            Ok(()) => panic!("expected a refusal"),
+        }
+    }
+
+    #[test]
+    fn a_local_provider_is_validated_by_its_own_fields() {
+        let body = local_body();
+        assert!(validate_provider(&body).is_ok());
+        let input = body.as_input();
+        assert_eq!(input.model_path, Some("/models/injection.json"));
+        assert_eq!(input.url, "");
+
+        let mut no_path = local_body();
+        no_path.model_path = None;
+        assert!(refused_field(&no_path).contains("model_path"));
+        let mut bad_pin = local_body();
+        bad_pin.model_sha256 = Some("AB".repeat(32));
+        assert!(refused_field(&bad_pin).contains("model_sha256"));
+        let mut with_url = local_body();
+        with_url.url = "https://x".into();
+        assert!(refused_field(&with_url).contains("url"));
+        let mut with_auth = local_body();
+        with_auth.auth_kind = "bearer".into();
+        with_auth.auth_env = Some("TOKEN".into());
+        assert!(refused_field(&with_auth).contains("auth_kind"));
+        let mut retried = local_body();
+        retried.max_retries = 2;
+        assert!(refused_field(&retried).contains("max_retries"));
+        let mut unknown = local_body();
+        unknown.kind = "gpu".into();
+        assert!(refused_field(&unknown).contains("kind"));
+        // a webhook carries no model fields
+        let mut webhook = local_body();
+        webhook.kind = "webhook".into();
+        webhook.url = "https://guard.internal/check".into();
+        assert!(refused_field(&webhook).contains("model_path"));
+    }
+
+    #[test]
+    fn a_body_without_a_kind_is_a_webhook() {
+        let body: ProviderBody = serde_json::from_value(serde_json::json!({
+            "name": "hook", "enabled": true, "url": "https://guard.internal/check",
+            "stage": "pre_call", "timeout_ms": 2000, "max_retries": 0,
+            "failure_mode": "fail_open", "max_body_bytes": 65536, "auth_kind": "none"
+        }))
+        .unwrap();
+        assert_eq!(body.kind, "webhook");
+        assert!(validate_provider(&body).is_ok());
+        assert_eq!(body.as_input().model_path, None);
     }
 }

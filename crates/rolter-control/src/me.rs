@@ -20,8 +20,8 @@ use uuid::Uuid;
 use rolter_store::postgres::models::User;
 use rolter_store::postgres::models::{OwnedVirtualKey, VirtualKey};
 use rolter_store::postgres::repo::{
-    AuditLogRepo, OrgRepo, RouteRepo, ScimIdentityRepo, UserPreferencesRepo, UserRepo,
-    VirtualKeyRepo,
+    AuditLogRepo, KeyCaps, NewVirtualKey, OrgRepo, RouteRepo, ScimIdentityRepo,
+    UserPreferencesRepo, UserRepo, VirtualKeyRepo,
 };
 
 use crate::analytics::{
@@ -29,7 +29,8 @@ use crate::analytics::{
 };
 use crate::auth::CurrentUser;
 use crate::crud::{
-    generate_virtual_key, key_pepper, pool, publish_config_change, ApiError, ApiResult, SafeJson,
+    generate_virtual_key, key_pepper, pool, publish_config_change, ApiError, ApiResult,
+    KeyBudgetBody, KeyCapsBody, KeyRateLimitBody, SafeJson,
 };
 use crate::rbac::{authorize, Principal, ScopeChain, ScopeFilter};
 use crate::rbac_matrix::cap;
@@ -530,6 +531,11 @@ struct MintKey {
     /// not what omitting the field in a form produces
     #[serde(default)]
     expires_in_days: Option<u32>,
+    /// a spend and/or rate cap the key is born with (#1171)
+    #[serde(default)]
+    budget: Option<KeyBudgetBody>,
+    #[serde(default)]
+    rate_limit: Option<KeyRateLimitBody>,
 }
 
 /// longest a virtual key name may be; long enough for "prod checkout service
@@ -591,21 +597,29 @@ async fn mint_my_key(
     authorize(&state, &principal, chain, cap!("my_virtual_key", Create)).await?;
 
     let (name, expires_at) = validated_name_and_expiry(&body.name, body.expires_in_days)?;
+    let caps = KeyCapsBody {
+        budget: body.budget,
+        rate_limit: body.rate_limit,
+    };
+    caps.validate()?;
 
     let (key, key_hash, key_prefix) = generate_virtual_key(&key_pepper());
     let row = VirtualKeyRepo(pool(&state))
-        .create(
+        .create_with_caps(
             project_id,
-            &key_hash,
-            &key_prefix,
-            Some(name.as_str()),
-            &body.models,
-            &body.providers,
-            body.cache,
-            Some(current.user.id),
-            expires_at,
-            // minted by hand from the self-service panel
-            None,
+            NewVirtualKey {
+                key_hash: &key_hash,
+                key_prefix: &key_prefix,
+                name: Some(name.as_str()),
+                models: &body.models,
+                providers: &body.providers,
+                cache_enabled: body.cache,
+                created_by: Some(current.user.id),
+                expires_at,
+                // minted by hand from the self-service panel
+                purpose: None,
+            },
+            caps.as_new(),
         )
         .await?;
     publish_config_change(&state).await?;
@@ -673,18 +687,20 @@ async fn mint_playground_key(
     let row = VirtualKeyRepo(pool(&state))
         .create(
             project_id,
-            &key_hash,
-            &key_prefix,
-            Some("Playground"),
-            &models,
-            // no provider narrowing: the routes already decide which providers
-            // a model reaches, and pinning providers here would make the
-            // playground key behave unlike the traffic it is meant to imitate
-            &[],
-            None,
-            Some(current.user.id),
-            Some(expires_at),
-            Some(PLAYGROUND_PURPOSE),
+            NewVirtualKey {
+                key_hash: &key_hash,
+                key_prefix: &key_prefix,
+                name: Some("Playground"),
+                models: &models,
+                // no provider narrowing: the routes already decide which providers
+                // a model reaches, and pinning providers here would make the
+                // playground key behave unlike the traffic it is meant to imitate
+                providers: &[],
+                cache_enabled: None,
+                created_by: Some(current.user.id),
+                expires_at: Some(expires_at),
+                purpose: Some(PLAYGROUND_PURPOSE),
+            },
         )
         .await?;
     publish_config_change(&state).await?;
@@ -712,20 +728,28 @@ async fn rotate_my_key(
 
     let (key, key_hash, key_prefix) = generate_virtual_key(&key_pepper());
     let row = VirtualKeyRepo(pool(&state))
-        .create(
+        .create_with_caps(
             old.project_id,
-            &key_hash,
-            &key_prefix,
-            old.name.as_deref(),
-            &old.models,
-            &old.providers,
-            old.cache_enabled,
-            Some(current.user.id),
-            // a rotation replaces a secret, it does not renew a decision: the
-            // fresh key expires exactly when the one it replaces would have
-            old.expires_at,
-            // and it stays the same kind of key it was
-            old.purpose.as_deref(),
+            NewVirtualKey {
+                key_hash: &key_hash,
+                key_prefix: &key_prefix,
+                name: old.name.as_deref(),
+                models: &old.models,
+                providers: &old.providers,
+                cache_enabled: old.cache_enabled,
+                created_by: Some(current.user.id),
+                // a rotation replaces a secret, it does not renew a decision: the
+                // fresh key expires exactly when the one it replaces would have
+                expires_at: old.expires_at,
+                // and it stays the same kind of key it was
+                purpose: old.purpose.as_deref(),
+            },
+            // and it keeps the caps the old one carried (#1171): rotating a
+            // leaked key must not hand back an unbounded one
+            KeyCaps {
+                inherit_from: Some(old.id),
+                ..Default::default()
+            },
         )
         .await?;
     VirtualKeyRepo(pool(&state)).set_disabled(id, true).await?;

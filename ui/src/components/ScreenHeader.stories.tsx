@@ -15,6 +15,7 @@ import {
   StaleSession,
   withGateway,
   type FetchStub,
+  type FleetAnswer,
   type GatewayAnswer,
 } from "@/pages/story-harness";
 
@@ -50,6 +51,7 @@ function HeaderStory({
   title,
   subtitle,
   gateway = "ready",
+  fleet,
   fetchStub,
   pendingRefresh = false,
   background = false,
@@ -59,6 +61,8 @@ function HeaderStory({
   subtitle: string;
   /** what `GET /gw/readyz` answers; must be a stable reference */
   gateway?: GatewayAnswer | (() => GatewayAnswer);
+  /** what `GET /api/v1/cluster/summary` answers; a 404 when omitted. Must be a stable reference */
+  fleet?: FleetAnswer;
   /** replaces the whole stub, for a story that records what was sent */
   fetchStub?: FetchStub;
   pendingRefresh?: boolean;
@@ -67,7 +71,10 @@ function HeaderStory({
   onOpenNav?: () => void;
 }) {
   // the header asks for nothing but the gateway, so every other request hangs
-  const stub = useMemo(() => fetchStub ?? withGateway(gateway, pending), [fetchStub, gateway]);
+  const stub = useMemo(
+    () => fetchStub ?? withGateway(gateway, pending, fleet),
+    [fetchStub, gateway, fleet],
+  );
   const header = <ScreenHeader title={title} subtitle={subtitle} onOpenNav={onOpenNav} />;
   return (
     <Harness fetchStub={stub}>
@@ -174,6 +181,51 @@ export const Unreachable: Story = {
 };
 
 /**
+ * A gateway that cannot read the control plane's snapshot format answers
+ * `503 snapshot_format_unsupported` (ADR-0038). It has no config and refuses
+ * every key, so the pill is red, and its words send the operator to the upgrade
+ * order rather than to the network as "unreachable" would (#3350).
+ */
+export const SnapshotFormatUnsupported: Story = {
+  render: (args) => <HeaderStory {...args} gateway="snapshotFormatUnsupported" />,
+  play: async ({ canvasElement }) => {
+    const pill = await expectPill(
+      canvasElement,
+      GATEWAY.snapshotFormatUnsupported,
+      {
+        dot: "bg-[color:var(--status-danger)]",
+        label: "text-[color:var(--status-danger-text)]",
+      },
+      false,
+    );
+    await expect(pill.getAttribute("title")).toContain(GATEWAY.detail.snapshotFormatUnsupported);
+    await expect(pill.getAttribute("title")).toContain("/deployment/upgrading#upgrade-order");
+    await expect(pill).not.toHaveTextContent(GATEWAY.down);
+  },
+};
+
+/**
+ * A gateway managed by a control plane that has not applied its first config
+ * snapshot answers `503 awaiting_snapshot` (#3348): red too, and worded as a
+ * gateway waiting for its config.
+ */
+export const AwaitingSnapshot: Story = {
+  render: (args) => <HeaderStory {...args} gateway="awaitingSnapshot" />,
+  play: async ({ canvasElement }) => {
+    const pill = await expectPill(
+      canvasElement,
+      GATEWAY.awaitingSnapshot,
+      {
+        dot: "bg-[color:var(--status-danger)]",
+        label: "text-[color:var(--status-danger-text)]",
+      },
+      false,
+    );
+    await expect(pill.getAttribute("title")).toContain(GATEWAY.detail.awaitingSnapshot);
+  },
+};
+
+/**
  * A `502` page from something in front of the control plane says nothing
  * about the gateway, so the pill says it does not know rather than calling the
  * gateway unreachable and sending the operator to the wrong process.
@@ -191,6 +243,138 @@ export const Unknown: Story = {
   },
 };
 
+const WARNING = {
+  dot: "bg-[color:var(--status-warning)]",
+  label: "text-[color:var(--status-warning-text)]",
+};
+const DANGER = {
+  dot: "bg-[color:var(--status-danger)]",
+  label: "text-[color:var(--status-danger-text)]",
+};
+const HEALTHY = { dot: "bg-[color:var(--status-success)]", label: MUTED };
+
+/** the cluster summary's `gateways` object for a story */
+const counts = (live: number, stale: number, lagging: number) => ({
+  inventory: true,
+  gateways: { live, stale, lagging },
+});
+const HEALTHY_FLEET = counts(3, 0, 0);
+const LAGGING_FLEET = counts(3, 0, 1);
+const STALE_FLEET = counts(2, 1, 0);
+const DOWN_FLEET = counts(0, 2, 0);
+const NO_INVENTORY = { inventory: false, gateways: { live: 0, stale: 0, lagging: 0 } };
+
+const fill = (text: string, values: Record<string, string | number>) =>
+  Object.entries(values).reduce((out, [k, v]) => out.split(`{{${k}}}`).join(String(v)), text);
+
+/**
+ * #3263: the pill reads the cluster summary first and says how many gateways
+ * are live. Three live and none behind or stale is the resting state: green,
+ * breathing, and the title says what was counted.
+ */
+export const FleetHealthy: Story = {
+  render: (args) => <HeaderStory {...args} fleet={HEALTHY_FLEET} />,
+  play: async ({ canvasElement }) => {
+    const pill = await expectPill(
+      canvasElement,
+      fill(GATEWAY.fleet.live_other, { count: 3 }),
+      HEALTHY,
+      true,
+    );
+    await expect(pill.getAttribute("title")).toContain(
+      fill(GATEWAY.detail.fleet.healthy_other, { count: 3 }),
+    );
+    await expect(pill.getAttribute("title")).toContain(CHECKED_AT);
+  },
+};
+
+/** One gateway answers but runs an old `config_version`: the warning tone, no pulse. */
+export const FleetLagging: Story = {
+  render: (args) => <HeaderStory {...args} fleet={LAGGING_FLEET} />,
+  play: async ({ canvasElement }) => {
+    const pill = await expectPill(
+      canvasElement,
+      fill(GATEWAY.fleet.behind_other, { lagging: 1, count: 3 }),
+      WARNING,
+      false,
+    );
+    await expect(pill.getAttribute("title")).toContain(
+      fill(GATEWAY.detail.fleet.behind_one, { count: 1, live: 3 }),
+    );
+  },
+};
+
+/** A gateway that went quiet but is not yet forgotten: crashed or partitioned. */
+export const FleetStale: Story = {
+  render: (args) => <HeaderStory {...args} fleet={STALE_FLEET} />,
+  play: async ({ canvasElement }) => {
+    const pill = await expectPill(
+      canvasElement,
+      fill(GATEWAY.fleet.stale_one, { live: 2, count: 1 }),
+      WARNING,
+      false,
+    );
+    await expect(pill.getAttribute("title")).toContain(
+      fill(GATEWAY.detail.fleet.stale_one, { count: 1 }),
+    );
+  },
+};
+
+/** Nothing live, though gateways are in the inventory: the danger tone. */
+export const FleetNoneLive: Story = {
+  render: (args) => <HeaderStory {...args} fleet={DOWN_FLEET} />,
+  play: async ({ canvasElement }) => {
+    const pill = await expectPill(canvasElement, GATEWAY.fleet.none, DANGER, false);
+    await expect(pill.getAttribute("title")).toContain(GATEWAY.detail.fleet.none);
+  },
+};
+
+/**
+ * A control plane with no database answers `inventory: false` and zero counts.
+ * That is "nothing was counted", not "no gateway is up", so the pill probes the
+ * gateway's `/readyz` and says what that returned.
+ */
+const noInventory = recording(withGateway("draining", pending, NO_INVENTORY));
+export const InventoryFalseFallsBackToTheProbe: Story = {
+  render: (args) => <HeaderStory {...args} fetchStub={noInventory.stub} />,
+  play: async ({ canvasElement }) => {
+    await expectPill(canvasElement, GATEWAY.degraded, WARNING, false);
+    await expect(
+      noInventory.calls.some((c) => new URL(c.url, "http://localhost").pathname === "/gw/readyz"),
+    ).toBe(true);
+  },
+};
+
+/** An older control plane answers the summary with a 404: the probe is the answer. */
+export const MissingSummaryFallsBackToTheProbe: Story = {
+  render: (args) => <HeaderStory {...args} gateway="ready" />,
+  play: async ({ canvasElement }) => {
+    await expectPill(canvasElement, GATEWAY.healthy, HEALTHY, true);
+  },
+};
+
+/** A summary that errors is not an outage of the pill: it probes instead. */
+export const FailedSummaryFallsBackToTheProbe: Story = {
+  render: (args) => <HeaderStory {...args} gateway="unreachable" fleet="failing" />,
+  play: async ({ canvasElement }) => {
+    await expectPill(canvasElement, GATEWAY.down, DANGER, false);
+  },
+};
+
+/** The count agrees with its noun in Russian, which has four forms. */
+export const FleetLaggingInRussian: Story = {
+  globals: { locale: "ru" },
+  render: (args) => <HeaderStory {...args} fleet={counts(5, 0, 2)} />,
+  play: async ({ canvasElement }) => {
+    await expectPill(
+      canvasElement,
+      fill(ru.shell.gateway.fleet.behind_many, { lagging: 2, count: 5 }),
+      WARNING,
+      false,
+    );
+  },
+};
+
 /**
  * The `/gw` proxy requires a dashboard session (#2486), so the probe carries
  * it as `Authorization: Bearer`, and nothing else: the proxy never forwards it
@@ -203,6 +387,11 @@ export const ProbesWithTheSession: Story = {
       <HeaderStory
         {...args}
         fetchStub={async (input, init) => {
+          // a control plane older than the cluster summary (#3263): the check
+          // falls back to the probe this story is about
+          if (String(input).includes("/api/v1/cluster/summary")) {
+            return json({ error: { message: "not found" } }, 404);
+          }
           if (String(input).includes("/gw/readyz")) {
             probeAuth.push(new Headers(init?.headers).get("Authorization"));
             return new Response("ok", { status: 200 });
@@ -233,9 +422,11 @@ export const RefusedSessionIsUnknown: Story = {
     <HeaderStory
       {...args}
       fetchStub={async (input) =>
-        String(input).includes("/gw/readyz")
+        String(input).includes("/api/v1/cluster/summary")
           ? json({ error: { message: "unauthorized" } }, 401)
-          : pending(input)
+          : String(input).includes("/gw/readyz")
+            ? json({ error: { message: "unauthorized" } }, 401)
+            : pending(input)
       }
     />
   ),

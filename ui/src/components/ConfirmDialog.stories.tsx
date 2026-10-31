@@ -3,6 +3,7 @@ import * as React from "react";
 import { expect, fn, userEvent, waitFor, within } from "storybook/test";
 
 import { ConfirmDialog } from "./ConfirmDialog";
+import { ApiError } from "@/lib/api";
 import { UxScreenProvider } from "@/lib/ux-react";
 import { expectNoUxEvent, expectUxEvent, recordUxEvents, uxEvents } from "@/pages/story-harness";
 
@@ -146,6 +147,55 @@ export const Failed: Story = {
     await expect(alert).toHaveTextContent("channel is referenced by 2 alert rules");
     // and the dialog stays usable so the operator can retry or back out
     await expect(canvas.getByRole("button", { name: "Delete channel" })).toBeEnabled();
+  },
+};
+
+/** A known code is translated, and the server's English stays out of the dialog (#3484). */
+export const FailedWithAKnownCode: Story = {
+  args: {
+    error: new ApiError("the server's own english sentence", 409, "api_token_inactive"),
+  },
+  play: async () => {
+    const alert = await screen().findByRole("alert");
+    await expect(alert).toHaveTextContent(/revoked or has expired, so there is nothing to rotate/);
+    await expect(alert).not.toHaveTextContent("the server's own english sentence");
+  },
+};
+
+/** The same refusal in `ru`: the catalog's sentence, not the control plane's English. */
+export const FailedWithAKnownCodeInRussian: Story = {
+  args: {
+    error: new ApiError("the server's own english sentence", 409, "api_token_inactive"),
+  },
+  globals: { locale: "ru" },
+  play: async () => {
+    const alert = await screen().findByRole("alert");
+    await expect(alert).toHaveTextContent("Токен отозван или истёк");
+    await expect(alert).not.toHaveTextContent("english");
+  },
+};
+
+/** A code whose sentence cannot name the input keeps the server's words underneath. */
+export const FailedWithACodeThatKeepsItsDetail: Story = {
+  args: {
+    error: new ApiError("name must not be empty", 400, "invalid_field"),
+  },
+  play: async () => {
+    const alert = await screen().findByRole("alert");
+    await expect(alert).toHaveTextContent("One of the values is not accepted");
+    await expect(alert).toHaveTextContent("name must not be empty");
+  },
+};
+
+/** An unknown code falls back to the raw message, as before. */
+export const FailedWithAnUnknownCode: Story = {
+  args: {
+    error: new ApiError("something only this build says", 409, "not_a_published_code"),
+  },
+  play: async () => {
+    await expect(await screen().findByRole("alert")).toHaveTextContent(
+      "something only this build says",
+    );
   },
 };
 

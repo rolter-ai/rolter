@@ -16,13 +16,18 @@
 //! OpenAI-style error envelope, naming the parameter. A bound inside it reaches
 //! ClickHouse byte for byte as it arrived, so a valid window means exactly what
 //! it meant before.
+//!
+//! A bound inside the grammar must also lie between [`EARLIEST_BOUND`] and a
+//! day past now ([`LATEST_BOUND_AHEAD`]), or it is a `400`
+//! `time_bound_out_of_range` (#3506): nothing was logged before then, and a
+//! window from year 1 to 9999 is a scan nobody means.
 
 use axum::extract::FromRequestParts;
 use axum::http::request::Parts;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
-use chrono::{NaiveDate, NaiveTime};
+use chrono::{DateTime, Duration, FixedOffset, NaiveDate, NaiveDateTime, NaiveTime, TimeZone, Utc};
 use serde::de::DeserializeOwned;
 use serde_json::json;
 
@@ -41,7 +46,8 @@ use serde_json::json;
 /// That covers RFC 3339 the way the dashboard and the common SDKs write it, the
 /// `YYYY-MM-DD hh:mm:ss.sss` form ClickHouse itself returns (and so the form
 /// inside every cursor this API hands out), and a bare date. A value with no
-/// zone is read in the ClickHouse server's time zone, as it always was.
+/// zone is read as UTC: the analytics `where` clause parses it with the zone
+/// `'UTC'` (#2984), whatever zone the ClickHouse server runs in.
 ///
 /// It is narrower than RFC 3339 exactly where ClickHouse misreads it: a
 /// lowercase `t` or `z`, year `0000` and a day the calendar does not have all
@@ -100,6 +106,144 @@ fn scan(mut rest: &[u8]) -> Option<()> {
     }
 }
 
+/// The earliest instant a `since` or `until` may name: the first of January
+/// 2000, UTC, the same first year a saved view's custom day may name
+/// (`me_saved_views.rs`).
+pub(crate) const EARLIEST_BOUND: &str = "2000-01-01T00:00:00Z";
+
+/// How far past now a `since` or `until` may name: a little slack for a
+/// client whose clock runs ahead of the control plane's. The dashboard itself
+/// never sends a bound past its own clock, since a range that has not ended
+/// sends no `until` and one that has not started starts now.
+pub(crate) const LATEST_BOUND_AHEAD: Duration = Duration::days(1);
+
+fn earliest_bound() -> DateTime<Utc> {
+    Utc.with_ymd_and_hms(2000, 1, 1, 0, 0, 0)
+        .single()
+        .unwrap_or(DateTime::<Utc>::MIN_UTC)
+}
+
+/// The instant a bound [`is_time_bound`] accepts names, reading one without a
+/// zone as UTC, the way the analytics `where` clause parses it. `None` for a
+/// value outside the grammar.
+pub(crate) fn bound_instant(value: &str) -> Option<DateTime<Utc>> {
+    if !is_time_bound(value) {
+        return None;
+    }
+    let (date, rest) = value.split_at(10);
+    let date = NaiveDate::parse_from_str(date, "%Y-%m-%d").ok()?;
+    let Some(rest) = rest.get(1..) else {
+        return Some(Utc.from_utc_datetime(&date.and_time(NaiveTime::MIN)));
+    };
+    // the time holds no `+`, `-` or `Z`, so whatever follows the first of them
+    // is the zone
+    let (time, zone) = match rest.find(['Z', '+', '-']) {
+        Some(at) => rest.split_at(at),
+        None => (rest, ""),
+    };
+    let time = NaiveTime::parse_from_str(time, "%H:%M:%S%.f")
+        .or_else(|_| NaiveTime::parse_from_str(time, "%H:%M"))
+        .ok()?;
+    let local = NaiveDateTime::new(date, time);
+    let offset = match zone.as_bytes() {
+        [] | [b'Z'] => FixedOffset::east_opt(0)?,
+        [sign, ..] => {
+            let hours: i32 = zone.get(1..3)?.parse().ok()?;
+            let minutes: i32 = zone.get(4..6)?.parse().ok()?;
+            let seconds = hours * 3600 + minutes * 60;
+            FixedOffset::east_opt(if *sign == b'-' { -seconds } else { seconds })?
+        }
+    };
+    Some(
+        offset
+            .from_local_datetime(&local)
+            .single()?
+            .with_timezone(&Utc),
+    )
+}
+
+/// The refusal for a bound that parses but lies before [`EARLIEST_BOUND`] or
+/// more than [`LATEST_BOUND_AHEAD`] past `now`, if `value` is one.
+fn out_of_range(param: &'static str, value: &str, now: DateTime<Utc>) -> Option<InvalidParam> {
+    let instant = bound_instant(value)?;
+    if instant >= earliest_bound() && instant <= now + LATEST_BOUND_AHEAD {
+        return None;
+    }
+    Some(InvalidParam {
+        param: Some(param),
+        code: "time_bound_out_of_range",
+        message: format!(
+            "{param} must lie between {EARLIEST_BOUND} and one day past now; {value} does not"
+        ),
+    })
+}
+
+/// The most points a bucketed read answers (#3506). A bucket that would cut
+/// the window into more is a `400` `too_many_buckets` rather than a series
+/// nobody can draw. The dashboard stays well inside it: its charts are hourly
+/// over at most a month (745 points), and daily over a custom range, which
+/// starts in 2000 at the earliest (about 9,800 days in 2026, and inside the
+/// limit until 2054).
+pub(crate) const MAX_BUCKETS: i64 = 20_000;
+
+/// The reads that cut their window into buckets, the only ones whose `bucket`
+/// [`Query`] holds to [`MAX_BUCKETS`]. The OpenAPI document marks the same
+/// three (`bucketed()`), and a test holds the two to each other.
+pub(crate) const BUCKETED_READS: &[&str] = &[
+    "/api/v1/analytics/timeseries",
+    "/api/v1/analytics/timeseries/export",
+    "/api/v1/health/timeline",
+];
+
+/// The shortest a bucket of each name can be, so the count below is the most
+/// a window can be cut into. A bucket name outside the list is the handler's
+/// to refuse.
+fn shortest_bucket(bucket: &str) -> Option<Duration> {
+    match bucket {
+        "hour" => Some(Duration::hours(1)),
+        "day" => Some(Duration::days(1)),
+        "week" => Some(Duration::days(7)),
+        "month" => Some(Duration::days(28)),
+        _ => None,
+    }
+}
+
+/// Refuse a `bucket` that would cut the window from `since` to `until` (the
+/// defaults when absent: seven days ago, and now) into more than
+/// [`MAX_BUCKETS`] points. A bound that does not parse, or a bucket name the
+/// handler does not know, is left to the checks that refuse it.
+pub(crate) fn check_buckets(
+    since: Option<&str>,
+    until: Option<&str>,
+    bucket: &str,
+    now: DateTime<Utc>,
+) -> Result<(), InvalidParam> {
+    let Some(width) = shortest_bucket(bucket) else {
+        return Ok(());
+    };
+    let bound = |value: Option<&str>, default: DateTime<Utc>| match value {
+        None | Some("") => Some(default),
+        Some(value) => bound_instant(value),
+    };
+    let (Some(since), Some(until)) = (bound(since, now - Duration::days(7)), bound(until, now))
+    else {
+        return Ok(());
+    };
+    let span = until - since;
+    if span <= Duration::zero() {
+        return Ok(());
+    }
+    // a window that does not start on a boundary touches one bucket more
+    let points = span.num_seconds() / width.num_seconds() + 1;
+    if points <= MAX_BUCKETS {
+        return Ok(());
+    }
+    Err(InvalidParam::too_many_buckets(format!(
+        "bucket={bucket} cuts this window into about {points} points, more than the \
+         {MAX_BUCKETS} a read answers; choose a coarser bucket or a shorter window"
+    )))
+}
+
 /// Consume exactly `width` ASCII digits and return their value.
 fn digits(rest: &mut &[u8], width: usize) -> Option<u32> {
     let field = rest.get(..width)?;
@@ -152,6 +296,16 @@ pub(crate) struct InvalidParam {
 }
 
 impl InvalidParam {
+    /// A `bucket` that would cut the window into more points than a read
+    /// answers (#3506).
+    pub(crate) fn too_many_buckets(message: String) -> Self {
+        Self {
+            param: Some("bucket"),
+            code: "too_many_buckets",
+            message,
+        }
+    }
+
     /// A keyset cursor that is malformed or carries no readable timestamp.
     pub(crate) fn cursor(message: String) -> Self {
         Self {
@@ -182,11 +336,20 @@ impl IntoResponse for InvalidParam {
 pub(crate) trait TimeBounds {
     /// The `since` and `until` the caller sent, in that order.
     fn time_bounds(&self) -> (Option<&str>, Option<&str>);
+
+    /// The `bucket` the caller sent, for a query that takes one, so [`Query`]
+    /// can refuse one that cuts the window too fine ([`check_buckets`]). A
+    /// handler whose default bucket applies when none is sent checks that one
+    /// itself.
+    fn bucket(&self) -> Option<&str> {
+        None
+    }
 }
 
 /// axum's `Query` for a query string that carries a time window.
 ///
-/// Both bounds are checked with [`is_time_bound`] before the handler runs, and
+/// Both bounds are checked with [`is_time_bound`] and held to the years a
+/// window may name (see the module docs) before the handler runs, and
 /// every failure, a malformed bound or a query string that does not deserialize
 /// at all, is an [`InvalidParam`] rather than axum's plain-text rejection. An
 /// empty bound is the same as an absent one: both mean the default.
@@ -223,6 +386,17 @@ where
                     message: bound_message(param, value),
                 });
             }
+            if let Some(refused) = out_of_range(param, value, Utc::now()) {
+                return Err(refused);
+            }
+        }
+        // only the reads that cut their window into buckets: a summary that was
+        // sent a `bucket` too answers one row whatever it says
+        if let Some(bucket) = query
+            .bucket()
+            .filter(|_| BUCKETED_READS.contains(&parts.uri.path()))
+        {
+            check_buckets(since, until, bucket, Utc::now())?;
         }
         Ok(Self(query))
     }
@@ -380,6 +554,103 @@ mod tests {
         }
     }
 
+    #[test]
+    fn a_bound_names_the_instant_clickhouse_reads_it_as() {
+        let at = |value: &str| bound_instant(value).map(|instant| instant.to_rfc3339());
+        assert_eq!(
+            at("2026-07-01").as_deref(),
+            Some("2026-07-01T00:00:00+00:00")
+        );
+        assert_eq!(
+            at("2026-07-01 12:30").as_deref(),
+            Some("2026-07-01T12:30:00+00:00")
+        );
+        assert_eq!(
+            at("2026-07-01T12:30:15.250Z").as_deref(),
+            Some("2026-07-01T12:30:15.250+00:00")
+        );
+        assert_eq!(
+            at("2026-07-01T02:00:00+02:00").as_deref(),
+            Some("2026-07-01T00:00:00+00:00")
+        );
+        assert_eq!(
+            at("2026-06-30T19:00:00-05:00").as_deref(),
+            Some("2026-07-01T00:00:00+00:00")
+        );
+        assert_eq!(at("not-a-date"), None);
+    }
+
+    #[test]
+    fn a_bound_outside_2000_to_a_day_past_now_is_out_of_range() {
+        let now = Utc.with_ymd_and_hms(2026, 10, 29, 12, 0, 0).unwrap();
+        for value in [
+            "2000-01-01",
+            "2000-01-01T00:00:00Z",
+            "2026-10-29T12:00:00Z",
+            // a day of slack past the control plane's clock
+            "2026-10-30",
+            "2026-10-30T12:00:00Z",
+        ] {
+            assert!(out_of_range("since", value, now).is_none(), "{value}");
+        }
+        for value in [
+            "0001-01-01",
+            "1999-12-31T23:59:59Z",
+            // the first instant of 2000 in UTC, written an hour east of it
+            "2000-01-01T00:30:00+01:00",
+            "2026-10-30T12:00:01Z",
+            "9999-12-31T23:59:59Z",
+        ] {
+            let refused = out_of_range("until", value, now).expect(value);
+            assert_eq!(refused.code, "time_bound_out_of_range", "{value}");
+            assert_eq!(refused.param, Some("until"));
+            assert!(refused.message.starts_with("until"), "{}", refused.message);
+        }
+    }
+
+    #[test]
+    fn a_bucket_past_the_point_limit_is_refused_and_the_dashboards_are_not() {
+        let now = Utc.with_ymd_and_hms(2026, 10, 29, 12, 0, 0).unwrap();
+        let ok = |since, until, bucket| check_buckets(since, until, bucket, now).is_ok();
+        // what the dashboard sends: hourly over a month, daily from 2000
+        assert!(ok(Some("2026-09-01"), Some("2026-10-01"), "hour"));
+        assert!(ok(Some("2000-01-01"), Some("2026-10-30"), "day"));
+        // the default window, hourly
+        assert!(ok(None, None, "hour"));
+        assert!(ok(Some(""), Some(""), "hour"));
+        // an hour at a time over 2000 to now is far past the limit
+        let refused = check_buckets(Some("2000-01-01"), None, "hour", now).unwrap_err();
+        assert_eq!(refused.code, "too_many_buckets");
+        assert_eq!(refused.param, Some("bucket"));
+        // the limit itself: 20,000 hours touch 20,001 buckets unless aligned
+        let since = (now - Duration::hours(MAX_BUCKETS - 1)).to_rfc3339();
+        assert!(ok(Some(&since), None, "hour"));
+        let since = (now - Duration::hours(MAX_BUCKETS)).to_rfc3339();
+        assert!(!ok(Some(&since), None, "hour"));
+        // coarser buckets over the same span are fine
+        assert!(ok(Some("2000-01-01"), None, "week"));
+        assert!(ok(Some("2000-01-01"), None, "month"));
+        // what other checks refuse is theirs: an unknown bucket, a bad bound,
+        // an end before the start
+        assert!(ok(Some("2000-01-01"), None, "year"));
+        assert!(ok(Some("not-a-date"), None, "hour"));
+        assert!(ok(Some("2026-10-01"), Some("2026-09-01"), "hour"));
+    }
+
+    #[tokio::test]
+    async fn an_out_of_range_bound_is_a_coded_400_naming_it() {
+        for param in ["since", "until"] {
+            for value in ["1999-12-31", "9999-12-31T23:59:59Z"] {
+                let error = extract(&format!("/?{param}={value}"))
+                    .await
+                    .expect_err("an out-of-range bound");
+                assert_eq!(error["error"]["param"], param);
+                assert_eq!(error["error"]["type"], "invalid_request_error");
+                assert_eq!(error["error"]["code"], "time_bound_out_of_range");
+            }
+        }
+    }
+
     #[tokio::test]
     async fn a_query_string_that_does_not_deserialize_is_json_too() {
         // axum's own rejection is text/plain, which the dashboard cannot read
@@ -401,10 +672,17 @@ mod tests {
         ("/api/v1/analytics/summary", None),
         ("/api/v1/analytics/timeseries", None),
         ("/api/v1/analytics/by-model", None),
+        ("/api/v1/analytics/by-variant", None),
         ("/api/v1/analytics/by-attribution", None),
+        ("/api/v1/analytics/by-attribution/export", None),
+        ("/api/v1/analytics/timeseries/export", None),
         ("/api/v1/analytics/invocations", Some("request_id")),
+        // streams the same list from the start; it takes no cursor of its own
+        ("/api/v1/analytics/invocations/export", None),
         ("/api/v1/analytics/guardrails", None),
         ("/api/v1/analytics/plugins", None),
+        ("/api/v1/analytics/param-adjustments", None),
+        ("/api/v1/analytics/savings", None),
         ("/api/v1/health/uptime", None),
         ("/api/v1/health/mttr", None),
         ("/api/v1/health/timeline", None),
@@ -502,7 +780,9 @@ mod tests {
     fn windowed_app(clickhouse_url: &str) -> Router {
         let mut state = crate::tests::state_with_token(None);
         state.clickhouse = Some(crate::analytics::ClickHouseClient::new(clickhouse_url));
-        let router = crate::analytics::router().merge(crate::health::router());
+        let router = crate::analytics::router()
+            .merge(crate::savings::router())
+            .merge(crate::health::router());
         #[cfg(feature = "postgres")]
         let router = router.merge(crate::mcp_logs::router());
         router.with_state(state)
@@ -579,6 +859,55 @@ mod tests {
             let bindings = seen.lock().pop().expect("the query reached clickhouse");
             assert_eq!(bindings["param_since"], "", "{path}");
             assert_eq!(bindings["param_until"], "", "{path}");
+        }
+    }
+
+    #[tokio::test]
+    async fn every_route_refuses_an_out_of_range_bound_before_clickhouse_sees_it() {
+        let (url, seen) = fake_clickhouse().await;
+        let app = windowed_app(&url);
+        for (path, _) in WINDOWED_ROUTES.iter().filter(|(p, _)| reachable_here(p)) {
+            for query in ["since=1999-12-31", "until=9999-12-31"] {
+                let (status, body) = get(&app, &format!("{path}?{query}")).await;
+                assert_eq!(status, StatusCode::BAD_REQUEST, "{path}?{query}");
+                assert_eq!(body["error"]["code"], "time_bound_out_of_range", "{path}");
+            }
+        }
+        assert!(seen.lock().is_empty(), "a refused bound reached clickhouse");
+    }
+
+    #[tokio::test]
+    async fn a_bucket_too_fine_for_its_window_is_refused_sent_or_defaulted() {
+        let (url, seen) = fake_clickhouse().await;
+        let app = windowed_app(&url);
+        for uri in [
+            // sent by the caller
+            "/api/v1/analytics/timeseries?since=2000-01-01&bucket=hour",
+            "/api/v1/analytics/timeseries/export?since=2000-01-01&bucket=hour",
+            "/api/v1/health/timeline?since=2000-01-01&bucket=hour",
+            // the timeline's own default is an hour
+            "/api/v1/health/timeline?since=2000-01-01",
+        ] {
+            let (status, body) = get(&app, uri).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{uri}: {body}");
+            assert_eq!(body["error"]["code"], "too_many_buckets", "{uri}");
+            assert_eq!(body["error"]["param"], "bucket", "{uri}");
+        }
+        assert!(
+            seen.lock().is_empty(),
+            "a refused bucket reached clickhouse"
+        );
+        // the same span a day at a time is answered, the timeseries default,
+        // and a read that buckets nothing ignores a bucket it was sent
+        for uri in [
+            "/api/v1/analytics/summary?since=2000-01-01&bucket=hour",
+            "/api/v1/analytics/by-model?since=2000-01-01&bucket=hour",
+            "/api/v1/analytics/timeseries?since=2000-01-01",
+            "/api/v1/analytics/timeseries?since=2000-01-01&bucket=day",
+            "/api/v1/health/timeline?since=2000-01-01&bucket=day",
+        ] {
+            let (status, body) = get(&app, uri).await;
+            assert_eq!(status, StatusCode::OK, "{uri}: {body}");
         }
     }
 

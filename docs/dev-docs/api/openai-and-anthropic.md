@@ -37,7 +37,7 @@ failures.
 | GET               | `/v1/responses/{id}/input_items` | list input items for a tenant-scoped native Responses resource                                       |
 | POST              | `/v1/messages`                   | Anthropic Messages; streaming supported                                                              |
 | POST              | `/v1/embeddings`                 | OpenAI embeddings; non-streaming                                                                     |
-| POST              | `/v1/rerank`                     | Cohere/Jina rerank; non-streaming                                                                    |
+| POST              | `/v1/rerank`                     | Cohere/Jina rerank; non-streaming; documents reshaped for an `infinity` target                       |
 | POST              | `/v1/systemone`                  | System One typed decisions, forwarded unchanged to a decision server; non-streaming (ADR-0035)       |
 | POST              | `/v1/images/generations`         | OpenAI image generation; non-streaming                                                               |
 | POST              | `/v1/audio/speech`               | OpenAI text-to-speech; binary audio response                                                         |
@@ -52,6 +52,8 @@ failures.
 | GET               | `/healthz`                       | liveness — process is up, no dependency checks                                                       |
 | GET               | `/readyz`                        | readiness — `503` while draining (see [Health & readiness](../architecture/health-and-readiness.md)) |
 | GET               | `/metrics`                       | Prometheus exposition                                                                                |
+
+The document's request and 200-response bodies name `components/schemas` entries (#3335), built in `crates/rolter-gateway/src/openapi_schemas.rs`. Each lists the fields rolter reads or guarantees and leaves `additionalProperties` open, because bodies are forwarded; a field it does not name still reaches the upstream. The streaming schemas (`ChatCompletionChunk`, `MessageStreamEvent`, `ResponseStreamEvent`) describe only the event families rolter forwards or produces by translation. A schema's provenance comes from the record that lists it under `gateway_schemas` in `crates/rolter-core/specifications.toml`; a new schema needs a record, or the `model_endpoint_bodies_reference_open_schemas_with_provenance` test fails.
 
 ## Request header forwarding
 
@@ -141,6 +143,76 @@ and document inputs retain URL, base64 media type/data, and file references.
 Blocks with no equivalent in the target protocol (for example OpenAI input
 audio sent to an Anthropic Messages upstream) are preserved as opaque content
 blocks; the target may reject them rather than rolter silently dropping data.
+
+### Parameters translation did not forward as sent
+
+A translator that cannot carry a caller parameter to the upstream dialect says
+so instead of discarding it silently (#1586). Every adapter in
+`crates/rolter-proxy/src/translation.rs` records into one
+`rolter_proxy::ParamAdjustments` (`adjustments.rs`), an entry per parameter with
+a `Disposition`: `dropped` (no equivalent, not sent), `clamped` (sent within
+the upstream's range: Chat → Anthropic clamps `temperature`, see below) or `translated` (sent as a lossy
+approximation, such as a forced-function `tool_choice` sent to Gemini as mode
+`ANY`, an Anthropic `tool_choice` carrying `disable_parallel_tool_use` sent to
+Gemini or Interactions, which have no such switch, or a tool list with
+non-function tools). A rename that keeps the meaning
+(`max_completion_tokens` → `max_tokens`, `stop` → `stop_sequences`) is not an
+adjustment. What each adapter reports:
+
+| Pair                         | Reported                                                                                                                                                                                |
+| ---------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Chat → Anthropic             | `n`, `presence_penalty`, `frequency_penalty`, `logprobs` dropped; `max_completion_tokens` dropped when `max_tokens` is also set; `temperature` clamped when above 1                     |
+| Anthropic → Chat             | nothing: `tool_choice.disable_parallel_tool_use: true` is carried as top-level `parallel_tool_calls: false` (#3325), and `false`, or `true` on a request with no tools, leaves it unset |
+| Responses → Chat / Anthropic | `background`, `store`, `previous_response_id`, `reasoning`, `text` dropped, plus the Chat → Anthropic row for Anthropic                                                                 |
+| any → Gemini generate        | every known parameter the translator does not map (`top_k`, `seed`, `response_format`, …); `tool_choice` and `tools` as above                                                           |
+| any → Gemini Interactions    | as Gemini, except that `store` and `previous_response_id` are carried rather than dropped                                                                                               |
+
+`temperature` is the one clamp (#3324, the maintainer's decision). OpenAI's Chat
+Completions and Responses accept 0 to 2 and Anthropic Messages 0 to 1, so a
+caller routed to Anthropic with `temperature: 1.3` used to get Anthropic's 400
+for a request valid in the dialect it speaks. `clamp_temperature` sends 1
+instead and records `temperature=clamped`; a value at or below 1, or one that is
+not a number, is forwarded as sent for the upstream to judge. Scaling (`t / 2`)
+was weighed and rejected, since it would change every request's temperature,
+including the ones Anthropic accepts as they are. Responses → Anthropic goes
+through the same Chat → Anthropic translator and clamps the same way.
+
+Gemini and Interactions build their body afresh, so the parameters left over in
+the source object are the dropped ones. Only names from `KNOWN_PARAMS` are
+recorded, so a key the caller invented never reaches a header or a log row, and
+`model`, `stream` and `stream_options` are left out because rolter carries or
+answers them itself.
+
+The record is made at request-translation time:
+`TranslationPlan::translate_request_reporting` returns it beside the body, and
+`Forwarder::forward_json_with` inserts it into the upstream `reqwest::Response`'s
+extensions when it is not empty. The gateway takes it off the response before
+reading a byte, puts it on `RequestLog::param_adjustments`, and
+`DecisionHeaders` renders it as `x-rolter-param-adjustments:
+top_k=dropped, tool_choice=translated` (an RFC 8941 dictionary of tokens) on the
+streamed, buffered and cached-store paths alike. The log row writes
+`<disposition>:<param>` entries to `request_logs.param_adjustments`
+(`clickhouse/022_param_adjustments.sql`, `Array(String)`, serialized only when
+non-empty, so a ClickHouse without the column keeps accepting every other row).
+A response served from the response cache did not go through translation, so
+the store keeps the record instead (#3326): `CachedResponse::param_adjustments`
+holds the miss's `log_entries()` (`#[serde(default)]` and skipped when empty, so
+an entry an older gateway stored reads as nothing adjusted and an unadjusted one
+is byte for byte what it was), and `cached_response` rebuilds it with
+`ParamAdjustments::from_log_entries`, which keeps only `<disposition>:<known
+parameter>` entries, onto the hit's log row and its header. The miss path does
+no extra work beyond rendering the entries it already writes to the log row. A
+semantic hit replays the adjustments of the request that produced the stored
+answer, which is what that answer was generated under.
+
+The common path pays nothing: a plan that does not translate returns an empty
+record, an empty `Vec` does not allocate, nothing is inserted into the response
+extensions, and `DecisionHeaders` builds no header string. Under ADR-0032 the
+header is a rolter-specific response header whose name and grammar are
+promised; the parameters it names and the dispositions it uses are an open
+vocabulary, so a new disposition is additive, not breaking. Tests: the
+`reported` cases in `translation.rs`, `adjustments.rs`, and the
+`param_adjustments_*` cases in `crates/rolter-gateway/tests/integration.rs`.
 
 ### Token usage and the prompt cache across dialects
 
@@ -242,6 +314,12 @@ Which routes answer which endpoint follows the provider kinds behind them
   `400 unsupported_endpoint`;
 - any other endpoint for a route whose targets are all `system_one` is refused
   the same way, naming `/v1/systemone`;
+- any endpoint but `/v1/embeddings` for a route whose targets are all
+  text-embeddings servers (`tei`, `infinity`; `ProviderKind::embeddings_only`)
+  is refused the same way, naming `/v1/embeddings`, without calling the
+  upstream (#3247), and so is `/v1/rerank` unless one of them is `infinity`,
+  the only one with a rerank mapping; this also turns the route's
+  `rolter_capabilities.chat` in `GET /v1/models` to `false`;
 - a route that mixes decision and chat targets balances as usual.
 
 Pre-call guardrails scan every string in `state` and in each question's
@@ -272,14 +350,24 @@ A `429` carries the upstream's `Retry-After` when it sent one. The message names
 `GET /v1/models` answers with three kinds of id, filtered to what the caller's
 virtual key may reach. A key minted in the store sees only its own org's
 routes, providers and groups, the same boundary the route authorization
-contract enforces on a call (#1844); a key from the gateway's config file sees
-them all:
+contract enforces on a call (#1844). Names are per org (#1857), so two orgs may
+each list a `gpt-4o`; a key lists the one its name resolves to, its own org's
+before a global one. A key from the gateway's config file carries no org: it
+sees global rows and every org row whose name only one org uses, while a name
+two orgs share (with no global row of it) is unknown to it, on a call and in
+the listing:
 
-| Id                    | `owned_by`          | Where it comes from                                                                                              |
-| --------------------- | ------------------- | ---------------------------------------------------------------------------------------------------------------- |
-| a route name (`chat`) | `rolter`            | every configured route, plus the built-in `fake-llm` unless a route the key can use shadows it                   |
-| `provider-slug/model` | the provider's name | the upstream models the provider's routes name, **plus** the catalogue the provider reported to its health probe |
-| `group-slug/model`    | the group's name    | the union of its member providers' models (a member with an explicit model rewrite contributes that one)         |
+| Id                    | `owned_by`          | Where it comes from                                                                                                  |
+| --------------------- | ------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| a route name (`chat`) | `rolter`            | every configured route, plus the built-in `fake-llm` unless a route the key can use shadows it                       |
+| `provider-slug/model` | the provider's name | the upstream models the provider's routes name, **plus** the catalogue the provider reported to its model-list probe |
+| `group-slug/model`    | the group's name    | the union of its member providers' models (a member with an explicit model rewrite contributes that one)             |
+
+A route's entry also carries `capabilities`, `model_type` and `context_length`
+when the route sets them (`handlers.rs`, `add_model_metadata`; #2939). They are
+advertised, never enforced. `description` is never served: it is free text
+written for the team and may hold internal routing notes. Provider-pinned and
+group addresses have no route, so they carry none of these.
 
 The provider-pinned half used to be derived from route targets alone, which
 under-reported a fleet: `provider-slug/model` resolves for **any** model the
@@ -287,10 +375,15 @@ provider serves (ADR-0017), so a provider with five models behind one route
 answered `200` for all five but listed two. A client that builds a model picker
 from `/v1/models` could not offer the rest (#1647).
 
-The catalogue comes from the probe the health sweep already sends. For every
-provider kind whose liveness endpoint is a model list — everything except TEI,
-and except a provider whose `health.path` was overridden — the sweep now parses
-that response instead of discarding it, and caches the model ids per provider.
+The catalogue comes from the provider's free model-list probe
+(`rolter_core::probe::probe_request`). For every provider kind whose liveness
+endpoint is a model list — everything except TEI — the response is parsed
+instead of discarded, and the model ids are cached per provider. Two writers
+fill the cache: a dedicated refresher (`model_catalog::spawn_refresher`) that
+runs whether or not active health checks are on (#1729), and the health sweep,
+which parses the body it already fetched while `[health] enabled = true`. The
+refresher always probes the kind's default path, so an overridden `health.path`
+does not stop it.
 The probe carries the provider's key, presented the way the provider kind
 expects it (`x-api-key` for Anthropic, a bearer token for OpenAI, and so on; see
 [How the provider key is presented](../deployment/configuration.md#how-the-provider-key-is-presented)).
@@ -298,15 +391,25 @@ An `openai` or `anthropic` provider answers a keyless model list with `401`,
 which still counts as healthy but has no catalogue to read, so these two kinds
 listed no extra models until the sweep sent their key (#2806).
 
-Two consequences follow from reusing the probe:
+An id is listed **whole**. Infinity and vLLM report Hugging Face ids such as
+`BAAI/bge-small-en-v1.5` and refuse the bare `bge-small-en-v1.5`, so the listing
+is `provider-slug/BAAI/bge-small-en-v1.5` and `resolve_pinned` (which splits at
+the first slash) sends `model = "BAAI/bge-small-en-v1.5"` upstream (#3245). Only a
+google resource name loses its `models/` prefix. `rolter_core::probe::catalogue_names`
+still cuts to the last segment; the control plane's model check uses it to match
+names, never to build an address.
 
-- **The wider listing needs `[health] enabled = true`.** Without active probing
-  nothing ever asks a provider what it serves, and the listing stays exactly
-  route-derived. Addressing is unaffected either way: an unlisted
-  `provider-slug/model` still routes.
-- **It costs no extra upstream traffic and no new configuration.** The probe
-  interval is the refresh interval; the cache survives config reloads and drops
-  a provider a reload removed.
+Two consequences follow:
+
+- **The wider listing does not depend on `[health]`.** The refresher runs every
+  `[health] catalogue_interval_secs` (default `900`; `0` turns it off, leaving
+  only the sweep). It works for a config-file-only deployment. A provider with
+  no catalogue yet is fetched within 30 seconds, and a failed fetch keeps the
+  previous catalogue rather than emptying the listing. Addressing is unaffected
+  either way: an unlisted `provider-slug/model` still routes.
+- **It is one free, non-inference GET per provider per interval.** The cache
+  survives config reloads and drops a provider a reload removed. Fetches are
+  bounded by `probe_concurrency` and a 10 second timeout.
 
 Two bounds keep the listing from growing without limit, since it is the product
 of the fleet and each provider's catalogue:
@@ -349,6 +452,15 @@ If its provider is removed, its provider kind changes, or its credential is
 rotated away, the record becomes unavailable. Unknown, expired, deleted,
 cross-key, and unavailable records all return the same `404 response_not_found`
 error so route ownership is not leaked.
+
+The record names its provider by its stable identity, the owning org and the
+display name, not by the runtime id that served the request (#3461). A
+provider's runtime id changes from `openai` to `openai@<org>` once a second org
+creates a provider of the same name (ADR-0040), and a response created before
+that still reaches the provider that holds it: each lifecycle call finds the
+provider's runtime id in the current snapshot again (`Snapshot::provider_id`).
+A record that carries a runtime id instead (`provider_org` unset) is looked up
+by that id, as records always were.
 
 Each lifecycle call is also re-authorized against the current configuration,
 exactly as a new request would be: the model the caller named, the route that
@@ -400,4 +512,4 @@ curl http://localhost:4000/v1/chat/completions \
   -d '{"model":"llama","messages":[{"role":"user","content":"hi"}]}'
 ```
 
-> Multipart audio (`/v1/audio/transcriptions`, `/v1/audio/translations`) forwards the upload verbatim and routes on the `model` form field; the route target's upstream model name is not rewritten into the multipart body, and variant routing / per-model param defaults (JSON-only) do not apply. Authorization does apply in full: the upload passes the same model, visibility, route-policy and provider gates as a JSON request ([route authorization contract](../architecture/rbac-and-auth.md#the-route-authorization-contract-1485)).
+> Multipart audio (`/v1/audio/transcriptions`, `/v1/audio/translations`) forwards the upload verbatim and routes on the `model` form field; the route target's upstream model name is not rewritten into the multipart body, and per-model and per-variant param defaults (JSON-only) do not apply. Variant routing does (#3494): a route with variants samples one exactly as a chat request does (`forward_variants`, given the upload as a `VariantPayload::Multipart` it forwards verbatim), dials only the variants' targets, falls over along the same chain and logs the variant it served from. Authorization does apply in full: the upload passes the same model, visibility, route-policy and provider gates as a JSON request ([route authorization contract](../architecture/rbac-and-auth.md#the-route-authorization-contract-1485)). The response side of the guardrails applies to the transcript (#3331): a built-in `post_call` rule that blocks, a semantic policy's `post_call` provider that refuses, or a `post_response` plugin that blocks answers `403` with `guardrail_blocked` (`plugin_blocked` for a plugin) in place of the transcript, which is still billed by its audio minutes; see [semantic guards](../architecture/semantic-guards.md#audio-transcriptions-3331). A `stream=true` form field is read too (#3432): on a route with a response-side check it is refused or buffered as a chat request's `"stream": true` is, with `400 guardrail_streaming_unsupported` (or `plugin_streaming_unsupported` / `pii_streaming_unsupported`) before the upstream call.

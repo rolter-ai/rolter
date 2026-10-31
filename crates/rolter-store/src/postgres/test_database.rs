@@ -11,7 +11,7 @@
 //! worktree is reading (#1430).
 //!
 //! So the url in the environment is treated as a *server* pointer, and the
-//! database actually used is derived from the workspace the test was compiled
+//! database actually used is derived from the workspace the test is running
 //! in: `rolter_test_wt_<worktree>_<digest>`, created on first use. A new
 //! worktree is therefore isolated without anyone remembering to export
 //! anything, which was the requirement — an isolation scheme that has to be
@@ -82,7 +82,7 @@ pub async fn url() -> Option<String> {
 /// The database name this worktree owns, exposed so a test can assert on the
 /// derivation without connecting.
 pub fn worktree_database_name() -> String {
-    database_name_for(workspace_root())
+    database_name_for(&workspace_root())
 }
 
 async fn resolve() -> Option<String> {
@@ -97,8 +97,8 @@ async fn resolve() -> Option<String> {
     }
 
     let root = workspace_root();
-    let name = database_name_for(root);
-    let result = retry(RETRY_DELAYS, |_| ensure_database(&configured, &name, root)).await;
+    let name = database_name_for(&root);
+    let result = retry(RETRY_DELAYS, |_| ensure_database(&configured, &name, &root)).await;
     match result {
         Ok(()) => Some(with_database(&configured, &name)),
         // a silent fallback would share one database between worktrees, which
@@ -146,15 +146,43 @@ fn opted_out() -> bool {
     std::env::var(OPT_OUT_ENV).is_ok_and(|v| v == "0" || v.eq_ignore_ascii_case("false"))
 }
 
-/// The workspace root, taken from this crate's manifest directory at compile
-/// time.
+/// The workspace root of the worktree the test is running in.
 ///
-/// Every crate in the workspace links this one, so every test binary in a
-/// worktree derives the same value — which a runtime `current_dir()` would not
-/// guarantee, since it is the package directory under `cargo test` and anything
-/// at all when a test binary is run by hand.
-fn workspace_root() -> &'static str {
-    // `<root>/crates/rolter-store`
+/// Cargo and nextest both export `CARGO_MANIFEST_DIR` to the test process at
+/// *run* time, naming the package under test, so the root is found by walking
+/// up from it. That is what keeps the answer right when worktrees share a
+/// `CARGO_TARGET_DIR`: the compiled `rolter-store` artifact, and any path baked
+/// into it with `env!`, can be reused from another worktree's build, and the
+/// suite then connects to that worktree's database (#2770). Every package in
+/// the workspace sits in the same worktree, so every test binary still agrees.
+///
+/// Falls back to the path this crate was compiled in when the variable is unset
+/// (a test binary run by hand), which is the best a binary with no other
+/// context can do.
+fn workspace_root() -> String {
+    let runtime = std::env::var_os("CARGO_MANIFEST_DIR")
+        .and_then(|dir| workspace_root_from(std::path::Path::new(&dir)));
+    match runtime {
+        Some(root) => root.to_string_lossy().into_owned(),
+        None => compiled_workspace_root().to_owned(),
+    }
+}
+
+/// The nearest ancestor of `start` (itself included) whose `Cargo.toml` declares
+/// a `[workspace]`.
+fn workspace_root_from(start: &std::path::Path) -> Option<std::path::PathBuf> {
+    start.ancestors().find_map(|dir| {
+        let manifest = std::fs::read_to_string(dir.join("Cargo.toml")).ok()?;
+        manifest
+            .lines()
+            .any(|line| line.trim() == "[workspace]")
+            .then(|| dir.to_path_buf())
+    })
+}
+
+/// The workspace root as of compile time: `<root>/crates/rolter-store` with the
+/// last two segments removed.
+fn compiled_workspace_root() -> &'static str {
     let manifest = env!("CARGO_MANIFEST_DIR");
     manifest
         .rsplit_once('/')
@@ -363,11 +391,40 @@ mod tests {
     fn the_workspace_root_is_two_levels_above_this_crate() {
         let root = workspace_root();
         assert!(
-            std::path::Path::new(root)
+            std::path::Path::new(&root)
                 .join("crates/rolter-store")
                 .is_dir(),
             "{root} does not look like the workspace root"
         );
+        assert_eq!(root, compiled_workspace_root());
+    }
+
+    /// Every package in a worktree must resolve to the same root, whichever
+    /// package's tests are running (#2770).
+    #[test]
+    fn any_package_in_a_workspace_resolves_to_the_same_root() {
+        let base = std::env::temp_dir().join(format!("rolter-wt-root-{}", uuid::Uuid::new_v4()));
+        let a = base.join("crates/a");
+        let b = base.join("crates/b/nested");
+        std::fs::create_dir_all(&a).unwrap();
+        std::fs::create_dir_all(&b).unwrap();
+        std::fs::write(base.join("Cargo.toml"), "[workspace]\nmembers = []\n").unwrap();
+        std::fs::write(a.join("Cargo.toml"), "[package]\nname = \"a\"\n").unwrap();
+
+        assert_eq!(workspace_root_from(&a).as_deref(), Some(base.as_path()));
+        assert_eq!(workspace_root_from(&b).as_deref(), Some(base.as_path()));
+        assert_eq!(workspace_root_from(&base).as_deref(), Some(base.as_path()));
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn a_directory_outside_any_workspace_resolves_to_nothing() {
+        let base = std::env::temp_dir().join(format!("rolter-wt-none-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&base).unwrap();
+        let found = workspace_root_from(&base);
+        std::fs::remove_dir_all(&base).unwrap();
+        // a stray Cargo.toml in a parent of the temp dir would be a false hit
+        assert!(found.is_none_or(|root| !root.starts_with(&base)));
     }
 
     #[tokio::test]

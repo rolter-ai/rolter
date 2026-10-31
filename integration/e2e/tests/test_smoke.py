@@ -60,5 +60,7 @@ def _wait_for_model(gw: GatewayClient, model: str, timeout: float = 20.0) -> Non
             return
         last = resp
         time.sleep(1.0)
-    raise AssertionError(f"model {model} never became routable: {last.status_code if last else 'n/a'} "
-                         f"{last.text if last else ''}")
+    raise AssertionError(
+        f"model {model} never became routable: {last.status_code if last else 'n/a'} "
+        f"{last.text if last else ''}"
+    )

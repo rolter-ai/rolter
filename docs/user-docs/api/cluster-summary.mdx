@@ -1,0 +1,68 @@
+---
+title: "Gateway Fleet Summary API for the Rolter Control Plane"
+sidebarTitle: "Cluster summary"
+description: "GET /api/v1/cluster/summary gives any signed-in caller the count of live, stale and config-lagging gateways, with no node names — the roll-up behind the dashboard's gateway pill."
+---
+
+`GET /api/v1/cluster/summary` answers one question every signed-in caller may ask: is the gateway
+fleet up, and is it running the current config? It returns counts and nothing that identifies a
+node, so a viewer learns the fleet's shape without learning host names or build versions. The
+per-node inventory stays behind `GET /api/v1/cluster/nodes`, which is superadmin-only (see
+[Cluster](/deployment/cluster)).
+
+## Request
+
+```http
+GET /api/v1/cluster/summary
+Authorization: Bearer <session or admin token>
+```
+
+Any authenticated caller may read it, a user with no membership anywhere included. The
+`cluster_summary` capability that `GET /api/v1/rbac/matrix` publishes is read-only for every
+authenticated caller. An anonymous request is refused with `401`.
+
+## Response
+
+```json
+{
+  "inventory": true,
+  "gateways": { "live": 3, "stale": 0, "lagging": 1 },
+  "config_version": 412,
+  "checked_at": "2026-10-27T09:14:02.511Z"
+}
+```
+
+| Field              | Meaning                                                                                                                                                                                         |
+| ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `inventory`        | `false` when the control plane has no database, so there is no inventory to count; see below                                                                                                    |
+| `gateways.live`    | gateways that polled the control plane in the last minute                                                                                                                                       |
+| `gateways.stale`   | gateways that stopped polling within the last 15 minutes: crashed or partitioned, not scaled away                                                                                               |
+| `gateways.lagging` | live gateways that have not applied `config_version` yet, or that the control plane last served an older snapshot format, which may leave out what that format cannot carry. A subset of `live` |
+| `config_version`   | the control plane's current config version                                                                                                                                                      |
+| `checked_at`       | when the counts were taken                                                                                                                                                                      |
+
+### What is counted
+
+- Only gateways. Control-plane nodes are not part of the data plane.
+- A gateway that an operator has **drained** is out of service on purpose and is counted nowhere.
+- A gateway silent for more than **15 minutes** is dropped from the counts instead of reading
+  `stale` forever. A rollout leaves the old pods' ids in the inventory, and without this horizon
+  every deploy would leave the fleet looking degraded until someone forgot the old nodes by hand.
+  A gateway that is silent for less than that is `stale`, which is what a crash looks like.
+- A gateway that sends no node id (no `ROLTER_NODE_ID`, no `HOSTNAME`) never enters the inventory
+  and is not counted.
+
+### Without a database
+
+A control plane started without a database has no cluster inventory. It still answers, with
+`inventory: false` and zero counts, so a client can tell "nothing was counted" from "no gateway is
+up" and fall back to probing a gateway's `/readyz` instead of reporting an empty fleet.
+
+## Who reads it
+
+The dashboard reads this endpoint every 30 seconds for the gateway pill in every screen header and for
+the **Gateways** tile on the Dashboard, both from one request. A response with `inventory: false`, or
+one that counts no gateway at all (none of them sends a node id), makes the dashboard probe
+`/readyz` through the `/gw` proxy instead, and so does a failed request, which is what a control
+plane older than this endpoint answers with a `404`. See
+[the gateway status in the header](/concepts/dashboard#the-gateway-status-in-the-header).

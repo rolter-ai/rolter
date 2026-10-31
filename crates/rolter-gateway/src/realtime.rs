@@ -16,6 +16,7 @@
 //! task instead, and a shutting-down gateway closes each session and waits for
 //! its meter's last flush before the process exits.
 
+// spec-ref: openai-realtime, websocket
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 use std::sync::Arc;
 use std::time::Duration;
@@ -37,12 +38,13 @@ use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 
 use crate::handlers::{
-    authenticate, authorize_model, authorize_route, budget_refusal, key_pool_key, pick_untried,
+    authenticate, authorize_model, authorize_route, budget_refusal, key_pool_key,
     rate_limit_refusal, request_scope, unpriced_admission, variant_key,
 };
 use crate::realtime_guard::{ClientVerdict, ContentPolicy, Frame};
 use crate::realtime_metering::{Closure, SessionEnd, SessionMeter, TurnTracker};
 use crate::state::{AppState, Snapshot};
+use rolter_core::failover::Failure;
 
 /// How long a shutting-down relay may spend writing its close frames. A
 /// client that stopped reading must not hold the drain past its grace and cost
@@ -173,6 +175,33 @@ pub async fn realtime(
     // session opens only while every budget it draws on has room left, and
     // only for a model this deployment is willing to serve unpriced
     let scope = request_scope(virtual_key.as_ref());
+    // a `post_call` semantic guardrail provider judges a whole response, and a
+    // realtime session is never one: refused here rather than relayed with
+    // the response policy skipped, whatever the policy's `streaming` says,
+    // since a session cannot be buffered (#459, ADR-0037)
+    if let Some(policy) = snap
+        .semantic_guards
+        .resolve(&crate::semantic_guards::policy_request(
+            &scope,
+            &entry.route.model,
+        ))
+        .filter(|policy| policy.runs_at(rolter_core::WebhookStage::PostCall))
+    {
+        state
+            .metrics
+            .guardrail_stream_rejections_total
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        return crate::error::ApiError::new(
+            StatusCode::BAD_REQUEST,
+            format!(
+                "the guardrail policy '{}' checks responses, which cannot be applied to a \
+                 realtime session; use a non-realtime endpoint",
+                policy.label()
+            ),
+        )
+        .with_code("guardrail_streaming_unsupported")
+        .into_response();
+    }
     if let Some(refusal) = budget_refusal(&state, &snap, &scope).await {
         return refusal;
     }
@@ -209,15 +238,8 @@ pub async fn realtime(
     // realtime has no request body, so session affinity uses the caller-supplied
     // session id and strategy-aware balancing sees an empty prompt
     let session_key = headers.get("x-session-id").and_then(|v| v.to_str().ok());
-    let context = RouteContext {
-        session_key,
-        prompt: None,
-        prompt_len: None,
-        prompt_digest: None,
-        token_ids: None,
-        // realtime sessions are not adapter-addressed
-        adapter: None,
-    };
+    // realtime sessions are not adapter-addressed, so no adapter either
+    let context = RouteContext::new().with_session_key(session_key);
     let selected = match connect_selected(
         &state,
         &snap,
@@ -247,6 +269,7 @@ pub async fn realtime(
         &query.model,
         &trace_id,
         &state.side_client,
+        &state.local_classifiers,
     );
     let plugin_calls = crate::realtime_metering::PluginCalls::default();
     let policy = policy.map(|policy| policy.recording_plugin_calls(plugin_calls.clone()));
@@ -257,9 +280,12 @@ pub async fn realtime(
         scope,
         model: query.model,
         price_model: entry.route.model.clone(),
+        route_namespace: Some(std::sync::Arc::clone(&entry.namespace)),
         provider: selected.provider.clone(),
         target: selected.target.clone(),
         variant: selected.variant.clone(),
+        first_variant: selected.first_variant.clone(),
+        sampled_variant: selected.sampled_variant.clone(),
         request_id,
         trace_id,
         key_digest: virtual_key
@@ -296,6 +322,12 @@ struct SelectedSession {
     /// the variant the session was pinned to; empty on a route without
     /// variants
     variant: String,
+    /// the variant the walk dialled first, which differs from `variant` when
+    /// the session failed over to another variant's target (#3543)
+    first_variant: String,
+    /// the variant the walk took as primary, before skipping one whose
+    /// targets are parked, unhealthy or behind an open breaker (#3547)
+    sampled_variant: String,
 }
 
 /// One target a session may be pinned to, in the order it is tried.
@@ -321,10 +353,18 @@ async fn connect_selected(
     session_guard: SessionGuard,
     key_meta: Option<&crate::state::KeyMeta>,
 ) -> Result<SelectedSession, String> {
-    let candidates = realtime_candidates(state, snap, entry, model, context, key_meta);
+    // per-target state is keyed by the route's namespace (ADR-0040)
+    let mut walk = CandidateWalk::new(state, snap, entry, &entry.namespace, context, key_meta);
     let mut last_error = "no target selected".to_string();
+    // how the last connect failed, which decides the candidate that may
+    // follow it: a restricted fallback is dialled only after a failure it
+    // takes over (#1584, #3322)
+    let mut last_failure: Option<Failure> = None;
+    // the variant of the first dial, kept across failovers as on the HTTP
+    // rows (#3543); empty on the classic pool
+    let mut first_variant: Option<&str> = None;
 
-    for candidate in candidates {
+    while let Some(candidate) = walk.next(last_failure.as_ref()) {
         let Candidate {
             target,
             namespace,
@@ -335,20 +375,32 @@ async fn connect_selected(
             last_error = "configured target provider not found".to_string();
             continue;
         };
-        let multi_key = provider.api_keys.len() > 1;
         let key_namespace = key_pool_key(&target.provider);
+        let parked_keys = crate::handlers::parked_keys(state, provider, &key_namespace);
         let api_key = provider
-            .pick_api_key_indexed(0.0, |i| {
-                multi_key && state.cooldowns.is_parked(&key_namespace, i)
-            })
+            .pick_api_key_indexed(0.0, |i| parked_keys.contains(i))
             .map(|(_, key)| key);
         let upstream_model = target.model.as_deref().unwrap_or(model);
         let url = realtime_url(&provider.api_base, upstream_model);
         let request = realtime_request(&url, api_key.as_deref(), headers)?;
+        // the list was ordered without taking a breaker's probe slot; the one
+        // target dialled takes it now (#3248). a refusal here is a race with
+        // another probe or a fail-open candidate, which is dialled anyway as
+        // the HTTP path does
+        let _ = state.breaker.allows(&namespace, index);
         let mut load = state.loads.begin(&namespace, index);
+        let first_variant = *first_variant.get_or_insert(variant);
         match connect_async(request).await {
             Ok((upstream, _)) => {
                 load.mark_ok();
+                // a good handshake is the target's verdict: it closes a
+                // breaker that was probing, as a good HTTP response does
+                if state.breaker.on_success(&namespace, index) {
+                    state
+                        .metrics
+                        .breaker_closed_total
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
                 return Ok(SelectedSession {
                     upstream,
                     _load: load,
@@ -357,10 +409,13 @@ async fn connect_selected(
                     provider: target.provider.clone(),
                     target: upstream_model.to_string(),
                     variant: variant.to_string(),
+                    first_variant: first_variant.to_string(),
+                    sampled_variant: walk.sampled.to_string(),
                 });
             }
             Err(error) => {
                 last_error = connect_failure_message(&error);
+                last_failure = connect_failure(&error);
                 if snap.cooldown.enabled() {
                     state
                         .cooldowns
@@ -382,104 +437,178 @@ fn connect_failure_message(error: &dyn std::fmt::Display) -> String {
     ))
 }
 
-/// Flatten routes into their strategy-led target order. Connections are tried
-/// only during establishment; after a successful upgrade the session is pinned.
-fn realtime_candidates<'a>(
-    state: &AppState,
-    snap: &Snapshot,
-    entry: &'a crate::state::RouteEntry,
-    model: &str,
-    context: &RouteContext<'_>,
-    key_meta: Option<&crate::state::KeyMeta>,
-) -> Vec<Candidate<'a>> {
-    if !entry.route.has_variants() {
-        let mut loads = state.loads.snapshot(model, entry.route.targets.len());
-        for (index, target) in entry.route.targets.iter().enumerate() {
-            if let Some(load) = loads.get_mut(index) {
-                *load = load.saturating_add(state.upstream_metrics.queue_depth(&target.provider));
-            }
+/// The class of a failed upstream handshake (#3322): a `429` or `5xx` answer
+/// as the HTTP loops read the status, a dial that never got an answer as a
+/// timeout or a transport failure. Any other answer (a `401`, a `404`) names
+/// no class, so only an ordinary target may follow it, as before.
+fn connect_failure(error: &tokio_tungstenite::tungstenite::Error) -> Option<Failure> {
+    match error {
+        tokio_tungstenite::tungstenite::Error::Http(response) => {
+            Failure::from_status(response.status().as_u16())
         }
-        let mut ordered = Vec::with_capacity(entry.route.targets.len());
-        let mut tried = Vec::with_capacity(entry.route.targets.len());
-        while let Some(index) = pick_untried(
+        error => Some(Failure::from_transport_error(&error.to_string())),
+    }
+}
+
+/// The targets a session may be pinned to, handed out one connect at a time
+/// so each pick knows how the previous connect failed: a restricted fallback
+/// never leads and follows only a failure its `takes_over` covers, exactly
+/// as on the HTTP forward loops (#1584, #3322). Connections are tried only
+/// during establishment; after a successful upgrade the session is pinned.
+struct CandidateWalk<'w, 'a> {
+    state: &'w AppState,
+    entry: &'a crate::state::RouteEntry,
+    model: &'w str,
+    context: &'w RouteContext<'w>,
+    key_meta: Option<&'w crate::state::KeyMeta>,
+    cooldowns: bool,
+    /// the classic pool's loads, read once; empty for a route with variants
+    loads: Vec<u64>,
+    /// a route with variants: every `(variant, target)` the key may use, in
+    /// the strategy-led order the session tries them
+    candidates: Vec<(usize, usize)>,
+    /// pool indexes, or positions in `candidates`, already handed out
+    tried: Vec<usize>,
+    /// the variant the walk leads with, before any skipping (#3547); empty
+    /// for the classic pool
+    sampled: &'a str,
+}
+
+impl<'w, 'a> CandidateWalk<'w, 'a> {
+    fn new(
+        state: &'w AppState,
+        snap: &Snapshot,
+        entry: &'a crate::state::RouteEntry,
+        model: &'w str,
+        context: &'w RouteContext<'w>,
+        key_meta: Option<&'w crate::state::KeyMeta>,
+    ) -> Self {
+        let mut walk = Self {
+            state,
             entry,
-            context,
-            &tried,
-            &loads,
-            &state.cooldowns,
-            &state.health,
-            &state.breaker,
             model,
-            snap.cooldown.enabled(),
+            context,
             key_meta,
-        ) {
-            entry.balancer.observe(index, context);
-            tried.push(index);
-            ordered.push(Candidate {
+            cooldowns: snap.cooldown.enabled(),
+            loads: Vec::new(),
+            candidates: Vec::new(),
+            tried: Vec::new(),
+            sampled: "",
+        };
+        if !entry.route.has_variants() {
+            walk.loads = state.loads.snapshot(model, entry.route.targets.len());
+            for (index, target) in entry.route.targets.iter().enumerate() {
+                if let Some(load) = walk.loads.get_mut(index) {
+                    *load =
+                        load.saturating_add(state.upstream_metrics.queue_depth(&target.provider));
+                }
+            }
+            return walk;
+        }
+        let primary = entry.route.sample_variant(0.0).unwrap_or(0);
+        walk.sampled = entry
+            .route
+            .variants
+            .get(primary)
+            .map_or("", |variant| variant.name.as_str());
+        for variant_index in entry.route.fallback_order(primary) {
+            let Some(variant) = entry.route.variants.get(variant_index) else {
+                continue;
+            };
+            let loads = state
+                .loads
+                .snapshot(&variant_key(model, &variant.name), variant.targets.len());
+            // the balancer's pick leads, unless it is a restricted fallback,
+            // which never leads; the rest follow in declared order
+            let lead = entry
+                .variant_balancers
+                .get(variant_index)
+                .and_then(|balancer| balancer.pick(context, &loads))
+                .filter(|index| {
+                    variant
+                        .targets
+                        .get(*index)
+                        .is_some_and(|target| !target.is_restricted())
+                });
+            walk.candidates.extend(
+                lead.into_iter()
+                    .chain((0..variant.targets.len()).filter(|i| Some(*i) != lead))
+                    .filter(|&index| {
+                        key_meta.is_none_or(|key| {
+                            key.provider_allowed(&variant.targets[index].provider)
+                        })
+                    })
+                    .map(|index| (variant_index, index)),
+            );
+        }
+        walk
+    }
+
+    /// The next target to dial after a connect that ended with `failure`
+    /// (`None` for the first, or after an answer that names no class).
+    fn next(&mut self, failure: Option<&Failure>) -> Option<Candidate<'a>> {
+        let entry = self.entry;
+        if !entry.route.has_variants() {
+            // read-only: picking must not take a half-open probe slot; the
+            // connect loop asks `allows` of the one target it dials (#3248)
+            let index = crate::handlers::TargetPool {
+                entry,
+                ctx: self.context,
+                loads: &self.loads,
+                cooldowns: &self.state.cooldowns,
+                health: &self.state.health,
+                breaker: &self.state.breaker,
+                namespace: self.model,
+                cd_enabled: self.cooldowns,
+                key_meta: self.key_meta,
+            }
+            .pick_read_only(&self.tried, failure)?;
+            entry.balancer.observe(index, self.context);
+            self.tried.push(index);
+            return Some(Candidate {
                 target: &entry.route.targets[index],
-                namespace: model.to_string(),
+                namespace: self.model.to_string(),
                 index,
                 variant: "",
             });
         }
-        return ordered;
-    }
-
-    let primary = entry.route.sample_variant(0.0).unwrap_or(0);
-    let mut ordered = Vec::new();
-    for variant_index in entry.route.fallback_order(primary) {
-        let Some(variant) = entry.route.variants.get(variant_index) else {
-            continue;
+        let route = &entry.route;
+        let open = |position: usize| {
+            let (variant, index) = self.candidates[position];
+            !self.tried.contains(&position)
+                && rolter_core::failover::may_dial(
+                    &route.variants[variant].targets[index].takes_over,
+                    failure,
+                )
         };
-        let namespace = variant_key(model, &variant.name);
-        let loads = state.loads.snapshot(&namespace, variant.targets.len());
-        let lead = entry
-            .variant_balancers
-            .get(variant_index)
-            .and_then(|balancer| balancer.pick(context, &loads))
-            .filter(|index| *index < variant.targets.len());
-        let indexes: Vec<_> = lead
-            .into_iter()
-            .chain((0..variant.targets.len()).filter(|i| Some(*i) != lead))
-            .collect();
-        let available: Vec<_> = indexes
-            .iter()
-            .copied()
-            .filter(|&index| {
-                let target = &variant.targets[index];
-                key_meta.is_none_or(|key| key.provider_allowed(&target.provider))
-                    && (!snap.cooldown.enabled() || !state.cooldowns.is_parked(&namespace, index))
-                    && state.health.is_healthy(&target.provider)
-                    && state.breaker.allows(&namespace, index)
-            })
-            .collect();
-        // preserve the HTTP route's fail-open behaviour when all candidates
-        // are temporarily unavailable
-        let allowed: Vec<_> = indexes
-            .iter()
-            .copied()
-            .filter(|&index| {
-                key_meta.is_none_or(|key| key.provider_allowed(&variant.targets[index].provider))
-            })
-            .collect();
-        for index in if available.is_empty() {
-            &allowed
-        } else {
-            &available
-        } {
-            let index = *index;
-            if let Some(balancer) = entry.variant_balancers.get(variant_index) {
-                balancer.observe(index, context);
-            }
-            ordered.push(Candidate {
-                target: &variant.targets[index],
-                namespace: namespace.clone(),
-                index,
-                variant: &variant.name,
-            });
+        let usable = |position: usize| {
+            let (variant, index) = self.candidates[position];
+            let namespace = variant_key(self.model, &route.variants[variant].name);
+            (!self.cooldowns || !self.state.cooldowns.is_parked(&namespace, index))
+                && self
+                    .state
+                    .health
+                    .is_healthy(&route.variants[variant].targets[index].provider)
+                && !self.state.breaker.refuses(&namespace, index)
+        };
+        // a target that is parked, unhealthy or behind an open breaker is
+        // tried only when nothing else is left, as on the HTTP routes
+        let position = (0..self.candidates.len())
+            .find(|&position| open(position) && usable(position))
+            .or_else(|| (0..self.candidates.len()).find(|&position| open(position)))?;
+        self.tried.push(position);
+        let (variant_index, index) = self.candidates[position];
+        let variant = &route.variants[variant_index];
+        if let Some(balancer) = entry.variant_balancers.get(variant_index) {
+            balancer.observe(index, self.context);
         }
+        Some(Candidate {
+            target: &variant.targets[index],
+            namespace: variant_key(self.model, &variant.name),
+            index,
+            variant: &variant.name,
+        })
     }
-    ordered
 }
 
 fn realtime_url(api_base: &str, model: &str) -> String {
@@ -530,6 +659,8 @@ async fn relay(
         provider,
         target,
         variant: _,
+        first_variant: _,
+        sampled_variant: _,
     } = session;
     let closing = state.realtime_sessions.closing.clone();
     let channels = meter.spawn();

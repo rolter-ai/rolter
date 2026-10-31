@@ -33,13 +33,14 @@ persona below is one of those, at one scope:
 | LLM / ML / software engineer      | member at a project                 | [engineer.md](journeys/engineer.md)             | "How do I get a key, call models, and see why my call failed?"               |
 | Application / service account     | a virtual key (no human)            | [app-service.md](journeys/app-service.md)       | "What happens to my traffic, my limits and my key over time?"                |
 | Finance / FinOps                  | viewer at the org (admin to cap)    | [finops.md](journeys/finops.md)                 | "What did we spend, on what, for whom — and can it stop at a limit?"         |
-| SecOps                            | superadmin (a narrower role: #1834) | [secops.md](journeys/secops.md)                 | "Can I prove who reads what, and that secrets never land in a log?"          |
-| DevOps / SRE (maintenance only)   | superadmin (a narrower role: #1834) | [devops.md](journeys/devops.md)                 | "Is it healthy, and can I upgrade, drain and restore it without a surprise?" |
+| SecOps                            | superadmin, or the security auditor | [secops.md](journeys/secops.md)                 | "Can I prove who reads what, and that secrets never land in a log?"          |
+| DevOps / SRE (maintenance only)   | superadmin, or the operator         | [devops.md](journeys/devops.md)                 | "Is it healthy, and can I upgrade, drain and restore it without a surprise?" |
 | Viewer (stakeholder, PM, auditor) | viewer at a project, team or org    | [viewer.md](journeys/viewer.md)                 | "What is happening here — and can I keep my own view of it?"                 |
 
-SecOps and DevOps are superadmin today only because nothing narrower reaches the
-deployment-wide settings they need. Both scripts start from that and mark it as
-the first gap.
+SecOps and DevOps no longer need superadmin: the deployment roles `security_auditor`
+and `operator` (#1834) reach the deployment-wide settings each job needs and no tenant
+data. The scripts below still run as the superadmin dogfood account, and their first step
+(D0.1, S0.1) checks the narrower role instead.
 
 ## The simplest paths
 
@@ -202,26 +203,21 @@ priorities live on the issues.
 | #2008 | nothing can check that a provider serves an upstream model name (UI: #2009)                                                           | A3.3a                         |
 | #1848 | the Dashboard's setup checklist shows an access error to everyone below admin                                                         | E1, V1, F1                    |
 | #1395 | requests refused before routing (401, 402, 403, 404, 429) never reach LLM Logs                                                        | E5, P5.4                      |
-| #1826 | LDAP is implemented but not reachable from sign-in                                                                                    | A1-c                          |
+| #3261 | LDAP is configured through the API only; no Governance screen                                                                         | A1-c                          |
 | #1827 | no SAML single sign-on                                                                                                                | A1-b (SAML-only IdPs)         |
 | #1828 | invitations are links an admin passes on by hand                                                                                      | A1-a, T2                      |
-| #1829 | alert rules are superadmin-only and deployment-wide                                                                                   | A5, T5, F4                    |
 | #337  | no warning before a budget blocks                                                                                                     | A5, T4, F4                    |
 | #1830 | no budget per person across their keys                                                                                                | T4, F3, E9                    |
 | #1833 | project members cannot see the health of their own routes' providers                                                                  | E5, T5                        |
-| #1834 | no operator or security-auditor role short of superadmin                                                                              | D0, S0                        |
 | #1835 | payload redaction matches key names, not secrets inside text; no preview                                                              | S3                            |
 | #1085 | one subject's logs and captured payloads cannot be erased on request                                                                  | S3.6                          |
-| #1836 | no scoped control-plane token for automation                                                                                          | P4, D6                        |
-| #1837 | shared project keys cannot be rotated in place                                                                                        | P3                            |
-| #1838 | no CSV export of spend or logs                                                                                                        | F5                            |
+| #1836 | scoped API tokens have no dashboard screen yet (API only)                                                                             | P4, D6                        |
 | #1817 | the dogfood fleet's adaptive route never engages                                                                                      | A3-d (adaptive), D2           |
 | #1818 | `rolter-seed --import` is silent about sections it skips                                                                              | A3-d                          |
 | #1819 | compose ClickHouse fails where `nofile` cannot reach 262144                                                                           | A0-b on constrained hosts     |
 | #2405 | the published image is built without the postgres feature                                                                             | A0.6 (image and Helm)         |
 | #2408 | the bundled `sk-rolter-dev` key reaches gateways through the control plane snapshot                                                   | A0-c, A0.6                    |
 | #1939 | a default Helm install fails its own strict preflight                                                                                 | A0-c, A0.6                    |
-| #1897 | `rolter-seed` ships in no image or package                                                                                            | A0.8                          |
 | #1891 | the published image binds loopback, so `docker run -p` reaches nothing                                                                | the quickstart's `docker run` |
 | #1832 | raw MCP traffic inspection for local servers (mcp-snoop)                                                                              | E7                            |
 | #1839 | a member cannot route their own local model through rolter (idea)                                                                     | E8                            |

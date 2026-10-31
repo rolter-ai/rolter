@@ -164,11 +164,12 @@ export const ModelCapabilitiesAndJsonState: Story = {
     await expect(list.queryByRole("option", { name: "chat-only" })).toBeNull();
     await userEvent.keyboard("openjev{ArrowDown}{Enter}");
     await expect(picker).toHaveValue("openjev");
-    await userEvent.click(
-      canvas.getByRole("combobox", { name: en.pages.playground.decisions.stateFormat }),
-    );
-    list = within(await canvas.findByRole("listbox"));
-    await userEvent.click(list.getByRole("option", { name: "JSON" }));
+    const format = canvas.getByRole("radiogroup", {
+      name: en.pages.playground.decisions.stateFormat,
+    });
+    await expect(within(format).getByRole("radio", { name: "JSON" })).not.toBeChecked();
+    await userEvent.click(within(format).getByRole("radio", { name: "JSON" }));
+    await expect(within(format).getByRole("radio", { name: "JSON" })).toBeChecked();
     fireEvent.change(canvas.getByLabelText(en.pages.playground.decisions.state), {
       target: { value: JSON.stringify({ text: "parcel", metadata: [1, 2] }) },
     });
@@ -185,6 +186,70 @@ export const ModelCapabilitiesAndJsonState: Story = {
     await expect(list.queryByRole("option", { name: "openjev" })).toBeNull();
     await expect(list.getByRole("option", { name: "chat-only" })).toBeVisible();
     await userEvent.keyboard("{Escape}");
+    // a decision-only model is no more use to Embeddings than to Chat (#3220)
+    await userEvent.click(canvas.getByRole("tab", { name: en.pages.playground.modes.embeddings }));
+    await userEvent.click(canvas.getByRole("combobox", { name: "Model" }));
+    list = within(await canvas.findByRole("listbox"));
+    await expect(list.queryByRole("option", { name: "openjev" })).toBeNull();
+    await expect(list.getByRole("option", { name: "chat-only" })).toBeVisible();
+    await userEvent.keyboard("{Escape}");
+  },
+};
+
+const shadowed = router({
+  ...paths,
+  "/gw/v1/models": {
+    data: [
+      // a configured chat route named fake-llm shadows the builtin
+      { id: "fake-llm", rolter_capabilities: { decisions: false, chat: true } },
+      { id: "openjev", rolter_capabilities: { decisions: true, chat: false } },
+    ],
+  },
+});
+
+export const ShadowedFakeLlmStartsOnTheFirstDecisionModel: Story = {
+  render: () => {
+    sent.calls.length = 0;
+    setPlaygroundKey("sk-test-decision");
+    return (
+      <Harness fetchStub={recording(shadowed).stub}>
+        <Playground />
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = await open(canvasElement);
+    const picker = canvas.getByRole("combobox", { name: en.pages.playground.decisions.model });
+    await waitFor(() => expect(picker).toHaveValue("openjev"));
+    await waitFor(() =>
+      expect(canvas.getByRole("button", { name: en.pages.playground.decisions.run })).toBeEnabled(),
+    );
+  },
+};
+
+export const NoDecisionModelShowsTheEmptyState: Story = {
+  render: () => {
+    setPlaygroundKey("sk-test-decision");
+    return (
+      <Harness
+        fetchStub={router({
+          ...paths,
+          "/gw/v1/models": {
+            // the shadowing route is all there is, and it does not serve decisions
+            data: [{ id: "fake-llm", rolter_capabilities: { decisions: false, chat: true } }],
+          },
+        })}
+      >
+        <Playground />
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = await open(canvasElement);
+    await expect(await canvas.findByText(en.pages.playground.decisions.noModels)).toBeVisible();
+    await expect(
+      canvas.queryByRole("button", { name: en.pages.playground.decisions.run }),
+    ).toBeNull();
   },
 };
 
@@ -199,7 +264,9 @@ export const RejectsInvalidImagesBeforeSending: Story = {
     ]) {
       fireEvent.change(input, { target: { files: [file] } });
       await expect(await canvas.findByRole("alert")).toHaveTextContent(
-        en.pages.playground.decisions.imageInvalid,
+        en.pages.playground.decisions.imageInvalid
+          .replace("{{size}}", "4")
+          .replace("{{pixels}}", "12"),
       );
       // story-wait-allow: invalid file validation disables this control before the assertion
       await expect(

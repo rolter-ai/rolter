@@ -1,0 +1,87 @@
+---
+title: "Sign In to Rolter with LDAP or Active Directory"
+sidebarTitle: "LDAP"
+description: "Register an LDAP directory for an organization, map its groups to Rolter roles, and let directory users sign in with their directory password."
+---
+
+Rolter can check a sign-in against your LDAP or Active Directory server. A directory user types the login and password they use everywhere else into the ordinary Rolter sign-in form, and gets the same session a local account gets.
+
+<Info>
+  LDAP is compiled into Rolter behind the `ldap` cargo feature. A build without it refuses to store a directory, with an error that says so. Build with `--features postgres,ldap` (for the container image, `--build-arg CARGO_FEATURES=postgres,ldap`).
+</Info>
+
+Everything below is done on **Governance › LDAP** in the dashboard, or through the [control-plane API](/api/control-plane-openapi), which the `curl` examples use. Both need the **admin** role on the org (see [RBAC](/security/rbac)); the API also accepts the deployment admin token. The dashboard screen registers, edits, takes in and out of service and deletes the org's directory, rotates or removes its bind password, and maps its groups to roles. A grant an LDAP sign-in wrote is marked **from LDAP** on the Users screen.
+
+## How a sign-in works
+
+The local account is tried first. If its password does not verify and the org's directory is enabled, Rolter asks the directory: it binds as a read-only service account to find the user, then binds again as that user with the password they typed. The second bind is the authentication; Rolter never reads or stores a password from the directory.
+
+From there everything is the same as for a local account: an org's [second-factor policy](/security/two-factor-authentication) applies, failed attempts are throttled, and the sign-in is audited.
+
+- A wrong password, an unknown login and a login outside the search base all get the same `invalid email or password` answer, so the form cannot be used to find out who is in your directory.
+- If the directory is unreachable, the sign-in is answered the same way and the reason goes to the control plane's log. Local accounts keep working.
+- A directory entry whose mail matches a **superadmin** never signs in as that account. Superadmins sign in locally, so the break-glass account stays reachable when the directory is down.
+- A directory entry whose mail matches an account that holds a **deployment role** (operator or security auditor) never signs in as that account, even if it has no organization roles. Those accounts sign in locally.
+- A directory entry whose mail matches an existing account that holds a role in **another organization** never signs in as that account. Your directory's entries are chosen by your organization's admins, so it may only sign in as accounts whose roles are all inside your organization.
+- While your organization has **password login turned off** (to send members through its identity provider), the directory does not sign anyone in either: a directory sign-in is a password typed into Rolter's form. Turning password login back on restores it.
+- A deactivated account stays out.
+- The account is keyed on the entry's email attribute. If the directory supplies none and the login typed is not an email address, the sign-in is refused.
+
+## Register a directory
+
+An org has one directory.
+
+```bash
+curl -X POST "$ROLTER_URL/api/v1/orgs/$ORG_ID/ldap-directories" \
+  -H "Authorization: Bearer $ROLTER_ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Corporate directory",
+    "url": "ldaps://dir.example.com",
+    "bind_dn": "cn=svc-rolter,dc=example,dc=com",
+    "bind_password": "…",
+    "base_dn": "ou=people,dc=example,dc=com",
+    "user_filter": "(|(uid={login})(mail={login}))",
+    "default_role": null
+  }'
+```
+
+| Field               | Meaning                                                                                                                      |
+| ------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| `url`               | `ldaps://` or `ldap://` address of the directory                                                                             |
+| `bind_dn`           | the read-only service account that finds users                                                                               |
+| `bind_password`     | its password. Sealed with `ROLTER_KEK` before it is stored and never returned; the response says `has_bind_password` instead |
+| `base_dn`           | the subtree searched for users                                                                                               |
+| `user_filter`       | the search filter; `{login}` is replaced with what the user typed, escaped. Default `(uid={login})`                          |
+| `email_attr`        | attribute holding the email. Default `mail`                                                                                  |
+| `display_name_attr` | attribute holding the display name. Default `cn`                                                                             |
+| `group_attr`        | attribute on the user entry listing their groups. Default `memberOf`                                                         |
+| `require_tls`       | refuse a plain `ldap://` URL so the bind password is never sent in cleartext. Default `true`                                 |
+| `default_role`      | `admin`, `member` or `viewer` for a user in no mapped group. Leave it out to refuse those users                              |
+| `enabled`           | take the directory out of service without deleting it. Default `true`                                                        |
+
+Rolter refuses a directory it could not use safely: an unknown URL scheme, `require_tls` with a plain `ldap://` URL, a filter without `{login}`, an empty base, or an address your [egress policy](/configuration/config-file) denies. Update a directory with `PUT /api/v1/ldap-directories/{id}`; leave `bind_password` out to keep the stored one, send an empty string to clear it, or send a value to rotate it.
+
+## Map groups to roles
+
+Group mapping works exactly as it does for [single sign-on](/security/single-sign-on) and [SCIM](/security/user-provisioning): a directory group is worth a role at the org, a team or a project.
+
+```bash
+curl -X POST "$ROLTER_URL/api/v1/ldap-directories/$DIRECTORY_ID/group-mappings" \
+  -H "Authorization: Bearer $ROLTER_ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"group_name": "cn=rolter-admins,ou=groups,dc=example,dc=com", "role": "admin"}'
+```
+
+Add `team_id` or `project_id` to grant at a narrower scope. A mapping can only grant inside the directory's own org. Group names are matched ignoring case and surrounding spaces.
+
+- A user in several mapped groups gets all of their roles.
+- A user in no mapped group gets `default_role`, or is refused when there is none.
+- Roles are reconciled on every sign-in. Removing a user from a group in the directory takes the role away the next time they sign in, with one exception: an org's last active admin grant is kept and audited rather than failing the sign-in. A role an administrator granted by hand is never touched.
+- A first sign-in gives an account that has no display name the one in the directory; the user can still change it.
+
+## What is not supported
+
+- Groups are read from the user entry (`memberOf`). Nested groups are not expanded, so map the groups users are directly in.
+- StartTLS on a plain `ldap://` connection is not implemented; use `ldaps://`.
+- Referrals are not followed.

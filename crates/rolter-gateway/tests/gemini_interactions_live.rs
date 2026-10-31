@@ -62,7 +62,7 @@ fn live_gateway(key: String, model: String) -> GatewayConfig {
         targets: vec![Target {
             provider: provider.name.clone(),
             model: Some(model),
-            weight: 1,
+            ..Default::default()
         }],
         params: Default::default(),
         param_policy: Default::default(),

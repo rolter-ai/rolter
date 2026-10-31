@@ -157,11 +157,7 @@ export default function AcceptInvite({ token }: { token: string }) {
       descriptionRole={signInReason != null ? "status" : undefined}
     >
       {invite == null && error != null && (
-        <Button
-          type="button"
-          onClick={toSignIn}
-          className="w-full bg-brand-folk text-white hover:bg-brand-press"
-        >
+        <Button variant="brand" type="button" onClick={toSignIn} className="w-full">
           {t("pages.acceptInvite.signIn")} <ArrowRight className="h-4 w-4" />
         </Button>
       )}
@@ -169,11 +165,7 @@ export default function AcceptInvite({ token }: { token: string }) {
         (signInReason != null ? (
           // the invitation is spent; what is left is the ordinary sign-in,
           // which the shell shows at any path once there is no session
-          <Button
-            type="button"
-            onClick={toSignIn}
-            className="w-full bg-brand-folk text-white hover:bg-brand-press"
-          >
+          <Button variant="brand" type="button" onClick={toSignIn} className="w-full">
             {t("pages.acceptInvite.toSignIn")} <ArrowRight className="h-4 w-4" />
           </Button>
         ) : (
@@ -231,11 +223,7 @@ export default function AcceptInvite({ token }: { token: string }) {
                 )}
               </div>
             )}
-            <Button
-              type="submit"
-              disabled={pending || refused}
-              className="w-full bg-brand-folk text-white hover:bg-brand-press"
-            >
+            <Button variant="brand" type="submit" disabled={pending || refused} className="w-full">
               {pending ? (
                 <>
                   {t(

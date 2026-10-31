@@ -14,6 +14,13 @@ use crate::ProviderKind;
 
 /// The anthropic messages api rejects requests without a version header, even on
 /// the free `GET /v1/models` list endpoint.
+///
+/// The one place the dated version is written: it is also the default of
+/// `[compatibility] anthropic_version`, the value forwarded traffic carries
+/// when the client stated none. Probes always send this value rather than an
+/// operator's pin: a probe asks whether the API answers and accepts the key,
+/// which no dated version changes. The `anthropic-messages` record of the
+/// specification registry names it, and a test holds the three together.
 pub const ANTHROPIC_VERSION: &str = "2023-06-01";
 
 /// Resolve the probe request for a provider: the URL and any header the upstream
@@ -47,6 +54,11 @@ pub fn probe_request(
         // semantic router engine publishes its list at `/v1/systemone/models`;
         // a 404 here still reads healthy, it only lists no models
         ProviderKind::SystemOne => (format!("{base}/v1/models"), Vec::new()),
+        // infinity lists its engines at `{url_prefix}/models` (`{"data": [{"id":
+        // ...}]}`), behind the api key when one is set, so it proves the key
+        // and names every model the one process serves. its `/health` sits
+        // outside the prefix and checks neither
+        ProviderKind::Infinity => (format!("{base}/models"), Vec::new()),
         ProviderKind::Bedrock => (bedrock_models_url(base), Vec::new()),
         ProviderKind::Vertex => (vertex_models_url(base), Vec::new()),
         ProviderKind::Openai
@@ -127,11 +139,52 @@ pub fn count_catalogue(body: &serde_json::Value) -> Option<usize> {
 ///
 /// An entry's id is the first of `id`, `model`, `modelId` or `name` it carries,
 /// which covers the openai (`id`), bedrock (`modelId`) and google/ollama
-/// (`name`) shapes; a bare string entry is its own id. A `name` that arrives as
-/// a resource path (`publishers/google/models/gemini-2.5-pro`) is reduced to
-/// its last segment, because that is the part an address can carry — a slash in
-/// a model id would re-split as another `slug/model` address.
+/// (`name`) shapes; a bare string entry is its own id.
+///
+/// The id is kept **whole**, because it is an address: Infinity and vLLM report
+/// the Hugging Face id `BAAI/bge-small-en-v1.5` and refuse a request whose
+/// `model` is only `bge-small-en-v1.5` (#3245). `provider-slug/org/model`
+/// addressing splits at the first slash, so the slash inside an id is safe. The
+/// one reduction is a google resource path in `name`
+/// (`publishers/google/models/gemini-2.5-pro`, `models/gemini-pro`): the
+/// `models/` prefix is part of the resource name, not of the model id the API
+/// accepts. To compare names rather than address them, use [`catalogue_names`].
 pub fn catalogue_ids(body: &serde_json::Value) -> Option<Vec<String>> {
+    catalogue_entries(body, |key, raw| {
+        if key == "name" {
+            resource_model_name(raw)
+        } else {
+            raw
+        }
+    })
+}
+
+/// The model names in a probe response body, each cut to its last path segment.
+///
+/// [`catalogue_ids`] minus the addressing: `publishers/google/models/gemini`,
+/// `models/gemini` and `gemini` agree, and so do `BAAI/bge-small-en-v1.5` and
+/// `bge-small-en-v1.5`. Right for deciding whether a catalogue lists the name an
+/// operator typed (the control plane's model check), wrong for handing out an
+/// address, which must be an id the provider accepts as `model`.
+pub fn catalogue_names(body: &serde_json::Value) -> Option<Vec<String>> {
+    catalogue_entries(body, |_, raw| raw.rsplit('/').next().unwrap_or(raw))
+}
+
+/// The part of a google resource name that the API accepts as a model id: what
+/// follows the last `models/` segment, or the whole string when it has none.
+fn resource_model_name(raw: &str) -> &str {
+    raw.rsplit_once("/models/")
+        .map(|(_, tail)| tail)
+        .or_else(|| raw.strip_prefix("models/"))
+        .unwrap_or(raw)
+}
+
+/// Walk a catalogue body and yield each entry's id, shaped by `shape` from the
+/// key it was read from and its raw value.
+fn catalogue_entries(
+    body: &serde_json::Value,
+    shape: impl for<'a> Fn(&'a str, &'a str) -> &'a str,
+) -> Option<Vec<String>> {
     const ARRAY_KEYS: [&str; 4] = ["data", "models", "modelSummaries", "publisherModels"];
     const ID_KEYS: [&str; 4] = ["id", "model", "modelId", "name"];
     let items = body
@@ -141,11 +194,13 @@ pub fn catalogue_ids(body: &serde_json::Value) -> Option<Vec<String>> {
         items
             .iter()
             .filter_map(|item| {
-                let raw = match item {
-                    serde_json::Value::String(s) => s.as_str(),
-                    other => ID_KEYS.iter().find_map(|key| other.get(key)?.as_str())?,
+                let (key, raw) = match item {
+                    serde_json::Value::String(s) => ("", s.as_str()),
+                    other => ID_KEYS
+                        .iter()
+                        .find_map(|key| Some((*key, other.get(key)?.as_str()?)))?,
                 };
-                let id = raw.rsplit('/').next().unwrap_or(raw).trim();
+                let id = shape(key, raw).trim();
                 (!id.is_empty()).then(|| id.to_string())
             })
             .collect(),
@@ -158,7 +213,9 @@ fn bedrock_models_url(api_base: &str) -> String {
         let host = control.split('/').next().unwrap_or(control);
         return format!("https://bedrock.{host}/foundation-models");
     }
-    format!("{}/foundation-models", base.trim_end_matches("/v1"))
+    // a proxy in front of the documented `/openai/v1` base, or a bare `/v1`
+    let root = base.strip_suffix("/openai/v1").unwrap_or(base);
+    format!("{}/foundation-models", root.trim_end_matches("/v1"))
 }
 
 fn vertex_models_url(api_base: &str) -> String {
@@ -222,16 +279,62 @@ mod tests {
     }
 
     #[test]
+    fn infinity_probes_its_engine_list() {
+        let (url, headers) = probe_request(ProviderKind::Infinity, "http://infinity:7997/", "/");
+        assert_eq!(url, "http://infinity:7997/models");
+        assert!(headers.is_empty());
+        assert_eq!(
+            probe_expectation(ProviderKind::Infinity, "/"),
+            ProbeExpectation::Catalogue
+        );
+        let listed = serde_json::json!({"object": "list", "data": [
+            {"id": "BAAI/bge-small-en-v1.5", "object": "model", "capabilities": ["embed"]},
+            {"id": "mixedbread-ai/mxbai-rerank-xsmall-v1", "object": "model", "capabilities": ["rerank"]},
+        ]});
+        // the whole id is the address infinity accepts as `model` (#3245); only
+        // a name comparison cuts it to its last path segment
+        assert_eq!(
+            catalogue_ids(&listed),
+            Some(vec![
+                "BAAI/bge-small-en-v1.5".to_string(),
+                "mixedbread-ai/mxbai-rerank-xsmall-v1".to_string()
+            ])
+        );
+        assert_eq!(
+            catalogue_names(&listed),
+            Some(vec![
+                "bge-small-en-v1.5".to_string(),
+                "mxbai-rerank-xsmall-v1".to_string()
+            ])
+        );
+    }
+
+    #[test]
     fn bedrock_and_vertex_rewrite_onto_their_control_planes() {
         let (url, _) = probe_request(
             ProviderKind::Bedrock,
-            "https://bedrock-runtime.us-east-1.amazonaws.com/v1",
+            "https://bedrock-runtime.us-east-1.amazonaws.com/openai/v1",
             "/",
         );
         assert_eq!(
             url,
             "https://bedrock.us-east-1.amazonaws.com/foundation-models"
         );
+        // a base saved before the documented `/openai/v1` still reaches it
+        let (legacy, _) = probe_request(
+            ProviderKind::Bedrock,
+            "https://bedrock-runtime.us-east-1.amazonaws.com/v1",
+            "/",
+        );
+        assert_eq!(legacy, url);
+        // a proxy host is not rewritten onto AWS: only the version prefix goes
+        for base in [
+            "https://proxy.example/openai/v1",
+            "https://proxy.example/v1",
+        ] {
+            let (proxied, _) = probe_request(ProviderKind::Bedrock, base, "/");
+            assert_eq!(proxied, "https://proxy.example/foundation-models", "{base}");
+        }
 
         let (url, _) = probe_request(
             ProviderKind::Vertex,
@@ -329,6 +432,39 @@ mod tests {
             ),
             Some(vec!["gemini-2.5-pro".to_string()])
         );
+    }
+
+    /// Infinity and vLLM report the Hugging Face id, and only that id is
+    /// accepted back as `model` (#3245).
+    #[test]
+    fn catalogue_ids_keep_a_hugging_face_id_whole() {
+        use serde_json::json;
+        let body = json!({"data": [{"id": "BAAI/bge-small-en-v1.5"}, {"id": "gpt-4o"}]});
+        assert_eq!(
+            catalogue_ids(&body),
+            Some(vec![
+                "BAAI/bge-small-en-v1.5".to_string(),
+                "gpt-4o".to_string()
+            ])
+        );
+        // the same entries as names, for comparison only
+        assert_eq!(
+            catalogue_names(&body),
+            Some(vec!["bge-small-en-v1.5".to_string(), "gpt-4o".to_string()])
+        );
+        // ollama may name a pulled hugging face model with a path too
+        assert_eq!(
+            catalogue_ids(&json!({"models": [{"name": "hf.co/acme/m:Q4"}]})),
+            Some(vec!["hf.co/acme/m:Q4".to_string()])
+        );
+    }
+
+    #[test]
+    fn catalogue_ids_drop_the_google_models_prefix_but_names_cut_every_path() {
+        use serde_json::json;
+        let body = json!({"models": [{"name": "models/gemini-pro"}]});
+        assert_eq!(catalogue_ids(&body), Some(vec!["gemini-pro".to_string()]));
+        assert_eq!(catalogue_names(&body), Some(vec!["gemini-pro".to_string()]));
     }
 
     #[test]

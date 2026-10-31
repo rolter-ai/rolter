@@ -19,6 +19,9 @@
 //!   project. Viewer is the lowest role there is, so a narrower membership never
 //!   takes away what a wider one showed. A row the gateway logged with no org at
 //!   all is visible only to the first group.
+//! * **An API token** — the chain it holds, by the rules of a person with that
+//!   role (#3291). Its one role is a synthetic membership, or the grants of its
+//!   custom role, so the lines below apply to it unchanged.
 //! * **Bodies** — the captured request and response bodies need the
 //!   `request_payload` floor at the row's own scope. The role there is resolved
 //!   most-specific membership first, exactly as `rbac::resolve_role` does, and
@@ -36,6 +39,11 @@
 //!   written before the column existed — is visible only to the first group,
 //!   so on upgrade the older rows drop out of a tenant's view until they age
 //!   out of the 90-day ttl.
+//!   A role on a project or team adds one more thing: the health rows of the
+//!   providers that a route of that project or team targets, resolved from
+//!   `route_targets`, so an engineer can tell whether the upstream behind their
+//!   own route is down without an org-level role (#1833). The match is the
+//!   same `(org, provider)` pair, and nothing else about the provider opens up.
 //!
 //! # Why a filter rather than a guard
 //!
@@ -83,6 +91,10 @@ pub(crate) struct AnalyticsAccess {
     payload_rank: i8,
     /// orgs whose provider-health rows the caller may read
     health_orgs: Vec<String>,
+    /// providers outside those orgs that a route in a project or team the
+    /// caller holds a role in targets, as `<org id>/<provider name>` (#1833).
+    /// Only their health rows open up, nothing else about the provider
+    health_providers: Vec<String>,
     /// the signed-in user's own id, empty for everyone else. Only the MCP log
     /// reads it: a user always sees the tool calls made under their own OAuth
     /// sessions, whatever tenancy the row carries (#1831)
@@ -151,8 +163,13 @@ pub(crate) const PAYLOAD_VISIBLE: &str = concat!(
 /// one whose provider health they read. Matching the org rather than the bare
 /// provider name keeps a name another org used before out of view, and a row
 /// with no org matches nothing, so it stays with the unrestricted callers.
-pub(crate) const PROVIDER_VISIBLE: &str =
-    "({unrestricted:UInt8} = 1 or (org_id != '' and has({health_org_ids:Array(String)}, org_id)))";
+///
+/// A project member has no org-level role, so a row also shows when its
+/// provider is one that a route of their projects targets (#1833). Org ids are
+/// fixed-width uuids, so `org/provider` cannot be forged by a provider name.
+pub(crate) const PROVIDER_VISIBLE: &str = "({unrestricted:UInt8} = 1 or (org_id != '' and \
+    (has({health_org_ids:Array(String)}, org_id) or \
+     has({health_provider_keys:Array(String)}, concat(org_id, '/', provider)))))";
 
 impl AnalyticsAccess {
     /// No filter: the admin token, a superadmin, and open mode.
@@ -161,6 +178,17 @@ impl AnalyticsAccess {
             unrestricted: true,
             read_rank: NO_RANK,
             payload_rank: NO_RANK,
+            ..Self::default()
+        }
+    }
+
+    /// A caller holding a viewer-or-better role in each of `orgs` and nothing
+    /// else, for a test outside this module that needs a scoped reach without
+    /// a database.
+    #[cfg(test)]
+    pub(crate) fn member_of_orgs(orgs: &[&str]) -> Self {
+        Self {
+            member_orgs: orgs.iter().map(|org| (org.to_string(), 0)).collect(),
             ..Self::default()
         }
     }
@@ -199,6 +227,12 @@ impl AnalyticsAccess {
         params.push(param("payload_rank", self.payload_rank.to_string()));
         let health_orgs: Vec<&str> = self.health_orgs.iter().map(String::as_str).collect();
         params.push(param("health_org_ids", string_array(&health_orgs)));
+        let health_providers: Vec<&str> =
+            self.health_providers.iter().map(String::as_str).collect();
+        params.push(param(
+            "health_provider_keys",
+            string_array(&health_providers),
+        ));
         params.push(param("caller_id", self.caller_id.clone()));
         params
     }
@@ -225,11 +259,23 @@ fn int_array(values: &[i8]) -> String {
     format!("[{}]", rendered.join(","))
 }
 
-/// The 401 every other guarded route answers with, in the same shape.
-fn unauthenticated() -> Response {
+/// The 401 a control plane with no database answers a missing or wrong admin
+/// token with (#1909).
+///
+/// Coded, unlike the generic 401 the session-backed routes send: with no
+/// database there are no sessions, so the dashboard's "sign in again" would
+/// offer a credential that cannot work. The code says the admin token is the
+/// only thing these routes accept, so the dashboard can ask for it and explain
+/// a refusal instead of looping. The code is part of the API and never renamed.
+fn admin_token_required() -> Response {
     (
         StatusCode::UNAUTHORIZED,
-        Json(json!({"error": {"message": "missing or invalid credentials"}})),
+        Json(json!({"error": {
+            "message": "this control plane has no database, so the admin token \
+                        (ROLTER_ADMIN_TOKEN) is the only credential it accepts here; \
+                        send it as `Authorization: Bearer <token>`",
+            "code": "admin_token_required",
+        }})),
     )
         .into_response()
 }
@@ -261,12 +307,29 @@ impl FromRequestParts<ControlState> for AnalyticsAccess {
     }
 }
 
+/// The caller's reach for the savings advisor (#1581): the request log's
+/// tenancy rule, floored on `savings:read` rather than `analytics:read` so the
+/// matrix can grant the re-pricing report on its own.
+pub(crate) struct SavingsAccess(pub(crate) AnalyticsAccess);
+
+impl FromRequestParts<ControlState> for SavingsAccess {
+    type Rejection = Response;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &ControlState,
+    ) -> Result<Self, Self::Rejection> {
+        resolve(parts, state, Reads::Savings).await.map(Self)
+    }
+}
+
 /// Which capability floors the read of a table, since the request log and the
 /// MCP tool-call log are scoped the same way but named by different rows of
 /// the matrix.
 #[derive(Clone, Copy)]
 enum Reads {
     Analytics,
+    Savings,
     #[cfg(feature = "postgres")]
     McpLog,
 }
@@ -288,22 +351,57 @@ async fn resolve(
     if state.pool.is_some() {
         use crate::rbac::Principal;
         return match Principal::from_request_parts(parts, state).await {
-            Ok(Principal::Superadmin { .. }) => Ok(AnalyticsAccess::unrestricted()),
-            Ok(Principal::User(user)) => scoped::for_user(state, &user, reads)
-                .await
-                .map_err(IntoResponse::into_response),
+            Ok(principal) => reach_of(state, &principal, reads).await,
             Err(error) => Err(error.into_response()),
         };
     }
     #[cfg(not(feature = "postgres"))]
     let _ = reads;
     // without one there are no sessions, and the admin token is the only
-    // credential that exists. the dashboard has no way to present it yet,
-    // so a store-less control plane shows these screens to curl only (#1909)
+    // credential that exists. a miss is answered with a code of its own so the
+    // dashboard can ask for the token rather than offer a sign-in (#1909)
     if presents_admin_token(parts, expected) {
         Ok(AnalyticsAccess::unrestricted())
     } else {
-        Err(unauthenticated())
+        Err(admin_token_required())
+    }
+}
+
+/// What a resolved principal may read of the request log: the reduction a
+/// bearer request goes through, for a principal that was resolved another way.
+/// A download ticket re-resolves the principal it was minted by and runs the
+/// export under this (#3504), so the ticket adds no second, weaker path.
+#[cfg(feature = "postgres")]
+#[allow(clippy::result_large_err)]
+pub(crate) async fn analytics_reach(
+    state: &ControlState,
+    principal: &crate::rbac::Principal,
+) -> Result<AnalyticsAccess, Response> {
+    reach_of(state, principal, Reads::Analytics).await
+}
+
+#[cfg(feature = "postgres")]
+#[allow(clippy::result_large_err)]
+async fn reach_of(
+    state: &ControlState,
+    principal: &crate::rbac::Principal,
+    reads: Reads,
+) -> Result<AnalyticsAccess, Response> {
+    use crate::rbac::Principal;
+    match principal {
+        Principal::Superadmin { .. } => Ok(AnalyticsAccess::unrestricted()),
+        Principal::User(user) => scoped::for_user(state, user, reads)
+            .await
+            .map_err(IntoResponse::into_response),
+        // a token holds its one role at one chain, so it reads the rows of
+        // that chain by the rules of a person with that role, the
+        // `request_payload` floor included (#3291). It has no account, so
+        // the rows of an MCP session "of its own" do not exist for it
+        Principal::Token(held) => {
+            scoped::for_roles(state, &held.memberships, &held.grants, None, reads)
+                .await
+                .map_err(IntoResponse::into_response)
+        }
     }
 }
 
@@ -331,7 +429,9 @@ mod scoped {
     use std::collections::HashMap;
 
     use rolter_store::postgres::models::{EffectiveGrant, Membership, User};
-    use rolter_store::postgres::repo::{AccessProfileRepo, MembershipRepo, ProjectRepo};
+    use rolter_store::postgres::repo::{
+        AccessProfileRepo, MembershipRepo, ProjectRepo, RouteTargetRepo,
+    };
     use uuid::Uuid;
 
     use super::{AnalyticsAccess, NO_RANK};
@@ -344,9 +444,9 @@ mod scoped {
     /// [`NO_RANK`]'s opposite: no membership reaches it.
     fn floor(requirement: Requirement) -> i8 {
         match requirement.authority {
-            Authority::Role(role) => role_rank(role) as i8,
+            Authority::Role(role) | Authority::RoleOrDeployment(role, _) => role_rank(role) as i8,
             Authority::Authenticated => 0,
-            Authority::Superadmin => i8::MAX,
+            Authority::Superadmin | Authority::Deployment(_) => i8::MAX,
         }
     }
 
@@ -463,6 +563,7 @@ mod scoped {
             read_rank,
             payload_rank,
             health_orgs: Vec::new(),
+            health_providers: Vec::new(),
             caller_id: String::new(),
         }
     }
@@ -530,18 +631,33 @@ mod scoped {
         let grants = AccessProfileRepo(pool)
             .effective_grants_for_user(user.id)
             .await?;
+        for_roles(state, &memberships, &grants, Some(user.id), reads).await
+    }
+
+    /// The reach of a caller whose memberships and grants are already in hand:
+    /// a signed-in user's, read from the store, or an API token's own (#3291).
+    /// `caller` is the account behind the request, which a token does not have.
+    pub(super) async fn for_roles(
+        state: &ControlState,
+        memberships: &[Membership],
+        grants: &[EffectiveGrant],
+        caller: Option<Uuid>,
+        reads: super::Reads,
+    ) -> ApiResult<AnalyticsAccess> {
+        let pool = pool(state);
         let (resource, read_floor) = match reads {
             super::Reads::Analytics => ("analytics", floor(cap!("analytics", Read))),
+            super::Reads::Savings => ("savings", floor(cap!("savings", Read))),
             super::Reads::McpLog => ("mcp_log", floor(cap!("mcp_log", Read))),
         };
         let mut access = from_roles_for(
             resource,
-            &memberships,
-            &grants,
+            memberships,
+            grants,
             read_floor,
             floor(cap!("request_payload", Read)),
         );
-        access.caller_id = user.id.to_string();
+        access.caller_id = caller.map(|id| id.to_string()).unwrap_or_default();
         let (orgs, teams, projects) = reach(&access);
         access.viewer_payload_projects = ProjectRepo(pool)
             .viewer_payload_projects(&orgs, &teams, &projects)
@@ -550,9 +666,17 @@ mod scoped {
             .map(|id| id.to_string())
             .collect();
         access.viewer_payload_projects.sort();
-        let health = health_orgs(&memberships, &grants, floor(cap!("provider_health", Read)));
+        let health = health_orgs(memberships, grants, floor(cap!("provider_health", Read)));
         // `health_orgs` returns the ids sorted and deduplicated
         access.health_orgs = health.iter().map(Uuid::to_string).collect();
+        // a role on a team or project reaches the providers its routes target
+        // (#1833). The org-level rule above still applies on top of this
+        access.health_providers = RouteTargetRepo(pool)
+            .targeted_providers(&teams, &projects)
+            .await?
+            .into_iter()
+            .map(|(org, name)| format!("{org}/{name}"))
+            .collect();
         Ok(access)
     }
 }
@@ -561,13 +685,31 @@ mod scoped {
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn a_missing_admin_token_is_a_coded_401_the_dashboard_can_act_on() {
+        let response = admin_token_required();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["error"]["code"], "admin_token_required");
+        assert!(body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("ROLTER_ADMIN_TOKEN"));
+    }
+
     #[test]
     fn provider_health_matches_the_rows_org_and_never_the_bare_name() {
         // a name another org used before must not match, and a row with no org
         // (config file, or written before the column) matches no restricted caller
         assert!(PROVIDER_VISIBLE.contains("org_id != ''"));
         assert!(PROVIDER_VISIBLE.contains("has({health_org_ids:Array(String)}, org_id)"));
-        assert!(!PROVIDER_VISIBLE.contains("provider)"));
+        // the provider rule is the pair, never the bare name (#1833)
+        assert!(PROVIDER_VISIBLE
+            .contains("has({health_provider_keys:Array(String)}, concat(org_id, '/', provider))"));
+        assert!(!PROVIDER_VISIBLE.contains("}, provider)"));
     }
 
     #[test]

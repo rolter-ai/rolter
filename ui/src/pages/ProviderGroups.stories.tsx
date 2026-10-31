@@ -28,7 +28,7 @@ import {
   uxEvents,
   type Recorder,
 } from "./story-harness";
-import type { LabelRow, ProviderGroupRow } from "@/lib/api";
+import type { LabelRow, ProviderCacheVerdict, ProviderGroupRow } from "@/lib/api";
 import { UxScreenProvider } from "@/lib/ux-react";
 
 const GROUPS: ProviderGroupRow[] = [
@@ -488,5 +488,89 @@ export const ProjectAdminOnAMixedList: Story = {
     await expectAllowed(canvasElement, "Delete provider group frontier");
     await expectRefused(canvasElement, "Edit provider group fallback");
     await expectRefused(canvasElement, "Delete provider group fallback");
+  },
+};
+
+// --- whether the members of a group report prompt-cache metrics (#984)
+
+const verdict = (provider_id: string, reports: boolean): ProviderCacheVerdict => ({
+  provider_id,
+  reports,
+  spelling: reports ? "cached_tokens" : null,
+  model: "probe-model",
+  probed_at: "2026-10-01T10:00:00Z",
+});
+
+const withCache = (read: () => unknown, groups: ProviderGroupRow[] = MIXED) =>
+  routes([
+    ["/provider-cache-probes", read],
+    ["/provider-groups", () => groups],
+    ["/providers", () => []],
+  ]);
+
+const rowOf = async (canvas: ReturnType<typeof within>, name: string) =>
+  within((await canvas.findByText(name)).closest('[role="row"]') as HTMLElement);
+
+/**
+ * A group is judged over its members: frontier's two both report, vllm-cluster
+ * has a member known not to, and overflow has none to judge at all.
+ */
+export const CacheReportingOverMembers: Story = {
+  render: () => (
+    <Harness
+      fetchStub={withCache(() => [
+        verdict("p-1", true),
+        verdict("p-2", true),
+        verdict("p-3", false),
+      ])}
+    >
+      <ProviderGroups />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(
+      await (await rowOf(canvas, "frontier")).findByText(/^Reports cache/),
+    ).toBeVisible();
+    await expect(
+      await (await rowOf(canvas, "vllm-cluster")).findByText(/^No cache metrics/),
+    ).toBeVisible();
+    await expect((await rowOf(canvas, "overflow")).queryByText(/cache|probed/i)).toBeNull();
+  },
+};
+
+/** Members nobody has probed read "not probed yet", never "no cache metrics". */
+export const CacheReportingNotProbedYet: Story = {
+  render: () => (
+    <Harness fetchStub={withCache(() => [verdict("p-1", true)])}>
+      <ProviderGroups />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const frontier = await rowOf(canvas, "frontier");
+    await expect(await frontier.findByText("Not probed yet")).toBeVisible();
+    await expect(frontier.queryByText(/No cache metrics/)).toBeNull();
+  },
+};
+
+/** A failed read of the verdicts shows no badge, and the groups still list. */
+export const CacheReportingFailedReadShowsNothing: Story = {
+  render: () => (
+    <Harness
+      fetchStub={scoped(async (input) => {
+        const url = String(input);
+        if (url.includes("/provider-cache-probes"))
+          return json({ error: { message: "boom" } }, 500);
+        return withCache(() => [])(input);
+      })}
+    >
+      <ProviderGroups />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByText("frontier")).toBeVisible();
+    await expect(canvas.queryByText(/Not probed yet|Reports cache|No cache metrics/)).toBeNull();
   },
 };

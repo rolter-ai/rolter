@@ -112,9 +112,36 @@ the config file leaves optional:
 
   </Accordion>
 
-  <Accordion title="Rotation keeps the original deadline">
+  <Accordion title="A spend or rate cap can be chosen at mint time">
+    The same sheet can bound the key as it is made: a **spend cap** (an amount
+    over a daily, monthly or total window) and/or a **rate cap** (requests and
+    tokens per minute). Both are optional. "Give this contractor a key that can
+    spend $50" is one decision in one place, instead of an unbounded key and a
+    second screen you may not get to.
+
+    The API takes them as `budget` (`{"limit_usd": "50", "period": "monthly"}`)
+    and `rate_limit` (`{"rpm": 30, "tpm": 20000}`) on `POST
+    /api/v1/projects/{project_id}/virtual-keys` and on `POST
+    /api/v1/me/projects/{project_id}/virtual-keys`. A cap is an ordinary
+    [budget or rate limit](/security/budgets-and-rate-limits) scoped to the key,
+    written in the same transaction as the key, so a key chosen to be bounded
+    never exists without its bound, and a cap the gateway would misread (a
+    negative amount, a `7d` window, a rate limit with neither number) is refused
+    with a 400 before any key is made. Edit or remove it afterwards under
+    **Budgets & Limits**, or through the
+    [budgets and rate limits API](/api/budgets-and-rate-limits).
+
+    The gateway enforces it, not merely records it: a request that arrives once
+    the key's spend has reached its cap is refused with a 402 naming the key, and
+    a request over its rate cap with a 429. Deleting the key deletes its caps.
+
+  </Accordion>
+
+  <Accordion title="Rotation keeps the original deadline and the caps">
     Rotating a key replaces its secret; it does not renew the decision. The
-    fresh key expires exactly when the one it replaces would have.
+    fresh key expires exactly when the one it replaces would have, and it
+    carries the same spend and rate caps, so rotating a leaked key never hands
+    back an unbounded one.
   </Accordion>
 </AccordionGroup>
 
@@ -128,6 +155,33 @@ has a cheap answer.
 Expiry is enforced by the gateway, not merely recorded: an expired key is
 refused at the data plane with a 401 that does not say which key it was or when
 it lapsed.
+
+### Rotating a shared key
+
+A key an admin minted for a project (**Governance → Virtual Keys**) can be
+rotated in place with the **Rotate** button on its row, or
+`POST /api/v1/virtual-keys/{id}/rotate`. The rotation issues a new secret for the
+**same key**: its models, providers, cache setting, attribution, limits, expiry
+and history all carry over, so there is nothing to copy by hand and nothing to
+miss. The new secret is shown once, like a mint.
+
+By default the old secret stops authenticating at the next snapshot. To roll a
+fleet out gradually, choose an **overlap** (1 hour, 24 hours or 7 days in the
+dashboard; `overlap_seconds` in the API, up to 30 days). During the overlap the
+old secret authenticates as the same key, with the same limits and attribution,
+and it never outlives the key's own expiry. The row names the old secret's
+prefix and when it stops working, and **Revoke now**
+(`DELETE /api/v1/virtual-keys/{id}/previous-secret`) ends the overlap early.
+Rotating again while an overlap is running replaces the old secret with the
+latest one: a key holds at most one previous secret.
+
+Rotation takes the same role as editing the key (admin on its project), and only for a shared key: a key a member minted for themself answers `409`, because the secret would run as that member, so they rotate it from **Account**. Disabling a key also ends its overlap, so re-enabling it later does not bring the old secret back. Both the
+rotation and an early revoke are recorded in the audit log as
+`virtual_key.rotate` and `virtual_key.revoke_previous_secret`; only the secrets'
+prefixes are recorded, and only peppered digests are ever stored.
+
+A key you minted for yourself is rotated from **Account** instead, which issues a
+second key and disables the first.
 
 ### After the key is minted
 

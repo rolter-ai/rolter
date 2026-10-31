@@ -3,8 +3,11 @@
 ## The dashboard is dark-only
 
 There is one palette and no theme toggle. `ui/src/index.css` is that palette:
-`:root` holds the shadcn HSL contract, the zinc ramp, the folkloric red accent,
-the status hues, the surfaces and the type scale, and `:root` also declares
+`:root` holds the shadcn contract (`--background`, `--muted`, `--accent` and the
+rest, each an alias of the design token that carries the same value, so
+retuning `--zinc-800` moves `bg-muted` with `--surface-subtle`), the zinc ramp,
+the folkloric red accent, the status hues, the surfaces and the type scale, and
+`:root` also declares
 `color-scheme: dark` so the browser paints scrollbars and form controls to
 match. There is no light theme to fall back to and no plan for one.
 
@@ -150,10 +153,10 @@ which is exactly how the gold avatar chip came to carry white initials at
 
 Both palettes live in `ui/src/index.css`:
 
-| Tokens                                     | Used by                                                                                   | Floor                                               |
-| ------------------------------------------ | ----------------------------------------------------------------------------------------- | --------------------------------------------------- |
-| `--chart-1` … `--chart-8`, `--chart-other` | `donut.tsx`, `scatter-plot.tsx`, `line-chart.tsx`, `Dashboard.tsx`'s model donut and bars | 3:1 — a fill carries a shape                        |
-| `--avatar-1` … `--avatar-6`                | the `Users.tsx` chips                                                                     | 4.5:1 against `#ffffff` — the chip carries initials |
+| Tokens                      | Used by                                                                                                     | Floor                                               |
+| --------------------------- | ----------------------------------------------------------------------------------------------------------- | --------------------------------------------------- |
+| `--chart-1` … `--chart-8`   | `scatter-plot.tsx`, `line-chart.tsx`, `Dashboard.tsx`'s by-model table (the swatch and the bar of each row) | 3:1 — a fill carries a shape                        |
+| `--avatar-1` … `--avatar-6` | the `Users.tsx` chips                                                                                       | 4.5:1 against `#ffffff` — the chip carries initials |
 
 An avatar chip takes its entry from `avatarColor(id)` in `ui/src/lib/avatar.ts`,
 a stable hash of the person's id. The row's position is never the input: picked
@@ -163,20 +166,19 @@ person can change.
 
 The ratio for each entry is recorded in the comment beside it. For the chart
 hues that is the worst of the four surfaces — a chart can sit on a card, a
-sheet or a panel, and the donut draws its slices over a `--surface-subtle`
+sheet or a panel, and a bar draws over a `--surface-subtle`
 track — which is `--surface-subtle` (`#27272a`) for every entry:
 
-| Token           | Value                        | Worst ratio (`#27272a`) | On `#111113` |
-| --------------- | ---------------------------- | ----------------------- | ------------ |
-| `--chart-1`     | `--red-600` `#e5342a`        | 3.44:1                  | 4.36:1       |
-| `--chart-2`     | `--zinc-400` `#a1a1aa`       | 5.81:1                  | 7.36:1       |
-| `--chart-3`     | `--status-info` `#3b82f6`    | 4.05:1                  | 5.13:1       |
-| `--chart-4`     | `--status-success` `#16a34a` | 4.52:1                  | 5.72:1       |
-| `--chart-5`     | `--status-warning` `#f59e0b` | 6.94:1                  | 8.78:1       |
-| `--chart-6`     | cyan `#22d3ee`               | 8.24:1                  | 10.44:1      |
-| `--chart-7`     | `--zinc-500` `#71717a`       | 3.08:1                  | 3.90:1       |
-| `--chart-8`     | `--zinc-300` `#d4d4d8`       | 10.08:1                 | 12.76:1      |
-| `--chart-other` | `--zinc-700` `#3f3f46`       | 1.43:1, exempt          | 1.81:1       |
+| Token       | Value                        | Worst ratio (`#27272a`) | On `#111113` |
+| ----------- | ---------------------------- | ----------------------- | ------------ |
+| `--chart-1` | `--red-600` `#e5342a`        | 3.44:1                  | 4.36:1       |
+| `--chart-2` | `--zinc-400` `#a1a1aa`       | 5.81:1                  | 7.36:1       |
+| `--chart-3` | `--status-info` `#3b82f6`    | 4.05:1                  | 5.13:1       |
+| `--chart-4` | `--status-success` `#16a34a` | 4.52:1                  | 5.72:1       |
+| `--chart-5` | `--status-warning` `#f59e0b` | 6.94:1                  | 8.78:1       |
+| `--chart-6` | cyan `#22d3ee`               | 8.24:1                  | 10.44:1      |
+| `--chart-7` | `--zinc-500` `#71717a`       | 3.08:1                  | 3.90:1       |
+| `--chart-8` | `--zinc-300` `#d4d4d8`       | 10.08:1                 | 12.76:1      |
 
 `--chart-6` used to be `--red-500` (`#ff4017`), one lightness step from
 `--chart-1`, so the first and sixth series of every categorical chart read as
@@ -187,21 +189,17 @@ tritanopia (Machado 2009, full severity). The current minima are 18.6, 17.9,
 (part of `bun run test`) reads the floor from the comment in `ui/src/index.css`,
 resolves every `--chart-N` token to hex, simulates each vision type and fails
 naming the pair, the vision type and the measured ΔE. It covers `--chart-1` …
-`--chart-8` only; `--chart-other` is exempt.
+`--chart-8`.
 
 `--chart-1` used to be `--red-folk` (2.23:1 worst) and `--chart-7` used to be
 `--zinc-600` (1.93:1 worst). Both were lifted in #1269. `--chart-1` matters
-most: as the first colour it paints the largest donut slice and the top
+most: as the first colour it paints the busiest model and the top
 provider bar. axe cannot catch this, because its `color-contrast` rule only
 checks text, so the story gate stays green whatever the chart hues are.
 
-`--chart-other` is exempt on purpose. It is the tail a donut rolls its long
-series into, it is meant to be quieter than the named slices, and it never
-carries meaning alone: its legend row names it and gives its share as text at
-full contrast. Lifting it past 3:1 would put it between `--chart-7` and
-`--chart-2`, where it would read as one more named series. Never use it for a
-series that has no legend row. Any other new entry has to clear 3:1 on all four
-surfaces.
+Every entry has to clear 3:1 on all four surfaces. (There used to be a
+`--chart-other`, the quieter tail of a donut, exempt from the floor; the donut
+went with #3345 and the token with it.)
 
 A component reads the sequence by index and never re-lists the hues:
 

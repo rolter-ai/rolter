@@ -1,6 +1,7 @@
 import * as React from "react";
 
 import { useFormat } from "@/lib/i18n/format";
+import { useMeasuredWidth } from "@/lib/use-measured-width";
 
 // points in an X/Y plane (latency vs cost, p50 vs p95) with an interactive
 // hover tooltip
@@ -33,7 +34,7 @@ export interface ScatterPlotProps extends React.HTMLAttributes<HTMLDivElement> {
   label?: string;
 }
 
-// the shared categorical sequence (#1245), the same one the donut groups by
+// the shared categorical sequence (#1245), the same one the by-model table walks
 const PALETTE = [
   "var(--chart-1)",
   "var(--chart-2)",
@@ -84,7 +85,8 @@ export function ScatterPlot({
   const format = useFormat();
   const fmt = format.compact;
   const [hover, setHover] = React.useState<HoverState | null>(null);
-  const W = 640;
+  // drawn at the width it is given, so its 11 unit labels are 11px at every width (#3457)
+  const { ref: frame, width: W } = useMeasuredWidth<HTMLDivElement>();
   const padL = 48;
   const padR = 14;
   const padT = 14;
@@ -100,7 +102,7 @@ export function ScatterPlot({
   const ticks = 4;
 
   return (
-    <div className={className} style={{ position: "relative" }} {...props}>
+    <div ref={frame} className={className} style={{ position: "relative" }} {...props}>
       <svg
         viewBox={`0 0 ${W} ${H}`}
         width="100%"
@@ -124,9 +126,9 @@ export function ScatterPlot({
               />
               <text
                 x={padL - 8}
-                y={y + 3}
+                y={y + 4}
                 textAnchor="end"
-                fontSize="10"
+                fontSize="11"
                 fontFamily="var(--font-mono)"
                 fill="var(--text-subtle)"
               >
@@ -145,7 +147,7 @@ export function ScatterPlot({
               x={x}
               y={H - 18}
               textAnchor="middle"
-              fontSize="10"
+              fontSize="11"
               fontFamily="var(--font-mono)"
               fill="var(--text-subtle)"
             >
@@ -185,7 +187,7 @@ export function ScatterPlot({
             x={padL + iw / 2}
             y={H - 2}
             textAnchor="middle"
-            fontSize="10"
+            fontSize="11"
             fill="var(--text-muted)"
           >
             {xLabel}
@@ -196,7 +198,7 @@ export function ScatterPlot({
             x={12}
             y={padT + ih / 2}
             textAnchor="middle"
-            fontSize="10"
+            fontSize="11"
             fill="var(--text-muted)"
             transform={`rotate(-90 12 ${padT + ih / 2})`}
           >

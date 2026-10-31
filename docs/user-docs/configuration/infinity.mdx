@@ -1,0 +1,159 @@
+---
+title: "Infinity: Self-Hosted Embeddings and Reranking"
+sidebarTitle: "Infinity"
+description: "Configure the infinity provider kind to serve embeddings and reranking from a self-hosted michaelfeil/infinity server, many models from one process, behind Rolter's keys, budgets and balancing."
+---
+
+[Infinity](https://github.com/michaelfeil/infinity) is an MIT-licensed inference server for embedding, reranking and classification models. One process serves several models at once and picks one per request by its `model` field, which makes it a good fit for retrieval pipelines that embed and rerank on the same path.
+
+The `infinity` provider kind sends two of Rolter's endpoints to it:
+
+| Rolter endpoint       | Infinity endpoint              | What changes on the way                               |
+| --------------------- | ------------------------------ | ----------------------------------------------------- |
+| `POST /v1/embeddings` | `POST {url_prefix}/embeddings` | nothing: Infinity's embeddings are OpenAI's shape     |
+| `POST /v1/rerank`     | `POST {url_prefix}/rerank`     | documents are reshaped to and from Cohere/Jina's form |
+
+Virtual keys, budgets, rate limits, route caps, balancing, retries, timeouts, request logs, usage and cost all apply, as they do for chat. Rolter routes to the models a server already runs; it never downloads, loads or unloads one.
+
+A route whose targets are all embedding servers (`infinity` or `tei`) answers only these two endpoints. A chat completion, a message, a response, an image or an audio request to it is refused with `400 unsupported_endpoint` naming `/v1/embeddings`, and nothing is sent to the server. A route that mixes an embedding server with a chat server is left to balance, since refusing it would also refuse the requests the chat server answers.
+
+---
+
+## Configuration
+
+```toml
+[[providers]]
+name = "infinity"
+kind = "infinity"
+api_base = "http://infinity:7997"
+# api_key_env = "INFINITY_API_KEY"   # only when the server was started with --api-key
+
+# one route per served model; the target's model is the name Infinity serves it under
+[[routes]]
+model = "embed-small"
+strategy = "round_robin"
+
+[[routes.targets]]
+provider = "infinity"
+model = "michaelfeil/bge-small-en-v1.5"
+
+[[routes]]
+model = "rerank"
+strategy = "round_robin"
+
+[[routes.targets]]
+provider = "infinity"
+model = "mixedbread-ai/mxbai-rerank-xsmall-v1"
+```
+
+- **`api_base`** is the server's address plus whatever `--url-prefix` it was started with. The prefix is empty by default, so the base carries no `/v1`: Rolter strips the `/v1` of its own endpoint and appends `/embeddings` or `/rerank`. A server started with `--url-prefix /v1` takes `api_base = "http://infinity:7997/v1"`.
+- **The key** is optional. Infinity reads it as `Authorization: Bearer <key>` when started with `--api-key` (or `INFINITY_API_KEY`), and serves everyone without one otherwise.
+- **The model** in each target is the name Infinity selects the engine by: the `--model-id`, or the `--served-model-name` given beside it. Several routes, or several targets of one route, can point at the same provider with different models.
+
+The dashboard's **Kind** picker lists it as **Infinity** and previews `http://infinity:7997/embeddings` as the address embedding requests resolve to.
+
+### Health checks
+
+The default probe is `GET {api_base}/models`, Infinity's engine list. It is behind the key when one is set, so a green check means the key is accepted, and it lists every model the process serves. Infinity's `/health` sits outside `--url-prefix` and checks neither. With `also_track_via_llm_call = true` and an `llm_probe_model`, the check sends one tiny embedding instead.
+
+---
+
+## Reranking
+
+Rolter's `/v1/rerank` takes the Cohere/Jina request (`model`, `query`, `documents`, `top_n`, `return_documents`) and Infinity takes the same fields, with two differences Rolter smooths over:
+
+- Infinity accepts each document only as a string. A document written as `{"text": "..."}` is sent as its text; one with no `text` is refused with a `400` `unsupported_content_part` naming its position, rather than dropped (dropping it would shift every later `index` in the answer).
+- With `return_documents`, Infinity returns each document as a bare string. Rolter returns it as `{"text": "..."}`, the form Cohere's and Jina's clients read.
+
+Results come back sorted by descending `relevance_score`, cut to `top_n`, with `usage.prompt_tokens` and `usage.total_tokens`, which Rolter records and prices like any other rerank.
+
+```bash
+curl http://localhost:8080/v1/rerank \
+  -H "Authorization: Bearer $ROLTER_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"model": "rerank", "query": "fast rust gateway", "documents": ["a python script", "a fast rust gateway"], "top_n": 1, "return_documents": true}'
+```
+
+---
+
+## Errors
+
+Infinity's refusals of a request reach the caller with their status and body unchanged, as every provider's do:
+
+| Case                                                                | Status | Body                                                   |
+| ------------------------------------------------------------------- | ------ | ------------------------------------------------------ |
+| a model the server does not run                                     | `400`  | `{"error": {"message": "Invalid model: ..."}}`         |
+| a model asked for a task it does not do                             | `400`  | `{"error": {"message": "ModelNotDeployedError: ..."}}` |
+| a missing or wrong key                                              | `401`  | `{"detail": "Unauthorized"}`                           |
+| a body Infinity cannot validate (token ids as `input`, for example) | `422`  | `{"detail": [...]}`                                    |
+
+An overloaded model (`429`) and a server error (`5xx`) are retryable, as from any provider: Rolter tries the route's other targets and, when every one has failed, answers `429 upstream_rate_limited` or `503`. A server that does not answer within the route's timeout is a `502` naming the timeout, and a response body that is not JSON is passed on as it came.
+
+---
+
+## Run Infinity with Docker
+
+A CPU image is enough to try it. This starts one process serving an embedding model and a reranker, with a key, and keeps the downloaded weights in `./infinity-cache`:
+
+```bash
+docker run --rm -p 7997:7997 \
+  -v "$PWD/infinity-cache:/app/.cache" \
+  michaelf34/infinity:0.0.77-cpu \
+  v2 \
+  --model-id michaelfeil/bge-small-en-v1.5 \
+  --model-id mixedbread-ai/mxbai-rerank-xsmall-v1 \
+  --api-key "$INFINITY_API_KEY" \
+  --port 7997
+```
+
+Drop `--api-key` for a keyless server. On a GPU host use `michaelf34/infinity:0.0.77` with `--gpus all`. Pin the image to a version, as above, rather than `latest`.
+
+In Compose, beside Rolter:
+
+```yaml
+services:
+  infinity:
+    image: michaelf34/infinity:0.0.77-cpu
+    command: ["v2", "--model-id", "michaelfeil/bge-small-en-v1.5", "--model-id", "mixedbread-ai/mxbai-rerank-xsmall-v1", "--port", "7997"]
+    volumes:
+      - ./infinity-cache:/app/.cache
+```
+
+Rolter then reaches it at `api_base = "http://infinity:7997"`.
+
+---
+
+## Air-gapped deployments
+
+Infinity downloads weights from Hugging Face on first start. Where the server has no internet access, prepare both the image and the weights on a connected machine and carry them across:
+
+1. **Pull and save the image.**
+
+   ```bash
+   docker pull michaelf34/infinity:0.0.77-cpu
+   docker save michaelf34/infinity:0.0.77-cpu -o infinity-0.0.77-cpu.tar
+   ```
+
+2. **Download the weights into a cache directory** with `--preload-only`, which loads each model once and exits:
+
+   ```bash
+   docker run --rm -v "$PWD/infinity-cache:/app/.cache" \
+     michaelf34/infinity:0.0.77-cpu \
+     v2 --model-id michaelfeil/bge-small-en-v1.5 \
+        --model-id mixedbread-ai/mxbai-rerank-xsmall-v1 \
+        --preload-only
+   ```
+
+3. **Copy `infinity-0.0.77-cpu.tar` and `infinity-cache/`** to the isolated host, then `docker load -i infinity-0.0.77-cpu.tar`.
+
+4. **Start it against the copied cache, offline.** `HF_HUB_OFFLINE=1` stops it from trying the network:
+
+   ```bash
+   docker run --rm -p 7997:7997 -e HF_HUB_OFFLINE=1 \
+     -v "$PWD/infinity-cache:/app/.cache" \
+     michaelf34/infinity:0.0.77-cpu \
+     v2 --model-id michaelfeil/bge-small-en-v1.5 \
+        --model-id mixedbread-ai/mxbai-rerank-xsmall-v1 --port 7997
+   ```
+
+Infinity's own repository also builds an image with the weights baked in (`docker buildx build --target=production-with-download --build-arg MODEL_NAME=...`), which can be pushed to an internal registry instead of carrying a cache directory. Either way Rolter needs nothing extra: it only routes to the models the server already holds.

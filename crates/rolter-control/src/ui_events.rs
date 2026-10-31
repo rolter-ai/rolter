@@ -133,6 +133,13 @@ fn invalid(message: impl Into<String>) -> ApiError {
 
 /// A bounded, control-character-free key. Empty is allowed for the optional
 /// columns; the caller decides which fields are required.
+///
+/// The `screen` key is a route id, and one key is reserved for what is not a
+/// route: `shell` names the dashboard's own chrome (the scope switcher in the
+/// rail, whose confirmations and create dialogs render outside any screen,
+/// #1895). It needs no special case here, since it is an ordinary key, but
+/// every key goes through this function and nothing may start refusing it
+/// without the dashboard's `SHELL_SCREEN` and the user docs changing with it.
 fn validate_key(value: &str, name: &str, required: bool) -> Result<(), String> {
     if value.is_empty() {
         return if required {
@@ -150,6 +157,7 @@ fn validate_key(value: &str, name: &str, required: bool) -> Result<(), String> {
     Ok(())
 }
 
+// spec-ref: rfc3339
 /// The instant to record, in the RFC 3339 form ClickHouse's `best_effort`
 /// parser reads into `DateTime64(3)`.
 ///
@@ -390,6 +398,18 @@ mod tests {
     #[test]
     fn accepts_a_minimal_event() {
         assert!(validate(&event()).is_ok());
+    }
+
+    #[test]
+    fn the_reserved_shell_screen_key_is_accepted() {
+        // the dashboard files the scope switcher's rows under it (#1895); a
+        // refusal would be a 400 for the whole batch they travel in
+        let mut e = event();
+        e.screen = "shell".to_string();
+        e.action = "form_submit".to_string();
+        e.target = "org-delete".to_string();
+        assert!(validate(&e).is_ok());
+        assert!(validate_key("shell", "screen", true).is_ok());
     }
 
     #[test]

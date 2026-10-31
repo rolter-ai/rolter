@@ -49,19 +49,6 @@ const WS_SESSION_PARAM: &str = "rolter_session";
 // while still bounding memory per request
 const MAX_BODY: usize = 32 * 1024 * 1024;
 
-// hop-by-hop headers must not be forwarded end-to-end (RFC 7230 §6.1); host and
-// content-length are recomputed by the client/server on each leg.
-const HOP_BY_HOP: [&str; 8] = [
-    "connection",
-    "keep-alive",
-    "proxy-authenticate",
-    "proxy-authorization",
-    "te",
-    "trailers",
-    "transfer-encoding",
-    "upgrade",
-];
-
 pub(crate) fn router() -> Router<ControlState> {
     Router::new().route("/gw/{*path}", any(proxy))
 }
@@ -284,10 +271,10 @@ fn take_query_param(query: &str, name: &str) -> (String, Option<String>) {
     (rest, taken)
 }
 
+// host and content-length are recomputed by the client/server on each leg.
+// spec-ref: http-semantics
 fn strip_hop_by_hop(headers: &mut HeaderMap) {
-    for name in HOP_BY_HOP {
-        headers.remove(name);
-    }
+    rolter_proxy::hop_by_hop::strip(headers);
 }
 
 fn gw_error(status: StatusCode, message: &str) -> Response {
@@ -335,6 +322,23 @@ fn build_gateway_client(connect_timeout: Duration) -> reqwest::Client {
 
 #[cfg(test)]
 mod tests {
+    use axum::http::{header, HeaderMap};
+
+    #[test]
+    fn the_relay_drops_nominated_and_trailer_headers_both_ways() {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::CONNECTION, "x-internal".parse().unwrap());
+        headers.insert("x-internal", "secret".parse().unwrap());
+        headers.insert(header::TRAILER, "x-checksum".parse().unwrap());
+        headers.insert("x-kept", "kept".parse().unwrap());
+        // the same call serves the request and the response leg
+        super::strip_hop_by_hop(&mut headers);
+        assert!(headers.get(header::CONNECTION).is_none());
+        assert!(headers.get("x-internal").is_none());
+        assert!(headers.get(header::TRAILER).is_none());
+        assert_eq!(headers.get("x-kept").unwrap(), "kept");
+    }
+
     use super::{build_gateway_client, take_query_param, ws_url};
     use std::time::{Duration, Instant};
 

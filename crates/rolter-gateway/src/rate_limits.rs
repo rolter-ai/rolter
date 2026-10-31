@@ -49,10 +49,7 @@ impl ScopeIds {
     /// The rate limits in `all` that apply to this request's scope chain.
     fn applicable_limits<'a>(&self, all: &'a [RateLimitConfig]) -> Vec<&'a RateLimitConfig> {
         all.iter()
-            .filter(|l| {
-                let id = self.id_for(l.scope);
-                !id.is_empty() && id == l.id
-            })
+            .filter(|l| self.matches(l.scope, &l.id, l.within.as_ref()))
             .collect()
     }
 }
@@ -65,6 +62,8 @@ fn scope_str(scope: BudgetScope) -> &'static str {
         BudgetScope::Key => "key",
         BudgetScope::BusinessUnit => "business_unit",
         BudgetScope::Customer => "customer",
+        BudgetScope::User => "user",
+        BudgetScope::Unknown => "unknown",
     }
 }
 
@@ -75,7 +74,17 @@ fn bucket_key(limit: &RateLimitConfig, kind: &str, bucket: i64) -> String {
 
 /// The part of a bucket key that names whose counter it is.
 fn limit_prefix(limit: &RateLimitConfig) -> String {
-    format!("rolter:rl:{}:{}", scope_str(limit.scope), limit.id)
+    match &limit.within {
+        None => format!("rolter:rl:{}:{}", scope_str(limit.scope), limit.id),
+        // a narrowed user limit and the same person's other limits are
+        // different counters (#1830)
+        Some(within) => format!(
+            "rolter:rl:{}:{}:{}",
+            scope_str(limit.scope),
+            limit.id,
+            within.key_segment()
+        ),
+    }
 }
 
 fn prefixed_bucket_key(prefix: &str, kind: &str, bucket: i64) -> String {
@@ -481,6 +490,7 @@ mod tests {
             id: id.to_string(),
             rpm,
             tpm,
+            within: None,
         }
     }
 
@@ -493,6 +503,7 @@ mod tests {
             key: "vk-1".to_string(),
             business_unit: "bu-1".to_string(),
             customer: String::new(),
+            user: String::new(),
         };
         let all = vec![
             limit(BudgetScope::Org, "org-1", Some(60), None),

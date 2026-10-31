@@ -12,6 +12,7 @@
 //! split keeps the read borrowed, hashes the model exactly once and confines
 //! allocation to a model's first park (#1050).
 
+use crate::target_mask::TargetMask;
 use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -65,6 +66,37 @@ impl Cooldowns {
             }
             None => false,
         }
+    }
+
+    /// Which of a model's first `n` targets are parked right now, answered with
+    /// one lock acquisition rather than one per target (#1942). Evicts expired
+    /// entries as [`Cooldowns::is_parked`] does. Allocation-free for up to 64
+    /// targets.
+    pub fn parked_mask(&self, model: &str, n: usize) -> TargetMask {
+        let mut mask = TargetMask::new();
+        let Some(inner) = &self.inner else {
+            return mask;
+        };
+        let mut map = inner.lock();
+        let Some(parks) = map.get_mut(model) else {
+            return mask;
+        };
+        let now = Instant::now();
+        for (idx, slot) in parks.iter_mut().enumerate() {
+            match *slot {
+                Some(until) if until > now => {
+                    if idx < n {
+                        mask.insert(idx);
+                    }
+                }
+                Some(_) => *slot = None,
+                None => {}
+            }
+        }
+        if parks.iter().all(Option::is_none) {
+            map.remove(model);
+        }
+        mask
     }
 
     /// Park `(model, idx)` for `secs`. Extends an existing cooldown, never
@@ -210,5 +242,31 @@ mod tests {
             c.inner.as_ref().unwrap().lock().is_empty(),
             "the model's now-empty map should have been removed"
         );
+    }
+
+    #[test]
+    fn the_mask_agrees_with_asking_per_target() {
+        let c = Cooldowns::new();
+        c.park("m", 1, 60);
+        c.park("m", 70, 60);
+        let mask = c.parked_mask("m", 100);
+        for idx in 0..100 {
+            assert_eq!(mask.contains(idx), c.is_parked("m", idx), "{idx}");
+        }
+        // targets past the asked width are left out, and an unknown model or a
+        // disabled registry has nothing parked
+        assert!(!c.parked_mask("m", 2).contains(70));
+        assert!(c.parked_mask("other", 4).is_empty());
+        assert!(Cooldowns::default().parked_mask("m", 4).is_empty());
+    }
+
+    #[test]
+    fn the_mask_evicts_expired_parks_like_a_read() {
+        let c = Cooldowns::new();
+        c.park("m", 0, 60);
+        c.inner.as_ref().unwrap().lock().get_mut("m").unwrap()[0] =
+            Some(Instant::now() - Duration::from_secs(1));
+        assert!(c.parked_mask("m", 1).is_empty());
+        assert!(c.inner.as_ref().unwrap().lock().get("m").is_none());
     }
 }

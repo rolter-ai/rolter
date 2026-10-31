@@ -118,6 +118,7 @@ export type RuleId =
   | "shadowed-primitive"
   | "hand-rolled-switch-row"
   | "bare-animation"
+  | "untyped-button"
   | "duplicated-shape";
 
 export interface Violation {
@@ -193,6 +194,11 @@ const ADVICE: Record<RuleId, string> = {
     "`prefers-reduced-motion`, which PRODUCT.md promises it does not (#2006). " +
     "Write `motion-safe:animate-spin` / `motion-safe:animate-pulse`: the icon or " +
     "dot stays on screen as a static indicator.",
+  "untyped-button":
+    "a native `<button>` with no `type` is a submit button, so one placed inside " +
+    "an editor sheet's `<form>` submits it (#1205 found four). Write " +
+    '`type="button"` (or `type="submit"` where it should submit), or use ' +
+    '`Button` from `@/components/ui/button`, which defaults to `type="button"`.',
   "duplicated-shape":
     "the same element and the same design-system classes, hand-written in three " +
     "or more files — a primitive that was never extracted, which is how #1658 " +
@@ -394,6 +400,23 @@ export function checkSource(
       violations.push({ file, line: index + 1, rule: "bare-animation", found: hit[0] });
     }
   });
+  // like the animation rule, a primitive's own file is not exempt: the
+  // sidebar and filter panel are where the untyped buttons were found
+  maskedLines.forEach((line, index) => {
+    if (!/<button(?:[\s/>]|$)/.test(line)) return;
+    const from = maskedLines.slice(0, index).join("\n").length + (index > 0 ? 1 : 0);
+    const start = from + line.indexOf("<button");
+    const tag = masked.slice(start, endOfTag(masked, start));
+    // a props spread may carry the type, so it is given the benefit of the doubt
+    // `data-type=` and `aria-type=` are not the attribute
+    if (/(?<![\w-])type\s*=(?!=)/.test(tag) || /\{\s*\.\.\./.test(tag)) return;
+    const reason = waiverAbove(lines, index);
+    if (reason !== null) {
+      waivers.push({ file, line: index + 1, rule: reason ? "untyped-button" : "unknown", reason });
+    } else {
+      violations.push({ file, line: index + 1, rule: "untyped-button", found: "<button>" });
+    }
+  });
   if (file.startsWith(PRIMITIVES_DIR)) return { violations, waivers };
   const imported = importedPrimitives(source);
   // a name is only shadowed when the file does not pull the shared one in: a
@@ -467,7 +490,7 @@ export function checkSource(
  *
  * `flex items-center gap-2` repeats in eighteen files and always will — a stack
  * of generic utilities is a sentence in Tailwind, not a component. What marks a
- * *deliberate* shape is the arbitrary value: `rounded-[10px]`,
+ * *deliberate* shape is the arbitrary value: `p-[22px]`,
  * `text-[color:var(--text-subtle)]`, `max-w-[840px]`. Those are the design
  * system spelled out by hand, and when the same handful of them lands on the
  * same tag in three files, somebody has re-typed a primitive.
@@ -492,7 +515,7 @@ export interface Shape {
   tag: string;
 }
 
-/** `rounded-[10px]`, `text-[color:var(--x)]`, `[grid-template-columns:…]` */
+/** `p-[22px]`, `text-[color:var(--x)]`, `[grid-template-columns:…]` */
 function isArbitrary(token: string): boolean {
   return token.includes("[");
 }

@@ -2,7 +2,25 @@ import type { DecisionRequest } from "@/lib/gateway";
 
 /** OpenJev accepts one image shared by every question, never a remote URL. */
 export const DECISION_IMAGE_MAX_BYTES = 4 * 1024 * 1024;
+/** The same contract caps the decoded image at 12 million pixels, whatever its byte size. */
+export const DECISION_IMAGE_MAX_PIXELS = 12_000_000;
 export const DECISION_IMAGE_TYPES = ["image/jpeg", "image/png", "image/webp"];
+
+/**
+ * The model the picker holds: the one chosen while it is still offered, else
+ * the built-in `fake-llm`, else the first model on offer, else none. A configured
+ * route named `fake-llm` shadows the builtin and drops out of the decision
+ * models, so a fixed default would name something the picker does not list.
+ */
+export function pickDecisionModel(
+  models: readonly { id: string }[],
+  chosen: string,
+  builtin: string,
+): string {
+  if (models.some((m) => m.id === chosen)) return chosen;
+  if (models.some((m) => m.id === builtin)) return builtin;
+  return models[0]?.id ?? "";
+}
 
 /** Keep JSON state as JSON and preserve question ids and vendor extensions. */
 export function decisionRequest(

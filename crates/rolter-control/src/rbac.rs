@@ -10,8 +10,11 @@
 //!    hatch that keeps CI and existing deployments working unchanged);
 //! 2. else if the bearer is a valid live session whose user `is_superadmin` →
 //!    [`Principal::Superadmin`];
-//! 3. else if the bearer is a valid live session → [`Principal::User`];
-//! 4. else → unauthenticated (`401`).
+//! 3. else if the bearer is a live API token (`rolter_api_…`, #1836) →
+//!    [`Principal::Token`], which holds one role at one org, team or project
+//!    and never superadmin or a deployment role;
+//! 4. else if the bearer is a valid live session → [`Principal::User`];
+//! 5. else → unauthenticated (`401`).
 //!
 //! ## Open mode
 //!
@@ -43,17 +46,17 @@ use axum::http::request::Parts;
 use subtle::ConstantTimeEq;
 
 use rolter_auth::Role;
-use rolter_store::postgres::models::{EffectiveGrant, Membership, User};
+use rolter_store::postgres::models::{ApiToken, EffectiveGrant, Membership, User};
 use rolter_store::postgres::repo::{
-    AccessProfileRepo, BusinessUnitRepo, CustomerRepo, MembershipRepo, ProjectRepo, SessionRepo,
-    TeamRepo, UserRepo, VirtualKeyRepo,
+    AccessProfileRepo, BusinessUnitRepo, CustomerRepo, MembershipRepo, OrgRepo, ProjectRepo,
+    SessionRepo, TeamRepo, UserRepo, VirtualKeyRepo,
 };
 use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::auth::{bearer_token, session_pepper};
 use crate::crud::{pool, ApiError, ApiResult};
-use crate::rbac_matrix::{action_key, Authority, Requirement};
+use crate::rbac_matrix::{action_key, Action, Authority, DeploymentRole, Requirement};
 use crate::ControlState;
 
 /// The authenticated caller behind a control-plane mutation.
@@ -71,6 +74,18 @@ pub(crate) enum Principal {
     },
     /// a logged-in local account, authorized per-scope via [`resolve_role`]
     User(User),
+    /// a scoped automation credential (#1836), authorized per-scope by the same
+    /// rules as a user holding its one role. It has no account behind it
+    Token(Box<TokenPrincipal>),
+}
+
+/// An API token and the authority it holds, in the shapes the guard already
+/// reads for a user: one membership for a built-in role, or the grants of a
+/// custom role.
+pub(crate) struct TokenPrincipal {
+    pub(crate) token: ApiToken,
+    pub(crate) memberships: Vec<Membership>,
+    pub(crate) grants: Vec<EffectiveGrant>,
 }
 
 impl FromRequestParts<ControlState> for Principal {
@@ -98,10 +113,19 @@ impl FromRequestParts<ControlState> for Principal {
             return Ok(Principal::Superadmin { account: None });
         }
 
-        // otherwise the bearer must be a live session token
+        // otherwise the bearer must be a live session token or an API token
         let token = bearer_token(&parts.headers).ok_or(ApiError::Unauthenticated)?;
         let token_hash = rolter_auth::hash_key(&session_pepper(), token);
         let pool = pool(state);
+        // the prefix only picks which table to ask: a session never starts
+        // with it, and an API token that is not live is refused, never retried
+        // as a session
+        if token.starts_with(crate::api_tokens::TOKEN_PREFIX) {
+            return crate::api_tokens::resolve(pool, &token_hash)
+                .await?
+                .map(Principal::Token)
+                .ok_or(ApiError::Unauthenticated);
+        }
         let session = SessionRepo(pool)
             .find_active_by_hash(&token_hash)
             .await?
@@ -152,6 +176,32 @@ impl ScopeChain {
         })
     }
 
+    /// The chain a budget or rate limit is authorized against, which for a
+    /// `user` cap is decided by where it is narrowed to (#1830): a person
+    /// belongs to no org, so the cap is the org's (or project's) to manage only
+    /// through its `within`. A user cap with no `within` counts the person's keys
+    /// everywhere, so it reaches no org and only a superadmin passes.
+    pub(crate) async fn from_cap(
+        pool: &PgPool,
+        scope_type: &str,
+        scope_id: Uuid,
+        within: rolter_store::postgres::repo::Within,
+    ) -> ApiResult<Self> {
+        if scope_type != "user" {
+            return Self::from_scope(pool, scope_type, scope_id).await;
+        }
+        // the person has to exist: the cap's id names nothing else
+        UserRepo(pool).get(scope_id).await?;
+        match (within.project, within.org) {
+            (Some(project), _) => Self::from_project(pool, project).await,
+            (None, Some(org)) => {
+                OrgRepo(pool).get(org).await?;
+                Ok(Self::org(org))
+            }
+            (None, None) => Ok(Self::default()),
+        }
+    }
+
     /// resolve the chain for a budget/rate-limit `{scope_type, scope_id}` body
     pub(crate) async fn from_scope(
         pool: &PgPool,
@@ -179,6 +229,29 @@ impl ScopeChain {
             )))),
         }
     }
+}
+
+/// [`authorize`] for a budget or rate limit, whose chain may be empty (#1830).
+///
+/// A `user` cap that is not narrowed to an org or a project counts the person's
+/// keys everywhere, so no membership reaches it and the matrix has no scope to
+/// resolve a role in. It is the deployment's to manage: only a superadmin
+/// passes.
+pub(crate) async fn authorize_cap(
+    state: &ControlState,
+    principal: &Principal,
+    chain: ScopeChain,
+    requirement: Requirement,
+) -> ApiResult<()> {
+    if chain.org.is_none() && chain.team.is_none() && chain.project.is_none() {
+        // an api token never holds a deployment authority, so it is refused
+        // here as a member is
+        return match principal {
+            Principal::Superadmin { .. } => Ok(()),
+            Principal::User(_) | Principal::Token(_) => Err(ApiError::Forbidden),
+        };
+    }
+    authorize(state, principal, chain, requirement).await
 }
 
 /// every built-in role, weakest first. The one place the set is enumerated, so
@@ -272,7 +345,9 @@ pub(crate) fn custom_grants_allow(
     chain: ScopeChain,
     requirement: Requirement,
 ) -> bool {
-    let Authority::Role(required) = requirement.authority else {
+    let (Authority::Role(required) | Authority::RoleOrDeployment(required, _)) =
+        requirement.authority
+    else {
         return false;
     };
     let action = action_key(requirement.action);
@@ -353,15 +428,33 @@ pub(crate) async fn authorize(
     let user = match principal {
         Principal::Superadmin { .. } => return Ok(()),
         Principal::User(user) => user,
+        Principal::Token(held) => return authorize_token(held, chain, requirement),
     };
     let required = match requirement.authority {
         Authority::Role(required) => required,
+        // a deployment role passes at every scope; without one the scoped role
+        // is checked below, exactly as for `Authority::Role` (#3362)
+        Authority::RoleOrDeployment(required, roles) => {
+            if holds_deployment_role(principal, roles) {
+                return Ok(());
+            }
+            required
+        }
         // holding a `Principal` at all means authentication already succeeded,
         // so there is nothing further to check
         Authority::Authenticated => return Ok(()),
         // a superadmin-only capability has no scope a membership could satisfy,
         // so a plain user is refused without touching the database
         Authority::Superadmin => return Err(ApiError::Forbidden),
+        // nor does one a deployment role reaches: the role is on the account,
+        // read from the row the extractor already loaded
+        Authority::Deployment(roles) => {
+            return if holds_deployment_role(principal, roles) {
+                Ok(())
+            } else {
+                Err(ApiError::Forbidden)
+            };
+        }
     };
     let memberships = MembershipRepo(pool(state)).list_for_user(user.id).await?;
     if user_authorized(&memberships, chain, required) {
@@ -382,7 +475,66 @@ pub(crate) async fn authorize(
     }
 }
 
+/// What an API token never changes, whatever role it holds: who may sign in,
+/// and with which roles. A token that could grant a membership or a custom
+/// role, send an invitation, reset someone's password or register an identity
+/// provider would leave access behind that outlives its own revocation, so
+/// these writes stay with people. Reading them is unaffected.
+pub(crate) const TOKEN_REFUSED_WRITES: &[&str] = &[
+    "access_profile_assignment",
+    "api_token",
+    "custom_role",
+    "invitation",
+    "ldap_directory",
+    "ldap_group_mapping",
+    "membership",
+    "org_auth_policy",
+    "password_reset",
+    "scim_group_mapping",
+    "scim_token",
+    "sso_group_mapping",
+    "sso_provider",
+    "user",
+];
+
+/// [`authorize`] for an API token: the same rules as a user holding its role,
+/// over the memberships and grants it carries, with no query. A deployment-wide
+/// capability, superadmin-only or reached by a deployment role, is never a
+/// token's: neither its membership nor a custom role can express it.
+/// Nor is a write to anything in [`TOKEN_REFUSED_WRITES`].
+fn authorize_token(
+    held: &TokenPrincipal,
+    chain: ScopeChain,
+    requirement: Requirement,
+) -> ApiResult<()> {
+    if requirement.action != Action::Read && TOKEN_REFUSED_WRITES.contains(&requirement.resource) {
+        return Err(ApiError::Forbidden);
+    }
+    let required = match requirement.authority {
+        // a token holds no deployment role, so the scoped half is all it has
+        Authority::Role(required) | Authority::RoleOrDeployment(required, _) => required,
+        Authority::Authenticated => return Ok(()),
+        Authority::Superadmin | Authority::Deployment(_) => return Err(ApiError::Forbidden),
+    };
+    if user_authorized(&held.memberships, chain, required)
+        || custom_grants_allow(&held.grants, chain, requirement)
+    {
+        Ok(())
+    } else {
+        Err(ApiError::Forbidden)
+    }
+}
+
 impl Principal {
+    /// The API token behind this principal, when the request carried one, so a
+    /// record of who acted can name it (#1836)
+    pub(crate) fn api_token(&self) -> Option<&ApiToken> {
+        match self {
+            Principal::Token(held) => Some(&held.token),
+            Principal::Superadmin { .. } | Principal::User(_) => None,
+        }
+    }
+
     /// The principal a signed-in account acts as: the superadmin bit makes it
     /// [`Principal::Superadmin`], exactly as the extractor decides for every
     /// other route. Handlers that take a `CurrentUser` and then authorize must
@@ -413,6 +565,22 @@ impl Principal {
         match self {
             Principal::Superadmin { account } => *account,
             Principal::User(user) => Some(user.id),
+            // a token is a credential, not a person: its records name it
+            // through [`Principal::api_token`]
+            Principal::Token(_) => None,
+        }
+    }
+
+    /// The deployment role a plain account holds (#1834). A superadmin holds
+    /// none because it needs none: it passes every deployment capability. An
+    /// unrecognised stored value reads as no role, never as a wider one.
+    pub(crate) fn deployment_role(&self) -> Option<DeploymentRole> {
+        match self {
+            Principal::Superadmin { .. } | Principal::Token(_) => None,
+            Principal::User(user) => user
+                .deployment_role
+                .as_deref()
+                .and_then(DeploymentRole::parse),
         }
     }
 }
@@ -427,6 +595,7 @@ impl Principal {
 /// [`authorize`] would apply to it alone.
 pub(crate) struct ScopeFilter {
     superadmin: bool,
+    deployment_role: Option<DeploymentRole>,
     memberships: Vec<Membership>,
     grants: Vec<EffectiveGrant>,
     requirement: Requirement,
@@ -440,6 +609,7 @@ impl ScopeFilter {
     ) -> ApiResult<Self> {
         let (superadmin, memberships, grants) = match principal {
             Principal::Superadmin { .. } => (true, Vec::new(), Vec::new()),
+            Principal::Token(held) => (false, held.memberships.clone(), held.grants.clone()),
             Principal::User(user) => (
                 false,
                 MembershipRepo(pool(state)).list_for_user(user.id).await?,
@@ -450,6 +620,7 @@ impl ScopeFilter {
         };
         Ok(Self {
             superadmin,
+            deployment_role: principal.deployment_role(),
             memberships,
             grants,
             requirement,
@@ -475,6 +646,15 @@ impl ScopeFilter {
         match requirement.authority {
             Authority::Authenticated => true,
             Authority::Superadmin => false,
+            Authority::Deployment(roles) => self
+                .deployment_role
+                .is_some_and(|held| roles.contains(&held)),
+            Authority::RoleOrDeployment(required, roles) => {
+                self.deployment_role
+                    .is_some_and(|held| roles.contains(&held))
+                    || user_authorized(&self.memberships, chain, required)
+                    || custom_grants_allow(&self.grants, chain, requirement)
+            }
             Authority::Role(required) => {
                 user_authorized(&self.memberships, chain, required)
                     || custom_grants_allow(&self.grants, chain, requirement)
@@ -569,6 +749,10 @@ pub(crate) async fn holds_admin(
     let user = match principal {
         Principal::Superadmin { .. } => return Ok(true),
         Principal::User(user) => user,
+        Principal::Token(held) => {
+            return Ok(effective_role_from(&held.memberships, &held.grants, chain)
+                .is_some_and(|role| role_rank(role) >= role_rank(Role::Admin)))
+        }
     };
     Ok(effective_role(state, user, chain)
         .await?
@@ -605,16 +789,18 @@ impl PolicyContext {
         principal: &Principal,
         org_id: Uuid,
     ) -> ApiResult<Self> {
-        let user = match principal {
+        let (memberships, grants) = match principal {
             Principal::Superadmin { .. } => return Ok(Self::Superadmin),
-            Principal::User(user) => user,
+            Principal::Token(held) => (held.memberships.clone(), held.grants.clone()),
+            Principal::User(user) => (
+                MembershipRepo(pool(state)).list_for_user(user.id).await?,
+                // a custom role a profile confers at the org counts here too, so an
+                // operator can widen resource visibility without minting a membership
+                AccessProfileRepo(pool(state))
+                    .effective_grants_for_user(user.id)
+                    .await?,
+            ),
         };
-        let memberships = MembershipRepo(pool(state)).list_for_user(user.id).await?;
-        // a custom role a profile confers at the org counts here too, so an
-        // operator can widen resource visibility without minting a membership
-        let grants = AccessProfileRepo(pool(state))
-            .effective_grants_for_user(user.id)
-            .await?;
         let role = effective_role_from(&memberships, &grants, ScopeChain::org(org_id));
         let mut team_ids: Vec<Uuid> = memberships.iter().filter_map(|m| m.team_id).collect();
         // a role below every requirement never reaches the team scan, so the
@@ -674,8 +860,23 @@ pub(crate) async fn policy_allows(
 fn require_superadmin(principal: &Principal) -> ApiResult<()> {
     match principal {
         Principal::Superadmin { .. } => Ok(()),
-        Principal::User(_) => Err(ApiError::Forbidden),
+        Principal::User(_) | Principal::Token(_) => Err(ApiError::Forbidden),
     }
+}
+
+/// Whether `principal` is a superadmin or holds one of `roles` (#1834).
+fn holds_deployment_role(principal: &Principal, roles: &[DeploymentRole]) -> bool {
+    matches!(principal, Principal::Superadmin { .. })
+        || principal
+            .deployment_role()
+            .is_some_and(|held| roles.contains(&held))
+}
+
+/// Whether `principal` is a superadmin or a deployment operator (#1834): the
+/// callers who run every alert rule and channel, whichever org owns it, since
+/// alerting was the operator's before it was delegated to scoped admins (#1829).
+pub(crate) fn is_deployment_operator(principal: &Principal) -> bool {
+    holds_deployment_role(principal, &[DeploymentRole::Operator])
 }
 
 /// Guard for a capability with no tenancy scope to resolve a role in.
@@ -689,7 +890,11 @@ pub(crate) fn authorize_superadmin(
 ) -> ApiResult<()> {
     match requirement.authority {
         Authority::Superadmin => require_superadmin(principal),
-        Authority::Role(_) | Authority::Authenticated => Err(ApiError::Forbidden),
+        Authority::Deployment(roles) if holds_deployment_role(principal, roles) => Ok(()),
+        Authority::Deployment(_)
+        | Authority::Role(_)
+        | Authority::RoleOrDeployment(..)
+        | Authority::Authenticated => Err(ApiError::Forbidden),
     }
 }
 
@@ -1076,6 +1281,7 @@ mod tests {
             created_at: Utc::now(),
             display_name: None,
             bio: None,
+            deployment_role: None,
         }
     }
 
@@ -1096,6 +1302,137 @@ mod tests {
         assert_eq!(Principal::for_user(member).account_id(), Some(member_id));
 
         assert_eq!(Principal::Superadmin { account: None }.account_id(), None);
+    }
+
+    fn user_with_deployment_role(role: Option<&str>) -> Principal {
+        let mut user = user_with_superadmin(false);
+        user.deployment_role = role.map(str::to_string);
+        Principal::for_user(user)
+    }
+
+    /// a deployment role opens exactly the capabilities that name it, through
+    /// the same guard every deployment handler already calls (#1834)
+    #[test]
+    fn a_deployment_role_passes_only_the_capabilities_that_name_it() {
+        use crate::rbac_matrix::superadmin_cap;
+        let operator = user_with_deployment_role(Some("operator"));
+        let auditor = user_with_deployment_role(Some("security_auditor"));
+        let plain = user_with_deployment_role(None);
+
+        let drain = superadmin_cap!("cluster_node", Update);
+        let read_security = superadmin_cap!("security_settings", Read);
+        let write_security = superadmin_cap!("security_settings", Update);
+        let grant = superadmin_cap!("deployment_role", Update);
+
+        assert!(authorize_superadmin(&operator, drain).is_ok());
+        assert!(authorize_superadmin(&operator, read_security).is_err());
+        assert!(authorize_superadmin(&auditor, read_security).is_ok());
+        assert!(authorize_superadmin(&auditor, write_security).is_err());
+        assert!(authorize_superadmin(&auditor, drain).is_err());
+        assert!(authorize_superadmin(&plain, drain).is_err());
+        // neither role can grant one
+        assert!(authorize_superadmin(&operator, grant).is_err());
+        assert!(authorize_superadmin(&auditor, grant).is_err());
+        // the admin token and a superadmin account pass every one of them
+        let token = Principal::Superadmin { account: None };
+        assert!(authorize_superadmin(&token, drain).is_ok());
+        assert!(authorize_superadmin(&token, grant).is_ok());
+    }
+
+    /// a token holds one role at one scope: nothing deployment-wide, whatever
+    /// the role, and nothing outside its own chain (#1836)
+    #[test]
+    fn a_token_reaches_neither_a_deployment_capability_nor_another_scope() {
+        use crate::rbac_matrix::{cap, superadmin_cap};
+        let (org, team, project, other) = (
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+        );
+        let now = Utc::now();
+        let held = TokenPrincipal {
+            token: ApiToken {
+                id: Uuid::new_v4(),
+                org_id: org,
+                team_id: Some(team),
+                project_id: Some(project),
+                name: "ci".into(),
+                role: Some("admin".into()),
+                custom_role_id: None,
+                token_hash: String::new(),
+                token_prefix: String::new(),
+                expires_at: None,
+                created_by: None,
+                created_at: now,
+                rotated_at: None,
+                last_used_at: None,
+                revoked_at: None,
+            },
+            memberships: vec![Membership {
+                id: Uuid::new_v4(),
+                user_id: Uuid::new_v4(),
+                org_id: Some(org),
+                team_id: Some(team),
+                project_id: Some(project),
+                role: "admin".into(),
+                source: "api_token".into(),
+                created_at: now,
+            }],
+            grants: Vec::new(),
+        };
+        let principal = Principal::Token(Box::new(held));
+        let at = |project| ScopeChain {
+            org: Some(org),
+            team: Some(team),
+            project: Some(project),
+        };
+        // an admin token passes a project guard at its own project only
+        let guard = |p: &Principal, project| match p {
+            Principal::Token(held) => authorize_token(held, at(project), cap!("route", Create)),
+            _ => unreachable!(),
+        };
+        assert!(guard(&principal, project).is_ok());
+        assert!(guard(&principal, other).is_err());
+        // admin is the top role, and still no deployment or superadmin row
+        assert!(
+            authorize_superadmin(&principal, superadmin_cap!("feature_flags", Update)).is_err()
+        );
+        assert!(
+            authorize_superadmin(&principal, superadmin_cap!("security_settings", Read)).is_err()
+        );
+        assert!(authorize_superadmin(&principal, superadmin_cap!("user", Update)).is_err());
+        assert_eq!(principal.deployment_role(), None);
+        assert_eq!(principal.account_id(), None);
+        assert!(principal.api_token().is_some());
+        // nor does it grant access to anyone, though it may read who has it
+        let Principal::Token(held) = &principal else {
+            unreachable!()
+        };
+        // (a person who is this project's admin may grant in it, #3074)
+        for write in [cap!("membership", Create), cap!("invitation", Create)] {
+            assert!(
+                authorize_token(held, at(project), write).is_err(),
+                "{write:?}"
+            );
+        }
+        assert!(authorize_token(held, at(project), cap!("membership", Read)).is_ok());
+    }
+
+    #[test]
+    fn an_unrecognised_stored_deployment_role_holds_nothing() {
+        let stale = user_with_deployment_role(Some("superadmin"));
+        assert_eq!(stale.deployment_role(), None);
+        assert!(authorize_superadmin(
+            &stale,
+            crate::rbac_matrix::superadmin_cap!("cluster_node", Update)
+        )
+        .is_err());
+        // a superadmin holds no deployment role and needs none
+        assert_eq!(
+            Principal::Superadmin { account: None }.deployment_role(),
+            None
+        );
     }
 
     #[test]

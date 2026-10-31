@@ -30,6 +30,14 @@ narrow race into a workspace-wide break.
 written as the two or three fields it cares about plus `..Default::default()`.
 Adding a field to `ProviderConfig` is now a no-op for fixtures.
 
+`Target` and `VirtualKeyRecord` (#3332) follow the same rule, after
+`Target::takes_over` and `VirtualKeyRecord::previous` each broke a test that
+landed on master while their branch was open. `Target::default()` carries
+`weight: 1`, the value an omitted `weight` key deserializes to, because a derived
+0 is a target no balancer picks; `VirtualKeyRecord::default()` is an enabled key
+with no scope and no restrictions. The store loaders, config export, snapshot
+assembly and seed import still write both literals in full.
+
 Production code is deliberately excluded. `PostgresStore`'s row mapping and the
 config parser still write the literal out in full, because there a new field is
 a question that someone owes an answer to — silently defaulting a column the

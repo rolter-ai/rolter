@@ -98,7 +98,8 @@ pub async fn sanitize(
                 // enforcement over availability. this is the mode to pick when
                 // the point of the deployment is that PII must not reach the
                 // provider: forwarding unsanitized on failure would defeat it
-                FailureMode::FailClosed => {
+                // a mode from a newer release reads as closed (#3347)
+                FailureMode::FailClosed | FailureMode::Unknown => {
                     metrics.pii_sanitizer_blocks_total.fetch_add(1, Relaxed);
                     SanitizeOutcome::Block("pii sanitizer unavailable".to_string())
                 }
@@ -215,13 +216,28 @@ async fn post<B: serde::Serialize, R: serde::de::DeserializeOwned>(
 ) -> Option<R> {
     // refused again here, not only at save: the policy may have been tightened
     // since, and a stored row is not a standing permission to egress
-    let mut req = egress
+    let req = egress
         .post(url)?
         .timeout(std::time::Duration::from_millis(config.timeout_ms))
         .header("X-Rolter-Trace-Id", trace_id)
         .json(body);
+    let req = authorize(req, config.auth.as_ref());
 
-    if let Some(auth) = &config.auth {
+    let resp = req.send().await.ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let bytes = resp.bytes().await.ok()?;
+    serde_json::from_slice(&bytes).ok()
+}
+
+/// Add the sanitizer's credential to `req`, shared by every endpoint it
+/// serves.
+pub(crate) fn authorize(
+    mut req: reqwest::RequestBuilder,
+    auth: Option<&WebhookAuth>,
+) -> reqwest::RequestBuilder {
+    if let Some(auth) = auth {
         // secrets are resolved from the environment at call time, never inlined
         // in config; a missing/empty var means the header is simply omitted
         if let Some(secret) = auth.resolve_secret(&[]) {
@@ -238,13 +254,7 @@ async fn post<B: serde::Serialize, R: serde::de::DeserializeOwned>(
             );
         }
     }
-
-    let resp = req.send().await.ok()?;
-    if !resp.status().is_success() {
-        return None;
-    }
-    let bytes = resp.bytes().await.ok()?;
-    serde_json::from_slice(&bytes).ok()
+    req
 }
 
 #[cfg(test)]

@@ -67,8 +67,24 @@ export interface AccessProfilePolicyInput {
   denied_routes: string[];
 }
 
-export function fetchAccessProfiles(orgId: string): Promise<AccessProfileRow[]> {
-  return getJson<AccessProfileRow[]>(`/api/v1/orgs/${orgId}/access-profiles`);
+export type AccessProfileInclude = "roles" | "assignments" | "policy";
+
+export function fetchAccessProfiles(orgId: string): Promise<AccessProfileRow[]>;
+/**
+ * `include` embeds what the detail endpoint returns, so a screen that needs each
+ * profile's composition reads it in one request however many profiles there are
+ * (#1996).
+ */
+export function fetchAccessProfiles(
+  orgId: string,
+  include: AccessProfileInclude[],
+): Promise<AccessProfileDetail[]>;
+export function fetchAccessProfiles(
+  orgId: string,
+  include?: AccessProfileInclude[],
+): Promise<AccessProfileRow[] | AccessProfileDetail[]> {
+  const query = include?.length ? `?include=${include.join(",")}` : "";
+  return getJson<AccessProfileRow[]>(`/api/v1/orgs/${orgId}/access-profiles${query}`);
 }
 
 // the one call that answers "what does this profile actually carry": the roles

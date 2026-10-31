@@ -25,6 +25,9 @@
 //! `ROLTER_TEST_CLICKHOUSE_URL`; unset either and the tests self-skip.
 #![cfg(feature = "postgres")]
 
+#[path = "common/clickhouse_ddl.rs"]
+mod clickhouse_ddl;
+
 use std::net::SocketAddr;
 
 use chrono::Timelike;
@@ -99,53 +102,13 @@ async fn ensure_table(base: &str) {
 }
 
 async fn apply_schema(base: &str) {
-    let client = reqwest::Client::new();
-    let dir = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../clickhouse"));
-    let mut files: Vec<_> = std::fs::read_dir(dir)
-        .expect("read the clickhouse migration directory")
-        .filter_map(|entry| {
-            let path = entry.ok()?.path();
-            (path.extension()? == "sql").then_some(path)
-        })
-        .collect();
-    // the numeric prefix is the order
-    files.sort();
     assert!(
-        files
+        clickhouse_ddl::migration_files()
             .iter()
             .any(|f| f.to_string_lossy().contains("ui_events")),
         "no ui_events DDL found in clickhouse/"
     );
-
-    for path in files {
-        let ddl = std::fs::read_to_string(&path).expect("read the shipped DDL");
-        // comments go first, as `ux-capture.sh apply-schema` strips them: several
-        // hold a `;` of their own. then one statement per request, since the HTTP
-        // interface refuses more than one
-        let stripped: String = ddl
-            .lines()
-            .map(|line| line.split("--").next().unwrap_or_default())
-            .collect::<Vec<_>>()
-            .join("\n");
-        for statement in stripped
-            .split(';')
-            .map(str::trim)
-            .filter(|statement| !statement.is_empty())
-        {
-            let response = client
-                .post(format!("{base}/"))
-                .body(statement.to_string())
-                .send()
-                .await
-                .expect("reach clickhouse");
-            assert!(
-                response.status().is_success(),
-                "{}: {}",
-                path.display(),
-                response.text().await.unwrap_or_default()
-            );
-        }
-    }
+    clickhouse_ddl::apply_schema(&reqwest::Client::new(), base).await;
 }
 
 /// The rows this session wrote, oldest first.

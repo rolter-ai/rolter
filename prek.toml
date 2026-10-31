@@ -202,10 +202,10 @@ pass_filenames = false
 # pinned like the ci step; see #2187 / #2185
 [[repos.hooks]]
 id = "ruff"
-name = "ruff (scripts)"
-entry = "bash -c 'r=$(bash scripts/tool-pin.sh ruff) && uvx --from \"$r\" ruff check scripts && uvx --from \"$r\" ruff format --check scripts'"
+name = "ruff (python)"
+entry = "bash -c 'r=$(bash scripts/tool-pin.sh ruff) && uvx --from \"$r\" ruff check scripts integration && uvx --from \"$r\" ruff format --check scripts integration'"
 language = "system"
-files = "^(scripts/.*\\.py|ruff\\.toml)$"
+files = "^((scripts|integration)/.*\\.py|(integration/e2e/)?ruff\\.toml)$"
 pass_filenames = false
 
 # the checker reads the workflows as parsed yaml, so it needs pyyaml; prek
@@ -258,7 +258,7 @@ id = "assert-gate-ran"
 name = "ci-ok fast path against a fake gh"
 entry = "bash scripts/test-assert-gate-ran.sh"
 language = "system"
-files = "^(\\.github/workflows/ci\\.yml|scripts/(assert|test-assert)-gate-ran\\.sh)$"
+files = "^(\\.github/workflows/ci\\.yml|scripts/(assert|test-assert)-gate-ran\\.sh|scripts/resolve-gated-base\\.sh)$"
 pass_filenames = false
 
 # scripts/fleet/ is what the fleet agents run to claim, board and land a pull
@@ -293,6 +293,26 @@ language = "system"
 files = "^(\\.github/workflows/project-automation\\.yml|scripts/test-project-automation\\.sh)$"
 pass_filenames = false
 
+# the nextest and coverage jobs name a failing test in an annotation by parsing
+# cargo's output; this runs the parser over a nextest and a libtest log
+[[repos.hooks]]
+id = "annotate-test-failures"
+name = "failing-test annotations"
+entry = "bash scripts/test-annotate-test-failures.sh"
+language = "system"
+files = "^(\\.github/scripts/annotate-test-failures\\.sh|scripts/test-annotate-test-failures\\.sh)$"
+pass_filenames = false
+
+# the nightly suites' failure alert only runs when something is already broken;
+# this drives its script against a fake gh and checks the three callers
+[[repos.hooks]]
+id = "report-failure"
+name = "report-failure against a fake gh"
+entry = "bash scripts/test-report-failure.sh"
+language = "system"
+files = "^(\\.github/workflows/(report-failure|extended|ui-e2e|sso-e2e|quality)\\.yml|scripts/(test-)?report-failure\\.sh)$"
+pass_filenames = false
+
 # integration/dogfood/*.sh decide what an operator is told to do next from their
 # exit codes and nothing else ran them. this drives them against a stub server
 [[repos.hooks]]
@@ -319,7 +339,7 @@ id = "helm-render"
 name = "helm chart renders strictly"
 entry = "bash scripts/check-helm-chart.sh"
 language = "system"
-files = "^(charts/|scripts/(check-helm-chart\\.sh|check-rendered-manifests\\.py|check-chart-update-check\\.py)$)"
+files = "^(charts/|scripts/(check-helm-chart\\.sh|check-rendered-manifests\\.py|check-chart-update-check\\.py|check-chart-image-tags\\.py)$)"
 pass_filenames = false
 
 [[repos.hooks]]

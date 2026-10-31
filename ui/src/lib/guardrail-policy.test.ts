@@ -88,12 +88,18 @@ describe("readEffectivePolicy", () => {
         route("claude-sonnet", {}),
         route("support-bot", { disable: [ROW.name] }),
         route("fake-llm", { enable: [ROW.name] }),
+        // an organization's route says whose it is (#3460)
+        {
+          ...route("support-bot", { enable: [ROW.name] }),
+          tenancy: { org_id: "org-a", project_id: "p-1" },
+        },
         { model: "no-advanced", strategy: "round_robin", targets: [] },
       ]),
     );
     expect(policy?.routes).toEqual([
-      { model: "support-bot", disable: [ROW.name], enable: [] },
-      { model: "fake-llm", disable: [], enable: [ROW.name] },
+      { model: "support-bot", org_id: "", disable: [ROW.name], enable: [] },
+      { model: "fake-llm", org_id: "", disable: [], enable: [ROW.name] },
+      { model: "support-bot", org_id: "org-a", disable: [], enable: [ROW.name] },
     ]);
   });
 

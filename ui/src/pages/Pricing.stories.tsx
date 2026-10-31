@@ -7,7 +7,10 @@ import {
   cancelConfirmation,
   clickWhenEnabled,
   confirmDestructive,
+  expectAllowed,
   expectEmptyState,
+  expectRefused,
+  NEEDS_SUPERADMIN,
   expectAnalyticsUnavailable,
   expectListTable,
   expectLoadError,
@@ -29,9 +32,13 @@ import {
   expectToast,
   uxEvents,
   type Recorder,
+  AddressProbe,
+  addressOf,
 } from "./story-harness";
-import type { CurrencySettings, ModelPriceRow } from "@/lib/api";
+import type { CurrencySettings, ModelPriceRow, PriceCatalogue } from "@/lib/api";
 import ru from "@/lib/i18n/locales/ru.json";
+import en from "@/lib/i18n/locales/en.json";
+import { expectFieldHints } from "@/lib/story-hints";
 import { UxScreenProvider } from "@/lib/ux-react";
 
 const price = (
@@ -98,7 +105,8 @@ const NARROWED: CurrencySettings = {
 };
 
 /** a by-model rollup row; the traffic a price is picked from, and what is unpriced */
-const traffic = (model: string, unpriced = 0) => ({
+const traffic = (model: string, unpriced = 0, org_id = "") => ({
+  org_id,
   model,
   requests: 40,
   unpriced_requests: unpriced,
@@ -280,6 +288,38 @@ export const ListsModelsWithUnpricedTraffic: Story = {
       expect(form.getByRole("combobox", { name: "Model name" })).toHaveValue("qwen-max"),
     );
     await expect(form.getByLabelText("Input price per Mtok")).toHaveValue(null);
+  },
+};
+
+/**
+ * #3486: the traffic read answers one row per organization's model. A price is
+ * per name, so two organizations' unpriced `gpt-4o` is one model to price, with
+ * their requests added up.
+ */
+export const TwoOrganizationsUnpricedModelIsOneRow: Story = {
+  render: () => (
+    <Harness
+      fetchStub={withCurrency(
+        CONFIGURED,
+        [],
+        [
+          traffic("gpt-4o", 30, "org-1"),
+          traffic("gpt-4o", 12, "org-2"),
+          traffic("qwen-max", 5, "org-1"),
+        ],
+      )}
+    >
+      <Pricing />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const list = within(await canvas.findByRole("table", { name: "Models with unpriced traffic" }));
+    await expect(list.getAllByText("gpt-4o")).toHaveLength(1);
+    await expect(list.getByText("42")).toBeInTheDocument();
+    await expect(
+      canvas.getByRole("heading", { name: "2 models have traffic and no price" }),
+    ).toBeVisible();
   },
 };
 
@@ -501,6 +541,103 @@ export const AddsAPrice: Story = {
   },
 };
 
+/**
+ * The Savings advisor flags a model with no known price and sends the operator
+ * here with `?model=` (#3422). A model with no price row opens the price form
+ * already named for it, for a role that can write prices; the link is then
+ * taken out of the address so closing the form does not bring it back.
+ */
+export const AnUnpricedModelLinkOpensThePriceFormNamedForIt: Story = {
+  render: () => (
+    <Harness
+      role="superadmin"
+      route="/pricing-overrides?model=mystery-1"
+      fetchStub={withCurrency(CONFIGURED)}
+    >
+      <Pricing />
+      <AddressProbe />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const form = within(await within(document.body).findByRole("dialog"));
+    await expect(await form.findByLabelText("Model name")).toHaveValue("mystery-1");
+    // a new price: no rate is filled in for it
+    await expect(form.getByLabelText("Input price per Mtok")).toHaveValue(null);
+    await waitFor(() => expect(addressOf(canvasElement).has("model")).toBe(false));
+  },
+};
+
+/**
+ * A model that already has a price row narrows the list to it, and opens
+ * nothing: the row's own Edit is one click away.
+ */
+export const APricedModelLinkNarrowsTheListToItsRow: Story = {
+  render: () => (
+    <Harness
+      role="superadmin"
+      route="/pricing-overrides?model=gpt-4o"
+      fetchStub={withCurrency(CONFIGURED)}
+    >
+      <Pricing />
+      <AddressProbe />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    // the link is read once the list has loaded, a step after the first paint
+    await waitFor(() => expect(canvas.getByRole("searchbox")).toHaveValue("gpt-4o"));
+    await waitFor(() => expect(modelOrder(canvasElement)).toEqual(["gpt-4o"]));
+    await expect(canvas.queryByText("mistral-large")).toBeNull();
+    await expect(document.querySelector('[role="dialog"]')).toBeNull();
+    await expectAllowed(canvasElement, /Edit the price for gpt-4o/i);
+    await waitFor(() => expect(addressOf(canvasElement).has("model")).toBe(false));
+  },
+};
+
+/**
+ * A role that cannot write prices follows the same link to the read-only list:
+ * a priced model narrows it to its row, whose Edit is refused and names the
+ * role it needs, and a model with no price opens no form at all.
+ */
+export const ALinkForARoleWithoutPriceEditingShowsTheReadOnlyRow: Story = {
+  render: () => (
+    <Harness
+      role="admin"
+      route="/pricing-overrides?model=gpt-4o"
+      fetchStub={withCurrency(CONFIGURED)}
+    >
+      <Pricing />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(modelOrder(canvasElement)).toEqual(["gpt-4o"]));
+    await expect(canvas.getByRole("searchbox")).toHaveValue("gpt-4o");
+    await expectRefused(canvasElement, /Edit the price for gpt-4o/i, NEEDS_SUPERADMIN);
+    await expect(document.querySelector('[role="dialog"]')).toBeNull();
+  },
+};
+
+export const AnUnpricedModelLinkOpensNoFormForARoleWithoutPriceEditing: Story = {
+  render: () => (
+    <Harness
+      role="admin"
+      route="/pricing-overrides?model=mystery-1"
+      fetchStub={withCurrency(CONFIGURED)}
+    >
+      <Pricing />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    // no price to read and none to write: the list says nothing matched
+    await expect(await canvas.findByText(en.pages.pricing.noMatchTitle)).toBeVisible();
+    await expect(canvas.getByRole("searchbox")).toHaveValue("mystery-1");
+    await expect(document.querySelector('[role="dialog"]')).toBeNull();
+    await expectRefused(canvasElement, /add price/i, NEEDS_SUPERADMIN);
+  },
+};
+
 /** saving the untouched form is refused at each field, and sends nothing */
 let emptySubmit: Recorder;
 export const EmptySubmitIsRefused: Story = {
@@ -519,6 +656,15 @@ export const EmptySubmitIsRefused: Story = {
     await expect(form.getByLabelText("Model name")).toBeValid();
     await expect(form.getByLabelText("Input price per Mtok")).toBeValid();
     await expect(form.queryByText("Choose a model to price.")).toBeNull();
+    // the mandatory ones are announced up front without the native `required`,
+    // which would flag the pristine form (#3451)
+    for (const name of ["Model name", "Input price per Mtok", "Output price per Mtok"]) {
+      const field = form.getByLabelText(name);
+      await expect(field).toHaveAttribute("aria-required", "true");
+      await expect(field).not.toHaveAttribute("required");
+    }
+    await expect(form.getByLabelText("Cached input price per Mtok (optional)")).not.toBeRequired();
+    await expect(form.getAllByText("*")).toHaveLength(3);
     await userEvent.click(form.getByRole("button", { name: "Save" }));
 
     await expect(form.getByLabelText("Model name")).toBeInvalid();
@@ -630,6 +776,12 @@ export const SetsTheCacheWriteRate: Story = {
     const form = within(sheet());
     const write = await form.findByLabelText("5 minute cache-write price per Mtok (optional)");
     await expect(write).toHaveValue(null);
+    // the model is fixed and prefilled while editing, so only the prices are marked
+    await expect(form.getByLabelText("Model name")).not.toHaveAttribute("aria-required");
+    await expect(form.getByLabelText("Input price per Mtok")).toHaveAttribute(
+      "aria-required",
+      "true",
+    );
     await userEvent.type(write, "3.75");
     await userEvent.click(form.getByRole("button", { name: "Save" }));
 
@@ -1437,5 +1589,264 @@ export const RefusesAnInvalidAudioTokenRate: Story = {
     await expect(audioIn).toHaveAccessibleDescription("Enter a price of 0 or more.");
     refusesAudioRate.expectNotSent("PUT", "/model-prices");
     await expect(form.getByLabelText(AUDIO_OUT)).toBeValid();
+  },
+};
+
+// --- catalogue import (#966) ---
+
+/** a price imported from the vendored snapshot, and one an operator set */
+const IMPORTED: ModelPriceRow[] = [
+  {
+    ...price("gpt-4o", "USD"),
+    source: "LiteLLM model_prices_and_context_window",
+    source_imported_at: "2026-10-01T00:00:00Z",
+  },
+  { ...price("mistral-large", "EUR"), source: null, source_imported_at: null },
+];
+
+const CATALOGUE: PriceCatalogue = {
+  source: "LiteLLM model_prices_and_context_window",
+  licence: "MIT",
+  url: "https://github.com/BerriAI/litellm",
+  currency: "USD",
+  snapshot: "2026-10-01",
+  total: 1200,
+  entries: [
+    {
+      model: "gpt-4o",
+      input_per_mtok: "2.500000",
+      output_per_mtok: "10.000000",
+      cached_input_per_mtok: "1.250000",
+      cache_write_per_mtok: null,
+      currency: "USD",
+    },
+    {
+      model: "mistral-large",
+      input_per_mtok: "2.000000",
+      output_per_mtok: "6.000000",
+      cached_input_per_mtok: null,
+      cache_write_per_mtok: null,
+      currency: "USD",
+    },
+    {
+      model: "claude-sonnet",
+      input_per_mtok: "3.000000",
+      output_per_mtok: "15.000000",
+      cached_input_per_mtok: "0.300000",
+      cache_write_per_mtok: "3.750000",
+      currency: "USD",
+    },
+  ],
+};
+
+/**
+ * The screen with the import endpoints answered. The catalogue and import paths
+ * share the `/model-prices` prefix with the list, so they are matched first.
+ */
+function importStub(
+  prices: ModelPriceRow[],
+  catalogue: (url: string) => Response | Promise<Response>,
+  imported?: () => unknown,
+) {
+  return recording(
+    scoped(async (input, init) => {
+      const url = String(input);
+      if (url.includes("/model-prices/catalogue")) return catalogue(url);
+      if (url.includes("/model-prices/import")) return json(imported?.() ?? {});
+      return withCurrency(CONFIGURED, prices)(input, init);
+    }),
+  );
+}
+
+/** a catalogue answer filtered by the `q` the dialog sent */
+const searchable = (url: string) => {
+  const q = (new URL(url, "http://x").searchParams.get("q") ?? "").toLowerCase();
+  const entries = CATALOGUE.entries.filter((e) => e.model.includes(q));
+  return json({ ...CATALOGUE, entries });
+};
+
+export const ShowsWhereEachPriceCameFrom: Story = {
+  render: () => (
+    <Harness fetchStub={withCurrency(CONFIGURED, IMPORTED)}>
+      <Pricing />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const imported = await rowOf(canvasElement, "gpt-4o");
+    const badge = await imported.findByText("Catalogue");
+    // the badge states the source, the snapshot day and that it can change
+    await expect(badge).toHaveAttribute("title", expect.stringContaining("LiteLLM"));
+    await expect(badge).toHaveAttribute("title", expect.stringContaining("Oct 1, 2026"));
+    await expect(badge).toHaveAttribute("title", expect.stringContaining("subject to change"));
+    const own = await rowOf(canvasElement, "mistral-large");
+    await expect(own.getByText("Override")).toBeInTheDocument();
+    await expect(own.queryByText("Catalogue")).toBeNull();
+  },
+};
+
+let importSearch: Recorder;
+export const ImportSearchesTheCatalogue: Story = {
+  render: () => {
+    importSearch = importStub(IMPORTED, searchable);
+    return (
+      <Harness fetchStub={importSearch.stub}>
+        <Pricing />
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    await clickWhenEnabled(canvasElement, /import from catalogue/i);
+    const dialog = within(sheet());
+    // the notice, the source line and the snapshot date are on screen before anything is picked
+    await waitFor(() =>
+      expect(
+        dialog.getByText(/Catalogue values are third-party list prices, subject to change/),
+      ).toBeVisible(),
+    );
+    await expect(dialog.getByText(/the source is provisional/i)).toBeInTheDocument();
+    await expect(
+      await dialog.findByText(
+        /LiteLLM model_prices_and_context_window \(MIT\) · snapshot Oct 1, 2026/,
+      ),
+    ).toBeInTheDocument();
+    const list = await dialog.findByRole("list", { name: "Catalogue models" });
+    await expect(within(list).getAllByRole("listitem")).toHaveLength(3);
+    await expect(within(list).getByText(/input 2\.50 · output 10\.00/)).toBeInTheDocument();
+    // the model the operator priced is marked as one the import keeps
+    await expect(within(list).getByTitle(/an import keeps it/)).toBeInTheDocument();
+
+    await userEvent.type(dialog.getByRole("searchbox"), "claude");
+    await waitFor(() =>
+      expect(
+        within(dialog.getByRole("list", { name: "Catalogue models" })).getAllByRole("listitem"),
+      ).toHaveLength(1),
+    );
+    await waitFor(() =>
+      expect(importSearch.calls.some((c) => c.url.includes("q=claude"))).toBe(true),
+    );
+    // nothing is imported until somebody presses the button
+    importSearch.expectNotSent("POST", "/model-prices/import");
+    await expect(dialog.getByRole("button", { name: "Import selected (0)" })).toBeDisabled();
+  },
+};
+
+let importRun: Recorder;
+export const ImportReportsEachOutcome: Story = {
+  render: () => {
+    importRun = importStub(IMPORTED, searchable, () => ({
+      source: CATALOGUE.source,
+      currency: "USD",
+      snapshot: "2026-10-01",
+      results: [
+        { model: "claude-sonnet", outcome: "created" },
+        { model: "gpt-4o", outcome: "updated" },
+        { model: "mistral-large", outcome: "kept_override" },
+        { model: "no-such-model", outcome: "not_in_catalogue" },
+      ],
+    }));
+    return (
+      <Harness fetchStub={importRun.stub}>
+        <Pricing />
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    await clickWhenEnabled(canvasElement, /import from catalogue/i);
+    const dialog = within(sheet());
+    const list = await dialog.findByRole("list", { name: "Catalogue models" });
+    for (const model of ["claude-sonnet", "gpt-4o", "mistral-large"]) {
+      await userEvent.click(within(list).getByText(model));
+    }
+    await userEvent.click(dialog.getByRole("button", { name: "Import selected (3)" }));
+
+    await expect(
+      await importRun.expectSentBody<Record<string, unknown>>("POST", "/model-prices/import"),
+    ).toEqual({ models: ["claude-sonnet", "gpt-4o", "mistral-large"] });
+    const result = await dialog.findByRole("status");
+    await expect(result).toHaveTextContent(/snapshot Oct 1, 2026/);
+    await expect(result).toHaveTextContent(/subject to change/);
+    await expect(result).toHaveTextContent("Created: claude-sonnet");
+    await expect(result).toHaveTextContent("Refreshed from the catalogue: gpt-4o");
+    await expect(result).toHaveTextContent("Kept your own price: mistral-large");
+    await expect(result).toHaveTextContent("Not in the catalogue: no-such-model");
+  },
+};
+
+export const ImportLoading: Story = {
+  render: () => (
+    <Harness fetchStub={importStub(IMPORTED, () => new Promise<Response>(() => {})).stub}>
+      <Pricing />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await clickWhenEnabled(canvasElement, /import from catalogue/i);
+    const dialog = sheet();
+    await waitFor(() => expect(within(dialog).getAllByRole("status").length).toBeGreaterThan(0));
+    await expect(within(dialog).queryByRole("list", { name: "Catalogue models" })).toBeNull();
+  },
+};
+
+export const ImportCatalogueEmpty: Story = {
+  render: () => (
+    <Harness
+      fetchStub={importStub(IMPORTED, () => json({ ...CATALOGUE, total: 0, entries: [] })).stub}
+    >
+      <Pricing />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await clickWhenEnabled(canvasElement, /import from catalogue/i);
+    await expect(
+      await within(sheet()).findByText("No catalogue model matches"),
+    ).toBeInTheDocument();
+  },
+};
+
+export const ImportCatalogueError: Story = {
+  render: () => (
+    <Harness fetchStub={importStub(IMPORTED, () => json({ error: { message: "boom" } }, 500)).stub}>
+      <Pricing />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await clickWhenEnabled(canvasElement, /import from catalogue/i);
+    await expectLoadError(sheet(), /failed to return price catalogue/i);
+    await expect(within(sheet()).queryByText("No catalogue model matches")).toBeNull();
+  },
+};
+
+export const ImportIsGated: Story = {
+  render: () => (
+    <Harness role="admin" fetchStub={withCurrency(CONFIGURED, IMPORTED)}>
+      <Pricing />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await expectRefused(canvasElement, /import from catalogue/i, NEEDS_SUPERADMIN);
+  },
+};
+
+export const ImportIsOpenToASuperadmin: Story = {
+  render: () => (
+    <Harness role="superadmin" fetchStub={withCurrency(CONFIGURED, IMPORTED)}>
+      <Pricing />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await expectAllowed(canvasElement, /import from catalogue/i);
+  },
+};
+
+/** The model name explains itself in an (i) (#3285). */
+export const ExplainsTheModelNameInAHint: Story = {
+  render: () => (
+    <Harness fetchStub={withCurrency(CONFIGURED)}>
+      <Pricing />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await clickWhenEnabled(canvasElement, /add price/i);
+    const p = en.pages.pricing;
+    await expectFieldHints(sheet(), en.common.aboutField, [[p.modelName, p.modelNameInfo]]);
   },
 };

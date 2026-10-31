@@ -1,3 +1,5 @@
+// users and memberships (crates/rolter-control/src/crud/users.rs and memberships.rs, ROL-223)
+import type { DeploymentRole } from "./rbac";
 import { getJson, sendJson } from "./request";
 
 export const ROLES = ["admin", "member", "viewer"] as const;
@@ -20,6 +22,11 @@ export interface UserRow {
   /** set when the account is deactivated (login blocked); null when active */
   deactivated_at?: string | null;
   created_at: string;
+  /**
+   * The delegable deployment role the account holds (#1834), or none. It
+   * reaches deployment-wide screens only and grants nothing inside an org.
+   */
+  deployment_role?: DeploymentRole | null;
 }
 
 export interface MembershipRow {
@@ -91,6 +98,15 @@ export function fetchDeploymentUsers(): Promise<UserRow[]> {
 // create/invite an account and grant it a role in the org atomically
 export function inviteUser(orgId: string, input: InviteUserInput): Promise<CreatedUser> {
   return sendJson<CreatedUser>("POST", `/api/v1/orgs/${orgId}/users`, input);
+}
+
+/**
+ * Give an account a deployment role, or `null` to clear it. Superadmin only,
+ * and deliberately not a field of `updateUser`: neither role can reach it, so
+ * an operator cannot widen their own reach.
+ */
+export function setDeploymentRole(id: string, role: DeploymentRole | null): Promise<UserRow> {
+  return sendJson<UserRow>("PUT", `/api/v1/users/${id}/deployment-role`, { role });
 }
 
 export function updateUser(id: string, input: UpdateUserInput): Promise<UserRow> {

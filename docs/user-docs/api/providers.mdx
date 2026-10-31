@@ -76,6 +76,32 @@ The dashboard's model sheet uses it: the **Check** button beside a target's
 upstream model reports listed, not listed, no catalogue to check, or why the
 probe failed.
 
+## Whether a provider reports prompt-cache metrics
+
+Cache-aware routing and the cache columns of analytics only work for a provider
+that returns its cache usage. `POST /api/v1/providers/{id}/probe-cache?model=<name>`
+asks the provider for **one token** of that upstream model and records whether the
+answer's `usage` carries a prompt-cache field, under any of the spellings the
+gateway reads (see [Cached prompts and thinking tokens](/observability/logs-and-cost#cached-prompts-and-thinking-tokens)).
+A field stated as `0` counts: the provider reports, it just had nothing cached.
+It needs `provider:update`, sends the provider's credential through the
+[egress policy](/configuration/egress), and is not run on its own, because it is a
+completion and costs a token.
+
+The response carries `recorded`, `verdict` (`provider_id`, `reports`, `spelling`,
+`model`, `probed_at`), `status`, `latency_ms`, `probed_url` and `error`. An
+upstream that does not answer with a completion that has a `usage` object tells
+nothing about its cache reporting, so `recorded` is `false` and the earlier
+verdict is left alone. Bedrock, Vertex, Azure OpenAI, native Gemini and the
+embedding and decision servers cannot be probed this way and answer `400`.
+
+`GET /api/v1/orgs/{org_id}/provider-cache-probes` lists the stored verdicts. A
+provider with no entry was **never probed**, which is not the same as "does not
+report". The dashboard shows the three apart on Providers, Models and Provider
+Groups, with the time the verdict was established. The verdict is what one response
+showed, so a provider that adds the field only on a hit reads as not reporting;
+probe again with another model, or read the time and model beside it.
+
 ## Cache telemetry sources
 
 A provider can name the source the cache-aware strategies read, in two optional

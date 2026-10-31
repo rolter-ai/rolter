@@ -56,12 +56,25 @@ This guide takes a deployment from nothing to "our people and our applications c
 
   </Step>
   <Step title="Create the first administrator and sign in">
-    `rolter-seed` creates the account. It does not ship in the image or the Python package yet ([#1897](https://github.com/rolter-ai/rolter/issues/1897)), so run it from a checkout of the repository with `ROLTER_DATABASE_URL` pointing at the deployment's database (on the Compose team stack, `postgres://rolter:<ROLTER_PG_PASSWORD>@127.0.0.1:5432/rolter`):
+    `rolter seed` creates the account. It ships in the image and in the Python package, and connects to the deployment's database through `ROLTER_DATABASE_URL`:
 
     ```bash
-    cargo run -p rolter-control --features postgres --bin rolter-seed -- \
-      --admin-email you@example.com --admin-password '<a long password>'
+    # Compose team stack: Postgres is published on 127.0.0.1
+    ROLTER_DATABASE_URL="postgres://rolter:<ROLTER_PG_PASSWORD>@127.0.0.1:5432/rolter" \
+      rolter seed --admin-email you@example.com --admin-password-stdin < password.txt
+
+    # Compose, without the CLI on the host: run it in the control container
+    docker compose -f docker/docker-compose.yml -f docker/docker-compose.team.yml --env-file .env \
+      exec -T control rolter seed --admin-email you@example.com --admin-password-stdin < password.txt
+
+    # Helm: the control pod already has the database URL
+    kubectl -n <namespace> exec -i deploy/<release>-rolter-control -- \
+      rolter seed --admin-email you@example.com --admin-password-stdin < password.txt
     ```
+
+    The password is read from standard input (`--admin-password-stdin`, the first line) or from a file (`--admin-password-file <path>`). `--admin-password <value>` still works, but a value on the command line is visible to every user on the host through `ps` and lands in shell history, so the three are mutually exclusive and the first two are the ones to use. Write `password.txt` with `chmod 600` (or `umask 077`) before you put the password in it, and delete it as soon as `rolter seed` has run.
+
+    It is safe to run again: it creates the org, team, project and administrator once and never touches an existing account. `rolter seed --import rolter.toml` applies a config file as desired state ([Config export](/configuration/config-export)).
 
     Open the dashboard (port 4001) and sign in. The account belongs to no organization, so it is not in any organization's people list until you ask for it: a superadmin sees such accounts under **Governance → Users**. Change the password you seeded under **Settings → Account & keys → Password**: it asks for the current password and the new one twice, and signs the account out of its other sessions while keeping the one you are in ([Change your password](/api/change-password)). Then protect the account with a second factor on the same screen, under **Two-factor authentication**. See [Two-factor authentication](/security/two-factor-authentication).
 

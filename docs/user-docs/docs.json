@@ -90,13 +90,15 @@
               "configuration/labels",
               "configuration/mcp-servers",
               "configuration/gemini-interactions",
-              "configuration/system-one"
+              "configuration/system-one",
+              "configuration/infinity"
             ]
           },
           {
             "group": "Reliability",
             "pages": [
               "reliability/retries-and-cooldowns",
+              "reliability/fallback-targets",
               "reliability/circuit-breakers",
               "reliability/health-checks",
               "reliability/performance-tuning"
@@ -109,10 +111,12 @@
               "security/authentication",
               "security/rbac",
               "security/single-sign-on",
+              "security/ldap",
               "security/two-factor-authentication",
               "security/user-provisioning",
               "security/mcp-oauth",
               "security/guardrails",
+              "security/semantic-guard-policies",
               "security/pii-sanitizer",
               "security/budgets-and-rate-limits",
               "security/cost-attribution"
@@ -123,9 +127,11 @@
             "pages": [
               "observability/metrics",
               "observability/logs-and-cost",
+              "observability/savings-advisor",
               "observability/tracing",
               "observability/what-to-look-at",
               "observability/log-settings",
+              "observability/log-erasure",
               "observability/connectors",
               "observability/alerting"
             ]
@@ -134,6 +140,7 @@
             "group": "Deployment",
             "pages": [
               "deployment/docker",
+              "deployment/helm",
               "deployment/verify-images",
               "deployment/production",
               "deployment/cluster",
@@ -156,6 +163,7 @@
             "group": "Gateway API",
             "pages": [
               "api/overview",
+              "api/specifications",
               "api/chat-completions",
               "api/completions",
               "api/messages",
@@ -164,6 +172,8 @@
               "api/mcp",
               "api/models",
               "api/health-and-metrics",
+              "api/breaker-state",
+              "api/cluster-summary",
               "api/stability",
               "api/config-problems",
               "api/ui-events",
@@ -173,8 +183,10 @@
               "api/tenancy",
               "api/member-management",
               "api/org-projects",
+              "api/org-virtual-keys",
               "api/teams",
               "api/deployment-users",
+              "api/api-tokens",
               "api/providers",
               "api/routes",
               "api/attribution-listings",

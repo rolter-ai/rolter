@@ -283,7 +283,44 @@ pub struct RouteTarget {
     pub provider_id: Uuid,
     pub upstream_model: Option<String>,
     pub weight: i32,
+    /// failure class tokens this target takes over (#1584); empty for an
+    /// ordinary member of the pool
+    #[serde(default)]
+    pub takes_over: Vec<String>,
     pub created_at: DateTime<Utc>,
+}
+
+/// One weighted variant of a route (#391), the stored form of a
+/// `[[routes.variants]]` entry. `position` is the declared order, which is the
+/// fallback chain after the sampled primary.
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+pub struct RouteVariant {
+    pub id: Uuid,
+    pub route_id: Uuid,
+    pub name: String,
+    pub weight: i32,
+    pub position: i32,
+    pub params: serde_json::Value,
+    pub created_at: DateTime<Utc>,
+    /// the variant's targets in routing order; filled in by the repository
+    #[sqlx(skip)]
+    #[serde(default)]
+    pub targets: Vec<RouteVariantTarget>,
+}
+
+/// One target of a [`RouteVariant`], tried in `position` order.
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+pub struct RouteVariantTarget {
+    pub id: Uuid,
+    pub variant_id: Uuid,
+    pub provider_id: Uuid,
+    pub upstream_model: Option<String>,
+    pub weight: i32,
+    pub position: i32,
+    /// failure class tokens this target takes over (#3373), as
+    /// [`RouteTarget::takes_over`]; empty for an ordinary member of the variant
+    #[serde(default)]
+    pub takes_over: Vec<String>,
 }
 
 /// A provider group: a fleet of providers addressable as `group-slug/model`
@@ -316,10 +353,27 @@ pub struct ProviderGroupMember {
     pub position: i32,
 }
 
+/// What the last probe of a provider observed about prompt-cache reporting
+/// (#984). A provider with no row has never been probed.
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+pub struct ProviderCacheProbe {
+    pub provider_id: Uuid,
+    /// the probed response carried a prompt-cache usage field
+    pub reports: bool,
+    /// the field it was found under, as a JSON pointer
+    pub spelling: Option<String>,
+    /// the upstream model the probe asked
+    pub model: String,
+    pub probed_at: DateTime<Utc>,
+}
+
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
 pub struct VirtualKey {
     pub id: Uuid,
     pub project_id: Uuid,
+    /// peppered digest of the secret. the gateway learns it through the
+    /// snapshot; no API response carries it (#3525)
+    #[serde(default, skip_serializing)]
     pub key_hash: String,
     pub key_prefix: String,
     pub name: Option<String>,
@@ -343,6 +397,19 @@ pub struct VirtualKey {
     /// for every key an operator created deliberately (#1640)
     pub purpose: Option<String>,
     pub created_at: DateTime<Utc>,
+    /// peppered digest of the secret an admin rotation replaced, while its
+    /// overlap window is open. a digest like `key_hash`, so it never leaves the
+    /// API: only the prefix and the end of the window do (#1837)
+    #[serde(default, skip_serializing)]
+    pub previous_key_hash: Option<String>,
+    /// first characters of the retired secret, so the Keys screen can say which
+    /// one still authenticates
+    #[serde(default)]
+    pub previous_key_prefix: Option<String>,
+    /// last instant the retired secret authenticates; `None` when no overlap is
+    /// running
+    #[serde(default)]
+    pub previous_expires_at: Option<DateTime<Utc>>,
 }
 
 /// a virtual key owned by the current user, enriched with the project/org names
@@ -369,7 +436,8 @@ pub struct OwnedVirtualKey {
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
 pub struct Budget {
     pub id: Uuid,
-    /// one of `org` | `team` | `project` | `virtual_key`
+    /// one of `org` | `team` | `project` | `virtual_key` | `business_unit` |
+    /// `customer` | `user`
     pub scope_type: String,
     pub scope_id: Uuid,
     /// decimal(12,4), returned as text to avoid a numeric-crate dependency
@@ -379,6 +447,11 @@ pub struct Budget {
     /// traffic; `None` inherits the deployment-wide setting (#996)
     pub unpriced_policy: Option<String>,
     pub created_at: DateTime<Utc>,
+    /// narrows a `user` budget to the keys the person minted in this org
+    /// (#1830); null on every other scope
+    pub within_org_id: Option<Uuid>,
+    /// narrows a `user` budget to the keys the person minted in this project
+    pub within_project_id: Option<Uuid>,
 }
 
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
@@ -389,6 +462,10 @@ pub struct RateLimit {
     pub rpm: Option<i32>,
     pub tpm: Option<i32>,
     pub created_at: DateTime<Utc>,
+    /// see [`Budget::within_org_id`]
+    pub within_org_id: Option<Uuid>,
+    /// see [`Budget::within_project_id`]
+    pub within_project_id: Option<Uuid>,
 }
 
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
@@ -422,6 +499,11 @@ pub struct ModelPrice {
     pub cached_audio_input_per_mtok: Option<String>,
     pub currency: String,
     pub created_at: DateTime<Utc>,
+    /// the catalogue this price was imported from (#966); `None` is a price an
+    /// operator set, which is an override that an import never replaces
+    pub source: Option<String>,
+    /// the day the catalogue snapshot the price came from was taken
+    pub source_imported_at: Option<DateTime<Utc>>,
 }
 /// singleton persisted feature flags that gate supported subsystems
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
@@ -465,6 +547,14 @@ pub struct ClusterNode {
     pub state_changed_at: DateTime<Utc>,
     pub first_seen_at: DateTime<Utc>,
     pub last_seen_at: DateTime<Utc>,
+    /// the oldest snapshot format the node stated it reads on its last poll
+    /// that stated one; 1 for a node from before negotiation (ADR-0038)
+    pub formats_min: i32,
+    /// the newest snapshot format the node stated it reads
+    pub formats_max: i32,
+    /// the format the node's last poll was answered in, or `None` when that
+    /// poll was refused for its format (or predates this column)
+    pub served_format: Option<i32>,
 }
 
 /// the latest adaptive-routing state one node reported for one route (#751).
@@ -472,6 +562,9 @@ pub struct ClusterNode {
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
 pub struct AdaptiveRoutingTelemetry {
     pub node_id: String,
+    /// the org that owns the route, empty for a deployment-wide route or a
+    /// gateway that predates the column (#3458)
+    pub org_id: String,
     /// public model name of the route
     pub model: String,
     /// whether the blend was routing at sample time
@@ -582,6 +675,49 @@ pub struct SsoGroupMapping {
     pub created_at: DateTime<Utc>,
 }
 
+/// an LDAP directory registered for one org (#1826).
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+pub struct LdapDirectory {
+    pub id: Uuid,
+    pub org_id: Uuid,
+    pub name: String,
+    pub url: String,
+    pub bind_dn: String,
+    /// sealed service-account password. read only by the directory bind,
+    /// through [`super::repo::LdapRepo::bind_password`]; what is serialized in
+    /// its place is the derived boolean `has_bind_password`, so an operator can
+    /// see that one is stored without anything being able to see it
+    #[serde(rename = "has_bind_password", serialize_with = "is_present")]
+    #[serde(skip_deserializing)]
+    pub bind_secret_ciphertext: Option<Vec<u8>>,
+    #[serde(skip)]
+    pub bind_secret_nonce: Option<Vec<u8>>,
+    pub base_dn: String,
+    pub user_filter: String,
+    pub email_attr: String,
+    pub display_name_attr: String,
+    pub group_attr: String,
+    pub require_tls: bool,
+    /// role granted when no group mapping matches; `None` denies login to a
+    /// user the directory has not put in a mapped group
+    pub default_role: Option<String>,
+    pub enabled: bool,
+    pub created_at: DateTime<Utc>,
+}
+
+/// a directory group granting a role at a scope
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+pub struct LdapGroupMapping {
+    pub id: Uuid,
+    pub directory_id: Uuid,
+    pub group_name: String,
+    pub org_id: Option<Uuid>,
+    pub team_id: Option<Uuid>,
+    pub project_id: Option<Uuid>,
+    pub role: String,
+    pub created_at: DateTime<Utc>,
+}
+
 /// one in-flight authorization-code login
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
 pub struct SsoLoginState {
@@ -613,6 +749,32 @@ pub struct ScimToken {
     pub token_hash: String,
     pub created_by: Option<Uuid>,
     pub created_at: DateTime<Utc>,
+    pub last_used_at: Option<DateTime<Utc>>,
+    pub revoked_at: Option<DateTime<Utc>>,
+}
+
+/// a scoped control-plane API token (#1836): a service account that holds one
+/// role at an org, team or project. `token_hash` is a peppered sha-256; the
+/// plaintext is returned once, at mint or rotation, and never stored.
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+pub struct ApiToken {
+    pub id: Uuid,
+    pub org_id: Uuid,
+    pub team_id: Option<Uuid>,
+    pub project_id: Option<Uuid>,
+    pub name: String,
+    /// a built-in role (`admin` | `member` | `viewer`), or `None` when the
+    /// token holds a custom role
+    pub role: Option<String>,
+    pub custom_role_id: Option<Uuid>,
+    #[serde(skip_serializing)]
+    pub token_hash: String,
+    /// the first characters of the value, to recognise a token in a list
+    pub token_prefix: String,
+    pub expires_at: Option<DateTime<Utc>>,
+    pub created_by: Option<Uuid>,
+    pub created_at: DateTime<Utc>,
+    pub rotated_at: Option<DateTime<Utc>>,
     pub last_used_at: Option<DateTime<Utc>>,
     pub revoked_at: Option<DateTime<Utc>>,
 }
@@ -726,6 +888,30 @@ pub struct McpServer {
     /// row of the RFC 9207 §2.4 table a missing `iss` is judged by
     pub oauth_discovered_iss_supported: bool,
     pub oauth_discovered_at: Option<DateTime<Utc>>,
+    /// tools in `tools` that the last successful `tools/list` no longer
+    /// returned. Kept rather than pruned so a tool group that names one still
+    /// validates, and flagged so a card can say it may be gone (#1283)
+    pub tools_stale: Vec<String>,
+    /// `pending` (never asked), `discovered` (the server answered, possibly
+    /// with no tools) or `failed` (the last attempt got no answer)
+    pub tools_discovery_status: String,
+    /// a bounded category for a failed attempt, never the upstream's text
+    pub tools_discovery_error: Option<String>,
+    /// when `tools/list` last succeeded
+    pub tools_discovered_at: Option<DateTime<Utc>>,
+    /// when discovery last ran, whether or not it succeeded
+    pub tools_discovery_attempted_at: Option<DateTime<Utc>>,
+    /// when the control plane last got an MCP handshake out of the server, by
+    /// a status probe or a discovery (#951)
+    pub last_contact_at: Option<DateTime<Utc>>,
+    /// what that handshake negotiated and who answered it
+    pub last_protocol_version: Option<String>,
+    pub last_server_name: Option<String>,
+    /// the reason of the last failed contact (`unreachable`, `handshake_failed`,
+    /// `auth_rejected`, `egress_denied`) and when it happened. Kept after a
+    /// later success, so a status can say when it last broke
+    pub last_error_kind: Option<String>,
+    pub last_error_at: Option<DateTime<Utc>>,
 }
 
 /// One in-flight authorization-code consent, opened by the callback. The PKCE
@@ -765,6 +951,15 @@ pub struct McpToolGroup {
     pub tools: serde_json::Value,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+/// a virtual key, project or team an MCP tool group is assigned to (#3295)
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+pub struct McpToolGroupAssignment {
+    pub group_id: Uuid,
+    pub subject_kind: String,
+    pub subject_id: Uuid,
+    pub created_at: DateTime<Utc>,
 }
 
 /// organization defaults managed by the MCP Settings screen
@@ -831,6 +1026,11 @@ pub struct LoggingSettings {
     pub payload_capture_enabled: bool,
     pub payload_capture_max_bytes: i32,
     pub payload_capture_redact_fields: Vec<String>,
+    /// built-in value detectors that scan captured text (#1835)
+    pub payload_capture_redact_detectors: Vec<String>,
+    /// operator-supplied value patterns, applied after the detectors
+    pub payload_capture_redact_patterns:
+        sqlx::types::Json<Vec<rolter_core::payload_redaction::RedactPattern>>,
     pub payload_capture_models: Vec<String>,
     pub payload_capture_virtual_key_ids: Vec<String>,
     /// how long request-log metadata is kept in clickhouse
@@ -852,6 +1052,8 @@ impl LoggingSettings {
         logging.payload_capture.enabled = self.payload_capture_enabled;
         logging.payload_capture.max_bytes = self.payload_capture_max_bytes.max(0) as usize;
         logging.payload_capture.redact_fields = self.payload_capture_redact_fields.clone();
+        logging.payload_capture.redact_detectors = self.payload_capture_redact_detectors.clone();
+        logging.payload_capture.redact_patterns = self.payload_capture_redact_patterns.0.clone();
         logging.payload_capture.models = self.payload_capture_models.clone();
         logging.payload_capture.virtual_key_ids = self.payload_capture_virtual_key_ids.clone();
         logging.ui_events = self.ui_events;
@@ -885,13 +1087,21 @@ pub struct GuardrailRule {
     pub updated_at: DateTime<Utc>,
 }
 
-/// one external guardrail service; at most one row can be enabled at a time
+/// one external guardrail service; several can be enabled, and the scoped
+/// policies pick which of them judge a request (#459)
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
 pub struct GuardrailProvider {
     pub id: Uuid,
     pub name: String,
     pub enabled: bool,
+    /// `webhook` or `local` (#3329)
+    pub kind: String,
+    /// empty for a local provider
     pub url: String,
+    /// a local provider's weights file on the gateways' file system
+    pub model_path: Option<String>,
+    /// a local provider's pinned sha256, 64 lowercase hex digits
+    pub model_sha256: Option<String>,
     pub stage: String,
     pub timeout_ms: i32,
     pub max_retries: i32,
@@ -899,6 +1109,31 @@ pub struct GuardrailProvider {
     pub max_body_bytes: i32,
     pub auth_kind: String,
     pub auth_env: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// one scoped semantic guardrail policy (#459): the providers it consults, in
+/// order, and the thresholds their scored categories are held to
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+pub struct GuardrailPolicyRow {
+    pub id: Uuid,
+    pub name: String,
+    pub enabled: bool,
+    /// `deployment`, `org`, `project`, `route` or `key`
+    pub scope_kind: String,
+    /// the org / project / key id, or the route's public model name; `None`
+    /// for the deployment scope
+    pub scope_id: Option<String>,
+    /// the providers the policy consults, in order
+    pub provider_ids: Vec<Uuid>,
+    /// category -> threshold in `[0, 1]`
+    pub thresholds: serde_json::Value,
+    /// `block` or `annotate`
+    pub on_violation: String,
+    /// `reject` or `buffer`
+    pub streaming: String,
+    pub description: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -922,6 +1157,11 @@ pub struct User {
     /// self-service profile (#1823): up to 500 chars, trimmed
     #[serde(default)]
     pub bio: Option<String>,
+    /// delegable deployment role (#1834): `operator`, `security_auditor`, or
+    /// none. Read only by the guard on deployment-wide capabilities; it grants
+    /// nothing at any org, team or project
+    #[serde(default)]
+    pub deployment_role: Option<String>,
 }
 
 /// a role grant at a scope; scope is the most specific non-null id among
@@ -966,6 +1206,13 @@ pub struct Invitation {
     pub accepted_at: Option<DateTime<Utc>>,
     pub revoked_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
+    /// how emailing the link went (#1828): `not_configured` (no mail transport
+    /// when it was created), `sent` or `failed`. The link is returned to the
+    /// admin whichever it is
+    pub mail_status: String,
+    pub mail_attempted_at: Option<DateTime<Utc>>,
+    /// why a `failed` send failed, in words safe to show an admin
+    pub mail_error: Option<String>,
 }
 
 /// a one-time password reset an administrator issued for an account (#2240)
@@ -1013,6 +1260,23 @@ pub struct MfaPolicyBinding {
     pub enforce_after: Option<DateTime<Utc>>,
 }
 
+/// One org member's second-factor state, for an admin deciding what a
+/// `required_*` policy would lock out (#1590). No secret and no hash: only
+/// whether a factor is armed and how many recovery codes are left.
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+pub struct OrgMemberMfa {
+    pub user_id: Uuid,
+    pub email: String,
+    /// the account is a deployment superadmin, which is who `required_superadmin`
+    /// binds
+    pub is_superadmin: bool,
+    /// an armed (confirmed) factor, which is what a `required_*` policy asks
+    /// for; a half-finished enrolment is not one
+    pub enabled: bool,
+    /// unspent recovery codes; always `0` without an armed factor
+    pub recovery_codes_remaining: i64,
+}
+
 /// What the dashboard and the login exchange may know about a user's second
 /// factor. Deliberately not the row: the sealed secret has no representation
 /// here at all, so there is no serialisation path that could leak it (#1078).
@@ -1039,6 +1303,31 @@ pub struct MfaChallenge {
     /// whether the password step that minted it followed a lockout, so the
     /// session it is redeemed for can say so on its `auth.login` row
     pub after_lock: bool,
+}
+
+/// one subject-scoped erasure of request logs and captured payloads (#1085)
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+pub struct LogErasure {
+    pub id: Uuid,
+    /// `virtual_key`, `user`, `org` or `request`
+    pub scope_kind: String,
+    pub scope_id: String,
+    pub org_id: Option<Uuid>,
+    pub request_ts: Option<DateTime<Utc>>,
+    pub include_logs: bool,
+    pub reason: String,
+    pub requested_by: Option<Uuid>,
+    /// `pending` while clickhouse mutations run, then `completed`; `failed`
+    /// when a statement was refused, `unverified` when completion could not be
+    /// confirmed from `system.mutations`
+    pub status: String,
+    pub statements: i32,
+    pub error: Option<String>,
+    /// which stores the erasure searched and which it skipped, as a list of
+    /// `{store, searched, code?, reason?}`; `[]` on a record from before it was kept
+    pub stores: serde_json::Value,
+    pub created_at: DateTime<Utc>,
+    pub completed_at: Option<DateTime<Utc>>,
 }
 
 /// a record of an admin/CRUD/auth action, for the audit-log API
@@ -1181,6 +1470,39 @@ pub struct EffectiveGrant {
 mod tests {
     use super::*;
 
+    /// every endpoint that returns a key serialises this type, so pinning it
+    /// here keeps the digests out of all of them at once (#3525)
+    #[test]
+    fn a_virtual_key_serialises_without_either_digest() {
+        let key = VirtualKey {
+            id: Uuid::nil(),
+            project_id: Uuid::nil(),
+            key_hash: "digest-of-the-secret".to_string(),
+            key_prefix: "rk_live_ab".to_string(),
+            name: Some("ci".to_string()),
+            models: vec![],
+            providers: vec![],
+            disabled: false,
+            expires_at: None,
+            cache_enabled: None,
+            created_by: None,
+            business_unit_id: None,
+            customer_id: None,
+            purpose: None,
+            created_at: DateTime::<Utc>::UNIX_EPOCH,
+            previous_key_hash: Some("digest-of-the-old-secret".to_string()),
+            previous_key_prefix: Some("rk_live_cd".to_string()),
+            previous_expires_at: None,
+        };
+        let json = serde_json::to_value(&key).expect("a key serialises");
+        assert!(json.get("key_hash").is_none(), "{json}");
+        assert!(json.get("previous_key_hash").is_none(), "{json}");
+        assert_eq!(json["key_prefix"], "rk_live_ab");
+        assert_eq!(json["previous_key_prefix"], "rk_live_cd");
+        let text = json.to_string();
+        assert!(!text.contains("digest-of-the"), "{text}");
+    }
+
     fn provider(secret: Option<Vec<u8>>) -> SsoProvider {
         SsoProvider {
             id: Uuid::nil(),
@@ -1233,6 +1555,10 @@ pub struct Label {
     pub id: Uuid,
     pub subject_type: String,
     pub subject_id: String,
+    /// the organization whose model a model label is on (#3476); `None` for a
+    /// deployment-wide label, and always for a provider, group or route, which
+    /// belong to an organization through their own row
+    pub org_id: Option<Uuid>,
     pub key: String,
     pub value: Option<String>,
     pub source: String,
@@ -1254,4 +1580,26 @@ pub struct SavedView {
     pub filters: serde_json::Value,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+/// the breaker state one node reported for one `(model, target)` (#2254). A
+/// scoreboard row, replaced by every report from that node rather than appended.
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+pub struct BreakerState {
+    pub node_id: String,
+    /// the org that owns the route, empty for a deployment-wide route or a
+    /// gateway that predates the column (#3458)
+    pub org_id: String,
+    /// public model name of the route
+    pub model: String,
+    /// position in the route's target list on that node
+    pub target_index: i32,
+    pub provider: String,
+    pub upstream_model: String,
+    /// `closed`, `open` or `half_open`
+    pub state: String,
+    pub consecutive_failures: i32,
+    /// seconds until an open breaker admits its probe
+    pub retry_after_secs: Option<i32>,
+    pub reported_at: DateTime<Utc>,
 }

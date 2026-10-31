@@ -36,6 +36,15 @@ export interface ModelPriceRow {
   cached_audio_input_per_mtok?: string | null;
   currency: string;
   created_at: string;
+  /**
+   * Where an imported price came from (#966); `null` is a price an operator
+   * set, which always wins over the catalogue and reads as an override. Optional
+   * because a control plane that predates the import does not send it, and
+   * absent says nothing about provenance.
+   */
+  source?: string | null;
+  /** when the snapshot the price was imported from was taken; `null` with `source` */
+  source_imported_at?: string | null;
 }
 
 export interface UpsertModelPriceInput {
@@ -114,6 +123,57 @@ export function upsertModelPrice(input: UpsertModelPriceInput): Promise<ModelPri
 
 export function deleteModelPrice(model: string): Promise<void> {
   return sendJson<void>("DELETE", `/api/v1/model-prices/${encodeURIComponent(model)}`);
+}
+
+/** one model of the vendored catalogue snapshot (#966); rates are decimal text */
+export interface CatalogueEntry {
+  model: string;
+  input_per_mtok: string;
+  output_per_mtok: string;
+  cached_input_per_mtok: string | null;
+  cache_write_per_mtok: string | null;
+  currency: string;
+}
+
+/**
+ * The vendored price catalogue (#966). It is a snapshot shipped with the
+ * control plane, never fetched at runtime, and the choice of source is
+ * provisional: what it carries is a third-party list price, subject to change.
+ */
+export interface PriceCatalogue {
+  source: string;
+  licence: string;
+  url: string;
+  currency: string;
+  /** the day the snapshot was taken, `YYYY-MM-DD` */
+  snapshot: string;
+  /** how many models the snapshot holds, whatever the query matched */
+  total: number;
+  entries: CatalogueEntry[];
+}
+
+export function fetchPriceCatalogue(q: string, limit = 50): Promise<PriceCatalogue> {
+  const params = new URLSearchParams({ limit: String(limit) });
+  if (q.trim()) params.set("q", q.trim());
+  return getJson<PriceCatalogue>(`/api/v1/model-prices/catalogue?${params}`);
+}
+
+/**
+ * What an import did with one model: `kept_override` is a price the operator
+ * set, which an import never replaces; `not_in_catalogue` is a name the
+ * snapshot does not carry.
+ */
+export type ImportOutcome = "created" | "updated" | "kept_override" | "not_in_catalogue";
+
+export interface PriceImportResult {
+  source: string;
+  currency: string;
+  snapshot: string;
+  results: { model: string; outcome: ImportOutcome }[];
+}
+
+export function importModelPrices(models: string[]): Promise<PriceImportResult> {
+  return sendJson<PriceImportResult>("POST", "/api/v1/model-prices/import", { models });
 }
 
 // --- local-account auth (crates/rolter-control/src/auth.rs, ROL-32) ---

@@ -33,6 +33,12 @@ export interface ProviderKindInfo {
    * a kind with no pin (#1133)
    */
   pinned_api_base?: string | null;
+  /**
+   * the specification registry records no located API reference for the kind,
+   * so whether it speaks an OpenAI-compatible API at a stable base is
+   * unverified (#3428); absent from an older control plane
+   */
+  unverified?: boolean;
 }
 
 export function fetchProviderKinds(): Promise<ProviderKindInfo[]> {
@@ -71,7 +77,7 @@ export function apiBaseDoublesV1(apiBase: string, baseIncludesV1: boolean): bool
 
 /**
  * Every provider kind the control plane accepts, in the order of the
- * `PROVIDER_KINDS` allowlist in `crates/rolter-control/src/crud.rs`.
+ * `PROVIDER_KINDS` allowlist in `crates/rolter-control/src/crud/providers.rs`.
  *
  * A fallback and a type, not the menu: `ProviderSheet` builds its picker from
  * `fetchProviderKinds()` so a kind the deployment gained is selectable without
@@ -128,6 +134,7 @@ export const PROVIDER_KINDS = [
   "krutrim",
   "falcon",
   "system_one",
+  "infinity",
 ] as const;
 
 /**
@@ -276,6 +283,69 @@ export interface ProviderTestResult {
 export function testProvider(id: string, model?: string): Promise<ProviderTestResult> {
   const query = model ? `?model=${encodeURIComponent(model)}` : "";
   return sendJson<ProviderTestResult>("POST", `/api/v1/providers/${id}/test${query}`);
+}
+
+/** What a probe established about one provider: the stored verdict row. */
+export interface ProviderCacheVerdict {
+  provider_id: string;
+  /** whether the provider's responses carried a prompt-cache usage field */
+  reports: boolean;
+  /** which usage field named it, `null` when the provider reports nothing */
+  spelling: string | null;
+  /** the upstream model the probe asked */
+  model: string;
+  /** when the probe ran (ISO) */
+  probed_at: string;
+}
+
+/** The answer of one cache probe. `recorded: false` learned nothing and left the old verdict. */
+export interface ProviderCacheProbeResult {
+  recorded: boolean;
+  verdict: ProviderCacheVerdict | null;
+  probed_url: string;
+  status: number | null;
+  latency_ms: number;
+  /** why nothing was learned, when `recorded` is false */
+  error: string | null;
+}
+
+/**
+ * Kinds the cache probe refuses with a 400: they are not reached by an
+ * OpenAI-shaped completion (or complete nothing at all), so there is nothing
+ * to ask. Mirrors the control plane's list in the docs for `probe-cache`.
+ */
+const UNPROBEABLE_KINDS: ReadonlySet<string> = new Set([
+  "bedrock",
+  "vertex",
+  "azure_openai",
+  "gemini_native",
+  "gemini_interactions",
+  "tei",
+  "infinity",
+  "system_one",
+]);
+
+export function canProbeCache(kind: string): boolean {
+  return !UNPROBEABLE_KINDS.has(kind);
+}
+
+/**
+ * The stored cache-reporting verdicts of an org. A provider with no row has
+ * never been probed, which is not the same as one that does not report.
+ */
+export function fetchProviderCacheProbes(orgId: string): Promise<ProviderCacheVerdict[]> {
+  return getJson<ProviderCacheVerdict[]>(`/api/v1/orgs/${orgId}/provider-cache-probes`);
+}
+
+/**
+ * Probe whether a provider reports prompt-cache metrics. This sends a real
+ * one-token completion to the upstream, so it costs a request.
+ */
+export function probeProviderCache(id: string, model: string): Promise<ProviderCacheProbeResult> {
+  return sendJson<ProviderCacheProbeResult>(
+    "POST",
+    `/api/v1/providers/${id}/probe-cache?model=${encodeURIComponent(model)}`,
+  );
 }
 
 /** The upstream model ids a stored provider lists, sorted. Empty when it listed none. */

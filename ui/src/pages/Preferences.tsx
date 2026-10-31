@@ -194,7 +194,7 @@ export default function Preferences() {
         description={t("pages.preferences.scope.hint")}
       >
         <div className="grid w-full gap-3 sm:grid-cols-3">
-          <Field label={t("scope.org")}>
+          <Field label={t("scope.org")} info={t("pages.preferences.scope.orgInfo")}>
             <Combobox
               clearable
               value={org}
@@ -209,7 +209,7 @@ export default function Preferences() {
               }
             />
           </Field>
-          <Field label={t("scope.team")}>
+          <Field label={t("scope.team")} info={t("pages.preferences.scope.teamInfo")}>
             <Combobox
               clearable
               value={team}
@@ -219,7 +219,7 @@ export default function Preferences() {
               onChange={(next) => edit({ default_team_id: next || null, default_project_id: null })}
             />
           </Field>
-          <Field label={t("scope.project")}>
+          <Field label={t("scope.project")} info={t("pages.preferences.scope.projectInfo")}>
             <Combobox
               clearable
               value={draft.default_project_id ?? ""}

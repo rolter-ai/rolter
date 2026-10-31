@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { TFunction } from "i18next";
-import { Loader2, PlugZap, Plus, ShieldAlert, ShieldOff, ShieldQuestion } from "lucide-react";
+import { Loader2, PlugZap, Plus, ShieldOff, ShieldQuestion } from "lucide-react";
 import * as React from "react";
 import { Trans, useTranslation } from "react-i18next";
 
@@ -36,22 +36,24 @@ import { Combobox } from "@/components/ui/combobox";
 import { Field } from "@/components/ui/field";
 import { FormSection } from "@/components/ui/form-section";
 import { Input } from "@/components/ui/input";
+import { Segmented } from "@/components/ui/segmented";
 
 import { SwitchRow } from "@/components/ui/switch-row";
 import {
   createGuardrailProvider,
   deleteGuardrailProvider,
-  fetchConfig,
   fetchEffectiveGuardrails,
+  fetchGuardrailPolicies,
   fetchGuardrailProviders,
   updateGuardrailProvider,
+  type GuardrailPolicyRow,
   type GuardrailProviderInput,
   type GuardrailProviderRow,
 } from "@/lib/api";
 import {
+  policyScopeLabel,
   providerStatus,
-  readEffectiveWebhook,
-  readWebhookSource,
+  readSemanticGuards,
   resolveEnforcement,
   type Enforcement,
   type ProviderStatus,
@@ -60,6 +62,7 @@ import { errorText } from "@/lib/error-copy";
 import { useFormat } from "@/lib/i18n/format";
 import { useToast } from "@/lib/toast";
 import { useScreenReady } from "@/lib/ux-react";
+import { cn } from "@/lib/utils";
 
 // the shape of an evaluation URL, shown as a placeholder and never as a value:
 // a prefilled host saves as the endpoint when nobody edits it, and a
@@ -67,11 +70,15 @@ import { useScreenReady } from "@/lib/ux-react";
 // request (#2163)
 const URL_EXAMPLE = "https://guardrails.internal/v1/evaluate";
 const HTTP_URL = /^https?:\/\//;
+const SHA256 = /^[0-9a-fA-F]{64}$/;
 
 const EMPTY: GuardrailProviderInput = {
   name: "",
   enabled: false,
+  kind: "webhook",
   url: "",
+  model_path: null,
+  model_sha256: null,
   stage: "pre_call",
   timeout_ms: 2000,
   max_retries: 0,
@@ -86,25 +93,26 @@ function GuardrailProvidersScreen() {
   const client = useQueryClient();
   const toast = useToast();
   const { number } = useFormat();
-  // the registry and the effective webhook are read together, so the banner
-  // never pairs a fresh list with a stale webhook between two refetches. an
-  // unreadable config is `null`: the list still renders and the banner says it
-  // cannot confirm enforcement (#2162)
+  // the registry, the effective document and the policies are read together,
+  // so the banner never pairs a fresh list with a stale document between two
+  // refetches. an unreadable document is `null`: the list still renders and the
+  // banner says it cannot confirm enforcement (#2162); unreadable policies are
+  // `null` too, and a confirmation then says it cannot name the traffic
   const query = useQuery({
     queryKey: ["guardrail-providers"],
     queryFn: async () => {
-      const [providers, webhook, source] = await Promise.all([
+      const [providers, semantic, policies] = await Promise.all([
         fetchGuardrailProviders(),
-        fetchConfig().then(readEffectiveWebhook, () => null),
-        // where the webhook comes from (#2249); without it the screen compares
-        // fields, which cannot tell a file copy of the enabled row from the row
-        fetchEffectiveGuardrails().then(readWebhookSource, () => null),
+        // which providers the gateways run (#459); without it the screen would
+        // trust the registry's switch, which is not the same thing
+        fetchEffectiveGuardrails().then(readSemanticGuards, () => null),
+        fetchGuardrailPolicies().catch(() => null),
       ]);
-      return { providers, webhook, source };
+      return { providers, semantic, policies };
     },
     retry: false,
   });
-  // what the active provider did over the last week (#2158)
+  // what the active providers did over the last week (#2158)
   const outcomes = useGuardrailOutcomes();
 
   // UX stream (#805). the screen key comes from the enclosing UxScreenProvider;
@@ -151,21 +159,21 @@ function GuardrailProvidersScreen() {
 
   const providers = query.data?.providers ?? [];
   const enforcement = query.data
-    ? resolveEnforcement(query.data.providers, query.data.webhook, query.data.source)
+    ? resolveEnforcement(query.data.providers, query.data.semantic)
     : null;
-  // `undefined` while the registry has not loaded: "none is active" would be a
-  // guess, and the confirmation below must not guess
-  const active = query.data ? (providers.find((provider) => provider.enabled) ?? null) : undefined;
-  // an enabled config-file webhook wins over the registry, whichever row is on
-  const fileInForce =
-    (enforcement?.state === "enforced" || enforcement?.state === "inert") &&
-    enforcement.provider === null;
+  // the providers running besides the one being edited; `undefined` while the
+  // effective document has not said, since "none" would be a guess
+  const othersOf = (id: string | undefined): string[] | undefined =>
+    enforcement?.state === "enforced"
+      ? enforcement.providers.filter((p) => p.provider_id !== id).map((p) => p.name)
+      : enforcement?.state === "off"
+        ? []
+        : undefined;
 
-  // switching a provider on hands it every request (#2163), and switching the
-  // active one off leaves them to nothing (#2271), so both saves go through a
-  // confirmation naming the provider and what traffic goes through afterwards.
-  // a save that leaves the switch where it was is not a hand-over and saves
-  // directly
+  // switching a provider on adds it to the active set (#459) and switching
+  // one off takes it out of it (#2271), so both saves go through a confirmation
+  // naming the provider and the traffic it sees or stops seeing. a save that
+  // leaves the switch where it was changes neither and saves directly
   const [handingOver, setHandingOver] = React.useState<GuardrailProviderInput | null>(null);
   // not cleared as the confirmation closes: the landing is reported on the
   // closing edge, and a UX stream key that flipped to the activation's there
@@ -179,14 +187,9 @@ function GuardrailProvidersScreen() {
     setPausing(!body.enabled);
     setHandingOver(body);
   };
-  // what requests go through once the active row is paused. no other row
-  // takes its place, so only an enabled config-file webhook still checks
-  // them, and an unreadable effective config cannot say whether one is
-  const pauseConsequence = fileInForce
-    ? t("pages.guardrailProviders.confirm.pauseFileStays", { name: handingOver?.name })
-    : enforcement === null || enforcement.state === "unknown"
-      ? t("pages.guardrailProviders.confirm.pauseUnknown")
-      : t("pages.guardrailProviders.confirm.pauseUnchecked");
+  // pausing the last running provider leaves requests unchecked, which is as
+  // red as the delete; with others still running it changes less
+  const othersRemain = (othersOf(editing?.id) ?? []).length > 0;
 
   return (
     <div className="mx-auto flex max-w-[1120px] flex-col gap-5 p-[22px]">
@@ -248,7 +251,7 @@ function GuardrailProvidersScreen() {
             <PolicyCard
               key={provider.id}
               title={provider.name}
-              description={provider.url}
+              description={provider.kind === "local" ? (provider.model_path ?? "") : provider.url}
               descriptionMono
               enabled={provider.enabled}
               status={
@@ -261,26 +264,29 @@ function GuardrailProvidersScreen() {
                     {provider.failure_mode.replace("_", "-")}
                   </Badge>
                   <Badge tone="outline">{provider.stage.replace("_", "-")}</Badge>
-                  {/* colour says a credential is attached; no auth says nothing */}
-                  <Badge tone={provider.auth_kind === "none" ? "outline" : "info"}>
-                    {provider.auth_kind.replace("_", " ")}
+                  <Badge tone={provider.kind === "local" ? "info" : "outline"}>
+                    {t(`pages.guardrailProviders.kind.${provider.kind}`)}
                   </Badge>
+                  {/* colour says a credential is attached; no auth says nothing */}
+                  {provider.kind === "webhook" && (
+                    <Badge tone={provider.auth_kind === "none" ? "outline" : "info"}>
+                      {provider.auth_kind.replace("_", " ")}
+                    </Badge>
+                  )}
                 </>
               }
               details={
                 <>
-                  {t("pages.guardrailProviders.detailLine", {
-                    timeout: number(provider.timeout_ms),
-                    count: provider.max_retries,
-                    kib: number(Math.round(provider.max_body_bytes / 1024)),
-                  })}
-                  {/* said on a paused row too: activating it is how a working
-                      provider gets replaced by one that checks nothing */}
-                  {provider.stage === "post_call" && (
-                    <p className="mt-1 text-[color:var(--status-warning-text)]">
-                      {t("pages.guardrailProviders.postCallCardNote")}
-                    </p>
-                  )}
+                  {provider.kind === "local"
+                    ? t("pages.guardrailProviders.detailLineLocal", {
+                        timeout: number(provider.timeout_ms),
+                        kib: number(Math.round(provider.max_body_bytes / 1024)),
+                      })
+                    : t("pages.guardrailProviders.detailLine", {
+                        timeout: number(provider.timeout_ms),
+                        count: provider.max_retries,
+                        kib: number(Math.round(provider.max_body_bytes / 1024)),
+                      })}
                   {/* outcomes are recorded under the provider's name, so a card
                       counts its own and a switched-away provider's history
                       stays off the new one's. a paused provider the gateway
@@ -367,7 +373,7 @@ function GuardrailProvidersScreen() {
         key={editing?.id ?? (editing === null ? "new" : "closed")}
         open={editing !== undefined}
         initial={editing ?? null}
-        active={active}
+        others={othersOf(editing?.id)}
         pending={save.isPending}
         error={save.isError ? errorText(save.error, t) : null}
         onClose={() => setEditing(undefined)}
@@ -388,9 +394,8 @@ function GuardrailProvidersScreen() {
         }}
         // activating is a hand-over, not a removal: the provider it pauses can
         // be switched back on. a pause that leaves requests unchecked is as
-        // red as the delete, and one under the config-file webhook changes
-        // nothing for traffic
-        tone={pausing && !fileInForce ? "danger" : "default"}
+        // red as the delete, and one with other providers running is not
+        tone={pausing && !othersRemain ? "danger" : "default"}
         title={
           pausing
             ? t("pages.guardrailProviders.confirm.pauseTitle", { name: handingOver?.name })
@@ -399,12 +404,21 @@ function GuardrailProvidersScreen() {
         description={
           handingOver &&
           (pausing ? (
-            pauseConsequence
+            <PauseConsequence
+              others={othersOf(editing?.id)}
+              reach={providerReach(query.data?.policies ?? null, editing?.id)}
+            />
           ) : (
             <ActivationConsequence
               provider={handingOver}
-              replaces={active === undefined ? undefined : (active?.name ?? null)}
-              fileWins={fileInForce}
+              others={othersOf(editing?.id)}
+              reach={providerReach(query.data?.policies ?? null, editing?.id)}
+              fileWins={
+                enforcement?.state === "enforced" &&
+                enforcement.providers.some(
+                  (p) => p.source === "file" && p.name === handingOver.name,
+                )
+              }
             />
           ))
         }
@@ -425,33 +439,79 @@ function GuardrailProvidersScreen() {
 }
 
 /**
- * What activating `provider` does, for the confirmation: the registry row it
- * pauses, then what every request goes through afterwards. `replaces` is the
- * active row's name, `null` when none is active, and `undefined` when the
- * registry did not load.
+ * Which requests a provider sees, from the policies that list it. A provider no
+ * policy lists, enabled or not, is unattached and runs on every request no
+ * policy matches (reported as "default"); one that policies list runs only for
+ * those policies' scopes, so pausing a policy never widens it.
+ */
+type Reach =
+  | { kind: "unknown" }
+  | { kind: "unattached" }
+  | { kind: "scoped"; enabled: GuardrailPolicyRow[]; paused: GuardrailPolicyRow[] };
+
+function providerReach(policies: GuardrailPolicyRow[] | null, id: string | undefined): Reach {
+  if (policies === null) return { kind: "unknown" };
+  const listing = id ? policies.filter((policy) => policy.provider_ids.includes(id)) : [];
+  if (listing.length === 0) return { kind: "unattached" };
+  return {
+    kind: "scoped",
+    enabled: listing.filter((policy) => policy.enabled),
+    paused: listing.filter((policy) => !policy.enabled),
+  };
+}
+
+/** the scopes of some policies, named, for a sentence */
+function useScopeNames(policies: GuardrailPolicyRow[]): string {
+  const { t } = useTranslation();
+  return policies
+    .map((policy) =>
+      policyScopeLabel(policy, (kind) => t(`pages.guardrailPolicies.scopes.${kind}`)),
+    )
+    .join(", ");
+}
+
+/**
+ * What activating `provider` does, for the confirmation: it joins the active
+ * set without pausing another, then which requests it sees and what a failure
+ * does. `others` is the names of the providers already running, `undefined`
+ * when the effective document did not say.
  *
  * Rendered inside the dialog's description paragraph, so each sentence is a
  * block `span` rather than a `p`.
  */
 function ActivationConsequence({
   provider,
-  replaces,
+  others,
+  reach,
   fileWins,
 }: {
   provider: GuardrailProviderInput;
-  replaces: string | null | undefined;
+  others: string[] | undefined;
+  reach: Reach;
   fileWins: boolean;
 }) {
   const { t } = useTranslation();
   const name = provider.name;
+  const scopes = useScopeNames(reach.kind === "scoped" ? reach.enabled : []);
   return (
     <>
       <span className="block">
-        {replaces === undefined
-          ? t("pages.guardrailProviders.confirm.activateOwnerUnknown")
-          : replaces === null
-            ? t("pages.guardrailProviders.confirm.activateNoneActive")
-            : t("pages.guardrailProviders.confirm.activateReplaces", { current: replaces })}
+        {others === undefined
+          ? t("pages.guardrailProviders.confirm.activateOthersUnknown")
+          : others.length === 0
+            ? t("pages.guardrailProviders.confirm.activateAlone")
+            : t("pages.guardrailProviders.confirm.activateAlongside", {
+                names: others.join(", "),
+              })}
+      </span>
+      <span className="mt-2 block">
+        {reach.kind === "unknown"
+          ? t("pages.guardrailProviders.confirm.reachUnknown")
+          : reach.kind === "unattached"
+            ? t("pages.guardrailProviders.confirm.reachUnattached")
+            : reach.enabled.length === 0
+              ? t("pages.guardrailProviders.confirm.reachPaused")
+              : t("pages.guardrailProviders.confirm.reachScoped", { scopes })}
       </span>
       <span className="mt-2 block">
         {provider.stage === "post_call" ? (
@@ -476,6 +536,32 @@ function ActivationConsequence({
 }
 
 /**
+ * What pausing the provider does: the other active providers keep running, and
+ * the policies that list it lose it. `others` is `undefined` when the effective
+ * document did not say, which is not the same as none.
+ */
+function PauseConsequence({ others, reach }: { others: string[] | undefined; reach: Reach }) {
+  const { t } = useTranslation();
+  const policies = reach.kind === "scoped" ? reach.enabled.map((policy) => policy.name) : [];
+  return (
+    <>
+      <span className="block">
+        {others === undefined
+          ? t("pages.guardrailProviders.confirm.pauseUnknown")
+          : others.length === 0
+            ? t("pages.guardrailProviders.confirm.pauseUnchecked")
+            : t("pages.guardrailProviders.confirm.pauseOthersKeep", { names: others.join(", ") })}
+      </span>
+      {policies.length > 0 && (
+        <span className="mt-2 block">
+          {t("pages.guardrailProviders.confirm.pausePolicies", { policies: policies.join(", ") })}
+        </span>
+      )}
+    </>
+  );
+}
+
+/**
  * The card badge for a row, or `undefined` for the two states `PolicyCard`
  * already says from `enabled` alone.
  */
@@ -484,8 +570,6 @@ function cardStatus(
   t: TFunction,
 ): { tone: "warning" | "neutral"; label: string } | undefined {
   switch (status) {
-    case "inert":
-      return { tone: "warning", label: t("pages.guardrailProviders.statusInert") };
     case "overridden":
       return { tone: "neutral", label: t("pages.guardrailProviders.statusOverridden") };
     case "unknown":
@@ -496,9 +580,9 @@ function cardStatus(
 }
 
 /**
- * What the gateway enforces, read from the effective webhook rather than from
+ * What the gateways enforce, read from the providers they run rather than from
  * the registry's switch. Green only when requests are really sent to a
- * guardrail service before they go upstream (#2162).
+ * guardrail service (#2162); several providers may be running at once (#459).
  */
 function EnforcementBanner({
   enforcement,
@@ -522,46 +606,26 @@ function EnforcementBanner({
     title = t("pages.guardrailProviders.offBanner");
     lines.push(t("pages.guardrailProviders.offBody"));
   } else {
-    const { provider, overridden, webhook } = enforcement;
-    if (enforcement.state === "enforced") {
-      tone = "success";
-      icon = <PlugZap className="h-5 w-5 text-[color:var(--status-success-text)]" aria-hidden />;
-      title = provider
-        ? t("pages.guardrailProviders.activeBanner", { name: provider.name })
-        : t("pages.guardrailProviders.fileBanner");
-    } else {
-      tone = "warning";
-      icon = (
-        <ShieldAlert className="h-5 w-5 text-[color:var(--status-warning-text)]" aria-hidden />
-      );
-      title = provider
-        ? t("pages.guardrailProviders.inertBanner", { name: provider.name })
-        : t("pages.guardrailProviders.fileInertBanner");
+    const { providers, unattached } = enforcement;
+    tone = "success";
+    icon = <PlugZap className="h-5 w-5 text-[color:var(--status-success-text)]" aria-hidden />;
+    title = t("pages.guardrailProviders.activeBanner", {
+      names: providers.map((provider) => provider.name).join(", "),
+    });
+    const closed = providers.filter((p) => p.failure_mode === "fail_closed").map((p) => p.name);
+    const open = providers.filter((p) => p.failure_mode === "fail_open").map((p) => p.name);
+    if (closed.length > 0) {
+      lines.push(t("pages.guardrailProviders.activeFailClosed", { names: closed.join(", ") }));
     }
-    if (!provider) {
-      // the file's webhook is not a row on this screen, so its endpoint is
-      // the only way to tell which service it is
-      lines.push(<span className="font-mono">{webhook.url}</span>);
+    if (open.length > 0) {
+      lines.push(t("pages.guardrailProviders.activeFailOpen", { names: open.join(", ") }));
     }
-    if (enforcement.state === "enforced") {
-      lines.push(
-        webhook.failure_mode === "fail_closed"
-          ? t("pages.guardrailProviders.activeFailClosed")
-          : t("pages.guardrailProviders.activeFailOpen"),
-      );
-    } else {
-      lines.push(
-        provider
-          ? t("pages.guardrailProviders.inertBody")
-          : t("pages.guardrailProviders.fileInertBody"),
-      );
+    if (unattached.length > 0) {
+      lines.push(t("pages.guardrailProviders.unattachedNote", { names: unattached.join(", ") }));
     }
-    if (!provider) {
-      lines.push(
-        overridden
-          ? t("pages.guardrailProviders.overriddenNote", { name: overridden.name })
-          : t("pages.guardrailProviders.fileNote"),
-      );
+    const fromFile = providers.filter((p) => p.source === "file").map((p) => p.name);
+    if (fromFile.length > 0) {
+      lines.push(t("pages.guardrailProviders.fileNote", { names: fromFile.join(", ") }));
     }
   }
 
@@ -588,7 +652,7 @@ function EnforcementBanner({
 function ProviderDialog({
   open,
   initial,
-  active,
+  others,
   pending,
   error,
   onClose,
@@ -596,8 +660,8 @@ function ProviderDialog({
 }: {
   open: boolean;
   initial: GuardrailProviderRow | null;
-  /** the registry's active row, `null` for none, `undefined` before it loads */
-  active: GuardrailProviderRow | null | undefined;
+  /** the other providers running, `undefined` before the effective document says */
+  others: string[] | undefined;
   pending: boolean;
   error: string | null;
   onClose: () => void;
@@ -607,9 +671,32 @@ function ProviderDialog({
   const [form, setForm] = React.useState<GuardrailProviderInput>(initial ?? EMPTY);
   const set = (patch: Partial<GuardrailProviderInput>) =>
     setForm((value) => ({ ...value, ...patch }));
-  const postCall = form.stage === "post_call";
   const [trialOpen, setTrialOpen] = React.useState(false);
+  const local = form.kind === "local";
+  // a kind switch resets the fields the other kind owns, so a stale URL never
+  // rides along with a local provider (the server rejects it) and vice versa
+  const setKind = (kind: GuardrailProviderInput["kind"]) =>
+    set(
+      kind === "local"
+        ? {
+            kind,
+            url: "",
+            auth_kind: "none",
+            auth_env: null,
+            max_retries: 0,
+            model_path: form.model_path ?? "",
+            model_sha256: form.model_sha256 ?? "",
+          }
+        : { kind, model_path: null, model_sha256: null },
+    );
   const urlValid = HTTP_URL.test(form.url);
+  const pathValid = (form.model_path ?? "").trim() !== "";
+  const shaValid = SHA256.test(form.model_sha256 ?? "");
+  const [pathLeft, setPathLeft] = React.useState(false);
+  const [shaLeft, setShaLeft] = React.useState(false);
+  const pathError =
+    pathLeft && !pathValid ? t("pages.guardrailProviders.modelPathRequired") : undefined;
+  const shaError = shaLeft && !shaValid ? t("pages.guardrailProviders.modelShaInvalid") : undefined;
   // said once the field is left, not on the first keystroke of a URL that is
   // still being typed
   const [urlLeft, setUrlLeft] = React.useState(false);
@@ -621,21 +708,38 @@ function ProviderDialog({
       : undefined;
   const valid =
     form.name.trim() !== "" &&
-    urlValid &&
+    (local ? pathValid && shaValid : urlValid) &&
     form.timeout_ms > 0 &&
     form.max_body_bytes > 0 &&
     (form.auth_kind === "none" || Boolean(form.auth_env?.trim()));
-  // names the provider the switch would pause; the save that turns it on is
-  // confirmed on the screen, with the failure policy the form ends up with
+  // says the switch adds this provider to the running ones; the save that
+  // flips it is confirmed on the screen, with the failure policy the form ends
+  // up with
   const activateHint = initial?.enabled
     ? t("pages.guardrailProviders.activateHintSelf")
-    : active === undefined
+    : others === undefined
       ? t("pages.guardrailProviders.activateHint")
-      : active === null
+      : others.length === 0
         ? t("pages.guardrailProviders.activateHintNone")
-        : t("pages.guardrailProviders.activateHintReplaces", { name: active.name });
+        : t("pages.guardrailProviders.activateHintAlongside", { names: others.join(", ") });
   return (
-    <Dialog open={open} onOpenChange={(value) => !value && onClose()}>
+    <Dialog
+      open={open}
+      onOpenChange={(value) => !value && onClose()}
+      onSubmit={() =>
+        onSave(
+          local
+            ? {
+                ...form,
+                model_path: (form.model_path ?? "").trim(),
+                model_sha256: (form.model_sha256 ?? "").toLowerCase(),
+              }
+            : form,
+        )
+      }
+      canSubmit={valid}
+      busy={pending}
+    >
       <DialogHeader>
         <DialogTitle>
           {initial
@@ -645,33 +749,91 @@ function ProviderDialog({
         <DialogDescription>{t("pages.guardrailProviders.dialogBody")}</DialogDescription>
       </DialogHeader>
       <DialogBody className="space-y-4">
-        <Field label={t("pages.guardrailProviders.fieldName")} htmlFor="provider-name">
+        <Field
+          label={t("pages.guardrailProviders.fieldName")}
+          htmlFor="provider-name"
+          info={t("pages.guardrailProviders.nameInfo")}
+          required
+        >
           <Input
             id="provider-name"
-            required
             value={form.name}
             onChange={(event) => set({ name: event.target.value })}
           />
         </Field>
         <Field
-          label={t("pages.guardrailProviders.fieldUrl")}
-          htmlFor="provider-url"
-          hint={t("pages.guardrailProviders.urlHint")}
-          error={urlError}
+          label={t("pages.guardrailProviders.fieldKind")}
+          info={t("pages.guardrailProviders.kindInfo")}
         >
-          <Input
-            id="provider-url"
-            type="url"
-            required
-            className="font-mono"
-            placeholder={URL_EXAMPLE}
-            value={form.url}
-            onChange={(event) => set({ url: event.target.value })}
-            onBlur={() => setUrlLeft(true)}
+          <Segmented<GuardrailProviderInput["kind"]>
+            ariaLabel={t("pages.guardrailProviders.fieldKind")}
+            value={form.kind}
+            options={[
+              { value: "webhook", label: t("pages.guardrailProviders.kind.webhook") },
+              { value: "local", label: t("pages.guardrailProviders.kind.local") },
+            ]}
+            onChange={setKind}
           />
         </Field>
+        {local ? (
+          <>
+            <Field
+              label={t("pages.guardrailProviders.fieldModelPath")}
+              htmlFor="provider-model-path"
+              hint={t("pages.guardrailProviders.modelPathHint")}
+              error={pathError}
+              required
+            >
+              <Input
+                id="provider-model-path"
+                className="font-mono"
+                placeholder="/etc/rolter/models/injection.json"
+                value={form.model_path ?? ""}
+                onChange={(event) => set({ model_path: event.target.value })}
+                onBlur={() => setPathLeft(true)}
+              />
+            </Field>
+            <Field
+              label={t("pages.guardrailProviders.fieldModelSha")}
+              htmlFor="provider-model-sha"
+              hint={t("pages.guardrailProviders.modelShaHint")}
+              error={shaError}
+              required
+            >
+              <Input
+                id="provider-model-sha"
+                className="font-mono"
+                value={form.model_sha256 ?? ""}
+                onChange={(event) => set({ model_sha256: event.target.value.trim() })}
+                onBlur={() => setShaLeft(true)}
+              />
+            </Field>
+          </>
+        ) : (
+          <Field
+            label={t("pages.guardrailProviders.fieldUrl")}
+            htmlFor="provider-url"
+            hint={t("pages.guardrailProviders.urlHint")}
+            error={urlError}
+            required
+          >
+            <Input
+              id="provider-url"
+              type="url"
+              className="font-mono"
+              placeholder={URL_EXAMPLE}
+              value={form.url}
+              onChange={(event) => set({ url: event.target.value })}
+              onBlur={() => setUrlLeft(true)}
+            />
+          </Field>
+        )}
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-          <Field label={t("pages.guardrailProviders.fieldStage")} htmlFor="provider-stage">
+          <Field
+            label={t("pages.guardrailProviders.fieldStage")}
+            htmlFor="provider-stage"
+            info={t("pages.guardrailProviders.stageInfo")}
+          >
             <Combobox
               id="provider-stage"
               value={form.stage}
@@ -680,22 +842,18 @@ function ProviderDialog({
                   stage: picked as GuardrailProviderInput["stage"],
                 })
               }
-              aria-describedby={postCall ? "provider-stage-note" : undefined}
               options={[
                 { value: "pre_call", label: t("pages.guardrailProviders.stagePre") },
-                // the gateway runs only the pre-call stage (`consult_pre_call`
-                // returns early for any other), so this is not offered until
-                // it runs the output stage too (#2162)
-                {
-                  value: "post_call",
-                  label: t("pages.guardrailProviders.stagePost"),
-                  description: t("pages.guardrailProviders.stagePostUnsupported"),
-                  disabled: true,
-                },
+                // the gateway checks the response body at this stage too (#459)
+                { value: "post_call", label: t("pages.guardrailProviders.stagePost") },
               ]}
             />
           </Field>
-          <Field label={t("pages.guardrailProviders.fieldFailure")} htmlFor="provider-failure">
+          <Field
+            label={t("pages.guardrailProviders.fieldFailure")}
+            htmlFor="provider-failure"
+            info={t("pages.guardrailProviders.failureInfo")}
+          >
             <Combobox
               id="provider-failure"
               aria-describedby={
@@ -723,18 +881,12 @@ function ProviderDialog({
             {t("pages.guardrailProviders.failOpenWarning")}
           </p>
         )}
-        {/* a row can still carry the stage: the API accepts it, and rows saved
-            from this dialog before it was disabled keep it */}
-        {postCall && (
-          <p
-            id="provider-stage-note"
-            className="rounded-lg bg-[color:var(--status-warning)]/10 p-3 text-xs text-[color:var(--status-warning-text)]"
+        <div className={cn("grid grid-cols-1 gap-3", local ? "sm:grid-cols-2" : "sm:grid-cols-3")}>
+          <Field
+            label={t("pages.guardrailProviders.fieldTimeout")}
+            htmlFor="provider-timeout"
+            info={t("pages.guardrailProviders.timeoutInfo")}
           >
-            {t("pages.guardrailProviders.postCallDialogNote")}
-          </p>
-        )}
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-          <Field label={t("pages.guardrailProviders.fieldTimeout")} htmlFor="provider-timeout">
             <Input
               id="provider-timeout"
               type="number"
@@ -743,16 +895,26 @@ function ProviderDialog({
               onChange={(event) => set({ timeout_ms: Number(event.target.value) })}
             />
           </Field>
-          <Field label={t("pages.guardrailProviders.fieldRetries")} htmlFor="provider-retries">
-            <Input
-              id="provider-retries"
-              type="number"
-              min={0}
-              value={form.max_retries}
-              onChange={(event) => set({ max_retries: Number(event.target.value) })}
-            />
-          </Field>
-          <Field label={t("pages.guardrailProviders.fieldBodyCap")} htmlFor="provider-cap">
+          {!local && (
+            <Field
+              label={t("pages.guardrailProviders.fieldRetries")}
+              htmlFor="provider-retries"
+              info={t("pages.guardrailProviders.retriesInfo")}
+            >
+              <Input
+                id="provider-retries"
+                type="number"
+                min={0}
+                value={form.max_retries}
+                onChange={(event) => set({ max_retries: Number(event.target.value) })}
+              />
+            </Field>
+          )}
+          <Field
+            label={t("pages.guardrailProviders.fieldBodyCap")}
+            htmlFor="provider-cap"
+            info={t("pages.guardrailProviders.bodyCapInfo")}
+          >
             <Input
               id="provider-cap"
               type="number"
@@ -762,25 +924,31 @@ function ProviderDialog({
             />
           </Field>
         </div>
-        <Field label={t("pages.guardrailProviders.fieldAuth")} htmlFor="provider-auth">
-          <Combobox
-            id="provider-auth"
-            value={form.auth_kind}
-            onChange={(picked) => {
-              const auth_kind = picked as GuardrailProviderInput["auth_kind"];
-              set({
-                auth_kind,
-                auth_env: auth_kind === "none" ? null : form.auth_env,
-              });
-            }}
-            options={[
-              { value: "none", label: t("pages.guardrailProviders.authNone") },
-              { value: "bearer", label: t("pages.guardrailProviders.authBearer") },
-              { value: "shared_secret", label: t("pages.guardrailProviders.authSharedSecret") },
-            ]}
-          />
-        </Field>
-        {form.auth_kind !== "none" && (
+        {!local && (
+          <Field
+            label={t("pages.guardrailProviders.fieldAuth")}
+            htmlFor="provider-auth"
+            info={t("pages.guardrailProviders.authInfo")}
+          >
+            <Combobox
+              id="provider-auth"
+              value={form.auth_kind}
+              onChange={(picked) => {
+                const auth_kind = picked as GuardrailProviderInput["auth_kind"];
+                set({
+                  auth_kind,
+                  auth_env: auth_kind === "none" ? null : form.auth_env,
+                });
+              }}
+              options={[
+                { value: "none", label: t("pages.guardrailProviders.authNone") },
+                { value: "bearer", label: t("pages.guardrailProviders.authBearer") },
+                { value: "shared_secret", label: t("pages.guardrailProviders.authSharedSecret") },
+              ]}
+            />
+          </Field>
+        )}
+        {!local && form.auth_kind !== "none" && (
           <Field
             label={t("pages.guardrailProviders.fieldEnv")}
             htmlFor="provider-env"
@@ -801,13 +969,19 @@ function ProviderDialog({
           checked={form.enabled}
           onChange={(enabled) => set({ enabled })}
         />
-        <FormSection
-          title={t("pages.guardrailProviders.trial.title")}
-          open={trialOpen}
-          onToggle={() => setTrialOpen((value) => !value)}
-        >
-          <GuardrailProviderTrial draft={form} />
-        </FormSection>
+        {local ? (
+          <p className="text-xs text-muted-foreground">
+            {t("pages.guardrailProviders.trial.localNote")}
+          </p>
+        ) : (
+          <FormSection
+            title={t("pages.guardrailProviders.trial.title")}
+            open={trialOpen}
+            onToggle={() => setTrialOpen((value) => !value)}
+          >
+            <GuardrailProviderTrial draft={form} />
+          </FormSection>
+        )}
         {error && (
           <p role="alert" className="text-xs text-[color:var(--status-danger-text)]">
             {error}
@@ -818,7 +992,12 @@ function ProviderDialog({
         <Button variant="ghost" onClick={onClose}>
           {t("common.cancel")}
         </Button>
-        <Button disabled={!valid || pending} onClick={() => onSave(form)}>
+        <Button
+          type="submit"
+          disabled={pending}
+          aria-disabled={!valid || undefined}
+          className="aria-disabled:opacity-50"
+        >
           {pending && <Loader2 className="mr-2 h-4 w-4 motion-safe:animate-spin" aria-hidden />}
           {pending ? t("pages.guardrailProviders.publishing") : t("pages.guardrailProviders.save")}
         </Button>
@@ -830,4 +1009,8 @@ function ProviderDialog({
 // deployment-scoped settings: superadmin-only in the capability table, so a
 // lesser caller sees the refusal instead of a screen that loads and then 403s
 // (#1183)
-export default superadminOnly(GuardrailProvidersScreen, "errors.resources.guardrailProviders");
+export default superadminOnly(
+  GuardrailProvidersScreen,
+  "errors.resources.guardrailProviders",
+  "guardrail_provider:read",
+);

@@ -4,6 +4,10 @@ name: sso e2e (keycloak)
 # the rolter images and boots the full stack plus keycloak, so it is NOT part of
 # the per-PR gate. run on demand or nightly. no secrets — keycloak is local and
 # its credentials are throwaway test values.
+#
+# nothing gates on this workflow, so a red nightly would sit unread in the
+# Actions tab. `report failure` opens or updates a tracking issue through
+# report-failure.yml, the same one extended.yml and ui-e2e.yml call (#2682).
 on:
   workflow_dispatch:
   schedule:
@@ -16,7 +20,7 @@ permissions:
 jobs:
   sso:
     name: sso + scim against keycloak
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -31,7 +35,7 @@ jobs:
           echo "::add-mask::${kek}"
           echo "ROLTER_KEK=${kek}" >> "$GITHUB_ENV"
 
-      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
           enable-cache: true
 
@@ -51,3 +55,24 @@ jobs:
         run: |
           docker compose -f integration/e2e/docker-compose.e2e.yml --profile idp \
             down -v --remove-orphans
+
+  # ── report failure: one tracking issue for the whole workflow ──────────────
+  # master only: a dispatch on a branch is someone trying a change, and its
+  # failure belongs in that run. the issue has its own title, so this suite
+  # never shares one with the others
+  report-failure:
+    name: report failure
+    needs: [sso]
+    if: ${{ !cancelled() && needs.sso.result == 'failure' && github.ref == 'refs/heads/master' }}
+    permissions:
+      contents: read
+      issues: write
+      actions: write
+    uses: ./.github/workflows/report-failure.yml
+    with:
+      title: "sso-e2e.yml: sso and scim journeys failing"
+      area: ci
+      effort: S
+      results: |
+        sso + scim against keycloak|${{ needs.sso.result }}
+      note: The run's `stack logs` step holds the last 400 lines of every container, keycloak included.

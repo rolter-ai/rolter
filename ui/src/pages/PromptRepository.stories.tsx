@@ -218,7 +218,6 @@ function loadedStub({
         {
           id: KEY,
           project_id: PROJECT,
-          key_hash: "hash",
           key_prefix: "rlt_prod",
           name: "Support app",
           models: ["support"],
@@ -880,7 +879,7 @@ export const RequiresSlugToDeleteTemplate: Story = {
 // A viewer reaches the same workbench — `prompt_template:read` is a viewer's —
 // and every control on it that writes is refused before the click rather than
 // after the 403. Publishing, rolling back and saving a version are all one
-// `prompt_template:update` guard in crates/rolter-control/src/crud.rs, so the
+// `prompt_template:update` guard in crates/rolter-control/src/crud/prompts.rs, so the
 // role that would allow them is Admin.
 export const AsViewer: Story = {
   render: () => (
@@ -1033,6 +1032,34 @@ export const RailListsEachVersionsScopes: Story = {
     const rail = await versionRail(canvasElement);
     await expect(await rail.findByText("Scopes: Production, support")).toBeVisible();
     await expect(rail.getByText("No scopes")).toBeVisible();
+  },
+};
+
+/**
+ * Enter in the create dialog submits it (#3242), and an empty name refuses the
+ * submit by naming the field instead of leaving Create silently dead.
+ */
+export const CreateDialogNamesTheMissingName: Story = {
+  render: () => <Harness fetchStub={loadedStub()} />,
+  play: async ({ canvas, canvasElement }) => {
+    const index = within(await canvas.findByRole("complementary", { name: "Templates" }));
+    await canvas.findByRole("textbox", { name: /Decorator 1 content/ });
+    await userEvent.click(index.getByRole("button", { name: "Create template" }));
+    const dialog = await openConfirmation(canvasElement);
+    const name = dialog.getByRole("textbox", { name: /^Name/ });
+    await expect(name).toBeRequired();
+    await expect(dialog.queryByText("Required")).toBeNull();
+
+    await userEvent.click(name);
+    await userEvent.keyboard("{Enter}");
+    await waitFor(async () => expect(await dialog.findByText("Required")).toBeVisible());
+    await waitFor(() => expect(name).toHaveFocus());
+    await expect(index.queryByRole("button", { name: /Billing helper/ })).toBeNull();
+
+    await userEvent.type(name, "Billing helper{Enter}");
+    await waitFor(() =>
+      expect(index.getByRole("button", { name: /Billing helper/ })).toBeVisible(),
+    );
   },
 };
 

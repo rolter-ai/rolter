@@ -161,6 +161,7 @@ export function TeamSheet({
               className="min-w-0 flex-1"
               label={t("pages.teams.teamName")}
               error={fields.errorOf("name")}
+              markRequired
             >
               <Input
                 id={nameId}

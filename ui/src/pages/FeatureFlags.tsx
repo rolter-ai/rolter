@@ -8,7 +8,7 @@ import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { LoadError } from "@/components/LoadError";
 import { PanelSkeleton } from "@/components/LoadingState";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
+import { SettingsSaveBar } from "@/components/SettingsSaveBar";
 import { SettingsPanel } from "@/components/ui/settings-panel";
 import { Switch } from "@/components/ui/switch";
 import {
@@ -21,8 +21,7 @@ import {
   type UnavailableFlagDto,
 } from "@/lib/api";
 import { errorText } from "@/lib/error-copy";
-import { useFormat } from "@/lib/i18n/format";
-import { useLeaveGuard } from "@/lib/use-leave-guard";
+import { useSettingsForm } from "@/lib/use-settings-form";
 import { useToast } from "@/lib/toast";
 import { useScreenReady } from "@/lib/ux-react";
 
@@ -45,7 +44,6 @@ const toValues = (dto: FeatureFlagsDto): FeatureFlagValues =>
 // than as a switch that silently does nothing (#535)
 function FeatureFlagsScreen() {
   const { t } = useTranslation();
-  const fmt = useFormat();
   // one entry per allowlisted flag; the order here is the order on screen
   const copy: Record<FeatureFlagKey, FlagCopy> = {
     response_cache: {
@@ -85,20 +83,12 @@ function FeatureFlagsScreen() {
   // `flags` is the query the user is actually waiting on for this screen
   useScreenReady(!flags.isLoading);
 
-  const [form, setForm] = React.useState<FeatureFlagValues | null>(null);
-  React.useEffect(() => {
-    if (flags.data && form === null) {
-      setForm(toValues(flags.data));
-    }
-  }, [flags.data, form]);
-
+  const source = React.useMemo(() => (flags.data ? toValues(flags.data) : undefined), [flags.data]);
+  // a draft differing from what the server holds is lost on navigation (#2584),
+  // which the shared form state guards
+  const sf = useSettingsForm<FeatureFlagValues>({ source });
+  const { draft: form, saved, changed } = sf;
   const [confirming, setConfirming] = React.useState(false);
-  // a draft differing from what the server holds is lost on navigation (#2584)
-  const dirty =
-    form !== null &&
-    flags.data !== undefined &&
-    FEATURE_FLAG_KEYS.some((key) => form[key] !== flags.data[key]);
-  const leavePrompt = useLeaveGuard(dirty);
 
   const save = useMutation({
     mutationFn: (values: FeatureFlagValues) => updateFeatureFlags(values),
@@ -111,7 +101,7 @@ function FeatureFlagsScreen() {
       // cache-aware strategies), so every reader of it would otherwise keep
       // the pre-toggle document until its staleTime ran out (#2284)
       void queryClient.invalidateQueries({ queryKey: ["config"] });
-      setForm(toValues(dto));
+      sf.commit(toValues(dto));
       setConfirming(false);
       toast.push({
         tone: "success",
@@ -147,14 +137,13 @@ function FeatureFlagsScreen() {
       </SettingsBody>
     );
   }
-  if (!form) return null;
+  if (!form || !saved) return null;
 
   const unavailable = flags.data?.unavailable ?? [];
   const reasonFor = (key: FeatureFlagKey) =>
     unavailable.find((u: UnavailableFlagDto) => u.flag === key)?.reason;
 
-  const stored = toValues(flags.data as FeatureFlagsDto);
-  const changed = FEATURE_FLAG_KEYS.filter((key) => form[key] !== stored[key]);
+  const stored = saved;
   // flags whose switch-off has a consequence worth naming outright
   const dangerous = changed.some((key) => !form[key] && key in OFF_CONSEQUENCE);
   const closeConfirm = (open: boolean) => {
@@ -163,12 +152,10 @@ function FeatureFlagsScreen() {
     save.reset();
   };
 
-  const set = (key: FeatureFlagKey, value: boolean) => {
-    setForm((f) => (f ? { ...f, [key]: value } : f));
-  };
+  const { set } = sf;
 
   return (
-    <SettingsBody>
+    <SettingsBody onSubmit={() => changed.length > 0 && setConfirming(true)}>
       {FEATURE_FLAG_KEYS.map((key) => (
         <FlagCard
           key={key}
@@ -178,24 +165,12 @@ function FeatureFlagsScreen() {
           storedOn={stored[key]}
           changed={form[key] !== stored[key]}
           unavailableReason={reasonFor(key)}
-          onChange={(v) => set(key, v)}
+          onChange={(v) => set({ [key]: v })}
         />
       ))}
 
-      <div className="sticky bottom-0 flex items-center justify-end gap-3 border-t border-[color:var(--border-subtle)] bg-background py-3">
-        <span className="mr-auto text-xs text-[color:var(--text-subtle)]">
-          {flags.data?.updated_at
-            ? t("pages.featureFlags.lastSaved", {
-                when: fmt.dateTime(flags.data.updated_at),
-              })
-            : t("pages.featureFlags.neverSaved")}
-        </span>
-        <Button disabled={changed.length === 0} onClick={() => setConfirming(true)}>
-          {t("common.saveChanges")}
-        </Button>
-      </div>
+      <SettingsSaveBar form={sf} pending={save.isPending} updatedAt={flags.data?.updated_at} />
 
-      {leavePrompt}
       <ConfirmDialog
         name="feature-flags-save"
         open={confirming && changed.length > 0}
@@ -257,14 +232,8 @@ function FlagCard({
     <SettingsPanel
       title={title}
       description={desc}
-      badge={
-        (unavailable || changed) && (
-          <>
-            {unavailable && <Badge tone="warning">{t("pages.featureFlags.unavailable")}</Badge>}
-            {changed && <Badge tone="info">{t("pages.featureFlags.changed")}</Badge>}
-          </>
-        )
-      }
+      badge={unavailable && <Badge tone="warning">{t("pages.featureFlags.unavailable")}</Badge>}
+      unsaved={changed}
       action={
         <Switch
           checked={checked}
@@ -291,4 +260,8 @@ function FlagCard({
 // deployment-scoped settings: superadmin-only in the capability table, so a
 // lesser caller sees the refusal instead of a screen that loads and then 403s
 // (#1183)
-export default superadminOnly(FeatureFlagsScreen, "errors.resources.featureFlags");
+export default superadminOnly(
+  FeatureFlagsScreen,
+  "errors.resources.featureFlags",
+  "feature_flags:read",
+);

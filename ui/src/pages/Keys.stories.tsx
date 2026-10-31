@@ -33,7 +33,15 @@ import {
   uxEvents,
   withDocsBase,
 } from "./story-harness";
-import type { BusinessUnitRow, CustomerRow, ProviderRow, RouteRow, VirtualKeyRow } from "@/lib/api";
+import type {
+  BudgetRow,
+  RateLimitRow,
+  BusinessUnitRow,
+  CustomerRow,
+  ProviderRow,
+  RouteRow,
+  VirtualKeyRow,
+} from "@/lib/api";
 import { formattersFor } from "@/lib/i18n/format";
 import en from "@/lib/i18n/locales/en.json";
 import ru from "@/lib/i18n/locales/ru.json";
@@ -164,7 +172,6 @@ const KEYS: VirtualKeyRow[] = [
   {
     id: "vk-1",
     project_id: "project-1",
-    key_hash: "hash-1",
     key_prefix: "sk-rolter-backend",
     name: "backend service",
     models: ["gpt-4o", "claude-sonnet"],
@@ -180,7 +187,6 @@ const KEYS: VirtualKeyRow[] = [
   {
     id: "vk-2",
     project_id: "project-1",
-    key_hash: "hash-2",
     key_prefix: "sk-rolter-laptop",
     name: "revoked laptop",
     models: [],
@@ -199,7 +205,6 @@ const KEYS: VirtualKeyRow[] = [
 const PLAYGROUND_KEY: VirtualKeyRow = {
   id: "vk-3",
   project_id: "project-1",
-  key_hash: "hash-3",
   key_prefix: "sk-rolter-play",
   name: "Playground",
   models: ["gpt-4o"],
@@ -699,7 +704,10 @@ export const AdminCreateAlsoRequiresANameAndAnExpiry: Story = {
   play: async ({ canvasElement }) => {
     await clickWhenEnabled(canvasElement, /add virtual key/i);
     const form = sheet();
-    await expect(within(form).getByRole("button", { name: "Create" })).toBeDisabled();
+    await expect(within(form).getByRole("button", { name: "Create" })).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
     await userEvent.type(within(form).getByLabelText("Name"), "backend service");
     await expect(within(form).getByRole("button", { name: "Create" })).toBeEnabled();
     // the finite default is the same one the self-service sheet offers
@@ -807,7 +815,10 @@ export const EditingAKeySendsTheAttributionPut: Story = {
     const form = sheet();
     // save stays disabled until something actually moves — re-saving an
     // untouched sheet must not write or audit anything
-    await expect(within(form).getByRole("button", { name: "Save" })).toBeDisabled();
+    await expect(within(form).getByRole("button", { name: "Save" })).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
     await pickOption(within(form).getByLabelText("Business unit"), "Platform Engineering");
     await pickOption(within(form).getByLabelText("Customer"), "Acme Corp");
     await userEvent.click(within(form).getByRole("button", { name: "Save" }));
@@ -1052,6 +1063,91 @@ export const DeleteIsConfirmedAndReported: Story = {
   },
 };
 
+/**
+ * Rotating a shared key (#1837) is a confirmation that carries the overlap
+ * choice: the request names it in seconds, the new secret is shown once, and a
+ * rotation with the default choice keeps no old secret alive.
+ */
+let rotations: Recorder;
+export const RotatingAKeySendsTheChosenOverlapAndRevealsTheSecret: Story = {
+  render: () => {
+    rotations = recording(
+      scoped(async (input, init) =>
+        init?.method === "POST"
+          ? json({ ...KEYS[0], key: "sk-rolter-rotated-shown-once" }, 200)
+          : (lookups(String(input)) ?? json(KEYS)),
+      ),
+    );
+    return (
+      <Harness fetchStub={rotations.stub}>
+        <Keys />
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    await clickWhenEnabled(canvasElement, "Rotate key backend service");
+    const dialog = await within(document.body).findByRole("dialog", {
+      name: "Rotate virtual key backend service?",
+    });
+    await pickOption(within(dialog).getByRole("combobox"), "24 hours");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Rotate key" }));
+
+    await expect(await rotations.expectSentBody("POST", "/virtual-keys/vk-1/rotate")).toEqual({
+      overlap_seconds: 86400,
+    });
+    const reveal = await within(document.body).findByRole("dialog", { name: "Key rotated" });
+    await waitFor(() =>
+      expect(within(reveal).getByText("sk-rolter-rotated-shown-once")).toBeInTheDocument(),
+    );
+  },
+};
+
+/**
+ * A key mid-overlap names the old secret and the moment it stops working, and
+ * offers to end it early: the revoke is its own confirmation and its own
+ * `DELETE`, and a cancelled one sends nothing.
+ */
+let revokes: Recorder;
+export const AKeyInOverlapNamesTheOldSecretAndRevokesItEarly: Story = {
+  render: () => {
+    revokes = recording(
+      scoped(async (input, init) =>
+        init?.method === "DELETE"
+          ? json({ ...KEYS[0], previous_key_prefix: null, previous_expires_at: null })
+          : (lookups(String(input)) ??
+            json([
+              {
+                ...KEYS[0],
+                previous_key_prefix: "sk-rolter-oldold",
+                previous_expires_at: "2099-01-01T12:00:00Z",
+              },
+              KEYS[1],
+            ])),
+      ),
+    );
+    return (
+      <Harness fetchStub={revokes.stub}>
+        <Keys />
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByText(/old secret sk-rolter-oldold… valid until/)).toBeVisible();
+    // only the key mid-overlap offers it
+    await expect(canvas.getAllByRole("button", { name: /Revoke the old secret/ })).toHaveLength(1);
+
+    await clickWhenEnabled(canvasElement, "Revoke the old secret of backend service now");
+    await cancelConfirmation();
+    revokes.expectNotSent("DELETE", "/previous-secret");
+
+    await clickWhenEnabled(canvasElement, "Revoke the old secret of backend service now");
+    await confirmDestructive(/sk-rolter-oldold/, "Revoke old secret");
+    await revokes.expectSent("DELETE", "/virtual-keys/vk-1/previous-secret");
+    await expectSheetClosed();
+  },
+};
+
 // the same screen at a phone's width in both languages: Russian runs a third
 // longer than English and overflowed twice as many screens (#2004)
 const keysFit = phoneFits({
@@ -1093,3 +1189,207 @@ function createSubtitleIsWhole(locale: "en" | "ru") {
 
 export const CreateSubtitleIsWholeAt1024: Story = createSubtitleIsWhole("en");
 export const CreateSubtitleIsWholeAt1024InRussian: Story = createSubtitleIsWhole("ru");
+
+/** the caps the org-wide reads answer for a key (#1171) */
+const KEY_BUDGET: BudgetRow = {
+  id: "budget-1",
+  scope_type: "virtual_key",
+  scope_id: "vk-1",
+  limit_usd: "50.0000",
+  period: "monthly",
+  unpriced_policy: null,
+  created_at: "2026-07-01T00:00:00Z",
+};
+
+const KEY_RATE: RateLimitRow = {
+  id: "rate-1",
+  scope_type: "virtual_key",
+  scope_id: "vk-1",
+  rpm: 60,
+  tpm: 40000,
+  created_at: "2026-07-01T00:00:00Z",
+};
+
+/**
+ * A row states its key's cap and window from the org-wide reads, one request
+ * each however many keys there are, and what is left of the cap from the one
+ * org-wide spend read (#3128). A budget on another scope is not this key's.
+ */
+export const RowStatesItsCap: Story = {
+  render: () => (
+    <Harness
+      fetchStub={scoped(async (input) => {
+        const url = String(input);
+        if (url.includes("/budgets/spend")) {
+          return json({
+            status: "ok",
+            budgets: [
+              { id: "budget-1", spent_usd: "12.5000", resets_at: "2026-08-01T00:00:00Z" },
+              { id: "budget-2", spent_usd: "1.0000", resets_at: null },
+            ],
+          });
+        }
+        if (url.includes("/budgets")) {
+          return json([
+            KEY_BUDGET,
+            { ...KEY_BUDGET, id: "budget-2", scope_type: "project", scope_id: "vk-2" },
+          ]);
+        }
+        if (url.includes("/rate-limits")) return json([KEY_RATE]);
+        return lookups(url) ?? json(KEYS);
+      })}
+    >
+      <Keys />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByText(/Spend cap \$50\.00 \(monthly\)/)).toBeVisible();
+    await expect(await canvas.findByText(/\$12\.50 spent · \$37\.50 left/)).toBeVisible();
+    await expect(canvas.getByText("Rate cap 60 rpm · 40,000 tpm")).toBeVisible();
+    await expect(canvas.getAllByText(/Spend cap/)).toHaveLength(1);
+    await expect(canvas.getAllByText(/left/)).toHaveLength(1);
+  },
+};
+
+/** An unreadable counter is unknown, never a full cap. */
+export const RowSaysSpendIsUnknown: Story = {
+  render: () => (
+    <Harness
+      fetchStub={scoped(async (input) => {
+        const url = String(input);
+        if (url.includes("/budgets/spend")) {
+          return json({
+            status: "unavailable",
+            budgets: [{ id: "budget-1", spent_usd: null, resets_at: null }],
+          });
+        }
+        if (url.includes("/budgets")) return json([KEY_BUDGET]);
+        if (url.includes("/rate-limits")) return json([]);
+        return lookups(url) ?? json(KEYS);
+      })}
+    >
+      <Keys />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByText("spend so far unknown")).toBeVisible();
+    await expect(canvas.queryByText(/left/)).toBeNull();
+  },
+};
+
+/** The sheet sends a cap only when it was switched on, and the summary says so. */
+export const MintsWithASpendAndRateCap: Story = {
+  render: () => {
+    sentCaps = recording(
+      scoped(async (input, init) =>
+        init?.method === "POST"
+          ? json({ ...KEYS[0], key: MINTED_KEY }, 201)
+          : (lookups(String(input)) ?? json(KEYS)),
+      ),
+    );
+    return (
+      <Harness fetchStub={sentCaps.stub}>
+        <Keys />
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    await clickWhenEnabled(canvasElement, /add virtual key/i);
+    const form = sheet();
+    const inForm = within(form);
+    await expect(inForm.getByText("No spend cap of its own")).toBeVisible();
+    await expect(inForm.getByText("No rate cap of its own")).toBeVisible();
+    await userEvent.type(inForm.getByLabelText("Name"), "ci runner");
+    await userEvent.click(inForm.getByRole("switch", { name: "Spend cap" }));
+    await userEvent.type(inForm.getByLabelText(/^Cap \(USD\)/), "25");
+    await expect(inForm.getByText(/Spend capped at \$25\.00 \(monthly\)/)).toBeVisible();
+    await userEvent.click(inForm.getByRole("switch", { name: "Rate cap" }));
+    await userEvent.type(inForm.getByLabelText("Tokens per minute"), "9000");
+    await expect(inForm.getByText("Rate capped at 9,000 tpm")).toBeVisible();
+    await userEvent.click(inForm.getByRole("button", { name: "Create" }));
+    const body = await sentCaps.expectSentBody<{
+      budget?: { limit_usd: string; period: string };
+      rate_limit?: { rpm?: number; tpm?: number };
+    }>("POST", "/virtual-keys");
+    await expect(body.budget).toEqual({ limit_usd: "25", period: "monthly" });
+    await expect(body.rate_limit).toEqual({ tpm: 9000 });
+  },
+};
+let sentCaps: Recorder;
+
+/** A mint with no cap chosen sends neither field: the default is no cap. */
+export const MintsWithoutACapByDefault: Story = {
+  render: () => {
+    sentCaps = recording(
+      scoped(async (input, init) =>
+        init?.method === "POST"
+          ? json({ ...KEYS[0], key: MINTED_KEY }, 201)
+          : (lookups(String(input)) ?? json(KEYS)),
+      ),
+    );
+    return (
+      <Harness fetchStub={sentCaps.stub}>
+        <Keys />
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    await mintAKey(canvasElement);
+    const body = await sentCaps.expectSentBody<Record<string, unknown>>("POST", "/virtual-keys");
+    await expect(body).not.toHaveProperty("budget");
+    await expect(body).not.toHaveProperty("rate_limit");
+  },
+};
+
+/** A cap left wrong names the field and keeps Create refused. */
+export const CapValidationErrors: Story = {
+  render: () => (
+    <Harness fetchStub={withKeys(KEYS)}>
+      <Keys />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await clickWhenEnabled(canvasElement, /add virtual key/i);
+    const form = sheet();
+    const inForm = within(form);
+    await userEvent.type(inForm.getByLabelText("Name"), "ci runner");
+    await userEvent.click(inForm.getByRole("switch", { name: "Spend cap" }));
+    await expect(await inForm.findByText("Enter the amount this key may spend")).toBeVisible();
+    await userEvent.type(inForm.getByLabelText(/^Cap \(USD\)/), "1e9");
+    await expect(inForm.getByText(/Enter a plain number/)).toBeVisible();
+    await userEvent.click(inForm.getByRole("switch", { name: "Rate cap" }));
+    await expect(inForm.getByText(/Fill in requests per minute/)).toBeVisible();
+    await expect(inForm.getByRole("button", { name: "Create" })).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
+  },
+};
+
+/**
+ * An overlap whose date has passed is over: the row stops naming the old secret
+ * (and offering to revoke it) even though the list still carries the columns.
+ */
+export const AnOverlapThatHasEndedIsNotShown: Story = {
+  render: () => (
+    <Harness
+      fetchStub={withKeys([
+        {
+          ...KEYS[0],
+          previous_key_prefix: "sk-rolter-oldold",
+          previous_expires_at: "2020-01-01T12:00:00Z",
+        },
+      ])}
+    >
+      <Keys />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByText("backend service");
+    await expect(canvas.queryByText(/old secret/)).toBeNull();
+    await expect(canvas.queryByRole("button", { name: /Revoke the old secret/ })).toBeNull();
+  },
+};

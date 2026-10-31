@@ -45,8 +45,10 @@ an organization with nothing in it.
 
 Reading labels takes the `viewer` role and writing them takes `admin`, so a
 caller who may not read them simply sees the screen without them rather than an
-error. Labelling a model is a superadmin's act, the way its price is, so an
-admin sees the panel and what it holds with the write controls disabled rather
+error. A deployment-wide model label is a superadmin's act, the way a model's
+price is. A label on an organization's own model takes that organization's
+`admin`, as its provider and route labels do. A caller who may not write a row's
+labels sees the panel and what it holds with the write controls disabled, rather
 than a form that would be refused.
 
 ---
@@ -75,8 +77,8 @@ curl -X POST https://rolter.example.com/api/v1/orgs/$ORG_ID/labels \
 labels takes the `viewer` role; adding, changing or removing one takes `admin`.
 
 Models are labelled through a separate endpoint, because a model belongs to the
-deployment-wide pricing catalog rather than to one org — labelling one is a
-superadmin action:
+deployment-wide pricing catalog rather than to one org — a deployment-wide label
+on one is a superadmin action:
 
 ```bash
 curl -X POST https://rolter.example.com/api/v1/model-labels \
@@ -84,6 +86,29 @@ curl -X POST https://rolter.example.com/api/v1/model-labels \
   -H "Content-Type: application/json" \
   -d '{"model": "gpt-4o", "key": "cheap"}'
 ```
+
+Two organizations may each serve a model of one name. A label on one
+organization's `gpt-4o` names that organization in `org_id`, so it never shows
+on the other's:
+
+```bash
+curl -X POST https://rolter.example.com/api/v1/model-labels \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"model": "gpt-4o", "org_id": "'$ORG_ID'", "key": "tier", "value": "gold"}'
+```
+
+The organization must serve a route of that name, or the request is a `404`.
+A label that names an organization takes the same role as its provider and
+route labels: an `admin` of that organization can add, change and remove it,
+while a label on another organization's model, or a deployment-wide one, is a
+`403` for them.
+A label without `org_id` is deployment-wide, and is the only kind a model from
+the gateway's config file can carry. `GET /api/v1/model-labels?org_id=$ORG_ID`
+lists what applies to that organization's models: its own labels, and each
+deployment-wide label whose key it has not set itself. Every label carries its
+`org_id` (`null` when deployment-wide), and an organization's labels are listed
+only to someone with a role in that organization.
 
 Re-using a key on the same subject returns `409 Conflict` rather than
 overwriting what is there. Change the value with `PUT`, or remove the label

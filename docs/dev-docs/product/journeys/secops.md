@@ -2,9 +2,10 @@
 
 **Security engineering: reviews and hardens, rarely changes routing.** Wants to
 prove, to themselves and to an auditor, who can read what, that secrets stay out
-of the logs, and that a leaver's access ends. Today that needs **superadmin**,
-because every setting they review is deployment-wide and nothing narrower
-reaches it — which also hands them every tenant's traffic.
+of the logs, and that a leaver's access ends. The settings they
+review are deployment-wide, so they used to need **superadmin**, which also hands
+over every tenant's traffic; the read-only `security_auditor` deployment role
+(#1834) reaches them without it.
 
 **Goal:** "I can show who reads prompts, that credentials never land in a log or
 a response, and that access ends when it should — without being able to change
@@ -18,9 +19,9 @@ trail or should leave a row in it.
 
 ## S0 — the role
 
-| #    | step                                             | where | expect                                                                         | status      |
-| ---- | ------------------------------------------------ | ----- | ------------------------------------------------------------------------------ | ----------- |
-| S0.1 | review security posture without being superadmin | —     | a read-only security-auditor role: settings, guardrails, audit, no tenant data | gap — #1834 |
+| #    | step                                             | where | expect                                                                         | status        |
+| ---- | ------------------------------------------------ | ----- | ------------------------------------------------------------------------------ | ------------- |
+| S0.1 | review security posture without being superadmin | —     | a read-only security-auditor role: settings, guardrails, audit, no tenant data | works — #1834 |
 
 ## S1 — the perimeter
 
@@ -47,10 +48,10 @@ trail or should leave a row in it.
 | ---- | ------------------------------------------------ | --------------------------------------------- | ------------------------------------------------------------------------------------------------------------ | ---------------- |
 | S3.1 | payload capture is off unless someone chose it   | **Observability → Logs Settings**             | off by default; the dogfood profile turns it on deliberately                                                 | verified         |
 | S3.2 | known credential fields never reach storage      | `payload_capture_redact_fields`               | the value of a matching JSON key replaced before the write, recursively                                      | verified         |
-| S3.3 | a key pasted into a prompt never reaches storage | —                                             | a secret inside free text redacted by pattern                                                                | gap — #1835      |
-| S3.4 | see what the redaction does before trusting it   | —                                             | a dry run against a sample body                                                                              | gap — #1835      |
+| S3.3 | a key pasted into a prompt never reaches storage | `payload_capture_redact_detectors`            | a secret inside free text replaced by a typed marker such as `[redacted:aws_key]` before the write           | verified (#1835) |
+| S3.4 | see what the redaction does before trusting it   | **Logs Settings** → Preview redaction         | a dry run against a sample body, storing and logging nothing                                                 | verified (#1835) |
 | S3.5 | who reads the bodies that are stored             | sign in as each persona; **LLM Logs** → a row | members and admins of the project read them; viewers get "hidden for your role" unless the project allows it | verified (#1820) |
-| S3.6 | erase one subject's logs on request              | —                                             | a subject's rows and payloads deleted, audited                                                               | gap — #1085      |
+| S3.6 | erase one subject's logs on request              | `POST /api/v1/log-erasures`                   | a subject's rows and payloads deleted, completion reported from ClickHouse, audited                          | verified (#1085) |
 
 ## S4 — inspection in the request path
 

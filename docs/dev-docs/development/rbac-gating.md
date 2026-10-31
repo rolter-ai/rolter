@@ -82,11 +82,11 @@ chain is specified here.
 
 `provider` and `provider_group` are `project` rows although a row may also be
 org-wide (#1919, #2519). The matrix answers for the chain the caller queried, so
-a project admin asked at `(org, team, project)` gets the writes `crud.rs` allows
+a project admin asked at `(org, team, project)` gets the writes `crud/` allows
 on a provider scoped to that project, and an org admin still passes through the
 org membership. The page-level answer cannot tell an org-wide row from a scoped
 one: a project admin would see Edit on an org-wide provider and the handler
-would answer `403`, because `crud.rs` checks such a row at the org. That check,
+would answer `403`, because `crud/` checks such a row at the org. That check,
 not this table, is the authority, so the two list screens gate each row at the
 row's own scope (#2522), see
 [Gating a row at its own scope](#gating-a-row-at-its-own-scope). Asked at the org alone (no `project_id`) a project
@@ -145,6 +145,13 @@ business unit or customer cap, and a project the dashboard cannot place, keep
 the page's answer. A project admin therefore edits their project's caps and is
 refused the team's and the org's above it, as the guard does.
 
+Model labels (#3520) are the third. A label that names an organization is
+written under `label:*` at that org, and a deployment-wide one under
+`model_label:*`, so the Model Catalog wraps each row's label sheet in
+`RowCapabilityScope` with a `RowScope` carrying only the row's `orgId`. The sheet
+then asks the org chain for an org's model and keeps the page's deployment
+answer for a model from the config file.
+
 ## Three answers, not two
 
 `useCan()` returns `boolean | undefined`, and the third one is load-bearing:
@@ -200,7 +207,7 @@ backstop it always was. `ui/src/lib/can.test.ts` pins both.
   Publish and Roll back are all one `<resource>:update` — publishing moves a
   version pointer through the same `PUT` guard as an edit
   (`set_prompt_template_version` / `set_skill_version` in
-  `crates/rolter-control/src/crud.rs`), and there is no `:publish` action in
+  `crates/rolter-control/src/crud/`), and there is no `:publish` action in
   the capability table to gate on instead — and Delete is the one control that
   takes `<resource>:delete` (#1297). The `AsViewer` story on each screen
   asserts all five are refused and name the Admin role.
@@ -263,8 +270,10 @@ backstop it always was. `ui/src/lib/can.test.ts` pins both.
 - **The deployment-scoped settings screens.** Feature flags, the runtime,
   logging, compatibility, client, model-default, adaptive and security policy,
   the cluster, connectors and alerting are wrapped in
-  `superadminOnly()` (`ui/src/components/ForbiddenScreen.tsx`). A non-superadmin
-  never mounts them, so they send no request to be refused. The MCP logs are
+  `superadminOnly(Screen, key, "<resource>:read")` (`ui/src/components/ForbiddenScreen.tsx`).
+  The third argument is the screen's own read pair, so a caller the table refuses never
+  mounts it and sends no request to be refused: a superadmin passes, and so does the
+  deployment role (operator, security auditor) that the table names for that read (#1834). The MCP logs are
   scoped on the server since #1831 (`mcp_log:read` is a viewer-level project
   capability); the screen stays wrapped until its dashboard half lands.
 
@@ -370,7 +379,7 @@ be reorganised freely (#1298).
 
 Give the nav leaf its `resource`, gate the create control on
 `<resource>:create`, gate each row control on `<resource>:update` or
-`<resource>:delete`, and wrap the screen in `superadminOnly()` if the capability
+`<resource>:delete`, and wrap the screen in `superadminOnly()`, passing its `<resource>:read`, if the capability
 table puts it at `scope: "deployment"`. Cover the roles in a story with
 `<Harness role="viewer">` — the harness stubs both RBAC endpoints from the same
 table this doc names.

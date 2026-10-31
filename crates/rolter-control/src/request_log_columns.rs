@@ -77,6 +77,77 @@ pub(crate) const OPTIONAL_COLUMNS: &[OptionalColumn] = &[
         name: "plugin_events",
         default: "emptyArrayString()",
     },
+    // 021_request_log_seq.sql
+    OptionalColumn {
+        name: "seq",
+        default: "toUInt64(0)",
+    },
+    // 023_fallback_reason.sql
+    OptionalColumn {
+        name: "fallback_reason",
+        default: "''",
+    },
+    // 022_param_adjustments.sql: what translation did to the request's
+    // parameters (#1586), read by the invocation list and its rollup (#3323)
+    OptionalColumn {
+        name: "param_adjustments",
+        default: "emptyArrayString()",
+    },
+    // 030_request_outcome.sql: the column's own default, which every row
+    // written before it reads as
+    OptionalColumn {
+        name: "outcome",
+        default: "'unknown'",
+    },
+    // 031_request_shape.sql: read by the savings advisor's exclusions (#3317)
+    OptionalColumn {
+        name: "has_tools",
+        default: "toUInt8(0)",
+    },
+    // 031_request_shape.sql
+    OptionalColumn {
+        name: "has_image_input",
+        default: "toUInt8(0)",
+    },
+    // 031_request_shape.sql
+    OptionalColumn {
+        name: "has_audio_input",
+        default: "toUInt8(0)",
+    },
+    // 031_request_shape.sql
+    OptionalColumn {
+        name: "has_response_schema",
+        default: "toUInt8(0)",
+    },
+    // 031_request_shape.sql
+    OptionalColumn {
+        name: "turns",
+        default: "toUInt16(0)",
+    },
+    // 037_request_log_provider_org.sql: the org that owns the provider, which
+    // tells two orgs' same-named providers apart (#1857, #3441)
+    OptionalColumn {
+        name: "provider_org_id",
+        default: "''",
+    },
+    // 045_cache_usage_reported.sql: whether the upstream stated its
+    // prompt-cache reads, read by the summary's read share (#3410)
+    OptionalColumn {
+        name: "cache_usage_reported",
+        default: "toUInt8(0)",
+    },
+    // 048_first_variant.sql: the variant the request was dialled to first,
+    // read by by-variant's assigned count (#3505)
+    OptionalColumn {
+        name: "first_variant",
+        default: "''",
+    },
+    // 050_sampled_variant.sql: the variant the weighted split sampled, read
+    // by by-variant's sampled count (#3547)
+    OptionalColumn {
+        name: "sampled_variant",
+        default: "''",
+    },
 ];
 
 /// The probe: every column `request_logs` has in the database the client reads
@@ -242,6 +313,81 @@ impl ColumnCache {
     }
 }
 
+/// Which of the optional columns `mcp_tool_call_logs` has: the ones a
+/// hand-applied migration adds (`042`, `047`).
+#[cfg_attr(not(feature = "postgres"), allow(dead_code))]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct McpColumns {
+    /// `042_mcp_log_error_scopes.sql`
+    pub error_scopes: bool,
+    /// `047_mcp_log_notification.sql`
+    pub notification: bool,
+    /// `051_mcp_log_outcome.sql`
+    pub outcome: bool,
+}
+
+#[cfg_attr(not(feature = "postgres"), allow(dead_code))]
+impl McpColumns {
+    /// Every column present: also what a probe that could not tell reads as,
+    /// the behaviour before the probe existed.
+    pub(crate) const ALL: Self = Self {
+        error_scopes: true,
+        notification: true,
+        outcome: true,
+    };
+
+    pub(crate) fn from_names<'a>(names: impl Iterator<Item = &'a str>) -> Self {
+        let mut found = Self::default();
+        for name in names {
+            match name {
+                "error_scopes" => found.error_scopes = true,
+                "notification" => found.notification = true,
+                "outcome" => found.outcome = true,
+                _ => {}
+            }
+        }
+        found
+    }
+
+    pub(crate) fn complete(self) -> bool {
+        self == Self::ALL
+    }
+}
+
+/// Whether `mcp_tool_call_logs` has the columns a hand-applied migration adds
+/// (#3375, #3466, #3529), remembered per client so an MCP log read does not probe each
+/// time. Applying `042`, `047` or `051` is an operator's step on an existing deployment
+/// and may come after the control plane is upgraded, so a select that names a
+/// column unconditionally would fail every detail read until then, as the
+/// invocation list's optional columns once did (#2903, see this module).
+// read only by the postgres-gated MCP log routes
+#[cfg_attr(not(feature = "postgres"), allow(dead_code))]
+#[derive(Default)]
+pub(crate) struct McpColumnCache {
+    entry: Mutex<Option<(McpColumns, Instant)>>,
+}
+
+#[cfg_attr(not(feature = "postgres"), allow(dead_code))]
+impl McpColumnCache {
+    pub(crate) fn fresh(&self, now: Instant) -> Option<McpColumns> {
+        let (columns, at) = (*self.entry.lock())?;
+        let lifetime = if columns.complete() {
+            SETTLED_FOR
+        } else {
+            UNSETTLED_FOR
+        };
+        (now.saturating_duration_since(at) < lifetime).then_some(columns)
+    }
+
+    pub(crate) fn store(&self, now: Instant, columns: McpColumns) {
+        *self.entry.lock() = Some((columns, now));
+    }
+
+    pub(crate) fn forget(&self) {
+        *self.entry.lock() = None;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -309,6 +455,19 @@ mod tests {
             "lifecycle_operation",
             "guardrail_events",
             "plugin_events",
+            "seq",
+            "fallback_reason",
+            "param_adjustments",
+            "outcome",
+            "has_tools",
+            "has_image_input",
+            "has_audio_input",
+            "has_response_schema",
+            "turns",
+            "provider_org_id",
+            "cache_usage_reported",
+            "first_variant",
+            "sampled_variant",
         ]))
         .expect("the table is visible");
         assert_eq!(columns.missing(), ["cache_write_1h_tokens"]);

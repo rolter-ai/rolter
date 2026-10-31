@@ -1,130 +1,118 @@
-//! Request-path client for the custom guardrail webhook (ROL-257).
+//! Request-path transport for webhook guardrail providers (ROL-257, #459); a
+//! local provider runs in [`crate::local_classifier`] instead (#3329).
 //!
-//! Consults a self-hosted HTTP guardrail service before proxying a request. The
-//! call is bounded (timeout, retries, content-size cap) and its transport-failure
-//! behaviour is operator-chosen (fail-open vs fail-closed). Only the explicitly
-//! assembled envelope is sent; prompt content is never logged here.
+//! One bounded call to a self-hosted guardrail service over the vendor-neutral
+//! webhook contract: the envelope is size-capped, the call has its own timeout
+//! and retry budget, and every way it can fail is named, so the policy runtime
+//! in [`crate::semantic_guards`] can resolve it through the provider's
+//! fail-open/fail-closed mode. Only the explicitly assembled envelope is sent;
+//! content is never logged here.
 
-use std::sync::atomic::Ordering::Relaxed;
-
-use rolter_core::guardrail_webhook::{
-    FailureMode, GuardrailWebhookConfig, WebhookAuth, WebhookDecision, WebhookRequest,
-    WebhookStage, WebhookTenant,
-};
+use rolter_core::guardrail_webhook::{GuardrailWebhookConfig, WebhookAuth, WebhookRequest};
+use rolter_core::ScoredDecision;
 use serde_json::Value;
 
 use crate::egress_client::EgressClient;
-use crate::metrics::Metrics;
 
-/// What the gateway should do after consulting the webhook.
-#[derive(Debug, Clone, PartialEq)]
-pub enum WebhookOutcome {
-    /// forward unchanged (allow, annotate, or a fail-open transport failure)
-    Allow,
-    /// reject the request with an OpenAI-compatible error; carries the reason
-    Block(Option<String>),
-    /// replace the inspected content with this value before forwarding
-    Transform(Value),
+/// Why a provider call produced no verdict. Each has a fixed metric label,
+/// never the provider's own text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CallFailure {
+    /// the egress policy refused the url, so nothing was sent
+    Refused,
+    /// the call outlived the provider's `timeout_ms`
+    Timeout,
+    /// the connection or the exchange failed before a status came back
+    Connect,
+    /// the provider shed the call: `429` or `503`
+    Overloaded,
+    /// any other non-2xx status
+    Status,
+    /// the body could not be read
+    Body,
+    /// the body is not a decision (see [`ScoredDecision::parse`])
+    Unparsable,
+    /// a local provider's model is not loaded, or its inference failed
+    Model,
+    /// the provider is of a kind this gateway does not know; unlike every
+    /// other failure it blocks whatever the provider's failure mode says
+    Unsupported,
+    /// a local provider's text was longer than its `max_scored_bytes` under
+    /// `on_truncated = "fail_closed"`; like `Unsupported` it blocks whatever
+    /// the provider's failure mode says (#3513)
+    Truncated,
 }
 
-/// Consult the pre-call webhook for a request body. `content` is the body under
-/// inspection; it is size-capped before sending. Transport failures resolve per
-/// `config.failure_mode`. Never returns an error: the outcome always tells the
-/// caller exactly what to do.
-#[allow(clippy::too_many_arguments)]
-pub async fn consult_pre_call(
-    config: &GuardrailWebhookConfig,
-    metrics: &Metrics,
-    egress: &EgressClient,
-    model: &str,
-    route: &str,
-    trace_id: &str,
-    tenant: WebhookTenant,
-    content: &Value,
-) -> WebhookOutcome {
-    if !config.enabled || config.stage != WebhookStage::PreCall {
-        return WebhookOutcome::Allow;
+impl CallFailure {
+    /// The metric label for this failure.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Refused => "refused",
+            Self::Timeout => "timeout",
+            Self::Connect => "connect",
+            Self::Overloaded => "overloaded",
+            Self::Status => "status",
+            Self::Body => "body",
+            Self::Unparsable => "unparsable",
+            Self::Model => "model",
+            Self::Unsupported => "unsupported",
+            Self::Truncated => "truncated",
+        }
     }
 
-    // bound the content forwarded to the webhook. an oversized body is replaced
-    // with a truncated preview and flagged, rather than streamed in full.
+    /// Whether another attempt can change the answer. A refused url, an
+    /// unparsable answer and a `4xx` other than `429` say the same thing twice.
+    fn is_transient(self) -> bool {
+        matches!(
+            self,
+            Self::Timeout | Self::Connect | Self::Overloaded | Self::Body
+        )
+    }
+}
+
+/// Bound `content` to `max_body_bytes`: an oversized body is replaced by a
+/// truncated preview string, and the flag says so.
+pub fn bounded_payload(content: &Value, max_body_bytes: usize) -> (Value, bool) {
     let serialized = serde_json::to_vec(content).unwrap_or_default();
-    let (payload, truncated) = if serialized.len() > config.max_body_bytes {
-        let preview: String = content
-            .to_string()
-            .chars()
-            .take(config.max_body_bytes)
-            .collect();
+    if serialized.len() > max_body_bytes {
+        let preview: String = content.to_string().chars().take(max_body_bytes).collect();
         (Value::String(preview), true)
     } else {
         (content.clone(), false)
-    };
-
-    let envelope = WebhookRequest {
-        direction: "request",
-        stage: WebhookStage::PreCall,
-        model,
-        route,
-        trace_id,
-        tenant,
-        truncated,
-        content: &payload,
-    };
-
-    match call_with_retries(config, egress, &envelope).await {
-        Ok(decision) => match decision {
-            WebhookDecision::Allow | WebhookDecision::Annotate { .. } => WebhookOutcome::Allow,
-            WebhookDecision::Block { reason } => {
-                metrics.guardrail_webhook_blocks_total.fetch_add(1, Relaxed);
-                WebhookOutcome::Block(reason)
-            }
-            WebhookDecision::Transform { content } => {
-                metrics
-                    .guardrail_webhook_transforms_total
-                    .fetch_add(1, Relaxed);
-                WebhookOutcome::Transform(content)
-            }
-        },
-        // transport failure: honour the operator's availability/enforcement choice
-        Err(()) => {
-            metrics.guardrail_webhook_errors_total.fetch_add(1, Relaxed);
-            match config.failure_mode {
-                FailureMode::FailOpen => WebhookOutcome::Allow,
-                FailureMode::FailClosed => {
-                    WebhookOutcome::Block(Some("guardrail service unavailable".to_string()))
-                }
-            }
-        }
     }
 }
 
-/// POST the envelope, retrying transient failures up to `max_retries` extra times.
-/// Returns `Err(())` when every attempt fails (caller applies the failure mode).
-async fn call_with_retries(
+/// POST `envelope` to the provider, retrying a transient failure up to
+/// `max_retries` extra times. The error is the last attempt's failure; the
+/// caller applies the provider's failure mode to it.
+pub async fn consult(
     config: &GuardrailWebhookConfig,
     egress: &EgressClient,
     envelope: &WebhookRequest<'_>,
-) -> Result<WebhookDecision, ()> {
+) -> Result<ScoredDecision, CallFailure> {
     let attempts = config.max_retries.saturating_add(1);
+    let mut last = CallFailure::Connect;
     for _ in 0..attempts {
-        if let Some(decision) = call_once(config, egress, envelope).await {
-            return Ok(decision);
+        match call_once(config, egress, envelope).await {
+            Ok(decision) => return Ok(decision),
+            Err(failure) if failure.is_transient() => last = failure,
+            Err(failure) => return Err(failure),
         }
     }
-    Err(())
+    Err(last)
 }
 
-/// A single webhook call. `None` signals a transient failure (connect, timeout,
-/// non-2xx, or unreadable body) that the retry loop may re-attempt.
+/// A single provider call.
 async fn call_once(
     config: &GuardrailWebhookConfig,
     egress: &EgressClient,
     envelope: &WebhookRequest<'_>,
-) -> Option<WebhookDecision> {
+) -> Result<ScoredDecision, CallFailure> {
     // refused again here, not only at save: the policy may have been tightened
     // since, and a stored row is not a standing permission to egress
     let mut req = egress
-        .post(config.url.trim())?
+        .post(config.url.trim())
+        .ok_or(CallFailure::Refused)?
         .timeout(std::time::Duration::from_millis(config.timeout_ms))
         .header("X-Rolter-Trace-Id", envelope.trace_id)
         .json(envelope);
@@ -147,19 +135,99 @@ async fn call_once(
         }
     }
 
-    let resp = req.send().await.ok()?;
-    if !resp.status().is_success() {
-        return None;
+    let resp = req.send().await.map_err(|error| {
+        if error.is_timeout() {
+            CallFailure::Timeout
+        } else {
+            CallFailure::Connect
+        }
+    })?;
+    let status = resp.status();
+    if !status.is_success() {
+        return Err(match status.as_u16() {
+            429 | 503 => CallFailure::Overloaded,
+            _ => CallFailure::Status,
+        });
     }
-    let body = resp.bytes().await.ok()?;
-    Some(WebhookDecision::parse(&body))
+    let body = resp.bytes().await.map_err(|error| {
+        if error.is_timeout() {
+            CallFailure::Timeout
+        } else {
+            CallFailure::Body
+        }
+    })?;
+    ScoredDecision::parse(&body).ok_or(CallFailure::Unparsable)
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
-    use rolter_core::guardrail_webhook::GuardrailWebhookConfig;
+    use rolter_core::guardrail_webhook::{WebhookDecision, WebhookStage};
+    use rolter_core::WebhookTenant;
     use serde_json::json;
+
+    pub(crate) fn envelope<'a>(content: &'a Value) -> WebhookRequest<'a> {
+        WebhookRequest {
+            direction: "request",
+            stage: WebhookStage::PreCall,
+            model: "gpt-4",
+            route: "route",
+            trace_id: "trace",
+            tenant: WebhookTenant::default(),
+            truncated: false,
+            content,
+            policy: None,
+            streamed: false,
+        }
+    }
+
+    fn enabled(url: String) -> GuardrailWebhookConfig {
+        GuardrailWebhookConfig {
+            enabled: true,
+            url,
+            timeout_ms: 2_000,
+            ..GuardrailWebhookConfig::default()
+        }
+    }
+
+    async fn ask(config: &GuardrailWebhookConfig) -> Result<ScoredDecision, CallFailure> {
+        let content = json!({"messages": []});
+        consult(
+            config,
+            &crate::egress_client::testing::permissive(),
+            &envelope(&content),
+        )
+        .await
+    }
+
+    /// A provider that answers every call with `status` and `body`, counting
+    /// the calls it took.
+    pub(crate) async fn serve_raw(
+        status: u16,
+        body: &'static str,
+    ) -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+        use axum::routing::post;
+        use axum::Router;
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = calls.clone();
+        let app = Router::new().route(
+            "/check",
+            post(move || {
+                counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                async move {
+                    (
+                        axum::http::StatusCode::from_u16(status).unwrap(),
+                        [(axum::http::header::CONTENT_TYPE, "application/json")],
+                        body,
+                    )
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        (format!("http://{addr}/check"), calls)
+    }
 
     /// #3097: a stored webhook row naming a `ROLTER_` secret must not send it
     /// to the webhook's url
@@ -180,219 +248,115 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
         let cfg = GuardrailWebhookConfig {
-            enabled: true,
-            url: format!("http://{addr}/check"),
             auth: Some(WebhookAuth::Bearer {
                 token_env: "ROLTER_TEST_GUARDRAIL_SECRET".to_string(),
             }),
-            ..GuardrailWebhookConfig::default()
+            ..enabled(format!("http://{addr}/check"))
         };
-        let out = consult_pre_call(
-            &cfg,
-            &Metrics::default(),
-            &crate::egress_client::testing::permissive(),
-            "gpt-4",
-            "route",
-            "trace",
-            WebhookTenant::default(),
-            &json!({"messages": []}),
-        )
-        .await;
+        let out = ask(&cfg).await;
         // SAFETY: cleanup of the test-local var set above
         unsafe { std::env::remove_var("ROLTER_TEST_GUARDRAIL_SECRET") };
-        assert_eq!(out, WebhookOutcome::Allow);
-    }
-
-    fn disabled() -> GuardrailWebhookConfig {
-        GuardrailWebhookConfig::default()
+        assert_eq!(out.unwrap().decision, WebhookDecision::Allow);
     }
 
     #[tokio::test]
-    async fn disabled_webhook_allows_without_calling() {
-        let out = consult_pre_call(
-            &disabled(),
-            &Metrics::default(),
-            &crate::egress_client::testing::permissive(),
-            "gpt-4",
-            "route",
-            "trace",
-            WebhookTenant::default(),
-            &json!({"messages": []}),
+    async fn each_decision_and_its_scores_come_back() {
+        let (url, _) = serve_raw(
+            200,
+            r#"{"action":"block","reason":"pii","categories":{"violence":0.4}}"#,
         )
         .await;
-        assert_eq!(out, WebhookOutcome::Allow);
+        let scored = ask(&enabled(url)).await.unwrap();
+        assert_eq!(
+            scored.decision,
+            WebhookDecision::Block {
+                reason: Some("pii".to_string())
+            }
+        );
+        assert_eq!(scored.categories.get("violence"), Some(&0.4));
     }
 
     #[tokio::test]
-    async fn unreachable_webhook_fails_open_by_default() {
+    async fn an_unreachable_provider_is_a_connect_or_timeout_failure() {
         let cfg = GuardrailWebhookConfig {
-            enabled: true,
             // reserved TEST-NET-1 address; connection is refused/timed out fast
-            url: "http://192.0.2.1:1/check".to_string(),
             timeout_ms: 150,
-            ..GuardrailWebhookConfig::default()
+            ..enabled("http://192.0.2.1:1/check".to_string())
         };
-        let out = consult_pre_call(
-            &cfg,
-            &Metrics::default(),
-            &crate::egress_client::testing::permissive(),
-            "gpt-4",
-            "route",
-            "trace",
-            WebhookTenant::default(),
-            &json!({"messages": []}),
-        )
-        .await;
-        assert_eq!(out, WebhookOutcome::Allow);
+        let failure = ask(&cfg).await.unwrap_err();
+        assert!(
+            matches!(failure, CallFailure::Timeout | CallFailure::Connect),
+            "{failure:?}"
+        );
     }
 
-    async fn serve(decision: Value) -> String {
+    #[tokio::test]
+    async fn a_slow_provider_times_out() {
         use axum::routing::post;
-        use axum::{Json, Router};
+        use axum::Router;
         let app = Router::new().route(
             "/check",
-            post(move || {
-                let decision = decision.clone();
-                async move { Json(decision) }
+            post(|| async {
+                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                axum::Json(json!({"action": "allow"}))
             }),
         );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-        format!("http://{addr}/check")
-    }
-
-    fn enabled(url: String) -> GuardrailWebhookConfig {
-        GuardrailWebhookConfig {
-            enabled: true,
-            url,
-            timeout_ms: 2_000,
-            ..GuardrailWebhookConfig::default()
-        }
-    }
-
-    #[tokio::test]
-    async fn allow_decision_forwards_unchanged() {
-        let url = serve(json!({"action": "allow"})).await;
-        let out = consult_pre_call(
-            &enabled(url),
-            &Metrics::default(),
-            &crate::egress_client::testing::permissive(),
-            "gpt-4",
-            "route",
-            "trace",
-            WebhookTenant::default(),
-            &json!({"messages": [{"role": "user", "content": "hi"}]}),
-        )
-        .await;
-        assert_eq!(out, WebhookOutcome::Allow);
-    }
-
-    #[tokio::test]
-    async fn block_decision_rejects_with_reason_and_counts() {
-        let url = serve(json!({"action": "block", "reason": "pii detected"})).await;
-        let metrics = Metrics::default();
-        let out = consult_pre_call(
-            &enabled(url),
-            &metrics,
-            &crate::egress_client::testing::permissive(),
-            "gpt-4",
-            "route",
-            "trace",
-            WebhookTenant::default(),
-            &json!({"messages": []}),
-        )
-        .await;
-        assert_eq!(out, WebhookOutcome::Block(Some("pii detected".to_string())));
-        assert_eq!(metrics.guardrail_webhook_blocks_total.load(Relaxed), 1);
-    }
-
-    #[tokio::test]
-    async fn transform_decision_replaces_content_and_counts() {
-        let url = serve(json!({
-            "action": "transform",
-            "content": {"messages": [{"role": "user", "content": "[cleaned]"}]}
-        }))
-        .await;
-        let metrics = Metrics::default();
-        let out = consult_pre_call(
-            &enabled(url),
-            &metrics,
-            &crate::egress_client::testing::permissive(),
-            "gpt-4",
-            "route",
-            "trace",
-            WebhookTenant::default(),
-            &json!({"messages": [{"role": "user", "content": "dirty"}]}),
-        )
-        .await;
-        match out {
-            WebhookOutcome::Transform(content) => {
-                assert_eq!(content["messages"][0]["content"], json!("[cleaned]"));
-            }
-            other => panic!("expected transform, got {other:?}"),
-        }
-        assert_eq!(metrics.guardrail_webhook_transforms_total.load(Relaxed), 1);
-    }
-
-    #[tokio::test]
-    async fn unreachable_webhook_fails_closed_when_configured() {
         let cfg = GuardrailWebhookConfig {
-            enabled: true,
-            url: "http://192.0.2.1:1/check".to_string(),
-            timeout_ms: 150,
-            failure_mode: FailureMode::FailClosed,
-            ..GuardrailWebhookConfig::default()
+            timeout_ms: 100,
+            ..enabled(format!("http://{addr}/check"))
         };
-        let out = consult_pre_call(
-            &cfg,
-            &Metrics::default(),
-            &crate::egress_client::testing::permissive(),
-            "gpt-4",
-            "route",
-            "trace",
-            WebhookTenant::default(),
-            &json!({"messages": []}),
-        )
-        .await;
-        assert!(matches!(out, WebhookOutcome::Block(_)));
+        assert_eq!(ask(&cfg).await.unwrap_err(), CallFailure::Timeout);
     }
 
-    fn fail_closed(url: String) -> GuardrailWebhookConfig {
-        GuardrailWebhookConfig {
-            enabled: true,
-            url,
-            timeout_ms: 300,
-            failure_mode: FailureMode::FailClosed,
-            ..GuardrailWebhookConfig::default()
-        }
-    }
-
-    async fn consult(cfg: &GuardrailWebhookConfig, egress: &EgressClient) -> WebhookOutcome {
-        consult_pre_call(
-            cfg,
-            &Metrics::default(),
-            egress,
-            "gpt-4",
-            "route",
-            "trace",
-            WebhookTenant::default(),
-            &json!({"messages": []}),
-        )
-        .await
-    }
-
-    /// #2383: a metadata literal is refused before any request is built, so a
-    /// fail-closed webhook blocks rather than reaching the address.
     #[tokio::test]
-    async fn a_metadata_literal_is_refused_per_the_failure_mode() {
-        let egress = crate::egress_client::testing::permissive();
-        let out = consult(
-            &fail_closed("https://169.254.169.254/latest/meta-data/".to_string()),
-            &egress,
-        )
-        .await;
-        assert!(matches!(out, WebhookOutcome::Block(_)), "{out:?}");
+    async fn an_overloaded_provider_is_retried_then_named() {
+        let (url, calls) = serve_raw(429, "{}").await;
+        let cfg = GuardrailWebhookConfig {
+            max_retries: 2,
+            ..enabled(url)
+        };
+        assert_eq!(ask(&cfg).await.unwrap_err(), CallFailure::Overloaded);
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn a_client_error_or_unparsable_answer_is_not_retried() {
+        let (url, calls) = serve_raw(400, "{}").await;
+        let cfg = GuardrailWebhookConfig {
+            max_retries: 2,
+            ..enabled(url)
+        };
+        assert_eq!(ask(&cfg).await.unwrap_err(), CallFailure::Status);
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+        let (url, calls) = serve_raw(200, r#"{"action":"nuke"}"#).await;
+        let cfg = GuardrailWebhookConfig {
+            max_retries: 2,
+            ..enabled(url)
+        };
+        assert_eq!(ask(&cfg).await.unwrap_err(), CallFailure::Unparsable);
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn an_oversized_body_is_bounded_and_flagged() {
+        let content = json!({"messages": [{"role": "user", "content": "x".repeat(100)}]});
+        let (payload, truncated) = bounded_payload(&content, 20);
+        assert!(truncated);
+        assert_eq!(payload.as_str().map(str::len), Some(20));
+        let (payload, truncated) = bounded_payload(&content, 10_000);
+        assert!(!truncated);
+        assert_eq!(payload, content);
+    }
+
+    /// #2383: a metadata literal is refused before any request is built.
+    #[tokio::test]
+    async fn a_metadata_literal_is_refused() {
+        let cfg = enabled("https://169.254.169.254/latest/meta-data/".to_string());
+        assert_eq!(ask(&cfg).await.unwrap_err(), CallFailure::Refused);
     }
 
     /// A hostname is not classified by the literal check, so only the
@@ -401,8 +365,14 @@ mod tests {
     async fn a_name_resolving_to_a_denied_address_is_never_connected_to() {
         let listener = crate::egress_client::testing::Counter::start().await;
         let egress = EgressClient::new(crate::egress_client::testing::deny_loopback());
-        let out = consult(&fail_closed(listener.url("/check")), &egress).await;
-        assert!(matches!(out, WebhookOutcome::Block(_)), "{out:?}");
+        let content = json!({"messages": []});
+        let out = consult(
+            &enabled(listener.url("/check")),
+            &egress,
+            &envelope(&content),
+        )
+        .await;
+        assert!(out.is_err(), "{out:?}");
         assert_eq!(listener.accepted(), 0);
     }
 
@@ -410,8 +380,7 @@ mod tests {
     async fn the_default_policy_still_reaches_a_loopback_webhook() {
         // the counter is only evidence if it can count
         let listener = crate::egress_client::testing::Counter::start().await;
-        let egress = crate::egress_client::testing::permissive();
-        let _ = consult(&fail_closed(listener.url("/check")), &egress).await;
+        let _ = ask(&enabled(listener.url("/check"))).await;
         assert_eq!(listener.accepted(), 1);
     }
 
@@ -426,18 +395,14 @@ mod tests {
             block_loopback: true,
             ..rolter_core::EgressPolicy::default()
         }));
-        let out = consult(&fail_closed(listener.url("/check")), &egress).await;
-        assert!(matches!(out, WebhookOutcome::Block(_)), "{out:?}");
+        let content = json!({"messages": []});
+        let out = consult(
+            &enabled(listener.url("/check")),
+            &egress,
+            &envelope(&content),
+        )
+        .await;
+        assert!(out.is_err(), "{out:?}");
         assert_eq!(listener.accepted(), 0);
-    }
-
-    /// A request-time refusal is a call failure like any other, so the
-    /// webhook's failure mode decides: fail-open lets the request through.
-    #[tokio::test]
-    async fn a_denied_webhook_url_follows_a_fail_open_failure_mode() {
-        let egress = crate::egress_client::testing::permissive();
-        let mut cfg = fail_closed("https://169.254.169.254/latest/meta-data/".to_string());
-        cfg.failure_mode = FailureMode::FailOpen;
-        assert_eq!(consult(&cfg, &egress).await, WebhookOutcome::Allow);
     }
 }

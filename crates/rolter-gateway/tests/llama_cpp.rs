@@ -35,7 +35,7 @@ fn config(addr: SocketAddr) -> GatewayConfig {
         targets: vec![Target {
             provider: "local-llama".into(),
             model: Some("tiny.gguf".into()),
-            weight: 1,
+            ..Default::default()
         }],
         params: Default::default(),
         param_policy: Default::default(),

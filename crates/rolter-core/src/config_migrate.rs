@@ -31,37 +31,49 @@
 //! that turns a rollback — the move an operator makes when everything else has
 //! already gone wrong — into an outage.
 //!
-//! # What does not belong in a migration
+//! # The singular credential and proxy spellings
 //!
-//! The provider fields `api_key`, `api_key_env` and `egress_proxy` have newer
-//! plural spellings (`api_keys`, `egress_proxies`). Normalising them used to be
-//! unsafe, and the reason is worth keeping on the record: `rolter-control`'s
-//! seed and config-export paths read the singular fields **directly**, so
-//! rewriting a document into the plural form would have left them `None` and
-//! silently changed what `rolter-seed --import` stored.
+//! A provider carries two spellings for the same thing: `api_key` /
+//! `api_key_env` beside the weighted `api_keys` list, and `egress_proxy` beside
+//! `egress_proxies`. Normalising them used to be unsafe, and the reason is worth
+//! keeping on the record: `rolter-control`'s seed and config-export paths read
+//! the singular fields **directly**, so rewriting a document into the plural
+//! form would have left them `None` and silently changed what `rolter-seed
+//! --import` stored.
 //!
-//! That is fixed (#1514). Persistence now goes through
+//! That was fixed (#1514). Persistence now goes through
 //! [`ProviderConfig::api_key_env_name`](crate::ProviderConfig::api_key_env_name)
-//! and [`inline_api_key`](crate::ProviderConfig::inline_api_key), and the
-//! proxy paths always carried both spellings, so either form imports and
-//! exports identically. The normalising step itself is #1720 — one caveat
-//! survives into it: the control-plane store holds a single credential per
-//! provider, so a migration must not imply that a multi-key `api_keys` array
-//! round-trips through the database.
+//! and [`inline_api_key`](crate::ProviderConfig::inline_api_key), and the proxy
+//! paths always carried both spellings, so either form imports and exports
+//! identically. The step from version 2 to 3 (#1720) is the normalisation: it
+//! rewrites a provider's `api_key` / `api_key_env` into one `api_keys` entry and
+//! its `egress_proxy` into a one-element `egress_proxies`.
+//!
+//! The decision recorded on #1720: the singular fields are **never** removed
+//! from the config types. They stay accepted as deserialize-time shims for as
+//! long as the format lives, because a file written by this build has to load on
+//! the older build it may be rolled back onto, and a file written by an older
+//! build has to load here. [`crate::config_lint`] warns that they are deprecated
+//! and names the plural spelling, and this step is what rewrites them. One
+//! caveat the step respects: the control-plane store holds a single credential
+//! per provider, so the migration never merges a singular credential into an
+//! `api_keys` list that already has entries (the singular fields were ignored
+//! beside a non-empty list, and stay where they are for the lint to report).
 //!
 //! A migration is safe here only when it is **behaviour-preserving**: the
-//! `GatewayConfig` parsed from the migrated document must equal the one parsed
-//! from the original. `migration_is_behaviour_preserving` pins that for every
+//! `GatewayConfig` parsed from the migrated document must resolve to the same
+//! credentials and proxies as the one parsed from the original. `migration_is_behaviour_preserving` pins that for every
 //! fixture.
 //!
 //! # Renaming a key will need [`crate::config_lint`] to change with it
 //!
-//! No step in [`MIGRATIONS`] currently *consumes* a key — the one entry
-//! reshapes `providers` from an array into a table, and `config_lint` already
-//! understands both spellings. The first migration that renames `old_key` to
-//! `new_key` breaks that: the lint parses the file as written, so it would
-//! report `old_key` as unrecognised and tell the operator to fix something
-//! rolter had already handled.
+//! The version 2 to 3 step *consumes* keys: `api_key`, `api_key_env` and
+//! `egress_proxy` become `api_keys` and `egress_proxies`. That did not break the
+//! lint, because the singular fields are still on the config types and so are
+//! still recognised as keys; the lint parses the file as written and says they
+//! are deprecated instead. A migration that removed a key from the types would
+//! break it: the lint would report `old_key` as unrecognised and tell the
+//! operator to fix something rolter had already handled.
 //!
 //! Resist the obvious fix of linting the migrated document. The paths the lint
 //! prints are how an operator finds the line in their own file, and migrating
@@ -75,7 +87,7 @@ use serde::Serialize;
 use crate::error::Result;
 
 /// Schema version the current build writes and understands.
-pub const CURRENT_SCHEMA_VERSION: u32 = 2;
+pub const CURRENT_SCHEMA_VERSION: u32 = 3;
 
 /// Version assumed for a file with no `schema_version` key.
 ///
@@ -151,13 +163,22 @@ pub struct Step {
 /// entry's `to`, and the last entry's `to` is [`CURRENT_SCHEMA_VERSION`].
 /// `the_chain_is_contiguous` enforces both, so a new step that forgets to bump
 /// the constant fails the build rather than silently never running.
-pub static MIGRATIONS: &[Migration] = &[Migration {
-    from: 1,
-    to: 2,
-    summary: "rewrite the deprecated [[providers]] / [[provider_groups]] arrays \
-              as the tiered { readonly, default } tables (ADR-0022)",
-    apply: tier_provider_sections,
-}];
+pub static MIGRATIONS: &[Migration] = &[
+    Migration {
+        from: 1,
+        to: 2,
+        summary: "rewrite the deprecated [[providers]] / [[provider_groups]] arrays \
+                  as the tiered { readonly, default } tables (ADR-0022)",
+        apply: tier_provider_sections,
+    },
+    Migration {
+        from: 2,
+        to: 3,
+        summary: "rewrite a provider's api_key / api_key_env as an api_keys entry and its \
+                  egress_proxy as a one-element egress_proxies (#1720)",
+        apply: plural_provider_spellings,
+    },
+];
 
 /// ADR-0022 replaced the flat `[[providers]]` array with a tiered table that
 /// distinguishes config-owned read-only entries from seeded defaults. Both
@@ -185,6 +206,107 @@ fn tier_provider_sections(doc: &mut toml::Table) -> Vec<Change> {
                 if count == 1 { "y" } else { "ies" }
             ),
         });
+    }
+    changes
+}
+
+/// The provider tables of a document, in either accepted shape: the flat
+/// `[[providers]]` array, or the tiered `{ readonly, default }` table.
+fn provider_entries(doc: &mut toml::Table) -> Vec<(String, &mut toml::Table)> {
+    let mut out = Vec::new();
+    match doc.get_mut("providers") {
+        Some(toml::Value::Array(entries)) => {
+            for (index, entry) in entries.iter_mut().enumerate() {
+                if let toml::Value::Table(provider) = entry {
+                    out.push((format!("providers[{index}]"), provider));
+                }
+            }
+        }
+        Some(toml::Value::Table(tiers)) => {
+            for (tier, value) in tiers.iter_mut() {
+                if tier != "readonly" && tier != "default" {
+                    continue;
+                }
+                let toml::Value::Array(entries) = value else {
+                    continue;
+                };
+                for (index, entry) in entries.iter_mut().enumerate() {
+                    if let toml::Value::Table(provider) = entry {
+                        out.push((format!("providers.{tier}[{index}]"), provider));
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+    out
+}
+
+/// #1720: write each provider's single credential and single proxy in the
+/// plural spelling. Neither rewrite changes what the provider resolves to:
+/// [`ProviderConfig::resolve_api_key`](crate::ProviderConfig::resolve_api_key)
+/// prefers an inline key to its variable, as an `api_keys` entry does, and a
+/// one-element `api_keys` list is a single key of weight 1 exactly as the pair
+/// was. A provider that already has a non-empty plural list is left alone: the
+/// singular field beside it was ignored, and deleting it would also delete the
+/// one thing the lint can point the operator at.
+fn plural_provider_spellings(doc: &mut toml::Table) -> Vec<Change> {
+    let mut changes = Vec::new();
+    for (path, provider) in provider_entries(doc) {
+        let has_keys = provider
+            .get("api_keys")
+            .and_then(toml::Value::as_array)
+            .is_some_and(|keys| !keys.is_empty());
+        if !has_keys {
+            let key = provider.get("api_key").cloned();
+            let env = provider.get("api_key_env").cloned();
+            if key.is_some() || env.is_some() {
+                let mut entry = toml::Table::new();
+                if let Some(key) = &key {
+                    entry.insert("key".to_string(), key.clone());
+                }
+                if let Some(env) = &env {
+                    entry.insert("env".to_string(), env.clone());
+                }
+                provider.remove("api_key");
+                provider.remove("api_key_env");
+                provider.insert(
+                    "api_keys".to_string(),
+                    toml::Value::Array(vec![toml::Value::Table(entry)]),
+                );
+                let moved = match (key.is_some(), env.is_some()) {
+                    (true, true) => "api_key and api_key_env",
+                    (true, false) => "api_key",
+                    _ => "api_key_env",
+                };
+                changes.push(Change {
+                    path: format!("{path}.{moved}"),
+                    detail: format!(
+                        "{moved} becomes a single entry of api_keys; the provider resolves the \
+                         same credential"
+                    ),
+                });
+            }
+        }
+        let has_proxies = provider
+            .get("egress_proxies")
+            .and_then(toml::Value::as_array)
+            .is_some_and(|proxies| !proxies.is_empty());
+        if !has_proxies {
+            if let Some(proxy @ toml::Value::String(_)) = provider.get("egress_proxy").cloned() {
+                provider.remove("egress_proxy");
+                provider.insert(
+                    "egress_proxies".to_string(),
+                    toml::Value::Array(vec![proxy]),
+                );
+                changes.push(Change {
+                    path: format!("{path}.egress_proxy"),
+                    detail: "egress_proxy becomes a one-element egress_proxies; the provider \
+                             uses the same proxy"
+                        .to_string(),
+                });
+            }
+        }
     }
     changes
 }
@@ -282,12 +404,12 @@ mod tests {
 
     /// The same deployment written in the current shape.
     const CURRENT: &str = r#"
-        schema_version = 2
+        schema_version = 3
 
         [providers]
         readonly = [
-            { name = "openai-main", kind = "openai", api_base = "https://api.openai.com", api_key_env = "OPENAI_API_KEY" },
-            { name = "anthropic-main", kind = "anthropic", api_base = "https://api.anthropic.com", api_key_env = "ANTHROPIC_API_KEY" },
+            { name = "openai-main", kind = "openai", api_base = "https://api.openai.com", api_keys = [{ env = "OPENAI_API_KEY" }] },
+            { name = "anthropic-main", kind = "anthropic", api_base = "https://api.anthropic.com", api_keys = [{ env = "ANTHROPIC_API_KEY" }] },
         ]
 
         [provider_groups]
@@ -425,6 +547,180 @@ mod tests {
         // both report the version they were understood as, not what was on disk
         assert_eq!(legacy.schema_version, Some(CURRENT_SCHEMA_VERSION));
         assert_eq!(current.schema_version, Some(CURRENT_SCHEMA_VERSION));
+    }
+
+    /// Every spelling of a provider's credential and proxy, as an operator on a
+    /// version 2 build has them on disk.
+    const SINGULAR: &str = r#"
+        schema_version = 2
+
+        [providers]
+        readonly = [
+            { name = "env-only", kind = "openai", api_base = "https://a.example", api_key_env = "ROLTER_TEST_ENV" },
+            { name = "inline-only", kind = "openai", api_base = "https://b.example", api_key = "sk-inline" },
+            { name = "both", kind = "openai", api_base = "https://c.example", api_key = "sk-inline", api_key_env = "ROLTER_TEST_ENV" },
+            { name = "proxied", kind = "openai", api_base = "https://d.example", api_key_env = "ROLTER_TEST_ENV", egress_proxy = "http://proxy:3128" },
+            { name = "already-plural", kind = "openai", api_base = "https://e.example", api_keys = [{ env = "ROLTER_TEST_ENV", weight = 3 }], egress_proxies = ["http://one:1", "http://two:2"] },
+            { name = "plural-beside-singular", kind = "openai", api_base = "https://f.example", api_key_env = "IGNORED_ENV", api_keys = [{ env = "ROLTER_TEST_ENV" }], egress_proxy = "http://ignored:1", egress_proxies = ["http://used:2"] },
+            { name = "bare", kind = "ollama", api_base = "http://localhost:11434" },
+        ]
+        default = [
+            { name = "seeded", kind = "openai", api_base = "https://g.example", api_key_env = "ROLTER_TEST_ENV" },
+        ]
+    "#;
+
+    #[test]
+    fn the_singular_spellings_become_the_plural_ones() {
+        let mut doc = table(SINGULAR);
+        let report = migrate(&mut doc);
+        assert_eq!((report.from, report.to), (2, CURRENT_SCHEMA_VERSION));
+
+        let readonly = doc["providers"]["readonly"].as_array().expect("readonly");
+        let by_name = |name: &str| {
+            readonly
+                .iter()
+                .chain(doc["providers"]["default"].as_array().expect("default"))
+                .find(|p| p["name"].as_str() == Some(name))
+                .and_then(toml::Value::as_table)
+                .unwrap_or_else(|| panic!("no provider {name}"))
+        };
+
+        let env_only = by_name("env-only");
+        assert!(!env_only.contains_key("api_key_env"));
+        assert_eq!(
+            env_only["api_keys"].to_string(),
+            r#"[{ env = "ROLTER_TEST_ENV" }]"#
+        );
+        let inline = by_name("inline-only");
+        assert!(!inline.contains_key("api_key"));
+        assert_eq!(inline["api_keys"].to_string(), r#"[{ key = "sk-inline" }]"#);
+        let both = by_name("both");
+        assert!(!both.contains_key("api_key") && !both.contains_key("api_key_env"));
+        assert_eq!(both["api_keys"].as_array().expect("one entry").len(), 1);
+        let proxied = by_name("proxied");
+        assert!(!proxied.contains_key("egress_proxy"));
+        assert_eq!(
+            proxied["egress_proxies"].to_string(),
+            r#"["http://proxy:3128"]"#
+        );
+        // the default tier is rewritten too
+        assert!(by_name("seeded").contains_key("api_keys"));
+        // a provider with a plural list keeps its weights, and the singular
+        // fields that were ignored beside it stay for the lint to report
+        let plural = by_name("already-plural");
+        assert_eq!(plural["api_keys"][0]["weight"].as_integer(), Some(3));
+        assert_eq!(plural["egress_proxies"].as_array().map(Vec::len), Some(2));
+        let beside = by_name("plural-beside-singular");
+        assert_eq!(beside["api_key_env"].as_str(), Some("IGNORED_ENV"));
+        assert_eq!(beside["egress_proxy"].as_str(), Some("http://ignored:1"));
+        assert_eq!(beside["api_keys"].as_array().map(Vec::len), Some(1));
+        // a provider with neither is untouched
+        assert!(!by_name("bare").contains_key("api_keys"));
+    }
+
+    /// The property the issue asks for: the migrated document resolves to the
+    /// same credentials and proxies as the document it came from.
+    #[test]
+    fn the_plural_rewrite_resolves_to_the_same_credentials_and_proxies() {
+        let before = GatewayConfig::from_toml_str(SINGULAR).expect("version 2 parses");
+        let mut doc = table(SINGULAR);
+        migrate(&mut doc);
+        let migrated_raw = toml::to_string(&doc).expect("re-serialises");
+        let after = GatewayConfig::from_toml_str(&migrated_raw).expect("migrated parses");
+
+        // from_toml_str migrates, so `before` is already the plural form; the
+        // raw table is what keeps the singular spelling for the comparison
+        let mut singular: toml::Table = table(SINGULAR);
+        singular.remove(SCHEMA_VERSION_KEY);
+        let mut original = Vec::new();
+        for tier in ["readonly", "default"] {
+            for entry in singular["providers"][tier].as_array().expect("tier") {
+                original.push(
+                    entry
+                        .clone()
+                        .try_into::<crate::ProviderConfig>()
+                        .expect("provider parses as written"),
+                );
+            }
+        }
+        let migrated: Vec<_> = after
+            .providers
+            .iter()
+            .chain(&after.provider_defaults)
+            .collect();
+        assert_eq!(original.len(), migrated.len());
+        for (was, now) in original.iter().zip(&migrated) {
+            assert_eq!(was.name, now.name);
+            assert_eq!(
+                was.api_key_env_name(),
+                now.api_key_env_name(),
+                "{}",
+                was.name
+            );
+            assert_eq!(was.inline_api_key(), now.inline_api_key(), "{}", was.name);
+            assert_eq!(
+                was.egress_proxy_pool(),
+                now.egress_proxy_pool(),
+                "{}",
+                was.name
+            );
+            assert_eq!(
+                was.resolve_api_keys(),
+                now.resolve_api_keys(),
+                "{}",
+                was.name
+            );
+            assert_eq!(
+                was.surplus_api_key_count(),
+                now.surplus_api_key_count(),
+                "{}",
+                was.name
+            );
+        }
+        // and the loader hands back the migrated form for the version 2 file
+        assert_eq!(before.providers.len(), after.providers.len());
+        assert!(before
+            .providers
+            .iter()
+            .all(|p| p.api_key_env.is_none() || p.name == "plural-beside-singular"));
+    }
+
+    #[test]
+    fn a_migrated_singular_file_is_up_to_date() {
+        let mut doc = table(SINGULAR);
+        migrate(&mut doc);
+        let migrated_raw = toml::to_string(&doc).expect("re-serialises");
+
+        let report = plan(&migrated_raw).expect("plans");
+        assert_eq!(report.from, CURRENT_SCHEMA_VERSION);
+        assert!(
+            report.is_empty(),
+            "a migrated document must be a fixed point: {:?}",
+            report.changes().collect::<Vec<_>>()
+        );
+        // and a version 2 file with singular spellings is not
+        let pending = plan(SINGULAR).expect("plans");
+        assert!(pending.changes().any(|c| c.path.ends_with(".api_key_env")));
+        assert!(pending.changes().any(|c| c.path.ends_with(".egress_proxy")));
+    }
+
+    #[test]
+    fn the_flat_provider_array_is_rewritten_too() {
+        // a hand-written version 2 file may still carry the deprecated array
+        let raw = r#"
+            schema_version = 2
+            [[providers]]
+            name = "flat"
+            kind = "openai"
+            api_base = "https://a.example"
+            api_key_env = "FLAT_KEY"
+        "#;
+        let mut doc = table(raw);
+        let report = migrate(&mut doc);
+        assert!(report
+            .changes()
+            .any(|c| c.path == "providers[0].api_key_env"));
+        assert!(doc["providers"][0]["api_keys"].is_array());
     }
 
     #[test]
@@ -573,12 +869,18 @@ mod tests {
         );
     }
 
-    /// The lint reads the file as written, and the current chain consumes no
-    /// keys, so the two do not interact yet. Pinned because the first renaming
-    /// migration breaks it — see the module docs.
+    /// The lint reads the file as written. The version 3 step consumes the
+    /// singular provider keys, which the config types still accept, so neither
+    /// the written file nor its migrated form reports an unrecognised key. A step
+    /// that removed a key from the types would break this — see the module docs.
     #[test]
     fn no_migration_consumes_a_key_the_lint_would_then_call_unrecognised() {
-        for fixture in [LEGACY, CURRENT] {
+        let migrated = {
+            let mut doc = table(LEGACY);
+            migrate(&mut doc);
+            toml::to_string(&doc).expect("re-serialises")
+        };
+        for fixture in [LEGACY, CURRENT, migrated.as_str()] {
             let unknown = crate::config_lint::unknown_keys(fixture).expect("lints");
             assert!(
                 unknown.is_empty(),
