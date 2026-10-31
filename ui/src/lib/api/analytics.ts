@@ -291,9 +291,14 @@ export function fetchAttributionSpend(
   ).then((r) => r.data);
 }
 
-/** what a guardrail did to a request: the three a rule can do, two a provider can */
+/** what a guardrail did to a request: the three a rule can do, three a provider can */
 export type GuardrailAction =
-  "blocked" | "redacted" | "annotated" | "provider_blocked" | "provider_transformed";
+  | "blocked"
+  | "redacted"
+  | "annotated"
+  | "provider_blocked"
+  | "provider_transformed"
+  | "semantic_truncated";
 
 /**
  * One `(action, rule)` of the guardrail outcome rollup (#2158): how many

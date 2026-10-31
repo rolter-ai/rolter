@@ -66,7 +66,7 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { Field } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Switch } from "@/components/ui/switch";
+import { SwitchRow } from "@/components/ui/switch-row";
 import {
   ApiError,
   checkMailRelay,
@@ -1370,14 +1370,12 @@ function EditUserSheet({
             placeholder={t("pages.users.newPasswordPlaceholder")}
           />
         </Field>
-        <label className="flex items-center gap-2 text-sm">
-          <Switch
-            checked={isSuperadmin}
-            aria-labelledby="user-superadmin-label"
-            onCheckedChange={setIsSuperadmin}
-          />
-          <span id="user-superadmin-label">{t("pages.users.superadmin")}</span>
-        </label>
+        <SwitchRow
+          title={t("pages.users.superadmin")}
+          checked={isSuperadmin}
+          onChange={setIsSuperadmin}
+          disabled={saving}
+        />
 
         <div className="rounded-md border border-destructive/30 bg-destructive/5 p-3">
           <div className="flex items-center justify-between gap-2">
@@ -1388,7 +1386,7 @@ function EditUserSheet({
               disabled={saving}
               onClick={() => onDelete(user)}
             >
-              <Trash2 className="h-3.5 w-3.5" />
+              <Trash2 className="h-3.5 w-3.5" aria-hidden />
               {t("common.delete")}
             </Button>
           </div>

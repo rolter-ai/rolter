@@ -166,43 +166,53 @@ after editing the file; it rewrites the generated tables and runs
 `just fmt-docs`, which aligns them (the freshness check ignores alignment).
 The registry is taplo-formatted like every other TOML file.
 
-## Spec drift: research for a scheduled check
+## Spec drift: scheduled operation
 
-#907 asks whether the registry can drive an informational workflow that notices
-when an upstream source changes. The design below is what a prototype should
-implement; it is not built yet (#3337).
+`scripts/spec_drift.py` reads the registry and checks each official source for a
+stable change signal. `.github/workflows/spec-drift.yml` runs it weekly and on
+`workflow_dispatch`; it has no `pull_request` trigger and is not in `ci-ok`.
+Every fetch has a timeout and three attempts with backoff. An unreachable or
+unreadable source is reported as `unavailable`, not as drift, and does not fail
+the run or open an issue.
 
-**Signal per source.** Compare the most stable signal a source offers, never a
-page's raw bytes:
+| Source shape              | Signal and comparison                                                                                          |
+| ------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| A record with `pinned`    | `git ls-remote <repository> HEAD`, compared with `pinned`                                                      |
+| A dated protocol          | The newest `YYYY-MM-DD` on its versioning page, compared with `version`                                        |
+| A record with a changelog | The newest entry date, compared with `reviewed_at`                                                             |
+| An RFC                    | Its `Obsoleted by` and `Updated by` headers, compared with the previous observation                            |
+| Any other living source   | `ETag`, then `Last-Modified`, then a digest of extracted `<main>` content without navigation, scripts or dates |
 
-| Source shape                                                                     | Signal                                                                                                                        |
-| -------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| A git repository (`opentelemetry-proto`, semantic conventions, `b3-propagation`) | the newest release tag, or the commit a branch points at (`git ls-remote`), against `pinned`                                  |
-| A dated protocol (Anthropic, MCP)                                                | the newest dated revision the versioning page lists, against `version`                                                        |
-| A changelog (OpenAI)                                                             | the newest entry date, against `reviewed_at`                                                                                  |
-| An RFC                                                                           | the `Obsoleted by` / `Updated by` header on rfc-editor.org                                                                    |
-| A living documentation page                                                      | `ETag` / `Last-Modified` when present, else a digest of the page's main content after stripping navigation, scripts and dates |
+A non-date `version` such as `forwarded` is observed but never compared as a
+dated implementation pin, so it cannot produce perpetual drift.
 
-**Noise.** Living vendor pages change layout weekly. Only the last row of the
-table digests a page, and only its extracted main content; a change there opens
-nothing on its own until it persists across two runs.
+The workflow caches its observations under a new key each run and restores the
+latest earlier observation. A living-page change is `pending` on its first run
+and becomes drift only when the same signal is present on the next run. This
+suppresses one-off layout changes. RFC observations are saved after their first
+report so an unchanged header is not reported every week.
 
-**Report.** One Actions summary row per changed source: the record id, old and
-new signal, the primary URL, and the record's endpoints, modules and tests, so a
-reviewer knows where to look. The raw signals are uploaded as an artifact.
+The Actions summary has one row per changed, pending or unavailable source: the
+record id, old and new signal, primary URL, endpoints, modules and tests. The
+`spec-drift-signals` artifact contains the raw JSON report, summary and state.
 
-**Follow-up.** One tracking issue per record, found by a fixed title
-(`spec drift: <id>`) so a second run comments on it rather than opening another.
-A draft PR is safe only for a change that is deterministic and generated (a
-pinned commit moving with no claim changing); everything else needs a person.
+A separate job, the only one with `issues: write`, opens one issue per drifted
+record with the fixed title `spec drift: <id>`. Later reports comment on that
+issue instead of creating another; a closed issue is reopened for new drift.
+Issue creation never runs on a pull request.
 
-**Acknowledging.** Bumping `reviewed_at` (and `version` or `pinned`) in the
-registry is the acknowledgement: the next run compares against the new values.
-Deferring is a comment on the tracking issue; the issue stays open.
+For pinned, dated and changelog signals, acknowledgement is a registry update to
+`pinned`, `version` or `reviewed_at` with the corresponding tests. Living-page
+and RFC observations advance after their report, so review and close the issue
+without inventing a registry revision. Deferring is a comment on the tracking
+issue; it stays open. The workflow does not open generated pull requests.
 
-**Running it.** `schedule` plus `workflow_dispatch`, never `pull_request`, and
-never in `ci-ok`'s `needs:`: a vendor outage or a changed page must not fail a PR
-or a release. `permissions: contents: read` plus `issues: write` for the issue
-step only, SHA-pinned actions, no secrets beyond `GITHUB_TOKEN`, a timeout and a
-retry with backoff per fetch, and a source that cannot be fetched is reported as
-unavailable rather than as drift.
+The tests replay recorded HTTP, git and GitHub CLI fixtures and never make live
+network calls. Run them with:
+
+```bash
+uv run --no-project --python 3.13 python -m unittest -v scripts/test_spec_drift.py
+```
+
+The same offline suite runs in `quality.yml`'s static checks, so changes to the
+reporter are gated without making upstream availability a merge condition.

@@ -84,6 +84,8 @@ const EMPTY: GuardrailProviderInput = {
   max_retries: 0,
   failure_mode: "fail_closed",
   max_body_bytes: 65536,
+  max_scored_bytes: null,
+  on_truncated: "score",
   auth_kind: "none",
   auth_env: null,
 };
@@ -697,6 +699,12 @@ function ProviderDialog({
   const pathError =
     pathLeft && !pathValid ? t("pages.guardrailProviders.modelPathRequired") : undefined;
   const shaError = shaLeft && !shaValid ? t("pages.guardrailProviders.modelShaInvalid") : undefined;
+  const scoredValid =
+    form.max_scored_bytes === null ||
+    (form.max_scored_bytes >= form.max_body_bytes && form.max_scored_bytes <= 16 * 1024 * 1024);
+  const [scoredLeft, setScoredLeft] = React.useState(false);
+  const scoredError =
+    scoredLeft && !scoredValid ? t("pages.guardrailProviders.scoredBytesInvalid") : undefined;
   // said once the field is left, not on the first keystroke of a URL that is
   // still being typed
   const [urlLeft, setUrlLeft] = React.useState(false);
@@ -708,7 +716,7 @@ function ProviderDialog({
       : undefined;
   const valid =
     form.name.trim() !== "" &&
-    (local ? pathValid && shaValid : urlValid) &&
+    (local ? pathValid && shaValid && scoredValid : urlValid) &&
     form.timeout_ms > 0 &&
     form.max_body_bytes > 0 &&
     (form.auth_kind === "none" || Boolean(form.auth_env?.trim()));
@@ -924,6 +932,50 @@ function ProviderDialog({
             />
           </Field>
         </div>
+        {local && (
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <Field
+              label={t("pages.guardrailProviders.fieldScoredBytes")}
+              htmlFor="provider-scored-cap"
+              info={t("pages.guardrailProviders.scoredBytesInfo")}
+              error={scoredError}
+            >
+              <Input
+                id="provider-scored-cap"
+                type="number"
+                min={form.max_body_bytes}
+                max={16 * 1024 * 1024}
+                value={form.max_scored_bytes ?? ""}
+                onChange={(event) =>
+                  set({
+                    max_scored_bytes: event.target.value === "" ? null : Number(event.target.value),
+                  })
+                }
+                onBlur={() => setScoredLeft(true)}
+              />
+            </Field>
+            <Field
+              label={t("pages.guardrailProviders.fieldOnTruncated")}
+              htmlFor="provider-on-truncated"
+              info={t("pages.guardrailProviders.onTruncatedInfo")}
+            >
+              <Combobox
+                id="provider-on-truncated"
+                value={form.on_truncated}
+                onChange={(picked) =>
+                  set({ on_truncated: picked as GuardrailProviderInput["on_truncated"] })
+                }
+                options={[
+                  { value: "score", label: t("pages.guardrailProviders.truncatedScore") },
+                  {
+                    value: "fail_closed",
+                    label: t("pages.guardrailProviders.truncatedFailClosed"),
+                  },
+                ]}
+              />
+            </Field>
+          </div>
+        )}
         {!local && (
           <Field
             label={t("pages.guardrailProviders.fieldAuth")}

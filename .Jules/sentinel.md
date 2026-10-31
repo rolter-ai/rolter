@@ -72,6 +72,10 @@
 
 **Learning:** `api_error_message(err)` in `crates/rolter-control/src/sso.rs` previously logged raw internal errors using `tracing::error!(error = %e, "sso error occurred")`. When internal errors (e.g. database connection strings or HTTP error messages) contained URLs with query parameters or basic auth userinfo, credentials could be written unredacted to system logs.
 **Prevention:** Always run internal error display strings through `rolter_core::redact::redact_urls_in_text(&e.to_string())` before logging them with `tracing::error!` or `tracing::warn!`.
+## 2026-10-25 - Redact Sensitive URL Credentials in MCP OAuth Discovery Errors
+
+**Learning:** MCP OAuth discovery in `crates/rolter-control/src/mcp_oauth_discovery.rs` constructed `DiscoveryError::Refused` and `tracing::debug!` messages using raw unredacted URLs and reqwest error strings. When discovery failed against URLs containing sensitive query parameters or userinfo credentials, those secrets could be exposed in API error messages and debug logs.
+**Prevention:** Always sanitize URLs and HTTP client error strings using `rolter_core::redact::redact_urls_in_text` before embedding them into `DiscoveryError::Refused` variants or `tracing` logs.
 ## 2026-10-25 - Consistent 409 Conflict Errors for Config-Owned Provider Groups
 
 **Learning:** `require_group_not_config_owned` and `require_group_row_not_config_owned` in `crates/rolter-control/src/crud/provider_groups.rs` previously returned `ApiError::Core(Error::Config(...))` which rendered as HTTP 400 Bad Request, whereas mutating other config-owned resources (providers, routes, models) returned HTTP 409 Conflict.

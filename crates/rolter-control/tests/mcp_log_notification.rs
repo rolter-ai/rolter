@@ -243,6 +243,20 @@ impl Stack {
             .unwrap_or_else(|| panic!("{event_id} is not listed: {page}"))
     }
 
+    async fn listed_ids(&self, status: &str) -> Vec<String> {
+        let page = self
+            .get(&format!("/api/v1/mcp/logs?limit=200&status={status}"))
+            .await;
+        let mut ids: Vec<String> = page["data"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|row| row["event_id"].as_str().unwrap().to_string())
+            .collect();
+        ids.sort();
+        ids
+    }
+
     async fn summary(&self) -> Value {
         self.get("/api/v1/mcp/logs/summary").await["data"][0].clone()
     }
@@ -415,4 +429,53 @@ async fn the_summary_rates_leave_out_the_calls_no_reply_was_awaited_for() {
         "{summary}"
     );
     assert_eq!(summary["failure_rate"], json!(0.5), "{summary}");
+}
+
+#[tokio::test]
+async fn the_status_filters_agree_with_the_summary_categories() {
+    let _ = skip_without_stack!();
+    for last in [50, 51] {
+        let stack = Stack::migrated_through(last)
+            .await
+            .expect("a configured stack");
+        let (plain, _) = stack.ingest(json!({})).await;
+        let (accepted, _) = stack
+            .ingest(json!({"transport": "sse", "outcome": "accepted"}))
+            .await;
+        let (unread, _) = stack.ingest(json!({"outcome": "unread", "tool": ""})).await;
+        let (note, _) = stack.ingest(json!({"notification": true})).await;
+        let (failed_note, _) = stack
+            .ingest(json!({"notification": true, "status": "error"}))
+            .await;
+        let sorted = |ids: &[&str]| {
+            let mut ids: Vec<String> = ids.iter().map(|id| (*id).to_string()).collect();
+            ids.sort();
+            ids
+        };
+        let expected_success = if last == 51 {
+            sorted(&[plain.as_str()])
+        } else {
+            sorted(&[plain.as_str(), accepted.as_str(), unread.as_str()])
+        };
+        let expected_not_awaited = if last == 51 {
+            sorted(&[accepted.as_str(), unread.as_str(), note.as_str()])
+        } else {
+            sorted(&[note.as_str()])
+        };
+        assert_eq!(
+            stack.listed_ids("success").await,
+            expected_success,
+            "{last}: success"
+        );
+        assert_eq!(
+            stack.listed_ids("not_awaited").await,
+            expected_not_awaited,
+            "{last}: not_awaited"
+        );
+        assert_eq!(
+            stack.listed_ids("error").await,
+            sorted(&[failed_note.as_str()]),
+            "{last}: a failed notification stays a failure"
+        );
+    }
 }

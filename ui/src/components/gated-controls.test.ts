@@ -21,7 +21,7 @@ import { stripComments } from "../../scripts/check-ui-primitives";
 
 const ROOT = join(import.meta.dir, "..", "..");
 /** always gated, so every call site names itself */
-const GATED = ["GatedButton", "GatedSwitch", "GatedCombobox", "RowIconButton"];
+const GATED = ["GatedButton", "GatedSwitch", "GatedCombobox", "GatedInput", "RowIconButton"];
 /** gated only when it is handed a `gate`, and then it names itself too */
 const OPTIONALLY_GATED = ["DeleteIconButton", "MenuItem", "SwitchRow"];
 const OPENING = new RegExp(`<(${[...GATED, ...OPTIONALLY_GATED].join("|")})\\b`, "g");
@@ -33,6 +33,7 @@ const GATE_OWNERS = new Set([
   "src/components/GatedButton.tsx",
   "src/components/GatedSwitch.tsx",
   "src/components/GatedCombobox.tsx",
+  "src/components/GatedInput.tsx",
   "src/components/screen.tsx",
   "src/components/ui/delete-icon-button.tsx",
   "src/components/ui/menu.tsx",

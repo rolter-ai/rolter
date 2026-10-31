@@ -102,7 +102,7 @@ Both HTTP transports are spoken (#3299). A `streamable_http` server is asked wit
 `POST`s whose reply is JSON or an SSE body. A server registered as `sse` (legacy
 HTTP+SSE) gets the older handshake in `McpClient::open_legacy_stream`: `GET` the
 registered address as an event stream, wait for the `endpoint` event, `POST` every
-message there and read each reply off the stream, since the `POST`s answer `202`.
+message there and read each reply off the stream, since the `POST`s answer with a `2xx`.
 The endpoint has to be on the origin the server was registered with (otherwise the
 handshake fails and nothing is sent to it), so a server cannot steer the control
 plane to an address the egress policy never checked. Discovery, the connection
@@ -717,18 +717,20 @@ The gateway records every proxied JSON-RPC `tools/call` in ClickHouse's
   says that status is not what the tool did. The field is left out of every other
   row and the writer sends `input_format_skip_unknown_fields=1`, so an
   un-migrated ClickHouse keeps accepting rows and records a notification as an
-  ordinary `success` row. A notification the policy refuses is a refusal like
-  any other and carries no flag. The control plane's detail read probes for the
-  column with the one that probes `error_scopes` (`McpColumns`) and selects
-  `0` in its place until the migration is applied; `POST /api/v1/mcp/events`
-  accepts `notification` and stores it only when true.
-- **Legacy `sse` replies (#3529).** A server on the legacy `sse` transport
-  answers each `POST` with `202 Accepted` and sends the JSON-RPC reply later on
-  the `GET` event stream the client holds open. A call answered that way with
-  no reply in the `202`'s body is recorded `status = success` with
+  ordinary `success` row. A notification refused by policy, an unreachable
+  upstream or insufficient OAuth scope keeps the flag beside its failure. The
+  control plane's detail read probes for the column with the one that probes
+  `error_scopes` (`McpColumns`) and selects `0` in its place until the migration
+  is applied; `POST /api/v1/mcp/events` accepts `notification` and stores it
+  only when true.
+- **Legacy `sse` replies (#3529, #3564).** A server on the legacy `sse`
+  transport answers each `POST` with `200 OK`, `202 Accepted` or `204 No
+Content` and sends the JSON-RPC reply later on the `GET` event stream the
+  client holds open. The Java MCP SDK's servlet transport answers `200` with an
+  empty body. An empty `2xx` answer is recorded `status = success` with
   `outcome = accepted` (`clickhouse/051_mcp_log_outcome.sql`,
   `LowCardinality(String)`): the server took the call, and nothing says what the
-  tool did. A `202` whose body does carry the call's reply (a JSON-RPC error, as
+  tool did. A `2xx` whose body does carry the call's reply (a JSON-RPC error, as
   some servers send) is judged by it like any other, and a streamable-HTTP
   server, which owes the reply in its answer, still has a bare `202` recorded as
   a transport error. The relay does not correlate the stream's replies with the
@@ -761,8 +763,10 @@ The gateway records every proxied JSON-RPC `tools/call` in ClickHouse's
   `calls - not_awaited`; a window with no awaited call has `null` rates. The
   list and the summary read the optional columns through the same
   `McpColumns` probe as the detail, so a table without `047` or `051` counts
-  every call as awaited. `POST /api/v1/mcp/events` accepts an `outcome` from
-  `MCP_OUTCOMES` beside a `success` status, and an empty `tool` only on an
+  every call as awaited. The list's `status` filter uses that same predicate:
+  `success` means awaited success and `not_awaited` selects the rows counted in
+  the summary's separate bucket. `POST /api/v1/mcp/events` accepts an `outcome`
+  from `MCP_OUTCOMES` beside a `success` status, and an empty `tool` only on an
   `unread` row.
   `ui/scripts/mcp-log-vocabulary.test.ts` holds the dashboard's not-awaited
   vocabulary and every catalog to the shared status and outcome names.

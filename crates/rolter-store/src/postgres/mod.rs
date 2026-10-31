@@ -2332,11 +2332,14 @@ fn provider_from_row(row: GuardrailProvider) -> GuardrailWebhookConfig {
             FailureMode::FailOpen
         },
         max_body_bytes: row.max_body_bytes.max(1) as usize,
-        // not stored: a registry provider scores the default budget and
-        // flags a cut without refusing it; only a config file sets these
-        // (#3513)
-        max_scored_bytes: None,
-        on_truncated: rolter_core::OnTruncated::default(),
+        max_scored_bytes: row
+            .max_scored_bytes
+            .and_then(|value| usize::try_from(value).ok()),
+        on_truncated: match row.on_truncated.as_str() {
+            "score" => rolter_core::OnTruncated::Score,
+            "fail_closed" => rolter_core::OnTruncated::FailClosed,
+            _ => rolter_core::OnTruncated::Unknown,
+        },
         auth,
     }
 }

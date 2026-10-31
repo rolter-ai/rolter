@@ -45,13 +45,31 @@ use ort::value::Tensor;
 use rolter_core::guardrail_webhook::{OnTruncated, MAX_SCORED_WINDOWS};
 use rolter_core::semantic_guards::MAX_CATEGORY_LEN;
 use serde::Deserialize;
-use tokenizers::{PostProcessor, Tokenizer, TruncationParams};
+use tokenizers::decoders::DecoderWrapper;
+use tokenizers::models::ModelWrapper;
+use tokenizers::normalizers::NormalizerWrapper;
+use tokenizers::pattern::Invert;
+use tokenizers::pre_tokenizers::split::SplitPattern;
+use tokenizers::pre_tokenizers::PreTokenizerWrapper;
+use tokenizers::processors::PostProcessorWrapper;
+use tokenizers::{
+    NormalizedString, Normalizer, PostProcessor, PreTokenizedString, PreTokenizer, TokenizerImpl,
+    TruncationParams,
+};
 use tokio::sync::Semaphore;
 
 use crate::local_classifier::{
     read_pinned, ModelError, ModelScores, RuntimeOwner, ScoreError, MAX_CATEGORIES,
     MAX_MODEL_FILE_BYTES, ONNX_FORMAT,
 };
+
+type ErrorPropagatingTokenizer = TokenizerImpl<
+    ModelWrapper,
+    ErrorPropagatingNormalizer,
+    ErrorPropagatingPreTokenizer,
+    PostProcessorWrapper,
+    DecoderWrapper,
+>;
 
 /// The largest ONNX model file loaded.
 pub const MAX_ONNX_MODEL_BYTES: u64 = 1024 * 1024 * 1024;
@@ -110,7 +128,7 @@ pub struct OnnxModel {
     // keep the environment alive until this model's session has dropped
     _environment: Arc<Environment>,
     pub(crate) admission: Arc<Semaphore>,
-    tokenizer: Tokenizer,
+    tokenizer: ErrorPropagatingTokenizer,
     labels: Vec<Option<String>>,
     activation: Activation,
     max_tokens: usize,
@@ -221,10 +239,8 @@ fn validate_tokenizer_patterns(value: &serde_json::Value) -> Result<(), ModelErr
             // serialized Split/Replace regexes use this one-key enum representation
             if fields.len() == 1 {
                 if let Some(serde_json::Value::String(pattern)) = fields.get("Regex") {
-                    regex::Regex::new(pattern).map_err(|_| {
-                        malformed("the tokenizer has a backtracking or oversized Regex pattern; \
-                            use a linear regex, a built-in pre-tokenizer, or an external classifier")
-                    })?;
+                    fancy_regex::Regex::new(pattern)
+                        .map_err(|error| malformed(format_args!("the tokenizer: {error}")))?;
                 }
             }
             for child in fields.values() {
@@ -239,6 +255,180 @@ fn validate_tokenizer_patterns(value: &serde_json::Value) -> Result<(), ModelErr
         _ => {}
     }
     Ok(())
+}
+
+const TOKENIZER_BACKTRACK_LIMIT: usize = 1_000_000;
+const TOKENIZER_DELEGATE_SIZE_LIMIT: usize = 1_000_000;
+
+fn compile_fancy(pattern: &str, literal: bool) -> Result<fancy_regex::Regex, ModelError> {
+    let pattern = if literal {
+        Cow::Owned(regex::escape(pattern))
+    } else {
+        Cow::Borrowed(pattern)
+    };
+    let mut builder = fancy_regex::RegexBuilder::new(&pattern);
+    builder
+        .backtrack_limit(TOKENIZER_BACKTRACK_LIMIT)
+        .delegate_size_limit(TOKENIZER_DELEGATE_SIZE_LIMIT);
+    builder
+        .build()
+        .map_err(|error| malformed(format_args!("the tokenizer: {error}")))
+}
+
+struct ErrorPropagatingPreTokenizer {
+    original: PreTokenizerWrapper,
+    regex: Option<fancy_regex::Regex>,
+    sequence: Vec<Self>,
+}
+
+impl ErrorPropagatingPreTokenizer {
+    fn new(original: &PreTokenizerWrapper) -> Result<Self, ModelError> {
+        let regex = match original {
+            PreTokenizerWrapper::Split(split) => Some(match &split.pattern {
+                SplitPattern::String(pattern) => compile_fancy(pattern, true)?,
+                SplitPattern::Regex(pattern) => compile_fancy(pattern, false)?,
+            }),
+            _ => None,
+        };
+        let sequence = match original {
+            PreTokenizerWrapper::Sequence(sequence) => sequence
+                .as_ref()
+                .iter()
+                .map(Self::new)
+                .collect::<Result<Vec<_>, _>>()?,
+            _ => Vec::new(),
+        };
+        Ok(Self {
+            original: original.clone(),
+            regex,
+            sequence,
+        })
+    }
+}
+
+impl PreTokenizer for ErrorPropagatingPreTokenizer {
+    fn pre_tokenize(&self, pretokenized: &mut PreTokenizedString) -> tokenizers::Result<()> {
+        match &self.original {
+            PreTokenizerWrapper::Sequence(_) => {
+                for tokenizer in &self.sequence {
+                    tokenizer.pre_tokenize(pretokenized)?;
+                }
+                Ok(())
+            }
+            PreTokenizerWrapper::Split(split) => {
+                let regex = self.regex.as_ref().ok_or("a split has no compiled regex")?;
+                if split.invert {
+                    pretokenized
+                        .split(|_, normalized| normalized.split(Invert(regex), split.behavior))
+                } else {
+                    pretokenized.split(|_, normalized| normalized.split(regex, split.behavior))
+                }
+            }
+            original => original.pre_tokenize(pretokenized),
+        }
+    }
+}
+
+struct ErrorPropagatingNormalizer {
+    original: NormalizerWrapper,
+    regex: Option<fancy_regex::Regex>,
+    sequence: Vec<Self>,
+    error: Arc<parking_lot::Mutex<Option<String>>>,
+}
+
+impl ErrorPropagatingNormalizer {
+    fn new(original: &NormalizerWrapper) -> Result<Self, ModelError> {
+        Self::new_shared(original, Arc::default())
+    }
+
+    fn new_shared(
+        original: &NormalizerWrapper,
+        error: Arc<parking_lot::Mutex<Option<String>>>,
+    ) -> Result<Self, ModelError> {
+        let regex = match original {
+            NormalizerWrapper::Replace(replace) => {
+                let value = serde_json::to_value(replace)
+                    .map_err(|error| malformed(format_args!("the tokenizer: {error}")))?;
+                let fields = value["pattern"].as_object().ok_or_else(|| {
+                    malformed("the tokenizer has a Replace without a valid pattern")
+                })?;
+                if let Some(serde_json::Value::String(pattern)) = fields.get("Regex") {
+                    Some(compile_fancy(pattern, false)?)
+                } else if let Some(serde_json::Value::String(pattern)) = fields.get("String") {
+                    Some(compile_fancy(pattern, true)?)
+                } else {
+                    return Err(malformed("the tokenizer has a Replace without a pattern"));
+                }
+            }
+            _ => None,
+        };
+        let sequence = match original {
+            NormalizerWrapper::Sequence(sequence) => sequence
+                .as_ref()
+                .iter()
+                .map(|child| Self::new_shared(child, Arc::clone(&error)))
+                .collect::<Result<Vec<_>, _>>()?,
+            _ => Vec::new(),
+        };
+        Ok(Self {
+            original: original.clone(),
+            regex,
+            sequence,
+            error,
+        })
+    }
+
+    fn clear_error(&self) {
+        *self.error.lock() = None;
+    }
+
+    fn take_error(&self) -> Option<String> {
+        self.error.lock().take()
+    }
+}
+
+impl Normalizer for ErrorPropagatingNormalizer {
+    fn normalize(&self, normalized: &mut NormalizedString) -> tokenizers::Result<()> {
+        let result = match &self.original {
+            NormalizerWrapper::Sequence(_) => {
+                for normalizer in &self.sequence {
+                    normalizer.normalize(normalized)?;
+                }
+                Ok(())
+            }
+            NormalizerWrapper::Replace(replace) => normalized.replace(
+                self.regex
+                    .as_ref()
+                    .ok_or("a replace has no compiled regex")?,
+                &replace.content,
+            ),
+            original => original.normalize(normalized),
+        };
+        if let Err(error) = &result {
+            *self.error.lock() = Some(error.to_string());
+        }
+        result
+    }
+}
+
+impl<'de> Deserialize<'de> for ErrorPropagatingPreTokenizer {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let original = PreTokenizerWrapper::deserialize(deserializer)?;
+        Self::new(&original).map_err(serde::de::Error::custom)
+    }
+}
+
+impl<'de> Deserialize<'de> for ErrorPropagatingNormalizer {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let original = NormalizerWrapper::deserialize(deserializer)?;
+        Self::new(&original).map_err(serde::de::Error::custom)
+    }
 }
 
 impl OnnxModel {
@@ -310,12 +500,12 @@ impl OnnxModel {
             root,
         )
         .map_err(part("the tokenizer"))?;
-        // fancy-regex's iterator hides runtime regex errors; reject those patterns
+        // fancy-regex's own Pattern implementation propagates resource-limit errors
         validate_tokenizer_patterns(
             &serde_json::from_slice(&tokenizer)
                 .map_err(|error| malformed(format_args!("the tokenizer: {error}")))?,
         )?;
-        let mut tokenizer = Tokenizer::from_bytes(&tokenizer)
+        let mut tokenizer = ErrorPropagatingTokenizer::from_bytes(&tokenizer)
             .map_err(|error| malformed(format_args!("the tokenizer: {error}")))?;
         let added = tokenizer
             .get_post_processor()
@@ -435,6 +625,9 @@ impl OnnxModel {
     /// Score `text`, waiting for the session until `deadline` at most.
     pub fn score(&self, text: &str, deadline: Instant, on_truncated: OnTruncated) -> ModelScores {
         let failed = |error: &dyn std::fmt::Display| ScoreError::Failed(error.to_string());
+        if let Some(normalizer) = self.tokenizer.get_normalizer() {
+            normalizer.clear_error();
+        }
         // a tokenizer panic is a provider failure, never a benign classification
         let encoded = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             self.tokenizer.encode(text, true)
@@ -454,6 +647,17 @@ impl OnnxModel {
                 };
             }
         };
+        // added_vocabulary drops the normalizer's Result, so the wrapper retains it
+        if let Some(error) = self
+            .tokenizer
+            .get_normalizer()
+            .and_then(ErrorPropagatingNormalizer::take_error)
+        {
+            return ModelScores {
+                categories: Err(ScoreError::Failed(error)),
+                truncated: false,
+            };
+        }
         let truncated = encoding.get_overflowing().len() >= MAX_SCORED_WINDOWS;
         let categories = if truncated && on_truncated != OnTruncated::Score {
             Err(ScoreError::Truncated)
@@ -603,6 +807,36 @@ mod tests {
 
     fn later() -> Instant {
         Instant::now() + std::time::Duration::from_secs(5)
+    }
+
+    fn provider_for_manifest(
+        folder: &Path,
+        manifest: &serde_json::Value,
+    ) -> rolter_core::GuardrailWebhookConfig {
+        use sha2::{Digest, Sha256};
+        let bytes = manifest.to_string();
+        std::fs::write(folder.join("manifest.json"), &bytes).unwrap();
+        let digest: String = Sha256::digest(bytes.as_bytes())
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        let mut provider = crate::local_classifier::tests::local_provider(&digest, 5_000);
+        provider.model_path = folder.join("manifest.json").to_string_lossy().into_owned();
+        provider
+    }
+
+    fn configured(
+        provider: &rolter_core::GuardrailWebhookConfig,
+    ) -> crate::local_classifier::LocalClassifiers {
+        let classifiers = crate::local_classifier::LocalClassifiers::default();
+        classifiers.configure(
+            &rolter_core::SemanticGuardsConfig {
+                providers: vec![provider.clone()],
+                ..Default::default()
+            },
+            &rolter_core::GuardrailWebhookConfig::default(),
+        );
+        classifiers
     }
 
     #[test]
@@ -929,7 +1163,7 @@ mod tests {
             "847bbeab6174d66a88898f729d52fa8d355fafe1bea101cf960dd404581df70e"
         );
         validate_tokenizer_patterns(&serde_json::from_slice(&source).unwrap()).unwrap();
-        let tokenizer = Tokenizer::from_bytes(&source).unwrap();
+        let tokenizer = ErrorPropagatingTokenizer::from_bytes(&source).unwrap();
         let vectors: serde_json::Value = serde_json::from_slice(
             &std::fs::read(fixtures.join("tokenizer-vectors.json")).unwrap(),
         )
@@ -969,8 +1203,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_split_regex_error_does_not_hide_a_late_injection() {
+    #[tokio::test]
+    async fn a_split_regex_error_does_not_hide_a_late_injection() {
         use sha2::{Digest, Sha256};
         let Some(_model) = fixture() else { return };
         let folder = crate::local_classifier::tests::TempDir::new("regex-error-onnx");
@@ -979,10 +1213,13 @@ mod tests {
             serde_json::from_slice(&std::fs::read(fixtures.join("tokenizer.json")).unwrap())
                 .unwrap();
         tokenizer["pre_tokenizer"] = serde_json::json!({
-            "type": "Split",
-            "pattern": { "Regex": r"(?:(a+)+(?=z))|\s+" },
-            "behavior": "Removed",
-            "invert": false,
+            "type": "Sequence",
+            "pretokenizers": [{
+                "type": "Split",
+                "pattern": { "Regex": r"(?:(a+)+(?=z))|\s+" },
+                "behavior": "Removed",
+                "invert": true,
+            }],
         });
         let tokenizer_bytes = serde_json::to_vec(&tokenizer).unwrap();
         std::fs::write(folder.0.join("tokenizer.json"), &tokenizer_bytes).unwrap();
@@ -994,17 +1231,26 @@ mod tests {
             serde_json::from_slice(&std::fs::read(MANIFEST).unwrap()).unwrap();
         manifest["model"]["path"] = serde_json::json!(fixtures.join("model.onnx"));
         manifest["tokenizer"]["sha256"] = serde_json::json!(digest);
-        let error = OnnxModel::from_manifest(
-            &folder.0.join("manifest.json"),
-            manifest.to_string().as_bytes(),
-            None,
-        )
-        .unwrap_err();
-        assert!(error.to_string().contains("backtracking"), "{error}");
-        assert!(!error.is_transient());
-        assert!(matches!(error, ModelError::Malformed(_)));
+        let provider = provider_for_manifest(&folder.0, &manifest);
+        let classifiers = configured(&provider);
+        let adversarial = format!("hello {}! jailbreak", "a".repeat(64));
+        for _ in 0..2 {
+            let error = classifiers
+                .classify(
+                    &provider,
+                    &serde_json::json!({"messages": [{"role": "user", "content": adversarial}]}),
+                )
+                .await
+                .unwrap_err();
+            assert!(matches!(
+                error,
+                crate::guardrail_webhook::CallFailure::Model
+            ));
+        }
         // a supported linear Split still preserves the late needle on repeated calls
-        tokenizer["pre_tokenizer"]["pattern"] = serde_json::json!({"Regex": r"\s+"});
+        tokenizer["pre_tokenizer"]["pretokenizers"][0]["pattern"] =
+            serde_json::json!({"Regex": r"\s+"});
+        tokenizer["pre_tokenizer"]["pretokenizers"][0]["invert"] = serde_json::json!(false);
         let bytes = serde_json::to_vec(&tokenizer).unwrap();
         std::fs::write(folder.0.join("tokenizer.json"), &bytes).unwrap();
         let digest: String = Sha256::digest(bytes)
@@ -1018,7 +1264,6 @@ mod tests {
             None,
         )
         .unwrap();
-        let adversarial = format!("hello {}! jailbreak", "a".repeat(64));
         for _ in 0..2 {
             assert!(
                 model
@@ -1041,12 +1286,95 @@ mod tests {
                 {"type": "Replace", "pattern": {"Regex": r"(a+)\1"}, "content": ""}
             ]}
         });
-        assert!(validate_tokenizer_patterns(&normalizer).is_err());
+        assert!(validate_tokenizer_patterns(&normalizer).is_ok());
         assert!(validate_tokenizer_patterns(&serde_json::json!({
             "model": {"vocab": {"Regex": 10, "hello": 13}},
             "pre_tokenizer": {"pattern": {"Regex": r"\s+"}},
         }))
         .is_ok());
+    }
+
+    #[test]
+    fn a_replace_regex_error_is_returned_on_every_call() {
+        let original: NormalizerWrapper = serde_json::from_value(serde_json::json!({
+            "type": "Replace",
+            "pattern": {"Regex": r"(?:(a+)+(?=z))|\s+"},
+            "content": "",
+        }))
+        .unwrap();
+        let normalizer = ErrorPropagatingNormalizer::new(&original).unwrap();
+        for _ in 0..2 {
+            let mut normalized = NormalizedString::from("a".repeat(64));
+            let error = normalizer.normalize(&mut normalized).unwrap_err();
+            assert!(error.to_string().contains("backtrack"), "{error}");
+        }
+        let backreference: NormalizerWrapper = serde_json::from_value(serde_json::json!({
+            "type": "Replace",
+            "pattern": {"Regex": r"(a+)\1"},
+            "content": "",
+        }))
+        .unwrap();
+        let normalizer = ErrorPropagatingNormalizer::new(&backreference).unwrap();
+        let mut normalized = NormalizedString::from("aa");
+        normalizer.normalize(&mut normalized).unwrap();
+        assert_eq!(normalized.get(), "");
+    }
+
+    #[tokio::test]
+    async fn a_nested_replace_regex_error_reaches_the_classifier() {
+        use sha2::{Digest, Sha256};
+        let Some(_model) = fixture() else { return };
+        let folder = crate::local_classifier::tests::TempDir::new("nested-regex-error-onnx");
+        let fixtures = Path::new(MANIFEST).parent().unwrap();
+        let mut tokenizer: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(fixtures.join("tokenizer.json")).unwrap())
+                .unwrap();
+        tokenizer["normalizer"] = serde_json::json!({
+            "type": "Sequence",
+            "normalizers": [
+                {"type": "Replace", "pattern": {"Regex": r"(o)\1"}, "content": ""},
+                {"type": "Replace", "pattern": {"Regex": r"(?:(a+)+(?=z))"}, "content": ""},
+            ],
+        });
+        let tokenizer_bytes = serde_json::to_vec(&tokenizer).unwrap();
+        std::fs::write(folder.0.join("tokenizer.json"), &tokenizer_bytes).unwrap();
+        let digest: String = Sha256::digest(&tokenizer_bytes)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        let mut manifest: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(MANIFEST).unwrap()).unwrap();
+        manifest["model"]["path"] = serde_json::json!(fixtures.join("model.onnx"));
+        manifest["tokenizer"]["sha256"] = serde_json::json!(digest);
+        let adversarial = format!("hello {}! jailbreak", "a".repeat(64));
+        let original: NormalizerWrapper =
+            serde_json::from_value(tokenizer["normalizer"].clone()).unwrap();
+        let normalizer = ErrorPropagatingNormalizer::new(&original).unwrap();
+        let mut normalized = NormalizedString::from(adversarial.clone());
+        let error = normalizer.normalize(&mut normalized).unwrap_err();
+        assert!(error.to_string().contains("backtrack"), "{error}");
+        let tokenizer = ErrorPropagatingTokenizer::from_bytes(&tokenizer_bytes).unwrap();
+        tokenizer.encode(adversarial.clone(), true).unwrap();
+        let error = tokenizer
+            .get_normalizer()
+            .and_then(ErrorPropagatingNormalizer::take_error)
+            .expect("the normalizer error is retained after added-vocabulary extraction");
+        assert!(error.contains("backtrack"), "{error}");
+        let provider = provider_for_manifest(&folder.0, &manifest);
+        let classifiers = configured(&provider);
+        for _ in 0..2 {
+            let error = classifiers
+                .classify(
+                    &provider,
+                    &serde_json::json!({"messages": [{"role": "user", "content": adversarial}]}),
+                )
+                .await
+                .unwrap_err();
+            assert!(matches!(
+                error,
+                crate::guardrail_webhook::CallFailure::Model
+            ));
+        }
     }
 
     #[test]
