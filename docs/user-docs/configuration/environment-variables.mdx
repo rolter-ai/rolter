@@ -202,12 +202,13 @@ api_key_env = "ANTHROPIC_API_KEY"
 
 Common provider key variables in use:
 
-| Variable            | Typical provider |
-| ------------------- | ---------------- |
-| `OPENAI_API_KEY`    | OpenAI           |
-| `ANTHROPIC_API_KEY` | Anthropic        |
-| `TOGETHER_API_KEY`  | Together AI      |
-| `GROQ_API_KEY`      | Groq             |
+| Variable             | Typical provider |
+| -------------------- | ---------------- |
+| `OPENAI_API_KEY`     | OpenAI           |
+| `ANTHROPIC_API_KEY`  | Anthropic        |
+| `OPENROUTER_API_KEY` | OpenRouter       |
+| `TOGETHER_API_KEY`   | Together AI      |
+| `GROQ_API_KEY`       | Groq             |
 
 <Tip>
   Always use `api_key_env` rather than writing your provider key inline in `rolter.toml`. Inline keys end up in version control, Docker image layers, and config backups. With `api_key_env`, your `rolter.toml` is safe to commit; only the environment running the gateway ever sees the actual key.
