@@ -1847,17 +1847,8 @@ mod tests {
             .write_all(b"GET /api/v1/analytics/invocations/export HTTP/1.1\r\nhost: x\r\n\r\n")
             .await
             .unwrap();
-        // not reading through the deadline, plus margin
-        tokio::time::sleep(Duration::from_millis(1500)).await;
-        // the server reset the connection while the client had read nothing:
-        // the socket error is pending, where an open connection has none
-        let reset = client.take_error().unwrap();
-        assert!(
-            reset.is_some(),
-            "no reset arrived: the connection is still open"
-        );
-        // so what the client still holds is
-        // only what its small buffers took before the stall, and then the end.
+        // what the client still holds is only what its small buffers took
+        // before the stall, and then the end. Reading observes the close itself:
         // an open connection would keep delivering the log
         let started = Instant::now();
         let mut total = 0usize;

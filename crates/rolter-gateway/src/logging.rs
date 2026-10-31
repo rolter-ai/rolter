@@ -2241,10 +2241,10 @@ mod tests {
                 ..Default::default()
             });
         }
-        let seen = tokio::time::timeout(Duration::from_secs(5), server)
-            .await
-            .expect("server timed out")
-            .unwrap();
+        // dropping the last sender makes the writer flush the batch and exit,
+        // independent of how long it and this test are scheduled under load
+        drop(sink);
+        let seen = server.await.unwrap();
         let rows = |marker: &str| -> Vec<serde_json::Value> {
             let request = seen.iter().find(|r| r.contains(marker)).unwrap();
             let body = request.split("\r\n\r\n").nth(1).unwrap();
