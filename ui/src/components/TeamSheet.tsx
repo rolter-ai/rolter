@@ -1,5 +1,5 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { ArrowUpRight, Folder, Trash2, User } from "lucide-react";
+import { ArrowUpRight, Folder, Loader2, Trash2, User } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 import { Link } from "react-router";
@@ -181,7 +181,10 @@ export function TeamSheet({
               className="mt-[22px]"
               disabled={unchanged || rename.isPending}
             >
-              {t("pages.teams.sheet.rename")}
+              {rename.isPending && (
+                <Loader2 className="mr-2 h-4 w-4 motion-safe:animate-spin" aria-hidden />
+              )}
+              {t(rename.isPending ? "common.saving" : "pages.teams.sheet.rename")}
             </GatedButton>
           </form>
 

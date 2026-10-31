@@ -812,3 +812,35 @@ export const RenameRefusedToAMember: Story = {
     await expectRefused(document.body, "Rename");
   },
 };
+
+export const RenamePending: Story = {
+  render: () => (
+    <Harness
+      role="admin"
+      fetchStub={async (input, init) => {
+        const path = new URL(String(input), "http://localhost").pathname;
+        if (init?.method === "PUT" && path === "/api/v1/teams/team-1") {
+          return new Promise<Response>(() => {});
+        }
+        if (path === "/api/v1/orgs") return json([ORG]);
+        if (/\/teams$/.test(path)) return json(TEAMS);
+        if (/\/memberships$/.test(path)) return json(GRANTS);
+        if (/\/users$/.test(path)) return json(PEOPLE);
+        if (/\/orgs\/org-1\/projects$/.test(path)) return json(PROJECTS);
+        return json([]);
+      }}
+    >
+      <Teams />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByRole("button", { name: "Open Platform" }));
+    const panel = within(sheet());
+    const field = panel.getByLabelText("Team name");
+    await userEvent.clear(field);
+    await userEvent.type(field, "Core platform");
+    await userEvent.click(panel.getByRole("button", { name: "Rename" }));
+    await waitFor(() => expect(panel.getByRole("button", { name: "Saving…" })).toBeDisabled());
+  },
+};
