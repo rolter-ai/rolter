@@ -2412,10 +2412,17 @@ mod tests {
             ))
             .count();
         assert_eq!(
-            rollups, 6,
-            "summary, timeseries, by-model, by-variant, by-attribution, param-adjustments"
+            rollups, 5,
+            "summary, timeseries, by-model, by-attribution, param-adjustments"
         );
         assert_eq!(filtered, rollups);
+        // by-variant array-joins its roles between `from` and `where`, so the
+        // source scan above cannot see it: read its built sql instead
+        let by_variant = by_variant_sql(&Columns::default());
+        assert!(
+            by_variant.contains(&format!("where {WHERE_WINDOW} and {ROW_VISIBLE}")),
+            "{by_variant}"
+        );
     }
 
     #[test]
@@ -2520,7 +2527,9 @@ mod tests {
         let by_variant = by_variant_sql(&Columns::default());
         assert_eq!(
             by_variant
-                .matches("where {WHERE_WINDOW} and {ROW_VISIBLE} and {ROW_FILTERS}")
+                .matches(&format!(
+                    "where {WHERE_WINDOW} and {ROW_VISIBLE} and {ROW_FILTERS}"
+                ))
                 .count(),
             1,
             "{by_variant}"
