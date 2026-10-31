@@ -16,6 +16,7 @@ import {
   Toasted,
   type FetchStub,
   type StoryRole,
+  openOptions,
 } from "./story-harness";
 import type { AnalyticsByModelRow, LoggingSettingsDto, VirtualKeyRow } from "@/lib/api";
 
@@ -48,7 +49,6 @@ const model = (name: string): AnalyticsByModelRow => ({
 const key = (id: string, name: string, prefix: string): VirtualKeyRow => ({
   id,
   project_id: "project-1",
-  key_hash: "hash",
   key_prefix: prefix,
   name,
   models: [],
@@ -289,10 +289,7 @@ export const CaptureOffIgnoresAnOutOfRangeMaxBytes: Story = {
     await waitFor(() => expect(maxBytes()).toBeDisabled());
     await expect(maxBytes()).not.toHaveAttribute("aria-invalid", "true");
     await expect(canvas.queryByText(/Max payload bytes must be/)).toBeNull();
-    await expect(canvas.getByRole("button", { name: "Save changes" })).not.toHaveAttribute(
-      "aria-disabled",
-      "true",
-    );
+    await expect(canvas.queryByText(/attention/)).toBeNull();
     // re-enabling capture re-validates the value
     await userEvent.click(canvas.getByRole("switch", { name: /capture/i }));
     await waitFor(() => expect(maxBytes()).toHaveAttribute("aria-invalid", "true"));
@@ -610,9 +607,13 @@ export const SaveWaitsForAnEdit: Story = {
     const canvas = within(canvasElement);
     const save = await canvas.findByRole("button", { name: "Save changes" });
     await expect(canvas.getByText(/Last saved/)).toBeVisible();
-    await expect(save).toBeDisabled();
-    await userEvent.type(canvas.getByLabelText("Sample rate percent"), "5");
-    await waitFor(() => expect(save).toBeEnabled());
+    await expect(save).toHaveAttribute("aria-disabled", "true");
+    // an edit that leaves the form valid, so Save reads as available
+    const rate = canvas.getByLabelText("Sample rate percent");
+    await userEvent.clear(rate);
+    await userEvent.type(rate, "5");
+    await waitFor(() => expect(save).not.toHaveAttribute("aria-disabled"));
+    await expect(canvas.queryByText(/attention/)).toBeNull();
   },
 };
 
@@ -729,6 +730,34 @@ export const PicksAModelAndMarksAnUnseenOne: Story = {
     await userEvent.click(canvas.getByRole("button", { name: "Save changes" }));
     await expectToast(canvasElement, /logs settings updated/i);
     await expect(sent.body?.payload_capture_models).toEqual(["gpt4o", "claude-sonnet-5"]);
+  },
+};
+
+/**
+ * #3486: the traffic read answers one row per organization's model, and two
+ * organizations may each have a `gpt-4o`. A capture filter matches names, so
+ * the picker offers the name once.
+ */
+export const AModelTwoOrganizationsServeIsOfferedOnce: Story = {
+  render: () => (
+    <Harness
+      reads={{
+        models: [
+          { ...model("gpt-4o"), org_id: "org-1" },
+          { ...model("gpt-4o"), org_id: "org-2" },
+          { ...model("claude-sonnet-5"), org_id: "org-1" },
+        ],
+      }}
+      fetchStub={async () => json(BASE)}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const combobox = await canvas.findByRole("combobox", { name: "Add a model to capture" });
+    await waitFor(() => expect(combobox).toBeEnabled());
+    const listbox = within(await openOptions(combobox));
+    await waitFor(() => expect(listbox.getAllByRole("option", { name: "gpt-4o" })).toHaveLength(1));
+    await expect(listbox.getAllByRole("option", { name: "claude-sonnet-5" })).toHaveLength(1);
   },
 };
 

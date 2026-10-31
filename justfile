@@ -70,8 +70,9 @@ dev: _config
     ( cd ui && "$ui" run dev 2>&1 | sed 's/^/[ui]      /' ) &
     wait
 
-# run the data-plane gateway against rolter.toml
-gateway config="rolter.toml":
+# run the data-plane gateway against rolter.toml (created from the example when
+# missing: a named --config that does not exist refuses to start, #3511)
+gateway config="rolter.toml": _config
     cargo run -p rolter-gateway -- --config {{config}}
 
 # run the control plane + ui host
@@ -101,6 +102,12 @@ gen-specs:
 gen-rbac:
     ROLTER_TEST_UPDATE_RBAC_MATRIX=1 cargo test -p rolter-control --features postgres --lib the_checked_in_matrix_artifact
     cd ui && bun run gen:rbac
+
+# rewrite crates/rolter-control/savings-reasons.json, the list of reasons the savings advisor
+# leaves a request out under, which the dashboard's catalog test reads (#3423); run after
+# changing EXCLUSION_REASONS in crates/rolter-control/src/savings.rs
+gen-savings-reasons:
+    ROLTER_TEST_UPDATE_SAVINGS_REASONS=1 cargo test -p rolter-control --features postgres --lib the_checked_in_reasons
 
 # bring up postgres, redis, clickhouse and rolter
 up:
@@ -248,8 +255,8 @@ dogfood:
     export ROLTER_DATABASE_URL="postgres://$DEV_PG_USER:$DEV_PG_PASSWORD@127.0.0.1:${ROLTER_PG_HOST_PORT:-5432}/rolter"
     export ROLTER_KEK="$kek"
     echo "[dogfood] seeding org + admin user (no providers: add those yourself)"
-    cargo run -q -p rolter-control --features postgres --bin rolter-seed -- \
-      --admin-email "$DEV_EMAIL" --admin-password "$DEV_PASSWORD" >/dev/null
+    printf '%s\n' "$DEV_PASSWORD" | cargo run -q -p rolter-control --features postgres --bin rolter-seed -- \
+      --admin-email "$DEV_EMAIL" --admin-password-stdin >/dev/null
 
     # a worktree's post-start hook can leave a partial node_modules behind, so
     # test for the build tool itself rather than the directory
@@ -451,8 +458,8 @@ dev-creds:
     export ROLTER_DATABASE_URL="postgres://$DEV_PG_USER:$DEV_PG_PASSWORD@127.0.0.1:${ROLTER_PG_HOST_PORT:-5432}/rolter"
     export ROLTER_KEK="$(cat "$d/.kek" 2>/dev/null || true)"
     echo "[dev-creds] rolter admin -> $DEV_EMAIL"
-    cargo run -q -p rolter-control --features postgres --bin rolter-seed -- \
-      --admin-email "$DEV_EMAIL" --admin-password "$DEV_PASSWORD" >/dev/null
+    printf '%s\n' "$DEV_PASSWORD" | cargo run -q -p rolter-control --features postgres --bin rolter-seed -- \
+      --admin-email "$DEV_EMAIL" --admin-password-stdin >/dev/null
 
     # rolter-seed creates the admin but never touches an existing one, so a
     # changed DEV_PASSWORD would leave the old one in force. set it through the

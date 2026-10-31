@@ -423,7 +423,7 @@ describe("findLiterals tells a comparison from a tag", () => {
 });
 
 // prose that reaches the screen without ever sitting in a JSX prop or a text
-// node: the donut built its tail slice as `{ label: `Other (${n})` }` (#1482),
+// node: the old donut chart built its tail slice as `{ label: `Other (${n})` }` (#1482),
 // and `ProviderSheet` held its CTA in a `const` it rendered later (#1531).
 // both were invisible to the gate (#1537)
 describe("findLiterals follows copy through object keys and local bindings", () => {
@@ -777,7 +777,6 @@ describe("findLiterals reads copy the text-node scan cannot see", () => {
   test("catches the copy props the dashboard's own components declare", () => {
     const source = [
       '<PageLead eyebrow="Inputs" />',
-      '<Donut centerLabel="Total" centerSub="requests" />',
       '<Chip removeLabel="Remove model" />',
       '<Segmented ariaLabel="Lock mode" />',
       '<Flag unavailableReason="Needs a restart" />',
@@ -785,8 +784,6 @@ describe("findLiterals reads copy the text-node scan cannot see", () => {
     ].join("\n");
     expect(texts(source)).toEqual([
       "Inputs",
-      "Total",
-      "requests",
       "Remove model",
       "Lock mode",
       "Needs a restart",

@@ -233,8 +233,139 @@ async fn effective_guardrails_name_the_file_as_the_source_of_an_identical_copy()
     assert_eq!(rules[1]["source"], "registry");
     assert_eq!(rules[1]["rule_id"], extra["id"], "{effective}");
     assert_eq!(effective["source"], "file", "{effective}");
-    assert_eq!(effective["overrides"], provider["id"], "{effective}");
+    // since #459 the file's webhook runs beside the registry's providers
+    // rather than displacing one
+    assert_eq!(effective["overrides"], Value::Null, "{effective}");
     assert_eq!(effective["webhook"]["url"], "https://guard.internal/check");
+    let running = effective["semantic"]["providers"]
+        .as_array()
+        .expect("providers");
+    assert_eq!(running.len(), 2, "{effective}");
+    assert_eq!(running[0]["source"], "file");
+    assert_eq!(running[1]["source"], "registry");
+    assert_eq!(running[1]["provider_id"], provider["id"], "{effective}");
+}
+
+/// Scoped policies (#459): several providers can be enabled at once, a policy
+/// is validated and stored with its ordered providers, one enabled policy per
+/// scope, the snapshot carries it, and a listed provider cannot be deleted.
+#[tokio::test]
+async fn scoped_policies_select_several_enabled_providers() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let app = rolter_control::test_app(db.pool().clone())
+        .await
+        .expect("build app");
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+    let provider = |name: &str, stage: &str| {
+        json!({
+            "name": name, "enabled": true, "url": format!("https://{name}.internal/check"),
+            "stage": stage, "timeout_ms": 500, "max_retries": 1,
+            "failure_mode": "fail_closed", "max_body_bytes": 65536, "auth_kind": "none"
+        })
+    };
+    let mut ids = Vec::new();
+    for (name, stage) in [("injection", "pre_call"), ("toxicity", "post_call")] {
+        let created = client
+            .post(format!("{base}/api/v1/guardrails/providers"))
+            .json(&provider(name, stage))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(created.status(), 201);
+        let created: Value = created.json().await.unwrap();
+        ids.push(created["id"].as_str().unwrap().to_string());
+    }
+    // both stay enabled: saving one no longer pauses the other
+    let listed: Value = client
+        .get(format!("{base}/api/v1/guardrails/providers"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(
+        listed
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|p| p["enabled"] == true),
+        "{listed}"
+    );
+
+    let policy = |name: &str, scope_id: &str, thresholds: Value| {
+        json!({
+            "name": name, "enabled": true, "scope_kind": "project", "scope_id": scope_id,
+            "provider_ids": [ids[1], ids[0]], "thresholds": thresholds,
+            "on_violation": "annotate", "streaming": "buffer"
+        })
+    };
+    let bad = client
+        .post(format!("{base}/api/v1/guardrails/policies"))
+        .json(&policy("support", "p-1", json!({"violence": 1.5})))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(bad.status(), 400);
+    let created = client
+        .post(format!("{base}/api/v1/guardrails/policies"))
+        .json(&policy(
+            "support",
+            "p-1",
+            json!({"violence": 0.8, "*": 0.95}),
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(created.status(), 201);
+    let created: Value = created.json().await.unwrap();
+    // the order the policy gave is the order it keeps
+    assert_eq!(
+        created["provider_ids"],
+        json!([ids[1], ids[0]]),
+        "{created}"
+    );
+    let clash = client
+        .post(format!("{base}/api/v1/guardrails/policies"))
+        .json(&policy("support-2", "p-1", json!({})))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(clash.status(), 409, "one enabled policy per scope");
+
+    let snapshot = rolter_store::postgres::PostgresConfigStore::new(db.pool().clone());
+    let config = rolter_store::ConfigStore::load(&snapshot).await.unwrap();
+    assert_eq!(config.semantic_guards.providers.len(), 2);
+    let stored = &config.semantic_guards.policies[0];
+    assert_eq!(stored.providers, ["toxicity", "injection"]);
+    assert_eq!(stored.thresholds.get("violence"), Some(&0.8));
+    let problems = config.semantic_guards.validate(&config.guardrail_webhook);
+    assert!(problems.is_empty(), "the snapshot must load: {problems:?}");
+
+    let refused = client
+        .delete(format!("{base}/api/v1/guardrails/providers/{}", ids[0]))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(refused.status(), 409, "a listed provider cannot be deleted");
+    let deleted = client
+        .delete(format!(
+            "{base}/api/v1/guardrails/policies/{}",
+            created["id"].as_str().unwrap()
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(deleted.status(), 204);
+    let freed = client
+        .delete(format!("{base}/api/v1/guardrails/providers/{}", ids[0]))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(freed.status(), 204);
 }
 
 /// A webhook double: answers every POST with `answer` (after `delay`) and hands
@@ -594,4 +725,82 @@ async fn an_unsaved_guardrail_provider_is_tried_with_a_sample_envelope() {
     )
     .await;
     assert_eq!(out["truncated"], true, "{out}");
+}
+
+#[tokio::test]
+async fn a_local_provider_is_stored_validated_and_reaches_the_snapshot() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let app = rolter_control::test_app(db.pool().clone())
+        .await
+        .expect("build app");
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let url = format!("http://{addr}/api/v1/guardrails/providers");
+    let digest = "ab".repeat(32);
+    let local = json!({
+        "name": "injection", "enabled": true, "kind": "local", "url": "",
+        "model_path": "/etc/rolter/models/injection.json", "model_sha256": digest,
+        "stage": "pre_call", "timeout_ms": 50, "max_retries": 0,
+        "failure_mode": "fail_closed", "max_body_bytes": 65536, "auth_kind": "none"
+    });
+
+    // a local provider with a url, or without its pin, is refused by field
+    for (field, value) in [
+        ("url", json!("https://x.internal")),
+        ("model_sha256", json!(null)),
+    ] {
+        let mut bad = local.clone();
+        bad[field] = value;
+        let refused = client.post(&url).json(&bad).send().await.unwrap();
+        assert_eq!(refused.status(), 400, "{field}");
+        let body: Value = refused.json().await.unwrap();
+        assert_eq!(body["error"]["field"], field, "{body}");
+    }
+
+    let created = client.post(&url).json(&local).send().await.unwrap();
+    assert_eq!(created.status(), 201);
+    let created: Value = created.json().await.unwrap();
+    assert_eq!(created["kind"], "local");
+    assert_eq!(created["url"], "");
+    assert_eq!(created["model_sha256"], digest);
+
+    // a webhook saved beside it keeps working, and carries no model fields
+    let webhook = client
+        .post(&url)
+        .json(&json!({
+            "name": "toxicity", "enabled": true, "url": "https://tox.internal/check",
+            "stage": "post_call", "timeout_ms": 500, "max_retries": 0,
+            "failure_mode": "fail_open", "max_body_bytes": 65536, "auth_kind": "none"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(webhook.status(), 201);
+    let webhook: Value = webhook.json().await.unwrap();
+    assert_eq!(webhook["kind"], "webhook");
+    assert_eq!(webhook["model_path"], Value::Null);
+
+    let store = rolter_store::postgres::PostgresConfigStore::new(db.pool().clone());
+    let config = rolter_store::ConfigStore::load(&store).await.unwrap();
+    let loaded = config
+        .semantic_guards
+        .providers
+        .iter()
+        .find(|p| p.name == "injection")
+        .expect("the local provider is in the snapshot");
+    assert_eq!(loaded.kind, rolter_core::GuardProviderKind::Local);
+    assert_eq!(loaded.model_path, "/etc/rolter/models/injection.json");
+    assert_eq!(loaded.model_sha256, digest);
+    assert!(config.validate_snapshot().is_ok());
+
+    // the schema refuses what the API refuses, for rows written around it
+    let raw = sqlx::query(
+        "insert into guardrail_providers (name, kind, url, model_path, model_sha256) \
+         values ('raw', 'local', 'https://x.internal', '/m.json', $1)",
+    )
+    .bind(&digest)
+    .execute(db.pool())
+    .await;
+    assert!(raw.is_err(), "a local row with a url breaks the kind check");
 }

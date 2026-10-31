@@ -90,6 +90,13 @@ metrics_path = "/internal/metrics"
 
   </Accordion>
 
+  <Accordion title="rolter_mcp_unread_bodies_total">
+    **Type:** Counter, labelled `reason`
+
+    MCP request bodies the proxy forwarded to a server no tool group or manifest governs without reading them, so the tool calls in them are not itemised in the MCP log: `encoded` (a `Content-Encoding` other than `identity`) or `unparseable` (not valid JSON; the proxy reads an ungoverned body only while the MCP log is on and the body mentions `tools/call`). With the MCP log on, each is also one row: `outcome = unread` after a `2xx` response, or the failure the HTTP layer reports. See [How a call's outcome is recorded](/api/mcp#how-a-calls-outcome-is-recorded).
+
+  </Accordion>
+
   <Accordion title="rolter_auth_failures_total">
     **Type:** Counter
 
@@ -272,6 +279,10 @@ These series are scraped, not measured by Rolter. They appear only for providers
 
 Both histograms are labelled `{model="..."}` so you can track latency per model independently. Each histogram exposes the standard `_bucket`, `_sum`, and `_count` series.
 
+<Note>
+  The `model` label of the latency histograms, of `rolter_variant_requests_total` and of `rolter_complexity_route_requests_total` (and that counter's `route` label) is the route's **runtime name**: its plain name, unless another organization has a route of the same name, then `name@<organization id>`. Two organizations' `gpt-4o` routes are therefore two series, each with that organization's own numbers, the same way the circuit-breaker and adaptive-routing series keep them apart. When a second organization takes a name, the first organization's series continue under the new label. A deployment where no two organizations share a route name sees the plain names it always did. The OTLP latency histograms keep the requested model name, as the GenAI conventions define it.
+</Note>
+
 <AccordionGroup>
   <Accordion title="rolter_request_latency_ms">
     **Type:** Histogram · Labels: `model`
@@ -295,6 +306,41 @@ Both histograms are labelled `{model="..."}` so you can track latency per model 
     **Type:** Gauge
 
     The current configuration snapshot version. This increments each time Rolter successfully reloads its configuration. Alert on this staying flat if you expect regular updates, or spiking unexpectedly.
+
+  </Accordion>
+
+  <Accordion title="rolter_semantic_local_truncated_total">
+    **Type:** Counter · **Labels:** `provider`
+
+    Calls of a [local classifier](/security/semantic-guard-policies#long-texts) provider whose text was longer than its `max_scored_bytes`, so the middle of it was not read. The request's log row carries `semantic_truncated:<provider>` too. A provider with `on_truncated = "fail_closed"` refuses these requests; otherwise they are scored on what fits. A steady rate is a reason to raise `max_scored_bytes` or to make the provider fail closed.
+
+  </Accordion>
+
+  <Accordion title="rolter_local_classifier_models">
+    **Type:** Gauge · **Labels:** `provider`, `state`
+
+    Whether each enabled [local classifier](/security/semantic-guard-policies#local-classifier) provider has its model loaded: `1` on the `state` it is in (`loaded` or `failed`) and `0` on the other. A model whose file could not be read is read again in the background, so a `failed` series turns into `loaded` once the file is in place, without a configuration change; one refused for its content or location (a wrong digest, outside `model_root`, malformed) stays `failed` until the configuration changes. The label is the provider's name, never the model's path, and a provider drops out once no configuration names it. Alert on `rolter_local_classifier_models{state="failed"} == 1`: that provider produces no verdict, so every request it judges follows its `failure_mode`, and a `fail_closed` one is refused.
+
+  </Accordion>
+
+  <Accordion title="rolter_snapshot_format">
+    **Type:** Gauge
+
+    The snapshot format of the configuration snapshot the gateway applied last, or `0` while it holds only its bootstrap file. The control plane and the gateway agree on a format on every poll (see [Upgrading](/deployment/upgrading#upgrade-order)), so in a healthy fleet every gateway reads the same value, and the value changes only in a release whose notes say the format moved.
+
+  </Accordion>
+
+  <Accordion title="rolter_snapshot_format_refused">
+    **Type:** Gauge
+
+    `1` while the control plane serves no snapshot format this gateway reads, and `0` once it answers in one the gateway does read. While it is `1`, the gateway keeps serving the config it last applied, and stops receiving changes, revoked keys included. A gateway that never applied a snapshot also reports not ready on `/readyz`. Alert on any non-zero value. It means a gateway was upgraded ahead of its control plane, or the control plane has retired the gateway's format. The gateway's log says which, and what to do.
+
+  </Accordion>
+
+  <Accordion title="rolter_snapshot_unknown_values">
+    **Type:** Gauge · **Labels:** `kind`
+
+    How many values in the gateway's last applied configuration snapshot it does not know, grouped by the kind of enum or entity they belong to: `provider_kind`, `route_strategy`, `budget_period`, `failure_mode` and so on. A value from a newer release is read fail-closed for its own entity: the provider or route is left out, the setting takes its most restrictive reading, or the budget refuses (see [Upgrading](/deployment/upgrading#upgrade-order)). The label is the kind, never the value or the name of the entity, and a kind drops back to `0` once a snapshot applies without it. Alert on any non-zero value: the gateway is ignoring part of its configuration until it is upgraded, and its log names each value at `warn`.
 
   </Accordion>
 
@@ -387,13 +433,13 @@ the default.
 
 ### What is exported
 
-| Kind                | Metrics                                                                                                                                                                                                                                        | How                      |
-| ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------ |
-| Counters and gauges | every `rolter_*_total`, `rolter_config_version`                                                                                                                                                                                                | observable               |
-| Process and runtime | `process.*`, `tokio.runtime.*`                                                                                                                                                                                                                 | observable, OTLP only    |
-| Labelled counters   | `rolter_target_requests_total`, `rolter_variant_requests_total`, `rolter_complexity_route_requests_total`, `rolter_route_limit_blocks_total`, `rolter_redis_reconnects_total`, `rolter_redis_connect_failures_total`, `rolter_fail_open_total` | observable               |
-| Labelled gauges     | `rolter_provider_queue_depth`, `rolter_provider_inflight`, `rolter_redis_connected`                                                                                                                                                            | observable               |
-| Histograms          | `rolter_request_latency_ms`, `rolter_request_ttft_ms`, `rolter_provider_queue_wait_ms`                                                                                                                                                         | recorded per measurement |
+| Kind                | Metrics                                                                                                                                                                                                                                                                                                                   | How                      |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------ |
+| Counters and gauges | every `rolter_*_total`, `rolter_config_version`, `rolter_snapshot_format`, `rolter_snapshot_format_refused`                                                                                                                                                                                                               | observable               |
+| Process and runtime | `process.*`, `tokio.runtime.*`                                                                                                                                                                                                                                                                                            | observable, OTLP only    |
+| Labelled counters   | `rolter_target_requests_total`, `rolter_variant_requests_total`, `rolter_complexity_route_requests_total`, `rolter_route_limit_blocks_total`, `rolter_redis_reconnects_total`, `rolter_redis_connect_failures_total`, `rolter_fail_open_total`, `rolter_semantic_local_truncated_total`, `rolter_mcp_unread_bodies_total` | observable               |
+| Labelled gauges     | `rolter_provider_queue_depth`, `rolter_provider_inflight`, `rolter_redis_connected`, `rolter_snapshot_unknown_values`, `rolter_local_classifier_models`                                                                                                                                                                   | observable               |
+| Histograms          | `rolter_request_latency_ms`, `rolter_request_ttft_ms`, `rolter_provider_queue_wait_ms`                                                                                                                                                                                                                                    | recorded per measurement |
 
 Counters and gauges are **observable instruments**: nothing is pushed on the
 request path, and the SDK reads the same atomics on its own schedule
@@ -413,12 +459,37 @@ inert and allocates nothing.
   comparable and would not be.
 </Note>
 
+### Control-plane metrics
+
+The control plane has no `/metrics` endpoint: it exports over OTLP only, when
+`OTEL_EXPORTER_OTLP_ENDPOINT` is set on it. Besides its snapshot, API and
+connection-pool series it exports one gauge of its configuration's health:
+
+<AccordionGroup>
+  <Accordion title="rolter_config_problems">
+    **Type:** Gauge · **Labels:** `kind`
+
+    How many problems `GET /api/v1/config/problems` lists for the whole deployment, by kind, as the control plane found them the last time it built a configuration snapshot for a new config version. The kinds are:
+
+    - `omitted`: a provider, route or key left out of the snapshot whole, as listed under `omitted`.
+    - `sanitized`: every other change the snapshot makes to serve the rest: a route target or reference pruned, a setting reset to its default, a stored key left out.
+    - `invalid`: a structural problem, such as two rows with one name, that makes the control plane refuse the snapshot, so gateways keep the config they have.
+    - `misread`: a stored row the control plane could read only by guessing, or left out, such as a budget period it does not know.
+    - `bootstrap_shadow`: an organization's provider, route or provider group that shares a name with a readonly row of the control plane's config file, and so replaces the file's row for that organization's keys.
+
+    The label is the kind only, never a row's name or organization. The gauge reports nothing until the control plane has built its first snapshot, and a kind drops back to `0` from the first snapshot built after its last problem is fixed. Alert on a non-zero `invalid`, since configuration changes stop reaching the gateways; the other kinds name rows to look at in the dashboard's configuration problems.
+
+  </Accordion>
+</AccordionGroup>
+
 ### Labels become attributes
 
 Prometheus labels are exported as OTLP attributes with the same names:
 `provider`, `target`, `outcome` on target counters; `model` and `variant` on
 variant counters; `model`, `tier`, `route`, `outcome` on complexity counters;
-and `model` on both histograms.
+and `model` on both histograms. The variant and complexity attributes carry the
+route's runtime name, as their Prometheus labels do; the histograms carry the
+requested model.
 
 Values are carried raw. The backslash-escaping you see in the Prometheus text
 format exists for that format only — OTLP carries attribute values as typed

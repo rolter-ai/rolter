@@ -27,6 +27,14 @@ export interface McpLogRow {
   request_id: string;
   trace_id: string;
   error: string | null;
+  /// 1 for a `tools/call` sent as a JSON-RPC notification, which no reply
+  /// answers, so `status` is only what the HTTP layer said (#3466, #3526); 0
+  /// before ClickHouse migration 047
+  notification?: number | string;
+  /// what refines `status` for a call whose result nothing judged (#3529):
+  /// `accepted` when a legacy `sse` server took the call and sends its reply on
+  /// the stream. empty for every other row, and before migration 051
+  outcome?: string;
 }
 
 export interface McpLogDetail extends McpLogRow {
@@ -35,6 +43,9 @@ export interface McpLogDetail extends McpLogRow {
   /// 1 when the arguments and result were captured but the caller's role is
   /// below the payload floor, so the server blanked them (#2396)
   payload_withheld?: number | string;
+  /// the OAuth scopes an upstream's `insufficient_scope` refusal asked for
+  /// (#3375); absent on a row written before ClickHouse migration 042
+  error_scopes?: string[];
 }
 
 export interface McpLogsQuery extends AnalyticsWindow {
@@ -50,7 +61,14 @@ export interface McpLogsQuery extends AnalyticsWindow {
 
 export interface McpSummaryRow {
   calls: string | number;
+  /// calls no reply was awaited for (notifications, `accepted` calls), counted
+  /// apart and left out of `successes`, `failures` and both rates (#3526)
+  not_awaited?: string | number;
+  successes?: string | number;
   failures: string | number;
+  /// over the awaited calls only; null when the window has none
+  success_rate?: number | null;
+  failure_rate?: number | null;
   // clickhouse averages an empty window to null (and quantile to nan); the
   // control plane forwards the JSON as-is
   avg_latency_ms: number | null;
@@ -305,6 +323,21 @@ export interface McpToolGroupRow {
   updated_at: string;
 }
 
+/** What an MCP tool group can be assigned to (#3295). */
+export type McpAssignmentKind = "virtual_key" | "project" | "team";
+
+export interface McpToolGroupAssignmentRow {
+  group_id: string;
+  subject_kind: McpAssignmentKind;
+  subject_id: string;
+  created_at: string;
+}
+
+export interface McpAssignmentSubject {
+  kind: McpAssignmentKind;
+  id: string;
+}
+
 export interface McpGatewaySettingsRow {
   org_id: string;
   default_transport: string;
@@ -448,7 +481,10 @@ export function fetchMcpToolGroups(orgId: string): Promise<McpToolGroupRow[]> {
 
 export function createMcpToolGroup(
   orgId: string,
-  input: Omit<McpToolGroupRow, "id" | "org_id" | "created_at" | "updated_at">,
+  input: Omit<McpToolGroupRow, "id" | "org_id" | "created_at" | "updated_at"> & {
+    /** written in the same transaction as the group; empty means the whole organization */
+    assignments?: McpAssignmentSubject[];
+  },
 ): Promise<McpToolGroupRow> {
   return sendJson<McpToolGroupRow>("POST", `/api/v1/orgs/${orgId}/mcp/tool-groups`, input);
 }
@@ -462,6 +498,23 @@ export function updateMcpToolGroup(
 
 export function deleteMcpToolGroup(id: string): Promise<void> {
   return sendJson<void>("DELETE", `/api/v1/mcp/tool-groups/${id}`);
+}
+
+/** Every assignment of every tool group of the org. */
+export function fetchMcpToolGroupAssignments(orgId: string): Promise<McpToolGroupAssignmentRow[]> {
+  return getJson<McpToolGroupAssignmentRow[]>(`/api/v1/orgs/${orgId}/mcp/tool-group-assignments`);
+}
+
+/** Replaces the whole set; an empty one hands the group back to the organization. */
+export function replaceMcpToolGroupAssignments(
+  groupId: string,
+  assignments: McpAssignmentSubject[],
+): Promise<McpToolGroupAssignmentRow[]> {
+  return sendJson<McpToolGroupAssignmentRow[]>(
+    "PUT",
+    `/api/v1/mcp/tool-groups/${groupId}/assignments`,
+    { assignments },
+  );
 }
 
 export function fetchMcpSettings(orgId: string): Promise<McpGatewaySettingsRow> {
@@ -570,6 +623,18 @@ export function startMcpOAuth(serverId: string, scopes?: string[]): Promise<McpA
     `/api/v1/mcp-servers/${serverId}/oauth/authorize`,
     scopes ? { scopes } : {},
   );
+}
+
+/**
+ * Consent again for more access (#3296, RFC 6749 §3.3 step-up): the scopes the
+ * grant already holds and the server requires are kept and `scopes` are added,
+ * so the re-consent widens the grant instead of replacing it with the narrower
+ * set. Answered like `startMcpOAuth`, with the url to open.
+ */
+export function startMcpStepUp(serverId: string, scopes: string[]): Promise<McpAuthorizeStarted> {
+  return sendJson<McpAuthorizeStarted>("POST", `/api/v1/mcp-servers/${serverId}/oauth/authorize`, {
+    step_up_scopes: scopes,
+  });
 }
 
 // renews one session from its stored refresh token. a refusal from the

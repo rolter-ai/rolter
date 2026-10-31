@@ -22,7 +22,14 @@ export interface GuardrailProviderRow {
   id: string;
   name: string;
   enabled: boolean;
+  /** `webhook` posts to `url`; `local` runs a classifier from `model_path` on each gateway */
+  kind: "webhook" | "local";
+  /** empty for a local provider */
   url: string;
+  /** the weights file on the gateway's file system; null for a webhook */
+  model_path: string | null;
+  /** the weights file's SHA-256, 64 hex digits; null for a webhook */
+  model_sha256: string | null;
   stage: "pre_call" | "post_call";
   timeout_ms: number;
   max_retries: number;
@@ -35,6 +42,30 @@ export interface GuardrailProviderRow {
 }
 
 export type GuardrailProviderInput = Omit<GuardrailProviderRow, "id" | "created_at" | "updated_at">;
+
+/** the scopes a guardrail policy can be pinned to, narrowest last */
+export const POLICY_SCOPES = ["deployment", "org", "project", "route", "key"] as const;
+export type GuardrailPolicyScope = (typeof POLICY_SCOPES)[number];
+
+export interface GuardrailPolicyRow {
+  id: string;
+  name: string;
+  enabled: boolean;
+  scope_kind: GuardrailPolicyScope;
+  /** null for deployment; an org / project / virtual-key uuid; a route's public model name */
+  scope_id: string | null;
+  /** registry provider ids, consulted in this order */
+  provider_ids: string[];
+  /** category -> threshold in [0, 1]; a provider score >= threshold is a violation; "*" applies to any category not listed */
+  thresholds: Record<string, number>;
+  on_violation: "block" | "annotate";
+  streaming: "reject" | "buffer";
+  description: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export type GuardrailPolicyInput = Omit<GuardrailPolicyRow, "id" | "created_at" | "updated_at">;
 
 export const fetchGuardrailRules = () => getJson<GuardrailRuleRow[]>("/api/v1/guardrails/rules");
 
@@ -189,3 +220,15 @@ export const testGuardrailPolicy = (body: GuardrailPolicyTestInput) =>
 
 export const testGuardrailProvider = (body: GuardrailProviderTestInput) =>
   sendJson<GuardrailProviderTestResult>("POST", "/api/v1/guardrails/providers/test", body);
+
+export const fetchGuardrailPolicies = () =>
+  getJson<GuardrailPolicyRow[]>("/api/v1/guardrails/policies");
+
+export const createGuardrailPolicy = (body: GuardrailPolicyInput) =>
+  sendJson<GuardrailPolicyRow>("POST", "/api/v1/guardrails/policies", body);
+
+export const updateGuardrailPolicy = (id: string, body: GuardrailPolicyInput) =>
+  sendJson<GuardrailPolicyRow>("PUT", `/api/v1/guardrails/policies/${id}`, body);
+
+export const deleteGuardrailPolicy = (id: string) =>
+  sendJson<void>("DELETE", `/api/v1/guardrails/policies/${id}`);

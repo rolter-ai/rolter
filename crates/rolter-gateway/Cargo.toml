@@ -41,11 +41,40 @@ tracing.workspace = true
 clap.workspace = true
 chrono.workspace = true
 scalar_api_reference = { version = "0.2.12", default-features = false }
+# O_NOFOLLOW and O_NONBLOCK for the one open of a local guardrail model, so
+# a FIFO swapped in under model_root cannot block a reload (#3454)
+libc.workspace = true
+# the `onnx/1` model format of local semantic guard providers (#3443), behind
+# the `onnx` feature. ONNX Runtime is loaded from its shared library at run
+# time (`load-dynamic`), so it is not linked or downloaded by the build
+# use the CPU-only API path: api-22 in this ort release enables automatic
+# device selection, which crashes with the tested ONNX Runtime 1.22.0
+# custom tokenizer patterns are restricted to the linear regex subset at load
+ort = { version = "=2.0.0-rc.15", default-features = false, features = [
+  "std",
+  "load-dynamic",
+  "api-21",
+], optional = true }
+tokenizers = { version = "0.22.2", default-features = false, features = [
+  "fancy-regex",
+], optional = true }
+regex = { workspace = true, optional = true }
+
+[features]
+default = []
+# run `onnx/1` local guardrail models (#3443); off by default, see
+# docs/user-docs/security/semantic-guard-policies.mdx for the runtime library
+onnx = ["dep:ort", "dep:tokenizers", "dep:regex"]
 
 [dev-dependencies]
-libc.workspace = true
-# `cli_guard`: every secret-bearing env flag must hide its value in `--help` (#2793)
-rolter-core = { workspace = true, features = ["cli-guard"] }
+# keep the canonical tokenizer snapshot compressed without changing its digest
+flate2 = "1"
+# a paused clock, so a timing test asserts virtual time rather than a wall-clock
+# bound a loaded runner can cross (#3416)
+tokio = { workspace = true, features = ["test-util"] }
+# `cli_guard`: every secret-bearing env flag must hide its value in `--help`
+# (#2793); `test_pipeline`: the exported attempt spans are asserted (#3535)
+rolter-core = { workspace = true, features = ["cli-guard", "test-pipeline"] }
 criterion.workspace = true
 # a capturing layer, so the tenant attributes are asserted to land on the span
 # rather than assumed from the call site (#836)

@@ -223,6 +223,19 @@ impl SessionRepo<'_> {
         .map_err(store_err)
     }
 
+    /// look up a live (unexpired) session by its row id, without touching
+    /// `last_seen_at`: a download ticket names the session it was minted on and
+    /// must find it revoked or expired by the time it is redeemed (#3504)
+    pub async fn find_active_by_id(&self, id: Uuid) -> Result<Option<Session>> {
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "select {SESSION_COLUMNS} from sessions where id = $1 and expires_at > now()"
+        )))
+        .bind(id)
+        .fetch_optional(self.0)
+        .await
+        .map_err(store_err)
+    }
+
     /// delete a session by its token digest (logout); a no-op if it's
     /// already gone or expired
     pub async fn delete_by_hash(&self, token_hash: &str) -> Result<()> {

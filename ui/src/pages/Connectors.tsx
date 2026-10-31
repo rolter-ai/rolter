@@ -741,7 +741,11 @@ function ConnectorSheet({
         <Field label={t("pages.connectors.form.name")} required>
           <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="datadog" />
         </Field>
-        <Field label={t("pages.connectors.form.endpoint")} required>
+        <Field
+          label={t("pages.connectors.form.endpoint")}
+          info={t("pages.connectors.form.endpointInfo")}
+          required
+        >
           <Input
             className="font-mono"
             value={endpoint}

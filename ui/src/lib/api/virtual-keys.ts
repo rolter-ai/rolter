@@ -4,7 +4,6 @@ import { getJson, sendJson } from "./request";
 export interface VirtualKeyRow {
   id: string;
   project_id: string;
-  key_hash: string;
   key_prefix: string;
   name?: string | null;
   models: string[];
@@ -26,6 +25,11 @@ export interface VirtualKeyRow {
   /// `playground` for one the Playground issued itself. null for every key an
   /// operator created on purpose
   purpose?: string | null;
+  /// first characters of the secret an admin rotation replaced, while its
+  /// overlap window is open (#1837). null when no overlap is running
+  previous_key_prefix?: string | null;
+  /// when the replaced secret stops authenticating; null when none is running
+  previous_expires_at?: string | null;
   created_at: string;
 }
 
@@ -71,6 +75,21 @@ export function fetchVirtualKeys(projectId: string): Promise<VirtualKeyRow[]> {
   return getJson<VirtualKeyRow[]>(`/api/v1/projects/${projectId}/virtual-keys`);
 }
 
+/**
+ * A key as the organization-wide listing returns it: the row without the
+ * retired secret's `previous_*` fields. No listing carries a digest of a
+ * secret (#3525).
+ */
+export type OrgVirtualKeyRow = Omit<VirtualKeyRow, "previous_key_prefix" | "previous_expires_at">;
+
+/**
+ * Every key of every project of an organization the caller may read, each
+ * carrying its `project_id` (#3467): one request in place of one per project.
+ */
+export function fetchOrgVirtualKeys(orgId: string): Promise<OrgVirtualKeyRow[]> {
+  return getJson<OrgVirtualKeyRow[]>(`/api/v1/orgs/${orgId}/virtual-keys`);
+}
+
 export function createVirtualKey(
   projectId: string,
   input: CreateVirtualKeyInput,
@@ -114,6 +133,23 @@ export function setVirtualKeyAttribution(
   },
 ): Promise<VirtualKeyRow> {
   return sendJson<VirtualKeyRow>("PUT", `/api/v1/virtual-keys/${id}/attribution`, attribution);
+}
+
+/**
+ * Issue a new secret for a shared key on the same row (#1837), so limits,
+ * attribution and allow-lists carry over. `overlapSeconds` keeps the replaced
+ * secret authenticating for that long; 0 ends it at once. The plaintext comes
+ * back once, like a mint.
+ */
+export function rotateVirtualKey(id: string, overlapSeconds: number): Promise<CreatedVirtualKey> {
+  return sendJson<CreatedVirtualKey>("POST", `/api/v1/virtual-keys/${id}/rotate`, {
+    overlap_seconds: overlapSeconds,
+  });
+}
+
+/** End a rotation's overlap now, so the replaced secret stops authenticating. */
+export function revokeVirtualKeyPreviousSecret(id: string): Promise<VirtualKeyRow> {
+  return sendJson<VirtualKeyRow>("DELETE", `/api/v1/virtual-keys/${id}/previous-secret`);
 }
 
 export function deleteVirtualKey(id: string): Promise<void> {

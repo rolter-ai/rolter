@@ -12,13 +12,13 @@ export const SCOPE_TYPES = [
   "virtual_key",
   "business_unit",
   "customer",
+  "user",
 ] as const;
 
 /**
- * A budget or rate limit that counts every key one person minted (#1830). It is
- * not in `SCOPE_TYPES`: the Limits screen offers no user picker, so creating one
- * stays on the API, but a row of this kind still comes back from the reads and
- * has to be drawn.
+ * A budget or rate limit that counts every key one person minted (#1830). The
+ * Limits screen creates one by picking the person and, optionally, the org or
+ * project to narrow it to (#3282).
  */
 export const USER_SCOPE = "user";
 

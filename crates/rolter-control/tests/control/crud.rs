@@ -3,9 +3,10 @@
 use crate::support::*;
 use serde_json::{json, Value};
 
-/// Providers and provider groups answer `slug/model` from one namespace at the
-/// gateway, so a slug either kind holds is refused to the other kind too, on
-/// create and on rename. A route name is refused where it would sit on another
+/// Providers and provider groups answer `slug/model` from one namespace per
+/// org at the gateway, so a slug either kind of an org holds is refused to the
+/// other kind of that org too, on create and on rename, while another org may
+/// reuse it (#1857). A route name is refused where it would sit on another
 /// org's `slug/model` address or on the builtin `fake-llm`, and is otherwise
 /// free to contain `/` (#1845).
 #[tokio::test]
@@ -74,20 +75,8 @@ async fn providers_groups_and_route_names_share_the_gateways_address_namespace()
     .await;
     assert_eq!(status, 200, "{pool}");
 
-    // across kinds: a provider may not take a group's slug, nor a group a
-    // provider's, and the refusal does not say which org holds it
-    let (status, body) = provider(&org_b, "pool-provider", "pool").await;
-    assert_eq!(status, 409, "provider on a group slug: {body}");
-    assert!(!body.to_string().contains("tenant-a"), "{body}");
     let (status, own) = provider(&org_b, "edge-b", "edge-b").await;
     assert_eq!(status, 200, "{own}");
-    let (status, body) = post(
-        format!("{base}/api/v1/orgs/{org_b}/provider-groups"),
-        json!({"name": "edge", "slug": "edge", "strategy": "round_robin",
-               "members": [{"provider_id": own["id"]}]}),
-    )
-    .await;
-    assert_eq!(status, 409, "group on a provider slug: {body}");
     let (status, own_group) = post(
         format!("{base}/api/v1/orgs/{org_b}/provider-groups"),
         json!({"name": "pool-b", "slug": "pool-b", "strategy": "round_robin",
@@ -96,11 +85,23 @@ async fn providers_groups_and_route_names_share_the_gateways_address_namespace()
     .await;
     assert_eq!(status, 200, "{own_group}");
 
+    // within one org, across kinds: a provider may not take its org's group
+    // slug, nor a group its org's provider slug
+    let (status, body) = provider(&org_b, "pool-b-provider", "pool-b").await;
+    assert_eq!(status, 409, "provider on a group slug: {body}");
+    let (status, body) = post(
+        format!("{base}/api/v1/orgs/{org_b}/provider-groups"),
+        json!({"name": "edge-b group", "slug": "edge-b", "strategy": "round_robin",
+               "members": [{"provider_id": own["id"]}]}),
+    )
+    .await;
+    assert_eq!(status, 409, "group on a provider slug: {body}");
+
     // the same on rename
     let (status, body) = send(
         reqwest::Method::PUT,
         format!("{base}/api/v1/providers/{}", own["id"].as_str().unwrap()),
-        json!({"slug": "pool", "allow_slug_change": true}),
+        json!({"slug": "pool-b", "allow_slug_change": true}),
     )
     .await;
     assert_eq!(status, 409, "provider renamed onto a group slug: {body}");
@@ -110,7 +111,7 @@ async fn providers_groups_and_route_names_share_the_gateways_address_namespace()
             "{base}/api/v1/provider-groups/{}",
             own_group["id"].as_str().unwrap()
         ),
-        json!({"slug": "edge", "allow_slug_change": true}),
+        json!({"slug": "edge-b", "allow_slug_change": true}),
     )
     .await;
     assert_eq!(status, 409, "group renamed onto a provider slug: {body}");
@@ -148,6 +149,18 @@ async fn providers_groups_and_route_names_share_the_gateways_address_namespace()
         assert_eq!(status, 200, "{model}: {body}");
     }
 
+    // another org may reuse either slug, for either kind (#1857). this comes
+    // last: an `edge/…` route of org a would then sit on org b's address too
+    let (status, body) = provider(&org_b, "pool-provider", "pool").await;
+    assert_eq!(status, 200, "another org's group slug: {body}");
+    let (status, body) = post(
+        format!("{base}/api/v1/orgs/{org_b}/provider-groups"),
+        json!({"name": "edge", "slug": "edge", "strategy": "round_robin",
+               "members": [{"provider_id": own["id"]}]}),
+    )
+    .await;
+    assert_eq!(status, 200, "another org's provider slug: {body}");
+
     // nothing refused above reached the snapshot, and it still builds
     let snapshot: Value = client
         .get(format!("{base}/internal/snapshot"))
@@ -161,6 +174,84 @@ async fn providers_groups_and_route_names_share_the_gateways_address_namespace()
         snapshot["config"].is_object(),
         "snapshot refused: {snapshot}"
     );
+}
+
+/// Two creates of one route name, sent at once to two projects of one org,
+/// both pass the API's check before either writes. The database's
+/// `routes_org_model_unique` (#3459) lets exactly one through, and the other
+/// reads the same `409` a sequential create gets, so the snapshot never holds
+/// a duplicate it would refuse. Another org keeps its namesake.
+#[tokio::test]
+async fn concurrent_route_creates_in_one_org_end_in_one_route_and_a_409() {
+    skip_without_db!();
+    let (app, _db) = fresh_app().await;
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+    let post = |url: String, body: Value| {
+        let client = client.clone();
+        async move {
+            let resp = client.post(&url).json(&body).send().await.unwrap();
+            let status = resp.status().as_u16();
+            let json: Value = resp.json().await.unwrap_or(Value::Null);
+            (status, json)
+        }
+    };
+    let id = |v: &Value| v["id"].as_str().unwrap().to_string();
+    let mut projects = Vec::new();
+    for (org, team_projects) in [("race-a", 2), ("race-b", 1)] {
+        let (_, org) = post(
+            format!("{base}/api/v1/orgs"),
+            json!({"name": org, "slug": org}),
+        )
+        .await;
+        let (_, team) = post(
+            format!("{base}/api/v1/orgs/{}/teams", id(&org)),
+            json!({"name": "core"}),
+        )
+        .await;
+        for n in 0..team_projects {
+            let (_, project) = post(
+                format!("{base}/api/v1/teams/{}/projects", id(&team)),
+                json!({"name": format!("app-{n}")}),
+            )
+            .await;
+            projects.push(id(&project));
+        }
+    }
+    let create = |project: String| {
+        post(
+            format!("{base}/api/v1/projects/{project}/routes"),
+            json!({"model": "gpt-4o", "strategy": "round_robin"}),
+        )
+    };
+    for _ in 0..5 {
+        let ((s1, b1), (s2, b2)) =
+            tokio::join!(create(projects[0].clone()), create(projects[1].clone()));
+        let mut statuses = [s1, s2];
+        statuses.sort();
+        assert_eq!(statuses, [200, 409], "{b1} / {b2}");
+        let refused = if s1 == 409 { &b1 } else { &b2 };
+        assert_eq!(refused["error"]["code"], "name_taken", "{refused}");
+        assert!(
+            refused["error"]["message"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("in this organization"),
+            "{refused}"
+        );
+        // clear the winner so the next round races again
+        let winner = if s1 == 200 { &b1 } else { &b2 };
+        let resp = client
+            .delete(format!("{base}/api/v1/routes/{}", id(winner)))
+            .send()
+            .await
+            .unwrap();
+        assert!(resp.status().is_success(), "{}", resp.status());
+    }
+    let (s1, _) = create(projects[0].clone()).await;
+    let (s2, other_org) = create(projects[2].clone()).await;
+    assert_eq!((s1, s2), (200, 200), "another org's namesake: {other_org}");
 }
 
 /// A readonly provider or group from the bootstrap file answers `slug/model`
@@ -247,16 +338,15 @@ async fn a_bootstrap_slug_is_refused_to_every_database_row() {
     }
     let (status, own) = provider("mine", "mine").await;
     assert_eq!(status, 200, "{own}");
-    // a readonly group's own slug meets the older config-owned guard first,
-    // which answers 400; a readonly provider's slug meets the namespace check
-    for (slug, refused) in [("edge-cluster", 409), ("shared-pool", 400)] {
+    // a readonly group or provider slug meets the config-owned/namespace guard and answers 409
+    for slug in ["edge-cluster", "shared-pool"] {
         let (status, body) = post(
             format!("{base}/api/v1/orgs/{org}/provider-groups"),
             json!({"name": format!("group-{slug}"), "slug": slug, "strategy": "round_robin",
                    "members": [{"provider_id": own["id"]}]}),
         )
         .await;
-        assert_eq!(status, refused, "group on bootstrap slug {slug}: {body}");
+        assert_eq!(status, 409, "group on bootstrap slug {slug}: {body}");
     }
     let (status, group) = post(
         format!("{base}/api/v1/orgs/{org}/provider-groups"),
@@ -297,6 +387,183 @@ async fn a_bootstrap_slug_is_refused_to_every_database_row() {
         .await;
         assert_eq!(status, 409, "{model}: {body}");
     }
+}
+
+/// An org's provider, group and route that a bootstrap file later repeats as
+/// global rows are still the org's own (#3516): its admin edits and deletes
+/// them, and the model list names the org's route as stored and only the
+/// file's as config.
+#[tokio::test]
+async fn an_org_row_a_bootstrap_row_shares_a_name_with_stays_the_orgs() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let token = admin_token();
+    let client = reqwest::Client::new();
+    let send =
+        |base: String, bearer: String, method: reqwest::Method, path: String, body: Value| {
+            let client = client.clone();
+            async move {
+                let resp = client
+                    .request(method, format!("{base}{path}"))
+                    .bearer_auth(bearer)
+                    .json(&body)
+                    .send()
+                    .await
+                    .unwrap();
+                let status = resp.status().as_u16();
+                (status, resp.json::<Value>().await.unwrap_or(Value::Null))
+            }
+        };
+
+    // the org's rows exist first, created while no file names them
+    let before = serve(
+        rolter_control::test_app_with_admin_token(pool.clone(), Some(token.to_string()))
+            .await
+            .unwrap(),
+    )
+    .await;
+    let before = format!("http://{before}");
+    let admin =
+        |method, path: String, body| send(before.clone(), token.to_string(), method, path, body);
+    let (_, org) = admin(
+        reqwest::Method::POST,
+        "/api/v1/orgs".into(),
+        json!({"name": "tenant", "slug": "tenant"}),
+    )
+    .await;
+    let org_id = org["id"].as_str().unwrap().to_string();
+    let (_, team) = admin(
+        reqwest::Method::POST,
+        format!("/api/v1/orgs/{org_id}/teams"),
+        json!({"name": "core"}),
+    )
+    .await;
+    let (_, project) = admin(
+        reqwest::Method::POST,
+        format!("/api/v1/teams/{}/projects", team["id"].as_str().unwrap()),
+        json!({"name": "app"}),
+    )
+    .await;
+    let (status, provider) = admin(
+        reqwest::Method::POST,
+        format!("/api/v1/orgs/{org_id}/providers"),
+        json!({"name": "openai", "slug": "openai", "kind": "openai_compatible",
+               "api_base": "http://127.0.0.1:9"}),
+    )
+    .await;
+    assert_eq!(status, 200, "{provider}");
+    let (status, group) = admin(
+        reqwest::Method::POST,
+        format!("/api/v1/orgs/{org_id}/provider-groups"),
+        json!({"name": "pool", "slug": "pool", "strategy": "round_robin",
+               "members": [{"provider_id": provider["id"]}]}),
+    )
+    .await;
+    assert_eq!(status, 200, "{group}");
+    let (status, route) = admin(
+        reqwest::Method::POST,
+        format!(
+            "/api/v1/projects/{}/routes",
+            project["id"].as_str().unwrap()
+        ),
+        json!({"model": "gpt-4o", "strategy": "round_robin"}),
+    )
+    .await;
+    assert_eq!(status, 200, "{route}");
+
+    // then the control plane starts with a file holding the same names globally
+    let mut file = rolter_core::GatewayConfig::default();
+    file.providers.push(rolter_core::ProviderConfig {
+        name: "openai".to_string(),
+        slug: Some("openai".to_string()),
+        kind: rolter_core::ProviderKind::OpenaiCompatible,
+        api_base: "http://127.0.0.1:8".to_string(),
+        ..Default::default()
+    });
+    file.provider_groups.push(rolter_core::ProviderGroupConfig {
+        name: "pool".to_string(),
+        slug: Some("pool".to_string()),
+        strategy: rolter_core::BalancingStrategy::RoundRobin,
+        members: vec![rolter_core::GroupMember {
+            provider: "openai".to_string(),
+            model: None,
+            weight: 1,
+        }],
+        tenancy: None,
+        ..Default::default()
+    });
+    file.routes.push(
+        serde_json::from_value(json!({
+            "model": "gpt-4o",
+            "targets": [{"provider": "openai", "model": "gpt-4o"}]
+        }))
+        .unwrap(),
+    );
+    let after = serve(
+        rolter_control::test_app_with_file_config(pool.clone(), Some(token.to_string()), file)
+            .await
+            .unwrap(),
+    )
+    .await;
+    let after = format!("http://{after}");
+    let org_uuid: uuid::Uuid = org_id.parse().unwrap();
+    let actors = seed_actors(&pool, org_uuid).await;
+    let manager = |method, path: String, body| {
+        send(
+            after.clone(),
+            actors.manager_bearer.clone(),
+            method,
+            path,
+            body,
+        )
+    };
+
+    let (status, body) = manager(
+        reqwest::Method::PUT,
+        format!("/api/v1/providers/{}", provider["id"].as_str().unwrap()),
+        json!({"api_base": "http://127.0.0.1:10"}),
+    )
+    .await;
+    assert_eq!(status, 200, "the org's own provider: {body}");
+    let (status, body) = manager(
+        reqwest::Method::PUT,
+        format!("/api/v1/provider-groups/{}", group["id"].as_str().unwrap()),
+        json!({"name": "renamed pool"}),
+    )
+    .await;
+    assert_eq!(status, 200, "the org's own group: {body}");
+
+    let (status, models) = send(
+        after.clone(),
+        token.to_string(),
+        reqwest::Method::GET,
+        "/api/v1/models".into(),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, 200, "{models}");
+    let sources: Vec<(Option<&str>, &str)> = models
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|m| m["model"] == "gpt-4o")
+        .map(|m| (m["org_id"].as_str(), m["source"].as_str().unwrap()))
+        .collect();
+    assert_eq!(sources.len(), 2, "{models}");
+    assert!(sources.contains(&(Some(org_id.as_str()), "db")), "{models}");
+    assert!(sources.contains(&(None, "config")), "{models}");
+
+    let (status, body) = manager(
+        reqwest::Method::DELETE,
+        format!("/api/v1/provider-groups/{}", group["id"].as_str().unwrap()),
+        Value::Null,
+    )
+    .await;
+    assert!(
+        (200..300).contains(&status),
+        "the org's own group: {status} {body}"
+    );
 }
 
 #[tokio::test]
@@ -3806,4 +4073,228 @@ async fn a_stored_provider_can_opt_out_of_the_host_pin() {
         .await
         .unwrap();
     assert_eq!(pinned["allow_custom_api_base"], false, "{pinned}");
+}
+
+/// #1584: a route target takes `takes_over`, the failure classes it is a
+/// fallback for. The classes are validated, stored, changed in place by a
+/// route update and served in the snapshot; and the API never leaves a route
+/// with only restricted targets, whether the last one is added alone, sent as
+/// the whole list or left behind by a delete.
+#[tokio::test]
+async fn a_target_takes_over_failure_classes_and_a_route_is_never_left_only_restricted() {
+    skip_without_db!();
+    let (app, _db) = fresh_app().await;
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+    let send = |method: reqwest::Method, url: String, body: Value| {
+        let client = client.clone();
+        async move {
+            let resp = client
+                .request(method, &url)
+                .json(&body)
+                .send()
+                .await
+                .unwrap();
+            let status = resp.status().as_u16();
+            (status, resp.json::<Value>().await.unwrap_or(Value::Null))
+        }
+    };
+    let post = |url: String, body: Value| send(reqwest::Method::POST, url, body);
+    let put = |url: String, body: Value| send(reqwest::Method::PUT, url, body);
+    let created = |(status, body): (u16, Value)| {
+        assert_eq!(status, 200, "{body}");
+        body["id"].as_str().expect("id").to_string()
+    };
+
+    let org = created(
+        post(
+            format!("{base}/api/v1/orgs"),
+            json!({"name": "Fallback", "slug": "fallback"}),
+        )
+        .await,
+    );
+    let team = created(
+        post(
+            format!("{base}/api/v1/orgs/{org}/teams"),
+            json!({"name": "core"}),
+        )
+        .await,
+    );
+    let project = created(
+        post(
+            format!("{base}/api/v1/teams/{team}/projects"),
+            json!({"name": "app"}),
+        )
+        .await,
+    );
+    let provider = |name: &'static str| {
+        post(
+            format!("{base}/api/v1/orgs/{org}/providers"),
+            json!({"name": name, "kind": "openai_compatible", "api_base": "http://127.0.0.1:9"}),
+        )
+    };
+    let cheap = created(provider("cheap").await);
+    let premium = created(provider("premium").await);
+    let route = created(
+        post(
+            format!("{base}/api/v1/projects/{project}/routes"),
+            json!({"model": "guarded", "strategy": "round_robin"}),
+        )
+        .await,
+    );
+    let route_url = format!("{base}/api/v1/routes/{route}");
+
+    // a restricted target cannot be a route's first
+    let (status, body) = post(
+        format!("{route_url}/targets"),
+        json!({"provider_id": premium, "takes_over": ["refusal"]}),
+    )
+    .await;
+    assert_eq!(status, 400, "{body}");
+    assert_eq!(body["error"]["field"], "takes_over", "{body}");
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("all_targets_restricted"),
+        "{body}"
+    );
+
+    let ordinary = created(
+        post(
+            format!("{route_url}/targets"),
+            json!({"provider_id": cheap}),
+        )
+        .await,
+    );
+
+    // an unknown class and a repeated one are refused by field
+    for bad in [json!(["rate_limited"]), json!(["timeout", "timeout"])] {
+        let (status, body) = post(
+            format!("{route_url}/targets"),
+            json!({"provider_id": premium, "takes_over": bad}),
+        )
+        .await;
+        assert_eq!(status, 400, "{body}");
+        assert_eq!(body["error"]["field"], "takes_over", "{body}");
+    }
+
+    let restricted = created(
+        post(
+            format!("{route_url}/targets"),
+            json!({"provider_id": premium, "takes_over": ["refusal:content_policy_violation"]}),
+        )
+        .await,
+    );
+    let listed: Value = client
+        .get(format!("{route_url}/targets"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let by_id = |id: &str| {
+        listed
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["id"] == id)
+            .cloned()
+            .unwrap()
+    };
+    assert_eq!(by_id(&ordinary)["takes_over"], json!([]));
+    assert_eq!(
+        by_id(&restricted)["takes_over"],
+        json!(["refusal:content_policy_violation"])
+    );
+
+    // the snapshot the gateway polls carries the classes
+    let snap: Value = client
+        .get(format!("{base}/internal/snapshot"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let served = snap["config"]["routes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["model"] == "guarded")
+        .cloned()
+        .expect("the route is served");
+    let premium_target = served["targets"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["provider"] == "premium")
+        .cloned()
+        .unwrap();
+    assert_eq!(
+        premium_target["takes_over"],
+        json!(["refusal:content_policy_violation"])
+    );
+
+    // a whole list of restricted targets is refused, and changes nothing
+    let (status, body) = put(
+        route_url.clone(),
+        json!({"targets": [
+            {"provider_id": cheap, "takes_over": ["throttled"]},
+            {"provider_id": premium, "takes_over": ["refusal"]},
+        ]}),
+    )
+    .await;
+    assert_eq!(status, 400, "{body}");
+    assert_eq!(body["error"]["field"], "targets", "{body}");
+
+    // a changed set is applied in place: the target keeps its id
+    let (status, body) = put(
+        route_url.clone(),
+        json!({"targets": [
+            {"provider_id": cheap},
+            {"provider_id": premium, "takes_over": ["refusal", "server_error"]},
+        ]}),
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+    let listed: Value = client
+        .get(format!("{route_url}/targets"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let premium_row = listed
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["provider_id"] == premium)
+        .cloned()
+        .unwrap();
+    assert_eq!(premium_row["id"], restricted);
+    assert_eq!(
+        premium_row["takes_over"],
+        json!(["refusal", "server_error"])
+    );
+
+    // removing the last ordinary target would strand the route
+    let (status, body) = send(
+        reqwest::Method::DELETE,
+        format!("{base}/api/v1/route-targets/{ordinary}"),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, 409, "{body}");
+    // the restricted one goes freely
+    let (status, _) = send(
+        reqwest::Method::DELETE,
+        format!("{base}/api/v1/route-targets/{restricted}"),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, 204);
 }

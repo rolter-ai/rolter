@@ -675,8 +675,7 @@ mod tests {
             targets: ["a", "b"]
                 .map(|provider| rolter_core::Target {
                     provider: provider.to_string(),
-                    model: None,
-                    weight: 1,
+                    ..Default::default()
                 })
                 .to_vec(),
             params: Default::default(),
@@ -687,6 +686,7 @@ mod tests {
             tenancy: None,
         };
         crate::state::RouteEntry {
+            namespace: route.model.clone().into(),
             project_scope: None,
             overrides: Default::default(),
             throughput: None,

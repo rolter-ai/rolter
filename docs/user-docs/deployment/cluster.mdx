@@ -31,7 +31,7 @@ Recording a sighting is best-effort: a bookkeeping failure never fails config pr
 These are two different questions, and the inventory reports them separately.
 
 - **Live** — the node polled within the last 60 seconds. The snapshot poll period is measured in seconds, so a node that misses several polls in a row is genuinely gone, not merely slow.
-- **Converged** — the node reported at least the control plane's current `config_version`.
+- **Converged** — the node reported at least the control plane's current `config_version`, and was last served the control plane's own snapshot format. A control plane can serve an older gateway an older format, which may leave out what that format cannot carry (a provider of a new kind, a route with a new restriction), so such a gateway is not converged even on the current version until it is upgraded. See [Upgrade order](/deployment/upgrading#upgrade-order).
 
 A node can be live but lagging (it is polling, it just has not applied the newest snapshot yet), or converged but stale (it stopped polling while on the current version — dead, not healthy). Reading only one axis hides the case that matters.
 
@@ -53,7 +53,7 @@ Forgetting drops a decommissioned node from the inventory. A node that is still 
 
 ## API
 
-All three endpoints are **superadmin only**, and drain and forget are audited. Any signed-in caller can read the counts-only [fleet summary](/api/cluster-summary) instead.
+All three endpoints are for a **superadmin** or an **operator** (a [deployment role](/security/rbac#deployment-roles)), and drain and forget are audited. Any signed-in caller can read the counts-only [fleet summary](/api/cluster-summary) instead.
 
 ```bash
 curl -H "Authorization: Bearer $ROLTER_ADMIN_TOKEN" \
@@ -67,4 +67,12 @@ curl -X DELETE -H "Authorization: Bearer $ROLTER_ADMIN_TOKEN" \
   https://control.example.com/api/v1/cluster/nodes/gw-1
 ```
 
-Each node in the list response carries `live` and `converged` alongside its reported `config_version`, `build_version`, `desired_state` and `last_seen_at`.
+Each node in the list response carries `live` and `converged` alongside its reported `config_version`, `build_version`, `desired_state` and `last_seen_at`, and the snapshot formats of its last poll:
+
+| Field           | Meaning                                                                                                                       |
+| --------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| `formats_min`   | the oldest snapshot format the node stated it reads; `1` for a gateway from before negotiation, which states none             |
+| `formats_max`   | the newest snapshot format the node stated it reads                                                                           |
+| `served_format` | the format its last poll was answered in, or `null` when that poll was refused for its format (`snapshot_format_unsupported`) |
+
+A statement that does not parse is refused with `400` and leaves the recorded range as it was.

@@ -1192,8 +1192,7 @@ impl Gateway {
                 strategy: BalancingStrategy::RoundRobin,
                 targets: vec![Target {
                     provider: provider.to_string(),
-                    model: None,
-                    weight: 1,
+                    ..Default::default()
                 }],
                 params: Default::default(),
                 param_policy: Default::default(),

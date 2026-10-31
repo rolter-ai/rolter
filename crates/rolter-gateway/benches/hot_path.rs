@@ -8,11 +8,14 @@
 //!
 //! - `admission` — breaker `allows`, cooldown `is_parked` and provider health
 //!   on a route with every target healthy, the steady state
-//! - `eligible_pick` — one balancer pick the way `pick_untried` makes it: the
+//! - `eligible_pick` — one balancer pick the way `TargetPool::pick` makes it: the
 //!   eligibility closure asks the three registries about each target, with a
 //!   parked and an unhealthy target in the pool
 //! - `snapshot_read` — the config read every request starts with: an
 //!   `ArcSwap` load and the route lookup
+//! - `key_pool` — a multi-key provider's key pick asking the cooldown registry
+//!   which of its 8 keys are parked: once per key (before #3249) and as one
+//!   mask read
 //!
 //! Before the criterion run, `main` prints an `allocs/op` table. The counting
 //! allocator is installed for this bench binary only and counts the measuring
@@ -205,7 +208,7 @@ fn route_config(routes: usize) -> GatewayConfig {
                 .map(|t| Target {
                     provider: format!("provider-{}", (r + t) % 8),
                     model: Some(format!("upstream-model-{r}")),
-                    weight: 1,
+                    ..Default::default()
                 })
                 .collect(),
             params: Default::default(),
@@ -235,7 +238,7 @@ fn pick_per_target(
     picked.is_some_and(|i| fleet.eligible(i))
 }
 
-/// A pick the way `pick_untried` makes it now: the registries are read once, and
+/// A pick the way `TargetPool::pick` makes it now: the registries are read once, and
 /// only if the balancer asks, then the pick is judged on its own.
 fn pick_snapshot(lb: &dyn LoadBalancer, ctx: &RouteContext, loads: &[u64], fleet: &Fleet) -> bool {
     let seen = std::cell::OnceCell::new();
@@ -288,7 +291,7 @@ fn snapshot_read(c: &mut Criterion) {
             |b, _| {
                 b.iter(|| {
                     let snap = state.snapshot.load();
-                    black_box(snap.routes.contains_key(black_box(model.as_str())))
+                    black_box(snap.routes.get("", black_box(model.as_str())).is_some())
                 });
             },
         );
@@ -296,7 +299,33 @@ fn snapshot_read(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, admission, eligible_pick, snapshot_read);
+/// The key-pool namespace a multi-key provider's keys are parked under.
+const KEY_NS: &str = "key::provider-0";
+const KEYS: usize = 8;
+
+fn key_pool(c: &mut Criterion) {
+    let mut group = c.benchmark_group("key_pool");
+    let cooldowns = Cooldowns::new();
+    cooldowns.park(KEY_NS, 1, 3600);
+    group.bench_function("per_key_locks_8_keys", |b| {
+        b.iter(|| {
+            for i in 0..KEYS {
+                black_box(cooldowns.is_parked(black_box(KEY_NS), i));
+            }
+        });
+    });
+    group.bench_function("mask_8_keys", |b| {
+        b.iter(|| {
+            let parked = cooldowns.parked_mask(black_box(KEY_NS), KEYS);
+            for i in 0..KEYS {
+                black_box(parked.contains(i));
+            }
+        });
+    });
+    group.finish();
+}
+
+criterion_group!(benches, admission, eligible_pick, snapshot_read, key_pool);
 
 /// Print allocations per operation for the paths above, before the timings.
 fn report_allocations() {
@@ -332,9 +361,41 @@ fn report_allocations() {
     let model = "model-500";
     let n = allocs_per_op(RUNS, || {
         let snap = state.snapshot.load();
-        black_box(snap.routes.contains_key(black_box(model)));
+        black_box(snap.routes.get("", black_box(model)).is_some());
     });
     eprintln!("  snapshot_read/load_and_route/1000           {n:>8.2}");
+
+    // an org key resolving a name two orgs share (#1857): the two-level lookup
+    // borrows both keys and allocates nothing
+    let mut shared = route_config(1000);
+    for org in ["org-a", "org-b"] {
+        let mut route = shared.routes[500].clone();
+        route.tenancy = Some(rolter_core::Tenancy {
+            org_id: org.to_string(),
+            project_id: None,
+        });
+        shared.routes.push(route);
+    }
+    let state = AppState::with_logging(&shared, None);
+    let n = allocs_per_op(RUNS, || {
+        let snap = state.snapshot.load();
+        black_box(
+            snap.routes
+                .get(black_box("org-b"), black_box(model))
+                .is_some(),
+        );
+    });
+    eprintln!("  snapshot_read/org_key_shared_name/1000      {n:>8.2}");
+
+    let cooldowns = Cooldowns::new();
+    cooldowns.park(KEY_NS, 1, 3600);
+    let n = allocs_per_op(RUNS, || {
+        let parked = cooldowns.parked_mask(black_box(KEY_NS), KEYS);
+        for i in 0..KEYS {
+            black_box(parked.contains(i));
+        }
+    });
+    eprintln!("  key_pool/mask_8_keys                        {n:>8.2}");
     eprintln!();
 }
 

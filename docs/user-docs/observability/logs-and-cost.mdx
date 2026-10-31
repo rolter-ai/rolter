@@ -27,35 +27,36 @@ The dashboard reads the rows back through the control plane, which needs its own
 
 Every request from a caller the gateway has identified writes one row to the `request_logs` table with the following fields, whatever happened to it: a success, a failure after the upstream errored, or a refusal before any upstream was involved (see [Failed and refused requests](#failed-and-refused-requests)). With a [`sample_rate`](/observability/log-settings#sampling) below `1` only the sampled requests do, each stamped with a `sample_weight`; a raw `count()` or `sum()` over the table shrinks with the rate, and `sum(sample_weight)` or `sum(cost_usd * sample_weight)` restores it.
 
-| Field                   | Type          | Description                                                                                                                                     |
-| ----------------------- | ------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| `ts`                    | DateTime64(3) | When the request **started** — the instant `latency_ms` is measured from                                                                        |
-| `request_id`            | String        | Unique request identifier, echoed in the request id response header (`x-request-id` by default)                                                 |
-| `log_id`                | String        | A key the gateway mints for each request; it ties a row to its captured body. Empty on rows written before it existed                           |
-| `trace_id`              | String        | The caller's distributed-trace id (W3C `traceparent` or B3); empty when the caller sent none                                                    |
-| `model`                 | String        | The public model name the client requested                                                                                                      |
-| `provider`              | String        | The upstream provider that served the request (`builtin` for the built-in `fake-llm` model)                                                     |
-| `target`                | String        | The specific upstream target within the provider                                                                                                |
-| `status`                | UInt16        | HTTP status code returned to the client                                                                                                         |
-| `upstream_status`       | UInt16        | HTTP status of the last upstream attempt that answered, `0` when none did (a refusal, a cache hit, a connection that failed)                    |
-| `attempts`              | UInt8         | Upstream attempts the request made, the one that answered included; `0` when it never reached an upstream                                       |
-| `prompt_tokens`         | UInt32        | Prompt / input token count reported by the upstream, prompt-cache reads and writes included                                                     |
-| `completion_tokens`     | UInt32        | Completion / output token count reported by the upstream                                                                                        |
-| `cost_usd`              | Float64       | Computed cost in USD (see [Cost tracking](#cost-tracking))                                                                                      |
-| `unpriced`              | UInt8         | `1` when the model had no price row, so `cost_usd` is unknown rather than zero (see [Unpriced traffic](#unpriced-traffic))                      |
-| `withheld`              | UInt8         | `1` when the provider answered and billed, but a guardrail or plugin refused delivery (see [Withheld responses](#withheld-responses))           |
-| `usage_unknown`         | UInt8         | `1` when the upstream answered successfully but reported no token usage, so the zero tokens are unknown rather than free                        |
-| `latency_ms`            | UInt32        | End-to-end request latency in milliseconds                                                                                                      |
-| `ttft_ms`               | UInt32        | Time-to-first-token in milliseconds (streaming requests)                                                                                        |
-| `stream`                | UInt8         | `1` when the response was streamed                                                                                                              |
-| `cache_hit`             | UInt8         | `1` when Rolter answered from its own response cache, so no upstream was called and `provider` and `target` are empty                           |
-| `cache_read_tokens`     | UInt32        | Prompt tokens the upstream reused from its own prompt cache                                                                                     |
-| `cache_write_tokens`    | UInt32        | Prompt tokens the upstream wrote to its prompt cache for this request                                                                           |
-| `cache_write_1h_tokens` | UInt32        | The part of `cache_write_tokens` the upstream wrote to its 1 hour prompt cache (Anthropic only); `0` when the provider reports no split         |
-| `error`                 | String        | Why the request failed, including the upstream's own reason; empty on success (see [Failed and refused requests](#failed-and-refused-requests)) |
-| `variant`               | String        | Name of the A/B variant that served the request (blank when not using variants)                                                                 |
-| `lifecycle_operation`   | String        | Which call on a stored response the row records (`retrieve`, `delete`, `cancel`, `input_items`, `compact`, `input_tokens`); empty otherwise     |
-| `sample_weight`         | Float64       | How many real requests the row stands for: `1 / sample_rate` when it was written, `1` when unsampled or written before the column               |
+| Field                   | Type          | Description                                                                                                                                                           |
+| ----------------------- | ------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ts`                    | DateTime64(3) | When the request **started** — the instant `latency_ms` is measured from                                                                                              |
+| `request_id`            | String        | Unique request identifier, echoed in the request id response header (`x-request-id` by default)                                                                       |
+| `log_id`                | String        | A key the gateway mints for each request; it ties a row to its captured body. Empty on rows written before it existed                                                 |
+| `trace_id`              | String        | The caller's distributed-trace id (W3C `traceparent` or B3); empty when the caller sent none                                                                          |
+| `model`                 | String        | The public model name the client requested                                                                                                                            |
+| `provider`              | String        | The upstream provider that served the request (`builtin` for the built-in `fake-llm` model)                                                                           |
+| `target`                | String        | The specific upstream target within the provider                                                                                                                      |
+| `status`                | UInt16        | HTTP status code returned to the client                                                                                                                               |
+| `upstream_status`       | UInt16        | HTTP status of the last upstream attempt that answered, `0` when none did (a refusal, a cache hit, a connection that failed)                                          |
+| `attempts`              | UInt8         | Upstream attempts the request made, the one that answered included; `0` when it never reached an upstream                                                             |
+| `prompt_tokens`         | UInt32        | Prompt / input token count reported by the upstream, prompt-cache reads and writes included                                                                           |
+| `completion_tokens`     | UInt32        | Completion / output token count reported by the upstream                                                                                                              |
+| `cost_usd`              | Float64       | Computed cost in USD (see [Cost tracking](#cost-tracking))                                                                                                            |
+| `unpriced`              | UInt8         | `1` when the model had no price row, so `cost_usd` is unknown rather than zero (see [Unpriced traffic](#unpriced-traffic))                                            |
+| `withheld`              | UInt8         | `1` when the provider answered and billed, but a guardrail or plugin refused delivery (see [Withheld responses](#withheld-responses))                                 |
+| `usage_unknown`         | UInt8         | `1` when the upstream answered successfully but reported no token usage, so the zero tokens are unknown rather than free                                              |
+| `latency_ms`            | UInt32        | End-to-end request latency in milliseconds                                                                                                                            |
+| `ttft_ms`               | UInt32        | Time-to-first-token in milliseconds (streaming requests)                                                                                                              |
+| `stream`                | UInt8         | `1` when the response was streamed                                                                                                                                    |
+| `cache_hit`             | UInt8         | `1` when Rolter answered from its own response cache, so no upstream was called and `provider` and `target` are empty                                                 |
+| `cache_read_tokens`     | UInt32        | Prompt tokens the upstream reused from its own prompt cache                                                                                                           |
+| `cache_write_tokens`    | UInt32        | Prompt tokens the upstream wrote to its prompt cache for this request                                                                                                 |
+| `cache_write_1h_tokens` | UInt32        | The part of `cache_write_tokens` the upstream wrote to its 1 hour prompt cache (Anthropic only); `0` when the provider reports no split                               |
+| `error`                 | String        | Why the request failed, including the upstream's own reason; empty on success (see [Failed and refused requests](#failed-and-refused-requests))                       |
+| `variant`               | String        | Name of the A/B variant that served the request (blank when not using variants)                                                                                       |
+| `lifecycle_operation`   | String        | Which call on a stored response the row records (`retrieve`, `delete`, `cancel`, `input_items`, `compact`, `input_tokens`); empty otherwise                           |
+| `fallback_reason`       | String        | The failure class that sent the request on to the target that answered it (see [Fallback targets](/reliability/fallback-targets)); empty when the first dial answered |
+| `sample_weight`         | Float64       | How many real requests the row stands for: `1 / sample_rate` when it was written, `1` when unsampled or written before the column                                     |
 
 The built-in `fake-llm` model is logged like any provider. It has no upstream, so its rows carry `provider = builtin` and `target = fake-llm`, and the token counts are the ones the fake response reports (a streamed chat completion included, though its stream carries no usage object). Its `cost_usd` is exactly `0`, and its rows are never marked `unpriced` or `usage_unknown`: a model that costs nothing is not an accounting gap. They show up on **LLM Logs** and in the analytics screens with no special casing, which makes `fake-llm` a quick way to check that logging works end to end. Requests it refuses, for example a `400` for a missing `input`, are logged with that status. Requests to `fake-llm` are not charged against token-per-minute limits or budgets, and its rows carry no captured payload.
 
@@ -73,6 +74,29 @@ What is **not** logged is anything that happens before the gateway knows who is 
 
 Rows written before `clickhouse/015_upstream_attempts.sql` default both columns to `0`.
 
+#### The outcome of each request
+
+Every row also names what happened to the request in its `outcome` column, so a refusal is selected by its reason rather than inferred from an empty provider and a 4xx:
+
+| `outcome`            | The request                                                                                                               |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| `served`             | got a successful answer, from an upstream, the [response cache](/concepts/response-cache) or the built-in `fake-llm`      |
+| `upstream_error`     | reached an upstream and ended in an error: the provider's own, or the gateway's after every attempt failed                |
+| `withheld`           | was answered and billed, and a post-call policy withheld the answer (see [Withheld responses](#withheld-responses))       |
+| `cancelled`          | lost its caller before the answer was delivered                                                                           |
+| `refused_budget`     | was refused before routing because a budget is spent (`402`)                                                              |
+| `refused_rate_limit` | was refused before routing by a rate limit or a route's own cap (`429`)                                                   |
+| `refused_guardrail`  | was refused before routing by a guardrail or the PII sanitizer                                                            |
+| `refused_plugin`     | was refused before routing by a plugin                                                                                    |
+| `refused_access`     | was refused before routing: an unknown model, or one the key may not use (`403`, `404`)                                   |
+| `refused_invalid`    | was refused before routing because it cannot be served as sent: a missing parameter, an endpoint the route's servers lack |
+| `refused`            | was refused for another reason, or no target was left to try                                                              |
+| `unknown`            | was logged before the gateway recorded an outcome, or by a gateway older than the column                                  |
+
+The `refused_*` rows are the requests refused after the key resolved, and read as described above: no `provider` or `target` and `attempts = 0`. The gateway picks the reason from the error code it answered with (`insufficient_quota`, `rate_limit_exceeded`, `guardrail_blocked`, `plugin_blocked`, `model_not_found`, ...), and from the status where the answer has no code. New outcomes may be added in a later release; treat a name you do not know as "see `status` and `error`".
+
+The column is added by `clickhouse/030_request_outcome.sql`. Every row older than the file reads `unknown`, and a gateway upgraded before you apply it keeps logging and loses only the outcome. Filter by it in **LLM Logs** with **Outcome**, or with `outcome=` on [`GET /api/v1/analytics/invocations`](#paging-the-invocation-log).
+
 **Calls on a stored response** are logged too: `GET`, `DELETE`, `cancel` and `input_items` on `/v1/responses/{id}` write one row each, like any other request from a known caller. The row's `model` is the model the response was created for, and its `provider` and `target` are the ones that hold it. `lifecycle_operation` says which call it was. The row has no tokens and no cost, and it is not marked `unpriced` or `usage_unknown`: the call generates nothing, so there is nothing to price. These calls are not billable, so they do not count against a budget, a token limit or a request limit, and they are left out of the per-model latency series on `/metrics`.
 
 Failures read as they do for a model request. A provider that answered with an error has its status in `upstream_status` and `attempts = 1`; one that could not be reached is a `502` with `upstream_status = 0`. A call the gateway turned away itself has an empty `provider` and `target` and `attempts = 0`: an id that does not exist, has expired or belongs to another tenant (`404`, with no `model` since there is no stored response to take one from), access that was revoked since the response was created (`403`), or an operation the response's provider has no API for (`501`).
@@ -86,7 +110,9 @@ A [realtime](/api/realtime) session writes one row per model response rather tha
 <Note>
   `ts` is the moment the request began, so `ts + latency_ms` is when it finished. Rows written by a Rolter older than 1.0 have no `ts` of their own and fall back to the ClickHouse column default, which records the moment their **batch was flushed** — in that data a burst of requests shares one millisecond and ordering inside a batch is arbitrary. Only rows written by a current gateway carry the true request time.
 
-`ts` is stored as `DateTime64(3)`, so requests that genuinely begin inside the same millisecond still share a timestamp. `GET /api/v1/analytics/invocations` therefore orders by `ts desc, request_id desc`: a tied pair keeps a stable, repeatable order, which is what stops a row appearing on two pages or on none.
+`ts` is stored as `DateTime64(3)`, so requests that genuinely begin inside the same millisecond still share a timestamp. `seq` tells such requests apart: each row also carries the gateway's start sequence, and `GET /api/v1/analytics/invocations` orders by `ts desc, seq desc, request_id desc`, so a tied pair keeps a stable, repeatable order, which is what stops a row appearing on two pages or on none.
+
+`seq` is the number of nanoseconds on the gateway process's monotonic clock between its start and the request's, counted from 1, so within one gateway instance a larger `seq` is a later start. It exists only per instance: two gateways' sequences are unrelated, and a restart begins again near 1. Two requests in the same millisecond are therefore ordered by when they began only when one gateway served both. Across gateways their order is stable and repeatable but not chronological. `ts` and the table's sorting key are unchanged, and no existing row is rewritten: rows older than the column, and rows from a gateway that predates it, have `seq` `0`. The column comes from `clickhouse/021_request_log_seq.sql` ([Upgrading](/deployment/upgrading)). The list works before you apply it, reading `seq` as `0`. The next page cursor now reads `timestamp|seq|request_id`, and a cursor handed out before the upgrade still resumes, at worst repeating rows of its one millisecond. The request log can also be downloaded as a CSV ([CSV exports](/api/dashboard-analytics#csv-exports)).
 
 </Note>
 
@@ -171,18 +197,18 @@ cache_write_per_mtok = 3.125   # optional; defaults to input_per_mtok when absen
 
 Rolter reads the prompt-cache hit from the field the provider reports it in, and records it as `cache_read_tokens`. Every spelling below counts the hit **inside** the prompt total except Anthropic's, which Rolter adds back in, so `prompt_tokens` is always the whole prompt and the cached share is priced at `cached_input_per_mtok`:
 
-| Provider                                                                                                                                                                                             | Where the cache hit is reported                                                      |
-| ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
-| OpenAI, Azure OpenAI, OpenRouter, Groq, xAI, Qwen, Z.ai/GLM, Mistral, Together, Fireworks, MiniMax, Doubao, Perplexity, Gemini (OpenAI-compatible endpoint), Meta Llama API, Nebius, Sarvam, Hunyuan | `usage.prompt_tokens_details.cached_tokens` (Chat Completions)                       |
-| OpenAI, Bedrock's OpenAI models, Meta Llama API and Sarvam (Responses API)                                                                                                                           | `usage.input_tokens_details.cached_tokens`                                           |
-| Ollama, llama.cpp, vLLM                                                                                                                                                                              | `usage.prompt_tokens_details.cached_tokens`, when the server reports one             |
-| Anthropic                                                                                                                                                                                            | `usage.cache_read_input_tokens`, beside `input_tokens` rather than inside it         |
-| Fireworks (dedicated deployments)                                                                                                                                                                    | the `fireworks-cached-prompt-tokens` response header, read when the body states none |
-| Databricks-hosted Claude                                                                                                                                                                             | `usage.cache_read_input_tokens`, at the top of `usage` beside `prompt_tokens`        |
-| DeepSeek                                                                                                                                                                                             | `usage.prompt_cache_hit_tokens` (`prompt_tokens` is the hits plus the misses)        |
-| Kimi (Moonshot), some Together models                                                                                                                                                                | `usage.cached_tokens`, at the top of `usage`                                         |
-| GigaChat                                                                                                                                                                                             | `usage.precached_prompt_tokens`                                                      |
-| Gemini (native `generateContent`), Gemini Interactions                                                                                                                                               | `cachedContentTokenCount`, `total_cached_tokens`; carried across by the translator   |
+| Provider                                                                                                                                                                                                        | Where the cache hit is reported                                                      |
+| --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
+| OpenAI, Azure OpenAI, OpenRouter, Groq, xAI, Qwen, Z.ai/GLM, Mistral, Together, Fireworks, MiniMax, Doubao, Perplexity, Gemini (OpenAI-compatible endpoint), Meta Llama API, Nebius, Sarvam, Hunyuan, YandexGPT | `usage.prompt_tokens_details.cached_tokens` (Chat Completions)                       |
+| OpenAI, Bedrock's OpenAI models, Meta Llama API and Sarvam (Responses API)                                                                                                                                      | `usage.input_tokens_details.cached_tokens`                                           |
+| Ollama, llama.cpp, vLLM                                                                                                                                                                                         | `usage.prompt_tokens_details.cached_tokens`, when the server reports one             |
+| Anthropic                                                                                                                                                                                                       | `usage.cache_read_input_tokens`, beside `input_tokens` rather than inside it         |
+| Fireworks (dedicated deployments)                                                                                                                                                                               | the `fireworks-cached-prompt-tokens` response header, read when the body states none |
+| Databricks-hosted Claude                                                                                                                                                                                        | `usage.cache_read_input_tokens`, at the top of `usage` beside `prompt_tokens`        |
+| DeepSeek                                                                                                                                                                                                        | `usage.prompt_cache_hit_tokens` (`prompt_tokens` is the hits plus the misses)        |
+| Kimi (Moonshot), some Together models                                                                                                                                                                           | `usage.cached_tokens`, at the top of `usage`                                         |
+| GigaChat                                                                                                                                                                                                        | `usage.precached_prompt_tokens`                                                      |
+| Gemini (native `generateContent`), Gemini Interactions                                                                                                                                                          | `cachedContentTokenCount`, `total_cached_tokens`; carried across by the translator   |
 
 A provider that caches but is not in the table logs `cache_read_tokens = 0` and is priced as fresh input until its field is added, so report the provider if you run into one. The table lists the providers whose documentation, or a response someone captured, names the field, not every provider that caches. Google documents no `usage` block for its OpenAI-compatible endpoints; Gemini's is in the table from a captured response, but no response with a cache hit was found for Vertex AI's, and Cohere's, Upstage's, OVHcloud's, Scaleway's and Ernie's compatible endpoints are not documented either, so a cache hit from any of them is read only if it uses one of the spellings above. Doubao's, Hunyuan's and Gemini's compatible endpoints are listed on the strength of the shape they copy, not of a primary source or a captured hit, so check `cache_read_tokens` on a request you know repeats a long prompt before relying on it.
 
@@ -260,7 +286,7 @@ How it combines and what it records:
 - **Token rates are still required.** A price row must name `input_per_mtok` and `output_per_mtok`, so a model billed only by the unit takes `0` for both. Zero is a rate, not a missing one.
 - **Unset means `unpriced`.** An image, transcription or speech request that reports no tokens on a price with no rate for its unit is logged `unpriced = 1` with `cost_usd = 0`, the same as a model with no price row. Before this, such a request on a row that priced only tokens was logged as priced and free.
 - **A duration that is not stated is unknown, not free.** A transcription returned as `json`, `text`, `srt` or `vtt` carries no duration. With `audio_input_per_minute` set, the row is logged `usage_unknown = 1` and `cost_usd = 0`. Ask for `verbose_json`, or use a model that reports its audio duration in `usage`, to have it priced.
-- **Failed requests cost nothing.** A request the upstream refused records no unit cost. A response a guardrail or plugin withheld after the provider produced it is still billed: images by `n`, speech by its input, a transcription not at all (its duration was in the body that was withheld).
+- **Failed requests cost nothing.** A request the upstream refused records no unit cost. A response a guardrail or plugin withheld after the provider produced it is still billed: images by `n`, speech by its input, a transcription by the duration the provider stated, read before the answer was withheld.
 - **Budgets count it.** `cost_usd` is the figure budgets add, so unit-priced requests advance an org, team, project, key, business-unit or customer budget exactly as token-priced ones do, and a rate in another currency is converted to the base first.
 - **Setting it.** The **Pricing** screen has an _image_, an _audio minute_ and a _speech character_ field, and a price that sets one shows a badge on its card. Over the API the rates are `image_per_unit`, `audio_input_per_minute` and `speech_per_mchar` on `PUT /api/v1/model-prices`, with the same rule as the cache-write rates: a body that leaves one out keeps the stored rate, `null` clears it. The **Pricing override** section of an image model's sheet edits the image rate, and that of an audio model's sheet the audio minute and speech character rates. Saving the sheet without touching one keeps the stored rate, and emptying one clears it.
 
@@ -359,7 +385,7 @@ currency).
 
 ### Cache hits and overall p95
 
-`GET /api/v1/analytics/summary` also reports `cache_hit_requests`, the requests answered from rolter's response cache (a provider's prompt cache is not counted here; it shows in each row's `cache_read_tokens`), and `p95_latency_ms`, the 95th percentile of latency over the whole window. The hit count is scaled by the log's sampling weight like every other count, so the response-cache hit rate is `cache_hit_requests / requests`; the percentile is read from the sampled rows as they are, since a uniform sample already estimates it. The dashboard home shows both.
+`GET /api/v1/analytics/summary` also reports `cache_hit_requests`, the requests answered from rolter's response cache (a provider's prompt cache is not counted here; it shows in each row's `cache_read_tokens`), `cache_read_tokens`, the prompt tokens the provider served from its own prompt cache, beside `prompt_tokens` and `cache_reported_prompt_tokens`, the prompt tokens of the requests whose provider stated its cache reads at all, zero included (a read share is the cache reads over that, so a provider that does not report them does not dilute it; all three are scaled by the sampling weight), `cache_unmeasured_requests`, the requests with a prompt whose provider did not state them (#3410; both are left out while `request_logs` lacks `cache_usage_reported`), and `p95_latency_ms`, the 95th percentile of latency over the whole window. The hit count is scaled by the log's sampling weight like every other count, so the response-cache hit rate is `cache_hit_requests / requests`; the percentile is weighted by the same sample weight (each kept row counts as the requests it stands for), so a log whose sample rate changed inside the window, or a route sampled at another rate, does not over-represent its lightly sampled traffic. The by-model `p50_latency_ms` and `p95_latency_ms` are weighted the same way; `avg_latency_ms` is weighted the same way, the sum of latency times weight over the sum of the weights, and is `0` for a window with no rows. The dashboard home shows both.
 
 ### Withheld and unknown-usage traffic
 
@@ -454,7 +480,7 @@ The call's arguments and result are stored only when `[logging.payload_capture]`
 Every usage, spend, provider-health and MCP-log read takes an optional `since` (inclusive) and `until` (exclusive). Left out, or sent empty, they cover the last 7 days up to now. Each accepts:
 
 - RFC 3339, which is what `Date.prototype.toISOString()` and most SDKs write: `2026-07-01T00:00:00Z`, `2026-07-01T00:00:00.123+02:00`
-- a date and time with no offset, read in the ClickHouse server's time zone: `2026-07-01 00:00:00`, `2026-07-01T00:00:00.000`
+- a date and time with no offset, read as UTC: `2026-07-01 00:00:00`, `2026-07-01T00:00:00.000`
 - a bare date: `2026-07-01`
 
 Anything else is refused with `400` and an error naming the parameter:
@@ -470,22 +496,27 @@ Anything else is refused with `400` and an error naming the parameter:
 }
 ```
 
-That covers a date the calendar does not have (`2026-02-30`), a lowercase `t` or `z`, and a Unix timestamp; send those as RFC 3339 instead. The check exists because ClickHouse reads a bound it cannot parse as 1970-01-01, so without it a typo would scan the whole log rather than fail.
+That covers a date the calendar does not have (`2026-02-30`), a lowercase `t` or `z`, and a Unix timestamp; send those as RFC 3339 instead. The check exists because ClickHouse reads a bound it cannot parse as 1970-01-01, so without it a typo would scan the whole log rather than fail. A bound that parses but lies before `2000-01-01T00:00:00Z` or more than one day past now is refused the same way, with `code: "time_bound_out_of_range"`.
 
 <Warning>
   Percent-encode the `+` of a positive offset as `%2B`. A query string decodes a bare `+` to a space, so `since=2026-07-01T00:00:00+02:00` arrives as `2026-07-01T00:00:00 02:00` and is refused, with a message that says so.
 </Warning>
 
+### The dashboard's window picker
+
+The picker on the Dashboard, LLM Logs, Cost Attribution and Savings offers the named windows above and **Custom range…**, which takes a start and an end day. The end day is included: 1 to 7 October covers seven whole days, from midnight on the 1st to midnight on the 8th, and the dashboard sends those two instants as `since` and `until`; a range whose last day has not ended yet runs up to now. The days, like the month windows, are counted in the time zone the charts are drawn in: your **Time zone** preference when you set one, your browser's otherwise. When that zone is not your browser's, the picker names it under the list. An end before the start is refused where you type it, and the screen keeps the last range that was whole. The address carries a range as `window=custom&since=2026-10-01&until=2026-10-07`, and a saved view stores the same three values. On the Dashboard, each figure's arrow compares a custom range with the same number of days straight before it.
+
 ## Filtering LLM Logs
 
 **Filters** opens a rail beside the **LLM Logs** table that narrows the requests of one time window, the last 24 hours unless you pick another. The window is counted back from each refresh, so a screen left open keeps showing a single day. The control plane applies each filter before it cuts the page, so a page of 50 is 50 matching requests.
 
-- **Time window** is one of the [reporting windows](#time-windows). The address carries it as `window=7d`.
+- **Time window** is one of the [reporting windows](#time-windows) or a [custom range](#the-dashboards-window-picker). The address carries it as `window=7d`, or as `window=custom&since=…&until=…`.
 - **Status** is one of **All**, **Errors** and **OK**. **Errors** is every request answered with a status of 400 or above, plus every request that got no answer at all (status `0`, shown as `ERR` in the table and **No response** in the drawer), since an upstream that never answered is the failure you are looking for. **OK** is every request answered with a status below 400, which includes a redirect as well as a `2xx`, and never a request that got no answer. **All** applies no filter.
 - **Model** takes one model, because the API filters on one exact model name. Picking a second model replaces the first.
 - **Virtual key** takes one key, picked by name from the keys of the project you are looking at. The address carries it as `key=<id>`.
 - **Cost** has three checks. **Unpriced only** keeps the requests recorded as unpriced (see [Unpriced traffic](#unpriced-traffic)); the API takes it as `unpriced=true`. **Withheld responses only** keeps the requests a policy refused to deliver after the provider billed them, and **Unknown usage only** keeps the successes whose upstream reported no usage (see [Withheld and unknown-usage traffic](#withheld-and-unknown-usage-traffic)); the API takes them as `withheld=true` and `usage_unknown=true`. They combine with each other and with every other filter, but a withheld response is a `403` and a response with unknown usage was a success, so ticking both returns nothing. Like every filter here they narrow the rows your roles can read and never widen them.
 - **Business unit** and **Customer** each take several values. A request matches when it was charged to any of the ones you picked.
+- **Outcome** keeps the requests the gateway recorded with one [outcome](#the-outcome-of-each-request), such as **Refused: budget spent** for the requests a spent budget turned away. **Not recorded** keeps the rows written before the gateway recorded one. The API takes it as `outcome=refused_budget`; a value it does not know is a `400`.
 - **Plugin** appears when the address names one (`plugin=blocked:<slug>`), and keeps the requests that plugin acted on. **Clear filters** drops it.
 
 **Clear filters** at the top of the rail drops every filter at once. When nothing matches, the empty table offers the same button.
@@ -500,7 +531,7 @@ A link can outlive what it names. A status value the API does not know is ignore
 
 ### Saved views
 
-**Saved views** beside **Filters** keeps the filters you have applied under a name, so you can come back to them in one click. On **LLM Logs** a view holds the time window, status, model, key, business unit and customer; on the Dashboard it holds the window, model, key, business unit and customer. It never holds an id lookup, the page you were on or the **Cost** checks. Pick **Apply** to set the screen's filters from the view, **Rename** to change its name, or the bin to delete it. Each account keeps up to 50 views per screen, and a name can be used once.
+**Saved views** beside **Filters** keeps the filters you have applied under a name, so you can come back to them in one click. On **LLM Logs** a view holds the time window, status, model, key, business unit and customer; on the Dashboard it holds the window, model, key, business unit and customer. It never holds an id lookup, the page you were on or the **Cost** checks. Pick **Apply** to set the screen's filters from the view (a **Cost** check you had ticked is cleared, since the view does not hold it), **Rename** to change its name, or the bin to delete it. Each account keeps up to 50 views per screen, and a name can be used once.
 
 Views are private: they follow your account to any browser you sign in from, and nobody else sees them. They never widen what you can read. If a view names a key, business unit or customer that you can no longer read, it is applied without that filter and the screen says how many it left out, for example _Applied without: 1 key, 2 customers_. The ids are not shown. Saving again keeps only the filters applied at that moment.
 
@@ -526,31 +557,50 @@ The cursor is a position in the list's sort key — `(ts, request_id)`, newest f
 Treat the cursor as opaque and pass it back unchanged. `next_cursor` is `null` only for an empty page; a short page still carries one, so stop when a page comes back with no rows. `limit` is clamped to `1..=200` and defaults to 50. A cursor that is not `timestamp|request_id`, or whose timestamp is not one of the [time window](#time-windows) forms, is a `400` with `param: "cursor"` and `code: "invalid_cursor"`. The MCP call log (`GET /api/v1/mcp/logs`) pages the same way over `(ts, event_id)` and checks its cursor the same way.
 
 <Note>
-  Every filter — `since`, `until`, `model`, `key`, `business_unit`, `customer`, `status`, `unpriced`, `guardrail`, `plugin`, `request_id`, `trace_id` — must be repeated with the cursor, since it is the same query resumed rather than a stored server-side page.
+  Every filter — `since`, `until`, `model`, `key`, `business_unit`, `customer`, `status`, `unpriced`, `guardrail`, `plugin`, `outcome`, `request_id`, `trace_id` — must be repeated with the cursor, since it is the same query resumed rather than a stored server-side page.
 </Note>
 
 The **LLM Logs** screen pages the same way. **Next page** follows the cursor the current page returned and **Previous page** goes back to the one it came from, so a page you return to holds the requests it held before, however much traffic arrived in between. Only the first page follows live traffic while **Streaming** is on; later pages stay fixed on their cursor. Changing a filter starts again from the newest request, and a page after a full last page reads as the end of the log with a **Back to newest** button.
 
 ### Optional columns in the invocation list
 
-Six fields of a row come from ClickHouse files that an existing deployment applies by hand (see [Upgrading](/deployment/upgrading)). Every row from `GET /api/v1/analytics/invocations` carries all six, whether or not the file has been applied:
+These fields of a row come from ClickHouse files that an existing deployment applies by hand (see [Upgrading](/deployment/upgrading)). Every row from `GET /api/v1/analytics/invocations` carries all of them, whether or not the file has been applied:
 
-| Field                   | Type   | Added by                      | Read as when the table lacks it |
-| ----------------------- | ------ | ----------------------------- | ------------------------------- |
-| `upstream_status`       | number | `015_upstream_attempts.sql`   | `0`                             |
-| `attempts`              | number | `015_upstream_attempts.sql`   | `0`                             |
-| `lifecycle_operation`   | string | `016_lifecycle_operation.sql` | `""` (empty string)             |
-| `cache_write_1h_tokens` | number | `017_cache_write_1h.sql`      | `0`                             |
-| `guardrail_events`      | array  | `018_guardrail_events.sql`    | `[]`                            |
-| `plugin_events`         | array  | `019_plugin_events.sql`       | `[]`                            |
+| Field                   | Type   | Added by                       | Read as when the table lacks it |
+| ----------------------- | ------ | ------------------------------ | ------------------------------- |
+| `upstream_status`       | number | `015_upstream_attempts.sql`    | `0`                             |
+| `attempts`              | number | `015_upstream_attempts.sql`    | `0`                             |
+| `lifecycle_operation`   | string | `016_lifecycle_operation.sql`  | `""` (empty string)             |
+| `cache_write_1h_tokens` | number | `017_cache_write_1h.sql`       | `0`                             |
+| `guardrail_events`      | array  | `018_guardrail_events.sql`     | `[]`                            |
+| `plugin_events`         | array  | `019_plugin_events.sql`        | `[]`                            |
+| `fallback_reason`       | string | `023_fallback_reason.sql`      | `""` (empty string)             |
+| `param_adjustments`     | array  | `022_param_adjustments.sql`    | `[]`                            |
+| `outcome`               | string | `030_request_outcome.sql`      | `"unknown"`                     |
+| `has_tools`             | number | `031_request_shape.sql`        | `0`                             |
+| `has_image_input`       | number | `031_request_shape.sql`        | `0`                             |
+| `has_audio_input`       | number | `031_request_shape.sql`        | `0`                             |
+| `has_response_schema`   | number | `031_request_shape.sql`        | `0`                             |
+| `turns`                 | number | `031_request_shape.sql`        | `0`                             |
+| `cache_usage_reported`  | number | `045_cache_usage_reported.sql` | `0`                             |
+| `first_variant`         | string | `048_first_variant.sql`        | `""` (empty string)             |
+| `sampled_variant`       | string | `050_sampled_variant.sql`      | `""` (empty string)             |
 
 `guardrail_events` lists what each guardrail did to the request, as `<action>:<rule name>` entries (`blocked:`, `redacted:` or `annotated:`) and `provider_blocked:<provider name>` / `provider_transformed:<provider name>` for the guardrail provider (the bare `provider_blocked` / `provider_transformed` on rows that predate the name, or for a provider with none); it is empty for a request no guardrail touched. See [What each rule did](/security/guardrails#what-each-rule-did).
 
+`fallback_reason` is the class of the failure that sent the request on to the target that answered it: `throttled`, `timeout`, `transport`, `server_error`, `refusal` or `refusal:<category>`. It is empty when the first dial answered. **LLM Logs** shows a non-empty one as **Fallback reason** in the **Routing** group of the detail drawer. See [Fallback targets](/reliability/fallback-targets#seeing-why-a-request-reached-a-fallback).
+
+`first_variant` is the weighted [variant](/concepts/providers-and-routes) the request was first dialled to. That is usually the variant the route's weights picked, but not always: a variant skipped while its breaker is open or its targets are parked is never dialled first. It differs from `variant` when the request failed over to another variant's target, and is empty on a route without variants. The route sheet's **Assigned** share is read from it (see [Dashboard analytics](/api/dashboard-analytics)).
+
+`sampled_variant` is the variant the route's weights picked for the request, before the gateway skipped any variant whose breaker was open or whose targets were parked or unhealthy. It differs from `first_variant` exactly when the gateway routed the request around the variant it sampled, and is empty on a route without variants. The route sheet's **Sampled** share is read from it. On a realtime turn row it is not a weighted draw: a session leads with the route's first variant with a non-zero weight, and every turn row of the session records that variant, so Sampled and Assigned are counted over the same rows ([#3553](https://github.com/rolter-ai/rolter/issues/3553) tracks sampling realtime sessions by weight).
+
 `plugin_events` lists what each plugin did to the request, as `<outcome>:<slug>` entries (`allowed`, `blocked`, `transformed` or `annotated`) and `error:<slug>:<kind>` for a call that got no verdict; it is empty for a request no plugin was consulted on. See [What each plugin did](/configuration/plugins#what-each-plugin-did).
+
+The five request-shape fields say what a request asked the model to do beyond its tokens, read by the gateway off the body the caller sent, in the OpenAI (Chat Completions, Responses) or Anthropic (Messages) dialect: `has_tools` is `1` when it offered the model tools, `has_image_input` and `has_audio_input` when an input message carried an image or audio, `has_response_schema` when it asked for output that follows a JSON schema (a bare JSON mode is not one), and `turns` is how many user turns it carried. They are `0` for a request that is not a chat-shaped model call, such as an embedding, and the [savings advisor](/observability/savings-advisor) excludes a request that has any of them set, or more than one turn.
 
 `cache_write_1h_tokens` is the part of the row's `cache_write_tokens` that went to the provider's 1 hour cache, never more than the total. The 5 minute share is the difference: `cache_write_tokens - cache_write_1h_tokens`. It is `0` for a provider that reports no split (every provider but Anthropic), for a request that wrote only to the 5 minute cache, and for every row older than the file.
 
-The control plane checks which of the four columns the table has by reading `system.columns`, selects the ones that exist and fills in the default for the rest, so a request list never fails because a file is still to be applied. It remembers the answer: a table that has all four is looked at again every ten minutes, one that lacks a column every minute, so a file you apply shows on the next page within a minute and needs no restart. A ClickHouse user that may not read `system.columns` is treated as having every column, which is how the list behaved before it checked. The check is made once the request is known to be well formed, and a ClickHouse that cannot be reached is an error as it always was, never a default.
+The control plane checks which of these columns the table has by reading `system.columns`, selects the ones that exist and fills in the default for the rest, so a request list never fails because a file is still to be applied. It remembers the answer: a table that has all of them is looked at again every ten minutes, one that lacks a column every minute, so a file you apply shows on the next page within a minute and needs no restart. A ClickHouse user that may not read `system.columns` is treated as having every column, which is how the list behaved before it checked. The check is made once the request is known to be well formed, and a ClickHouse that cannot be reached is an error as it always was, never a default.
 
 ## Finding one request by its id
 
@@ -610,6 +660,8 @@ The **Time** column shows the clock with milliseconds, such as `15:34:56.789`, b
 `GET /api/v1/mcp/logs`, `/api/v1/mcp/logs/summary` and `/api/v1/mcp/logs/{event_id}` follow the same rule as the request log. A signed-in user reads the tool calls of the orgs, teams and projects where they hold a role, and every call made under their own MCP OAuth sessions, whatever project the gateway attributed it to. A superadmin, the admin token and open mode read everything. Someone with no role anywhere gets an empty list and a summary of zero, and a call outside their reach answers `404` exactly like one that does not exist.
 
 The list carries no tool arguments or results. The single-event read carries them only for a caller who is a member or above at the call's project, or a viewer on a project whose admin set `payload_min_role` to `viewer` (the same setting that shows LLM request bodies). Anyone else gets both fields empty and `payload_withheld: 1`. Recording an event (`POST /api/v1/mcp/events`) stays with the gateway and superadmins.
+
+Every allowed `tools/call` through the proxy is a row of its own: one sent alone, each call of a JSON-RPC batch (matched to its reply by `id`, so the calls of one batch can end differently) and one sent as a notification. A notification has no `id`, so nothing answers it; its row has the status the server's HTTP response gave, and the event detail reports `notification: 1` to say that status is not what the tool did. At most 256 calls of one request are recorded; the rest are forwarded as usual and counted in `rolter_mcp_events_dropped_total`. A batch that is refused because one call in it is refused is not forwarded, so only the refused calls are rows. A batch that also lists tools has its reply rewritten for the caller, and its calls are recorded with the HTTP status alone and no result. `notification` needs `clickhouse/047_mcp_log_notification.sql`; until it is applied a notification is a plain `success` row. MCP Logs marks a notification **notification, no reply awaited**, a call a legacy `sse` server answered `202` **accepted, reply on the stream**, and a request body forwarded unread to a server no tool group governs **body not read, calls not itemised** (one row with no tool). Its summary leaves out of the failure count and rate a notification the server accepted, an accepted legacy `sse` call and an unread body, counting them apart as not awaited; a notification the server refused or failed was not delivered and counts as a failure (see [How a call's outcome is recorded](/api/mcp#how-a-calls-outcome-is-recorded)).
 
 Calls recorded before an MCP proxy attributed them to an org, project and user carry none of the three, so they stay visible to superadmins only. Nothing needs migrating: new calls are attributed when they are written.
 

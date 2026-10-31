@@ -14,35 +14,64 @@ pub struct ClusterNodeRepo<'a>(pub &'a PgPool);
 impl ClusterNodeRepo<'_> {
     /// Record a node sighting. `first_seen_at` is preserved across restarts of
     /// the same node id so an operator can tell a flapping node from a new one.
+    ///
+    /// `formats` is the snapshot format range the poll stated (ADR-0038,
+    /// #3351): `None` when the statement did not parse, which leaves the range
+    /// already recorded. `served_format` is the format the poll was answered
+    /// in, `None` when it was refused one.
     pub async fn heartbeat(
         &self,
         id: &str,
         role: &str,
         build_version: &str,
         config_version: i64,
+        formats: Option<(i32, i32)>,
+        served_format: Option<i32>,
     ) -> Result<ClusterNode> {
         sqlx::query_as(
-            "insert into cluster_nodes (id, role, build_version, config_version) \
-             values ($1, $2, $3, $4) \
+            "insert into cluster_nodes \
+                (id, role, build_version, config_version, formats_min, formats_max, \
+                 served_format) \
+             values ($1, $2, $3, $4, coalesce($5, 1), coalesce($6, 1), $7) \
              on conflict (id) do update set \
                 role = excluded.role, build_version = excluded.build_version, \
-                config_version = excluded.config_version, last_seen_at = now() \
+                config_version = excluded.config_version, \
+                formats_min = coalesce($5, cluster_nodes.formats_min), \
+                formats_max = coalesce($6, cluster_nodes.formats_max), \
+                served_format = excluded.served_format, last_seen_at = now() \
              returning id, role, build_version, config_version, desired_state, \
-                state_changed_at, first_seen_at, last_seen_at",
+                state_changed_at, first_seen_at, last_seen_at, formats_min, formats_max, \
+                served_format",
         )
         .bind(id)
         .bind(role)
         .bind(build_version)
         .bind(config_version)
+        .bind(formats.map(|(min, _)| min))
+        .bind(formats.map(|(_, max)| max))
+        .bind(served_format)
         .fetch_one(self.0)
         .await
         .map_err(store_err)
     }
 
+    /// Record that the format a node was just told it would be served could not
+    /// express the config after all (`snapshot_format_inexpressible`), so it
+    /// was served nothing.
+    pub async fn clear_served_format(&self, id: &str) -> Result<()> {
+        sqlx::query("update cluster_nodes set served_format = null where id = $1")
+            .bind(id)
+            .execute(self.0)
+            .await
+            .map_err(store_err)?;
+        Ok(())
+    }
+
     pub async fn list(&self) -> Result<Vec<ClusterNode>> {
         sqlx::query_as(
             "select id, role, build_version, config_version, desired_state, \
-                    state_changed_at, first_seen_at, last_seen_at \
+                    state_changed_at, first_seen_at, last_seen_at, formats_min, formats_max, \
+                    served_format \
              from cluster_nodes order by role, id",
         )
         .fetch_all(self.0)
@@ -58,7 +87,8 @@ impl ClusterNodeRepo<'_> {
                 "update cluster_nodes set desired_state = $2, state_changed_at = now() \
              where id = $1 \
              returning id, role, build_version, config_version, desired_state, \
-                       state_changed_at, first_seen_at, last_seen_at",
+                       state_changed_at, first_seen_at, last_seen_at, formats_min, \
+                       formats_max, served_format",
             )
             .bind(id)
             .bind(desired_state),
@@ -99,6 +129,8 @@ pub struct AdaptiveRoutingTelemetryRepo<'a>(pub &'a PgPool);
 /// documents are stored as sent: the control plane owns the API shape, and the
 /// gateway owns what a target signal means.
 pub struct AdaptiveRoutingSample<'a> {
+    /// the org that owns the route, empty for a deployment-wide route (#3458)
+    pub org_id: &'a str,
     pub model: &'a str,
     pub engaged: bool,
     pub observed: i64,
@@ -115,13 +147,17 @@ impl AdaptiveRoutingTelemetryRepo<'_> {
     /// transaction that records the rest, so the scoreboard cannot show a
     /// route that has been switched off or deleted.
     pub async fn report(&self, node_id: &str, samples: &[AdaptiveRoutingSample<'_>]) -> Result<()> {
-        let models: Vec<String> = samples.iter().map(|s| s.model.to_string()).collect();
+        let orgs: Vec<&str> = samples.iter().map(|s| s.org_id).collect();
+        let models: Vec<&str> = samples.iter().map(|s| s.model).collect();
         let mut tx = self.0.begin().await.map_err(store_err)?;
         sqlx::query(
-            "delete from adaptive_routing_telemetry \
-             where node_id = $1 and model <> all($2)",
+            "delete from adaptive_routing_telemetry t \
+             where t.node_id = $1 \
+               and not exists (select 1 from unnest($2::text[], $3::text[]) as k(org_id, model) \
+                                where k.org_id = t.org_id and k.model = t.model)",
         )
         .bind(node_id)
+        .bind(&orgs)
         .bind(&models)
         .execute(&mut *tx)
         .await
@@ -130,9 +166,9 @@ impl AdaptiveRoutingTelemetryRepo<'_> {
             sqlx::query(
                 "insert into adaptive_routing_telemetry \
                     (node_id, model, engaged, observed, blend_picks, exploration_picks, \
-                     fallback_picks, policy, targets, reported_at) \
-                 values ($1, $2, $3, $4, $5, $6, $7, $8, $9, now()) \
-                 on conflict (node_id, model) do update set \
+                     fallback_picks, policy, targets, org_id, reported_at) \
+                 values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, now()) \
+                 on conflict (node_id, org_id, model) do update set \
                     engaged = excluded.engaged, observed = excluded.observed, \
                     blend_picks = excluded.blend_picks, \
                     exploration_picks = excluded.exploration_picks, \
@@ -149,6 +185,7 @@ impl AdaptiveRoutingTelemetryRepo<'_> {
             .bind(sample.fallback_picks)
             .bind(&sample.policy)
             .bind(&sample.targets)
+            .bind(sample.org_id)
             .execute(&mut *tx)
             .await
             .map_err(store_err)?;
@@ -161,11 +198,11 @@ impl AdaptiveRoutingTelemetryRepo<'_> {
     /// see — but they are never served as if they were current.
     pub async fn list_fresh(&self, max_age_secs: i64) -> Result<Vec<AdaptiveRoutingTelemetry>> {
         sqlx::query_as(
-            "select node_id, model, engaged, observed, blend_picks, exploration_picks, \
+            "select node_id, org_id, model, engaged, observed, blend_picks, exploration_picks, \
                     fallback_picks, policy, targets, reported_at \
              from adaptive_routing_telemetry \
              where reported_at > now() - make_interval(secs => $1::double precision) \
-             order by model, node_id",
+             order by model, org_id, node_id",
         )
         .bind(max_age_secs as f64)
         .fetch_all(self.0)
@@ -194,6 +231,8 @@ pub struct BreakerStateRepo<'a>(pub &'a PgPool);
 
 /// One target's breaker as a node reports it.
 pub struct BreakerSample<'a> {
+    /// the org that owns the route, empty for a deployment-wide route (#3458)
+    pub org_id: &'a str,
     pub model: &'a str,
     pub target_index: i32,
     pub provider: &'a str,
@@ -218,9 +257,9 @@ impl BreakerStateRepo<'_> {
             sqlx::query(
                 "insert into breaker_state \
                     (node_id, model, target_index, provider, upstream_model, state, \
-                     consecutive_failures, retry_after_secs, reported_at) \
-                 values ($1, $2, $3, $4, $5, $6, $7, $8, now()) \
-                 on conflict (node_id, model, target_index) do update set \
+                     consecutive_failures, retry_after_secs, org_id, reported_at) \
+                 values ($1, $2, $3, $4, $5, $6, $7, $8, $9, now()) \
+                 on conflict (node_id, org_id, model, target_index) do update set \
                     provider = excluded.provider, upstream_model = excluded.upstream_model, \
                     state = excluded.state, \
                     consecutive_failures = excluded.consecutive_failures, \
@@ -234,6 +273,7 @@ impl BreakerStateRepo<'_> {
             .bind(sample.state)
             .bind(sample.consecutive_failures)
             .bind(sample.retry_after_secs)
+            .bind(sample.org_id)
             .execute(&mut *tx)
             .await
             .map_err(store_err)?;
@@ -245,11 +285,11 @@ impl BreakerStateRepo<'_> {
     /// if they were current.
     pub async fn list_fresh(&self, max_age_secs: i64) -> Result<Vec<BreakerState>> {
         sqlx::query_as(
-            "select node_id, model, target_index, provider, upstream_model, state, \
+            "select node_id, org_id, model, target_index, provider, upstream_model, state, \
                     consecutive_failures, retry_after_secs, reported_at \
              from breaker_state \
              where reported_at > now() - make_interval(secs => $1::double precision) \
-             order by model, target_index, node_id",
+             order by model, org_id, target_index, node_id",
         )
         .bind(max_age_secs as f64)
         .fetch_all(self.0)

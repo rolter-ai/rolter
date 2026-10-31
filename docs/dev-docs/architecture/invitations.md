@@ -14,9 +14,14 @@ someone else holding their credential — usually in a chat log.
 
 1. `POST /api/v1/orgs/{org_id}/invitations` (admin at the target scope) returns
    the invitation, the token, and a ready-made `accept_url`. **The token is
-   shown exactly once**; only its peppered SHA-256 digest is stored, the same
-   treatment sessions and virtual keys get, so a database dump alone yields no
-   usable link.
+   shown exactly once**; what sign-in reads is its peppered SHA-256 digest, the
+   same treatment sessions and virtual keys get. With a mail relay and a KEK the
+   token is also kept sealed with the KEK (`token_ciphertext`, see the resend
+   below), so a dump alone yields no usable link but a dump with the KEK does,
+   for as long as the invitation is live. That copy is not tied to the pepper:
+   rotating `ROLTER_SESSION_PEPPER` stops the digest matching, so the link no
+   longer signs anyone in, yet a resend still opens the sealed token and mails a
+   link that is dead. Revoke and re-invite after a pepper change.
 2. `GET /api/v1/invitations/accept/{token}` — unauthenticated preview returning
    the org name, the invited email, the role, the scope it applies at
    (`scope_type` of `org`, `team` or `project`, plus the team or project's
@@ -207,6 +212,30 @@ fails an invitation.
 - Each delivery is audited as `invitation.mail_sent` or `invitation.mail_failed`
   on the invitation. Neither the address nor the link is in the audit detail or
   in any log line, and neither is the SMTP URL, which can carry a password.
+- `POST /api/v1/invitations/{id}/resend` (#3304) mails the same link again. Only
+  a digest of the token is kept for sign-in, so with a relay and a KEK
+  `create_invitation` also stores the token sealed (`token_ciphertext` and
+  `token_nonce`, migration `0155`, listed in `SEALED_COLUMNS`); a resend opens
+  it, keeps the expiry and records the outcome on the row. Accepting, revoking
+  or replacing an invitation clears the sealed copy, and so does expiry: the
+  background `expiry_sweep` (every five minutes) calls
+  `InvitationRepo::sweep_expired_sealed_tokens` for each invitation past
+  `expires_at`, since an expired link opens nothing and the copy would otherwise
+  live as long as the row (#3397). `sealed_token` refuses an expired row itself,
+  so one waiting for the sweep is inert. One without it (created
+  before `0155`, without a relay, or without a KEK) answers `409` and has to be
+  revoked and sent again. It is guarded as creating the invitation is, at the
+  invitation's own scope, and audits `invitation.resend` followed by the usual
+  `invitation.mail_sent` or `invitation.mail_failed`.
+- `POST /api/v1/orgs/{org_id}/invitations/mail-check` and the `--connect`
+  mode of `rolter check` run `Mailer::check`: connect, TLS and authentication
+  against the relay, no message. A failure names its stage (`connect`, `tls`,
+  `auth`, `relay`) with a fixed sentence; the relay's reply, its address and the
+  credential never leave the process. Every run dials the relay, so `CallGap`
+  (`call_gap.rs`, held in `ControlState::mail_check_gap`) lets a caller (the
+  `caller_key` the CSV export counts against) run one every five seconds (and anyone one every two, the relay being one shared resource) and
+  answers `ApiError::TooManyAttempts` (`429` with `Retry-After`, #3394) in
+  between. It is process-local; the integration suite's app shortens the gap.
 - The send is awaited, bounded by a 15 second timeout, so the response says what
   happened. `Mailer` (`mail.rs`) is the seam the integration suite installs to
   record messages and to fail on demand.

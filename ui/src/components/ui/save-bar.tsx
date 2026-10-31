@@ -9,7 +9,12 @@ export interface SaveBarProps {
   invalid: number;
   /** a save is in flight */
   pending?: boolean;
-  /** nothing to save yet (`!dirty`); unlike an invalid form, this really disables the button */
+  /**
+   * nothing to save yet (`!dirty`). Save reads as unavailable but stays
+   * pressable (`aria-disabled`, the press ignored while still pristine): the
+   * press that blurs a `commitOnBlur` field commits it, and the click that
+   * follows must find the form dirty and submit it (#3449)
+   */
   disabled?: boolean;
   /** a quiet line while nothing is at fault, e.g. how many fields were edited */
   status?: React.ReactNode;
@@ -30,7 +35,10 @@ export interface SaveBarProps {
  * form is invalid, and a Save that stays pressable then. A press on an invalid
  * form moves focus to the first field at fault (`useFieldErrors().submit`), so
  * the button is `aria-disabled`, not `disabled`: a disabled button cannot be
- * pressed and could not say why.
+ * pressed and could not say why. A pristine form is the same: a disabled button
+ * has `pointer-events: none`, so the press that blurs and commits a field would
+ * land on the bar behind it and never reach Save (#3449). Only a save in flight
+ * really disables it.
  */
 export function SaveBar({
   invalid,
@@ -64,12 +72,19 @@ export function SaveBar({
       )}
       {children}
       <Button
-        disabled={disabled || pending}
-        aria-disabled={invalid > 0 || undefined}
+        disabled={pending}
+        aria-disabled={invalid > 0 || disabled || undefined}
         aria-describedby={message ? statusId : undefined}
-        className={invalid > 0 ? "opacity-50" : undefined}
+        className={invalid > 0 || disabled ? "opacity-50" : undefined}
         type={onSave ? "button" : "submit"}
-        onClick={onSave}
+        onClick={(event) => {
+          // read at click time: a blur commit before this press has re-rendered the bar
+          if (disabled) {
+            event.preventDefault();
+            return;
+          }
+          onSave?.();
+        }}
       >
         {pending ? t("common.saving") : t("common.saveChanges")}
       </Button>

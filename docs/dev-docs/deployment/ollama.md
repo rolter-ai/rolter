@@ -66,7 +66,7 @@ Containers must address Ollama by its Compose service name:
 ```yaml
 services:
   ollama:
-    image: ollama/ollama:0.40.2
+    image: ollama/ollama:0.40.12
     volumes:
       - ollama-data:/root/.ollama
 ```
@@ -74,6 +74,12 @@ services:
 Use `api_base = "http://ollama:11434"` in the gateway container's config. The
 opt-in smoke suite under `integration/ollama/` provides a complete reproducible
 Compose setup and pulls `qwen2.5:0.5b` and `all-minilm:22m` automatically.
+
+The complete `integration/ollama/run.sh` passed on the x86_64 rtx host with
+`ollama/ollama:0.40.12` on October 28, 2026: models, chat, legacy completions,
+non-empty embedding vectors and SSE through the Docker-built gateway. This
+tests the Compose path, not a native Ollama substitute. Building the gateway's
+Dockerfile requires BuildKit (`docker buildx version` should succeed).
 
 ## Compatibility and known gaps
 

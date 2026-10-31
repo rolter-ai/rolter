@@ -12,6 +12,16 @@ The savings advisor reads the request log for a window and answers three questio
 
 It needs the control plane's `CLICKHOUSE_URL`, like every other analytics read; without it the endpoint answers `503`.
 
+## Reading it in the dashboard
+
+**Observability → Savings** shows the same report. It is hidden from roles that lack the `savings` capability, and a deployment without ClickHouse sees a note naming `CLICKHOUSE_URL` instead of figures.
+
+- **The warning comes first.** The screen opens on what the advisor is not: it re-prices, it does not judge quality, and the report's own `limits` are listed under that heading with every answer.
+- **Window and scope.** The window defaults to the last 7 days, as the endpoint does, and, with the organization, project, route and virtual key pickers and the three thresholds, lives in the address, so a link opens on the same report. The thresholds apply together when you press **Recalculate**.
+- **Spend.** Requests, spend, the unpriced requests inside it, retried or failed-over requests, failed requests, response-cache hits and misses, then the route, upstream model and caller breakdowns. The caller table names each key from the report itself, whichever project it is in, so a report across the whole organization names every caller's key; the API returns it as `key_name` on each `by_caller` row. Projects are named from the list the project picker uses. A key since deleted, or a project your account cannot read, shows as its id.
+- **Candidates.** One table per route and current model. Projected costs and savings are always a range from the optimistic to the pessimistic end; a saving's pessimistic end can be negative. The summary line above them gives the range for everything substitutable.
+- **Left out.** Requests the advisor did not re-price, by reason, and the pool models it could not consider for lack of a price. Each such model links to **Pricing Overrides** with `?model=<name>`, which opens the price form already named for it so you can set one (a role that cannot write prices sees the list narrowed to the model instead).
+
 ## Asking for a report
 
 ```bash
@@ -45,7 +55,7 @@ Totals for the window, then the slices worth a second look:
 - `multi_attempt`: requests that took more than one upstream attempt (retries and failovers together; the log does not tell the two apart) and what they cost.
 - `failed`: requests that ended in an error, and what was spent on them anyway.
 - `cache`: response-cache hits, and the misses on routes that have the response cache switched on.
-- `by_route`, `by_model` (the upstream model that served the request) and `by_caller` (project and virtual key, the 50 most expensive), costliest first.
+- `by_route`, `by_model` (the upstream model that served the request) and `by_caller` (project and virtual key, the 50 most expensive, each with `key_name`, the name given to the key, `null` for a key with no name or one since deleted; never the key's prefix), costliest first.
 
 `unpriced_requests` sits beside every cost: those requests ran against a model with no price, so their recorded cost is not a cost.
 
@@ -67,11 +77,11 @@ Each entry lists the other models in the **same route's pool** (its targets, var
 
 ### `excluded`: what was left out, and why
 
-`excluded.requests` counts every request that was not re-priced by reason: `unpriced`, `failed`, `cache_hit`, `usage_unknown`, `not_a_model_call`, `no_token_usage`, `prompt_too_large`, `output_too_large`, `route_not_configured` (the route has since been deleted or renamed) and `no_cheaper_candidate`. `excluded.unknown_candidate_prices` names the pool models that could not be considered because they have no price; add one in **Models** and they will be.
+`excluded.requests` counts every request that was not re-priced by reason: `unpriced`, `failed`, `cache_hit`, `usage_unknown`, `not_a_model_call`, `uses_tools` (it offered the model tools), `image_input`, `audio_input` (an input message carried an image or audio), `structured_output` (it asked for output that follows a JSON schema), `multi_turn` (it carried more than one user turn), `no_token_usage`, `prompt_too_large`, `output_too_large`, `route_not_configured` (the route has since been deleted or renamed) and `no_cheaper_candidate`. `excluded.unknown_candidate_prices` names the pool models that could not be considered because they have no price; add one in **Models** and they will be.
 
 ## What it does not claim
 
 - **Quality.** Nothing here says a cheaper model is good enough. Test it.
-- **Request shape beyond size.** The request log does not record whether a request carried tools, images, audio, several turns or a structured-output schema, so the advisor cannot exclude those. A request that needs one of them may still be listed.
+- **Request shape, before it was recorded.** The gateway records whether a request offered tools, sent an image or audio, carried several turns or asked for a structured-output schema, for both the OpenAI and the Anthropic dialects, and the advisor excludes such requests under the reasons above. The flags are columns added by `clickhouse/031_request_shape.sql`: until it is applied none is recorded, nothing is excluded for them and the report's `limits` say so, and a request logged before you applied it reads as having none of them, so it may still be listed.
 - **Models outside the route.** Only models you already configured on the same route are considered; the advisor never suggests a model your deployment does not route to.
 - **Unknown prices.** A request or a candidate without a price is counted, never priced at zero.

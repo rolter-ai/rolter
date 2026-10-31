@@ -222,3 +222,7 @@ NUL are escaped.
 - **No referral chasing.** A referral from the directory is not followed.
 - **`ldaps://` only for transport security.** StartTLS on a plain `ldap://`
   connection is not implemented.
+
+## Dashboard
+
+Governance › LDAP is `ui/src/pages/Ldap.tsx`, over `ui/src/lib/api/ldap.ts`. It is gated on `ldap_directory` (the screen, edit, enable, delete) and `ldap_group_mapping` (the mapping form, through the shared `GroupMappings` with `kind="ldap"`). An org has one directory, so the add button is disabled once one exists; a `409` from a racing second registration is shown in the sheet. The bind password follows the SSO client-secret rule: the edit sheet omits `bind_password` when the field is empty (keep) and sends the typed value (rotate); clearing is a separate confirmed control on the card, the only place that sends `""`.

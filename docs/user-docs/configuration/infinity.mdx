@@ -15,6 +15,8 @@ The `infinity` provider kind sends two of Rolter's endpoints to it:
 
 Virtual keys, budgets, rate limits, route caps, balancing, retries, timeouts, request logs, usage and cost all apply, as they do for chat. Rolter routes to the models a server already runs; it never downloads, loads or unloads one.
 
+A route whose targets are all embedding servers (`infinity` or `tei`) answers only these two endpoints. A chat completion, a message, a response, an image or an audio request to it is refused with `400 unsupported_endpoint` naming `/v1/embeddings`, and nothing is sent to the server. A route that mixes an embedding server with a chat server is left to balance, since refusing it would also refuse the requests the chat server answers.
+
 ---
 
 ## Configuration

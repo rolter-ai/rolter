@@ -155,12 +155,12 @@
        family with the status hues above.
 
        chart fills carry a shape, not a glyph: the floor is the 3:1 WCAG
-       non-text one. a chart sits on a card, a sheet or a panel, and the donut
-       ring draws its slices over a --surface-subtle track, so each entry is
-       measured on all four surfaces and the worst of the four is recorded —
-       that is #27272a for every hue here (#1269).
+       non-text one. a chart sits on a card, a sheet or a panel, and a bar draws
+       over a --surface-subtle track, so each entry is measured on all four
+       surfaces and the worst of the four is recorded — that is #27272a for
+       every hue here (#1269).
        --chart-1 was --red-folk (2.23:1 worst), the ornament red: it is the
-       first colour, so it painted the largest donut slice and the top provider
+       first colour, so it painted the busiest model and the top provider
        bar under the floor. --red-600 is the same brand family lifted to clear
        it. --chart-7 was --zinc-600 (1.93:1 worst); --zinc-500 is the
        shape half of the --zinc-450 text pair and clears it.
@@ -180,13 +180,6 @@
     --chart-6: #22d3ee; /* cyan · 8.24:1 worst */
     --chart-7: var(--zinc-500); /* #71717a · 3.08:1 worst */
     --chart-8: var(--zinc-300); /* #d4d4d8 · 10.08:1 worst */
-    /* the tail a donut rolls everything past its named slices into. exempt
-       from the 3:1 floor on purpose (#1269): it is meant to be quieter than
-       the slices it stands for, and it never carries meaning alone — its
-       legend row names it and states its share as text at full contrast. a
-       lifted value would land between --chart-7 and --chart-2 and read as one
-       more named series. never use it for a series that has no legend row */
-    --chart-other: var(--zinc-700); /* #3f3f46 · 1.43:1 worst, exempt */
 
     /* avatar chips carry white initials, so each entry is measured against
        #ffffff at the 4.5:1 body-text floor rather than the 3:1 one */

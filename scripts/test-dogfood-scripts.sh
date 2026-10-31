@@ -10,7 +10,7 @@
 # by reading the code (#1792, #1892). adaptive-routing.sh must fail loudly on a
 # refused call instead of printing a success line (#1817), and ux-capture.sh must
 # take the operator's own account and reach a ClickHouse that is not published
-# (#2794). no SigNoz, no docker and no control plane is needed: the stub plays
+# (#2794). no SigNoz, docker daemon or control plane is needed: the stub plays
 # the answers from a scenario file, one line per route, rewritten between
 # cases. it runs as a step of quality.yml's `static checks` job and as a prek
 # hook.
@@ -20,11 +20,26 @@
 # that cannot be run against the stub goes in `not_covered_reason` instead, with
 # the reason: the run fails for an integration/dogfood/*.sh that is neither (#2693).
 #
-# needs python3 and curl. bash 3.2 compatible, so it runs on a stock mac too.
+# needs python3 and curl, plus the docker compose CLI (no daemon) for the
+# SigNoz startup check. bash 3.2 compatible, so it runs on a stock mac too.
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/.." && pwd)
 dogfood="$root/integration/dogfood"
+
+# the same overlay `just dogfood` starts must retain its migration ordering
+# rendering compose needs the cli only, not a running docker daemon. CI always
+# has the cli; a machine without it skips this one check rather than the suite
+if docker compose version >/dev/null 2>&1; then
+  docker compose -f "$root/docker/docker-compose.yml" \
+    -f "$root/docker/docker-compose.signoz.yml" config --format json \
+    | python3 "$root/scripts/test-signoz-startup.py"
+elif [ -n "${CI:-}" ]; then
+  echo "docker compose cli not found; the signoz startup check needs it in CI" >&2
+  exit 1
+else
+  echo "skip: SigNoz startup contract (no docker compose cli)"
+fi
 
 work=$(mktemp -d)
 server_pid=""

@@ -27,8 +27,9 @@ In the dashboard it is the **Alerting** group, with one screen for each:
   delivery time to unseal it.
 - A route from the control plane to each channel endpoint that the
   [egress policy](#endpoints-and-the-egress-policy) permits.
-- A superadmin account or the deployment admin token. Alerting is
-  deployment-wide, so no organization role reaches it (see
+- An organization, team or project admin for the scope you want to watch, or a
+  superadmin account, an operator (a [deployment role](/security/rbac#deployment-roles)) or the deployment admin token for the whole deployment
+  (see [Scopes and ownership](#scopes-and-ownership) and
   [Permissions](#permissions-and-audit)).
 
 Rules read the request log, and the log can be sampled. With a
@@ -36,7 +37,8 @@ Rules read the request log, and the log can be sampled. With a
 carries the number of real requests it stands for, and `request_volume` and
 `spend_velocity` add those up, so a threshold set against real traffic still
 means real traffic. `error_rate` is the weighted share of failing requests, a
-ratio of weighted counts. `p95_latency_ms` is an estimate from the sample.
+ratio of weighted counts. `p95_latency_ms` is the 95th percentile of the weighted rows, so a row
+that stands for four requests counts four times.
 Rows written before the sample weight was recorded count as one request each.
 
 ## How a rule is evaluated
@@ -53,10 +55,9 @@ does. A window with nothing to measure is handled by the rule's
 longer than a minute overlap from one pass to the next, so a 5-minute rule
 looks at a sliding 5 minutes each time.
 
-One limit follows from that:
-
-- Every signal is deployment-wide. A rule cannot be narrowed to one provider,
-  model, route, virtual key or organization.
+A rule without a scope reads the whole deployment. To watch a slice, give it a
+[scope](#scopes-and-ownership). A rule still cannot be narrowed to one
+provider, model or route.
 
 For alerts that need that, use the gateway's Prometheus
 [metrics](/observability/metrics), which carry per-model and per-provider
@@ -70,8 +71,8 @@ dashboard shows it under a translated name and in that unit.
 
 | Signal                  | Value                                                                                                                                                                                                                                           | Unit (API)                      | Dashboard                                                     | Table                    |
 | ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------- | ------------------------------------------------------------- | ------------------------ |
-| `error_rate`            | Share of logged requests in the window with an HTTP status of 500 or above. 4xx responses, `429` included, do not count.                                                                                                                        | a fraction from `0` to `1`      | **Error rate**, a percentage: `0.05` shows as `5%`            | `request_logs`           |
-| `p95_latency_ms`        | 95th-percentile request latency, from ClickHouse's approximate `quantile`.                                                                                                                                                                      | milliseconds                    | **p95 latency**: `840 ms`                                     | `request_logs`           |
+| `error_rate`            | Share of logged requests in the window with an HTTP status of 500 or above, or with no status at all (status `0`: a transport failure or an exhausted retry that never got an answer). 4xx responses, `429` included, do not count.             | a fraction from `0` to `1`      | **Error rate**, a percentage: `0.05` shows as `5%`            | `request_logs`           |
+| `p95_latency_ms`        | 95th-percentile request latency, weighted by each row's sample weight (ClickHouse's `quantileExactWeighted`).                                                                                                                                   | milliseconds                    | **p95 latency**: `840 ms`                                     | `request_logs`           |
 | `spend_velocity`        | Spend in the window scaled to an hourly rate, `sum(cost_usd) × 3600 / window_secs`, so a 5-minute and a 1-hour window give comparable figures.                                                                                                  | settlement currency per hour    | **Spend rate**: `€12.50/h`                                    | `request_logs`           |
 | `request_volume`        | Number of logged requests in the window. A count, not a rate: the same traffic reads twice as high over a window twice as long.                                                                                                                 | requests per window             | **Request volume**: `340 requests in 5m`                      | `request_logs`           |
 | `provider_health_flaps` | Number of provider health observations in the window whose outcome was not `ok` (an error or a timeout), across every target and every source, active probes and passive request results alike. Despite the name it counts failures, not flaps. | failed health events per window | **Provider health failures**: `10 failed health events in 5m` | `provider_health_events` |
@@ -449,13 +450,13 @@ language rather than as the stored identifier.
 Some starting points, with the threshold as the API takes it and as the
 dashboard shows it:
 
-| Signal                  | Threshold (API) | Dashboard                       | Window | Fires when                                                        |
-| ----------------------- | --------------- | ------------------------------- | ------ | ----------------------------------------------------------------- |
-| `error_rate`            | `0.05`          | `5%`                            | `300`  | 5% or more of the last five minutes' requests are 5xx             |
-| `p95_latency_ms`        | `8000`          | `8,000 ms`                      | `600`  | p95 latency over ten minutes reaches 8 seconds                    |
-| `spend_velocity`        | `50`            | `$50.00/h`                      | `3600` | the last hour spent 50 or more in the settlement currency         |
-| `request_volume`        | `1000`          | `1,000 requests in 5m`          | `300`  | a thousand or more requests in five minutes, about three a second |
-| `provider_health_flaps` | `10`            | `10 failed health events in 5m` | `300`  | ten or more failed health observations in 5 minutes               |
+| Signal                  | Threshold (API) | Dashboard                       | Window | Fires when                                                             |
+| ----------------------- | --------------- | ------------------------------- | ------ | ---------------------------------------------------------------------- |
+| `error_rate`            | `0.05`          | `5%`                            | `300`  | 5% or more of the last five minutes' requests are 5xx or got no answer |
+| `p95_latency_ms`        | `8000`          | `8,000 ms`                      | `600`  | p95 latency over ten minutes reaches 8 seconds                         |
+| `spend_velocity`        | `50`            | `$50.00/h`                      | `3600` | the last hour spent 50 or more in the settlement currency              |
+| `request_volume`        | `1000`          | `1,000 requests in 5m`          | `300`  | a thousand or more requests in five minutes, about three a second      |
+| `provider_health_flaps` | `10`            | `10 failed health events in 5m` | `300`  | ten or more failed health observations in 5 minutes                    |
 
 Tune `request_volume` to your own traffic. With the default `above` it catches a
 surge; for a drop, use `comparison: below` (see
@@ -599,11 +600,59 @@ curl -s "https://control.example.com/api/v1/alert-notifications?delivery_status=
   -H "Authorization: Bearer $ROLTER_TOKEN"
 ```
 
+## Scopes and ownership
+
+A rule can watch one **scope** instead of the deployment: an organization, a
+team, a project, a virtual key, a business unit or a customer. It then
+evaluates only the request-log rows of that scope, so a team lead's error-rate
+rule sees their team's traffic and nothing else. The scope is set when the rule
+is created (`scope_type` and `scope_id` in the body, given together) and cannot
+be changed afterwards; create a new rule to watch another scope.
+`provider_health_flaps` is recorded per organization, so it can only watch an
+organization or the whole deployment. An organization's rule counts the health
+events of the providers that organization owns; providers defined in the
+gateway's own config file belong to no organization and are counted only by a
+deployment-wide rule. A rule whose team, project or key has
+since been deleted reports a scope error (`scope_gone`) and does not fire;
+delete it.
+
+Creating, editing, deleting and evaluating a rule takes **admin at its scope**:
+an organization admin for an organization rule, a team admin for a team's, and
+so on. A rule for a business unit or a customer is the organization admin's. A
+rule with no scope, which reads every tenant, stays with a superadmin and a
+[deployment operator](/security/rbac). An operator, who holds no membership
+anywhere, runs every rule and channel of every organization the same way: the
+capability matrix lists the alerting rows as _admin at the scope, or operator_,
+and `GET /api/v1/rbac/effective` includes them for an operator, so the dashboard
+enables the Alerting controls for one.
+
+A **channel** belongs to one organization or to the deployment. An organization
+admin owns the channels of their organization (`org_id` in the create body); a
+deployment channel is created by a superadmin or an operator and can be named by any rule. A
+rule can notify only a channel of its own organization or a deployment channel,
+and a deployment-wide rule only a deployment channel. The control plane refuses
+anything else with a `400` on `channel_id`, answering an unknown channel the
+same way so the id cannot be probed, and it checks again at delivery. Names
+are unique per owner, so two organizations can each have a rule called
+`prod errors`.
+
+The lists are narrowed to what the caller may use. Rules and notification
+history show only the scopes the caller administers. Channels show the
+caller's organizations' channels and the deployment's, but a deployment
+channel's address is withheld (`endpoint` is empty and `manageable` is false),
+as it may carry a token. A caller who administers nothing gets `403`. The
+control plane picks a scoped admin's rules from the organizations, teams and
+projects they administer, so a listing costs what their own rules cost and not
+what every organization's together do.
+
 ## Permissions and audit
 
-Alerting has no tenancy scope, so every operation is superadmin-only, the same
-as the other deployment-wide settings in [RBAC](/security/rbac). The dashboard
-hides the Alerting group from other roles.
+Every operation is decided at the owner of the row, as described above, and the
+dashboard shows the Alerting group to anyone who administers a scope, and to an
+operator. Deployment rows and channels are for a superadmin or an operator (a
+[deployment role](/security/rbac#deployment-roles)), like the other
+deployment-wide settings in
+[RBAC](/security/rbac).
 
 | Endpoint                                    | Capability                     |
 | ------------------------------------------- | ------------------------------ |
@@ -619,7 +668,7 @@ row.
 
 Every create, update and delete of a channel or rule writes an audit entry
 (`alert.channel.create`, `alert.rule.delete` and so on). Create and update
-entries carry the name, the enabled flag and, for a rule, the signal. A channel
+entries carry the name, the enabled flag and, for a rule, the signal and scope. A channel
 update entry also records `endpoint_changed`, `secret_replaced` and
 `secret_cleared`, as booleans. Neither a channel secret nor its endpoint ever
 appears in one, since an endpoint's query string can carry a token.

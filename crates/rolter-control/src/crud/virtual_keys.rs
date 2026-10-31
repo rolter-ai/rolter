@@ -2,7 +2,7 @@
 
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
-use axum::routing::{get, put};
+use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
 use rand::Rng;
 use serde::{Deserialize, Serialize};
@@ -13,10 +13,11 @@ use rolter_store::postgres::models::VirtualKey;
 use rolter_store::postgres::repo::{BusinessUnitRepo, CustomerRepo, NewVirtualKey, VirtualKeyRepo};
 
 use super::{
-    authorize_virtual_key, invalid_field, log_audit, pool, publish_config_change, ApiError,
-    ApiResult, KeyBudgetBody, KeyCapsBody, KeyRateLimitBody, SafeJson,
+    authorize_virtual_key, invalid_field, log_audit, pool, project_teams, publish_config_change,
+    require_reach, row_chain, ApiError, ApiResult, KeyBudgetBody, KeyCapsBody, KeyRateLimitBody,
+    SafeJson,
 };
-use crate::rbac::{authorize, Principal, ScopeChain};
+use crate::rbac::{authorize, Principal, ScopeChain, ScopeFilter};
 use crate::rbac_matrix::cap;
 use crate::ControlState;
 
@@ -29,8 +30,17 @@ pub(super) fn router() -> Router<ControlState> {
             get(list_virtual_keys).post(create_virtual_key),
         )
         .route(
+            "/api/v1/orgs/{org_id}/virtual-keys",
+            get(list_org_virtual_keys),
+        )
+        .route(
             "/api/v1/virtual-keys/{id}",
             put(set_virtual_key_disabled).delete(delete_virtual_key),
+        )
+        .route("/api/v1/virtual-keys/{id}/rotate", post(rotate_virtual_key))
+        .route(
+            "/api/v1/virtual-keys/{id}/previous-secret",
+            delete(revoke_previous_secret),
         )
         .route(
             "/api/v1/virtual-keys/{id}/cache",
@@ -56,6 +66,79 @@ async fn list_virtual_keys(
     let chain = ScopeChain::from_project(pool(&state), project_id).await?;
     authorize(&state, &principal, chain, cap!("virtual_key", Read)).await?;
     Ok(Json(VirtualKeyRepo(pool(&state)).list(project_id).await?))
+}
+
+/// A virtual key as the organization-wide listing returns it: the row without
+/// any digest of a secret, `key_hash` and the retired secret's included. A
+/// screen that picks keys needs to name them, not to check them.
+#[derive(Serialize)]
+struct OrgVirtualKey {
+    id: Uuid,
+    project_id: Uuid,
+    key_prefix: String,
+    name: Option<String>,
+    models: Vec<String>,
+    providers: Vec<String>,
+    disabled: bool,
+    expires_at: Option<chrono::DateTime<chrono::Utc>>,
+    cache_enabled: Option<bool>,
+    created_by: Option<Uuid>,
+    business_unit_id: Option<Uuid>,
+    customer_id: Option<Uuid>,
+    purpose: Option<String>,
+    created_at: chrono::DateTime<chrono::Utc>,
+}
+
+impl From<VirtualKey> for OrgVirtualKey {
+    fn from(key: VirtualKey) -> Self {
+        Self {
+            id: key.id,
+            project_id: key.project_id,
+            key_prefix: key.key_prefix,
+            name: key.name,
+            models: key.models,
+            providers: key.providers,
+            disabled: key.disabled,
+            expires_at: key.expires_at,
+            cache_enabled: key.cache_enabled,
+            created_by: key.created_by,
+            business_unit_id: key.business_unit_id,
+            customer_id: key.customer_id,
+            purpose: key.purpose,
+            created_at: key.created_at,
+        }
+    }
+}
+
+/// The keys of every project of an organization, each carrying its
+/// `project_id`, so a screen that names keys across projects reads one list
+/// instead of one per project (#3467). Scoped to what the caller may already
+/// read: the same `virtual_key:read` floor as the per-project list, decided for
+/// each project, so a caller with a role on one team gets that team's projects'
+/// keys and a caller with a role nowhere in the organization is refused. The
+/// readable projects are settled first and only their keys are read.
+async fn list_org_virtual_keys(
+    principal: Principal,
+    State(state): State<ControlState>,
+    Path(org_id): Path<Uuid>,
+) -> ApiResult<Json<Vec<OrgVirtualKey>>> {
+    let filter = ScopeFilter::load(&state, &principal, cap!("virtual_key", Read)).await?;
+    // the capability is read at a project, so the verdict is per project. a
+    // caller with a role nowhere in the organization is refused rather than
+    // shown an empty list that would say the organization exists and has no keys
+    if !filter.is_superadmin() {
+        require_reach(&state, &filter, org_id).await?;
+    }
+    let teams_of = project_teams(&state, org_id).await?;
+    let readable: Vec<Uuid> = teams_of
+        .keys()
+        .copied()
+        .filter(|project| filter.allows(row_chain(org_id, None, Some(*project), &teams_of)))
+        .collect();
+    let keys = VirtualKeyRepo(pool(&state))
+        .list_in_projects(&readable)
+        .await?;
+    Ok(Json(keys.into_iter().map(OrgVirtualKey::from).collect()))
 }
 
 #[derive(Deserialize)]
@@ -164,6 +247,107 @@ async fn create_virtual_key(
     )
     .await;
     Ok(Json(CreatedVirtualKey { row, key }))
+}
+
+/// Longest an old secret may keep authenticating after a rotation: 30 days.
+/// Past that a "rotation" is two live keys with nobody tracking the second.
+pub(crate) const MAX_ROTATION_OVERLAP_SECONDS: u64 = 30 * 24 * 60 * 60;
+
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct RotateVirtualKey {
+    /// how long the secret being replaced keeps authenticating, in seconds;
+    /// omit or 0 for none, so the old secret stops at once
+    #[serde(default)]
+    overlap_seconds: u64,
+}
+
+/// A personal key (one a member minted for themself) rotates from Account, never
+/// here: a project admin who rotated it would hold a working secret the gateway
+/// attributes to that member and runs under their access policy.
+fn refuse_personal(key: &VirtualKey) -> ApiResult<()> {
+    if key.created_by.is_some() {
+        return Err(ApiError::Conflict(
+            "this key belongs to the member who minted it; they rotate it from Account".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+/// Issue a new secret for a shared key (#1837): the same row, so limits,
+/// attribution, allow-lists, cache setting and history all carry over, with an
+/// optional window during which the previous secret still authenticates.
+///
+/// Deliberately its own path rather than a variant of the self-service rotate in
+/// `me.rs`, which mints a second row and disables the first.
+async fn rotate_virtual_key(
+    principal: Principal,
+    State(state): State<ControlState>,
+    Path(id): Path<Uuid>,
+    body: Option<SafeJson<RotateVirtualKey>>,
+) -> ApiResult<Json<CreatedVirtualKey>> {
+    let org_id = authorize_virtual_key(&state, &principal, id, cap!("virtual_key", Update)).await?;
+    refuse_personal(&VirtualKeyRepo(pool(&state)).get(id).await?)?;
+    let body = body.map(|SafeJson(body)| body).unwrap_or_default();
+    if body.overlap_seconds > MAX_ROTATION_OVERLAP_SECONDS {
+        return Err(invalid_field(
+            "overlap_seconds",
+            "overlap_seconds must be at most 2592000 (30 days)",
+        ));
+    }
+    let overlap_until = (body.overlap_seconds > 0).then(|| {
+        chrono::Utc::now()
+            + chrono::Duration::seconds(i64::try_from(body.overlap_seconds).unwrap_or(0))
+    });
+    let (key, key_hash, key_prefix) = generate_virtual_key(&key_pepper());
+    let row = VirtualKeyRepo(pool(&state))
+        .rotate(id, &key_hash, &key_prefix, overlap_until)
+        .await?;
+    publish_config_change(&state).await?;
+    log_audit(
+        &state,
+        &principal,
+        org_id,
+        "virtual_key.rotate",
+        "virtual_key",
+        id,
+        serde_json::json!({
+            "key_prefix": key_prefix,
+            "previous_key_prefix": row.previous_key_prefix,
+            "overlap_until": overlap_until,
+        }),
+    )
+    .await;
+    Ok(Json(CreatedVirtualKey { row, key }))
+}
+
+/// End a rotation's overlap early: the previous secret stops authenticating at
+/// the next snapshot. Idempotent, so a retry after a timeout is safe.
+async fn revoke_previous_secret(
+    principal: Principal,
+    State(state): State<ControlState>,
+    Path(id): Path<Uuid>,
+) -> ApiResult<Json<VirtualKey>> {
+    let org_id = authorize_virtual_key(&state, &principal, id, cap!("virtual_key", Update)).await?;
+    let repo = VirtualKeyRepo(pool(&state));
+    let before = repo.get(id).await?;
+    refuse_personal(&before)?;
+    let row = repo.revoke_previous(id).await?;
+    publish_config_change(&state).await?;
+    log_audit(
+        &state,
+        &principal,
+        org_id,
+        "virtual_key.revoke_previous_secret",
+        "virtual_key",
+        id,
+        serde_json::json!({
+            "previous_key_prefix": before.previous_key_prefix,
+            "previous_expires_at": before.previous_expires_at,
+        }),
+    )
+    .await;
+    Ok(Json(row))
 }
 
 #[derive(Deserialize)]

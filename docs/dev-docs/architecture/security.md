@@ -732,7 +732,8 @@ disappears on its own as they expire. Bodies written by gateways from v0.1.0 or
 earlier, which let ClickHouse stamp the log row and the payload row separately,
 never joined on `ts` and still do not: after the control plane is upgraded those
 bodies stop showing until payload retention removes them. The user docs'
-upgrade page says to upgrade gateways first for that reason.
+upgrade page keeps ADR-0038's order (control plane first) and says to roll the
+gateways straight after it, which keeps the set of such bodies small (#3349).
 
 Two limits are known and tracked:
 
@@ -813,18 +814,21 @@ groups with no owner, so a key from any org could call another org's routes,
 or address its providers directly as `provider-slug/model` or through a group
 as `group-slug/model`, spending that org's credential. Two orgs that picked the
 same provider name also froze config propagation for everyone, because the
-snapshot refuses duplicate names.
+snapshot refused duplicate names.
 
 Every row loaded from the store now carries its org (and a route its project)
 as `tenancy`, and the gateway resolves a model only among the rows the key's
 org may use, on all three address forms and in `GET /v1/models`. Another org's
 row is a miss: it shadows nothing of the caller's own, and the caller gets the
 `404` an unknown model gets. On the write path a route target or group member
-must name a provider in the same org. Names the gateway indexes
-deployment-wide (route and provider names, and the one slug namespace
-providers and groups share) are unique across orgs, and so is a route name
-that would sit on another org's `slug/model` address. A collision is refused
-with a `409` that does not say which org holds the name. The route-name check
+must name a provider in the same org. Names are per org (#1857,
+[ADR-0040](../adr/2026-10-28-per-org-namespaces.md)): two orgs may each have a
+`gpt-4o` route and an `openai` provider, a key resolves its own org's row
+first, and the gateway keeps their breakers, cooldowns, key pools and queues
+apart. Within one org, route and provider names and the one slug namespace
+providers and groups share are unique, and a route name may not sit on
+another org's `slug/model` address. A collision is refused with a `409` that
+does not say which org holds the name. The route-name check
 runs one way: a slug created after another org's `slug/…` route is accepted,
 and keys that carry no org then reach that route rather than the new address
 (the ADR-0017 addendum explains why). An admin can also
@@ -834,7 +838,7 @@ behind it to that project's keys (#1919).
 The contract, the table of which keys admit which rows, and the write-time
 guards are in
 [RBAC & authentication](rbac-and-auth.md#one-org-never-reaches-another-1844-1845);
-per-org namespaces, which would let two orgs reuse a name, are #1857.
+[ADR-0040](../adr/2026-10-28-per-org-namespaces.md) is the naming model.
 
 ## Control↔data-plane trust boundary
 
@@ -921,7 +925,7 @@ Output guardrails, `post_response` plugins and the PII sanitizer's response leg 
 | `post_response` plugin | `plugin_streaming_unsupported`    | `rolter_plugin_stream_rejections_total`    | the plugin's `failure_mode = "fail_open"`                                       |
 | PII response leg       | `pii_streaming_unsupported`       | `rolter_pii_stream_rejections_total`       | `pii_sanitizer.streaming = "passthrough"`, or `"restore"` for restoration alone |
 
-A plugin's waiver is its own failure mode rather than a new setting. `fail_closed` already says "never deliver what I have not approved", and a stream is exactly a response the plugin cannot approve. `fail_open` already says "deliver when I cannot answer", which is all a stream permits. The check (`handlers.rs`, beside `post_response_plugin_list`) refuses when any applicable plugin is fail closed and names it in the message. Before #1776, every `post_response` plugin was silently skipped for a stream. Tests: the `*_post_response_plugin_*stream*` cases in `crates/rolter-gateway/tests/integration.rs`, including a cached stream refused after a hot reload adds the plugin.
+A plugin's waiver is its own failure mode rather than a new setting. `fail_closed` already says "never deliver what I have not approved", and a stream is exactly a response the plugin cannot approve. `fail_open` already says "deliver when I cannot answer", which is all a stream permits. The check (`handlers.rs`, `RequestCtx::post_response_plugins`) refuses when any applicable plugin is fail closed and names it in the message. Before #1776, every `post_response` plugin was silently skipped for a stream. Tests: the `*_post_response_plugin_*stream*` cases in `crates/rolter-gateway/tests/integration.rs`, including a cached stream refused after a hot reload adds the plugin.
 
 The dashboard states the consequence where the choice is made (#2178). `ui/src/pages/Plugins.tsx` shows a note in the plugin dialog once the stage is `post_response`, worded by the selected `failure_mode` and wired as the description of both pickers, and a `post_response` card with `fail_closed` carries a one-line warning. Unlike the guardrail rule screen, which has to read `streaming_post_call` from the effective config, both follow from the plugin's own fields. The stories `WarnsThatAFailClosedPostResponsePluginRefusesStreams` and `DialogNoteTracksStageAndFailurePolicy` pin it.
 

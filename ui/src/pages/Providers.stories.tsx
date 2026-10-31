@@ -890,17 +890,21 @@ const GROUPS: ProviderGroupRow[] = [
 
 const target = (provider: string) => ({ provider, weight: 1 });
 
+/** the scope's organization, which owns every stored provider these stories list */
+const OWN = { org_id: "org-1", project_id: "project-1" };
+
 const EFFECTIVE = {
   providers: [],
   virtual_keys: [],
   routes: [
-    { model: "gpt-4o", strategy: "weighted", targets: [target("openai-prod")] },
+    { model: "gpt-4o", strategy: "weighted", tenancy: OWN, targets: [target("openai-prod")] },
     {
       model: "chat",
       strategy: "weighted",
+      tenancy: OWN,
       targets: [target("openai-prod"), target("anthropic-eu")],
     },
-    { model: "claude", strategy: "weighted", targets: [target("anthropic-eu")] },
+    { model: "claude", strategy: "weighted", tenancy: OWN, targets: [target("anthropic-eu")] },
   ],
 };
 
@@ -946,6 +950,50 @@ export const DeleteNamesTheRoutesAndGroupsThatUseTheProvider: Story = {
     await expect(dialog.getByText(/take it out of those first/)).toBeVisible();
     await expect(dialog.getByText("openai-prod/model")).toBeVisible();
     await expect(dialog.getByRole("button", { name: "Delete provider" })).toBeEnabled();
+  },
+};
+
+/**
+ * #3460: another organization also has an `openai-prod`, and routes of its own
+ * through it. Deleting this organization's provider lists this organization's
+ * routes only, and judges "only target" on them alone.
+ */
+export const DeleteNamesOnlyItsOwnOrganizationsRoutes: Story = {
+  render: () => (
+    <Harness
+      fetchStub={withUsage({
+        config: async () =>
+          json({
+            ...EFFECTIVE,
+            routes: [
+              ...EFFECTIVE.routes,
+              {
+                model: "theirs",
+                strategy: "weighted",
+                tenancy: { org_id: "org-2", project_id: "project-9" },
+                targets: [target("openai-prod")],
+              },
+              // their `chat` names only their own `openai-prod`
+              {
+                model: "chat",
+                strategy: "weighted",
+                tenancy: { org_id: "org-2", project_id: "project-9" },
+                targets: [target("openai-prod")],
+              },
+            ],
+          }),
+      })}
+    >
+      <Providers />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const dialog = await openDeleteFor(canvasElement, "openai-prod");
+    await dialog.findByText("Target of 2 routes");
+    await expect(dialog.queryByText("theirs")).toBeNull();
+    // this organization's `chat` still has another target, whatever theirs has
+    await expect(dialog.getAllByText("only target")).toHaveLength(1);
+    await expect(dialog.getByText("chat").parentElement).not.toHaveTextContent("only target");
   },
 };
 
@@ -1029,10 +1077,11 @@ export const DeleteUsageHandlesManyAndLongNames: Story = {
     const many = {
       ...EFFECTIVE,
       routes: [
-        { model: long, strategy: "weighted", targets: [target("openai-prod")] },
+        { model: long, strategy: "weighted", tenancy: OWN, targets: [target("openai-prod")] },
         ...Array.from({ length: 11 }, (_, i) => ({
           model: `route-${String(i).padStart(2, "0")}`,
           strategy: "weighted",
+          tenancy: OWN,
           targets: [target("openai-prod"), target("anthropic-eu")],
         })),
       ],

@@ -2,9 +2,11 @@ import { Trans, useTranslation } from "react-i18next";
 
 import { BreakerBadge } from "@/components/BreakerBadge";
 import { StatusDot } from "@/components/screen";
+import { FallbackBadge } from "@/components/TakesOverField";
 import { healthPresentation } from "@/components/target-health";
 import { useFormat } from "@/lib/i18n/format";
 import { HEALTH_SLA, type RouteTargetView } from "@/lib/route-targets";
+import { isRestricted } from "@/lib/failure-classes";
 import { usesWeights } from "@/lib/strategies";
 import { cn } from "@/lib/utils";
 
@@ -35,7 +37,12 @@ export function RouteTargetList({
   const { t } = useTranslation();
   const fmt = useFormat();
   const weighted = usesWeights(strategy);
-  const total = targets.reduce((sum, tg) => sum + Math.max(tg.weight, 0), 0) || 1;
+  // a fallback takes no ordinary traffic, so it neither has a share nor
+  // dilutes the others' (#3319)
+  const total =
+    targets
+      .filter((tg) => !isRestricted(tg.takesOver))
+      .reduce((sum, tg) => sum + Math.max(tg.weight, 0), 0) || 1;
   // one template for every line, and fixed widths for the figures, so the
   // columns line up down the list whatever each line holds
   const breakers = targets.some((tg) => tg.breaker);
@@ -71,17 +78,25 @@ export function RouteTargetList({
           >
             {health && <StatusDot color={healthPresentation(tg.health).color} />}
             <span className="truncate text-[color:var(--text-secondary)]">{tg.provider}</span>
-            <span className="truncate text-muted-foreground">{tg.upstream}</span>
+            <span className="flex min-w-0 items-center gap-1.5">
+              <span className="truncate text-muted-foreground">{tg.upstream}</span>
+              {!weighted && <FallbackBadge takesOver={tg.takesOver ?? []} />}
+            </span>
             <span className="whitespace-nowrap text-right text-[color:var(--text-secondary)]">
               {t("routeTargets.weight", { weight: fmt.number(tg.weight) })}
             </span>
-            {weighted && (
-              <span className="whitespace-nowrap text-right text-foreground">
-                {t("routeTargets.share", {
-                  share: fmt.percent(Math.max(tg.weight, 0) / total, 0),
-                })}
-              </span>
-            )}
+            {weighted &&
+              (isRestricted(tg.takesOver) ? (
+                <span className="justify-self-end">
+                  <FallbackBadge takesOver={tg.takesOver ?? []} />
+                </span>
+              ) : (
+                <span className="whitespace-nowrap text-right text-foreground">
+                  {t("routeTargets.share", {
+                    share: fmt.percent(Math.max(tg.weight, 0) / total, 0),
+                  })}
+                </span>
+              ))}
             {health && (
               <span
                 className={cn(

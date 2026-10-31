@@ -4,10 +4,20 @@ export interface TargetDto {
   provider: string;
   model?: string | null;
   weight: number;
+  /** the failure classes this target is a fallback for (#1584); absent for an ordinary target */
+  takes_over?: string[];
+}
+
+/** who owns a row of the effective config; absent on a config-file row */
+export interface TenancyDto {
+  org_id: string;
+  project_id?: string | null;
 }
 
 export interface RouteDto {
   model: string;
+  /** the organization (and project) the route belongs to; absent for a config-file route */
+  tenancy?: TenancyDto | null;
   strategy: string;
   targets: TargetDto[];
   /** A/B variants; a route with none serves from `targets` alone */
@@ -22,6 +32,8 @@ export interface VirtualKeyDto {
 
 export interface ProviderDto {
   name: string;
+  /** the organization the provider belongs to; absent for a config-file provider */
+  tenancy?: TenancyDto | null;
   kind: string;
   api_base: string;
 }
@@ -138,8 +150,24 @@ export function unservedModels(
   return out;
 }
 
+/** What `GET /api/v1/config/export` can be narrowed by (#3440, #3396). */
+export interface ConfigExportOptions {
+  /** one organization's slug; absent exports the whole deployment */
+  org?: string;
+  /** leave caps on a person, which name an account by email, out of the file */
+  withoutPersonCaps?: boolean;
+}
+
 /**
- * The whole deployment's configuration as an importable `rolter.toml` (#1082).
+ * The stable `error.code` of the refusal to export the whole deployment while
+ * two organizations share a name: the caller exports one organization instead
+ * (`crates/rolter-control/src/config_export.rs`, #3480).
+ */
+export const CONFIG_EXPORT_NEEDS_ORG = "config_export_needs_org";
+
+/**
+ * The deployment's configuration as an importable `rolter.toml` (#1082), or
+ * one organization's with `org` (#3440).
  *
  * Text rather than a record: the endpoint renders a document
  * (`crates/rolter-control/src/config_export.rs`), and the dashboard hands it
@@ -147,6 +175,10 @@ export function unservedModels(
  * Superadmin-only — one document spans every org — so the caller gates on
  * `config_export:read` before it ever asks.
  */
-export function exportConfigToml(): Promise<string> {
-  return getText("/api/v1/config/export");
+export function exportConfigToml(options: ConfigExportOptions = {}): Promise<string> {
+  const query = new URLSearchParams();
+  if (options.org) query.set("org", options.org);
+  if (options.withoutPersonCaps) query.set("without_person_caps", "true");
+  const suffix = query.size > 0 ? `?${query}` : "";
+  return getText(`/api/v1/config/export${suffix}`);
 }

@@ -103,12 +103,13 @@ class Keycloak:
         realm: str,
         redirect_uris: list[str],
         groups: list[str],
-        user: KeycloakUser,
-        member_of: list[str],
+        user: KeycloakUser | None = None,
+        member_of: list[str] | None = None,
     ) -> None:
-        """Create (or reset) a realm with one confidential client, one user, and
-        the groups that user belongs to. Idempotent: the realm is deleted first,
-        so a rerun against a kept stack starts clean."""
+        """Create (or reset) a realm with one confidential client and its groups,
+        and a user in `member_of` when one is given (more come from `add_user`).
+        Idempotent: the realm is deleted first, so a rerun against a kept stack
+        starts clean."""
         self._http.request(
             "DELETE",
             f"/admin/realms/{realm}",
@@ -150,6 +151,11 @@ class Keycloak:
         for group in groups:
             self._admin("POST", f"/{realm}/groups", json={"name": group})
 
+        if user is not None:
+            self.add_user(realm, user, member_of or [])
+
+    def add_user(self, realm: str, user: KeycloakUser, member_of: list[str]) -> None:
+        """Create a user in an existing realm and put them in `member_of`."""
         self._admin(
             "POST",
             f"/{realm}/users",

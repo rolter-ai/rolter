@@ -1,0 +1,88 @@
+---
+title: "Fallback Targets That Take Over Specific Failures"
+sidebarTitle: "Fallback Targets"
+description: "Keep an expensive or special-purpose route target out of normal traffic and reach it only when another target fails in a way it is meant to fix, such as a content refusal or throttling."
+---
+
+Every target of a route is normally a member of its pool: the balancing strategy spreads traffic across all of them, and a [retry](/reliability/retries-and-cooldowns) moves to whichever untried target comes next. Sometimes a target is not meant to share the load at all. It is the remedy for one kind of failure:
+
+- an expensive, high-trust model that should answer **only** the requests a cheaper one refused on content policy;
+- a burst-capacity provider that should be reached **only** when the main one is throttling, never on a `500` (which there would mean the same bad request);
+- a provider with a different content policy, which is the right answer to exactly one failure and the wrong one to every other.
+
+`takes_over` on a route target says which failures it is for.
+
+## How it works
+
+A target with `takes_over` is **restricted**:
+
+- It is **never dialled first**, and the balancing strategy never picks it for ordinary traffic. A route of one ordinary target and one restricted target sends every request to the ordinary one, whatever its strategy or weights say.
+- It is tried **only as the successor of a failed attempt** whose failure matches one of its classes, and only while the request has a retry left (`[retry] max_retries`, or the route's own `limits.retries`). Failing over to it counts as a retry like any other.
+- A target without `takes_over` behaves exactly as it always has. Adding the field to one target changes nothing about the others.
+
+The classes are the failures the gateway already tells apart when it decides whether to retry:
+
+| Class                | The failed attempt…                                                                                      |
+| -------------------- | -------------------------------------------------------------------------------------------------------- |
+| `throttled`          | was answered `429`                                                                                       |
+| `timeout`            | was answered `408` or `504`, or timed out before a response arrived                                      |
+| `transport`          | got no response at all: refused or reset connection, TLS or DNS failure                                  |
+| `server_error`       | was answered with another `5xx`                                                                          |
+| `refusal`            | was refused on the provider's content policy (see below)                                                 |
+| `refusal:<category>` | was refused on content policy, and the provider named `<category>` (lowercase letters, digits, `_`, `-`) |
+
+### Content refusals
+
+A refusal is not a transient failure: retrying it on an ordinary target sends the same request to the same kind of model. Rolter therefore never retries a refusal onto an ordinary target; only a target whose `takes_over` covers it is tried. A route with no such target forwards a refusal to the caller exactly as before, without reading it.
+
+Rolter counts an upstream answer as a refusal when it is a `451`, or a `400`, `403` or `422` whose error says so: an `error.code` or `error.type` naming a content policy, content filter, safety or moderation failure (OpenAI's `content_policy_violation`, Azure OpenAI's `content_filter`), or the `content_filter_result` Azure OpenAI attaches. Any other client error, such as a malformed request, stays final and is forwarded unchanged, body included.
+
+The categories a refusal carries are the provider's error code and, for Azure OpenAI, each filter category it marked as filtered (`hate`, `sexual`, `violence`, `self_harm`, …). `refusal:hate` takes over only a refusal that named `hate`; `refusal` takes over every refusal.
+
+## Configuration
+
+```toml rolter.toml
+# the cheap model serves all traffic; the premium one answers only what the
+# cheap one refused on content policy
+[[routes]]
+model = "assistant"
+[[routes.targets]]
+provider = "cheap"
+model = "small-model"
+[[routes.targets]]
+provider = "premium"
+model = "large-model"
+takes_over = ["refusal"]
+
+# a burst provider reached only when the main one is throttling
+[[routes]]
+model = "batch"
+[[routes.targets]]
+provider = "main"
+[[routes.targets]]
+provider = "burst"
+takes_over = ["throttled", "timeout"]
+```
+
+In the dashboard, open a route on **Routing Rules** or a model on **Model Catalog**. Each target line says whether it is an **Ordinary target** or a **Fallback for** its classes; open it to pick the classes as chips, or type a refusal category and select **Add** for `refusal:<category>`. Picking nothing keeps the target ordinary. The variants of a route on **Routing Rules** have the same control on each of their targets. A fallback is marked **fallback** on the route's card and in the catalog's target list, and states no share of traffic: the ordinary targets split the route between them. A sheet whose every target is a fallback cannot be saved and says why beside what strands the route: the target list for a route without variants, the variants for one with them. The Model Catalog sheet does not edit variants, so there it links to **Routing Rules**, where one save that gives a variant an ordinary target repairs the route, whatever else the save changes.
+
+The same field is `takes_over` on a target in the [routes API](/api/routes), on `POST /api/v1/routes/{route_id}/targets` and in the target list of `PUT /api/v1/routes/{id}`. The routes API returns it on every target, as an empty list for an ordinary one.
+
+### A route always needs an ordinary target
+
+A route whose every target sets `takes_over` could never dial anything. A route with variants dials only its variants' targets, so what counts is the variants' targets; its own target list is not consulted, and an ordinary target there does not make up for variants that hold only fallbacks. Rolter refuses one rather than discovering it at request time: `rolter check` and gateway startup reject the file, the seed import refuses it before writing anything, and the API refuses a request that would leave a route that way, whether it sets variants, adds the last target, replaces the list or deletes the last ordinary target. Each refusal names `all_targets_restricted`.
+
+A database route can still end up that way without a write being refused: a row written by hand, by an older import or through an older API that counted the route's own targets and its variants' together (so it accepted variants holding only fallbacks over an ordinary target list), or a route whose only ordinary target is on a provider the snapshot leaves out. The gateway then leaves the route out rather than serving it, and drops a target whose stored class it cannot read rather than treating it as an ordinary one. Both are listed among the [configuration problems](/api/config-problems) (`GET /api/v1/config/problems`) of the route's organization, naming the route, and for a dropped target the provider and the class.
+
+## Seeing why a request reached a fallback
+
+Every request-log row records the failure that sent the request on to the target that answered it, in `fallback_reason`: `refusal:content_policy_violation`, `throttled` and so on, or an empty string when the first dial answered. **LLM Logs** shows it as **Fallback reason** in the Routing group of a request's details, for a request that reached a fallback. It is returned on each row of `GET /api/v1/analytics/invocations`, so a request that reached the expensive target because of a content refusal can be told from one that reached it because of load. The column comes from `clickhouse/023_fallback_reason.sql`; see [Upgrading](/deployment/upgrading).
+
+## Realtime sessions
+
+A [realtime](/api/realtime) session picks its target while it connects, and a failed upstream handshake is classified like an HTTP failure: no answer is `transport` (or `timeout`), a `429` is `throttled`, a `408` or `504` is `timeout`, and any other `5xx` is `server_error`. The next target is chosen with that failure, so a restricted target that takes it over is reached. A handshake answered with any other status names no class, so only an ordinary target follows it. Once connected, the session stays on its target; a failure later in the session is not taken over. A content refusal cannot happen while connecting, so a target that takes over only refusals is never used by a realtime session.
+
+## Limits
+
+- Weighted variants honour `takes_over` on their targets the same way, across the whole fallback chain, for a route in `rolter.toml` and one stored in the database alike: `PUT /api/v1/routes/{id}/variants` takes it on each variant target.
+- A content refusal returned with a `200` (a `finish_reason` of `content_filter` in a completed response) is an answer, not a failure, and is not taken over.

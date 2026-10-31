@@ -29,6 +29,10 @@ pub const DEFAULT_MAX_SCAN_BYTES: usize = 256 * 1024;
 const MAX_REPLACEMENT_LEN: usize = 64;
 
 /// Stage at which a rule evaluates.
+///
+/// Deliberately closed (#3347): a stage says what a rule scans, and no
+/// reading of an unknown one narrows what is served without guessing. A new
+/// stage is a snapshot format bump (ADR-0038).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum GuardStage {
@@ -61,6 +65,10 @@ pub enum StreamingPostCall {
     Reject,
     /// serve the stream with output rules not applied (input rules still run)
     Passthrough,
+    /// a value this build does not know (#3347); read as
+    /// [`StreamingPostCall::Reject`]
+    #[serde(other)]
+    Unknown,
 }
 
 /// What a rule does when it matches.
@@ -74,11 +82,20 @@ pub enum GuardAction {
     Block,
     /// replace each match with a fixed token such as `[REDACTED:EMAIL]`
     Redact,
+    /// an action this build does not know (#3347); read as
+    /// [`GuardAction::Block`]
+    #[serde(other)]
+    Unknown,
 }
 
 /// A safe starter rule shipped with the gateway. All are opt-in: an operator must
 /// list the rule explicitly; nothing scans by default. Patterns are
 /// intentionally conservative to limit false positives.
+///
+/// Deliberately closed (#3347): a detector this build does not have cannot
+/// scan, and the only reading of it that never serves more than configured
+/// would block every request at its stage. A new detector is a snapshot format
+/// bump (ADR-0038).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BuiltinRule {
@@ -575,7 +592,7 @@ impl CompiledGuardrails {
                         trace.push(PolicyStep::evaluated(rule, DryRunOutcome::Annotated, count));
                     }
                 }
-                GuardAction::Block => {
+                GuardAction::Block | GuardAction::Unknown => {
                     report.blocked_by = Some(rule.name.clone());
                     if let Some(trace) = trace.as_deref_mut() {
                         trace.push(PolicyStep::evaluated(rule, DryRunOutcome::Blocked, count));

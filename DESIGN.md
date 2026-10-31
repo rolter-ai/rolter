@@ -90,7 +90,6 @@ spacing:
   gutter: "22px"
   lg: "24px"
   sidebar: "232px"
-  header: "52px"
   sheet: "580px"
 components:
   button-primary:
@@ -281,7 +280,7 @@ Each status hue is a pair. The fill (`status-success`, `status-warning`, `status
 `status-danger`) carries dots, bars, borders and `/15` tints; the `-text` half carries the label.
 Warning has one value because the amber already clears AA as text.
 
-Charts read `--chart-1` … `--chart-8` and `--chart-other` by index, and avatar chips read
+Charts read `--chart-1` … `--chart-8` by index, and avatar chips read
 `--avatar-1` … `--avatar-6`; both palettes live in `ui/src/index.css` with their measured ratios.
 The chart sequence is red, zinc-400, blue, green, amber, cyan, zinc-500, zinc-300; no two entries are
 closer than CIE76 ΔE 17, also under the three colour-vision deficiencies.
@@ -308,7 +307,11 @@ variant. Reference a token: `text-[color:var(--status-danger-text)]`.
 `--zinc-800` moves `bg-muted` with `--surface-subtle` (#1993). Either spelling is fine at a call
 site; a new value goes in the design tokens first. The default `border` colour stays the opaque
 `--zinc-800`, which is what a bare `border` has always painted; the translucent hairlines are the
-three `--border-*` tokens.
+three `--border-*` tokens. This is a decision, not a gap (#3283): a bare `border` is opaque while
+the 200-odd `--border-subtle` uses are translucent, and making the default translucent would move
+every bare border a few levels (a little darker on the base surface, lighter on elevated ones), so it
+stays opaque until someone looks at each screen with that change in hand. New borders use the
+`--border-*` tokens; the bare `border` is for the shadcn contract's own components.
 
 ## Typography
 
@@ -344,9 +347,11 @@ raised (#2230): screens put primary data in badges (a price on Pricing, a cap on
 text was below the detector's `undersized-ui-text` line on most of them. The alternative, keeping
 10px for status words and moving data out of badges, was rejected: a badge stays free to carry a
 number, so it must stay legible as one. The old `--text-3xs` step is gone with it; a label or
-glyph that was set in it uses `text-2xs`. Two things sit outside the scale: labels drawn inside a
-chart's SVG, which are sized in viewBox units, and the `aria-hidden` provider monogram, which is a
-mark rather than text.
+glyph that was set in it uses `text-2xs`. Labels inside a chart's SVG are held to the same floor at
+the size the chart is drawn: `LineChart` measures its frame and sets its labels in pixels, so they
+are 11px at every width. `BarChart` (vertical) and `ScatterPlot` share its measuring hook
+(`useMeasuredWidth`), so no chart is an exception (#3450, #3457). One thing sits outside the scale: the `aria-hidden` provider monogram,
+which is a mark rather than text.
 
 ### Named Rules
 
@@ -363,8 +368,9 @@ used is retired (#1992).
 
 ## Layout
 
-The shell is a fixed 232px sidebar (a drawer below `md`) beside a content column with a 52px
-header band. Screens pad their header and body with a 22px horizontal gutter; cards pad 24px;
+The shell is a fixed 232px sidebar (a drawer below `md`) beside a content column. The screen
+header has no height of its own: `ScreenHeader` pads 16px above and below its title and subtitle and
+sizes to them, so there is no header token (#3283). Screens pad their header and body with a 22px horizontal gutter; cards pad 24px;
 table cells pad 16px by 8px. Spacing follows Tailwind's 4px scale.
 
 Settings screens use `SettingsBody`, `PageBody`'s left-aligned gutter capped at 840px, so a form

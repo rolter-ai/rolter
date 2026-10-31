@@ -56,7 +56,10 @@ export const Clean: Story = {
   args: { updatedAt: "2026-07-31T12:00:00Z" },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expect(canvas.getByRole("button", { name: "Save changes" })).toBeDisabled();
+    await expect(canvas.getByRole("button", { name: "Save changes" })).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
     await expect(canvas.getByRole("button", { name: "Discard changes" })).toBeDisabled();
     await expect(canvas.getByText(/^Last saved /)).toBeVisible();
   },
@@ -67,7 +70,9 @@ export const Edited: Story = {
   args: { form: { ...clean, dirty: true, changed: ["a", "b"], discard: fn() } },
   play: async ({ canvasElement, args }) => {
     const canvas = within(canvasElement);
-    await expect(canvas.getByRole("button", { name: "Save changes" })).toBeEnabled();
+    await expect(canvas.getByRole("button", { name: "Save changes" })).not.toHaveAttribute(
+      "aria-disabled",
+    );
     await expect(canvas.getByText(/^2 changes not saved yet/)).toHaveAttribute("role", "status");
     await userEvent.click(canvas.getByRole("button", { name: "Discard changes" }));
     await expect(args.form.discard).toHaveBeenCalledTimes(1);

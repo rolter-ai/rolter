@@ -13,6 +13,15 @@ name = "engine-2"
 kind = "openai_compatible"
 api_base = "http://127.0.0.1:__ENGINE_2_PORT__"
 
+# benchmark the same engine directly and through the gateway, without a pool
+# changing which upstream answers between the two measurements
+[[routes]]
+model = "rolter-dummy"
+strategy = "round_robin"
+[[routes.targets]]
+provider = "engine-1"
+model = "rolter-dummy"
+
 # The same two-engine pool is exercised through every currently supported
 # strategy. Targets override the public route name with the dummy server model.
 [[routes]]

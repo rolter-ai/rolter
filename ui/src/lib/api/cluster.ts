@@ -11,8 +11,15 @@ export interface ClusterNodeRow {
   last_seen_at: string;
   // polled inside the liveness window
   live: boolean;
-  // reported at least the control plane's current config version
+  // reported at least the control plane's current config version, and was not
+  // last served an older snapshot format (#3351)
   converged: boolean;
+  // the snapshot formats the node stated it reads on its last poll, and the one
+  // it was served (`null` when that poll was refused for its format). absent
+  // from a control plane older than #3351
+  formats_min?: number;
+  formats_max?: number;
+  served_format?: number | null;
 }
 
 /**

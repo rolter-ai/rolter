@@ -1,0 +1,20 @@
+{
+  "$comment": "written by the rolter-control test suite from EXCLUSION_REASONS in src/savings.rs (`just gen-savings-reasons`) - do not edit by hand",
+  "reasons": [
+    "unpriced",
+    "failed",
+    "cache_hit",
+    "usage_unknown",
+    "uses_tools",
+    "image_input",
+    "audio_input",
+    "structured_output",
+    "multi_turn",
+    "not_a_model_call",
+    "no_token_usage",
+    "prompt_too_large",
+    "output_too_large",
+    "route_not_configured",
+    "no_cheaper_candidate"
+  ]
+}

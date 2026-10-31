@@ -44,17 +44,19 @@ scalar_api_reference = { version = "0.2.12", default-features = false }
 parking_lot.workspace = true
 async-trait.workspace = true
 sqlx = { workspace = true, optional = true }
-uuid = { workspace = true, optional = true }
+# download tickets (#3504) mint an id and a secret in every build, the
+# store-less one included
+uuid.workspace = true
 argon2 = { workspace = true, optional = true }
-rand = { workspace = true, optional = true }
+rand.workspace = true
 chrono.workspace = true
 chrono-tz = { version = "0.10", default-features = false }
 # the bootstrap import re-parses the file as raw TOML to tell a written
 # `[logging.payload_capture]` from serde's default one (#954)
 toml.workspace = true
 jsonwebtoken = { workspace = true, optional = true }
-base64 = { workspace = true, optional = true }
-sha2 = { workspace = true, optional = true }
+base64.workspace = true
+sha2.workspace = true
 ldap3 = { workspace = true, optional = true }
 # invitation email (#1828); only the postgres build has invitations
 lettre = { workspace = true, optional = true }
@@ -74,8 +76,6 @@ rolter-store = { workspace = true, features = ["test-support"] }
 # a capturing layer, so the ingest-failure warn is asserted to be rate-limited
 # rather than assumed from reading the gate (#1747)
 tracing-subscriber.workspace = true
-# unit tests generate their credentials at run time rather than writing them out
-uuid.workspace = true
 
 [features]
 default = []
@@ -83,11 +83,7 @@ ldap = ["dep:ldap3"]
 postgres = [
   "rolter-store/postgres",
   "dep:sqlx",
-  "dep:uuid",
   "dep:argon2",
-  "dep:rand",
   "dep:jsonwebtoken",
-  "dep:base64",
-  "dep:sha2",
   "dep:lettre",
 ]

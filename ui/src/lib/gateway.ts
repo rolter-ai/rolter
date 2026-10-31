@@ -675,8 +675,23 @@ export function gatewayBase(publicBaseUrl?: string | null): GatewayBase | null {
  * - `unreachable`: the control plane's `/gw` proxy answered `502` in its own
  *   JSON error shape, which it does only when the request to the gateway
  *   itself failed
+ * - `awaitingSnapshot`: it answered `503 awaiting_snapshot`. It is managed by a
+ *   control plane and has applied no config snapshot yet, so it refuses every
+ *   key (#3348)
+ * - `snapshotFormatUnsupported`: it answered `503 snapshot_format_unsupported`.
+ *   It has never applied a snapshot and the control plane serves none in a
+ *   format it reads, so it refuses every key until the two builds agree
+ *   (ADR-0038, #3350)
  */
-export type GatewayReadiness = "ready" | "draining" | "unreachable";
+export type GatewayReadiness =
+  "ready" | "draining" | "unreachable" | "awaitingSnapshot" | "snapshotFormatUnsupported";
+
+// the bodies a gateway's `/readyz` answers `503` with, and what each one means
+const NOT_READY: Record<string, GatewayReadiness> = {
+  draining: "draining",
+  awaiting_snapshot: "awaitingSnapshot",
+  snapshot_format_unsupported: "snapshotFormatUnsupported",
+};
 
 /**
  * A probe answer that says nothing about the gateway: an unexpected status, a
@@ -707,7 +722,10 @@ export class GatewayProbeError extends Error {
  */
 export function readinessFrom(status: number, body: string): GatewayReadiness | null {
   if (status === 200) return body.trim() === "ok" ? "ready" : null;
-  if (status === 503) return body.trim() === "draining" ? "draining" : null;
+  if (status === 503) {
+    const answer = body.trim();
+    return Object.prototype.hasOwnProperty.call(NOT_READY, answer) ? NOT_READY[answer] : null;
+  }
   if (status === 502) {
     try {
       const parsed = JSON.parse(body) as { error?: { message?: unknown } };

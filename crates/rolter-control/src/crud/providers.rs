@@ -19,8 +19,8 @@ use rolter_store::postgres::repo::{
 
 use super::{
     explicit_null, invalid_field, log_audit, pool, publish_config_change, require_allowed_egress,
-    require_non_empty, require_not_config_owned, resolve_new_slug, resolve_slug_change, ApiError,
-    ApiResult, Query, SafeJson, SCOPE_MISMATCH,
+    require_non_empty, require_not_config_owned, require_row_not_config_owned, resolve_new_slug,
+    resolve_slug_change, ApiError, ApiResult, Query, SafeJson, SCOPE_MISMATCH,
 };
 use crate::rbac::{authorize, reaches_org, Principal, ScopeChain, ScopeFilter};
 use crate::rbac_matrix::{cap, Requirement};
@@ -28,7 +28,7 @@ use crate::ControlState;
 
 use super::provider_groups::require_address_slug_free;
 
-use super::provider_groups::taken_in_deployment;
+use super::provider_groups::taken_in_org;
 
 pub(super) fn router() -> Router<ControlState> {
     Router::new()
@@ -311,9 +311,7 @@ async fn list_provider_models(
     // the base was checked when it was stored, but the egress policy may have
     // been tightened since; a stored row is not a standing permission to egress
     require_allowed_egress(&state, &provider.api_base, "api_base")?;
-    let kind: rolter_core::ProviderKind =
-        serde_json::from_value(serde_json::Value::String(provider.kind.clone()))
-            .map_err(|_| ApiError::Curated(format!("unknown provider kind '{}'", provider.kind)))?;
+    let kind = known_kind(&provider.kind)?;
     let (secret, credential) =
         resolve_probe_credential(&state, id, provider.api_key_env.as_deref()).await?;
     if credential == "stored (undecryptable)" || credential == "stored (KEK unset)" {
@@ -388,9 +386,7 @@ async fn test_provider(
     // been tightened since; a stored row is not a standing permission to egress
     require_allowed_egress(&state, &api_base, "api_base")?;
 
-    let parsed_kind: rolter_core::ProviderKind =
-        serde_json::from_value(serde_json::Value::String(kind.clone()))
-            .map_err(|_| ApiError::Curated(format!("unknown provider kind '{kind}'")))?;
+    let parsed_kind = known_kind(&kind)?;
 
     let (secret, credential) = resolve_probe_credential(&state, id, api_key_env.as_deref()).await?;
 
@@ -743,6 +739,20 @@ fn seal_api_key(api_key: &str) -> ApiResult<(Vec<u8>, Vec<u8>)> {
     Ok(kek.encrypt(api_key)?)
 }
 
+/// A stored kind as a [`rolter_core::ProviderKind`] this build can dial.
+///
+/// A kind from a newer release decodes as `Unknown` rather than failing
+/// (#3347); a probe must not dial it, so it is refused here like a kind that
+/// does not parse.
+fn known_kind(kind: &str) -> ApiResult<rolter_core::ProviderKind> {
+    match serde_json::from_value(serde_json::Value::String(kind.to_string())) {
+        Ok(rolter_core::ProviderKind::Unknown) | Err(_) => {
+            Err(ApiError::Curated(format!("unknown provider kind '{kind}'")))
+        }
+        Ok(parsed) => Ok(parsed),
+    }
+}
+
 fn validate_kind(kind: &str) -> ApiResult<()> {
     if !PROVIDER_KINDS.contains(&kind) {
         return Err(invalid_field(
@@ -767,9 +777,8 @@ fn validate_kind(kind: &str) -> ApiResult<()> {
 /// provider opts out, as `provider_problems` refuses it in a file (#1133).
 /// Without this the row saves and the snapshot then omits the provider.
 fn require_pinned_api_base(kind: &str, api_base: &str, allow_custom: bool) -> ApiResult<()> {
-    let Ok(parsed) = serde_json::from_value::<rolter_core::ProviderKind>(
-        serde_json::Value::String(kind.to_string()),
-    ) else {
+    let Ok(parsed) = known_kind(kind) else {
+        // an unknown kind is validate_kind's error to report, not this one's
         return Ok(());
     };
     match parsed.host_pin_problem(api_base, allow_custom) {
@@ -779,9 +788,7 @@ fn require_pinned_api_base(kind: &str, api_base: &str, allow_custom: bool) -> Ap
 }
 
 fn require_wellformed_api_base(kind: &str, api_base: &str) -> ApiResult<()> {
-    let Ok(parsed) = serde_json::from_value::<rolter_core::ProviderKind>(
-        serde_json::Value::String(kind.to_string()),
-    ) else {
+    let Ok(parsed) = known_kind(kind) else {
         // an unknown kind is validate_kind's error to report, not this one's
         return Ok(());
     };
@@ -833,10 +840,10 @@ async fn create_provider(
     )?;
     let slug = resolve_new_slug(&body.name, body.slug.as_deref())?;
     let providers = ProviderRepo(pool(&state));
-    if providers.name_in_use(&body.name).await? {
-        return Err(taken_in_deployment("provider name", &body.name));
+    if providers.name_in_use(&body.name, Some(org_id)).await? {
+        return Err(taken_in_org("provider name", &body.name));
     }
-    require_address_slug_free(&state, "provider slug", &slug, None).await?;
+    require_address_slug_free(&state, "provider slug", &slug, org_id, None).await?;
     // seal before touching the database so a missing KEK leaves no row behind
     let sealed = body.api_key.as_deref().map(seal_api_key).transpose()?;
     let row = ProviderRepo(pool(&state))
@@ -982,7 +989,12 @@ async fn update_provider(
             .await?;
         }
     }
-    require_not_config_owned(&state.config_owned.providers, &existing.name, "provider")?;
+    require_row_not_config_owned(
+        &state.config_owned.provider_rows,
+        existing.org_id,
+        &existing.name,
+        "provider",
+    )?;
     if let Some(Some(project_id)) = body.project_id {
         require_scope_project(&state, org_id, project_id).await?;
     }
@@ -1034,7 +1046,7 @@ async fn update_provider(
     let slug_change =
         resolve_slug_change(body.slug.as_deref(), &existing.slug, body.allow_slug_change)?;
     if let Some(slug) = slug_change.as_deref() {
-        require_address_slug_free(&state, "provider slug", slug, Some(id)).await?;
+        require_address_slug_free(&state, "provider slug", slug, existing.org_id, Some(id)).await?;
     }
     // seal before writing anything so a missing KEK changes nothing
     let sealed = match body.api_key.as_deref().map(str::trim) {
@@ -1663,9 +1675,7 @@ async fn probe_provider_cache(
     if model.is_empty() {
         return Err(invalid_field("model", "name the upstream model to ask"));
     }
-    let kind: rolter_core::ProviderKind =
-        serde_json::from_value(serde_json::Value::String(provider.kind.clone()))
-            .map_err(|_| ApiError::Curated(format!("unknown provider kind '{}'", provider.kind)))?;
+    let kind = known_kind(&provider.kind)?;
     if !cache_probe_supported(kind) {
         return Err(ApiError::Curated(format!(
             "cache reporting cannot be probed for a '{}' provider",

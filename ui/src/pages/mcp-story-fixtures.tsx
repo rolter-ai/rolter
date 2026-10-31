@@ -20,6 +20,21 @@ export const PROJECT = {
   id: "project-1",
   team_id: TEAM.id,
   name: "Gateway",
+  team_name: TEAM.name,
+  created_at: ORG.created_at,
+};
+// a virtual key of PROJECT, as the per-project key listing returns it
+export const KEY = {
+  id: "key-9",
+  project_id: PROJECT.id,
+  key_prefix: "sk-rl-ab",
+  name: "ci runner",
+  models: [],
+  providers: [],
+  disabled: false,
+  created_by: null,
+  business_unit_id: null,
+  customer_id: null,
   created_at: ORG.created_at,
 };
 // what every server row carries since #952: no credential, no overrides
@@ -246,6 +261,8 @@ export function routed(
       | "servers"
       | "library"
       | "groups"
+      | "assignments"
+      | "keys"
       | "settings"
       | "oauthClient"
       | "authorize"
@@ -263,6 +280,8 @@ export function routed(
     if (url.includes("/mcp/grants")) return over.grants?.(input, init) ?? json([]);
     if (url.includes("/mcp/sessions")) return over.sessions?.(input, init) ?? json([]);
     if (url.includes("/mcp/library")) return over.library?.(input, init) ?? json(LIBRARY);
+    if (url.includes("/mcp/tool-group-assignments") || url.includes("/assignments"))
+      return over.assignments?.(input, init) ?? json([]);
     if (url.includes("/mcp/tool-groups")) return over.groups?.(input, init) ?? json(GROUPS);
     if (url.includes("/mcp/settings")) return over.settings?.(input, init) ?? json(SETTINGS);
     if (url.includes("/oauth-client")) return over.oauthClient?.(input, init) ?? json(OAUTH_CLIENT);
@@ -276,6 +295,7 @@ export function routed(
         json({ ...SERVERS[0], ...JSON.parse(String(init?.body ?? "{}")) })
       );
     if (url.includes("/mcp-servers")) return over.servers?.(input, init) ?? json(SERVERS);
+    if (url.includes("/virtual-keys")) return over.keys?.(input, init) ?? json([KEY]);
     if (url.includes("/projects")) return json([PROJECT]);
     if (url.includes("/teams")) return json([TEAM]);
     if (url.includes("/orgs")) return json([ORG]);

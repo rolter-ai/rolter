@@ -1,9 +1,11 @@
 import type { Meta, StoryObj } from "@storybook/react";
-import { expect, within } from "storybook/test";
+import * as React from "react";
+import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import { Button } from "./button";
 import { EmptyState } from "./empty-state";
 import { Table, type TableColumn } from "./table";
+import { cn } from "@/lib/utils";
 import { ANSWERED, type ReadState } from "@/lib/read-state";
 import { atMobile, expectInFrame } from "@/lib/story-viewport";
 import { expectTableStateInFrame } from "@/pages/story-harness";
@@ -81,6 +83,32 @@ export const RenderedCells: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(canvas.getByText("18,422")).toBeVisible();
+  },
+};
+
+/**
+ * A table is named by its caption, and a column can be the row's header, so a
+ * screen reader reads each value under both the column and the row it is in.
+ */
+export const NamedWithRowHeaders: Story = {
+  render: () => (
+    <Table
+      caption="Models by usage"
+      columns={[{ ...COLUMNS[0]!, rowHeader: true }, ...COLUMNS.slice(1)]}
+      data={ROWS}
+      rowKey="id"
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByRole("table", { name: "Models by usage" })).toBeVisible();
+    await expect(canvas.getAllByRole("rowheader")).toHaveLength(ROWS.length);
+    await expect(canvas.getByRole("rowheader", { name: ROWS[0]!.model as string })).toBeVisible();
+    // the last row draws no rule under any of its cells, the row header included
+    const last = canvas.getByRole("rowheader", { name: ROWS[ROWS.length - 1]!.model as string });
+    for (const cell of last.closest("tr")!.children) {
+      await expect(getComputedStyle(cell).borderBottomWidth).toBe("0px");
+    }
   },
 };
 
@@ -296,5 +324,207 @@ export const ScrollsFromTheKeyboard: Story = {
     await expect(scroller).not.toBeNull();
     scroller?.focus();
     await expect(scroller).toHaveFocus();
+  },
+};
+
+// a dense table the way a log draws it: its own width decides what shows, so it
+// sits in an `@container` of a width the story picks
+const DENSE: TableColumn<Row>[] = [
+  { key: "model", header: "Model", colClassName: "w-1/2", className: "truncate" },
+  {
+    key: "provider",
+    header: "Provider",
+    colClassName: "hidden w-1/4 @min-[600px]:table-column",
+    className: "hidden @min-[600px]:table-cell",
+  },
+  { key: "requests", header: "Requests", align: "right", colClassName: "w-1/4" },
+];
+
+function Dense({ width }: { width: number }) {
+  return (
+    <div className="@container max-h-48 overflow-auto" style={{ width }}>
+      <Table
+        bare
+        compact
+        columns={DENSE}
+        data={ROWS}
+        rowKey="id"
+        caption="Requests"
+        tableClassName="table-fixed"
+      />
+    </div>
+  );
+}
+
+/**
+ * A column hides by the table's own width: `colClassName` sizes (and hides) its
+ * `<col>`, `className` its header and cells. Narrow, the provider is gone from
+ * the table; wide, it is there.
+ */
+export const ColumnsGiveWayByTheTablesWidth: Story = {
+  render: () => (
+    <div className="space-y-4">
+      <div data-testid="narrow">
+        <Dense width={400} />
+      </div>
+      <div data-testid="wide">
+        <Dense width={700} />
+      </div>
+    </div>
+  ),
+  play: async ({ canvasElement }) => {
+    const narrow = within(within(canvasElement).getByTestId("narrow"));
+    const wide = within(within(canvasElement).getByTestId("wide"));
+    await expect(narrow.getByRole("columnheader", { name: "Model" })).toBeVisible();
+    await expect(narrow.queryByRole("columnheader", { name: "Provider" })).toBeNull();
+    await expect(wide.getByRole("columnheader", { name: "Provider" })).toBeVisible();
+    // a table that is named is found by that name
+    await expect(narrow.getByRole("table", { name: "Requests" })).toBeInTheDocument();
+  },
+};
+
+/**
+ * `rowProps` hands a row its attributes: the selected one says so with
+ * `aria-selected`, and a click selects it.
+ */
+export const RowsCanBeSelected: Story = {
+  render: () => {
+    function Selectable() {
+      const [selected, setSelected] = React.useState<string | null>(null);
+      return (
+        <Table
+          columns={COLUMNS}
+          data={ROWS}
+          rowKey="id"
+          hover={false}
+          rowProps={(r) => ({
+            "aria-selected": selected === r.id,
+            onClick: () => setSelected(r.id),
+            className: cn("cursor-pointer", selected === r.id && "bg-muted"),
+          })}
+        />
+      );
+    }
+    return <Selectable />;
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const row = canvas.getByText("claude-sonnet").closest("tr") as HTMLElement;
+    await expect(row).toHaveAttribute("aria-selected", "false");
+    await userEvent.click(row);
+    await expect(row).toHaveAttribute("aria-selected", "true");
+    await expect(canvas.getByText("gpt-4o").closest("tr")).toHaveAttribute(
+      "aria-selected",
+      "false",
+    );
+  },
+};
+
+/** A cell's own attributes come from `cellProps`, here the full name of a clipped value. */
+export const CellsTakeTheirOwnAttributes: Story = {
+  render: () => (
+    <Table
+      columns={[
+        { key: "model", header: "Model", cellProps: (r: Row) => ({ title: r.model }) },
+        { key: "provider", header: "Provider" },
+      ]}
+      data={ROWS}
+      rowKey="id"
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    await expect(within(canvasElement).getByText("gpt-4o")).toHaveAttribute("title", "gpt-4o");
+  },
+};
+
+/**
+ * The header of a table without a frame sticks to the top of the scroll area
+ * that holds it, so it stays in view while the rows move under it.
+ */
+export const StickyHeaderStaysWhileRowsScroll: Story = {
+  render: () => (
+    <div
+      className="max-h-24 overflow-auto"
+      data-testid="scroller"
+      role="region"
+      aria-label="Rows"
+      tabIndex={0}
+    >
+      <Table
+        bare
+        compact
+        stickyHeader
+        columns={COLUMNS}
+        data={Array.from({ length: 30 }, (_, i) => ({ ...ROWS[i % 3]!, id: `r${i}` }))}
+        rowKey="id"
+      />
+    </div>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const scroller = canvas.getByTestId("scroller");
+    const header = canvas.getByRole("columnheader", { name: "Model" });
+    scroller.scrollTop = 200;
+    await waitFor(() => expect(scroller.scrollTop).toBeGreaterThan(100));
+    await expect(header.getBoundingClientRect().top).toBeGreaterThanOrEqual(
+      scroller.getBoundingClientRect().top - 1,
+    );
+    await expect(header).toBeVisible();
+  },
+};
+
+const STACKABLE: TableColumn<Row>[] = [
+  {
+    key: "model",
+    header: "Model",
+    stackedClassName: "@max-[479px]:col-start-1 @max-[479px]:row-start-1",
+  },
+  {
+    key: "requests",
+    header: "Requests",
+    align: "right",
+    stackedClassName: "@max-[479px]:col-start-2 @max-[479px]:row-start-1",
+  },
+  {
+    key: "p95",
+    header: "p95",
+    align: "right",
+    stackedClassName: "@max-[479px]:col-start-1 @max-[479px]:row-start-2",
+  },
+];
+
+/**
+ * Below 480px of the table's own width each row restacks into a grid and the
+ * header leaves the screen but not the accessibility tree: the cells keep
+ * their column names.
+ */
+export const StackedRowsKeepTheirHeaders: Story = {
+  render: () => (
+    <div className="@container" style={{ width: 360 }}>
+      <Table bare compact stacked columns={STACKABLE} data={ROWS} rowKey="id" caption="Requests" />
+    </div>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const row = canvas.getByText("gpt-4o").closest("tr") as HTMLElement;
+    await expect(getComputedStyle(row).display).toBe("grid");
+    // the header is out of sight, yet still the cells' names
+    const header = canvas.getByRole("columnheader", { name: "Requests" });
+    await expect(header.closest("thead")).toHaveClass("@max-[479px]:sr-only");
+    await expect(canvas.getAllByRole("columnheader")).toHaveLength(3);
+    await expect(within(row).getByText("18422")).toBeVisible();
+  },
+};
+
+/** At 480px and wider the same table is a table again. */
+export const StackedRowsAreATableWhenWide: Story = {
+  render: () => (
+    <div className="@container" style={{ width: 640 }}>
+      <Table bare compact stacked columns={STACKABLE} data={ROWS} rowKey="id" caption="Requests" />
+    </div>
+  ),
+  play: async ({ canvasElement }) => {
+    const row = within(canvasElement).getByText("gpt-4o").closest("tr") as HTMLElement;
+    await expect(getComputedStyle(row).display).toBe("table-row");
   },
 };

@@ -141,6 +141,7 @@ open invitation, SCIM token and MFA recovery code.
 | `alert_channels`           | alert channel webhook secrets                |
 | `security_settings`        | a dashboard credential sealed before removal |
 | `observability_connectors` | observability connector credentials          |
+| `invitations`              | pending invitation links, for a resend       |
 | `user_totp_factors`        | TOTP second-factor shared secrets            |
 | `mcp_servers`              | MCP OAuth client secrets                     |
 | `mcp_servers`              | MCP static bearer tokens and header api keys |

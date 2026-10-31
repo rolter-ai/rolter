@@ -25,6 +25,10 @@ export interface AlertChannelRow {
   endpoint: string;
   enabled: boolean;
   secret_configured: boolean;
+  /** the owning org; null for a deployment channel, which only a superadmin manages */
+  org_id?: string | null;
+  /** whether the caller may edit or delete it; a deployment channel an org admin may only name on a rule is not, and its endpoint is withheld */
+  manageable?: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -33,12 +37,30 @@ export interface AlertChannelInput {
   name: string;
   endpoint: string;
   enabled: boolean;
+  /** the owning org, on create only; left out for a deployment channel */
+  org_id?: string;
   managed_secret?: string;
 }
+
+/** what a rule can watch; a rule with none reads the whole deployment (#1829) */
+export const ALERT_SCOPE_TYPES = [
+  "org",
+  "team",
+  "project",
+  "virtual_key",
+  "business_unit",
+  "customer",
+] as const;
+
+export type AlertScopeType = (typeof ALERT_SCOPE_TYPES)[number];
 
 export interface AlertRuleRow {
   id: string;
   name: string;
+  /** the org the rule's scope sits in; null for a deployment-wide rule */
+  org_id?: string | null;
+  scope_type?: string | null;
+  scope_id?: string | null;
   signal: string;
   threshold: number;
   comparison: AlertComparison;
@@ -59,6 +81,9 @@ export interface AlertRuleRow {
 
 export interface AlertRuleInput {
   name: string;
+  /** the scope to watch, on create only, given together; the scope cannot change later */
+  scope_type?: AlertScopeType;
+  scope_id?: string;
   signal: string;
   threshold: number;
   /** left out, a PUT keeps the stored value */

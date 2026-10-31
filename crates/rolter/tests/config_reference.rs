@@ -261,6 +261,18 @@ const CHECKS: &[Check] = &[
     plain("### \\[\\[virtual_keys\\]\\]", "VirtualKeyConfig"),
     plain("### \\[\\[model_prices\\]\\]", "ModelPriceConfig"),
     plain("### \\[currency\\]", "CurrencyConfig"),
+    plain(
+        "### \\[\\[mcp_manifest_enforcement\\]\\]",
+        "McpManifestEnforcementConfig",
+    ),
+    plain(
+        "### \\[\\[mcp_gateway_settings\\]\\]",
+        "McpGatewaySettingsConfig",
+    ),
+    plain(
+        "### \\[\\[mcp_gateway_tool_groups\\]\\]",
+        "McpGatewayToolGroupConfig",
+    ),
     plain("### \\[\\[budgets\\]\\]", "BudgetConfig"),
     Check {
         heading: "### unpriced_policy",
@@ -291,6 +303,15 @@ const CHECKS: &[Check] = &[
     plain("#### \\[\\[guardrails.rules\\]\\]", "GuardrailRule"),
     plain("### \\[egress\\]", "EgressPolicy"),
     plain("### \\[guardrail_webhook\\]", "GuardrailWebhookConfig"),
+    plain("### \\[semantic_guards\\]", "SemanticGuardsConfig"),
+    plain(
+        "#### \\[\\[semantic_guards.providers\\]\\]",
+        "GuardrailWebhookConfig",
+    ),
+    plain(
+        "#### \\[\\[semantic_guards.policies\\]\\]",
+        "GuardrailPolicy",
+    ),
     plain("### \\[pii_sanitizer\\]", "PiiSanitizerConfig"),
     plain("### \\[prompt_templates\\]", "PromptTemplatesConfig"),
     with_exempt(
@@ -475,6 +496,9 @@ fn tables() -> Vec<Table> {
         Table::repeated("mcp_oauth_sessions").owned("/security/mcp-oauth"),
         Table::repeated("mcp_tool_groups").owned("/api/mcp"),
         Table::repeated("mcp_settings").owned("/api/mcp"),
+        Table::repeated("mcp_manifest_enforcement"),
+        Table::repeated("mcp_gateway_settings"),
+        Table::repeated("mcp_gateway_tool_groups"),
         Table::repeated("model_prices"),
         Table::single("currency"),
         Table::repeated("budgets"),
@@ -503,6 +527,7 @@ fn tables() -> Vec<Table> {
         Table::single("guardrails"),
         Table::single("egress"),
         Table::single("guardrail_webhook"),
+        Table::single("semantic_guards"),
         Table::single("pii_sanitizer"),
         Table::single("prompt_templates"),
         Table::single("plugins").owned("/configuration/plugins"),

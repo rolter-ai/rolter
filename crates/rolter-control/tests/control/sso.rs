@@ -1475,6 +1475,8 @@ async fn sso_off_hides_the_provider_and_refuses_its_login() {
         .unwrap();
     assert_eq!(unknown_json.status(), 400);
     assert!(unknown_json.headers().get("location").is_none());
+    let unknown_body: Value = unknown_json.json().await.unwrap();
+    assert_eq!(unknown_body["error"]["code"], "unknown_provider");
     let unknown_browser = client
         .get(format!("{base}/auth/sso/nobody/start"))
         .header("accept", "text/html,application/xhtml+xml;q=0.9,*/*;q=0.8")
@@ -2067,7 +2069,7 @@ async fn sso_never_adopts_a_superadmin_or_an_account_with_roles_in_another_org()
     let grace = seed_user(&pool, "grace@example.com", false).await;
     seed_membership(&pool, grace, Some(acme), None, None, "viewer").await;
 
-    let sign_in = |email: &'static str| {
+    let sign_in_as = |email: &'static str, accept: &'static str| {
         let client = client.clone();
         let base = base.clone();
         let issuer = issuer.clone();
@@ -2094,12 +2096,13 @@ async fn sso_never_adopts_a_superadmin_or_an_account_with_roles_in_another_org()
                 .get(format!(
                     "{base}/auth/sso/acme-idp/callback?code=abc&state={state}"
                 ))
-                .header("accept", "text/html")
+                .header("accept", accept)
                 .send()
                 .await
                 .unwrap()
         }
     };
+    let sign_in = |email: &'static str| sign_in_as(email, "text/html");
     let refused = format!("{base}/login?sso_error=account_outside_org&sso=acme-idp");
     let roles = |user: uuid::Uuid| {
         let pool = pool.clone();
@@ -2126,6 +2129,19 @@ async fn sso_never_adopts_a_superadmin_or_an_account_with_roles_in_another_org()
     // the break-glass account: refused
     let response = sign_in("root@example.com").await;
     assert_eq!(redirect_of(&response), refused);
+
+    // a client that does not ask for html is told the same code, with the
+    // status it always had and nothing that names the account (#3468)
+    for email in ["ada@example.com", "root@example.com"] {
+        let response = sign_in_as(email, "application/json").await;
+        assert_eq!(response.status(), 403);
+        let body: Value = response.json().await.unwrap();
+        assert_eq!(body["error"]["code"], "account_outside_org", "{body}");
+        let message = body["error"]["message"].as_str().unwrap();
+        assert!(!message.contains(email), "{message}");
+        assert!(!message.contains("example.com"), "{message}");
+        assert_ne!(message, "insufficient role for this resource");
+    }
 
     // an account whose roles are all in acme is adopted, as before
     let response = sign_in("grace@example.com").await;

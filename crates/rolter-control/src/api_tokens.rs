@@ -92,6 +92,16 @@ pub(crate) async fn resolve(
     Ok(Some(Box::new(held)))
 }
 
+/// [`resolve`] by the token's row id: the principal a download ticket minted
+/// with this token redeems as (#3504). A token revoked or expired since is
+/// `None`, as it is for a bearer.
+pub(crate) async fn resolve_id(pool: &PgPool, id: Uuid) -> ApiResult<Option<Box<TokenPrincipal>>> {
+    let Some(token) = ApiTokenRepo(pool).find_active_by_id(id).await? else {
+        return Ok(None);
+    };
+    Ok(Some(Box::new(token_authority(pool, token).await?)))
+}
+
 /// The membership or the grants a token stands for. A token's scope ids are
 /// copied as stored, so a project token matches the chain its project names.
 async fn token_authority(pool: &PgPool, token: ApiToken) -> ApiResult<TokenPrincipal> {

@@ -115,8 +115,7 @@ fn backpressure_config(model: &str, upstream: SocketAddr) -> GatewayConfig {
         strategy: BalancingStrategy::RoundRobin,
         targets: vec![Target {
             provider: "hold".to_string(),
-            model: None,
-            weight: 1,
+            ..Default::default()
         }],
         params: Default::default(),
         param_policy: Default::default(),

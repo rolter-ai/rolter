@@ -67,14 +67,7 @@ fn key_record(config: &GatewayConfig, plaintext: &str, id: &str, user: &str) -> 
         team_id: "team-1".to_string(),
         project_id: "project-1".to_string(),
         user_id: user.to_string(),
-        models: Vec::new(),
-        providers: Vec::new(),
-        disabled: false,
-        expires_at: None,
-        cache: None,
-        business_unit_id: String::new(),
-        customer_id: String::new(),
-        access_policy: None,
+        ..Default::default()
     }
 }
 
@@ -91,8 +84,7 @@ fn base_config(upstream: SocketAddr) -> GatewayConfig {
         strategy: BalancingStrategy::RoundRobin,
         targets: vec![Target {
             provider: "up".to_string(),
-            model: None,
-            weight: 1,
+            ..Default::default()
         }],
         params: Default::default(),
         param_policy: Default::default(),
@@ -230,4 +222,25 @@ async fn a_narrowed_user_cap_counts_only_its_own_org_or_project() {
         let expected = if stopped { 402 } else { 200 };
         assert_eq!(chat(gw, "sk-n").await.status(), expected, "{within}");
     }
+}
+
+/// #3470: a budget on a scope this gateway does not know, as an older control
+/// plane now serves one it cannot read (or a newer one sends), is binding: it
+/// counts every request, so a frozen cap refuses a key it does not name.
+#[tokio::test]
+async fn a_cap_on_an_unknown_scope_refuses_every_request() {
+    let Some(redis) = redis_url() else {
+        eprintln!("ROLTER_TEST_REDIS_URL unset; skipping");
+        return;
+    };
+    let mut config = base_config(upstream().await);
+    let key = unique("vk-anyone");
+    config
+        .db_virtual_keys
+        .push(key_record(&config, "sk-anyone", &key, ""));
+    let galaxy = budget("galaxy", &unique("galaxy"), 0);
+    assert_eq!(galaxy.scope, rolter_core::BudgetScope::Unknown);
+    config.budgets.push(galaxy);
+    let gw = gateway(&config, &redis).await;
+    assert_eq!(chat(gw, "sk-anyone").await.status(), 402);
 }

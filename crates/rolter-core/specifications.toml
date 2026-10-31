@@ -43,7 +43,12 @@ version = "v1"
 reviewed_at = "2026-10-27"
 conformance = "native-passthrough"
 gateway_endpoints = ["POST /v1/chat/completions"]
-gateway_schemas = ["ChatCompletionRequest"]
+gateway_schemas = [
+  "ChatCompletionRequest",
+  "ChatCompletionResponse",
+  "ChatCompletionChunk",
+  "Usage",
+]
 modules = [
   "crates/rolter-gateway/src/handlers.rs",
   "crates/rolter-proxy/src/lib.rs",
@@ -80,6 +85,7 @@ version = "v1"
 reviewed_at = "2026-10-27"
 conformance = "native-passthrough"
 gateway_endpoints = ["POST /v1/completions"]
+gateway_schemas = ["CompletionRequest", "CompletionResponse"]
 modules = ["crates/rolter-gateway/src/handlers.rs"]
 supported = [
   "request and response bodies forwarded unchanged to an OpenAI-shaped upstream",
@@ -113,6 +119,13 @@ gateway_endpoints = [
   "GET /v1/responses/{response_id}/input_items",
   "POST /v1/responses/{response_id}/compact",
   "GET /v1/responses/{response_id}/input_tokens",
+]
+gateway_schemas = [
+  "ResponsesRequest",
+  "ResponseObject",
+  "ResponseDeletion",
+  "ResponseInputItems",
+  "ResponseStreamEvent",
 ]
 modules = [
   "crates/rolter-gateway/src/handlers.rs",
@@ -148,6 +161,7 @@ version = "v1"
 reviewed_at = "2026-10-27"
 conformance = "native-passthrough"
 gateway_endpoints = ["POST /v1/embeddings"]
+gateway_schemas = ["EmbeddingRequest", "EmbeddingResponse"]
 modules = ["crates/rolter-gateway/src/handlers.rs"]
 supported = [
   "request and response bodies forwarded unchanged to an OpenAI-shaped upstream; the gateway reads `model`, `encoding_format` and `usage`",
@@ -168,6 +182,7 @@ version = "v1"
 reviewed_at = "2026-10-27"
 conformance = "extension"
 gateway_endpoints = ["GET /v1/models"]
+gateway_schemas = ["ModelList"]
 modules = [
   "crates/rolter-gateway/src/handlers.rs",
   "crates/rolter-gateway/src/model_catalog.rs",
@@ -193,6 +208,7 @@ version = "v1"
 reviewed_at = "2026-10-27"
 conformance = "native-passthrough"
 gateway_endpoints = ["POST /v1/images/generations"]
+gateway_schemas = ["ImageGenerationRequest", "ImageResponse"]
 modules = ["crates/rolter-gateway/src/handlers.rs"]
 supported = [
   "request and response bodies forwarded unchanged to an OpenAI-shaped upstream",
@@ -217,16 +233,20 @@ gateway_endpoints = [
   "POST /v1/audio/transcriptions",
   "POST /v1/audio/translations",
 ]
-gateway_schemas = ["AudioUpload"]
+gateway_schemas = ["AudioUpload", "SpeechRequest", "TranscriptionResponse"]
 modules = [
   "crates/rolter-gateway/src/handlers.rs",
   "crates/rolter-gateway/src/multipart.rs",
 ]
 supported = [
   "speech: JSON request forwarded, binary audio streamed back",
-  "transcriptions and translations: the multipart body is forwarded verbatim; the gateway reads only the `model` field",
+  "transcriptions and translations: the multipart body is forwarded verbatim; the gateway reads only the `model`, `response_format` and `stream` fields",
+  "transcriptions with `stream=true` (#3432): `transcript.text.delta` / `transcript.text.done` events are relayed; under response guardrails the stream is refused before the upstream call or buffered, judged on the joined transcript text and replayed, as the policy's `streaming` setting says",
 ]
 tests = [
+  "crates/rolter-gateway/tests/semantic_guards.rs::a_streamed_transcription_streams_through",
+  "crates/rolter-gateway/tests/semantic_guards.rs::a_streamed_transcription_follows_the_policy_streaming_setting",
+  "crates/rolter-gateway/tests/semantic_guards.rs::a_streamed_transcription_under_output_rules_is_refused",
   "crates/rolter-gateway/tests/integration.rs::builtin_fake_llm_serves_audio_speech",
   "crates/rolter-gateway/tests/integration.rs::builtin_fake_llm_serves_audio_transcriptions",
   "crates/rolter-gateway/tests/integration.rs::audio_translations_rejects_non_multipart",
@@ -306,6 +326,7 @@ version = "2023-06-01"
 reviewed_at = "2026-10-27"
 conformance = "native-passthrough"
 gateway_endpoints = ["POST /v1/messages"]
+gateway_schemas = ["MessagesRequest", "MessageResponse", "MessageStreamEvent"]
 modules = [
   "crates/rolter-gateway/src/handlers.rs",
   "crates/rolter-proxy/src/lib.rs",
@@ -411,6 +432,7 @@ version = "v1"
 reviewed_at = "2026-10-27"
 conformance = "transport-only"
 gateway_endpoints = ["POST /v1/rerank"]
+gateway_schemas = ["RerankRequest", "RerankResponse"]
 modules = [
   "crates/rolter-gateway/src/handlers.rs",
   "crates/rolter-proxy/src/infinity.rs",
@@ -440,10 +462,12 @@ modules = ["crates/rolter-proxy/src/infinity.rs"]
 supported = [
   "embeddings: OpenAI's own shape, forwarded unchanged",
   "rerank: `{\"text\": ...}` documents flattened on the way up and bare-string documents wrapped on the way back",
+  "every other endpoint refused with `400 unsupported_endpoint` before the upstream on a route that reaches only embedding servers",
 ]
 tests = [
   "crates/rolter-proxy/src/infinity.rs::documents_come_back_in_the_cohere_shape",
   "crates/rolter-gateway/tests/infinity.rs",
+  "crates/rolter-gateway/tests/embedding_only.rs",
 ]
 
 [[spec]]
@@ -458,8 +482,12 @@ conformance = "native-passthrough"
 modules = ["crates/rolter-core/src/upstream.rs"]
 supported = [
   "the OpenAI-compatible `/v1/embeddings` route, and `/health` as the liveness probe",
+  "every other endpoint, `/v1/rerank` included (TEI has no rerank mapping), refused with `400 unsupported_endpoint` before the upstream on a route that reaches only embedding servers, none of them Infinity",
 ]
-tests = ["crates/rolter-gateway/tests/tei.rs"]
+tests = [
+  "crates/rolter-gateway/tests/tei.rs",
+  "crates/rolter-gateway/tests/embedding_only.rs",
+]
 
 [[spec]]
 id = "system-one"
@@ -471,6 +499,7 @@ contract = "living"
 reviewed_at = "2026-10-27"
 conformance = "native-passthrough"
 gateway_endpoints = ["POST /v1/systemone"]
+gateway_schemas = ["SystemOneRequest", "SystemOneResponse"]
 modules = ["crates/rolter-gateway/src/system_one.rs"]
 supported = [
   "request and response forwarded unchanged; the gateway reads `model` and `usage` (ADR-0035)",
@@ -498,12 +527,19 @@ supported = [
   "messages, system and developer instructions, images, documents, tools and tool results, in both directions",
   "SSE translated incrementally in both directions",
   "`max_tokens` injected from `[compatibility] default_max_tokens` when an OpenAI request sets none",
+  "Anthropic `tool_choice.disable_parallel_tool_use: true` carried as Chat `parallel_tool_calls: false` on a request with tools (#3325)",
 ]
 omissions = [
   "fields with no counterpart in the target dialect are dropped, never forwarded",
 ]
+deviations = [
+  "an OpenAI `temperature` above Anthropic's maximum of 1 is sent as 1 and reported as `temperature=clamped` (#3324)",
+]
 tests = [
   "crates/rolter-proxy/src/translation.rs::openai_multimodal_and_tools_become_anthropic_blocks",
+  "crates/rolter-proxy/src/translation.rs::chat_to_anthropic_clamps_a_temperature_above_one",
+  "crates/rolter-proxy/src/translation.rs::anthropic_disable_parallel_tool_use_becomes_chat_parallel_tool_calls",
+  "crates/rolter-gateway/tests/integration.rs::a_chat_temperature_above_one_is_clamped_for_an_anthropic_upstream",
   "crates/rolter-proxy/src/translation.rs::anthropic_response_becomes_openai_response",
   "crates/rolter-proxy/src/translation.rs::anthropic_sse_translates_across_chunk_boundaries",
   "crates/rolter-gateway/tests/integration.rs::cross_protocol_sse_is_translated_incrementally_both_ways",
@@ -636,14 +672,16 @@ conformance = "partial"
 modules = [
   "crates/rolter-control/src/proxy.rs",
   "crates/rolter-gateway/src/mcp_proxy.rs",
+  "crates/rolter-proxy/src/hop_by_hop.rs",
 ]
 supported = [
-  "a fixed list of hop-by-hop fields (RFC 9110 §7.6.1) is stripped before a request or response is relayed",
-]
-omissions = [
-  "fields a `Connection` header nominates are not removed, and the control plane's `/gw` relay lists `trailers` where the field is `Trailer` (#3338)",
+  "`Connection`, every field its value nominates and the fixed hop-by-hop set (`Keep-Alive`, `Proxy-Connection`, `TE`, `Trailer`, `Transfer-Encoding`, `Upgrade` and the proxy-auth fields, RFC 9110 §7.6.1) are stripped by one shared helper before a request or response is relayed",
 ]
 tests = [
+  "crates/rolter-proxy/src/hop_by_hop.rs::removes_connection_and_the_fields_it_nominates",
+  "crates/rolter-proxy/src/hop_by_hop.rs::removes_trailer_and_the_fixed_set",
+  "crates/rolter-control/src/proxy.rs::the_relay_drops_nominated_and_trailer_headers_both_ways",
+  "crates/rolter-gateway/src/mcp_proxy.rs::the_relay_drops_nominated_and_trailer_headers",
   "crates/rolter-gateway/src/mcp_proxy.rs::proxy_replaces_client_auth_and_preserves_path_query_and_body",
 ]
 
@@ -700,12 +738,17 @@ contract = "rfc"
 version = "RFC 9745"
 reviewed_at = "2026-10-27"
 conformance = "native-passthrough"
-modules = ["crates/rolter-control/src/deprecation.rs"]
+modules = [
+  "crates/rolter-control/src/deprecation.rs",
+  "crates/rolter-control/src/snapshot_negotiation.rs",
+]
 supported = [
   "`Deprecation: @<unix seconds>` on a deprecated control-plane operation",
+  "`Deprecation` on every `/internal/snapshot` answer served in a deprecated snapshot format (ADR-0038)",
 ]
 tests = [
   "crates/rolter-control/src/deprecation.rs::headers_follow_rfc_9745_and_rfc_8594",
+  "crates/rolter-control/src/snapshot_negotiation.rs::a_deprecated_format_carries_the_headers_and_only_it",
 ]
 
 [[spec]]
@@ -718,12 +761,17 @@ contract = "rfc"
 version = "RFC 8594"
 reviewed_at = "2026-10-27"
 conformance = "native-passthrough"
-modules = ["crates/rolter-control/src/deprecation.rs"]
+modules = [
+  "crates/rolter-control/src/deprecation.rs",
+  "crates/rolter-control/src/snapshot_negotiation.rs",
+]
 supported = [
   "`Sunset` as an IMF-fixdate on every deprecated control-plane operation",
+  "`Sunset` on every `/internal/snapshot` answer served in a deprecated snapshot format (ADR-0038)",
 ]
 tests = [
   "crates/rolter-control/src/deprecation.rs::headers_follow_rfc_9745_and_rfc_8594",
+  "crates/rolter-control/src/snapshot_negotiation.rs::a_deprecated_format_carries_the_headers_and_only_it",
 ]
 
 [[spec]]
@@ -746,7 +794,8 @@ supported = [
   "`method`, `result` and `error` are read from an MCP exchange to log tool calls",
 ]
 deviations = [
-  "a body that cannot be read as JSON-RPC is refused with 400 `mcp_request_unreadable` unless the organization's failure policy lets it through",
+  "a body to a server the organization's tool groups or tool manifest govern that cannot be read as strict JSON-RPC (UTF-16 or UTF-32, `NaN`, trailing commas, comments) is refused with 400 `mcp_request_unreadable`, whatever the deprecated failure policy says; a leading UTF-8 byte-order mark is removed, and the body is judged and forwarded without it (#3527)",
+  "a request with `\"id\": null` is treated as a notification: nothing can be matched to a reply, so it is logged with the HTTP status and no result",
 ]
 omissions = [
   "an allowed message is forwarded unchanged: rolter validates no other part of it",
@@ -756,6 +805,7 @@ tests = [
   "crates/rolter-gateway/src/mcp_policy.rs::a_batch_is_refused_as_a_whole_naming_every_refused_call",
   "crates/rolter-gateway/tests/integration.rs::mcp_proxy_records_a_tool_call_with_key_and_session_owner_attribution",
   "crates/rolter-gateway/tests/integration.rs::mcp_proxy_records_a_json_rpc_error_as_a_tool_error",
+  "crates/rolter-gateway/tests/integration.rs::mcp_proxy_records_batch_calls_and_notifications_over_http",
 ]
 
 # ── MCP ──────────────────────────────────────────────────────────────────────
@@ -793,16 +843,24 @@ supported = [
   "a POST naming a tool outside the organization's enabled tool groups is refused with 403 `mcp_tool_denied` before anything is forwarded (see `json-rpc`)",
   "an upstream 403 whose challenge says `insufficient_scope` is answered with 403 `mcp_insufficient_scope` and a rebuilt `WWW-Authenticate` challenge",
 ]
+deviations = [
+  "a POST to a server the organization's tool groups or tool manifest govern, with a `Content-Encoding` other than `identity`, is refused with 415 `mcp_request_unreadable`: the relay decodes no body, so it could not apply the rules to it",
+]
 omissions = [
   "no protocol-version negotiation: `MCP-Protocol-Version` is relayed, never read",
   "no validation of what an allowed message contains, and none of the server's replies",
   "the deprecated HTTP+SSE transport is relayed like any other request, not implemented",
+  "the replies a deprecated HTTP+SSE server sends on its event stream are not matched to the calls posted: a POST it answers 202 with no reply in the body is logged `accepted`",
+  "a body forwarded unread to a server no rule governs (encoded, or not JSON) has its calls not itemised: it is counted in `rolter_mcp_unread_bodies_total` and logged as one `unread` row",
 ]
 tests = [
   "crates/rolter-gateway/src/mcp_proxy.rs::proxy_replaces_client_auth_and_preserves_path_query_and_body",
   "crates/rolter-gateway/src/mcp_policy.rs::a_governed_server_serves_only_the_tools_its_groups_list",
   "crates/rolter-gateway/src/mcp_proxy.rs::insufficient_scope_from_an_oauth_server_is_the_step_up_answer",
   "crates/rolter-gateway/tests/integration.rs::mcp_proxy_binds_virtual_key_owner_to_server_scopes_and_bearer",
+  "crates/rolter-gateway/tests/integration.rs::mcp_proxy_refuses_a_content_encoded_body_to_a_governed_server",
+  "crates/rolter-gateway/src/mcp_proxy.rs::a_legacy_sse_call_answered_202_is_accepted_with_its_reply_on_the_stream",
+  "crates/rolter-gateway/src/mcp_proxy.rs::a_body_forwarded_unread_is_counted_and_recorded_as_unread",
 ]
 
 [[spec]]
@@ -1434,39 +1492,42 @@ dialects = ["openai-chat-completions"]
 auth = "api-key"
 primary_path = "/v1/chat/completions"
 conformance = "provider-profile"
-reviewed_at = "2026-10-27"
+reviewed_at = "2026-10-29"
 tests = [
   "crates/rolter-proxy/src/lib.rs::every_kind_authenticates_with_the_header_the_probes_use",
+  "crates/rolter-gateway/tests/provider_profiles.rs::azure_openai_v1_authenticates_with_the_api_key_header",
 ]
 
 [[provider]]
 kind = "bedrock"
 authority = "Amazon Web Services"
 url = "https://docs.aws.amazon.com/bedrock/latest/userguide/inference-chat-completions.html"
-base = "https://bedrock-runtime.us-east-1.amazonaws.com/v1"
+base = "https://bedrock-runtime.us-east-1.amazonaws.com/openai/v1"
 dialects = ["openai-chat-completions"]
 auth = "bearer"
 primary_path = "/v1/chat/completions"
 conformance = "provider-profile"
-reviewed_at = "2026-10-27"
+reviewed_at = "2026-10-29"
 notes = "a Bedrock API key as a bearer token; SigV4 signing is not implemented"
 tests = [
   "crates/rolter-proxy/src/lib.rs::the_previewed_address_is_the_one_the_forwarder_builds",
+  "crates/rolter-gateway/tests/provider_profiles.rs::bedrock_runtime_authenticates_with_a_bearer_api_key_under_openai_v1",
 ]
 
 [[provider]]
 kind = "vertex"
 authority = "Google Cloud"
-url = "https://cloud.google.com/vertex-ai/generative-ai/docs/migrate/openai/overview"
+url = "https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/migrate/openai/examples"
 base = "https://aiplatform.googleapis.com/v1/projects/PROJECT/locations/global/endpoints/openapi"
 dialects = ["openai-chat-completions"]
 auth = "bearer"
 primary_path = "/v1/chat/completions"
 conformance = "provider-profile"
-reviewed_at = "2026-10-27"
+reviewed_at = "2026-10-29"
 notes = "a short-lived OAuth access token as the bearer; rolter does not mint it"
 tests = [
   "crates/rolter-proxy/src/lib.rs::the_previewed_address_is_the_one_the_forwarder_builds",
+  "crates/rolter-gateway/tests/provider_profiles.rs::vertex_takes_an_oauth_access_token_as_a_bearer_under_the_project_endpoint",
 ]
 
 [[provider]]
@@ -1478,9 +1539,10 @@ dialects = ["gemini-openai-compat"]
 auth = "bearer"
 primary_path = "/v1/chat/completions"
 conformance = "provider-profile"
-reviewed_at = "2026-10-27"
+reviewed_at = "2026-10-29"
 tests = [
   "crates/rolter-core/src/config.rs::every_kind_resolves_by_the_documented_rule",
+  "crates/rolter-gateway/tests/provider_profiles.rs::gemini_openai_shim_lives_under_v1beta_openai",
 ]
 
 [[provider]]
@@ -1520,9 +1582,10 @@ dialects = ["openai-chat-completions"]
 auth = "bearer"
 primary_path = "/v1/chat/completions"
 conformance = "provider-profile"
-reviewed_at = "2026-10-27"
+reviewed_at = "2026-10-29"
 tests = [
   "crates/rolter-core/src/config.rs::every_kind_resolves_by_the_documented_rule",
+  "crates/rolter-gateway/tests/provider_profiles.rs::mistral_base_carries_v1_and_the_gateway_prefix_is_not_doubled",
 ]
 
 [[provider]]
@@ -1534,9 +1597,10 @@ dialects = ["openai-chat-completions"]
 auth = "bearer"
 primary_path = "/v1/chat/completions"
 conformance = "provider-profile"
-reviewed_at = "2026-10-27"
+reviewed_at = "2026-10-29"
 tests = [
   "crates/rolter-core/src/config.rs::every_kind_resolves_by_the_documented_rule",
+  "crates/rolter-gateway/tests/provider_profiles.rs::groq_keeps_the_openai_prefix_of_its_base",
 ]
 
 [[provider]]
@@ -1691,9 +1755,10 @@ dialects = ["openai-chat-completions"]
 auth = "bearer"
 primary_path = "/v1/chat/completions"
 conformance = "provider-profile"
-reviewed_at = "2026-10-27"
+reviewed_at = "2026-10-29"
 tests = [
   "crates/rolter-core/src/config.rs::every_kind_resolves_by_the_documented_rule",
+  "crates/rolter-gateway/tests/provider_profiles.rs::deepseek_base_has_no_version_segment",
 ]
 
 [[provider]]
@@ -1817,14 +1882,16 @@ tests = [
 kind = "gigachat"
 authority = "Sber"
 url = "https://developers.sber.ru/docs/ru/gigachat/api/overview"
+base = "https://api.giga.chat/v1"
 dialects = ["openai-chat-completions"]
 auth = "bearer"
 primary_path = "/v1/chat/completions"
 conformance = "provider-profile"
-reviewed_at = "2026-10-27"
-notes = "GigaChat issues short-lived access tokens from an OAuth endpoint; rolter sends the configured key as the bearer and does not mint one"
+reviewed_at = "2026-10-29"
+notes = "base, path and auth from the OpenAPI file the reference pages are built from (https://developers.sber.ru/docs/files/openapi/gigachat/api.yml, read 2026-10-29): its servers entry is https://api.giga.chat/v1 and chat completions is POST /v1/chat/completions on https://api.giga.chat, the address the overview names for every user from 17 July 2026 (https://gigachat.devices.sberbank.ru/ is being phased out; #3488). The file's JavaScript SDK sample still writes https://api.giga.chat/api/v1, which disagrees with its own servers and path. GigaChat issues short-lived access tokens from an OAuth endpoint; rolter sends the configured key as the bearer and does not mint one"
 tests = [
   "crates/rolter-core/src/config.rs::every_kind_resolves_by_the_documented_rule",
+  "crates/rolter-gateway/tests/provider_profiles.rs::gigachat_takes_an_oauth_access_token_as_a_bearer",
 ]
 
 [[provider]]
@@ -1860,9 +1927,9 @@ url = "https://mts.ai/product/cotype/"
 dialects = ["openai-chat-completions"]
 auth = "bearer"
 primary_path = "/v1/chat/completions"
-conformance = "provider-profile"
+conformance = "unverified"
 reviewed_at = "2026-10-27"
-notes = "product page; no public API reference was found at review"
+notes = "product page; no public API reference was found at review. Unverified: whether it speaks an OpenAI-compatible API at a stable base URL is not established, so no conformance fixture is recorded and the profile rests on the walk-every-kind tests alone (#3336)"
 tests = [
   "crates/rolter-core/src/config.rs::every_kind_resolves_by_the_documented_rule",
 ]
@@ -1900,9 +1967,9 @@ url = "https://rinna.co.jp/"
 dialects = ["openai-chat-completions"]
 auth = "bearer"
 primary_path = "/v1/chat/completions"
-conformance = "provider-profile"
+conformance = "unverified"
 reviewed_at = "2026-10-27"
-notes = "company site; no public API reference was found at review"
+notes = "company site; no public API reference was found at review. Unverified: whether it speaks an OpenAI-compatible API at a stable base URL is not established, so no conformance fixture is recorded and the profile rests on the walk-every-kind tests alone (#3336)"
 tests = [
   "crates/rolter-core/src/config.rs::every_kind_resolves_by_the_documented_rule",
 ]
@@ -1914,9 +1981,9 @@ url = "https://ai.rakuten.co.jp/"
 dialects = ["openai-chat-completions"]
 auth = "bearer"
 primary_path = "/v1/chat/completions"
-conformance = "provider-profile"
+conformance = "unverified"
 reviewed_at = "2026-10-27"
-notes = "product site; no public API reference was found at review"
+notes = "product site; no public API reference was found at review. Unverified: whether it speaks an OpenAI-compatible API at a stable base URL is not established, so no conformance fixture is recorded and the profile rests on the walk-every-kind tests alone (#3336)"
 tests = [
   "crates/rolter-core/src/config.rs::every_kind_resolves_by_the_documented_rule",
 ]
@@ -1941,9 +2008,9 @@ url = "https://cloud.olakrutrim.com/"
 dialects = ["openai-chat-completions"]
 auth = "bearer"
 primary_path = "/v1/chat/completions"
-conformance = "provider-profile"
+conformance = "unverified"
 reviewed_at = "2026-10-27"
-notes = "console; no public API reference was found at review"
+notes = "console; no public API reference was found at review. Unverified: whether it speaks an OpenAI-compatible API at a stable base URL is not established, so no conformance fixture is recorded and the profile rests on the walk-every-kind tests alone (#3336)"
 tests = [
   "crates/rolter-core/src/config.rs::every_kind_resolves_by_the_documented_rule",
 ]
@@ -1955,9 +2022,9 @@ url = "https://falconllm.tii.ae/"
 dialects = ["openai-chat-completions"]
 auth = "bearer"
 primary_path = "/v1/chat/completions"
-conformance = "provider-profile"
+conformance = "unverified"
 reviewed_at = "2026-10-27"
-notes = "product site; no public API reference was found at review"
+notes = "product site; no public API reference was found at review. Unverified: whether it speaks an OpenAI-compatible API at a stable base URL is not established, so no conformance fixture is recorded and the profile rests on the walk-every-kind tests alone (#3336)"
 tests = [
   "crates/rolter-core/src/config.rs::every_kind_resolves_by_the_documented_rule",
 ]

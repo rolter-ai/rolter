@@ -134,6 +134,7 @@ export function AssignProfileSheet({
               ? t("pages.accessProfiles.assign.userHint")
               : t("pages.accessProfiles.assign.teamHint")
           }
+          required
         >
           <Combobox
             options={options}

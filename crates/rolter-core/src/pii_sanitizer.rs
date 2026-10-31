@@ -59,6 +59,10 @@ pub enum SanitizeDirection {
     Response,
     /// both legs
     Both,
+    /// a direction this build does not know (#3347); read as
+    /// [`SanitizeDirection::Both`]
+    #[serde(other)]
+    Unknown,
 }
 
 impl SanitizeDirection {
@@ -117,6 +121,10 @@ pub enum StreamingResponse {
     /// [`Self::Reject`], because detecting entities in a stream needs context
     /// the placeholder holdback does not give.
     Restore,
+    /// a value this build does not know (#3347); read as
+    /// [`StreamingResponse::Reject`]
+    #[serde(other)]
+    Unknown,
 }
 
 /// When the gateway may turn placeholders back into plaintext.
@@ -143,6 +151,10 @@ pub enum RestorationPolicy {
     /// Lets one deployment serve both trusted and untrusted callers: the
     /// default stays redacted and a client opts in per request.
     CallerAuthorized,
+    /// a policy this build does not know (#3347); read as
+    /// [`RestorationPolicy::Never`]
+    #[serde(other)]
+    Unknown,
 }
 
 impl RestorationPolicy {
@@ -154,7 +166,7 @@ impl RestorationPolicy {
     #[must_use]
     pub fn should_restore(self, caller_requested: bool) -> bool {
         match self {
-            Self::Never => false,
+            Self::Never | Self::Unknown => false,
             Self::TrustedDownstream => true,
             Self::CallerAuthorized => caller_requested,
         }

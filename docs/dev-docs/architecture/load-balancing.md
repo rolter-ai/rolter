@@ -55,7 +55,7 @@ nothing.
 
 ### Eligibility cost
 
-`pick_untried` hands the balancer an `eligible(i)` closure. Answering it per target would take the cooldown, health and breaker locks for each target the strategy weighs, about three per target. Instead the three registries each answer for the whole route in one lock acquisition (`Cooldowns::parked_mask`, `Health::unhealthy_mask`, `Breaker::open_mask`, as `TargetMask`s), read the first time the closure is called, so an attempt takes three acquisitions however many targets the route has, plus the checks on the one target it picks. A strategy that never calls the closure (`round_robin`) takes only the latter. The masks are read-only: an open breaker whose window has elapsed is left to `Breaker::allows`, which the chosen target is still asked, so the probe is admitted exactly as before.
+`TargetPool::pick` hands the balancer an `eligible(i)` closure. Answering it per target would take the cooldown, health and breaker locks for each target the strategy weighs, about three per target. Instead the three registries each answer for the whole route in one lock acquisition (`Cooldowns::parked_mask`, `Health::unhealthy_mask`, `Breaker::open_mask`, as `TargetMask`s), read the first time the closure is called, so an attempt takes three acquisitions however many targets the route has, plus the checks on the one target it picks. A strategy that never calls the closure (`round_robin`) takes only the latter. The masks are read-only: `open_mask` lists an open breaker inside its window and a half-open one whose probe still holds the slot, and leaves a breaker whose window (or probe lease) has elapsed to `Breaker::allows`, which the chosen target is still asked, so exactly one probe is admitted ([health-and-readiness.md](health-and-readiness.md#the-circuit-breakers-half-open-probe-3248)).
 
 Measured with `just bench-hot-path` (a 4 vCPU cloud VM, so read the ratios, not the nanoseconds), eligible pick with one target parked and one unhealthy, per-target answers against the snapshot:
 
@@ -66,7 +66,9 @@ Measured with `just bench-hot-path` (a 4 vCPU cloud VM, so read the ratios, not 
 | `cache_aware`  | 8.1 / 7.5 µs | 84.6 / 85.6 µs | 282 / 275 µs   | 620 / 609 µs  |
 | `pipeline`     | 8.4 / 7.9 µs | 84.4 / 88.3 µs | 295 / 288 µs   | 597 / 587 µs  |
 
-Only `power_of_two` is dominated by the eligibility answers, and the snapshot makes its cost grow slowly with the pool. `cache_aware` and the pipeline spend their time matching prefixes and scoring (the bench gives every target the same prompt), so the per-target locks were within noise there; the snapshot is for the constant-locks bound, not a measured win for them. Each pick's allocations are unchanged: none for `round_robin`, `power_of_two` and `cache_aware` up to 64 targets, and 6 to 12 for the pipeline (its candidate and score vectors).
+Only `power_of_two` is dominated by the eligibility answers, and the snapshot makes its cost grow slowly with the pool. `cache_aware` and the pipeline spend their time matching prefixes and scoring (the bench gives every target the same prompt), so the per-target locks were within noise there; the snapshot is for the constant-locks bound, not a measured win for them. Each pick's allocations are unchanged: none for `round_robin`, `power_of_two` and `cache_aware` up to 64 targets. The pipeline stacks (`pipeline`, `lora_aware`, `cheapest`, `fastest`, `predicted_latency`) allocated 6 to 12 vectors per pick (the candidate list, the running totals and one score vector per scorer) until #3249: a `Scorer` now writes into caller-provided scratch (`Scorer::score_into`), and `Pipeline::select` holds that scratch on the stack for a route of up to `STACK_TARGETS` (64) targets, so the pick itself allocates nothing there, and a wider route allocates its three buffers once per pick. A scorer backed by a live source (`fastest`, `predicted_latency`, the KV-cache and LMCache scorers) still pays for the one snapshot its source returns. `tests/hot_path_allocations.rs` asserts zero for `pipeline`, `lora_aware` and `cheapest` at 4 and 64 targets.
+
+The same rule holds on the two paths `TargetPool::pick` does not cover (#3249). The weighted-variant forward loop builds each variant's registry key once per request, and reads each variant's `Blocked` masks at most once per attempt (lazily, only for a variant a candidate is asked about), then asks `Breaker::allows` only of the candidate it is about to use; it used to build the key and take the three locks for every candidate it walked past. A multi-key provider's key pick reads its pool's parks with one `Cooldowns::parked_mask` (`handlers::parked_keys`) instead of an `is_parked` per key, on the chat, raw (audio), variant and realtime paths.
 
 ## Balancer lifetime, and provider groups
 
@@ -88,9 +90,9 @@ that is not free. A group has no configured route: `Snapshot::resolve_pinned`
 builds a _synthetic_ one per request, because the model each member forwards
 depends on what the caller asked for. Only the target list is per request,
 though — the strategy and the member weights are fixed for the life of the
-snapshot, so the group's balancer is built once in `Snapshot::build`, stored in
-`Snapshot::group_balancers` keyed by slug, and shared by every synthetic entry
-built for that group. Before #1655 it was built inside `resolve_pinned`, and a
+snapshot, so the group's balancer is built once in `Snapshot::build`, stored
+with the group in `Snapshot::groups_by_slug` (keyed by `(org, slug)`, #1857),
+and shared by every synthetic entry built for that group. Before #1655 it was built inside `resolve_pinned`, and a
 whole fleet's traffic went to whichever member was listed first, whatever the
 group's strategy and weights said.
 
@@ -276,6 +278,99 @@ update checks the strategy against the same `STRATEGIES` allowlist creation
 uses and the targets against the single-target checks, and nothing more. A
 reload rebuilds every route's balancer anyway, so a strategy change carries no
 selection state across.
+
+## Fallback targets that take over failure classes
+
+A route target may carry `takes_over` (#1584), a set of `rolter_core::failover::FailureClass`es: `throttled`, `timeout`, `transport`, `server_error`, `refusal` and `refusal:<category>`. A target with a set is **restricted**: it is never dialled first, never the balancer's pick for ordinary traffic, and tried only as the successor of an attempt whose failure one of its classes covers. A target with no set is an ordinary member of the pool, so a route that sets none behaves exactly as before. The user-facing contract is [Fallback targets](../../user-docs/reliability/fallback-targets.mdx).
+
+**Vocabulary.** The classes are rolter's own words for the failures the forward loop already tells apart when `[retry]` decides whether to retry: `Failure::from_status` maps `429` to `throttled`, `408`/`504` to `timeout` and any other `5xx` to `server_error`; `Failure::from_transport_error` maps a forward error to `timeout` when the forwarder says it timed out and to `transport` otherwise. `refusal` is new: `Failure::refusal` reads a `451`, or a `400`/`403`/`422` whose `error.code` or `error.type` contains a content-policy marker (`content_policy`, `content_filter`, `content_management`, `responsible_ai`, `safety`, `moderation`) or that carries Azure's `content_filter_result`. Its categories are the marked code and each filter category marked `filtered: true`, lowercase. `FailureClass::matches` compares kinds and, for a narrowed class, requires the category among the failure's.
+
+**Selection.** `rolter_core::failover::may_dial(classes, failure)` is the one rule: with no failure (the first dial) only an unrestricted target; after a failure an unrestricted target unless the failure is a refusal (a refusal is the same request to the same kind of model, so it is never retried onto an ordinary target), and a restricted one only when a class matches. In the classic pool `admits` folds it into the key's provider check, so it reaches every place `TargetPool::pick` consults: the `usable` closure handed to `LoadBalancer::pick_eligible` (#3255), the `skip` check on the balancer's pick, the declared-order fallback and the fail-open `first_untried_allowed`, which therefore never fails open onto a restricted target. `has_untried_target` takes the same failure, so the backoff check and the pick agree. The variant chain does the same through `candidate_admits`, and `variant_candidates` keeps a restricted target out of each variant balancer's lead. Realtime sessions walk their candidates one connect at a time (`CandidateWalk` in `realtime.rs`, #3322): `connect_failure` classifies a failed handshake (`Failure::from_status` on an HTTP answer: `429` throttled, `408` and `504` timeout, any other `5xx` server error; `Failure::from_transport_error` on a dial that got none; any other answer names no class and is walked as a first dial), and `next` hands that failure to `TargetPool::pick_read_only` on the classic pool, or to `may_dial` over the flattened variant candidates, whose balancer lead is never a restricted target. Picking only reads the breaker (`Breaker::refuses`); the connect loop asks `allows` of the one target it dials (#3248).
+
+**The ladder.** Each loop (`forward_classic`, which both pipelines share, and `forward_variants`) keeps `last_failure` in the `ForwardLoop` they share, set wherever an attempt is superseded: the key-level `429`/`401` and the retryable statuses through `Failure::from_status`, a forward error through `Failure::from_transport_error`. A refusal is not retryable, so a `4xx` used to end the loop with its response. Now, while a retry is left, a `400`/`403`/`422`/`451` on a route with a target that takes refusals over (`ModelRoute::takes_over_refusals`) is read by `failover::peek_refusal`: up to 16 KiB within 1 s, classified, and the response rebuilt (status, version, headers, and the prefix chained ahead of whatever the upstream still sends) so an answer that is not taken over reaches the caller byte for byte. A refusal some untried target takes over supersedes the attempt like a retryable status, except that it neither parks the target nor feeds its breaker (a refusal says nothing about health) and there is no backoff. Routes with no such target never read the body, so the hot path of every existing route is unchanged. The refusal takeover spends the retry budget like any failover, so `limits.retries = 0` turns it off.
+
+**The recorded reason.** At every pick the loop sets `fallback_reason` to `last_failure`'s token (`Failure::token`: the kind, or `refusal:<first category>`), empty on the first dial, and the request row carries it (`RequestLog::fallback_reason`, serialized only when non-empty, `clickhouse/023_fallback_reason.sql`, `LowCardinality(String)`). The control plane's invocation list selects it through `OPTIONAL_COLUMNS`, so a ClickHouse without `023` reads it as `''`.
+
+**Failing closed.** A route whose every target is restricted could never dial anything. "Every target" means the targets the data plane dials first (`ModelRoute::dialled_targets`): the variants' targets when the route has variants, because `forward_variants` never consults the classic pool then, and the pool otherwise (#3430). So a route whose variants hold only fallbacks is refused even when its pool has an ordinary target. This holds on every path: `proxy_multipart` (`/v1/audio/transcriptions` and `/v1/audio/translations`) routes a route with variants through `forward_variants` too, with the same sampled primary and candidates (#3494). `ModelRoute::takes_over_problems` (also a class listed twice on one target) feeds `GatewayConfig::validate`, so the gateway refuses such a file at startup; `rolter check` reports it as an error with every other `validate` problem (#3320), `rolter-seed --import` refuses the file before writing a row, and the routes API refuses a list, a single added target or a delete that would leave a route that way, each naming `all_targets_restricted`. The snapshot assembly cannot refuse (one bad route would fail validation of the whole snapshot), so `load_routes` drops a target whose stored class does not parse rather than serving it as an ordinary target, and leaves out, with a warning, a route whose remaining dialled targets are all restricted, as it does a route whose settings do not parse. Both are reported: `assemble_routes` builds the routes and the problems together, `load_routes` keeps the routes and `load_problem_records` the problems (#3321), so `GET /api/v1/config/problems` and the snapshot's problem list name the route, the provider and the class of a dropped target, and give the `all_targets_restricted` sentence for a route left out, each owned by the route's tenant.
+
+**Storage.** `route_targets.takes_over` is a `text[]` (`0129_route_target_takes_over.sql`) of canonical class tokens, `'{}'` by default; `route_targets` already carries the `0003` `bump_config_version()` trigger. `RouteRepo::update` matches targets by provider and upstream model as before and rewrites a match whose weight or set changed, reporting the previous set in the audit detail. The seed import applies an edited `takes_over` in place like an edited weight, and `rolter config export` writes it. A variant target stores its set the same way in `route_variant_targets.takes_over` (`0180_route_variant_target_takes_over.sql`, covered by the `0139` statement trigger, #3373): `RouteVariantRepo::replace` writes and compares it, `route_variants` in the store parses it (an unreadable class drops the target and is reported), the variants `PUT` validates it, and the seed import and the export carry it. The all-restricted rule counts the targets the data plane dials on every write path, the variants' when the route has variants and the pool otherwise, as `ModelRoute::takes_over_problems` does (#3487). The dashboard edits it (#3319): `TargetEditor` (shared by the route sheet and the model sheet) and `RouteVariantEditor` give each target line a `TakesOverField` (a `ChipGroup` over the classes in `ui/src/lib/failure-classes.ts`, a typed `refusal:<category>`, `FieldLabel` and `FieldError`), folded to one line for an ordinary target and open for a fallback. Every target is sent with its set, since an entry without one clears what is stored. Both sheets refuse a list of only fallbacks before sending (`allRestricted`, which applies the same rule: the variants' targets when the route has variants, the list otherwise), map a `targets[i].takes_over` / `variants[i].targets[j].takes_over` refusal onto that line and an `all_targets_restricted` refusal onto the part that strands the route: the target list for a route without variants, the variants for one with them (#3510). The route sheet says it beside its variant editor, whose add button is then the focus target for the whole-set error; the model sheet, which does not edit variants, says it under a Variants label with a link to Routing Rules that takes focus. Because the API judges each write against what is stored at that moment, the route sheet stores variants that stay before the route `PUT` (they decide whether the pool counts at all), and a removal of every variant before it too while the stored variants hold only fallbacks (the pool is judged against them until they are gone) and after it otherwise (the variants `PUT` then judges the pool it hands the route to), so a stored route whose variants hold only fallbacks is repaired in one save either way. The one end state no order reaches in one save is a route whose stored pool and stored variants both hold only fallbacks being repaired by removing the variants and fixing the pool: each write is judged against the other half as stored. The model sheet creates a new route's ordinary targets before its fallbacks, since `POST /api/v1/routes/{id}/targets` refuses a fallback on a route with no ordinary target yet. Routing Rules and the Model Catalog mark a fallback with a `FallbackBadge` and state no share for it, the ordinary targets splitting the route between them. LLM Logs shows a non-empty `fallback_reason` in the drawer's Routing group.
+
+Tests: `rolter_core::failover` unit tests (vocabulary, classification, `may_dial`, the all-restricted rule), `handlers::tests::a_restricted_target_*` and `a_refusal_moves_only_*`, `failover::tests` in the gateway (the rebuilt body), `crates/rolter-gateway/tests/conditional_failover.rs` (end to end, including the recorded reason), the store snapshot test `takes_over_reaches_the_snapshot_and_fails_closed`, the CRUD test `a_target_takes_over_failure_classes_and_a_route_is_never_left_only_restricted` and the seed test `the_import_applies_takes_over_and_refuses_an_all_restricted_route`.
+
+## Variant analytics
+
+`GET /api/v1/analytics/by-variant` (`by_variant_sql` in
+`crates/rolter-control/src/analytics.rs`) gives each weighted variant of a route
+four counts, which the route sheet (`ui/src/components/RouteVariantTraffic.tsx`)
+sets beside the configured weights:
+
+- `requests`: every request the variant answered (`request_logs.variant`),
+  failovers included, so a variant others fail over to reads above its weight.
+- `first_attempt_requests` (#3409): the part of `requests` with no
+  `fallback_reason`, the requests it answered on the first dial. A request that
+  failed over from another variant counts for neither variant, so a flaky
+  variant reads below its weight here.
+- `assigned_requests` (#3505): the requests each variant was dialled to first,
+  grouped by `request_logs.first_variant`, which the gateway records once per
+  request. It is not the sampled primary: `next_candidate` skips a candidate
+  whose target is parked, unhealthy or behind an open breaker, so a variant in
+  that state is dialled first by none of the requests sampled for it and reads
+  near 0 here; `sampled_requests` is the count that keeps those requests.
+  `forward_variants` names the candidate's variant in
+  `ForwardOutcome::variant` before it dials, and `ForwardLoop::begin_attempt`
+  copies it to `first_variant` while `attempts` is still `0`; the cancel guard's
+  row keeps the first variant it is attributed (`CancelGuard::attribute`). The
+  classic pool has no variant and copies nothing, and an empty field is left out
+  of the row, so a ClickHouse without `clickhouse/048_first_variant.sql` takes
+  every row as before.
+- `sampled_requests` (#3547): the requests the weighted split sampled each
+  variant for, grouped by `request_logs.sampled_variant`. `forward_variants`
+  copies the name of `route.sample_variant`'s pick into
+  `ForwardOutcome::sampled_variant` (and `CancelGuard::sampled`) before
+  `next_candidate` skips anything, so it is the split itself: a variant behind
+  an open breaker keeps its sampled share while its assigned share falls, and
+  the gap between the two is the traffic the gateway routed around it. Only the
+  variant path copies it, so a classic route allocates nothing for it, and an
+  empty field is left out of the row
+  (`clickhouse/050_sampled_variant.sql`).
+
+The assigned and sampled counts need rows grouped by other keys than the
+answered ones, and a variant that only failed over (or was only ever skipped)
+has no answered row at all, so the select is a `union all` of the answered
+rollup, an assigned rollup and a sampled rollup over the same window and
+filters, summed per `(org_id, model, variant)`. The organization is
+part of every key (#3548), as in by-model since #3486: two organizations may
+each have a route of one name, and a caller who reads both gets each one's
+variants as their own rows. A row without
+`first_variant` (written before `048`, or by an older gateway) counts for the
+variant that answered it when it has no `fallback_reason`, for no variant when
+it failed over, and a classic row counts under the empty variant. Without
+`fallback_reason` (`023`) such an old variant row is never counted. Without
+`048` the count is `null` and the sheet leaves its column out. The sampled
+count reads only rows that name their sample and classic rows: a variant row
+written before `050` could have been sampled for any variant, so it is left
+out, and without `050` the count is `null` and its half is not selected.
+
+Realtime turn rows carry the same fields (#3543). A session walks its dial list
+one connect at a time (`CandidateWalk` in `realtime.rs`) and can fail over
+across variants before it is pinned: `connect_selected` keeps the variant of
+the first dial, `CandidateWalk` the variant it led with, and both ride
+`SelectedSession` into `SessionMeter`, whose `base_row` writes them on every
+turn row of the session. A session assigned one variant and pinned to another
+therefore counts for the first in `assigned_requests` and for the second in
+`requests`, as an HTTP request that failed over does. The walk leads with
+`sample_variant(0.0)`, not a weighted draw, so a realtime session's sampled
+variant is the route's first variant with a non-zero weight (#3553 tracks
+sampling it by weight).
+Tests: `by_variant_*` in `analytics.rs`; the `by_variant_*048*`,
+`by_variant_*050*`, `by_variant_counts_the_sampled_primary_*`,
+`by_variant_counts_a_failover_*` and `by_variant_lists_a_variant_*` cases of
+`crates/rolter-control/tests/invocations_optional_columns.rs` (real
+ClickHouse); `a_variant_failover_records_the_variant_first_dialled` and
+`a_request_sampled_for_an_open_breaker_records_the_sampled_variant` in
+`crates/rolter-gateway/tests/upstream_failure_log.rs`;
+`a_session_that_fails_over_to_another_variant_records_the_first_dialled` in
+`crates/rolter-gateway/tests/realtime_metering.rs`.
 
 ## Selecting a strategy from the dashboard
 

@@ -1,6 +1,6 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { focusManager } from "@tanstack/react-query";
-import { MemoryRouter, useLocation } from "react-router";
+import { MemoryRouter } from "react-router";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import Logs from "./Logs";
@@ -14,15 +14,24 @@ import {
   expectSkeleton,
   expectUxEvent,
   json,
+  Toasted,
+  expectToast,
   pending,
   recordUxEvents,
   recording,
   routes,
+  savedText,
   scoped,
+  stubSavePicker,
   uxEvents,
   type FetchStub,
   type Recorder,
   withSampleRate,
+  AddressProbe,
+  addressOf,
+  captureFollowedLinks,
+  STORY_DOWNLOAD_URL,
+  withExportTickets,
 } from "./story-harness";
 import type { BusinessUnitRow, CustomerRow, InvocationRow, VirtualKeyRow } from "@/lib/api";
 import { formattersFor } from "@/lib/i18n/format";
@@ -125,7 +134,11 @@ const MODELS = [{ model: "gpt-4o" }, { model: "internal-llama" }];
 // the control plane's status classes, as `status_predicate` in
 // crates/rolter-control/src/analytics.rs writes them
 const inStatusClass = (status: number, wanted: string) =>
-  wanted === "error" ? status >= 400 : wanted === "success" ? status > 0 && status < 400 : true;
+  wanted === "error"
+    ? status === 0 || status >= 400
+    : wanted === "success"
+      ? status > 0 && status < 400
+      : true;
 
 /**
  * A stub that filters the way the control plane does (#1247): the attribution
@@ -149,8 +162,10 @@ const serverFiltered = (rows: InvocationRow[], base = "USD"): FetchStub =>
       const onlyUnpriced = url.searchParams.get("unpriced") === "true";
       const onlyWithheld = url.searchParams.get("withheld") === "true";
       const onlyUnknown = url.searchParams.get("usage_unknown") === "true";
+      const outcome = url.searchParams.get("outcome");
       const data = rows.filter(
         (r) =>
+          (!outcome || (r.outcome ?? "unknown") === outcome) &&
           (!onlyWithheld || Number(r.withheld ?? 0) === 1) &&
           (!onlyUnknown || Number(r.usage_unknown ?? 0) === 1) &&
           (!units || units.includes(r.business_unit_id)) &&
@@ -975,6 +990,33 @@ export const TimeStatusAndCostStayInFrameInRussian: Story = {
 };
 
 /**
+ * Every column header is drawn the same way (#3448): a column's body colour
+ * (the muted Provider, Latency, Tokens and Cost cells) stays off its header,
+ * which keeps the header's own, so the row of headers reads as one.
+ */
+export const EveryColumnHeaderHasTheHeaderColour: Story = {
+  render: () => (
+    <Harness fetchStub={withLogs(ROWS)}>
+      <Logs />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByText(fmt.timeMs(ROWS[0].ts));
+    // the rail and the drawer are closed, so every column has room
+    const headers = Array.from(canvasElement.querySelectorAll("thead th")).filter(
+      (th) => getComputedStyle(th).display !== "none",
+    );
+    await expect(headers.length).toBeGreaterThanOrEqual(6);
+    const colours = new Set(headers.map((th) => getComputedStyle(th).color));
+    await expect(Array.from(colours)).toHaveLength(1);
+    // and it is the header's muted colour, not the body text's
+    const body = getComputedStyle(canvasElement.querySelector("tbody td")!).color;
+    await expect(Array.from(colours)[0]).not.toBe(body);
+  },
+};
+
+/**
  * #1986: the table is narrower than the window once the filter rail and the
  * detail drawer are open beside it, and it gives up columns to the width it
  * actually has, widest need first, never Status or Cost. With both panels open
@@ -1148,14 +1190,6 @@ export const TheAttributionFilterIsSentToTheServer: Story = {
  * wrote to the address (#1985). It rides on a data attribute with no text, so
  * no `getByText` can match it.
  */
-function AddressProbe() {
-  const { search } = useLocation();
-  return <span data-testid="address" data-search={search} hidden />;
-}
-
-const addressOf = (canvasElement: HTMLElement) =>
-  new URLSearchParams(within(canvasElement).getByTestId("address").dataset.search ?? "");
-
 /** the query string of the screen's latest read of the log */
 const lastLogQuery = (recorder: Recorder) => {
   const reads = recorder.calls.filter((c) => c.url.includes("/analytics/invocations"));
@@ -1230,6 +1264,81 @@ export const StatusIsOneChoiceOfThree: Story = {
     await userEvent.click(radio("All"));
     await waitFor(() => expect(modelsOnScreen(canvasElement)).toHaveLength(2));
     await expect(addressOf(canvasElement).has("status")).toBe(false);
+  },
+};
+
+const OUTCOMES: InvocationRow[] = [
+  row({ request_id: "req-served", model: "gpt-4o", outcome: "served" }),
+  row({
+    request_id: "req-budget",
+    model: "internal-llama",
+    provider: "",
+    target: "",
+    status: 402,
+    attempts: 0,
+    error: "budget exceeded",
+    outcome: "refused_budget",
+  }),
+];
+
+const byOutcome = recording(serverFiltered(OUTCOMES));
+
+/**
+ * #3307: a refusal is picked by the outcome the gateway recorded rather than
+ * inferred from an empty provider and a 4xx. The pick is the outcome the
+ * server is asked for, the address carries it, and the drawer names a row's
+ * outcome in words.
+ */
+export const FiltersByOutcome: Story = {
+  render: () => (
+    <Harness fetchStub={byOutcome.stub}>
+      <Logs />
+      <AddressProbe />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByText("internal-llama");
+    await userEvent.click(canvas.getByRole("button", { name: /Filters/ }));
+    const picker = await canvas.findByRole("combobox", { name: "Outcome" });
+    await userEvent.click(picker);
+    await userEvent.click(await canvas.findByRole("option", { name: "Refused: budget spent" }));
+    await waitFor(() => expect(modelsOnScreen(canvasElement)).toEqual(["internal-llama"]));
+    await expect(lastLogQuery(byOutcome).get("outcome")).toBe("refused_budget");
+    await expect(addressOf(canvasElement).get("outcome")).toBe("refused_budget");
+    await expect(canvas.getByRole("button", { name: "Filters · 1" })).toBeVisible();
+
+    const details = within(await openDetails(canvasElement, "internal-llama"));
+    await expect(details.getByText("Refused: budget spent")).toBeVisible();
+  },
+};
+
+/**
+ * #3323: a translated request that lost or changed a parameter says which in
+ * the drawer, in words; a row whose parameters all went through has no row.
+ */
+export const TheDrawerListsTheParameterAdjustments: Story = {
+  render: () => (
+    <Harness
+      fetchStub={withLogs([
+        row({
+          request_id: "req-adjusted",
+          model: "claude-sonnet",
+          param_adjustments: ["dropped:presence_penalty", "clamped:temperature"],
+        }),
+        row({ request_id: "req-plain", model: "gpt-4o" }),
+      ])}
+    >
+      <Logs />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const details = within(await openDetails(canvasElement, "claude-sonnet"));
+    await expect(details.getByText("Parameters not sent as given")).toBeVisible();
+    await expect(details.getByText("presence_penalty: dropped")).toBeVisible();
+    await expect(details.getByText("temperature: clamped")).toBeVisible();
+    const plain = within(await openDetails(canvasElement, "gpt-4o"));
+    await expect(plain.queryByText("Parameters not sent as given")).toBeNull();
   },
 };
 
@@ -1792,7 +1901,6 @@ export const AFailedRequestLeadsWithItsError: Story = {
 const CI_KEY: VirtualKeyRow = {
   id: "vk-ci",
   project_id: "project-1",
-  key_hash: "",
   key_prefix: "rk_live_ab12",
   name: "ci-runner",
   models: [],
@@ -1861,6 +1969,8 @@ export const TheDrawerGroupsRoutingUsageAndAttribution: Story = {
     const routing = drawer.getByRole("region", { name: "Routing" });
     await expect(valueOf(routing, "Provider → target")).toBe("openai → openai/gpt-4o");
     await expect(valueOf(routing, "Variant")).toBe("canary");
+    // the first dial answered, so no fallback reason is stated (#3319)
+    await expect(within(routing).queryByText("Fallback reason")).toBeNull();
     await expect(valueOf(routing, "Response cache")).toBe("Hit");
     await expect(valueOf(routing, "Stream")).toBe("Streamed");
     await expect(valueOf(routing, "Time to first token")).toBe(`${fmt.number(120)} ms`);
@@ -1882,6 +1992,45 @@ export const TheDrawerGroupsRoutingUsageAndAttribution: Story = {
     await expect(within(attribution).queryByText("vk-ci")).toBeNull();
     await expect(valueOf(attribution, "Business unit")).toBe("Platform Engineering");
     await expect(valueOf(attribution, "Customer")).toBe("Acme Corp");
+  },
+};
+
+/**
+ * #3319: a request a fallback target answered names the failure that sent it
+ * there in its Routing group, beside the attempts it took.
+ */
+export const TheDrawerNamesTheFallbackReason: Story = {
+  render: () => (
+    <Harness
+      fetchStub={routes([
+        [
+          "/api/v1/analytics/invocations",
+          () => ({
+            data: [
+              row({
+                request_id: "req-fallback",
+                provider: "anthropic-burst",
+                upstream_status: 200,
+                attempts: 2,
+                fallback_reason: "refusal:content_policy_violation",
+              }),
+            ],
+          }),
+        ],
+        ["/api/v1/currency", () => ({ base: "USD", codes: ["USD"], rates: {} })],
+      ])}
+    >
+      <Logs />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(
+      await canvas.findByRole("button", { name: /Open request details for gpt-4o/i }),
+    );
+    const panel = await canvas.findByRole("complementary", { name: "Details" });
+    const routing = within(panel).getByRole("region", { name: "Routing" });
+    await expect(valueOf(routing, "Fallback reason")).toBe("refusal:content_policy_violation");
   },
 };
 
@@ -2664,7 +2813,7 @@ export const ARequestWithOneBodyExplainsTheMissingOneOnly: Story = {
     await expect(drawer.queryByText(/No request body was stored/)).toBeNull();
     await expect(drawer.queryByRole("heading", { name: "Request and response" })).toBeNull();
     // the three guesses are for a request with neither body
-    await expect(drawer.queryByText(/retention window|capture/i)).toBeNull();
+    await expect(drawer.queryByText(/retention window|\bcapture\b/i)).toBeNull();
     await expect(drawer.queryByRole("link", { name: "Open log settings" })).toBeNull();
   },
 };
@@ -3296,10 +3445,16 @@ const withSavedView = recording(
  * #2452: applying a saved view writes its `effective_filters` into the address,
  * so the screen reads them like any link, and the id it could not apply is
  * counted, not named. The log is then read with the view's window, key and
- * attribution, and with no cursor or request id.
+ * attribution, and with no cursor or request id. The Cost checks are not part
+ * of a view, so each one ticked beforehand is cleared with the rest instead of
+ * narrowing the log beyond what the view says (#3346); so are the guardrail and
+ * plugin outcomes (#3405).
  */
 export const ApplyingASavedViewSetsTheAddress: Story = {
-  parameters: { address: "/logs?request_id=req-ok&unpriced=true" },
+  parameters: {
+    address:
+      "/logs?request_id=req-ok&unpriced=true&withheld=true&usage_unknown=true&guardrail=pii-block&plugin=redact",
+  },
   render: () => (
     <Harness fetchStub={withSavedView.stub}>
       <Logs />
@@ -3317,10 +3472,12 @@ export const ApplyingASavedViewSetsTheAddress: Story = {
     await expect(address.get("key")).toBe(KEY_ID);
     await expect(address.get("business_unit")).toBe("unit-1");
     await expect(address.get("customer")).toBe("cust-1");
-    // the lookup would have masked the filters, so it is gone; the unpriced
-    // flag is not part of a view and stays
+    // the lookup would have masked the filters, so it is gone, and so is every
+    // Cost check the view does not name
     await expect(address.has("request_id")).toBe(false);
-    await expect(address.get("unpriced")).toBe("true");
+    for (const flag of ["unpriced", "withheld", "usage_unknown", "guardrail", "plugin"]) {
+      await expect(address.has(flag)).toBe(false);
+    }
     await expect(await canvas.findByRole("status")).toHaveTextContent(
       "Applied without: 1 customer.",
     );
@@ -3330,9 +3487,82 @@ export const ApplyingASavedViewSetsTheAddress: Story = {
       expect(sent.get("customer")).toBe("cust-1");
       expect(sent.get("status")).toBe("error");
       expect(sent.has("request_id")).toBe(false);
+      for (const flag of ["unpriced", "withheld", "usage_unknown", "guardrail", "plugin"])
+        expect(sent.has(flag)).toBe(false);
       const span = Date.now() - Date.parse(sent.get("since") ?? "");
       expect(span).toBeGreaterThan(6.9 * 24 * 3600_000);
     });
+  },
+};
+
+const CUSTOM_VIEW = {
+  ...SAVED_VIEW,
+  id: "55555555-5555-4555-8555-555555555555",
+  name: "October incident",
+  filters: { window: "custom", since: "2026-10-01", until: "2026-10-07" },
+  effective_filters: { window: "custom", since: "2026-10-01", until: "2026-10-07" },
+  unavailable: [],
+};
+
+const withCustomView = recording(
+  scoped(async (input, init) => {
+    const path = new URL(String(input), "http://localhost").pathname;
+    if (path === "/api/v1/me/saved-views") return json([CUSTOM_VIEW]);
+    return serverFiltered(MIXED)(input, init);
+  }),
+);
+
+/**
+ * A saved view can hold a custom range (#3407): applying it writes the window
+ * and both days to the address, the log is read over exactly those days, and
+ * applying a view with a named window afterwards takes the days out again.
+ */
+export const ApplyingASavedCustomRangeSetsTheDays: Story = {
+  parameters: { address: "/logs?window=30d" },
+  render: () => (
+    <Harness fetchStub={withCustomView.stub}>
+      <Logs />
+      <AddressProbe />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByRole("button", { name: "Saved views" }));
+    await userEvent.click(await screen().findByRole("button", { name: "Apply October incident" }));
+    await waitFor(() => expect(addressOf(canvasElement).get("window")).toBe("custom"));
+    const address = addressOf(canvasElement);
+    await expect(address.get("since")).toBe("2026-10-01");
+    await expect(address.get("until")).toBe("2026-10-07");
+    await waitFor(() => {
+      const sent = lastLogQuery(withCustomView);
+      expect(sent.get("since")).toBe(new Date(2026, 9, 1).toISOString());
+      expect(sent.get("until")).toBe(new Date(2026, 9, 8).toISOString());
+    });
+  },
+};
+
+const readingACustomRange = recording(
+  scoped(async (input, init) => serverFiltered(MIXED)(input, init)),
+);
+
+/** An address that names a custom range reads the log over those days, and the rail shows them. */
+export const ACustomRangeInTheAddressIsReadAsTheWindow: Story = {
+  parameters: { address: "/logs?window=custom&since=2026-10-01&until=2026-10-07" },
+  render: () => (
+    <Harness fetchStub={readingACustomRange.stub}>
+      <Logs />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => {
+      const sent = lastLogQuery(readingACustomRange);
+      expect(sent.get("since")).toBe(new Date(2026, 9, 1).toISOString());
+      expect(sent.get("until")).toBe(new Date(2026, 9, 8).toISOString());
+    });
+    await userEvent.click(await canvas.findByRole("button", { name: /Filters/ }));
+    await expect(await canvas.findByLabelText("From")).toHaveValue("2026-10-01");
+    await expect(canvas.getByLabelText("To")).toHaveValue("2026-10-07");
   },
 };
 
@@ -3788,5 +4018,467 @@ export const AUsageUnknownRequestIsNotShownAsZero: Story = {
     const panel = await canvas.findByRole("complementary", { name: "Details" });
     await waitFor(() => expect(panel).toBeVisible());
     await expect(await within(panel).findAllByText(/reported no usage/i)).toHaveLength(2);
+  },
+};
+
+async function captureDownload(names: string[], run: () => Promise<void>): Promise<void> {
+  const original = HTMLAnchorElement.prototype.click;
+  HTMLAnchorElement.prototype.click = function capture(this: HTMLAnchorElement) {
+    names.push(this.download);
+  };
+  try {
+    await run();
+  } finally {
+    HTMLAnchorElement.prototype.click = original;
+  }
+}
+
+/**
+ * The Export button asks the control plane for the log under the filters on
+ * screen (#1838): the file is built there, under the caller's own row scope,
+ * so the request carries the filters and no page cursor. With no save dialog in
+ * the browser the export goes through a download ticket (#3504): the ticket
+ * names the export and its query, and the browser follows the link it gets.
+ */
+let logExport: Recorder;
+export const ExportSendsTheFiltersOnScreen: Story = {
+  parameters: {
+    address:
+      "/logs?status=error&unpriced=true&withheld=true&usage_unknown=true&outcome=refused_budget&model=internal-llama&guardrail=blocked:pii&plugin=blocked:acme",
+  },
+  render: () => {
+    logExport = recording(
+      scoped(
+        withExportTickets(
+          async (input) => (await withLogs(ROWS)(input)) as Response,
+          [{ state: "complete", rows: 2 }],
+        ),
+      ),
+    );
+    return (
+      <Harness fetchStub={logExport.stub}>
+        <Toasted>
+          <Logs />
+        </Toasted>
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const links: string[] = [];
+    // no save dialog in this browser: the browser's download manager gets it
+    await stubSavePicker().within(
+      () =>
+        captureFollowedLinks(links, async () => {
+          await userEvent.click(await canvas.findByRole("button", { name: "Export CSV" }));
+          await expectToast(canvasElement, /Export downloaded/, "success");
+        }),
+      false,
+    );
+    await expect(links).toEqual([STORY_DOWNLOAD_URL]);
+    const ticket = await logExport.expectSentBody<{ path: string; query: string }>(
+      "POST",
+      "/analytics/exports/tickets",
+    );
+    await expect(ticket.path).toBe("/api/v1/analytics/invocations/export");
+    const params = new URLSearchParams(ticket.query);
+    await expect(params.get("status")).toBe("error");
+    await expect(params.get("unpriced")).toBe("true");
+    await expect(params.get("model")).toBe("internal-llama");
+    // the guardrail and plugin filters travel too, or the file would hold the unfiltered log
+    await expect(params.get("guardrail")).toBe("blocked:pii");
+    await expect(params.get("plugin")).toBe("blocked:acme");
+    // and so do the delivery flags and the outcome (#3386)
+    await expect(params.get("withheld")).toBe("true");
+    await expect(params.get("usage_unknown")).toBe("true");
+    await expect(params.get("outcome")).toBe("refused_budget");
+    await expect(params.has("cursor")).toBe(false);
+    await expect(params.has("limit")).toBe(false);
+  },
+};
+
+/**
+ * A download the control plane answered with an error (here ClickHouse
+ * failing) is a toast. The page learns of it through the ticket's status, since
+ * the browser, not the page, received the answer.
+ */
+export const AFailedExportIsAToastNotAHalfDownload: Story = {
+  render: () => (
+    <Harness
+      fetchStub={scoped(
+        withExportTickets(
+          async (input) => (await withLogs(ROWS)(input)) as Response,
+          [{ state: "refused", status: 502 }],
+        ),
+      )}
+    >
+      <Toasted>
+        <Logs />
+      </Toasted>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const links: string[] = [];
+    await stubSavePicker().within(
+      () =>
+        captureFollowedLinks(links, async () => {
+          await userEvent.click(await canvas.findByRole("button", { name: "Export CSV" }));
+          await expectToast(canvasElement, /Could not export request log export/, "error");
+        }),
+      false,
+    );
+    await expectToast(canvasElement, /refused the download \(HTTP 502\)/, "error");
+    // the link was followed once, and no copy of the body passed through the page
+    await expect(links).toEqual([STORY_DOWNLOAD_URL]);
+  },
+};
+
+const MIB = 1_048_576;
+
+/**
+ * A CSV body that arrives in pieces: `chunks` first, then it either ends
+ * (`end`), is cut short the way a dropped connection or the server's row cap
+ * cuts it (`cut`), or stays open (`hang`) until something aborts the request.
+ */
+function chunkedCsv(chunks: Uint8Array[], then: "end" | "cut" | "hang"): Response {
+  let sent = 0;
+  const body = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      const next = chunks[sent];
+      if (next) {
+        sent += 1;
+        controller.enqueue(next);
+      } else if (then === "end") controller.close();
+      else if (then === "cut") controller.error(new TypeError("network error"));
+      else return new Promise<void>(() => undefined);
+    },
+  });
+  return new Response(body, {
+    headers: {
+      "content-type": "text/csv; charset=utf-8",
+      "content-disposition": 'attachment; filename="request-log_server-name.csv"',
+    },
+  });
+}
+
+const exportStub = (answer: () => Response) =>
+  recording(
+    scoped(async (input) =>
+      String(input).includes("/analytics/invocations/export")
+        ? answer()
+        : ((await withLogs(ROWS)(input)) as Response),
+    ),
+  );
+
+/**
+ * Where the browser can write to a chosen file, the export streams there as it
+ * arrives (#3434): the person is asked where to save before anything is
+ * requested, the body is written in the chunks it came in, and the file is
+ * closed once it ended whole. Nothing goes through the Blob download.
+ */
+export const ExportStreamsToTheFileThePersonChose: Story = {
+  render: () => {
+    const stub = exportStub(() =>
+      chunkedCsv(
+        [new TextEncoder().encode("ts,model\r\n"), new TextEncoder().encode("1,a\r\n")],
+        "end",
+      ),
+    );
+    return (
+      <Harness fetchStub={stub.stub}>
+        <Toasted>
+          <Logs />
+        </Toasted>
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const dialog = stubSavePicker();
+    const names: string[] = [];
+    await dialog.within(() =>
+      captureDownload(names, async () => {
+        await userEvent.click(await canvas.findByRole("button", { name: "Export CSV" }));
+        await expectToast(canvasElement, /Export saved to the file you chose/, "success");
+      }),
+    );
+    await expect(dialog.files).toHaveLength(1);
+    const [file] = dialog.files;
+    // the name the server gives, built before the request left (#3498)
+    await expect(file!.suggestedName).toMatch(/^request-log_\d{4}-\d{2}-\d{2}_to_now_USD\.csv$/);
+    await expect(savedText(file!)).toBe("ts,model\r\n1,a\r\n");
+    await expect(file!.chunks).toHaveLength(2);
+    await expect(file!.closed).toBe(true);
+    await expect(file!.aborted).toBe(false);
+    // written to the file, not offered as a download
+    await expect(names).toHaveLength(0);
+  },
+};
+
+/**
+ * The name the server gives an export from the bounds it was sent, as
+ * `analytics_export.rs` builds it: each bound's date, `now` for an open end,
+ * and the currency.
+ */
+const serverName = (url: string, currency: string) => {
+  const params = new URL(url, "http://localhost").searchParams;
+  const day = (bound: string | null, unset: string) => (bound ? bound.slice(0, 10) : unset);
+  return `request-log_${day(params.get("since"), "7-days-ago")}_to_${day(params.get("until"), "now")}_${currency}.csv`;
+};
+
+/** the suggestion the save dialog was given, and the name the server would give the same export */
+async function suggestedAndServerName(canvasElement: HTMLElement, stub: Recorder) {
+  const canvas = within(canvasElement);
+  const dialog = stubSavePicker();
+  await dialog.within(async () => {
+    await userEvent.click(await canvas.findByRole("button", { name: "Export CSV" }));
+    await expectToast(canvasElement, /Its suggested name gives the window and currency/, "success");
+  });
+  const call = stub.calls.find((c) => c.url.includes("/invocations/export"))!;
+  return { suggested: dialog.files[0]!.suggestedName, server: serverName(call.url, "EUR") };
+}
+
+let namedWindowExport: Recorder;
+/**
+ * #3498: the save dialog opens before the request leaves, so it cannot wait for
+ * the server's name. It suggests the same name, built from the bounds the
+ * export sends: for last month, its first day and the first of this month, in
+ * the deployment's currency.
+ */
+export const TheSaveDialogSuggestsTheServersNameForANamedWindow: Story = {
+  parameters: { address: "/logs?window=last-month" },
+  render: () => {
+    namedWindowExport = recording(
+      scoped(async (input) =>
+        String(input).includes("/analytics/invocations/export")
+          ? chunkedCsv([new TextEncoder().encode("ts\r\n")], "end")
+          : ((await withLogs(ROWS, "EUR")(input)) as Response),
+      ),
+    );
+    return (
+      <Harness fetchStub={namedWindowExport.stub}>
+        <Toasted>
+          <Logs />
+        </Toasted>
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const { suggested, server } = await suggestedAndServerName(canvasElement, namedWindowExport);
+    await expect(suggested).toBe(server);
+    await expect(suggested).toMatch(
+      /^request-log_\d{4}-\d{2}-\d{2}_to_\d{4}-\d{2}-\d{2}_EUR\.csv$/,
+    );
+  },
+};
+
+let customRangeExport: Recorder;
+/** and for a custom range, its first day and the day after its last, which `until` names */
+export const TheSaveDialogSuggestsTheServersNameForACustomRange: Story = {
+  parameters: { address: "/logs?window=custom&since=2026-10-01&until=2026-10-07" },
+  render: () => {
+    customRangeExport = recording(
+      scoped(async (input) =>
+        String(input).includes("/analytics/invocations/export")
+          ? chunkedCsv([new TextEncoder().encode("ts\r\n")], "end")
+          : ((await withLogs(ROWS, "EUR")(input)) as Response),
+      ),
+    );
+    return (
+      <Harness fetchStub={customRangeExport.stub}>
+        <Toasted>
+          <Logs />
+        </Toasted>
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const { suggested, server } = await suggestedAndServerName(canvasElement, customRangeExport);
+    await expect(suggested).toBe(server);
+    // midnight on the 1st and on the 8th in the chart zone, dated as sent
+    await expect(suggested).toMatch(/^request-log_2026-(09-30|10-01)_to_2026-10-0[78]_EUR\.csv$/);
+  },
+};
+
+/**
+ * Until the deployment's currency is known the dashboard cannot build the
+ * server's name, and a guessed currency would name the file wrongly, so the
+ * dialog suggests the plain name and leaves the rest to the server (#3498).
+ */
+export const WithNoCurrencyKnownTheSaveDialogSuggestsThePlainName: Story = {
+  render: () => {
+    const stub = recording(
+      scoped(async (input) => {
+        const path = new URL(String(input), "http://localhost").pathname;
+        if (path === "/api/v1/currency") return json({ error: { message: "down" } }, 503);
+        if (path.includes("/analytics/invocations/export")) {
+          return chunkedCsv([new TextEncoder().encode("ts\r\n")], "end");
+        }
+        return (await withLogs(ROWS)(input)) as Response;
+      }),
+    );
+    return (
+      <Harness fetchStub={stub.stub}>
+        <Toasted>
+          <Logs />
+        </Toasted>
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const dialog = stubSavePicker();
+    await dialog.within(async () => {
+      await userEvent.click(await canvas.findByRole("button", { name: "Export CSV" }));
+      await expectToast(canvasElement, /Export saved to the file you chose/, "success");
+    });
+    await expect(dialog.files[0]!.suggestedName).toBe("request-log.csv");
+  },
+};
+
+/** Closing the save dialog is a no: nothing is requested and nothing is said. */
+export const ClosingTheSaveDialogSendsNoExport: Story = {
+  render: () => {
+    const stub = exportStub(() => chunkedCsv([], "end"));
+    return (
+      <Harness fetchStub={stub.stub}>
+        <Toasted>
+          <Logs />
+        </Toasted>
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const dialog = stubSavePicker({ reject: true });
+    await dialog.within(async () => {
+      await userEvent.click(await canvas.findByRole("button", { name: "Export CSV" }));
+      await waitFor(() => expect(canvas.getByRole("button", { name: "Export CSV" })).toBeEnabled());
+    });
+    await expect(dialog.files).toHaveLength(0);
+    await expect(canvas.queryByRole("alert", { name: /export/i })).toBeNull();
+    await expect(canvas.queryByText(/Export downloaded/)).toBeNull();
+    // closing the dialog is a no, not a cancelled export: nothing to announce
+    await expect(canvas.queryByText(/Export cancelled/)).toBeNull();
+  },
+};
+
+/**
+ * A long export shows how much has arrived and can be stopped. Cancel ends the
+ * request and discards the half-written file, and says so.
+ */
+export const ACancelledExportKeepsNoPartialFile: Story = {
+  render: () => {
+    const stub = exportStub(() => chunkedCsv([new Uint8Array(Math.round(1.5 * MIB))], "hang"));
+    return (
+      <Harness fetchStub={stub.stub}>
+        <Toasted>
+          <Logs />
+        </Toasted>
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const dialog = stubSavePicker();
+    await dialog.within(async () => {
+      await userEvent.click(await canvas.findByRole("button", { name: "Export CSV" }));
+      await waitFor(() => expect(canvas.getByText("1.5 MB received")).toBeVisible());
+      await userEvent.click(canvas.getByRole("button", { name: /Cancel the request log export/ }));
+      await expectToast(canvasElement, /Export cancelled/, "success");
+    });
+    const [file] = dialog.files;
+    await expect(file!.aborted).toBe(true);
+    await expect(file!.closed).toBe(false);
+    // and the empty file the dialog made is not left behind
+    await expect(file!.removed).toBe(true);
+    await expect(await canvas.findByRole("button", { name: "Export CSV" })).toBeEnabled();
+  },
+};
+
+/**
+ * A body cut short, at the row or time cap or by a dropped connection (#3434),
+ * is its own message and never a finished file: the half-written file is
+ * discarded. Through the browser's download manager (#3504) the page cannot
+ * discard it, so it says the download is incomplete.
+ */
+export const ATruncatedExportSaysSoAndKeepsNoFile: Story = {
+  render: () => {
+    const stub = exportStub(() => chunkedCsv([new TextEncoder().encode("ts,model\r\n")], "cut"));
+    return (
+      <Harness
+        fetchStub={withExportTickets(stub.stub, [
+          { state: "streaming", rows: 1 },
+          { state: "truncated", rows: 1, reason: "time_limit" },
+        ])}
+      >
+        <Toasted>
+          <Logs />
+        </Toasted>
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const dialog = stubSavePicker();
+    const names: string[] = [];
+    await dialog.within(() =>
+      captureDownload(names, async () => {
+        await userEvent.click(await canvas.findByRole("button", { name: "Export CSV" }));
+        await expectToast(canvasElement, /The export stopped before its last row/, "error");
+      }),
+    );
+    await expect(dialog.files[0]!.aborted).toBe(true);
+    await expect(dialog.files[0]!.closed).toBe(false);
+    await expect(dialog.files[0]!.removed).toBe(true);
+    await expect(names).toHaveLength(0);
+    // and the download through the browser, whose partial file the page cannot reach
+    const links: string[] = [];
+    await stubSavePicker().within(
+      () =>
+        captureFollowedLinks(links, async () => {
+          await userEvent.click(canvas.getByRole("button", { name: "Export CSV" }));
+          await expectToast(canvasElement, /The browser's download of it is incomplete/, "error");
+        }),
+      false,
+    );
+    await expect(links).toEqual([STORY_DOWNLOAD_URL]);
+  },
+};
+
+/**
+ * The export gate refuses an export past its concurrency bound with `429` and
+ * `Retry-After` (#3360, #3434): the toast says to wait, and for how long, in
+ * words and not as a bare failure.
+ */
+export const ABusyExportGateAsksToWait: Story = {
+  render: () => {
+    const stub = exportStub(
+      () =>
+        new Response(
+          JSON.stringify({ error: { message: "you already have a request log export running" } }),
+          { status: 429, headers: { "content-type": "application/json", "retry-after": "15" } },
+        ),
+    );
+    return (
+      <Harness fetchStub={stub.stub}>
+        <Toasted>
+          <Logs />
+        </Toasted>
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const dialog = stubSavePicker();
+    await dialog.within(async () => {
+      await userEvent.click(await canvas.findByRole("button", { name: "Export CSV" }));
+      await expectToast(canvasElement, /Try again in about 15 seconds/, "error");
+    });
+    await expectToast(canvasElement, /Could not export request log export/, "error");
+    // the file chosen for an export that never started is not left behind
+    await expect(dialog.files[0]!.aborted).toBe(true);
+    await expect(dialog.files[0]!.removed).toBe(true);
   },
 };

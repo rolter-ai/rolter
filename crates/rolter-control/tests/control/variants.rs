@@ -239,7 +239,7 @@ async fn a_variant_edit_reaches_the_snapshot() {
 }
 
 /// The write refuses what the gateway could not route as written: a negative
-/// weight, a weight of 0 (sampled as 1 until #3341), a variant with no target, and a target on
+/// weight, a variant with no target, and a target on
 /// a provider that is not the route's org's. Each refusal names its field, and
 /// none of them writes anything.
 #[tokio::test]
@@ -266,10 +266,6 @@ async fn a_variant_set_the_gateway_cannot_route_is_refused() {
     let one = |name: &str, weight: i64| json!({"name": name, "weight": weight, "targets": [{"provider_id": primary}]});
     for (body, field) in [
         (json!({"variants": [one("a", -1)]}), "variants[0].weight"),
-        (
-            json!({"variants": [one("a", 2), one("b", 0)]}),
-            "variants[1].weight",
-        ),
         (
             json!({"variants": [{"name": "a", "targets": []}]}),
             "variants[0].targets",
@@ -307,6 +303,45 @@ async fn a_variant_set_the_gateway_cannot_route_is_refused() {
     );
     let read: Value = client.get(&url).send().await.unwrap().json().await.unwrap();
     assert_eq!(read, json!([]));
+}
+
+/// A variant weight of 0 is a fallback-only variant, and a set of only zeroes
+/// is stored too: the gateway samples it uniformly (#3341, #3427).
+#[tokio::test]
+async fn a_variant_weight_of_zero_is_stored_and_reaches_the_snapshot() {
+    skip_without_db!();
+    let (app, db) = fresh_app().await;
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+    let (_, project_id, [primary, _]) = tenant(&client, &base, "acme").await;
+    let route = post(
+        &client,
+        format!("{base}/api/v1/projects/{project_id}/routes"),
+        json!({"model": "split"}),
+    )
+    .await;
+    let url = format!(
+        "{base}/api/v1/routes/{}/variants",
+        route["id"].as_str().unwrap()
+    );
+    let one = |name: &str, weight: i64| json!({"name": name, "weight": weight, "targets": [{"provider_id": primary}]});
+
+    for weights in [[3, 0], [0, 0]] {
+        let before = config_version(db.pool()).await;
+        let (status, stored) = put(
+            &client,
+            url.clone(),
+            json!({"variants": [one("a", weights[0]), one("b", weights[1])]}),
+        )
+        .await;
+        assert_eq!(status, 200, "{weights:?}: {stored}");
+        assert_eq!(stored[1]["weight"], weights[1], "{stored}");
+        assert!(config_version(db.pool()).await > before);
+        let snapped = snapshot_route(&client, &base, "split").await;
+        assert_eq!(snapped["variants"][0]["weight"], weights[0], "{snapped}");
+        assert_eq!(snapped["variants"][1]["weight"], weights[1], "{snapped}");
+    }
 }
 
 /// Variants are part of the route, so they take its permissions: a viewer of
@@ -499,4 +534,247 @@ async fn variants_take_the_route_s_permissions() {
         !listed.to_string().contains(&route_ids[0]),
         "the hidden route's variants leaked: {listed}"
     );
+}
+
+/// #3373: a variant target's `takes_over` is validated like a route target's,
+/// stored, returned and carried to the snapshot; the all-restricted rule counts
+/// the targets the gateway dials (the variants' when there are any, the pool
+/// otherwise, #3487), on the variants write and on the route's target writes.
+#[tokio::test]
+async fn a_variant_target_takes_over_failure_classes() {
+    skip_without_db!();
+    let (app, db) = fresh_app().await;
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+    let (_, project_id, [primary, secondary]) = tenant(&client, &base, "acme").await;
+    let route = post(
+        &client,
+        format!("{base}/api/v1/projects/{project_id}/routes"),
+        json!({"model": "split"}),
+    )
+    .await;
+    let route_id = route["id"].as_str().unwrap();
+    let url = format!("{base}/api/v1/routes/{route_id}/variants");
+
+    let before = config_version(db.pool()).await;
+    for (body, field) in [
+        (
+            json!({"variants": [{"name": "a", "targets": [
+                {"provider_id": primary},
+                {"provider_id": secondary, "takes_over": ["bogus"]}
+            ]}]}),
+            "variants[0].targets[1].takes_over",
+        ),
+        (
+            json!({"variants": [{"name": "a", "targets": [
+                {"provider_id": primary},
+                {"provider_id": secondary, "takes_over": ["timeout", "timeout"]}
+            ]}]}),
+            "variants[0].targets[1].takes_over",
+        ),
+        // the route has no targets of its own, so a set of restricted ones
+        // could never dial anything
+        (
+            json!({"variants": [
+                {"name": "a", "targets": [{"provider_id": secondary, "takes_over": ["throttled"]}]},
+                {"name": "b", "targets": [{"provider_id": primary, "takes_over": ["refusal"]}]}
+            ]}),
+            "variants",
+        ),
+    ] {
+        let (status, refused) = put(&client, url.clone(), body.clone()).await;
+        assert_eq!(status, 400, "{body}: {refused}");
+        assert_eq!(refused["error"]["field"], field, "{refused}");
+        assert!(
+            field != "variants"
+                || refused["error"]["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains("all_targets_restricted"),
+            "{refused}"
+        );
+    }
+    assert_eq!(config_version(db.pool()).await, before);
+
+    let (status, stored) = put(
+        &client,
+        url.clone(),
+        json!({"variants": [{"name": "a", "targets": [
+            {"provider_id": primary},
+            {"provider_id": secondary, "takes_over": ["throttled", "refusal:violence"]}
+        ]}]}),
+    )
+    .await;
+    assert_eq!(status, 200, "{stored}");
+    assert_eq!(stored[0]["targets"][0]["takes_over"], json!([]));
+    assert_eq!(
+        stored[0]["targets"][1]["takes_over"],
+        json!(["throttled", "refusal:violence"])
+    );
+    let snapped = snapshot_route(&client, &base, "split").await;
+    assert_eq!(
+        snapped["variants"][0]["targets"][1]["takes_over"],
+        json!(["throttled", "refusal:violence"]),
+        "{snapped}"
+    );
+
+    // the variant's ordinary target lets the route's own pool be restricted
+    let (status, body) = put(
+        &client,
+        format!("{base}/api/v1/routes/{route_id}"),
+        json!({"targets": [{"provider_id": secondary, "takes_over": ["timeout"]}]}),
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+    // and with it, clearing the variants would strand the route
+    let (status, refused) = put(&client, url.clone(), json!({"variants": []})).await;
+    assert_eq!(status, 400, "{refused}");
+    assert_eq!(refused["error"]["field"], "variants", "{refused}");
+}
+
+/// #3487: every routes-API write applies the gateway's dialled-targets rule. A
+/// route with variants dials only the variants' targets, so an ordinary pool
+/// no longer lets a set of fallback-only variants through; a route without
+/// variants dials its pool. Each write path that could strand a route is
+/// refused naming `all_targets_restricted`.
+#[tokio::test]
+async fn the_routes_api_counts_only_the_targets_the_gateway_dials() {
+    skip_without_db!();
+    let (app, db) = fresh_app().await;
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+    let (_, project_id, [primary, secondary]) = tenant(&client, &base, "dialled").await;
+    let route = post(
+        &client,
+        format!("{base}/api/v1/projects/{project_id}/routes"),
+        json!({"model": "pooled"}),
+    )
+    .await;
+    let route_id = route["id"].as_str().unwrap();
+    let route_url = format!("{base}/api/v1/routes/{route_id}");
+    let variants_url = format!("{route_url}/variants");
+    let pooled = post(
+        &client,
+        format!("{route_url}/targets"),
+        json!({"provider_id": primary}),
+    )
+    .await;
+    let pooled_id = pooled["id"].as_str().unwrap();
+    let refused_restricted = |(status, body): (u16, Value), code: u16| {
+        assert_eq!(status, code, "{body}");
+        assert!(
+            body["error"]["message"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("all_targets_restricted"),
+            "{body}"
+        );
+    };
+
+    // PUT variants: fallback-only variants over an ordinary pool would leave
+    // the gateway nothing to dial, since it never consults the pool then
+    let before = config_version(db.pool()).await;
+    let fallbacks_only = json!({"variants": [
+        {"name": "a", "targets": [{"provider_id": secondary, "takes_over": ["throttled"]}]},
+        {"name": "b", "targets": [{"provider_id": primary, "takes_over": ["timeout"]}]}
+    ]});
+    refused_restricted(
+        put(&client, variants_url.clone(), fallbacks_only).await,
+        400,
+    );
+    assert_eq!(config_version(db.pool()).await, before);
+
+    // a set with an ordinary target is accepted, and removing that last
+    // ordinary variant target is refused in turn
+    let (status, body) = put(
+        &client,
+        variants_url.clone(),
+        json!({"variants": [{"name": "a", "targets": [
+            {"provider_id": secondary},
+            {"provider_id": primary, "takes_over": ["throttled"]}
+        ]}]}),
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+    let before = config_version(db.pool()).await;
+    refused_restricted(
+        put(
+            &client,
+            variants_url.clone(),
+            json!({"variants": [{"name": "a", "targets": [
+                {"provider_id": primary, "takes_over": ["throttled"]}
+            ]}]}),
+        )
+        .await,
+        400,
+    );
+    assert_eq!(config_version(db.pool()).await, before);
+
+    // with ordinary variant targets the pool is not dialled, so the pool's
+    // writes may leave it only fallbacks
+    let (status, body) = put(
+        &client,
+        route_url.clone(),
+        json!({"targets": [{"provider_id": primary, "takes_over": ["timeout"]}]}),
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+    let (status, body) = put(
+        &client,
+        route_url.clone(),
+        json!({"targets": [{"provider_id": primary}]}),
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+
+    // a route stranded before the rule reached the API (its variants hold
+    // only fallbacks) refuses every pool write that leaves it so: the pool
+    // is not dialled while the variants exist
+    sqlx::query(
+        "update route_variant_targets set takes_over = '{throttled}' \
+         where variant_id in (select id from route_variants where route_id = $1::uuid)",
+    )
+    .bind(route_id)
+    .execute(db.pool())
+    .await
+    .unwrap();
+    // every refusal below writes nothing
+    let before = config_version(db.pool()).await;
+    // POST a target
+    let resp = client
+        .post(format!("{route_url}/targets"))
+        .json(&json!({"provider_id": secondary, "takes_over": ["refusal"]}))
+        .send()
+        .await
+        .unwrap();
+    let status = resp.status().as_u16();
+    refused_restricted((status, resp.json().await.unwrap()), 400);
+    assert_eq!(config_version(db.pool()).await, before);
+    // PUT the target list
+    refused_restricted(
+        put(
+            &client,
+            route_url.clone(),
+            json!({"targets": [{"provider_id": primary}]}),
+        )
+        .await,
+        400,
+    );
+    assert_eq!(config_version(db.pool()).await, before);
+    // DELETE a target
+    let resp = client
+        .delete(format!("{base}/api/v1/route-targets/{pooled_id}"))
+        .send()
+        .await
+        .unwrap();
+    let status = resp.status().as_u16();
+    refused_restricted((status, resp.json().await.unwrap()), 409);
+    assert_eq!(config_version(db.pool()).await, before);
+
+    // clearing the variants hands the route back to its ordinary pool
+    let (status, body) = put(&client, variants_url.clone(), json!({"variants": []})).await;
+    assert_eq!(status, 200, "{body}");
+    snapshot_route(&client, &base, "pooled").await;
 }

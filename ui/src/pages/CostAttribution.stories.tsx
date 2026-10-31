@@ -1,6 +1,6 @@
 import type { Meta, StoryObj } from "@storybook/react";
 import * as React from "react";
-import { MemoryRouter, Route, Routes, useLocation, useNavigate } from "react-router";
+import { MemoryRouter, Route, Routes, useNavigate } from "react-router";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import { BusinessUnits, Customers } from "./CostAttribution";
@@ -26,6 +26,11 @@ import {
   type Recorder,
   type StoryRole,
   withSampleRate,
+  AddressProbe,
+  addressOf,
+  captureFollowedLinks,
+  STORY_DOWNLOAD_URL,
+  withExportTickets,
 } from "./story-harness";
 import type { AttributionSpendRow, BusinessUnitRow, CustomerRow } from "@/lib/api";
 import { formattersFor } from "@/lib/i18n/format";
@@ -775,14 +780,6 @@ export const CustomersRefusedToAMember: Story = {
  * wrote to the address. It rides on a data attribute with no text, so no
  * `getByText` can match it.
  */
-function AddressProbe() {
-  const { search } = useLocation();
-  return <span data-testid="address" data-search={search} hidden />;
-}
-
-const addressOf = (canvasElement: HTMLElement) =>
-  new URLSearchParams(within(canvasElement).getByTestId("address").dataset.search ?? "");
-
 /** the query string of every spend rollup the screen asked for, oldest first */
 const spendQueries = (recorder: Recorder) =>
   recorder.calls
@@ -913,6 +910,7 @@ export const PicksTheWindowFromTheKeyboard: Story = {
       "Last 30 days",
       "Month to date",
       "Last month",
+      "Custom range…",
     ]);
     // the list opens on the window in force, so one step down is the next one
     await userEvent.keyboard("{ArrowDown}{Enter}");
@@ -953,6 +951,36 @@ export const OpensOnTheWindowInTheAddress: Story = {
     await expect(sent[0].get("since")).toBe(monthStart(0).toISOString());
     await expect(sent[0].has("until")).toBe(false);
     await expect(sent[0].get("dimension")).toBe("customer");
+  },
+};
+
+const customWindow = byWindow();
+
+/**
+ * A custom range of days (#3407) is read from the address and asked for as the
+ * start of its first day up to the start of the day after its last; the strip
+ * names the range and says the figures are for a custom range.
+ */
+export const OpensOnACustomRangeInTheAddress: Story = {
+  parameters: { address: "/customers?window=custom&since=2026-10-01&until=2026-10-07" },
+  render: () => {
+    customWindow.calls.length = 0;
+    return (
+      <Harness fetchStub={customWindow.stub}>
+        <Customers />
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getByText("Spend, custom range")).toBeVisible());
+    await expect(windowPicker(canvasElement)).toHaveValue("Custom range…");
+    await expect(canvas.getByLabelText("From")).toHaveValue("2026-10-01");
+    await expect(canvas.getByLabelText("To")).toHaveValue("2026-10-07");
+    const sent = spendQueries(customWindow);
+    await expect(sent).toHaveLength(1);
+    await expect(sent[0].get("since")).toBe(new Date(2026, 9, 1).toISOString());
+    await expect(sent[0].get("until")).toBe(new Date(2026, 9, 8).toISOString());
   },
 };
 
@@ -1326,5 +1354,45 @@ export const CustomersFailToLoadAndRetry: Story = {
     await userEvent.click(canvas.getByRole("button", { name: "heal" }));
     await userEvent.click(canvas.getByRole("button", { name: "Try again" }));
     await expect(await canvas.findByText("Acme Corp")).toBeVisible();
+  },
+};
+
+/**
+ * Export on the Customers screen asks for the customer rollup over the window
+ * on screen, unattributed spend included (#1838), through a download ticket
+ * the browser follows (#3504), so the file keeps the server's name, which says
+ * the window and the currency.
+ */
+let spendExport: Recorder;
+export const ExportAsksForTheDimensionAndWindowOnScreen: Story = {
+  render: () => {
+    const base = router({});
+    spendExport = recording(withExportTickets(base, [{ state: "complete", rows: 3 }]));
+    return (
+      <Harness fetchStub={spendExport.stub}>
+        <Toasted>
+          <Customers />
+        </Toasted>
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const links: string[] = [];
+    await captureFollowedLinks(links, async () => {
+      await userEvent.click(await canvas.findByRole("button", { name: "Export CSV" }));
+      await expectToast(canvasElement, /Export downloaded/, "success");
+    });
+    // handed to the browser's download manager, which keeps the server's name
+    await expect(links).toEqual([STORY_DOWNLOAD_URL]);
+    const ticket = await spendExport.expectSentBody<{ path: string; query: string }>(
+      "POST",
+      "/analytics/exports/tickets",
+    );
+    await expect(ticket.path).toBe("/api/v1/analytics/by-attribution/export");
+    const params = new URLSearchParams(ticket.query);
+    await expect(params.get("dimension")).toBe("customer");
+    await expect(params.get("include_unattributed")).toBe("true");
+    await expect(params.get("since")).toBeTruthy();
   },
 };

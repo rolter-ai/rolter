@@ -68,7 +68,7 @@ function fleetPhrases(t: TFunction, fleet: FleetCounts): { label: string; detail
 function GatewayPill() {
   const { t } = useTranslation();
   const fmt = useFormat();
-  const { health, live, answeredAt, fleet } = useGatewayHealth();
+  const { health, live, answeredAt, fleet, refusal } = useGatewayHealth();
   const tone = TONE[health];
   const when =
     answeredAt === null
@@ -77,7 +77,10 @@ function GatewayPill() {
           time: fmt.time(answeredAt),
         });
   const phrases = fleet ? fleetPhrases(t, fleet) : null;
-  const detail = [phrases?.detail ?? t(`shell.gateway.detail.${health}`), when]
+  // a gateway with no config is down for its callers, but "unreachable" would
+  // send the operator to the network rather than to the control plane
+  const key = refusal ?? health;
+  const detail = [phrases?.detail ?? t(`shell.gateway.detail.${key}`), when]
     .filter(Boolean)
     .join(" ");
   return (
@@ -94,7 +97,7 @@ function GatewayPill() {
           health === "healthy" && live && "rl-pulse",
         )}
       />
-      <span className={tone.label}>{phrases?.label ?? t(`shell.gateway.${health}`)}</span>
+      <span className={tone.label}>{phrases?.label ?? t(`shell.gateway.${key}`)}</span>
     </span>
   );
 }

@@ -1,10 +1,11 @@
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import type { TFunction } from "i18next";
 import * as React from "react";
 import { Trans, useTranslation } from "react-i18next";
 import { AlertTriangle, ArrowRight, Download, RefreshCw, ShieldCheck } from "lucide-react";
 import { Link, useNavigate } from "react-router";
 
+import { ConfigExportDialog } from "@/components/ConfigExportDialog";
 import { CopyButton } from "@/components/CopyButton";
 import { GatedButton } from "@/components/GatedButton";
 import { LoadError } from "@/components/LoadError";
@@ -24,7 +25,6 @@ import { Badge } from "@/components/ui/badge";
 import { CodeBlock } from "@/components/ui/code-block";
 import { EmptyState } from "@/components/ui/empty-state";
 import {
-  exportConfigToml,
   fetchClusterNodes,
   fetchConfig,
   fetchConfigProblems,
@@ -495,43 +495,45 @@ function VirtualKeysTable({
 function ExportButton() {
   const { t } = useTranslation();
   const toast = useToast();
-
-  const exportConfig = useMutation({
-    mutationFn: exportConfigToml,
-    onSuccess: (toml) => {
-      // an object URL rather than a data URI: the document is the whole
-      // deployment's config and can run to hundreds of kilobytes, which some
-      // browsers refuse to navigate to as a URI
-      const url = URL.createObjectURL(new Blob([toml], { type: "application/toml" }));
-      const a = document.createElement("a");
-      a.href = url;
-      // dated, because the reason to keep one of these is to diff it against
-      // the next; `rolter.toml` alone would overwrite the last export
-      a.download = `rolter-config-${new Date().toISOString().slice(0, 10)}.toml`;
-      a.click();
-      URL.revokeObjectURL(url);
-    },
-    onError: (error) => {
-      toast.push({
-        tone: "error",
-        title: t("toast.exportFailed", { what: t("errors.resources.configExport") }),
-        detail: errorText(error, t),
-      });
-    },
-  });
+  const [open, setOpen] = React.useState(false);
 
   return (
-    <GatedButton
-      gate="config_export:read"
-      control="config-export"
-      variant="outline"
-      size="sm"
-      disabled={exportConfig.isPending}
-      onClick={() => exportConfig.mutate()}
-    >
-      <Download className="h-3.5 w-3.5" />
-      {exportConfig.isPending ? t("pages.config.export.pending") : t("pages.config.export.action")}
-    </GatedButton>
+    <>
+      <GatedButton
+        gate="config_export:read"
+        control="config-export"
+        variant="outline"
+        size="sm"
+        onClick={() => setOpen(true)}
+      >
+        <Download className="h-3.5 w-3.5" />
+        {t("pages.config.export.action")}
+      </GatedButton>
+      <ConfigExportDialog
+        open={open}
+        onOpenChange={setOpen}
+        onExported={(toml, org) => {
+          // an object URL rather than a data URI: the document is the whole
+          // deployment's config and can run to hundreds of kilobytes, which some
+          // browsers refuse to navigate to as a URI
+          const url = URL.createObjectURL(new Blob([toml], { type: "application/toml" }));
+          const a = document.createElement("a");
+          a.href = url;
+          // dated, because the reason to keep one of these is to diff it against
+          // the next; `rolter.toml` alone would overwrite the last export
+          a.download = `rolter-config-${org ? `${org}-` : ""}${new Date().toISOString().slice(0, 10)}.toml`;
+          a.click();
+          URL.revokeObjectURL(url);
+        }}
+        onFailed={(error) =>
+          toast.push({
+            tone: "error",
+            title: t("toast.exportFailed", { what: t("errors.resources.configExport") }),
+            detail: errorText(error, t),
+          })
+        }
+      />
+    </>
   );
 }
 

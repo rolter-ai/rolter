@@ -110,7 +110,7 @@ const USER_FACING_PROPS = [
   "group",
   // the names the dashboard's own components declare for copy and that the
   // list above did not reach (#1745): PageLead and SettingsPanel's kicker, the
-  // charts' axis titles and units, the donut's centre, a chip's remove button,
+  // charts' axis titles and units, a chip's remove button,
   // a Segmented group's name, a screen's empty slot and a flag's refusal
   "eyebrow",
   "xLabel",
@@ -118,8 +118,6 @@ const USER_FACING_PROPS = [
   "unit",
   "xUnit",
   "yUnit",
-  "centerLabel",
-  "centerSub",
   "removeLabel",
   "ariaLabel",
   "empty",

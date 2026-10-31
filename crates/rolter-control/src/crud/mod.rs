@@ -576,6 +576,26 @@ fn require_not_config_owned(
     Ok(())
 }
 
+/// Reject a mutation of the stored row `name` of `org` when the file owns that
+/// very row: the same org and name (#3516). A stored row is always an org's,
+/// so an org's row that shares a name with a global file row is the org's own
+/// and stays editable; creating one is still refused by
+/// [`require_not_config_owned`], the write-time guard of ADR-0040 section 6.
+fn require_row_not_config_owned(
+    owned: &std::collections::HashSet<(String, String)>,
+    org: uuid::Uuid,
+    name: &str,
+    kind: &str,
+) -> ApiResult<()> {
+    if owned.contains(&(org.to_string(), name.to_string())) {
+        return Err(ApiError::Conflict(format!(
+            "{kind} '{name}' is managed by the bootstrap config and cannot be \
+             modified at runtime; edit the config file and restart instead"
+        )));
+    }
+    Ok(())
+}
+
 /// Check `requirement` on the project owning route `id` (walked route →
 /// project → team → org). Used by the route handlers that only carry the route
 /// id. Returns the resolved org id, for audit-log scoping.

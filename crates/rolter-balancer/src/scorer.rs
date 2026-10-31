@@ -25,10 +25,23 @@ pub trait Scorer: Send + Sync {
     /// stable identifier of the scorer
     fn name(&self) -> &'static str;
 
-    /// Score each candidate target. `candidates[k]` is a target index into the
-    /// route; `loads[i]` (when `loads.len()` equals the route width) is the
-    /// in-flight count for target `i`. Returns one score per candidate.
-    fn score(&self, ctx: &RouteContext, candidates: &[usize], loads: &[u64]) -> Vec<f32>;
+    /// Score each candidate target into `out`, which is exactly as long as
+    /// `candidates`. `candidates[k]` is a target index into the route and its
+    /// score goes in `out[k]`; `loads[i]` (when `loads.len()` equals the route
+    /// width) is the in-flight count for target `i`. Every slot must be
+    /// written: `out` is scratch reused across scorers and picks, not zeroed.
+    ///
+    /// Writing into caller-provided space rather than returning a `Vec` is what
+    /// lets [`Pipeline::select`] pick without allocating (#3249).
+    fn score_into(&self, ctx: &RouteContext, candidates: &[usize], loads: &[u64], out: &mut [f32]);
+
+    /// [`Scorer::score_into`] into a fresh `Vec`, one score per candidate. For
+    /// tests and telemetry; the pick path uses `score_into`.
+    fn score(&self, ctx: &RouteContext, candidates: &[usize], loads: &[u64]) -> Vec<f32> {
+        let mut out = vec![0.0; candidates.len()];
+        self.score_into(ctx, candidates, loads, &mut out);
+        out
+    }
 
     /// Whether this scorer reads [`RouteContext::prompt`], `prompt_len` or
     /// `prompt_digest`. Defaults to `true`, the safe answer for a scorer the
@@ -55,6 +68,11 @@ pub struct Component {
     /// its score per target, route-order aligned
     pub scores: Vec<f32>,
 }
+
+/// The widest route [`Pipeline::select`] picks for in stack scratch, without
+/// allocating. Matches the one-word eligibility mask (`Usable`), so a route
+/// this size allocates nothing anywhere on the pick.
+pub const STACK_TARGETS: usize = 64;
 
 /// A weighted stack of [`Scorer`]s selecting one target by argmax of the
 /// weighted-sum score over the eligible candidates.
@@ -93,35 +111,84 @@ impl Pipeline {
     /// Select one target. `eligible(i)` is the filter stage: it returns `false`
     /// for a target that must be skipped (model mismatch, unhealthy, cooling,
     /// already tried). Returns `None` when no target is eligible.
+    ///
+    /// A route of up to [`STACK_TARGETS`] targets is picked in stack scratch, so
+    /// the pipeline itself allocates nothing per pick (#3249); a wider route
+    /// allocates its three scratch buffers once per pick. A scorer backed by a
+    /// live source (`fastest`, `predicted_latency`, the KV-cache scorers) still
+    /// pays for the one snapshot its source returns.
     pub fn select(
         &self,
         ctx: &RouteContext,
         loads: &[u64],
         eligible: impl Fn(usize) -> bool,
     ) -> Option<usize> {
-        // stage 1: filter to the eligible candidate set
-        let candidates: Vec<usize> = (0..self.n).filter(|&i| eligible(i)).collect();
-        if candidates.is_empty() {
-            return None;
+        if self.n <= STACK_TARGETS {
+            let mut candidates = [0usize; STACK_TARGETS];
+            let mut totals = [0f32; STACK_TARGETS];
+            let mut scores = [0f32; STACK_TARGETS];
+            self.select_in(
+                ctx,
+                loads,
+                eligible,
+                &mut candidates,
+                &mut totals,
+                &mut scores,
+            )
+        } else {
+            let mut candidates = vec![0usize; self.n];
+            let mut totals = vec![0f32; self.n];
+            let mut scores = vec![0f32; self.n];
+            self.select_in(
+                ctx,
+                loads,
+                eligible,
+                &mut candidates,
+                &mut totals,
+                &mut scores,
+            )
         }
-        if candidates.len() == 1 {
-            return Some(candidates[0]);
+    }
+
+    /// [`Pipeline::select`] over caller-provided scratch, each buffer at least
+    /// `self.n` long.
+    fn select_in(
+        &self,
+        ctx: &RouteContext,
+        loads: &[u64],
+        eligible: impl Fn(usize) -> bool,
+        candidates: &mut [usize],
+        totals: &mut [f32],
+        scores: &mut [f32],
+    ) -> Option<usize> {
+        // stage 1: filter to the eligible candidate set
+        let mut len = 0;
+        for i in (0..self.n).filter(|&i| eligible(i)) {
+            let slot = candidates.get_mut(len)?;
+            *slot = i;
+            len += 1;
+        }
+        let candidates = &candidates[..len];
+        match candidates {
+            [] => return None,
+            [only] => return Some(*only),
+            _ => {}
         }
         // stage 2: weighted sum of every scorer over the candidates
-        let mut totals = vec![0f32; candidates.len()];
+        let totals = &mut totals[..len];
+        totals.fill(0.0);
+        let scores = &mut scores[..len];
         for (scorer, weight) in &self.scorers {
             if *weight == 0.0 {
                 continue;
             }
-            let scores = scorer.score(ctx, &candidates, loads);
-            for (k, s) in scores.iter().enumerate() {
-                if let Some(t) = totals.get_mut(k) {
-                    *t += weight * s;
-                }
+            scorer.score_into(ctx, candidates, loads, scores);
+            for (t, s) in totals.iter_mut().zip(scores.iter()) {
+                *t += weight * s;
             }
         }
         // stage 3: argmax, ties broken randomly
-        Some(candidates[argmax_tiebreak(&totals)])
+        Some(candidates[argmax_tiebreak(totals)])
     }
 
     /// Score every target with every scorer, without picking one. This is the
@@ -304,11 +371,16 @@ impl Scorer for StaticScorer {
     fn reads_prompt(&self) -> bool {
         false
     }
-    fn score(&self, _ctx: &RouteContext, candidates: &[usize], _loads: &[u64]) -> Vec<f32> {
-        candidates
-            .iter()
-            .map(|&i| self.weights.get(i).copied().unwrap_or(1.0) / self.max)
-            .collect()
+    fn score_into(
+        &self,
+        _ctx: &RouteContext,
+        candidates: &[usize],
+        _loads: &[u64],
+        out: &mut [f32],
+    ) {
+        for (o, &i) in out.iter_mut().zip(candidates) {
+            *o = self.weights.get(i).copied().unwrap_or(1.0) / self.max;
+        }
     }
 }
 
@@ -339,36 +411,41 @@ impl Scorer for CheapestScorer {
     fn reads_prompt(&self) -> bool {
         false
     }
-    fn score(&self, _ctx: &RouteContext, candidates: &[usize], _loads: &[u64]) -> Vec<f32> {
-        rank_lower_better(&self.costs, candidates)
+    fn score_into(
+        &self,
+        _ctx: &RouteContext,
+        candidates: &[usize],
+        _loads: &[u64],
+        out: &mut [f32],
+    ) {
+        rank_lower_better(|i| self.costs.get(i).copied(), candidates, out);
     }
 }
 
 /// Min-max normalize a lower-is-better signal over the candidate set: the
 /// lowest known value scores `1.0` down to `0.0` for the highest; `<= 0`
 /// (unknown) scores a neutral `0.5`, and an uninformative window (no or equal
-/// known values) scores a flat `1.0`.
-fn rank_lower_better(values: &[f64], candidates: &[usize]) -> Vec<f32> {
-    let known: Vec<f64> = candidates
+/// known values) scores a flat `1.0`. `value(i)` is target `i`'s signal, `None`
+/// past the end of the source; one score per candidate goes into `out`.
+fn rank_lower_better(value: impl Fn(usize) -> Option<f64>, candidates: &[usize], out: &mut [f32]) {
+    let known = |i: usize| value(i).filter(|&v| v > 0.0);
+    let (min, max) = candidates
         .iter()
-        .filter_map(|&i| values.get(i).copied())
-        .filter(|&v| v > 0.0)
-        .collect();
-    let (min, max) = known
-        .iter()
-        .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), &v| {
+        .filter_map(|&i| known(i))
+        .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), v| {
             (lo.min(v), hi.max(v))
         });
-    if known.is_empty() || min >= max {
-        return vec![1.0; candidates.len()];
+    // no known value leaves min at infinity, which this also catches
+    if min >= max {
+        out.fill(1.0);
+        return;
     }
-    candidates
-        .iter()
-        .map(|&i| match values.get(i).copied() {
-            Some(v) if v > 0.0 => (1.0 - (v - min) / (max - min)) as f32,
-            _ => 0.5,
-        })
-        .collect()
+    for (o, &i) in out.iter_mut().zip(candidates) {
+        *o = match known(i) {
+            Some(v) => (1.0 - (v - min) / (max - min)) as f32,
+            None => 0.5,
+        };
+    }
 }
 
 /// A live, lock-cheap source of per-target latency the [`FastestScorer`] reads
@@ -421,17 +498,18 @@ impl Scorer for PreciseKvScorer {
         false
     }
 
-    fn score(&self, ctx: &RouteContext, candidates: &[usize], _loads: &[u64]) -> Vec<f32> {
-        let Some(token_ids) = ctx.token_ids.filter(|ids| !ids.is_empty()) else {
-            return vec![0.0; candidates.len()];
-        };
-        let Some(scores) = self.source.scores(token_ids) else {
-            return vec![0.0; candidates.len()];
-        };
-        candidates
-            .iter()
-            .map(|&index| scores.get(index).copied().unwrap_or(0.0).clamp(0.0, 1.0))
-            .collect()
+    fn score_into(
+        &self,
+        ctx: &RouteContext,
+        candidates: &[usize],
+        _loads: &[u64],
+        out: &mut [f32],
+    ) {
+        let scores = ctx
+            .token_ids
+            .filter(|ids| !ids.is_empty())
+            .and_then(|token_ids| self.source.scores(token_ids));
+        resident_fractions(scores.as_deref(), candidates, out);
     }
 }
 
@@ -454,14 +532,25 @@ impl Scorer for LmCacheScorer {
         false
     }
 
-    fn score(&self, _ctx: &RouteContext, candidates: &[usize], _loads: &[u64]) -> Vec<f32> {
-        let Some(scores) = self.source.scores() else {
-            return vec![0.0; candidates.len()];
-        };
-        candidates
-            .iter()
-            .map(|&index| scores.get(index).copied().unwrap_or(0.0).clamp(0.0, 1.0))
-            .collect()
+    fn score_into(
+        &self,
+        _ctx: &RouteContext,
+        candidates: &[usize],
+        _loads: &[u64],
+        out: &mut [f32],
+    ) {
+        resident_fractions(self.source.scores().as_deref(), candidates, out);
+    }
+}
+
+/// Copy a cache source's route-order scores out for `candidates`, bounded to
+/// `[0, 1]`; a missing source (or a target past its end) scores `0.0`.
+fn resident_fractions(scores: Option<&[f32]>, candidates: &[usize], out: &mut [f32]) {
+    for (o, &i) in out.iter_mut().zip(candidates) {
+        *o = scores
+            .and_then(|s| s.get(i).copied())
+            .unwrap_or(0.0)
+            .clamp(0.0, 1.0);
     }
 }
 
@@ -490,9 +579,15 @@ impl Scorer for FastestScorer {
     fn reads_prompt(&self) -> bool {
         false
     }
-    fn score(&self, _ctx: &RouteContext, candidates: &[usize], _loads: &[u64]) -> Vec<f32> {
+    fn score_into(
+        &self,
+        _ctx: &RouteContext,
+        candidates: &[usize],
+        _loads: &[u64],
+        out: &mut [f32],
+    ) {
         let latencies = self.source.latencies(self.n);
-        rank_lower_better(&latencies, candidates)
+        rank_lower_better(|i| latencies.get(i).copied(), candidates, out);
     }
 }
 
@@ -518,18 +613,17 @@ impl Scorer for PredictedLatencyScorer {
     fn name(&self) -> &'static str {
         "predicted_latency"
     }
-    fn score(&self, ctx: &RouteContext, candidates: &[usize], loads: &[u64]) -> Vec<f32> {
+    fn score_into(&self, ctx: &RouteContext, candidates: &[usize], loads: &[u64], out: &mut [f32]) {
         let tokens = crate::predictor::prompt_tokens(ctx);
+        let predicted = self.source.predict(self.n, loads, tokens);
         // an unpredicted target becomes `0.0`, which `rank_lower_better` already
         // reads as "unknown" and scores neutrally — the same convention every
         // other lower-is-better signal in this file uses
-        let predicted: Vec<f64> = self
-            .source
-            .predict(self.n, loads, tokens)
-            .into_iter()
-            .map(|p| p.unwrap_or(0.0))
-            .collect();
-        rank_lower_better(&predicted, candidates)
+        rank_lower_better(
+            |i| predicted.get(i).map(|p| p.unwrap_or(0.0)),
+            candidates,
+            out,
+        );
     }
 }
 
@@ -555,20 +649,27 @@ impl Scorer for LeastLoadScorer {
     fn reads_prompt(&self) -> bool {
         false
     }
-    fn score(&self, _ctx: &RouteContext, candidates: &[usize], loads: &[u64]) -> Vec<f32> {
+    fn score_into(
+        &self,
+        _ctx: &RouteContext,
+        candidates: &[usize],
+        loads: &[u64],
+        out: &mut [f32],
+    ) {
         if loads.len() != self.n {
-            return vec![1.0; candidates.len()];
+            out.fill(1.0);
+            return;
         }
+        let load = |i: usize| loads.get(i).copied().unwrap_or(0);
         let max = candidates
             .iter()
-            .map(|&i| loads[i])
+            .map(|&i| load(i))
             .max()
             .unwrap_or(0)
             .max(1) as f32;
-        candidates
-            .iter()
-            .map(|&i| 1.0 - (loads[i] as f32 / max))
-            .collect()
+        for (o, &i) in out.iter_mut().zip(candidates) {
+            *o = 1.0 - (load(i) as f32 / max);
+        }
     }
 }
 
@@ -602,21 +703,24 @@ impl Scorer for PrefixCacheScorer {
     fn name(&self) -> &'static str {
         "prefix_cache"
     }
-    fn score(&self, ctx: &RouteContext, candidates: &[usize], _loads: &[u64]) -> Vec<f32> {
+    fn score_into(
+        &self,
+        ctx: &RouteContext,
+        candidates: &[usize],
+        _loads: &[u64],
+        out: &mut [f32],
+    ) {
         let Some(prompt) = ctx.prompt.filter(|p| !p.is_empty()) else {
-            return vec![0.0; candidates.len()];
+            out.fill(0.0);
+            return;
         };
         let len = prompt.len() as f32;
-        candidates
-            .iter()
-            .map(|&i| {
-                if i >= self.n {
-                    return 0.0;
-                }
-                let matched = self.tries[i].lock().longest_prefix(prompt);
-                matched as f32 / len
-            })
-            .collect()
+        for (o, &i) in out.iter_mut().zip(candidates) {
+            *o = match self.tries.get(i) {
+                Some(trie) => trie.lock().longest_prefix(prompt) as f32 / len,
+                None => 0.0,
+            };
+        }
     }
 
     fn observe(&self, target: usize, ctx: &RouteContext) {
@@ -675,20 +779,27 @@ impl Scorer for SessionAffinityScorer {
         false
     }
 
-    fn score(&self, ctx: &RouteContext, candidates: &[usize], _loads: &[u64]) -> Vec<f32> {
-        let mut scores = vec![0.0; candidates.len()];
+    fn score_into(
+        &self,
+        ctx: &RouteContext,
+        candidates: &[usize],
+        _loads: &[u64],
+        out: &mut [f32],
+    ) {
+        out.fill(0.0);
         let Some(key) = ctx.session_key else {
-            return scores;
+            return;
         };
         let map = self.last.lock();
         if let Some((target, at)) = map.get(key) {
             if at.elapsed() < self.ttl {
                 if let Some(k) = candidates.iter().position(|&c| c == *target) {
-                    scores[k] = 1.0;
+                    if let Some(o) = out.get_mut(k) {
+                        *o = 1.0;
+                    }
                 }
             }
         }
-        scores
     }
 
     fn observe(&self, target: usize, ctx: &RouteContext) {
@@ -810,24 +921,24 @@ impl Scorer for LoraScorer {
         false
     }
 
-    fn score(&self, ctx: &RouteContext, candidates: &[usize], _loads: &[u64]) -> Vec<f32> {
+    fn score_into(
+        &self,
+        ctx: &RouteContext,
+        candidates: &[usize],
+        _loads: &[u64],
+        out: &mut [f32],
+    ) {
         let Some(adapter) = ctx.adapter else {
-            return vec![0.0; candidates.len()];
+            out.fill(0.0);
+            return;
         };
-        candidates
-            .iter()
-            .map(|&i| {
-                if self
-                    .resident
-                    .get(i)
-                    .is_some_and(|slots| slots.lock().holds(adapter))
-                {
-                    1.0
-                } else {
-                    0.0
-                }
-            })
-            .collect()
+        for (o, &i) in out.iter_mut().zip(candidates) {
+            let holds = self
+                .resident
+                .get(i)
+                .is_some_and(|slots| slots.lock().holds(adapter));
+            *o = if holds { 1.0 } else { 0.0 };
+        }
     }
 
     fn observe(&self, target: usize, ctx: &RouteContext) {

@@ -996,7 +996,6 @@ const SPLIT_KEYS: VirtualKeyRow[] = [
   {
     id: "vk-1",
     project_id: "project-1",
-    key_hash: "hash-1",
     key_prefix: "sk-rolter-play",
     name: "Playground",
     models: ["gpt-4o"],
@@ -1013,7 +1012,6 @@ const SPLIT_KEYS: VirtualKeyRow[] = [
   {
     id: "vk-2",
     project_id: "project-1",
-    key_hash: "hash-2",
     key_prefix: "sk-rolter-ci",
     name: "ci-nightly-regression-runner-eu-west",
     models: [],

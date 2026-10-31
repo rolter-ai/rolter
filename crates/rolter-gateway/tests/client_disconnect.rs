@@ -113,7 +113,7 @@ fn config(upstream: SocketAddr, clickhouse: SocketAddr) -> GatewayConfig {
         targets: vec![Target {
             provider: "slow".into(),
             model: Some("slow-chat".into()),
-            weight: 1,
+            ..Default::default()
         }],
         params: Default::default(),
         param_policy: Default::default(),
@@ -238,7 +238,7 @@ async fn a_caller_that_leaves_during_a_retry_backoff_is_not_charged_to_the_targe
     config.routes[0].targets.push(Target {
         provider: "sibling".into(),
         model: Some("slow-chat".into()),
-        weight: 1,
+        ..Default::default()
     });
     let gateway = serve(rolter_gateway::build_router_from_config(&config)).await;
 
@@ -334,6 +334,9 @@ async fn a_request_abandoned_on_a_variant_route_names_its_variant_and_target() {
     assert_eq!(row["provider"], "slow");
     assert_eq!(row["target"], "slow-chat");
     assert_eq!(row["variant"], "canary");
+    assert_eq!(row["first_variant"], "canary");
+    // the cancel row carries the split's sample too (#3547)
+    assert_eq!(row["sampled_variant"], "canary");
 }
 
 #[tokio::test]

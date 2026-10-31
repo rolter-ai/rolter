@@ -33,7 +33,12 @@ const NODE_BUILD_HEADER: &str = "x-rolter-node-build";
 /// One target's breaker, as this node sees it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TargetBreaker {
-    /// public model name of the route
+    /// the org that owns the route, empty for a route from the gateway's own
+    /// config file. Two orgs may each have a route of one name (ADR-0040), so
+    /// the control plane keys a route by `(org_id, model)` (#3458)
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub org_id: String,
+    /// public model name of the route, never its qualified runtime namespace
     pub model: String,
     /// position in the route's target list
     pub target_index: usize,
@@ -61,26 +66,52 @@ pub struct BreakerReport {
 /// would only make a row nobody can act on.
 pub fn collect(state: &AppState) -> Vec<TargetBreaker> {
     let snapshot = state.snapshot.load();
-    label(state.breaker.snapshot(), |model, idx| {
-        let entry = snapshot.routes.get(model)?;
+    // the registry is keyed by route namespace, which is the route's name
+    // unless another org's route shares it (ADR-0040); the report names the
+    // route by its org and name instead, so it reads the same either way
+    label(state.breaker.snapshot(), |namespace, idx| {
+        let (org, model, entry) = snapshot
+            .routes
+            .iter()
+            .find(|(_, _, entry)| *entry.namespace == *namespace)?;
         let target = entry.route.targets.get(idx)?;
-        Some((
-            target.provider.clone(),
-            target.model.clone().unwrap_or_else(|| model.to_string()),
-        ))
+        Some(Label {
+            org_id: org.to_string(),
+            model: model.to_string(),
+            provider: snapshot.provider_name(&target.provider).to_string(),
+            upstream_model: target
+                .model
+                .clone()
+                .unwrap_or_else(|| entry.route.model.clone()),
+        })
     })
+}
+
+/// What a breaker entry is reported as: its route's org and name, and the
+/// target's provider and upstream model.
+struct Label {
+    org_id: String,
+    model: String,
+    provider: String,
+    upstream_model: String,
 }
 
 fn label(
     views: Vec<BreakerView>,
-    lookup: impl Fn(&str, usize) -> Option<(String, String)>,
+    lookup: impl Fn(&str, usize) -> Option<Label>,
 ) -> Vec<TargetBreaker> {
     let mut targets: Vec<TargetBreaker> = views
         .into_iter()
         .filter_map(|view| {
-            let (provider, upstream_model) = lookup(&view.model, view.target_index)?;
+            let Label {
+                org_id,
+                model,
+                provider,
+                upstream_model,
+            } = lookup(&view.model, view.target_index)?;
             Some(TargetBreaker {
-                model: view.model,
+                org_id,
+                model,
                 target_index: view.target_index,
                 provider,
                 upstream_model,
@@ -91,7 +122,9 @@ fn label(
         })
         .collect();
     // stable order so a diff between two reports is about the state
-    targets.sort_by(|a, b| (&a.model, a.target_index).cmp(&(&b.model, b.target_index)));
+    targets.sort_by(|a, b| {
+        (&a.model, &a.org_id, a.target_index).cmp(&(&b.model, &b.org_id, b.target_index))
+    });
     targets
 }
 
@@ -191,7 +224,7 @@ mod tests {
         Target {
             provider: provider.to_string(),
             model: model.map(str::to_string),
-            weight: 1,
+            ..Default::default()
         }
     }
 
@@ -219,6 +252,36 @@ mod tests {
         assert_eq!(targets[0].provider, "azure");
         assert_eq!(targets[0].upstream_model, "gpt-4o-2024");
         assert_eq!(targets[0].state, BreakerPhase::Open);
+    }
+
+    /// #3458: two orgs' `gpt-4o` have the namespaces `gpt-4o@org-a` and
+    /// `gpt-4o@org-b`; each is reported as the route's name with its org, so
+    /// the control plane keeps them apart and can match each to its route.
+    #[test]
+    fn two_orgs_same_named_routes_are_reported_by_org_and_name() {
+        let mut config = config();
+        let mut second = config.routes[0].clone();
+        for (route, org) in [(&mut config.routes[0], "org-a"), (&mut second, "org-b")] {
+            route.tenancy = Some(rolter_core::Tenancy {
+                org_id: org.to_string(),
+                project_id: None,
+            });
+        }
+        config.routes.push(second);
+        let state = AppState::new(&config);
+        assert!(state.breaker.on_failure("gpt-4o@org-a", 0));
+        assert!(state.breaker.on_failure("gpt-4o@org-b", 1));
+        let targets: Vec<_> = collect(&state)
+            .into_iter()
+            .map(|t| (t.org_id, t.model, t.provider))
+            .collect();
+        assert_eq!(
+            targets,
+            [
+                ("org-a".into(), "gpt-4o".into(), "openai".into()),
+                ("org-b".into(), "gpt-4o".into(), "azure".into()),
+            ]
+        );
     }
 
     #[test]

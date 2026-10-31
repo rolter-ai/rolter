@@ -37,7 +37,7 @@ fn config(providers: Vec<ProviderConfig>) -> GatewayConfig {
         .map(|provider| Target {
             provider: provider.name.clone(),
             model: Some("anthropic/claude-sonnet-4".into()),
-            weight: 1,
+            ..Default::default()
         })
         .collect();
     config.providers = providers;

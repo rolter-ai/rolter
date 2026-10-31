@@ -1,4 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
+import * as React from "react";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import Limits from "./Limits";
@@ -33,9 +34,11 @@ import {
   uxEvents,
   type Recorder,
 } from "./story-harness";
+import { AuthProvider } from "@/lib/auth";
 import type { BudgetRow, BudgetSpendReport, RateLimitRow, VirtualKeyRow } from "@/lib/api";
 import en from "@/lib/i18n/locales/en.json";
 import ru from "@/lib/i18n/locales/ru.json";
+import { expectFieldHints } from "@/lib/story-hints";
 import { atMobile, expectNoHorizontalOverflow } from "@/lib/story-viewport";
 import { UxScreenProvider } from "@/lib/ux-react";
 
@@ -97,7 +100,6 @@ const KEYS: VirtualKeyRow[] = [
   {
     id: "vk-1",
     project_id: "project-1",
-    key_hash: "hash",
     key_prefix: "sk-rolter-backend",
     name: "backend service",
     models: [],
@@ -654,6 +656,97 @@ export const CreatesARateLimit: Story = {
     await expectSheetClosed();
   },
 };
+
+/**
+ * Either cap will do, so neither field is marked required; a refused submit with
+ * both empty says what is missing in the footer (#3242), and Enter submits once
+ * one is typed.
+ */
+let rateLimitBlocked: Recorder;
+export const RateLimitSheetNamesWhatIsMissing: Story = {
+  render: () => {
+    rateLimitBlocked = recording(
+      scoped(async (input, init) => {
+        const url = String(input);
+        if (init?.method === "POST") return json(RATE_LIMITS[0], 201);
+        if (url.includes("/virtual-keys")) return json(KEYS);
+        if (url.includes("/budgets")) return budgetRead(url, BUDGETS);
+        return json(RATE_LIMITS);
+      }),
+    );
+    return (
+      <Harness fetchStub={rateLimitBlocked.stub}>
+        <Limits />
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    await clickWhenEnabled(canvasElement, /add rate limit/i);
+    const form = within(sheet());
+    const rpm = form.getByLabelText("Requests per minute (optional)");
+    await expect(form.queryByRole("status")).toBeNull();
+
+    await userEvent.click(form.getByRole("button", { name: "Create" }));
+    await expect(await form.findByRole("status")).toHaveTextContent(
+      "Set a requests or a tokens per minute limit.",
+    );
+    rateLimitBlocked.expectNotSent("POST", "/rate-limits");
+
+    await userEvent.type(rpm, "300{Enter}");
+    await expectSheetClosed();
+    await expect(await rateLimitBlocked.expectSentBody("POST", "/rate-limits")).toMatchObject({
+      rpm: 300,
+    });
+  },
+};
+
+/**
+ * The scope type, the budget's limit and both rate-limit caps explain
+ * themselves in an (i) (#3285): what the caps belong to, what spend is counted
+ * from, and that an empty cap is no cap.
+ */
+function explainsEveryField(locale: "en" | "ru"): Story {
+  const catalog = locale === "ru" ? ru : en;
+  const p = catalog.pages.limits;
+  return {
+    ...(locale === "ru" ? { globals: { locale: "ru" } } : {}),
+    render: () => (
+      <Harness
+        fetchStub={scoped(async (input) => {
+          const url = String(input);
+          if (url.includes("/virtual-keys")) return json(KEYS);
+          if (url.includes("/budgets")) return budgetRead(url, BUDGETS);
+          return json(RATE_LIMITS);
+        })}
+      >
+        <Limits />
+      </Harness>
+    ),
+    play: async ({ canvasElement }) => {
+      const open = locale === "ru" ? /добавить бюджет/i : /add budget/i;
+      const openRate = locale === "ru" ? /добавить лимит скорости/i : /add rate limit/i;
+      await clickWhenEnabled(canvasElement, open);
+      await expectFieldHints(sheet(), catalog.common.aboutField, [
+        [
+          p.budgetLimitLabel.replace("{{currency}}", "USD"),
+          p.budgetLimitInfo.replace("{{currency}}", "USD"),
+        ],
+      ]);
+      await userEvent.keyboard("{Escape}");
+      await expectSheetClosed();
+      await expectFieldHints(canvasElement, catalog.common.aboutField, [
+        [p.scopeTypeLabel, p.scopeTypeInfo],
+      ]);
+      await clickWhenEnabled(canvasElement, openRate);
+      await expectFieldHints(sheet(), catalog.common.aboutField, [
+        [p.rpmLabel, p.rpmInfo],
+        [p.tpmLabel, p.tpmInfo],
+      ]);
+    },
+  };
+}
+export const ExplainsEachFieldInAHint: Story = explainsEveryField("en");
+export const ExplainsEachFieldInAHintInRussian: Story = explainsEveryField("ru");
 
 /**
  * The edits #1285 exists for. Each answers a PATCH with the row it would have
@@ -1884,5 +1977,248 @@ export const AFailedOrgWideReadSaysSoAndRetries: Story = {
     await pickOption(await canvas.findByLabelText("Scope type"), "All scopes");
     await expectLoadError(canvasElement, /failed to return budgets/i);
     await expectNoFalseEmpty(canvasElement, /no budgets/i);
+  },
+};
+
+const PEOPLE = [
+  {
+    id: "user-1",
+    email: "ada@example.com",
+    display_name: "Ada Lovelace",
+    is_superadmin: false,
+    created_at: "2026-01-01T00:00:00Z",
+  },
+  {
+    id: "user-2",
+    email: "grace@example.com",
+    display_name: null,
+    is_superadmin: false,
+    created_at: "2026-01-01T00:00:00Z",
+  },
+];
+
+const USER_BUDGETS: BudgetRow[] = [
+  {
+    id: "budget-u1",
+    scope_type: "user",
+    scope_id: "user-1",
+    within_org_id: "org-1",
+    limit_usd: "40.00",
+    period: "monthly",
+    unpriced_policy: null,
+    created_at: "2026-07-01T00:00:00Z",
+  },
+  {
+    id: "budget-u2",
+    scope_type: "user",
+    scope_id: "user-2",
+    within_org_id: null,
+    within_project_id: null,
+    limit_usd: "10.00",
+    period: "monthly",
+    unpriced_policy: null,
+    created_at: "2026-07-01T00:00:00Z",
+  },
+];
+
+// the rows exist so the screen shows its one header button; the empty state
+// repeats it as a call to action
+const USER_LIMITS: RateLimitRow[] = [
+  {
+    id: "limit-u1",
+    scope_type: "user",
+    scope_id: "user-1",
+    within_org_id: "org-1",
+    rpm: 30,
+    tpm: null,
+    created_at: "2026-07-01T00:00:00Z",
+  },
+  {
+    id: "limit-u2",
+    scope_type: "user",
+    scope_id: "user-2",
+    within_org_id: "org-1",
+    rpm: 30,
+    tpm: null,
+    created_at: "2026-07-01T00:00:00Z",
+  },
+];
+
+const withPeople = recording(
+  routes([
+    ["/users", () => PEOPLE],
+    ["/virtual-keys", () => KEYS],
+    ["/budgets/spend", () => spendFor(USER_BUDGETS)],
+    ["/budgets", () => USER_BUDGETS],
+    ["/rate-limits", () => []],
+  ]),
+);
+
+/**
+ * #3282: a user row names the person, by the name they go by or else the
+ * address they sign in with, and says what the cap counts, wherever the scope
+ * is named — never the uuid.
+ */
+export const UserRowsNameThePerson: Story = {
+  render: () => (
+    <Harness fetchStub={withPeople.stub}>
+      <Limits />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await pickOption(await canvas.findByLabelText("Scope type"), "All scopes");
+    await expect(
+      await canvas.findByText("User Ada Lovelace (keys they minted in one organization)"),
+    ).toBeVisible();
+    await expect(canvas.getByText("User grace@example.com (every key they minted)")).toBeVisible();
+    await expect(canvas.queryByText(/user-1/)).not.toBeInTheDocument();
+  },
+};
+
+const createsUserCaps = recording(
+  scoped(async (input, init) => {
+    const url = String(input);
+    if (init?.method === "POST") return json(USER_BUDGETS[0], 201);
+    if (url.includes("/users")) return json(PEOPLE);
+    if (url.includes("/virtual-keys")) return json(KEYS);
+    if (url.includes("/budgets")) return budgetRead(url, USER_BUDGETS);
+    return json(USER_LIMITS);
+  }),
+);
+
+/**
+ * #3282: an admin picks the person, then the org the cap is narrowed to
+ * (which decides who may manage it), and the create carries both. A cap that
+ * counts every key is offered only to a superadmin.
+ */
+export const CreatesAUserBudgetNarrowedToAnOrg: Story = {
+  render: () => (
+    <Harness fetchStub={createsUserCaps.stub}>
+      <Limits />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await pickOption(await canvas.findByLabelText("Scope type"), "User");
+    await pickOption(await canvas.findByLabelText("Scope"), /^Ada Lovelace/);
+    await clickWhenEnabled(canvasElement, /add budget/i);
+    const form = sheet();
+    // the org is already picked, and, with no account behind this open-mode
+    // session to refuse it, the un-narrowed reach is on offer
+    await waitFor(() => expect(within(form).getByLabelText("Organization")).toHaveValue("Rolter"));
+    const reach = await openOptions(within(form).getByLabelText("Counts"));
+    await expect(
+      within(reach).getByRole("option", { name: "Every key they minted" }),
+    ).toBeVisible();
+    await userEvent.keyboard("{Escape}");
+    const limit = within(form).getByLabelText("Limit (USD)");
+    await userEvent.clear(limit);
+    await userEvent.type(limit, "40");
+    await userEvent.click(within(form).getByRole("button", { name: "Create" }));
+    const body = await createsUserCaps.expectSentBody<Record<string, unknown>>(
+      "POST",
+      "/api/v1/budgets",
+    );
+    await expect(body).toMatchObject({
+      scope_type: "user",
+      scope_id: "user-1",
+      within_org_id: "org-1",
+      limit_usd: "40",
+    });
+    await expect(body).not.toHaveProperty("within_project_id");
+  },
+};
+
+const createsUserLimit = recording(
+  scoped(async (input, init) => {
+    const url = String(input);
+    if (init?.method === "POST") return json({}, 201);
+    if (url.includes("/users")) return json(PEOPLE);
+    if (url.includes("/virtual-keys")) return json(KEYS);
+    if (url.includes("/budgets")) return budgetRead(url, USER_BUDGETS);
+    return json(USER_LIMITS);
+  }),
+);
+
+/** #3282: a per-user rate limit narrowed to one project carries only the project. */
+export const CreatesAUserRateLimitNarrowedToAProject: Story = {
+  render: () => (
+    <Harness fetchStub={createsUserLimit.stub}>
+      <Limits />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await pickOption(await canvas.findByLabelText("Scope type"), "User");
+    await pickOption(await canvas.findByLabelText("Scope"), "grace@example.com");
+    await clickWhenEnabled(canvasElement, /add rate limit/i);
+    const form = sheet();
+    await pickOption(await within(form).findByLabelText("Counts"), "Keys minted in one project");
+    // a project cap cannot be created before a project is picked
+    await expect(within(form).getByRole("button", { name: "Create" })).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
+    await pickOption(within(form).getByLabelText("Project"), "Gateway");
+    await userEvent.type(within(form).getByLabelText("Requests per minute (optional)"), "60");
+    await userEvent.click(within(form).getByRole("button", { name: "Create" }));
+    const body = await createsUserLimit.expectSentBody<Record<string, unknown>>(
+      "POST",
+      "/api/v1/rate-limits",
+    );
+    await expect(body).toMatchObject({
+      scope_type: "user",
+      scope_id: "user-2",
+      within_project_id: "project-1",
+      rpm: 60,
+    });
+    await expect(body).not.toHaveProperty("within_org_id");
+  },
+};
+
+const MEMBER = { id: "u-member", email: "ada@acme.dev", is_superadmin: false };
+
+// signed in the way a login leaves the browser, minus the token, so the
+// provider knows the account without asking /auth/me for it
+function SignedInMember({ children }: { children: React.ReactNode }) {
+  React.useState(() => {
+    localStorage.setItem("rolter.session.email", MEMBER.email);
+    localStorage.setItem("rolter.session.user", JSON.stringify(MEMBER));
+    localStorage.removeItem("rolter.session.token");
+  });
+  React.useEffect(
+    () => () => {
+      localStorage.removeItem("rolter.session.email");
+      localStorage.removeItem("rolter.session.user");
+    },
+    [],
+  );
+  return <AuthProvider>{children}</AuthProvider>;
+}
+
+/**
+ * #3282: only a superadmin may leave a user cap un-narrowed, so a signed-in
+ * account that is not one is offered the org and the project and not the
+ * "every key" reach. (An open-mode session has no account and is offered all
+ * three, as the story above shows.)
+ */
+export const ASignedInNonSuperadminIsNotOfferedEveryKey: Story = {
+  render: () => (
+    <SignedInMember>
+      <Harness fetchStub={createsUserCaps.stub}>
+        <Limits />
+      </Harness>
+    </SignedInMember>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await pickOption(await canvas.findByLabelText("Scope type"), "User");
+    await pickOption(await canvas.findByLabelText("Scope"), /^Ada Lovelace/);
+    await clickWhenEnabled(canvasElement, /add budget/i);
+    const form = sheet();
+    const reach = await openOptions(await within(form).findByLabelText("Counts"));
+    await expect(within(reach).getByRole("option", { name: /one organization/ })).toBeVisible();
+    await expect(within(reach).queryByRole("option", { name: "Every key they minted" })).toBeNull();
   },
 };

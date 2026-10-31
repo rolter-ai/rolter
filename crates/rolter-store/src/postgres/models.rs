@@ -283,6 +283,10 @@ pub struct RouteTarget {
     pub provider_id: Uuid,
     pub upstream_model: Option<String>,
     pub weight: i32,
+    /// failure class tokens this target takes over (#1584); empty for an
+    /// ordinary member of the pool
+    #[serde(default)]
+    pub takes_over: Vec<String>,
     pub created_at: DateTime<Utc>,
 }
 
@@ -313,6 +317,10 @@ pub struct RouteVariantTarget {
     pub upstream_model: Option<String>,
     pub weight: i32,
     pub position: i32,
+    /// failure class tokens this target takes over (#3373), as
+    /// [`RouteTarget::takes_over`]; empty for an ordinary member of the variant
+    #[serde(default)]
+    pub takes_over: Vec<String>,
 }
 
 /// A provider group: a fleet of providers addressable as `group-slug/model`
@@ -363,6 +371,9 @@ pub struct ProviderCacheProbe {
 pub struct VirtualKey {
     pub id: Uuid,
     pub project_id: Uuid,
+    /// peppered digest of the secret. the gateway learns it through the
+    /// snapshot; no API response carries it (#3525)
+    #[serde(default, skip_serializing)]
     pub key_hash: String,
     pub key_prefix: String,
     pub name: Option<String>,
@@ -386,6 +397,19 @@ pub struct VirtualKey {
     /// for every key an operator created deliberately (#1640)
     pub purpose: Option<String>,
     pub created_at: DateTime<Utc>,
+    /// peppered digest of the secret an admin rotation replaced, while its
+    /// overlap window is open. a digest like `key_hash`, so it never leaves the
+    /// API: only the prefix and the end of the window do (#1837)
+    #[serde(default, skip_serializing)]
+    pub previous_key_hash: Option<String>,
+    /// first characters of the retired secret, so the Keys screen can say which
+    /// one still authenticates
+    #[serde(default)]
+    pub previous_key_prefix: Option<String>,
+    /// last instant the retired secret authenticates; `None` when no overlap is
+    /// running
+    #[serde(default)]
+    pub previous_expires_at: Option<DateTime<Utc>>,
 }
 
 /// a virtual key owned by the current user, enriched with the project/org names
@@ -523,6 +547,14 @@ pub struct ClusterNode {
     pub state_changed_at: DateTime<Utc>,
     pub first_seen_at: DateTime<Utc>,
     pub last_seen_at: DateTime<Utc>,
+    /// the oldest snapshot format the node stated it reads on its last poll
+    /// that stated one; 1 for a node from before negotiation (ADR-0038)
+    pub formats_min: i32,
+    /// the newest snapshot format the node stated it reads
+    pub formats_max: i32,
+    /// the format the node's last poll was answered in, or `None` when that
+    /// poll was refused for its format (or predates this column)
+    pub served_format: Option<i32>,
 }
 
 /// the latest adaptive-routing state one node reported for one route (#751).
@@ -530,6 +562,9 @@ pub struct ClusterNode {
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
 pub struct AdaptiveRoutingTelemetry {
     pub node_id: String,
+    /// the org that owns the route, empty for a deployment-wide route or a
+    /// gateway that predates the column (#3458)
+    pub org_id: String,
     /// public model name of the route
     pub model: String,
     /// whether the blend was routing at sample time
@@ -918,6 +953,15 @@ pub struct McpToolGroup {
     pub updated_at: DateTime<Utc>,
 }
 
+/// a virtual key, project or team an MCP tool group is assigned to (#3295)
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+pub struct McpToolGroupAssignment {
+    pub group_id: Uuid,
+    pub subject_kind: String,
+    pub subject_id: Uuid,
+    pub created_at: DateTime<Utc>,
+}
+
 /// organization defaults managed by the MCP Settings screen
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
 pub struct McpGatewaySettings {
@@ -1043,13 +1087,21 @@ pub struct GuardrailRule {
     pub updated_at: DateTime<Utc>,
 }
 
-/// one external guardrail service; at most one row can be enabled at a time
+/// one external guardrail service; several can be enabled, and the scoped
+/// policies pick which of them judge a request (#459)
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
 pub struct GuardrailProvider {
     pub id: Uuid,
     pub name: String,
     pub enabled: bool,
+    /// `webhook` or `local` (#3329)
+    pub kind: String,
+    /// empty for a local provider
     pub url: String,
+    /// a local provider's weights file on the gateways' file system
+    pub model_path: Option<String>,
+    /// a local provider's pinned sha256, 64 lowercase hex digits
+    pub model_sha256: Option<String>,
     pub stage: String,
     pub timeout_ms: i32,
     pub max_retries: i32,
@@ -1057,6 +1109,31 @@ pub struct GuardrailProvider {
     pub max_body_bytes: i32,
     pub auth_kind: String,
     pub auth_env: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// one scoped semantic guardrail policy (#459): the providers it consults, in
+/// order, and the thresholds their scored categories are held to
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+pub struct GuardrailPolicyRow {
+    pub id: Uuid,
+    pub name: String,
+    pub enabled: bool,
+    /// `deployment`, `org`, `project`, `route` or `key`
+    pub scope_kind: String,
+    /// the org / project / key id, or the route's public model name; `None`
+    /// for the deployment scope
+    pub scope_id: Option<String>,
+    /// the providers the policy consults, in order
+    pub provider_ids: Vec<Uuid>,
+    /// category -> threshold in `[0, 1]`
+    pub thresholds: serde_json::Value,
+    /// `block` or `annotate`
+    pub on_violation: String,
+    /// `reject` or `buffer`
+    pub streaming: String,
+    pub description: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -1246,6 +1323,9 @@ pub struct LogErasure {
     pub status: String,
     pub statements: i32,
     pub error: Option<String>,
+    /// which stores the erasure searched and which it skipped, as a list of
+    /// `{store, searched, code?, reason?}`; `[]` on a record from before it was kept
+    pub stores: serde_json::Value,
     pub created_at: DateTime<Utc>,
     pub completed_at: Option<DateTime<Utc>>,
 }
@@ -1390,6 +1470,39 @@ pub struct EffectiveGrant {
 mod tests {
     use super::*;
 
+    /// every endpoint that returns a key serialises this type, so pinning it
+    /// here keeps the digests out of all of them at once (#3525)
+    #[test]
+    fn a_virtual_key_serialises_without_either_digest() {
+        let key = VirtualKey {
+            id: Uuid::nil(),
+            project_id: Uuid::nil(),
+            key_hash: "digest-of-the-secret".to_string(),
+            key_prefix: "rk_live_ab".to_string(),
+            name: Some("ci".to_string()),
+            models: vec![],
+            providers: vec![],
+            disabled: false,
+            expires_at: None,
+            cache_enabled: None,
+            created_by: None,
+            business_unit_id: None,
+            customer_id: None,
+            purpose: None,
+            created_at: DateTime::<Utc>::UNIX_EPOCH,
+            previous_key_hash: Some("digest-of-the-old-secret".to_string()),
+            previous_key_prefix: Some("rk_live_cd".to_string()),
+            previous_expires_at: None,
+        };
+        let json = serde_json::to_value(&key).expect("a key serialises");
+        assert!(json.get("key_hash").is_none(), "{json}");
+        assert!(json.get("previous_key_hash").is_none(), "{json}");
+        assert_eq!(json["key_prefix"], "rk_live_ab");
+        assert_eq!(json["previous_key_prefix"], "rk_live_cd");
+        let text = json.to_string();
+        assert!(!text.contains("digest-of-the"), "{text}");
+    }
+
     fn provider(secret: Option<Vec<u8>>) -> SsoProvider {
         SsoProvider {
             id: Uuid::nil(),
@@ -1442,6 +1555,10 @@ pub struct Label {
     pub id: Uuid,
     pub subject_type: String,
     pub subject_id: String,
+    /// the organization whose model a model label is on (#3476); `None` for a
+    /// deployment-wide label, and always for a provider, group or route, which
+    /// belong to an organization through their own row
+    pub org_id: Option<Uuid>,
     pub key: String,
     pub value: Option<String>,
     pub source: String,
@@ -1470,6 +1587,9 @@ pub struct SavedView {
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
 pub struct BreakerState {
     pub node_id: String,
+    /// the org that owns the route, empty for a deployment-wide route or a
+    /// gateway that predates the column (#3458)
+    pub org_id: String,
     /// public model name of the route
     pub model: String,
     /// position in the route's target list on that node

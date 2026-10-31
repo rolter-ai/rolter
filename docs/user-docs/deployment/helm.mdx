@@ -1,0 +1,123 @@
+---
+title: "Deploy with the Helm Chart"
+sidebarTitle: "Helm"
+description: "Install Rolter on Kubernetes with the bundled Helm chart: secrets, your own config, preflight checks, probes, autoscaling, ingress, the per-component image tags and the request log export limits."
+---
+
+The chart in `charts/rolter` deploys the data-plane gateway and the control plane (which also serves the dashboard) as two Deployments. PostgreSQL, Redis and ClickHouse are deliberately **not** part of it: use managed services and your normal backup policy, and point the chart at them.
+
+---
+
+## Install
+
+Keep the database URL, which carries a password, in a Kubernetes Secret and hand it to both workloads through `secretEnv` (see [Secrets](#secrets)):
+
+```bash
+kubectl create secret generic rolter-db \
+  --from-literal=url='postgres://rolter:secret@postgres/rolter'
+
+helm upgrade --install rolter ./charts/rolter \
+  --set env.redisUrl='redis://redis:6379' \
+  -f secrets-values.yaml
+```
+
+```yaml
+# secrets-values.yaml
+secretEnv:
+  - name: ROLTER_DATABASE_URL
+    valueFrom:
+      secretKeyRef:
+        name: rolter-db
+        key: url
+```
+
+`env.clickhouseUrl` turns on request logging and the dashboard's analytics. Without Redis each control-plane replica keeps its own sign-in throttle counters, so a multi-replica install wants it set. The control plane refuses to start without an admin token when it listens on `0.0.0.0`, which it does in a pod, so supply `ROLTER_ADMIN_TOKEN` as described below.
+
+---
+
+## Secrets
+
+Provider credentials and tokens belong in Kubernetes Secrets, passed through `secretEnv`, never in `config.file` or `--set` values (which land in release history):
+
+```yaml
+secretEnv:
+  - name: ROLTER_ADMIN_TOKEN
+    valueFrom:
+      secretKeyRef:
+        name: rolter-admin
+        key: token
+  - name: OPENAI_API_KEY
+    valueFrom:
+      secretKeyRef:
+        name: rolter-providers
+        key: openai-api-key
+```
+
+`secretEnv` entries reach both workloads. `gateway.extraEnv` and `control.extraEnv` add variables to one of them. Other settings, such as mail for invitations (`ROLTER_SMTP_URL`), go the same way.
+
+---
+
+## Your own `rolter.toml`
+
+`config.file` is the bootstrap file the chart writes into a ConfigMap. To manage the file outside the release, create the ConfigMap yourself and name it:
+
+```yaml
+config:
+  existingConfigMap: rolter-config
+```
+
+Once a database is configured, providers, routes and the rest are managed from the dashboard and propagate to the gateways without a restart; see [Hot reload](/configuration/hot-reload).
+
+---
+
+## Preflight
+
+By default (`preflight.enabled`) each pod runs `rolter check --strict` in an init container, against the same environment block the workload will get, so a misconfigured release fails the rollout instead of starting degraded and the pod never becomes ready. `preflight.connect` also probes that the datastores accept a TCP connection; it is off because a DNS blip during a rollout would then block a release that is fine. See [Production hardening](/deployment/production).
+
+---
+
+## Probes
+
+The control plane wires a startup, readiness and liveness probe; the gateway wires readiness and liveness.
+
+| Probe     | Endpoint   | Means                                                                                                                                                                                              |
+| --------- | ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| liveness  | `/healthz` | The process is up and not wedged. It checks no dependency, so a database outage can never restart the fleet.                                                                                       |
+| readiness | `/readyz`  | The instance may take traffic. On the control plane: the Postgres pool hands out a connection, every migration is applied, and `ROLTER_KEK` parses when set. Redis and ClickHouse only degrade it. |
+
+A gateway answers `/readyz` with `503` in three cases, each with its own body: `draining` (the control plane marked the node as draining, so it leaves the Service while in-flight requests finish), `awaiting_snapshot` (it has not yet applied a first configuration snapshot) and `snapshot_format_unsupported` (the control plane it polls cannot serve a snapshot format the gateway can read, as when a new gateway starts before its control plane). In all three the pod stays out of the Service and nothing is killed. Alert on `/readyz` staying down and on `/healthz` flapping. The control plane's readiness and startup windows are `control.probes`.
+
+---
+
+## Image tags
+
+Both workloads run `image.tag`, which defaults to the chart's `appVersion`. `control.image.tag` and `gateway.image.tag` move one component alone, so the control plane can be upgraded first and the gateways after it, and the gateways can be held on, or rolled back to, an older release. A gateway may lag behind its control plane but never lead it. The procedure, and when it matters, is in [Two steps with the Helm chart](/deployment/upgrading#two-steps-with-the-helm-chart).
+
+---
+
+## Scaling, disruption and exposure
+
+- **Autoscaling.** `gateway.autoscaling.enabled` adds a HorizontalPodAutoscaler on CPU (`targetCPUUtilizationPercentage`) between `minReplicas` and `maxReplicas`. It needs metrics-server.
+- **Disruption.** `gateway.podDisruptionBudget` keeps at most `maxUnavailable` gateways down during a drain.
+- **Ingress.** `ingress.enabled` publishes the Services through your controller. Each entry in `ingress.hosts[].paths[]` names the `service` (`gateway` or `control`) it routes to, and `ingress.tls` carries the certificates.
+- **Hardening.** The pods run as non-root with a read-only root filesystem, no Linux capabilities and no service-account token.
+
+---
+
+## Control plane limits
+
+| Values                                  | Variable                                  | Default   | Meaning                                                                            |
+| --------------------------------------- | ----------------------------------------- | --------- | ---------------------------------------------------------------------------------- |
+| `control.pool.maxConnections`           | `ROLTER_DB_MAX_CONNECTIONS`               | `10`      | Postgres pool per pod; keep it times `replicaCount` under the database's own limit |
+| `control.requestTimeoutSeconds`         | `ROLTER_REQUEST_TIMEOUT_SECS`             | `60`      | Outer bound on one API request                                                     |
+| `control.login.*`                       | `ROLTER_LOGIN_*`                          |           | Failed sign-in throttling                                                          |
+| `control.export.maxRows`                | `ROLTER_EXPORT_MAX_ROWS`                  | `1000000` | Most rows one request log CSV export carries                                       |
+| `control.export.maxSeconds`             | `ROLTER_EXPORT_MAX_SECS`                  | `600`     | Longest one export runs; also frees the place of a client that stopped reading     |
+| `control.export.maxConcurrent`          | `ROLTER_EXPORT_MAX_CONCURRENT`            | `4`       | Exports running at once in one pod                                                 |
+| `control.export.maxConcurrentPerCaller` | `ROLTER_EXPORT_MAX_CONCURRENT_PER_CALLER` | `1`       | Exports running at once for one caller in one pod                                  |
+
+`0` turns an export bound off. The concurrency counts are per control-plane pod. See [Dashboard analytics API](/api/dashboard-analytics) for what an export does past a bound.
+
+`control.updateCheck: false` stops the control plane, and the preflight init container, from asking GitHub for the latest release, for a cluster that must make no outbound call.
+
+`gateway.semanticModelRoot` sets `ROLTER_SEMANTIC_MODEL_ROOT` on every gateway pod: the directory every [local classifier](/security/semantic-guard-policies#local-classifier) model must resolve under, which is where the models' volume belongs. It takes precedence over a `[semantic_guards] model_root` in the chart's `rolter.toml`. Empty, the default, leaves that key to decide.

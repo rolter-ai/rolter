@@ -70,7 +70,7 @@ async fn crud_roundtrip_across_the_tenancy_and_routing_tables() {
 
     let targets = RouteTargetRepo(&pool);
     let target = targets
-        .create(route.id, provider.id, Some("gpt-4o-2024-08-06"), 2)
+        .create(route.id, provider.id, Some("gpt-4o-2024-08-06"), 2, &[])
         .await
         .unwrap();
     assert_eq!(targets.list(route.id).await.unwrap().len(), 1);
@@ -1266,6 +1266,7 @@ fn stored_target(provider_id: Uuid, upstream_model: Option<&str>, weight: i32) -
         provider_id,
         upstream_model: upstream_model.map(str::to_string),
         weight,
+        takes_over: Vec::new(),
         created_at: Utc::now(),
     }
 }
@@ -1275,7 +1276,25 @@ fn spec(provider_id: Uuid, upstream_model: Option<&str>, weight: i32) -> RouteTa
         provider_id,
         upstream_model: upstream_model.map(str::to_string),
         weight,
+        takes_over: Vec::new(),
     }
+}
+
+/// #1584: a changed `takes_over` set is a change to the matched target, like
+/// a changed weight, rather than a different target.
+#[test]
+fn target_plan_updates_a_changed_takes_over_set_in_place() {
+    let a = Uuid::new_v4();
+    let stored = vec![stored_target(a, None, 1)];
+    let mut restricted = spec(a, None, 1);
+    restricted.takes_over = vec!["refusal".to_string()];
+    let desired = vec![restricted];
+    let plan = plan_target_changes(&stored, &desired);
+    assert_eq!(plan.reweight.len(), 1);
+    assert_eq!(plan.reweight[0].0.id, stored[0].id);
+    assert_eq!(plan.reweight[0].1.takes_over, vec!["refusal".to_string()]);
+    assert!(plan.insert.is_empty());
+    assert!(plan.delete.is_empty());
 }
 
 /// #2235: a target is matched by provider and upstream model, so a weight
@@ -1302,7 +1321,7 @@ fn target_plan_matches_on_provider_and_upstream_model() {
     assert_eq!(
         plan.reweight
             .iter()
-            .map(|(t, w)| (t.id, *w))
+            .map(|(t, s)| (t.id, s.weight))
             .collect::<Vec<_>>(),
         vec![(stored[0].id, 5)]
     );
@@ -1468,9 +1487,12 @@ async fn route_update_is_one_transaction() {
         .await
         .unwrap();
     let targets = RouteTargetRepo(&pool);
-    let kept = targets.create(route.id, primary, None, 1).await.unwrap();
+    let kept = targets
+        .create(route.id, primary, None, 1, &[])
+        .await
+        .unwrap();
     let dropped = targets
-        .create(route.id, primary, Some("gpt-4o-mini"), 1)
+        .create(route.id, primary, Some("gpt-4o-mini"), 1, &[])
         .await
         .unwrap();
 
@@ -1779,4 +1801,538 @@ async fn targeted_providers_are_those_the_scopes_routes_use() {
         .await
         .unwrap();
     assert_eq!(by_team, vec![(org.id, "beta".to_string())]);
+}
+
+/// Two orgs may each hold a `gpt-4o` route and an `openai` provider, and the
+/// store composes both into the config the snapshot is built from, each
+/// naming its own org's provider (#1857). The write-time checks answer per org.
+#[tokio::test]
+async fn two_orgs_each_hold_the_same_route_and_provider_names() {
+    if !super::super::test_database::is_configured() {
+        eprintln!("skipping: {} not set", super::super::test_database::URL_ENV);
+        return;
+    }
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let providers = ProviderRepo(&pool);
+    let routes = RouteRepo(&pool);
+    let mut orgs = Vec::new();
+    for slug in ["org-a", "org-b"] {
+        let org = OrgRepo(&pool).create(slug, slug).await.unwrap();
+        let team = TeamRepo(&pool).create(org.id, "core").await.unwrap();
+        let project = ProjectRepo(&pool).create(team.id, "app").await.unwrap();
+        let provider = providers
+            .create(
+                org.id,
+                NewProvider {
+                    name: "openai",
+                    slug: "openai",
+                    kind: "openai_compatible",
+                    api_base: "http://127.0.0.1:9/v1",
+                    api_key_env: None,
+                    egress_proxy: None,
+                    egress_proxies: &[],
+                    kv_events: None,
+                    lmcache: None,
+                    project_id: None,
+                    allow_custom_api_base: false,
+                },
+            )
+            .await
+            .unwrap();
+        let route = routes
+            .create(project.id, "gpt-4o", "round_robin")
+            .await
+            .unwrap();
+        RouteTargetRepo(&pool)
+            .create(route.id, provider.id, None, 1, &[])
+            .await
+            .unwrap();
+        orgs.push(org.id);
+    }
+    let other = OrgRepo(&pool).create("org-c", "org-c").await.unwrap();
+
+    // held in each org, free in a third, and held somewhere when asked broadly
+    for org in orgs.iter().copied() {
+        assert!(providers.name_in_use("openai", Some(org)).await.unwrap());
+        assert!(routes.model_in_use("gpt-4o", Some(org)).await.unwrap());
+        assert!(providers
+            .address_slug_in_use("openai", Some(org), None)
+            .await
+            .unwrap());
+    }
+    assert!(!providers
+        .name_in_use("openai", Some(other.id))
+        .await
+        .unwrap());
+    assert!(!routes.model_in_use("gpt-4o", Some(other.id)).await.unwrap());
+    assert!(!providers
+        .address_slug_in_use("openai", Some(other.id), None)
+        .await
+        .unwrap());
+    assert!(routes.model_in_use("gpt-4o", None).await.unwrap());
+
+    use crate::ConfigStore as _;
+    let config = crate::postgres::PostgresConfigStore::new(pool.clone())
+        .load()
+        .await
+        .unwrap();
+    let owners = |names: Vec<(&str, Option<&rolter_core::Tenancy>)>, name: &str| {
+        let mut owners: Vec<String> = names
+            .into_iter()
+            .filter(|(n, _)| *n == name)
+            .map(|(_, t)| t.map(|t| t.org_id.clone()).unwrap_or_default())
+            .collect();
+        owners.sort();
+        owners
+    };
+    let mut both: Vec<String> = orgs.iter().map(Uuid::to_string).collect();
+    both.sort();
+    assert_eq!(
+        owners(
+            config
+                .routes
+                .iter()
+                .map(|r| (r.model.as_str(), r.tenancy.as_ref()))
+                .collect(),
+            "gpt-4o"
+        ),
+        both
+    );
+    assert_eq!(
+        owners(
+            config
+                .providers
+                .iter()
+                .map(|p| (p.name.as_str(), p.tenancy.as_ref()))
+                .collect(),
+            "openai"
+        ),
+        both
+    );
+    // each route names `openai`, which resolves in its own org
+    let mut config = config;
+    assert!(config.sanitize_for_snapshot().is_empty());
+    config.validate_snapshot().unwrap();
+}
+
+/// One route name per org is held by `routes_org_model_unique` (#3459), not
+/// by a check-then-insert: two projects of one org cannot both hold a name,
+/// even when both creates race, while another org keeps its own.
+#[tokio::test]
+async fn the_database_holds_one_route_name_per_org() {
+    if !super::super::test_database::is_configured() {
+        eprintln!("skipping: {} not set", super::super::test_database::URL_ENV);
+        return;
+    }
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let org_a = OrgRepo(&pool).create("org-a", "org-a").await.unwrap();
+    let org_b = OrgRepo(&pool).create("org-b", "org-b").await.unwrap();
+    let team_a = TeamRepo(&pool).create(org_a.id, "platform").await.unwrap();
+    let team_b = TeamRepo(&pool).create(org_b.id, "core").await.unwrap();
+    let projects = ProjectRepo(&pool);
+    let a1 = projects.create(team_a.id, "one").await.unwrap();
+    let a2 = projects.create(team_a.id, "two").await.unwrap();
+    let b1 = projects.create(team_b.id, "one").await.unwrap();
+    let routes = RouteRepo(&pool);
+
+    // two concurrent creates of one name in two projects of one org: one wins
+    let (first, second) = tokio::join!(
+        routes.create(a1.id, "gpt-4o", "round_robin"),
+        routes.create(a2.id, "gpt-4o", "round_robin"),
+    );
+    let outcomes = [first, second];
+    assert_eq!(
+        outcomes.iter().filter(|r| r.is_ok()).count(),
+        1,
+        "{outcomes:?}"
+    );
+    assert!(
+        outcomes
+            .iter()
+            .any(|r| matches!(r, Err(Error::AlreadyExists(_)))),
+        "{outcomes:?}"
+    );
+    // the other org's namesake is its own
+    routes.create(b1.id, "gpt-4o", "round_robin").await.unwrap();
+    let held: Vec<(Uuid, String)> =
+        sqlx::query_as("select org_id, model from routes order by org_id")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    let mut expected = vec![
+        (org_a.id, "gpt-4o".to_string()),
+        (org_b.id, "gpt-4o".to_string()),
+    ];
+    expected.sort();
+    assert_eq!(held, expected, "each org holds the name once");
+
+    // the copy of the org follows the project, whatever a write says
+    let route = routes.create(a1.id, "claude", "round_robin").await.unwrap();
+    sqlx::query("update routes set org_id = $2 where id = $1")
+        .bind(route.id)
+        .bind(org_b.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let org: Uuid = sqlx::query_scalar("select org_id from routes where id = $1")
+        .bind(route.id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(org, org_a.id);
+    // and moves with a team that changes org
+    let refused = sqlx::query("update teams set org_id = $2 where id = $1")
+        .bind(team_a.id)
+        .bind(org_b.id)
+        .execute(&pool)
+        .await
+        .expect_err("org-b already holds gpt-4o, so moving org-a's team must refuse");
+    assert!(
+        refused.to_string().contains("routes_org_model_unique"),
+        "{refused}"
+    );
+    sqlx::query("delete from routes where model = 'gpt-4o' and project_id = $1")
+        .bind(b1.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("update teams set org_id = $2 where id = $1")
+        .bind(team_a.id)
+        .bind(org_b.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let org: Uuid = sqlx::query_scalar("select org_id from routes where id = $1")
+        .bind(route.id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(org, org_b.id);
+}
+
+/// Providers and provider groups share one `slug/model` address per org
+/// (#1857), and `0206` holds it across the two tables (#3459): a group cannot
+/// take a slug a provider of its org holds, or the reverse, even when both
+/// creates race, while another org may take it.
+#[tokio::test]
+async fn providers_and_groups_share_one_slug_per_org() {
+    if !super::super::test_database::is_configured() {
+        eprintln!("skipping: {} not set", super::super::test_database::URL_ENV);
+        return;
+    }
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let org_a = OrgRepo(&pool).create("org-a", "org-a").await.unwrap();
+    let org_b = OrgRepo(&pool).create("org-b", "org-b").await.unwrap();
+    let provider = |slug: &'static str| NewProvider {
+        name: slug,
+        slug,
+        kind: "openai_compatible",
+        api_base: "http://127.0.0.1:9/v1",
+        api_key_env: None,
+        egress_proxy: None,
+        egress_proxies: &[],
+        kv_events: None,
+        lmcache: None,
+        project_id: None,
+        allow_custom_api_base: false,
+    };
+    let providers = ProviderRepo(&pool);
+    let groups = ProviderGroupRepo(&pool);
+
+    // a provider and a group racing for one slug in one org: one wins
+    let (p, g) = tokio::join!(
+        providers.create(org_a.id, provider("edge")),
+        groups.create(org_a.id, "edge", "edge", "round_robin", None),
+    );
+    assert!(
+        p.is_ok() != g.is_ok(),
+        "exactly one holder: provider {p:?}, group {g:?}"
+    );
+    let lost = if p.is_ok() {
+        g.map(|_| ())
+    } else {
+        p.map(|_| ())
+    };
+    assert!(matches!(lost, Err(Error::AlreadyExists(_))), "{lost:?}");
+
+    // sequentially, both ways round
+    providers.create(org_a.id, provider("pool")).await.unwrap();
+    assert!(matches!(
+        groups
+            .create(org_a.id, "pool", "pool", "round_robin", None)
+            .await,
+        Err(Error::AlreadyExists(_))
+    ));
+    groups
+        .create(org_a.id, "fleet", "fleet", "round_robin", None)
+        .await
+        .unwrap();
+    assert!(matches!(
+        providers.create(org_a.id, provider("fleet")).await,
+        Err(Error::AlreadyExists(_))
+    ));
+
+    // another org takes every one of them, as a provider or as a group
+    providers.create(org_b.id, provider("edge")).await.unwrap();
+    groups
+        .create(org_b.id, "pool", "pool", "round_robin", None)
+        .await
+        .unwrap();
+    providers.create(org_b.id, provider("fleet")).await.unwrap();
+}
+
+#[tokio::test]
+async fn deleting_a_team_project_or_key_drops_its_mcp_tool_group_assignments() {
+    if !super::super::test_database::is_configured() {
+        eprintln!("skipping: {} not set", super::super::test_database::URL_ENV);
+        return;
+    }
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let org = OrgRepo(&pool).create("acme", "acme").await.unwrap();
+    let teams = TeamRepo(&pool);
+    let projects = ProjectRepo(&pool);
+    let keys = VirtualKeyRepo(&pool);
+    let lone_team = teams.create(org.id, "lone").await.unwrap();
+    let team = teams.create(org.id, "core").await.unwrap();
+    let lone_project = projects.create(team.id, "lone").await.unwrap();
+    let key_project = projects.create(team.id, "keys").await.unwrap();
+    let keys_ref = &keys;
+    let new_key = |hash, prefix| async move {
+        keys_ref
+            .create(
+                key_project.id,
+                NewVirtualKey {
+                    key_hash: hash,
+                    key_prefix: prefix,
+                    name: None,
+                    models: &[],
+                    providers: &[],
+                    cache_enabled: None,
+                    created_by: None,
+                    expires_at: None,
+                    purpose: None,
+                },
+            )
+            .await
+            .unwrap()
+    };
+    let deleted_key = new_key("hash-a", "sk-a").await;
+    let cascaded_key = new_key("hash-b", "sk-b").await;
+
+    let group = McpToolGroupRepo(&pool)
+        .create(NewMcpToolGroup {
+            org_id: org.id,
+            name: "docs",
+            slug: "docs",
+            description: "",
+            enabled: true,
+            tools: &serde_json::json!([]),
+            assignments: &[
+                ("team".to_string(), lone_team.id),
+                ("project".to_string(), lone_project.id),
+                ("virtual_key".to_string(), deleted_key.id),
+                ("virtual_key".to_string(), cascaded_key.id),
+            ],
+        })
+        .await
+        .unwrap();
+    let assignments = McpToolGroupAssignmentRepo(&pool);
+    let version = || async {
+        sqlx::query_scalar::<_, i64>("select version from config_version where id = 1")
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+    };
+    let subjects = || async {
+        let mut ids: Vec<Uuid> = assignments
+            .list_for_group(group.id)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|(_, id)| id)
+            .collect();
+        ids.sort();
+        ids
+    };
+    assert_eq!(subjects().await.len(), 4);
+
+    keys.delete(deleted_key.id).await.unwrap();
+    assert!(!subjects().await.contains(&deleted_key.id));
+
+    // deleting a team or a project bumps `config_version` through the tables
+    // it cascades into whatever happens to the assignments, so the sweep is
+    // measured against the same delete of a subject with none: it adds exactly
+    // one bump, and a subject with no assignment adds none (a bump wakes every
+    // gateway)
+    let unassigned_team = teams.create(org.id, "unassigned").await.unwrap();
+    let unassigned_project = projects.create(team.id, "unassigned").await.unwrap();
+    let before = version().await;
+    teams.delete(unassigned_team.id).await.unwrap();
+    let team_baseline = version().await - before;
+    let before = version().await;
+    projects.delete(unassigned_project.id).await.unwrap();
+    let project_baseline = version().await - before;
+
+    let before = version().await;
+    projects.delete(lone_project.id).await.unwrap();
+    assert!(!subjects().await.contains(&lone_project.id));
+    assert_eq!(
+        version().await - before,
+        project_baseline + 1,
+        "the sweep reaches the gateway"
+    );
+
+    let before = version().await;
+    teams.delete(lone_team.id).await.unwrap();
+    assert!(!subjects().await.contains(&lone_team.id));
+    assert_eq!(
+        version().await - before,
+        team_baseline + 1,
+        "so does a team's"
+    );
+
+    // a project takes its keys with it, and their assignments follow
+    projects.delete(key_project.id).await.unwrap();
+    assert!(subjects().await.is_empty());
+}
+
+/// #3476: two organizations' `gpt-4o` carry their own labels. A label naming
+/// an organization shadows the deployment-wide one of the same key for that
+/// organization's model only, and uniqueness holds per organization with the
+/// deployment-wide labels counted as one owner.
+#[tokio::test]
+async fn model_labels_are_keyed_by_organization_and_fall_back_to_the_deployment() {
+    if !super::super::test_database::is_configured() {
+        eprintln!("skipping: {} not set", super::super::test_database::URL_ENV);
+        return;
+    }
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let orgs = OrgRepo(&pool);
+    let acme = orgs.create("acme", "acme").await.unwrap();
+    let globex = orgs.create("globex", "globex").await.unwrap();
+    for org in [acme.id, globex.id] {
+        let team = TeamRepo(&pool).create(org, "core").await.unwrap();
+        let project = ProjectRepo(&pool).create(team.id, "default").await.unwrap();
+        RouteRepo(&pool)
+            .create(project.id, "gpt-4o", "power_of_two")
+            .await
+            .unwrap();
+    }
+
+    let labels = LabelRepo(&pool);
+    let label = |org_id: Option<Uuid>, key: &'static str, value: &'static str| CustomLabelInput {
+        subject_type: "model",
+        subject_id: "gpt-4o",
+        org_id,
+        key,
+        value: Some(value),
+    };
+    // deployment-wide, then each org's own `tier`
+    labels
+        .create_custom(label(None, "tier", "standard"))
+        .await
+        .unwrap()
+        .expect("the deployment's label");
+    labels
+        .create_custom(label(None, "family", "gpt"))
+        .await
+        .unwrap()
+        .expect("a second deployment label");
+    let acme_tier = labels
+        .create_custom(label(Some(acme.id), "tier", "gold"))
+        .await
+        .unwrap()
+        .expect("acme's own tier beside the deployment's");
+    assert_eq!(acme_tier.org_id, Some(acme.id));
+    labels
+        .create_custom(label(Some(globex.id), "tier", "bronze"))
+        .await
+        .unwrap()
+        .expect("globex's own tier beside acme's");
+
+    // one key per owner: a second deployment-wide `tier` collides, null
+    // counted as one value, and so does a second of acme's
+    assert!(labels
+        .create_custom(label(None, "tier", "again"))
+        .await
+        .unwrap()
+        .is_none());
+    assert!(labels
+        .create_custom(label(Some(acme.id), "tier", "again"))
+        .await
+        .unwrap()
+        .is_none());
+
+    let applying = |org: Uuid| {
+        let labels = &labels;
+        async move {
+            let mut rows: Vec<(String, String, Option<Uuid>)> = labels
+                .list_models_for_org(org, LabelFilter::default())
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|l| (l.key, l.value.unwrap_or_default(), l.org_id))
+                .collect();
+            rows.sort();
+            rows
+        }
+    };
+    // each org reads its own tier, never the other's, and the deployment's
+    // family it has not overridden
+    assert_eq!(
+        applying(acme.id).await,
+        vec![
+            ("family".into(), "gpt".into(), None),
+            ("tier".into(), "gold".into(), Some(acme.id)),
+        ]
+    );
+    assert_eq!(
+        applying(globex.id).await,
+        vec![
+            ("family".into(), "gpt".into(), None),
+            ("tier".into(), "bronze".into(), Some(globex.id)),
+        ]
+    );
+    // a filter applies to what the org reads, not to the rows it shadows
+    let gold = labels
+        .list_models_for_org(
+            globex.id,
+            LabelFilter {
+                value: Some("gold"),
+                ..LabelFilter::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert!(gold.is_empty(), "{gold:?}");
+
+    assert!(labels.org_has_model(acme.id, "gpt-4o").await.unwrap());
+    assert!(!labels.org_has_model(acme.id, "claude").await.unwrap());
+
+    // only a model label names an organization
+    let route_label = labels
+        .create_custom(CustomLabelInput {
+            subject_type: "route",
+            subject_id: &Uuid::new_v4().to_string(),
+            org_id: Some(acme.id),
+            key: "tier",
+            value: None,
+        })
+        .await;
+    assert!(route_label.is_err(), "{route_label:?}");
+
+    // deleting an org takes its labels with it and leaves the rest
+    sqlx::query("delete from orgs where id = $1")
+        .bind(acme.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let left = labels.list(LabelFilter::default()).await.unwrap();
+    assert_eq!(left.len(), 3, "{left:?}");
+    assert!(left.iter().all(|l| l.org_id != Some(acme.id)));
 }

@@ -40,8 +40,8 @@ use rolter_store::postgres::crypto::{Kek, KEK_ENV};
 use rolter_store::postgres::repo::AuditLogRepo;
 
 use crate::crud::{invalid_field, pool, ApiError, ApiResult, SafeJson};
-use crate::rbac::{authorize_superadmin, Principal};
-use crate::rbac_matrix::superadmin_cap;
+use crate::rbac::{authorize, is_deployment_operator, Principal, ScopeChain, ScopeFilter};
+use crate::rbac_matrix::{cap, Requirement};
 use crate::ControlState;
 
 /// Longest one webhook delivery may take, connect included. Deliveries run
@@ -97,6 +97,7 @@ mod error_code {
     pub const CLICKHOUSE_BAD_RESPONSE: &str = "clickhouse_bad_response";
     pub const QUERY_FAILED: &str = "query_failed";
     pub const CLICKHOUSE_ERROR: &str = "clickhouse_error";
+    pub const SCOPE_GONE: &str = "scope_gone";
 }
 
 /// Why a rule's signal could not be read: a stable code, the numbers it
@@ -177,6 +178,14 @@ struct Channel {
     endpoint: String,
     enabled: bool,
     secret_configured: bool,
+    /// The org that owns the channel; null for a deployment channel, which only
+    /// a superadmin manages (#1829)
+    org_id: Option<Uuid>,
+    /// Whether the caller may edit or delete it. A deployment channel is listed
+    /// to an org admin so a rule can name it, with its endpoint withheld, since
+    /// the address may carry a token
+    #[sqlx(skip)]
+    manageable: bool,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
 }
@@ -185,6 +194,13 @@ struct Channel {
 struct Rule {
     id: Uuid,
     name: String,
+    /// The org the rule's scope sits in; null for a deployment-wide rule
+    org_id: Option<Uuid>,
+    /// What the rule watches (`org`, `team`, `project`, `virtual_key`,
+    /// `business_unit` or `customer`); null for the whole deployment. Fixed when
+    /// the rule is created
+    scope_type: Option<String>,
+    scope_id: Option<Uuid>,
     signal: String,
     threshold: f64,
     comparison: String,
@@ -230,14 +246,24 @@ struct Notification {
 struct ChannelInput {
     name: String,
     endpoint: String,
+    /// Owning org, on create only; omitted for a deployment channel. An update
+    /// leaves the owner as it is
+    #[serde(default)]
+    org_id: Option<Uuid>,
     #[serde(default)]
     enabled: bool,
     managed_secret: Option<String>,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 struct RuleInput {
     name: String,
+    /// The scope to watch, on create only: both or neither. An update leaves
+    /// the scope as it is
+    #[serde(default)]
+    scope_type: Option<String>,
+    #[serde(default)]
+    scope_id: Option<Uuid>,
     signal: String,
     threshold: f64,
     /// `above` (the default) fires at `value >= threshold`, `below` at
@@ -350,8 +376,43 @@ fn bearer(secret: &str) -> Option<HeaderValue> {
     Some(value)
 }
 
+/// The `request_logs` column a scope type is matched on. The health stream is
+/// keyed by the provider's org alone, so only an org scope can watch it.
+fn scope_column(scope_type: &str) -> Option<&'static str> {
+    Some(match scope_type {
+        "org" => "org_id",
+        "team" => "team_id",
+        "project" => "project_id",
+        "virtual_key" => "virtual_key_id",
+        "business_unit" => "business_unit_id",
+        "customer" => "customer_id",
+        _ => return None,
+    })
+}
+
+fn check_signal_scope(signal: &str, scope_type: Option<&str>) -> ApiResult<()> {
+    match scope_type {
+        Some(scope) if scope_column(scope).is_none() => Err(invalid_field(
+            "scope_type",
+            "scope_type must be one of org, team, project, virtual_key, business_unit, customer",
+        )),
+        Some(scope) if signal == "provider_health_flaps" && scope != "org" => Err(invalid_field(
+            "signal",
+            "provider_health_flaps can only watch a whole org or the deployment: provider health is not recorded per team, project, key, business unit or customer",
+        )),
+        _ => Ok(()),
+    }
+}
+
 fn validate_rule(input: &RuleInput) -> ApiResult<()> {
     validate_name(&input.name, "rule name")?;
+    if input.scope_type.is_some() != input.scope_id.is_some() {
+        return Err(invalid_field(
+            "scope_id",
+            "scope_type and scope_id are given together or not at all",
+        ));
+    }
+    check_signal_scope(&input.signal, input.scope_type.as_deref())?;
     if !SIGNALS.contains(&input.signal.as_str()) {
         return Err(invalid_field(
             "signal",
@@ -402,27 +463,258 @@ fn seal(secret: &str) -> ApiResult<(Vec<u8>, Vec<u8>)> {
 }
 
 fn channel_columns() -> &'static str {
-    "id, name, kind, endpoint, enabled, secret_ciphertext is not null as secret_configured, created_at, updated_at"
+    "id, name, kind, endpoint, enabled, secret_ciphertext is not null as secret_configured, org_id, created_at, updated_at"
 }
 
 fn rule_columns() -> &'static str {
-    "id, name, signal, threshold, comparison, no_data, window_secs, channel_id, enabled, state, last_value, last_evaluated_at, last_error, last_error_code, last_error_params, created_at, updated_at"
+    "id, name, org_id, scope_type, scope_id, signal, threshold, comparison, no_data, window_secs, channel_id, enabled, state, last_value, last_evaluated_at, last_error, last_error_code, last_error_params, created_at, updated_at"
+}
+
+/// A deployment-wide channel or rule names no org, so no membership can
+/// satisfy it: only a superadmin or a deployment operator may touch it. An API
+/// token holds no deployment authority and is refused as a member is.
+fn deployment_only(principal: &Principal) -> ApiResult<()> {
+    if is_deployment_operator(principal) {
+        Ok(())
+    } else {
+        Err(ApiError::Forbidden)
+    }
+}
+
+/// Guard a channel at its owning org, or at the deployment when it has none.
+async fn authorize_channel(
+    state: &ControlState,
+    principal: &Principal,
+    org_id: Option<Uuid>,
+    requirement: Requirement,
+) -> ApiResult<()> {
+    match org_id {
+        Some(org) => authorize(state, principal, ScopeChain::org(org), requirement).await,
+        None => deployment_only(principal),
+    }
+}
+
+/// The scope chain a stored rule is guarded at: its own scope, or its org when
+/// the scope row is gone (deleted team, project, key...) so the org's admins
+/// can still see and remove the leftover rule. `None` for a deployment rule.
+async fn rule_chain(state: &ControlState, rule: &Rule) -> Option<ScopeChain> {
+    let org = rule.org_id?;
+    if let (Some(scope_type), Some(scope_id)) = (&rule.scope_type, rule.scope_id) {
+        if let Ok(chain) = ScopeChain::from_scope(pool(state), scope_type, scope_id).await {
+            if chain.org == Some(org) {
+                return Some(chain);
+            }
+        }
+    }
+    Some(ScopeChain::org(org))
+}
+
+async fn authorize_rule(
+    state: &ControlState,
+    principal: &Principal,
+    rule: &Rule,
+    requirement: Requirement,
+) -> ApiResult<()> {
+    match rule_chain(state, rule).await {
+        Some(chain) => authorize(state, principal, chain, requirement).await,
+        None => deployment_only(principal),
+    }
+}
+
+async fn load_rule(state: &ControlState, id: Uuid) -> ApiResult<Rule> {
+    sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "select {} from alert_rules where id=$1",
+        rule_columns()
+    )))
+    .bind(id)
+    .fetch_optional(pool(state))
+    .await
+    .map_err(rolter_store::postgres::store_err)?
+    .ok_or_else(|| ApiError::Core(Error::NotFound(format!("alert rule {id}"))))
+}
+
+/// The owner of a channel: `Some(None)` for a deployment channel.
+async fn channel_owner(state: &ControlState, id: Uuid) -> ApiResult<Option<Uuid>> {
+    sqlx::query_scalar::<_, Option<Uuid>>("select org_id from alert_channels where id=$1")
+        .bind(id)
+        .fetch_optional(pool(state))
+        .await
+        .map_err(rolter_store::postgres::store_err)?
+        .ok_or_else(|| ApiError::Core(Error::NotFound(format!("alert channel {id}"))))
+}
+
+/// Whether a rule owned by `rule_org` may notify a channel owned by
+/// `channel_org`: its own org's, or a deployment channel. A deployment-wide
+/// rule reads the whole deployment, so it may only notify a deployment channel,
+/// never one org's.
+fn channel_reaches(channel_org: Option<Uuid>, rule_org: Option<Uuid>) -> bool {
+    channel_org.is_none() || channel_org == rule_org
+}
+
+/// Refuse a rule that names a channel it may not notify. An unknown channel and
+/// another org's are answered alike, so the id cannot be used to probe.
+async fn check_rule_channel(
+    state: &ControlState,
+    channel_id: Option<Uuid>,
+    rule_org: Option<Uuid>,
+) -> ApiResult<()> {
+    let Some(id) = channel_id else { return Ok(()) };
+    let reachable = match channel_owner(state, id).await {
+        Ok(owner) => channel_reaches(owner, rule_org),
+        Err(ApiError::Core(Error::NotFound(_))) => false,
+        Err(error) => return Err(error),
+    };
+    if reachable {
+        Ok(())
+    } else {
+        Err(invalid_field(
+            "channel_id",
+            "channel_id must name a channel of the rule's own organization or a deployment channel",
+        ))
+    }
+}
+
+/// Where the caller may run alerting: the chain of every place they hold an
+/// alert-rule admin role, so the orgs, teams and projects their rules live in.
+/// Empty for a caller with none, who is refused the listing (a superadmin never
+/// asks).
+async fn alerting_reach(state: &ControlState, filter: &ScopeFilter) -> ApiResult<Vec<ScopeChain>> {
+    let held: Vec<ScopeChain> = filter
+        .reach(pool(state))
+        .await?
+        .into_iter()
+        .filter(|held| filter.allows(*held))
+        .collect();
+    if held.iter().all(|held| held.org.is_none()) {
+        return Err(ApiError::Forbidden);
+    }
+    Ok(held)
+}
+
+/// The orgs in which the caller may run alerting: those of every place they
+/// hold an alert-rule admin role.
+async fn alerting_orgs(
+    state: &ControlState,
+    filter: &ScopeFilter,
+) -> ApiResult<std::collections::HashSet<Uuid>> {
+    Ok(alerting_reach(state, filter)
+        .await?
+        .into_iter()
+        .filter_map(|held| held.org)
+        .collect())
+}
+
+/// The rules whose scope lies inside one of the places in `reach` (#3361): the
+/// rules of an org, of a team (or of a project or key inside it) and of a
+/// project (or a key inside it), chosen in SQL so a rule of any other org is
+/// never read. A superset of what the caller may see, never a verdict.
+async fn rules_in_reach(state: &ControlState, reach: &[ScopeChain]) -> ApiResult<Vec<Rule>> {
+    let (mut orgs, mut teams, mut projects) = (Vec::new(), Vec::new(), Vec::new());
+    for held in reach {
+        match (held.org, held.team, held.project) {
+            (_, _, Some(project)) => projects.push(project),
+            (_, Some(team), None) => teams.push(team),
+            (Some(org), None, None) => orgs.push(org),
+            (None, None, None) => {}
+        }
+    }
+    sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "select {} from alert_rules where id in ( \
+             select r.id from alert_rules r \
+             left join projects p on r.scope_type = 'project' and p.id = r.scope_id \
+             left join virtual_keys k on r.scope_type = 'virtual_key' and k.id = r.scope_id \
+             left join projects kp on kp.id = k.project_id \
+             where r.org_id = any($1) \
+                or (r.scope_type = 'team' and r.scope_id = any($2)) \
+                or coalesce(p.team_id, kp.team_id) = any($2) \
+                or coalesce(p.id, kp.id) = any($3)) \
+         order by name",
+        rule_columns()
+    )))
+    .bind(orgs)
+    .bind(teams)
+    .bind(projects)
+    .fetch_all(pool(state))
+    .await
+    .map_err(rolter_store::postgres::store_err)
+    .map_err(Into::into)
+}
+
+/// The rules the caller may see: all of them for a superadmin or a deployment
+/// operator, otherwise those whose scope the caller is admin of.
+/// Deployment-wide rules are never theirs.
+///
+/// A scoped caller's rules are chosen in SQL from their reach (#3361): the
+/// rules of the orgs they hold the role at, of the teams, and of the projects,
+/// reading a team or a project (or a key's project) scope through its row. So
+/// what is read, and how many chains are then resolved, follows the caller's
+/// own rules and not the number of rules in other orgs. The reach is a
+/// superset on purpose: the verdict on each rule is still [`ScopeFilter`]'s, so
+/// a more specific lower role, which beats an org admin at that scope, still
+/// hides the rule.
+async fn visible_rules(
+    state: &ControlState,
+    principal: &Principal,
+    requirement: Requirement,
+) -> ApiResult<Vec<Rule>> {
+    let filter = ScopeFilter::load(state, principal, requirement).await?;
+    if is_deployment_operator(principal) {
+        return sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "select {} from alert_rules order by name",
+            rule_columns()
+        )))
+        .fetch_all(pool(state))
+        .await
+        .map_err(rolter_store::postgres::store_err)
+        .map_err(Into::into);
+    }
+    let reach = alerting_reach(state, &filter).await?;
+    let rules = rules_in_reach(state, &reach).await?;
+    let mut visible = Vec::new();
+    for rule in rules {
+        if let Some(chain) = rule_chain(state, &rule).await {
+            if filter.allows(chain) {
+                visible.push(rule);
+            }
+        }
+    }
+    Ok(visible)
 }
 
 async fn list_channels(
     principal: Principal,
     State(state): State<ControlState>,
 ) -> ApiResult<Json<Vec<Channel>>> {
-    authorize_superadmin(&principal, superadmin_cap!("alert_channel", Read))?;
-    Ok(Json(
-        sqlx::query_as(sqlx::AssertSqlSafe(format!(
-            "select {} from alert_channels order by name",
-            channel_columns()
-        )))
-        .fetch_all(pool(&state))
-        .await
-        .map_err(rolter_store::postgres::store_err)?,
-    ))
+    let owned = ScopeFilter::load(&state, &principal, cap!("alert_channel", Read)).await?;
+    // who may see a channel is decided by running alerting in its org, which is
+    // the rule capability: a team admin names their org's channel on a rule
+    // without being able to edit it
+    let rules = ScopeFilter::load(&state, &principal, cap!("alert_rule", Read)).await?;
+    let orgs = if is_deployment_operator(&principal) {
+        None
+    } else {
+        Some(alerting_orgs(&state, &rules).await?)
+    };
+    let mut channels: Vec<Channel> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "select {} from alert_channels order by name",
+        channel_columns()
+    )))
+    .fetch_all(pool(&state))
+    .await
+    .map_err(rolter_store::postgres::store_err)?;
+    if let Some(orgs) = &orgs {
+        channels.retain(|c| c.org_id.is_none_or(|org| orgs.contains(&org)));
+    }
+    for channel in &mut channels {
+        channel.manageable = match channel.org_id {
+            Some(org) => is_deployment_operator(&principal) || owned.allows(ScopeChain::org(org)),
+            None => is_deployment_operator(&principal),
+        };
+        if !channel.manageable {
+            channel.endpoint.clear();
+        }
+    }
+    Ok(Json(channels))
 }
 
 async fn create_channel(
@@ -430,21 +722,30 @@ async fn create_channel(
     State(state): State<ControlState>,
     SafeJson(input): SafeJson<ChannelInput>,
 ) -> ApiResult<Json<Channel>> {
-    authorize_superadmin(&principal, superadmin_cap!("alert_channel", Create))?;
+    authorize_channel(
+        &state,
+        &principal,
+        input.org_id,
+        cap!("alert_channel", Create),
+    )
+    .await?;
     let endpoint = validate_channel(&input)?;
     check_egress(&state.egress, &endpoint)?;
     let secret = input.managed_secret.as_deref().map(seal).transpose()?;
-    let channel: Channel = sqlx::query_as(sqlx::AssertSqlSafe(format!(
-        "insert into alert_channels (name, kind, endpoint, enabled, secret_ciphertext, secret_nonce) values ($1, 'webhook', $2, $3, $4, $5) returning {}", channel_columns())))
+    let mut channel: Channel = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "insert into alert_channels (name, kind, endpoint, enabled, secret_ciphertext, secret_nonce, org_id) values ($1, 'webhook', $2, $3, $4, $5, $6) returning {}", channel_columns())))
         .bind(input.name.trim()).bind(endpoint.as_str()).bind(input.enabled)
         .bind(secret.as_ref().map(|(c, _)| c.as_slice())).bind(secret.as_ref().map(|(_, n)| n.as_slice()))
+        .bind(input.org_id)
         .fetch_one(pool(&state)).await.map_err(rolter_store::postgres::store_err)?;
+    channel.manageable = true;
     audit(
         &state,
         &principal,
+        channel.org_id,
         "alert.channel.create",
         channel.id,
-        serde_json::json!({"name": channel.name, "enabled": channel.enabled}),
+        serde_json::json!({"name": channel.name, "enabled": channel.enabled, "org_id": channel.org_id}),
     )
     .await;
     Ok(Json(channel))
@@ -456,7 +757,8 @@ async fn update_channel(
     Path(id): Path<Uuid>,
     SafeJson(input): SafeJson<ChannelInput>,
 ) -> ApiResult<Json<Channel>> {
-    authorize_superadmin(&principal, superadmin_cap!("alert_channel", Update))?;
+    let owner = channel_owner(&state, id).await?;
+    authorize_channel(&state, &principal, owner, cap!("alert_channel", Update)).await?;
     let endpoint = validate_channel(&input)?;
     let secret = input.managed_secret.as_deref().map(seal).transpose()?;
     let mut tx = pool(&state)
@@ -485,7 +787,7 @@ async fn update_channel(
     // this request brings the new receiver's own
     let origin_changed = stored.is_none_or(|stored| stored.origin() != endpoint.origin());
     let clear_secret = origin_changed && secret.is_none();
-    let channel: Channel = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+    let mut channel: Channel = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "update alert_channels set name=$2, endpoint=$3, enabled=$4, \
          secret_ciphertext = case when $7 then null else coalesce($5, secret_ciphertext) end, \
          secret_nonce = case when $7 then null else coalesce($6, secret_nonce) end, \
@@ -505,11 +807,13 @@ async fn update_channel(
     tx.commit()
         .await
         .map_err(rolter_store::postgres::store_err)?;
+    channel.manageable = true;
     // whether the endpoint moved and what became of the secret, never the
     // endpoint itself: its query string can carry a token
     audit(
         &state,
         &principal,
+        owner,
         "alert.channel.update",
         id,
         serde_json::json!({
@@ -529,7 +833,8 @@ async fn delete_channel(
     State(state): State<ControlState>,
     Path(id): Path<Uuid>,
 ) -> ApiResult<StatusCode> {
-    authorize_superadmin(&principal, superadmin_cap!("alert_channel", Delete))?;
+    let owner = channel_owner(&state, id).await?;
+    authorize_channel(&state, &principal, owner, cap!("alert_channel", Delete)).await?;
     if sqlx::query("delete from alert_channels where id=$1")
         .bind(id)
         .execute(pool(&state))
@@ -545,6 +850,7 @@ async fn delete_channel(
     audit(
         &state,
         &principal,
+        owner,
         "alert.channel.delete",
         id,
         serde_json::json!({}),
@@ -557,15 +863,8 @@ async fn list_rules(
     principal: Principal,
     State(state): State<ControlState>,
 ) -> ApiResult<Json<Vec<Rule>>> {
-    authorize_superadmin(&principal, superadmin_cap!("alert_rule", Read))?;
     Ok(Json(
-        sqlx::query_as(sqlx::AssertSqlSafe(format!(
-            "select {} from alert_rules order by name",
-            rule_columns()
-        )))
-        .fetch_all(pool(&state))
-        .await
-        .map_err(rolter_store::postgres::store_err)?,
+        visible_rules(&state, &principal, cap!("alert_rule", Read)).await?,
     ))
 }
 
@@ -574,17 +873,32 @@ async fn create_rule(
     State(state): State<ControlState>,
     SafeJson(input): SafeJson<RuleInput>,
 ) -> ApiResult<Json<Rule>> {
-    authorize_superadmin(&principal, superadmin_cap!("alert_rule", Create))?;
     validate_rule(&input)?;
-    let rule: Rule = sqlx::query_as(sqlx::AssertSqlSafe(format!("insert into alert_rules (name, signal, threshold, comparison, no_data, window_secs, channel_id, enabled) values ($1,$2,$3,$7,$8,$4,$5,$6) returning {}", rule_columns())))
+    // creating takes admin at the scope the rule watches; a deployment-wide
+    // rule watches every tenant's traffic and stays a superadmin's
+    let (org_id, scope) = match (input.scope_type.as_deref(), input.scope_id) {
+        (Some(scope_type), Some(scope_id)) => {
+            let chain = ScopeChain::from_scope(pool(&state), scope_type, scope_id).await?;
+            authorize(&state, &principal, chain, cap!("alert_rule", Create)).await?;
+            (chain.org, Some((scope_type, scope_id)))
+        }
+        _ => {
+            deployment_only(&principal)?;
+            (None, None)
+        }
+    };
+    check_rule_channel(&state, input.channel_id, org_id).await?;
+    let rule: Rule = sqlx::query_as(sqlx::AssertSqlSafe(format!("insert into alert_rules (name, signal, threshold, comparison, no_data, window_secs, channel_id, enabled, org_id, scope_type, scope_id) values ($1,$2,$3,$7,$8,$4,$5,$6,$9,$10,$11) returning {}", rule_columns())))
         .bind(input.name.trim()).bind(&input.signal).bind(input.threshold).bind(input.window_secs).bind(input.channel_id).bind(input.enabled).bind(input.comparison()).bind(input.no_data())
+        .bind(org_id).bind(scope.map(|(t, _)| t)).bind(scope.map(|(_, id)| id))
         .fetch_one(pool(&state)).await.map_err(rolter_store::postgres::store_err)?;
     audit(
         &state,
         &principal,
+        rule.org_id,
         "alert.rule.create",
         rule.id,
-        serde_json::json!({"name": rule.name, "signal": rule.signal, "enabled": rule.enabled}),
+        serde_json::json!({"name": rule.name, "signal": rule.signal, "enabled": rule.enabled, "scope_type": rule.scope_type, "scope_id": rule.scope_id}),
     )
     .await;
     Ok(Json(rule))
@@ -596,8 +910,16 @@ async fn update_rule(
     Path(id): Path<Uuid>,
     SafeJson(input): SafeJson<RuleInput>,
 ) -> ApiResult<Json<Rule>> {
-    authorize_superadmin(&principal, superadmin_cap!("alert_rule", Update))?;
-    validate_rule(&input)?;
+    let stored = load_rule(&state, id).await?;
+    authorize_rule(&state, &principal, &stored, cap!("alert_rule", Update)).await?;
+    // the scope is fixed at creation, so what the body says about it is not
+    // read; the stored scope is what the signal is checked against
+    let mut checked = input.clone();
+    checked.scope_type = None;
+    checked.scope_id = None;
+    validate_rule(&checked)?;
+    check_signal_scope(&input.signal, stored.scope_type.as_deref())?;
+    check_rule_channel(&state, input.channel_id, stored.org_id).await?;
     let rule: Rule = sqlx::query_as(sqlx::AssertSqlSafe(format!("update alert_rules set name=$2, signal=$3, threshold=$4, window_secs=$5, channel_id=$6, enabled=$7, comparison=coalesce($8, comparison), no_data=coalesce($9, no_data), updated_at=now() where id=$1 returning {}", rule_columns())))
         .bind(id).bind(input.name.trim()).bind(&input.signal).bind(input.threshold).bind(input.window_secs).bind(input.channel_id).bind(input.enabled).bind(&input.comparison).bind(input.no_data_for_update())
         .fetch_optional(pool(&state)).await.map_err(rolter_store::postgres::store_err)?
@@ -605,6 +927,7 @@ async fn update_rule(
     audit(
         &state,
         &principal,
+        stored.org_id,
         "alert.rule.update",
         id,
         serde_json::json!({"name": rule.name, "signal": rule.signal, "enabled": rule.enabled}),
@@ -618,7 +941,8 @@ async fn delete_rule(
     State(state): State<ControlState>,
     Path(id): Path<Uuid>,
 ) -> ApiResult<StatusCode> {
-    authorize_superadmin(&principal, superadmin_cap!("alert_rule", Delete))?;
+    let stored = load_rule(&state, id).await?;
+    authorize_rule(&state, &principal, &stored, cap!("alert_rule", Delete)).await?;
     if sqlx::query("delete from alert_rules where id=$1")
         .bind(id)
         .execute(pool(&state))
@@ -632,6 +956,7 @@ async fn delete_rule(
     audit(
         &state,
         &principal,
+        stored.org_id,
         "alert.rule.delete",
         id,
         serde_json::json!({}),
@@ -696,7 +1021,11 @@ async fn list_history(
     State(state): State<ControlState>,
     Query(query): Query<HistoryQuery>,
 ) -> ApiResult<Json<Vec<Notification>>> {
-    authorize_superadmin(&principal, superadmin_cap!("alert_history", Read))?;
+    // history is read through the rules the caller may see, so a scoped admin
+    // reads only what their own rules wrote
+    let rules = visible_rules(&state, &principal, cap!("alert_history", Read)).await?;
+    let rule_ids: Option<Vec<Uuid>> =
+        (!is_deployment_operator(&principal)).then(|| rules.iter().map(|r| r.id).collect());
     let limit = query.limit.unwrap_or(100).clamp(1, 500);
     let status = one_of("state", query.state, HISTORY_STATES)?;
     let delivery = one_of("delivery_status", query.delivery_status, DELIVERY_STATUSES)?;
@@ -705,6 +1034,7 @@ async fn list_history(
         "select id, rule_id, channel_id, state, delivery_status, detail, detail_code, detail_params, value, threshold, sent_at \
          from alert_notification_history \
          where ($1::uuid is null or rule_id=$1) \
+           and ($7::uuid[] is null or rule_id = any($7)) \
            and ($2::text is null or state=$2) \
            and ($3::text is null or delivery_status=$3) \
            and ($4::timestamptz is null or (sent_at, id) < ($4, $5)) \
@@ -717,6 +1047,7 @@ async fn list_history(
     .bind(cursor.map(|(at, _)| at))
     .bind(cursor.map(|(_, id)| id))
     .bind(limit)
+    .bind(rule_ids)
     .fetch_all(pool(&state))
     .await
     .map_err(rolter_store::postgres::store_err)?;
@@ -738,7 +1069,8 @@ async fn evaluate(
     State(state): State<ControlState>,
     Path(id): Path<Uuid>,
 ) -> ApiResult<Json<Evaluation>> {
-    authorize_superadmin(&principal, superadmin_cap!("alert_history", Create))?;
+    let stored = load_rule(&state, id).await?;
+    authorize_rule(&state, &principal, &stored, cap!("alert_history", Create)).await?;
     evaluate_one(&state, id, Lock::Wait, Kek::from_env().as_ref())
         .await?
         .map(Json)
@@ -877,7 +1209,7 @@ async fn evaluate_rule(
     else {
         return Ok(None);
     };
-    let reading = read_signal(state, &unlocked.signal, unlocked.window_secs).await;
+    let reading = read_signal(state, &unlocked).await;
 
     let mut tx = pool(state)
         .begin()
@@ -890,7 +1222,7 @@ async fn evaluate_rule(
     // edited meanwhile
     let channel: Option<ChannelTarget> = match unlocked.channel_id {
         Some(channel_id) => sqlx::query_as(
-            "select id, endpoint, enabled, secret_ciphertext, secret_nonce from alert_channels where id=$1 for key share",
+            "select id, endpoint, enabled, secret_ciphertext, secret_nonce, org_id from alert_channels where id=$1 for key share",
         )
         .bind(channel_id)
         .fetch_optional(&mut *tx)
@@ -920,6 +1252,7 @@ async fn evaluate_rule(
     // matches the missing channel and is evaluated as no channel
     let edited = rule.signal != unlocked.signal
         || rule.window_secs != unlocked.window_secs
+        || rule.scope_id != unlocked.scope_id
         || rule.channel_id != channel.as_ref().map(|c| c.id);
     // another evaluation started after this one and has already recorded its
     // reading, which this older one must not overwrite
@@ -935,6 +1268,10 @@ async fn evaluate_rule(
         )));
     }
 
+    // the API only lets a rule name a channel of its own org or a deployment
+    // one, and this holds the line if a row got past it: a channel of another
+    // org is treated as no channel, so a scoped rule's numbers never reach it
+    let channel = channel.filter(|channel| channel_reaches(channel.org_id, rule.org_id));
     let value = match reading {
         Ok(value) => value,
         Err(reason) => {
@@ -1143,18 +1480,31 @@ fn retry_delay(failures: usize) -> chrono::Duration {
 ///
 /// `Ok(None)` is a window with no data, for a signal that can lack it (see
 /// [`can_lack_data`]); any other empty window reads `0`.
-async fn read_signal(
-    state: &ControlState,
-    signal: &str,
-    window_secs: i32,
-) -> Result<Option<f64>, SignalError> {
+async fn read_signal(state: &ControlState, rule: &Rule) -> Result<Option<f64>, SignalError> {
     let Some(ch) = state.clickhouse.as_ref() else {
         return Err(SignalError::new(
             error_code::CLICKHOUSE_NOT_CONFIGURED,
             "alert evaluation requires CLICKHOUSE_URL",
         ));
     };
-    read_signal_from(ch, signal, window_secs).await
+    // a scoped rule whose team, project, key... was deleted would read an empty
+    // window, which for `below request_volume` is a standing false alarm
+    let scope = match (rule.scope_type.as_deref(), rule.scope_id) {
+        (Some(scope_type), Some(scope_id)) => {
+            if ScopeChain::from_scope(pool(state), scope_type, scope_id)
+                .await
+                .is_err()
+            {
+                return Err(SignalError::new(
+                    error_code::SCOPE_GONE,
+                    "the scope this rule watches no longer exists",
+                ));
+            }
+            Some((scope_type, scope_id))
+        }
+        _ => None,
+    };
+    read_signal_from(ch, &rule.signal, rule.window_secs, scope).await
 }
 
 /// [`read_signal`] against a given ClickHouse client.
@@ -1162,13 +1512,19 @@ async fn read_signal_from(
     ch: &crate::analytics::ClickHouseClient,
     signal: &str,
     window_secs: i32,
+    scope: Option<(&str, Uuid)>,
 ) -> Result<Option<f64>, SignalError> {
-    let sql = metric_sql(signal, window_secs).map_err(|_| SignalError {
+    let column = scope.and_then(|(scope_type, _)| scope_column(scope_type));
+    // the scope id is bound as a query parameter, never spliced into the sql
+    let params: Vec<(String, String)> = scope
+        .map(|(_, id)| vec![("param_scope_id".to_string(), id.to_string())])
+        .unwrap_or_default();
+    let sql = metric_sql_scoped(signal, window_secs, column).map_err(|_| SignalError {
         code: error_code::UNKNOWN_SIGNAL,
         params: Some(serde_json::json!({ "signal": signal })),
         message: format!("unknown signal '{signal}'"),
     })?;
-    let rows = match tokio::time::timeout(QUERY_TIMEOUT, ch.query(&sql, &[])).await {
+    let rows = match tokio::time::timeout(QUERY_TIMEOUT, ch.query(&sql, &params)).await {
         Ok(Ok(rows)) => rows,
         Ok(Err(error)) => {
             tracing::warn!(
@@ -1236,13 +1592,25 @@ fn describe_query_error(error: &anyhow::Error) -> SignalError {
     SignalError::new(error_code::CLICKHOUSE_ERROR, "analytics query failed")
 }
 
+#[cfg(test)]
 fn metric_sql(signal: &str, window_secs: i32) -> ApiResult<String> {
+    metric_sql_scoped(signal, window_secs, None)
+}
+
+/// [`metric_sql`] narrowed to the rows whose `column` equals the bound
+/// `scope_id` parameter, for a rule that watches one scope rather than the
+/// deployment (#1829).
+fn metric_sql_scoped(signal: &str, window_secs: i32, column: Option<&str>) -> ApiResult<String> {
     let window = window_secs.clamp(60, 86_400);
     let expression = match signal {
         // a ratio of weighted counts: each kept row stands for `sample_weight`
         // real requests, so a rate change inside the window cannot skew it
-        "error_rate" => "if(sum(sample_weight) = 0, 0, sumIf(sample_weight, status >= 500) / sum(sample_weight))".to_string(),
-        "p95_latency_ms" => "if(count() = 0, 0, quantile(0.95)(latency_ms))".to_string(),
+        // server-side failures: 5xx plus status 0, a request that never got an
+        // answer (#3294). 4xx stays out, it is the caller's own mistake and a
+        // rule on it would page on a client bug
+        "error_rate" => "if(sum(sample_weight) = 0, 0, sumIf(sample_weight, status = 0 or status >= 500) / sum(sample_weight))".to_string(),
+        // weighted by the row's sample weight like the other signals (#3355)
+        "p95_latency_ms" => format!("if(count() = 0, 0, {})", crate::analytics::P95_LATENCY),
         "spend_velocity" => format!("sum(cost_usd * sample_weight) * 3600 / {window}"),
         "request_volume" => "sum(sample_weight)".to_string(),
         "provider_health_flaps" => "countIf(outcome != 'ok')".to_string(),
@@ -1253,11 +1621,16 @@ fn metric_sql(signal: &str, window_secs: i32) -> ApiResult<String> {
     } else {
         "request_logs"
     };
+    // the column comes from `scope_column`'s fixed list, the value is a bound
+    // parameter
+    let scope = column
+        .map(|column| format!(" and {column} = {{scope_id:String}}"))
+        .unwrap_or_default();
     // samples stays a plain row count: it only says whether the window held
     // any logged row, which the weights must not inflate. provider_health_events
     // is not sampled and has no weight column
     // samples as a float: ClickHouse quotes a 64-bit integer in JSON output
-    Ok(format!("select toFloat64({expression}) as value, toFloat64(count()) as samples from {table} where ts >= now64(3) - interval {window} second format JSON"))
+    Ok(format!("select toFloat64({expression}) as value, toFloat64(count()) as samples from {table} where ts >= now64(3) - interval {window} second{scope} format JSON"))
 }
 
 /// The channel columns delivery needs, secret included. Never serialized.
@@ -1268,6 +1641,8 @@ struct ChannelTarget {
     enabled: bool,
     secret_ciphertext: Option<Vec<u8>>,
     secret_nonce: Option<Vec<u8>>,
+    /// owning org; null for a deployment channel
+    org_id: Option<Uuid>,
 }
 
 /// One history row's `delivery_status`, `detail` and its stable code.
@@ -1661,9 +2036,13 @@ fn delivery_client(egress: &Arc<EgressPolicy>) -> Option<reqwest::Client> {
         .ok()
 }
 
+/// Record an alert change in the audit log of the org that owns the row, or in
+/// the deployment's alone (`org: None`) for a deployment-wide channel or rule,
+/// so an org admin's changes show in their own org's log and export (#1829).
 async fn audit(
     state: &ControlState,
     principal: &Principal,
+    org: Option<Uuid>,
     action: &str,
     target: Uuid,
     detail: serde_json::Value,
@@ -1671,7 +2050,7 @@ async fn audit(
     let actor = principal.account_id();
     if let Err(error) = AuditLogRepo(pool(state))
         .create(
-            None,
+            org,
             actor,
             action,
             Some("alerting"),
@@ -1701,6 +2080,8 @@ mod tests {
 
     fn rule(signal: &str, threshold: f64, window_secs: i32) -> RuleInput {
         RuleInput {
+            scope_type: None,
+            scope_id: None,
             name: "x".into(),
             signal: signal.into(),
             threshold,
@@ -1714,6 +2095,9 @@ mod tests {
 
     fn stored(comparison: &str, no_data: &str) -> Rule {
         Rule {
+            org_id: None,
+            scope_type: None,
+            scope_id: None,
             id: Uuid::nil(),
             name: "r".into(),
             signal: "error_rate".into(),
@@ -1901,6 +2285,7 @@ mod tests {
 
     fn channel(endpoint: &str, managed_secret: Option<String>) -> ChannelInput {
         ChannelInput {
+            org_id: None,
             name: "ops".into(),
             endpoint: endpoint.into(),
             enabled: false,
@@ -1914,6 +2299,7 @@ mod tests {
     async fn a_name_resolving_to_a_denied_address_is_never_contacted() {
         let listener = crate::egress_client::testing::Counter::start().await;
         let channel = ChannelTarget {
+            org_id: None,
             id: Uuid::new_v4(),
             endpoint: listener.url("/hook"),
             enabled: true,
@@ -1966,6 +2352,63 @@ mod tests {
         for signal in SIGNALS {
             assert!(validate_rule(&rule(signal, 0.5, 60)).is_ok());
         }
+    }
+
+    #[test]
+    fn a_rule_notifies_its_own_orgs_channel_or_a_deployment_one_and_no_other() {
+        let a = Some(Uuid::from_u128(1));
+        let b = Some(Uuid::from_u128(2));
+        // channel owner, rule owner, may notify
+        for (channel, rule, expected) in [
+            (None, None, true),
+            (None, a, true),
+            (a, a, true),
+            (a, None, false),
+            (a, b, false),
+            (b, a, false),
+        ] {
+            assert_eq!(
+                channel_reaches(channel, rule),
+                expected,
+                "{channel:?} {rule:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_scoped_rule_reads_only_its_scope_through_a_bound_parameter() {
+        for (scope, column) in [
+            ("org", "org_id"),
+            ("team", "team_id"),
+            ("project", "project_id"),
+            ("virtual_key", "virtual_key_id"),
+            ("business_unit", "business_unit_id"),
+            ("customer", "customer_id"),
+        ] {
+            assert_eq!(scope_column(scope), Some(column));
+            let sql = metric_sql_scoped("request_volume", 300, scope_column(scope)).unwrap();
+            assert!(
+                sql.contains(&format!("and {column} = {{scope_id:String}}")),
+                "{sql}"
+            );
+            // the id is never spliced in
+            assert!(!sql.contains("'"), "{sql}");
+        }
+        assert!(scope_column("deployment").is_none());
+        assert!(!metric_sql("request_volume", 300)
+            .unwrap()
+            .contains("scope_id"));
+        // the health stream is keyed by org alone
+        let sql = metric_sql_scoped("provider_health_flaps", 300, Some("org_id")).unwrap();
+        assert!(sql.contains("provider_health_events") && sql.contains("org_id = {scope_id"));
+    }
+
+    #[test]
+    fn the_error_rate_counts_server_failures_and_requests_without_a_status() {
+        let sql = metric_sql("error_rate", 300).unwrap();
+        // status 0 never got an answer; a 4xx is the caller's own mistake
+        assert!(sql.contains("status = 0 or status >= 500"), "{sql}");
+        assert!(!sql.contains("status >= 400"), "{sql}");
     }
 
     #[test]
@@ -2192,6 +2635,9 @@ mod tests {
     #[test]
     fn the_payload_carries_the_rule_the_reading_and_a_summary() {
         let rule = Rule {
+            org_id: None,
+            scope_type: None,
+            scope_id: None,
             id: Uuid::nil(),
             name: "high error rate".into(),
             signal: "error_rate".into(),
@@ -2468,6 +2914,146 @@ mod tests {
                 .await
                 .expect("the evaluation succeeds")
                 .expect("the rule exists")
+        }
+
+        /// The API refuses a rule that names another org's channel, and the
+        /// evaluator holds the line if a row got past it (#1829): the channel
+        /// of another org is treated as no channel, so nothing is delivered
+        /// and the transition is recorded as skipped.
+        #[tokio::test]
+        async fn a_channel_of_another_org_is_never_delivered_to_even_if_a_rule_names_it() {
+            let Some(db) = scratch().await else { return };
+            let stub = Stub::start().await;
+            let state = state_with(&db, &stub);
+            let mut orgs = Vec::new();
+            for slug in ["mine", "theirs"] {
+                let org: Uuid = sqlx::query_scalar(
+                    "insert into orgs (name, slug) values ($1, $1) returning id",
+                )
+                .bind(slug)
+                .fetch_one(db.pool())
+                .await
+                .expect("insert an org");
+                orgs.push(org);
+            }
+            let theirs = add_channel(&db, &stub.hook_url(), true, false).await;
+            sqlx::query("update alert_channels set org_id = $2 where id = $1")
+                .bind(theirs)
+                .bind(orgs[1])
+                .execute(db.pool())
+                .await
+                .expect("give the channel an owner");
+            // the rule belongs to the other org, and the channel is put on it by
+            // SQL, the way the API would never allow
+            let id = add_rule(&db, Some(theirs)).await;
+            sqlx::query(
+                "update alert_rules set org_id = $2, scope_type = 'org', scope_id = $2 where id = $1",
+            )
+            .bind(id)
+            .bind(orgs[0])
+            .execute(db.pool())
+            .await
+            .expect("scope the rule to the first org");
+
+            stub.read(0.9);
+            let evaluation = run(&state, id, None).await;
+            assert_eq!(evaluation.rule.state, "firing");
+            assert!(!evaluation.notified);
+            assert!(
+                stub.hooks().is_empty(),
+                "nothing reached the other org's channel"
+            );
+            let rows = history(&db, id).await;
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0].1, "skipped");
+        }
+
+        /// #3361: the rules read for a scoped caller are chosen by their reach in
+        /// SQL, so another org's rules are never loaded, however many there are.
+        #[tokio::test]
+        async fn only_the_rules_inside_the_reach_are_read() {
+            let Some(db) = scratch().await else { return };
+            let pool = db.pool();
+            let mut orgs = Vec::new();
+            for slug in ["mine", "theirs"] {
+                let org: Uuid = sqlx::query_scalar(
+                    "insert into orgs (name, slug) values ($1, $1) returning id",
+                )
+                .bind(slug)
+                .fetch_one(pool)
+                .await
+                .expect("insert an org");
+                let team: Uuid = sqlx::query_scalar(
+                    "insert into teams (org_id, name) values ($1, 'core') returning id",
+                )
+                .bind(org)
+                .fetch_one(pool)
+                .await
+                .expect("insert a team");
+                let project: Uuid = sqlx::query_scalar(
+                    "insert into projects (team_id, name) values ($1, 'app') returning id",
+                )
+                .bind(team)
+                .fetch_one(pool)
+                .await
+                .expect("insert a project");
+                orgs.push((org, team, project));
+            }
+            let add = |name: String, org: Uuid, scope: (&'static str, Uuid)| {
+                sqlx::query(
+                    "insert into alert_rules (name, signal, threshold, window_secs, org_id, scope_type, scope_id) \
+                     values ($1, 'error_rate', 0.5, 300, $2, $3, $4)",
+                )
+                .bind(name)
+                .bind(org)
+                .bind(scope.0)
+                .bind(scope.1)
+                .execute(pool)
+            };
+            let (org_a, team_a, project_a) = orgs[0];
+            let (org_b, team_b, project_b) = orgs[1];
+            add("a org".into(), org_a, ("org", org_a)).await.unwrap();
+            add("a team".into(), org_a, ("team", team_a)).await.unwrap();
+            add("a project".into(), org_a, ("project", project_a))
+                .await
+                .unwrap();
+            for i in 0..25 {
+                add(format!("b project {i}"), org_b, ("project", project_b))
+                    .await
+                    .unwrap();
+            }
+            add("b team".into(), org_b, ("team", team_b)).await.unwrap();
+            // a deployment rule belongs to nobody's reach
+            add_rule(&db, None).await;
+
+            let stub = Stub::start().await;
+            let state = state_with(&db, &stub);
+            let names = |rules: Vec<Rule>| -> Vec<String> {
+                rules.into_iter().map(|rule| rule.name).collect()
+            };
+            // an org admin reads their org's rules and nothing else
+            let rules = rules_in_reach(&state, &[ScopeChain::org(org_a)])
+                .await
+                .unwrap();
+            assert_eq!(names(rules), ["a org", "a project", "a team"]);
+            // a team admin reads the team's, and the projects inside it
+            let team = ScopeChain {
+                org: Some(org_a),
+                team: Some(team_a),
+                project: None,
+            };
+            let rules = rules_in_reach(&state, &[team]).await.unwrap();
+            assert_eq!(names(rules), ["a project", "a team"]);
+            // a project admin reads that project's alone
+            let project = ScopeChain {
+                org: Some(org_a),
+                team: Some(team_a),
+                project: Some(project_a),
+            };
+            let rules = rules_in_reach(&state, &[project]).await.unwrap();
+            assert_eq!(names(rules), ["a project"]);
+            // and no reach reads nothing
+            assert!(rules_in_reach(&state, &[]).await.unwrap().is_empty());
         }
 
         #[tokio::test]

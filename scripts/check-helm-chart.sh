@@ -4,7 +4,7 @@
 # `helm-render` prek hook runs `all`, so a chart edit fails locally with the
 # message CI would print (#2191).
 #
-#   bash scripts/check-helm-chart.sh [all|defaults|no-preflight|all-preflight|update-check|preflight]
+#   bash scripts/check-helm-chart.sh [all|defaults|no-preflight|all-preflight|update-check|image-tags|preflight]
 #
 # `all` (the default) also runs `helm lint`. without helm on PATH `all` skips
 # with a notice, since CI is the authority; naming a case needs helm and fails.
@@ -15,6 +15,7 @@ cd "$(dirname "$0")/.."
 chart=charts/rolter
 strict="uv run --script scripts/check-rendered-manifests.py"
 update_check="uv run --script scripts/check-chart-update-check.py"
+image_tags="uv run --script scripts/check-chart-image-tags.py"
 
 render_defaults() {
     helm template ci "$chart" | $strict
@@ -39,6 +40,19 @@ render_all_preflight() {
 render_update_check() {
     helm template ci "$chart" | $update_check true
     helm template ci "$chart" --set control.updateCheck=false | $update_check false
+}
+
+# the control plane and the gateways are tagged apart (#3352): by default both
+# run `image.tag`, or the appVersion when that is empty, and a component's own
+# tag moves that component alone, preflight initContainer included
+render_image_tags() {
+    local app
+    app="$(sed -n 's/^appVersion: *"\{0,1\}\([^"]*\)"\{0,1\}$/\1/p' "$chart/Chart.yaml")"
+    helm template ci "$chart" | $image_tags "$app" "$app"
+    helm template ci "$chart" --set image.tag=9.9.9 | $image_tags 9.9.9 9.9.9
+    helm template ci "$chart" --set image.tag=9.9.9 --set gateway.image.tag=9.8.0 \
+        | $image_tags 9.9.9 9.8.0
+    helm template ci "$chart" --set control.image.tag=9.9.9 | $image_tags 9.9.9 "$app"
 }
 
 # the default values plus the secrets and datastores an operator must supply:
@@ -88,12 +102,14 @@ case "$case_name" in
         render_no_preflight
         render_all_preflight
         render_update_check
+        render_image_tags
         if [ -n "${ROLTER_BIN:-}" ]; then render_preflight; fi
         ;;
     defaults) render_defaults ;;
     no-preflight) render_no_preflight ;;
     all-preflight) render_all_preflight ;;
     update-check) render_update_check ;;
+    image-tags) render_image_tags ;;
     preflight) render_preflight ;;
     *)
         echo "unknown case: $case_name" >&2

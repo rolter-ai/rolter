@@ -98,6 +98,7 @@
             "group": "Reliability",
             "pages": [
               "reliability/retries-and-cooldowns",
+              "reliability/fallback-targets",
               "reliability/circuit-breakers",
               "reliability/health-checks",
               "reliability/performance-tuning"
@@ -115,6 +116,7 @@
               "security/user-provisioning",
               "security/mcp-oauth",
               "security/guardrails",
+              "security/semantic-guard-policies",
               "security/pii-sanitizer",
               "security/budgets-and-rate-limits",
               "security/cost-attribution"
@@ -138,6 +140,7 @@
             "group": "Deployment",
             "pages": [
               "deployment/docker",
+              "deployment/helm",
               "deployment/verify-images",
               "deployment/production",
               "deployment/cluster",
@@ -180,6 +183,7 @@
               "api/tenancy",
               "api/member-management",
               "api/org-projects",
+              "api/org-virtual-keys",
               "api/teams",
               "api/deployment-users",
               "api/api-tokens",

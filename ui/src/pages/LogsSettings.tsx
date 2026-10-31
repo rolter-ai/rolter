@@ -444,7 +444,12 @@ function LogsSettingsScreen() {
           addLabel={t("pages.logsSettings.picker.addModel")}
           placeholder={t("pages.logsSettings.onlyModelsPlaceholder")}
           selected={form.models}
-          options={(seenModels.data ?? []).map((row) => ({ value: row.model, label: row.model }))}
+          // one row per organization's model (#3486): a name two organizations
+          // share is one option, since the capture filter matches names
+          options={[...new Set((seenModels.data ?? []).map((row) => row.model))].map((model) => ({
+            value: model,
+            label: model,
+          }))}
           // a model that has not carried traffic yet is still a fair thing to
           // capture, so a name outside the list is accepted and only marked
           allowCustom

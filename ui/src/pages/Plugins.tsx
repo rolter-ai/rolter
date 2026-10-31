@@ -598,6 +598,7 @@ function PluginDialog({
             label={t("pages.plugins.fieldName")}
             htmlFor="plugin-name"
             error={fields.errorOf("name")}
+            markRequired
           >
             <Input
               id="plugin-name"
@@ -627,7 +628,11 @@ function PluginDialog({
           />
         </Field>
         <div className="grid gap-3 sm:grid-cols-2">
-          <Field label={t("pages.plugins.fieldScope")} htmlFor="plugin-scope">
+          <Field
+            label={t("pages.plugins.fieldScope")}
+            info={t("pages.plugins.fieldScopeInfo")}
+            htmlFor="plugin-scope"
+          >
             <Combobox
               id="plugin-scope"
               value={form.project_id}
@@ -638,7 +643,11 @@ function PluginDialog({
               ]}
             />
           </Field>
-          <Field label={t("pages.plugins.fieldStage")} htmlFor="plugin-stage">
+          <Field
+            label={t("pages.plugins.fieldStage")}
+            info={t("pages.plugins.fieldStageInfo")}
+            htmlFor="plugin-stage"
+          >
             <Combobox
               id="plugin-stage"
               aria-describedby={streaming ? streamingNoteId : undefined}
@@ -650,8 +659,10 @@ function PluginDialog({
         </div>
         <Field
           label={t("pages.plugins.fieldEndpoint")}
+          info={t("pages.plugins.fieldEndpointInfo")}
           htmlFor="plugin-endpoint"
           error={fields.errorOf("endpoint")}
+          markRequired
         >
           <Input
             id="plugin-endpoint"
@@ -676,7 +687,11 @@ function PluginDialog({
               onChange={(event) => set({ position: event.target.value })}
             />
           </Field>
-          <Field label={t("pages.plugins.fieldFailure")} htmlFor="plugin-failure">
+          <Field
+            label={t("pages.plugins.fieldFailure")}
+            info={t("pages.plugins.fieldFailureInfo")}
+            htmlFor="plugin-failure"
+          >
             <Combobox
               id="plugin-failure"
               aria-describedby={streaming ? streamingNoteId : undefined}

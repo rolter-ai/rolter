@@ -104,6 +104,11 @@ export interface RouteTargetView {
   /** the model id sent upstream: the target's own, or the route's public name */
   upstream: string;
   weight: number;
+  /**
+   * the failure classes the target is a fallback for (#1584); empty for an
+   * ordinary target. A fallback takes no ordinary traffic, so it has no share
+   */
+  takesOver?: string[];
   health?: TargetHealth | null;
   /**
    * The target's live breaker where the gateways report one that is not
@@ -120,29 +125,57 @@ function grainOf(row: UptimeRow): "provider" | "target" {
 }
 
 /**
+ * The rollup rows of the provider a row of organization `org` names
+ * `provider` by (#3460). Two organizations may each have a provider of one
+ * name, and the rollups answer a series for each (#3441), so a row reaches
+ * its own organization's provider first and a config-file one (`org_id` `""`)
+ * after it, never another organization's: the rule the gateway resolves a
+ * route's targets by. Rows from a control plane that predates `org_id`, and a
+ * caller that does not know the organization (`org` undefined), match on the
+ * name alone, as before.
+ */
+export function providerRows<T extends { provider: string; org_id?: string }>(
+  rows: T[],
+  provider: string,
+  org?: string,
+): T[] {
+  const named = rows.filter((r) => r.provider === provider);
+  if (org === undefined || named.every((r) => r.org_id === undefined)) return named;
+  const own = named.filter((r) => r.org_id === org);
+  return own.length > 0 ? own : named.filter((r) => !r.org_id);
+}
+
+/**
  * The health of one target, or `null` when nothing observed it.
  *
  * Passive rows describe the exact target — the provider plus the model id the
  * gateway sent — so they win. A target with no traffic of its own yet falls
  * back to the provider's probe row, which watches the provider as a whole.
+ * `org` is the organization of the row naming the provider; see
+ * {@link providerRows}.
  */
 export function targetHealth(
   rows: UptimeRow[] | undefined,
   provider: string,
   upstream: string,
   timeline?: TimelineRow[],
+  org?: string,
 ): TargetHealth | null {
   if (!Array.isArray(rows)) return null;
-  const own = rows.find(
-    (r) => r.provider === provider && grainOf(r) === "target" && r.target_id === upstream,
-  );
-  const row = own ?? rows.find((r) => r.provider === provider && grainOf(r) === "provider");
+  const mine = providerRows(rows, provider, org);
+  const own = mine.find((r) => grainOf(r) === "target" && r.target_id === upstream);
+  const row = own ?? mine.find((r) => grainOf(r) === "provider");
   if (!row) return null;
   const breached = row.sla_breached === 1;
   // without the timeline there is no recent window, so only the rollup speaks
   const burn = Array.isArray(timeline)
     ? recentBurn(
-        timeline.filter((b) => b.provider === row.provider && b.target_id === row.target_id),
+        timeline.filter(
+          (b) =>
+            b.provider === row.provider &&
+            b.target_id === row.target_id &&
+            (b.org_id ?? "") === (row.org_id ?? ""),
+        ),
         recentSince(timeline),
       )
     : undefined;
@@ -154,23 +187,28 @@ export function targetHealth(
  *
  * `health` is left off when the uptime rollup was not read, so a screen can
  * tell "no health data for this target" from "health was never asked for".
+ * `org` is the organization that owns the route, `""` for a config-file
+ * route: its breakers and its providers' health are its own, never those of
+ * another organization's route or provider of the same name (#3460).
  */
 export function targetViews(
   route: Pick<RouteDto, "model" | "targets">,
   uptime?: UptimeRow[],
   timeline?: TimelineRow[],
   breakers?: Pick<BreakerStateDto, "targets">,
+  org?: string,
 ): RouteTargetView[] {
   return (route.targets ?? []).map((tg, i) => {
     const upstream = tg.model || route.model;
     // matched on the route's own target list, whose order the gateway reports
-    const breaker = breakerFor(breakers, route.model, i);
+    const breaker = breakerFor(breakers, route.model, i, org);
     return {
       provider: tg.provider,
       upstream,
       weight: tg.weight,
+      takesOver: tg.takes_over ?? [],
       ...(breaker && breaker.state !== "closed" ? { breaker } : {}),
-      ...(uptime ? { health: targetHealth(uptime, tg.provider, upstream, timeline) } : {}),
+      ...(uptime ? { health: targetHealth(uptime, tg.provider, upstream, timeline, org) } : {}),
     };
   });
 }

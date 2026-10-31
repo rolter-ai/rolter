@@ -5,7 +5,9 @@ import { McpLibrary, McpSettings, ToolGroups } from "./McpManagement";
 import {
   GROUPS,
   Harness,
+  KEY,
   LIBRARY,
+  PROJECT,
   SERVERS,
   SETTINGS,
   Toasts,
@@ -25,6 +27,7 @@ import {
   expectSkeleton,
   Harness as GatedHarness,
   json,
+  pending,
   recording,
 } from "./story-harness";
 
@@ -251,6 +254,310 @@ export const ToolGroupSelectsTools: Story = {
   },
 };
 
+// #3295: a group can be narrowed to teams, projects or single keys (#3380). The
+// whole set is sent on save
+const keyAssignment = (id: string) => ({
+  group_id: "group-1",
+  subject_kind: "virtual_key",
+  subject_id: id,
+  created_at: "2026-01-01T00:00:00Z",
+});
+const assignmentsRecorded = recording(
+  routed({
+    groups: async (_input, init) => json(init?.method === "PUT" ? GROUPS[0] : GROUPS),
+    assignments: async (_input, init) =>
+      init?.method === "PUT" ? json([]) : json([keyAssignment(KEY.id)]),
+  }),
+);
+export const ToolGroupAssignsTeamsAndKeepsKeyAssignments: Story = {
+  render: () => (
+    <Harness fetchStub={assignmentsRecorded.stub}>
+      <ToolGroups />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const narrowed = await canvas.findByText("Assigned callers only");
+    await waitFor(() => expect(narrowed).toBeVisible());
+    await userEvent.click(
+      await canvas.findByRole("button", { name: "Configure tool group Triage" }),
+    );
+    const body = within(document.body);
+    // the stored key assignment is shown as picked, under its project
+    const key = await body.findByRole("group", { name: "Keys of Platform / Gateway" });
+    await expect(within(key).getByRole("button", { name: "ci runner" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    await userEvent.click(await body.findByRole("button", { name: "Platform" }));
+    await userEvent.click(body.getByRole("button", { name: "Save group" }));
+    await expect(
+      await assignmentsRecorded.expectSentBody("PUT", "/tool-groups/group-1/assignments"),
+    ).toEqual({
+      assignments: [
+        { kind: "team", id: "team-1" },
+        { kind: "virtual_key", id: "key-9" },
+      ],
+    });
+  },
+};
+// #3380: a key is added to a group from the dialog, and taken off again
+const keyAdded = recording(
+  routed({
+    groups: async (_input, init) => json(init?.method === "PUT" ? GROUPS[0] : GROUPS),
+    assignments: async () => json([]),
+  }),
+);
+export const ToolGroupAssignsASingleKey: Story = {
+  render: () => (
+    <Harness fetchStub={keyAdded.stub}>
+      <ToolGroups />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await userEvent.click(
+      await within(canvasElement).findByRole("button", { name: "Configure tool group Triage" }),
+    );
+    const body = within(document.body);
+    await userEvent.click(await body.findByRole("button", { name: "ci runner" }));
+    await userEvent.click(body.getByRole("button", { name: "Save group" }));
+    await expect(await keyAdded.expectSentBody("PUT", "/tool-groups/group-1/assignments")).toEqual({
+      assignments: [{ kind: "virtual_key", id: "key-9" }],
+    });
+  },
+};
+const keyRemoved = recording(
+  routed({
+    groups: async (_input, init) => json(init?.method === "PUT" ? GROUPS[0] : GROUPS),
+    assignments: async (_input, init) =>
+      init?.method === "PUT" ? json([]) : json([keyAssignment(KEY.id), keyAssignment("key-gone")]),
+  }),
+);
+export const ToolGroupRemovesAKeyAndDropsADeletedOne: Story = {
+  render: () => (
+    <Harness fetchStub={keyRemoved.stub}>
+      <ToolGroups />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await userEvent.click(
+      await within(canvasElement).findByRole("button", { name: "Configure tool group Triage" }),
+    );
+    const body = within(document.body);
+    const key = await body.findByRole("button", { name: "ci runner" });
+    await waitFor(() => expect(key).toHaveAttribute("aria-pressed", "true"));
+    await userEvent.click(key);
+    await userEvent.click(body.getByRole("button", { name: "Save group" }));
+    // the unticked key and the one that no longer exists are both gone
+    await expect(
+      await keyRemoved.expectSentBody("PUT", "/tool-groups/group-1/assignments"),
+    ).toEqual({ assignments: [] });
+  },
+};
+// a key list that cannot be read is said so, and what is stored is kept
+const keysUnread = recording(
+  routed({
+    groups: async (_input, init) => json(init?.method === "PUT" ? GROUPS[0] : GROUPS),
+    assignments: async (_input, init) =>
+      init?.method === "PUT" ? json([]) : json([keyAssignment(KEY.id)]),
+    keys: async () => json({ error: { message: "boom" } }, 500),
+  }),
+);
+export const ToolGroupKeysUnreadableKeepsStoredKeys: Story = {
+  render: () => (
+    <Harness fetchStub={keysUnread.stub}>
+      <ToolGroups />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await userEvent.click(
+      await within(canvasElement).findByRole("button", { name: "Configure tool group Triage" }),
+    );
+    const body = within(document.body);
+    const unread = await body.findByText(/virtual keys could not be read/);
+    await waitFor(() => expect(unread).toBeVisible());
+    await userEvent.click(await body.findByRole("button", { name: "Platform" }));
+    await userEvent.click(body.getByRole("button", { name: "Save group" }));
+    await expect(
+      await keysUnread.expectSentBody("PUT", "/tool-groups/group-1/assignments"),
+    ).toEqual({
+      assignments: [
+        { kind: "team", id: "team-1" },
+        { kind: "virtual_key", id: "key-9" },
+      ],
+    });
+  },
+};
+export const ToolGroupKeysLoading: Story = {
+  render: () => (
+    <Harness fetchStub={routed({ keys: pending })}>
+      <ToolGroups />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await userEvent.click(
+      await within(canvasElement).findByRole("button", { name: "Configure tool group Triage" }),
+    );
+    const reading = await within(document.body).findByText("Reading the virtual keys…");
+    await waitFor(() => expect(reading).toBeVisible());
+  },
+};
+export const ToolGroupWithoutKeys: Story = {
+  render: () => (
+    <Harness fetchStub={routed({ keys: async () => json([]) })}>
+      <ToolGroups />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await userEvent.click(
+      await within(canvasElement).findByRole("button", { name: "Configure tool group Triage" }),
+    );
+    const none = await within(document.body).findByText("No virtual keys to assign yet.");
+    await waitFor(() => expect(none).toBeVisible());
+  },
+};
+// #3467: the keys of every project arrive in one request, however many
+// projects there are, and sit under the project each names
+const SECOND_PROJECT = { ...PROJECT, id: "project-2", name: "Batch" };
+const SECOND_KEY = { ...KEY, id: "key-10", project_id: SECOND_PROJECT.id, name: "nightly" };
+const keysInOneRead = recording(async (input, init) => {
+  const url = String(input);
+  if (url.endsWith("/projects")) return json([PROJECT, SECOND_PROJECT]);
+  return routed({
+    assignments: async () => json([]),
+    keys: async () => json([KEY, SECOND_KEY]),
+  })(input, init);
+});
+export const ToolGroupReadsEveryKeyInOneRequest: Story = {
+  render: () => (
+    <Harness fetchStub={keysInOneRead.stub}>
+      <ToolGroups />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await userEvent.click(
+      await within(canvasElement).findByRole("button", { name: "Configure tool group Triage" }),
+    );
+    const body = within(document.body);
+    const first = await body.findByRole("group", { name: "Keys of Platform / Gateway" });
+    const second = await body.findByRole("group", { name: "Keys of Platform / Batch" });
+    await expect(within(first).getByRole("button", { name: "ci runner" })).toBeVisible();
+    await expect(within(second).getByRole("button", { name: "nightly" })).toBeVisible();
+    // one read of the organization's keys, not one per project
+    const reads = keysInOneRead.calls.filter((call) => call.url.includes("/virtual-keys"));
+    await expect(reads.map((call) => call.url)).toHaveLength(1);
+    await expect(reads[0].url).toMatch(/\/orgs\/[^/]+\/virtual-keys$/);
+  },
+};
+// a caller whose role refuses the key list is told so, and what is stored stays
+const keysRefused = recording(
+  routed({
+    groups: async (_input, init) => json(init?.method === "PUT" ? GROUPS[0] : GROUPS),
+    assignments: async (_input, init) =>
+      init?.method === "PUT" ? json([]) : json([keyAssignment(KEY.id)]),
+    keys: async () => json({ error: { message: "insufficient role" } }, 403),
+  }),
+);
+export const ToolGroupKeysRefusedKeepsStoredKeys: Story = {
+  render: () => (
+    <Harness fetchStub={keysRefused.stub}>
+      <ToolGroups />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await userEvent.click(
+      await within(canvasElement).findByRole("button", { name: "Configure tool group Triage" }),
+    );
+    const body = within(document.body);
+    const refused = await body.findByText(/does not let you list virtual keys/);
+    await waitFor(() => expect(refused).toBeVisible());
+    await expect(body.queryByText(/virtual keys could not be read/)).toBeNull();
+    await userEvent.click(await body.findByRole("button", { name: "Platform" }));
+    await userEvent.click(body.getByRole("button", { name: "Save group" }));
+    await expect(
+      await keysRefused.expectSentBody("PUT", "/tool-groups/group-1/assignments"),
+    ).toEqual({
+      assignments: [
+        { kind: "team", id: "team-1" },
+        { kind: "virtual_key", id: "key-9" },
+      ],
+    });
+  },
+};
+// an unreadable assignment list must not turn into an editor that saves an
+// empty set over the stored one
+export const ToolGroupWithoutReadableAssignmentsOffersNoEditor: Story = {
+  render: () => (
+    <Harness
+      fetchStub={routed({
+        assignments: async () => json({ error: { message: "boom" } }, 500),
+      })}
+    >
+      <ToolGroups />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(
+      await canvas.findByRole("button", { name: "Configure tool group Triage" }),
+    );
+    const body = within(document.body);
+    const unread = await body.findByText(/could not be read/);
+    await waitFor(() => expect(unread).toBeVisible());
+    await expect(body.queryByRole("button", { name: "Platform" })).toBeNull();
+  },
+};
+
+// the editor must not start from an empty set while the stored one is still on
+// its way: saving then would store nothing and hand a narrowed group to the
+// whole organization
+let releaseAssignments: () => void = () => {};
+const slowAssignments = recording(
+  routed({
+    groups: async (_input, init) => json(init?.method === "PUT" ? GROUPS[0] : GROUPS),
+    assignments: async (_input, init) => {
+      if (init?.method === "PUT") return json([]);
+      await new Promise<void>((resolve) => {
+        releaseAssignments = resolve;
+      });
+      return json([
+        {
+          group_id: "group-1",
+          subject_kind: "team",
+          subject_id: "team-1",
+          created_at: "2026-01-01T00:00:00Z",
+        },
+      ]);
+    },
+  }),
+);
+export const ToolGroupSaveBeforeAssignmentsLoadLeavesThemAlone: Story = {
+  render: () => (
+    <Harness fetchStub={slowAssignments.stub}>
+      <ToolGroups />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(
+      await canvas.findByRole("button", { name: "Configure tool group Triage" }),
+    );
+    const body = within(document.body);
+    // still reading: no editor, and the copy says so rather than "could not be read"
+    const reading = await body.findByText("Reading the current assignments…");
+    await waitFor(() => expect(reading).toBeVisible());
+    await expect(body.queryByText(/could not be read/)).toBeNull();
+    await expect(body.queryByRole("button", { name: "Platform" })).toBeNull();
+    await userEvent.click(body.getByRole("button", { name: "Save group" }));
+    await slowAssignments.expectSent("PUT", "/mcp/tool-groups/group-1");
+    releaseAssignments();
+    // the save is over once the dialog has closed; only then can a follow-up
+    // assignments call have been made, so only then does its absence mean anything
+    await waitFor(() => expect(within(document.body).queryByRole("dialog")).toBeNull());
+    await waitFor(() => slowAssignments.expectNotSent("PUT", "/tool-groups/group-1/assignments"));
+  },
+};
+
 // the group delete was the last window.confirm on this screen, and it could not
 // even name the group it was about (#1179)
 //
@@ -345,6 +652,37 @@ export const SettingsSavesChanges: Story = {
   },
 };
 
+// the deprecated failure policy (#3527) is shown as having no effect and
+// offered as no choice, and a save sends the stored value back untouched
+const failingOpenSaves = recording(async () =>
+  json({ ...SETTINGS, default_failure_mode: "fail_open" }),
+);
+export const SettingsFailurePolicyHasNoEffect: Story = {
+  render: () => (
+    <Harness fetchStub={routed({ settings: failingOpenSaves.stub })}>
+      <Toasts>
+        <McpSettings />
+      </Toasts>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const policy = await canvas.findByRole("group", { name: "Default failure policy" });
+    await expect(within(policy).getByText("No effect")).toBeVisible();
+    await expect(within(policy).getByText(/refuses every request it cannot inspect/)).toBeVisible();
+    await expect(canvas.queryByRole("combobox", { name: "Default failure policy" })).toBeNull();
+    await expect(canvas.queryByText("Fail open")).toBeNull();
+    await userEvent.click(canvas.getByRole("button", { name: "Save MCP settings" }));
+    const sent = await failingOpenSaves.expectSentBody<{ default_failure_mode: string }>(
+      "PUT",
+      "/mcp/settings",
+    );
+    await expect(sent.default_failure_mode).toBe("fail_open");
+    await waitFor(() =>
+      expect(within(document.body).getByText("MCP settings saved")).toBeVisible(),
+    );
+  },
+};
 // a tool group is its own resource, so the catalog's gates say nothing about it
 export const ToolGroupsGatedForMember: Story = {
   render: () => (
@@ -381,6 +719,22 @@ export const ToolGroupsAllowedForAdmin: Story = {
     await expectAllowed(canvasElement, "Create group");
     await expectAllowed(canvasElement, "Delete tool group Triage");
     await expectAllowed(canvasElement, "Configure tool group Triage");
+  },
+};
+// the assignment chips are gated by their own resource, which an admin holds
+export const ToolGroupAssignmentsAllowedForAdmin: Story = {
+  render: () => (
+    <GatedHarness role="admin" fetchStub={routed()}>
+      <ToolGroups />
+    </GatedHarness>
+  ),
+  play: async ({ canvasElement }) => {
+    await userEvent.click(
+      await within(canvasElement).findByRole("button", { name: "Configure tool group Triage" }),
+    );
+    await within(document.body).findByRole("button", { name: "Platform" });
+    await expectAllowed(document.body, "Platform");
+    await expectAllowed(document.body, "ci runner");
   },
 };
 export const LibraryGatedForMember: Story = {

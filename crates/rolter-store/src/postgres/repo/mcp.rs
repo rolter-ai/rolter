@@ -12,6 +12,7 @@ use rolter_core::{Error, Result};
 
 use super::super::models::{
     McpGatewaySettings, McpLoginState, McpOAuthGrant, McpOAuthSession, McpServer, McpToolGroup,
+    McpToolGroupAssignment,
 };
 use super::support::{fetch_optional_or_not_found, require_affected, store_err};
 
@@ -603,6 +604,19 @@ impl McpServerRepo<'_> {
     }
 }
 
+/// A tool group being created, with the subjects it is assigned to.
+#[derive(Debug, Clone, Copy)]
+pub struct NewMcpToolGroup<'a> {
+    pub org_id: Uuid,
+    pub name: &'a str,
+    pub slug: &'a str,
+    pub description: &'a str,
+    pub enabled: bool,
+    pub tools: &'a serde_json::Value,
+    /// `(kind, subject id)`, written in the group's own transaction
+    pub assignments: &'a [(String, Uuid)],
+}
+
 /// Organization-owned tool-group policy manifests.
 pub struct McpToolGroupRepo<'a>(pub &'a PgPool);
 
@@ -633,16 +647,21 @@ impl McpToolGroupRepo<'_> {
         .await
     }
 
-    pub async fn create(
-        &self,
-        org_id: Uuid,
-        name: &str,
-        slug: &str,
-        description: &str,
-        enabled: bool,
-        tools: &serde_json::Value,
-    ) -> Result<McpToolGroup> {
-        sqlx::query_as(sqlx::AssertSqlSafe(format!(
+    /// Create a group and, in the same transaction, the subjects it is assigned
+    /// to, so a group meant to be narrowed is never visible to a gateway as
+    /// applying to the whole organization (#3295).
+    pub async fn create(&self, new: NewMcpToolGroup<'_>) -> Result<McpToolGroup> {
+        let NewMcpToolGroup {
+            org_id,
+            name,
+            slug,
+            description,
+            enabled,
+            tools,
+            assignments,
+        } = new;
+        let mut tx = self.0.begin().await.map_err(store_err)?;
+        let group: McpToolGroup = sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "insert into mcp_tool_groups (org_id, name, slug, description, enabled, tools) \
              values ($1, $2, $3, $4, $5, $6) returning {MCP_TOOL_GROUP_COLUMNS}"
         )))
@@ -652,9 +671,23 @@ impl McpToolGroupRepo<'_> {
         .bind(description)
         .bind(enabled)
         .bind(tools)
-        .fetch_one(self.0)
+        .fetch_one(&mut *tx)
         .await
-        .map_err(store_err)
+        .map_err(store_err)?;
+        for (kind, subject_id) in assignments {
+            sqlx::query(
+                "insert into mcp_tool_group_assignments (group_id, subject_kind, subject_id) \
+                 values ($1, $2, $3) on conflict do nothing",
+            )
+            .bind(group.id)
+            .bind(kind)
+            .bind(subject_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(store_err)?;
+        }
+        tx.commit().await.map_err(store_err)?;
+        Ok(group)
     }
 
     pub async fn update(
@@ -691,6 +724,87 @@ impl McpToolGroupRepo<'_> {
     }
 }
 
+/// The subjects an MCP tool group is assigned to (#3295).
+pub struct McpToolGroupAssignmentRepo<'a>(pub &'a PgPool);
+
+/// What a tool group can be assigned to.
+pub const MCP_ASSIGNMENT_KINDS: &[&str] = &["virtual_key", "project", "team"];
+
+impl McpToolGroupAssignmentRepo<'_> {
+    /// Every assignment of every group of an organization.
+    pub async fn list_for_org(&self, org_id: Uuid) -> Result<Vec<McpToolGroupAssignment>> {
+        sqlx::query_as(
+            "select a.group_id, a.subject_kind, a.subject_id, a.created_at \
+             from mcp_tool_group_assignments a \
+             join mcp_tool_groups g on g.id = a.group_id \
+             where g.org_id = $1 order by a.group_id, a.subject_kind, a.subject_id",
+        )
+        .bind(org_id)
+        .fetch_all(self.0)
+        .await
+        .map_err(store_err)
+    }
+
+    /// The subjects a group is assigned to now.
+    pub async fn list_for_group(&self, group_id: Uuid) -> Result<Vec<(String, Uuid)>> {
+        sqlx::query_as(
+            "select subject_kind, subject_id from mcp_tool_group_assignments where group_id = $1",
+        )
+        .bind(group_id)
+        .fetch_all(self.0)
+        .await
+        .map_err(store_err)
+    }
+
+    /// Whether `subject_id` is a `kind` that belongs to the organization. A key
+    /// and a project belong to it through their team.
+    pub async fn subject_in_org(&self, kind: &str, subject_id: Uuid, org_id: Uuid) -> Result<bool> {
+        let sql = match kind {
+            "team" => "select 1 from teams where id = $1 and org_id = $2",
+            "project" => {
+                "select 1 from projects p join teams t on t.id = p.team_id \
+                 where p.id = $1 and t.org_id = $2"
+            }
+            "virtual_key" => {
+                "select 1 from virtual_keys k join projects p on p.id = k.project_id \
+                 join teams t on t.id = p.team_id where k.id = $1 and t.org_id = $2"
+            }
+            _ => return Ok(false),
+        };
+        let found: Option<i32> = sqlx::query_scalar(sql)
+            .bind(subject_id)
+            .bind(org_id)
+            .fetch_optional(self.0)
+            .await
+            .map_err(store_err)?;
+        Ok(found.is_some())
+    }
+
+    /// Replace the whole assignment set of a group in one transaction, so a
+    /// gateway never loads half of it.
+    pub async fn replace(&self, group_id: Uuid, subjects: &[(String, Uuid)]) -> Result<()> {
+        let mut tx = self.0.begin().await.map_err(store_err)?;
+        sqlx::query("delete from mcp_tool_group_assignments where group_id = $1")
+            .bind(group_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(store_err)?;
+        for (kind, subject_id) in subjects {
+            sqlx::query(
+                "insert into mcp_tool_group_assignments (group_id, subject_kind, subject_id) \
+                 values ($1, $2, $3) on conflict do nothing",
+            )
+            .bind(group_id)
+            .bind(kind)
+            .bind(subject_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(store_err)?;
+        }
+        tx.commit().await.map_err(store_err)
+    }
+}
+
 /// Per-organization MCP gateway defaults.
 pub struct McpGatewaySettingsRepo<'a>(pub &'a PgPool);
 
@@ -708,7 +822,7 @@ pub struct McpGatewaySettingsUpdate<'a> {
 
 impl McpGatewaySettingsRepo<'_> {
     pub async fn get(&self, org_id: Uuid) -> Result<McpGatewaySettings> {
-        sqlx::query_as(
+        let stored: Option<McpGatewaySettings> = sqlx::query_as(
             "select org_id, default_transport, connect_timeout_ms, request_timeout_ms, \
              max_retries, default_failure_mode, allow_unlisted_tools, updated_at \
              from mcp_gateway_settings where org_id = $1",
@@ -716,9 +830,21 @@ impl McpGatewaySettingsRepo<'_> {
         .bind(org_id)
         .fetch_optional(self.0)
         .await
-        .map_err(store_err)
-        .map(|stored| {
-            stored.unwrap_or_else(|| McpGatewaySettings {
+        .map_err(store_err)?;
+        if let Some(stored) = stored {
+            return Ok(stored);
+        }
+        // no row: the defaults, which are not written anywhere so they follow
+        // later changes. whether manifests are enforced is the one thing the
+        // organization carries itself (#3334)
+        let enforcing: Option<bool> =
+            sqlx::query_scalar("select mcp_enforce_manifests from orgs where id = $1")
+                .bind(org_id)
+                .fetch_optional(self.0)
+                .await
+                .map_err(store_err)?;
+        Ok({
+            McpGatewaySettings {
                 org_id,
                 default_transport: "streamable_http".to_string(),
                 connect_timeout_ms: 5_000,
@@ -726,10 +852,12 @@ impl McpGatewaySettingsRepo<'_> {
                 max_retries: 1,
                 default_failure_mode: "fail_closed".to_string(),
                 // what the proxy does for an org with no row (`mcp_policy`):
-                // unlisted tools pass until the org saves settings refusing them
-                allow_unlisted_tools: true,
+                // an org created before #3334 lets unlisted tools pass until
+                // it saves settings refusing them; a newer one refuses them
+                // until it saves settings allowing them
+                allow_unlisted_tools: !enforcing.unwrap_or(false),
                 updated_at: Utc::now(),
-            })
+            }
         })
     }
 

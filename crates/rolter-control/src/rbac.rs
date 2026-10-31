@@ -345,7 +345,9 @@ pub(crate) fn custom_grants_allow(
     chain: ScopeChain,
     requirement: Requirement,
 ) -> bool {
-    let Authority::Role(required) = requirement.authority else {
+    let (Authority::Role(required) | Authority::RoleOrDeployment(required, _)) =
+        requirement.authority
+    else {
         return false;
     };
     let action = action_key(requirement.action);
@@ -430,6 +432,14 @@ pub(crate) async fn authorize(
     };
     let required = match requirement.authority {
         Authority::Role(required) => required,
+        // a deployment role passes at every scope; without one the scoped role
+        // is checked below, exactly as for `Authority::Role` (#3362)
+        Authority::RoleOrDeployment(required, roles) => {
+            if holds_deployment_role(principal, roles) {
+                return Ok(());
+            }
+            required
+        }
         // holding a `Principal` at all means authentication already succeeded,
         // so there is nothing further to check
         Authority::Authenticated => return Ok(()),
@@ -501,7 +511,8 @@ fn authorize_token(
         return Err(ApiError::Forbidden);
     }
     let required = match requirement.authority {
-        Authority::Role(required) => required,
+        // a token holds no deployment role, so the scoped half is all it has
+        Authority::Role(required) | Authority::RoleOrDeployment(required, _) => required,
         Authority::Authenticated => return Ok(()),
         Authority::Superadmin | Authority::Deployment(_) => return Err(ApiError::Forbidden),
     };
@@ -638,6 +649,12 @@ impl ScopeFilter {
             Authority::Deployment(roles) => self
                 .deployment_role
                 .is_some_and(|held| roles.contains(&held)),
+            Authority::RoleOrDeployment(required, roles) => {
+                self.deployment_role
+                    .is_some_and(|held| roles.contains(&held))
+                    || user_authorized(&self.memberships, chain, required)
+                    || custom_grants_allow(&self.grants, chain, requirement)
+            }
             Authority::Role(required) => {
                 user_authorized(&self.memberships, chain, required)
                     || custom_grants_allow(&self.grants, chain, requirement)
@@ -855,6 +872,13 @@ fn holds_deployment_role(principal: &Principal, roles: &[DeploymentRole]) -> boo
             .is_some_and(|held| roles.contains(&held))
 }
 
+/// Whether `principal` is a superadmin or a deployment operator (#1834): the
+/// callers who run every alert rule and channel, whichever org owns it, since
+/// alerting was the operator's before it was delegated to scoped admins (#1829).
+pub(crate) fn is_deployment_operator(principal: &Principal) -> bool {
+    holds_deployment_role(principal, &[DeploymentRole::Operator])
+}
+
 /// Guard for a capability with no tenancy scope to resolve a role in.
 ///
 /// `requirement` comes from [`crate::rbac_matrix::superadmin_cap`], which is a
@@ -867,9 +891,10 @@ pub(crate) fn authorize_superadmin(
     match requirement.authority {
         Authority::Superadmin => require_superadmin(principal),
         Authority::Deployment(roles) if holds_deployment_role(principal, roles) => Ok(()),
-        Authority::Deployment(_) | Authority::Role(_) | Authority::Authenticated => {
-            Err(ApiError::Forbidden)
-        }
+        Authority::Deployment(_)
+        | Authority::Role(_)
+        | Authority::RoleOrDeployment(..)
+        | Authority::Authenticated => Err(ApiError::Forbidden),
     }
 }
 

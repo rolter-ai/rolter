@@ -1,6 +1,6 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import * as React from "react";
-import { createMemoryRouter, RouterProvider, useInRouterContext } from "react-router";
+import { createMemoryRouter, RouterProvider, useInRouterContext, useLocation } from "react-router";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import { Toaster } from "@/components/ui/toaster";
@@ -82,6 +82,19 @@ export const scopeResponse = (url: string): Response | null => {
   }
   return null;
 };
+
+/**
+ * Puts the router's query string where a story can read it: render it beside
+ * the screen and read the address back with {@link addressOf}.
+ */
+export function AddressProbe() {
+  const { search } = useLocation();
+  return <span data-testid="address" data-search={search} hidden />;
+}
+
+/** the address an {@link AddressProbe} in `canvasElement` holds, as parameters */
+export const addressOf = (canvasElement: HTMLElement) =>
+  new URLSearchParams(within(canvasElement).getByTestId("address").dataset.search ?? "");
 
 /** A stub that resolves the scope and then answers `handler`. */
 export function scoped(handler: FetchStub): FetchStub {
@@ -324,7 +337,16 @@ export function withCapabilities(
  *
  * Pass a function to change the answer between checks.
  */
-export type GatewayAnswer = "ready" | "draining" | "unreachable" | "unrecognised" | "pending";
+export type GatewayAnswer =
+  | "ready"
+  | "draining"
+  | "unreachable"
+  | "unrecognised"
+  | "pending"
+  // a managed gateway with no config snapshot applied yet (#3348)
+  | "awaitingSnapshot"
+  // a gateway that cannot read the control plane's snapshot format (ADR-0038)
+  | "snapshotFormatUnsupported";
 
 function gatewayResponse(answer: GatewayAnswer): Promise<Response> {
   const text = (body: string, status: number, type = "text/plain; charset=utf-8") =>
@@ -334,6 +356,10 @@ function gatewayResponse(answer: GatewayAnswer): Promise<Response> {
       return text("ok", 200);
     case "draining":
       return text("draining", 503);
+    case "awaitingSnapshot":
+      return text("awaiting_snapshot", 503);
+    case "snapshotFormatUnsupported":
+      return text("snapshot_format_unsupported", 503);
     case "unreachable":
       return Promise.resolve(
         json({ error: { message: "gateway unreachable: error sending request" } }, 502),
@@ -488,6 +514,139 @@ export function stubClipboard(writeText: (value: string) => Promise<void>): () =
       else Reflect.deleteProperty(navigator, "clipboard");
     };
   };
+}
+
+/** a file a stubbed save dialog handed out, as the page left it */
+export interface SavedFile {
+  suggestedName?: string;
+  /** the file types the dialog was asked to offer, as `showSaveFilePicker` takes them */
+  types?: { description?: string; accept: Record<string, string[]> }[];
+  /** what was written, in order */
+  chunks: Uint8Array[];
+  closed: boolean;
+  aborted: boolean;
+  /** the file was taken away again, as the page does for an export that wrote nothing */
+  removed: boolean;
+}
+
+/**
+ * Stand in for the browser's save dialog (`showSaveFilePicker`, #3434), which
+ * a story cannot answer. Each `files` entry is one file the page opened for
+ * writing. Pass `reject` to answer as a person who closed the dialog.
+ */
+export function stubSavePicker(options: { reject?: boolean } = {}) {
+  const files: SavedFile[] = [];
+  const picker = async (opts: { suggestedName?: string; types?: SavedFile["types"] }) => {
+    if (options.reject) throw new DOMException("closed", "AbortError");
+    const file: SavedFile = {
+      suggestedName: opts.suggestedName,
+      types: opts.types,
+      chunks: [],
+      closed: false,
+      aborted: false,
+      removed: false,
+    };
+    files.push(file);
+    return {
+      // a file the picker just made: nothing in it yet
+      getFile: async () => ({ size: 0 }),
+      remove: async () => {
+        file.removed = true;
+      },
+      createWritable: async () => ({
+        write: async (chunk: Uint8Array) => {
+          file.chunks.push(chunk);
+        },
+        close: async () => {
+          file.closed = true;
+        },
+        abort: async () => {
+          file.aborted = true;
+        },
+      }),
+    };
+  };
+  return {
+    files,
+    /** run `body` with the dialog in the page, or without it when `picker` is `false` */
+    async within(body: () => Promise<void>, installed = true) {
+      const w = window as { showSaveFilePicker?: unknown };
+      const original = Object.getOwnPropertyDescriptor(w, "showSaveFilePicker");
+      // the browser's own sits on the prototype, so "absent" is an own property
+      // that hides it rather than a delete
+      Object.defineProperty(w, "showSaveFilePicker", {
+        value: installed ? picker : undefined,
+        configurable: true,
+      });
+      try {
+        await body();
+      } finally {
+        if (original) Object.defineProperty(w, "showSaveFilePicker", original);
+        else Reflect.deleteProperty(w, "showSaveFilePicker");
+      }
+    },
+  };
+}
+
+/** the text a stubbed file received */
+export function savedText(file: SavedFile): string {
+  const decoder = new TextDecoder();
+  return file.chunks.map((c) => decoder.decode(c, { stream: true })).join("");
+}
+
+/** the download link every stubbed ticket carries */
+export const STORY_DOWNLOAD_URL = "/api/v1/analytics/exports/download/rolter_dl_story";
+
+/**
+ * Answer the export download tickets (#3504) in front of `inner`: the mint
+ * answers `mint` (a ticket by default), and each status read answers the next
+ * of `reads`, the last one repeating. `reads` are the ticket's states, such as
+ * `{ state: "streaming", rows: 1000 }`; `done` is filled in as the control
+ * plane fills it.
+ */
+export function withExportTickets(
+  inner: FetchStub,
+  reads: Record<string, unknown>[],
+  mint: () => Response = () =>
+    json({
+      id: "story-ticket",
+      download_url: STORY_DOWNLOAD_URL,
+      status_url: "/api/v1/analytics/exports/tickets/story-ticket",
+      expires_at: "2026-10-29T12:01:00Z",
+    }),
+): FetchStub {
+  let read = 0;
+  return async (input, init) => {
+    const path = new URL(String(input), "http://localhost").pathname;
+    if (path === "/api/v1/analytics/exports/tickets") return mint();
+    if (path.startsWith("/api/v1/analytics/exports/tickets/")) {
+      const state = reads[Math.min(read, reads.length - 1)]!;
+      read += 1;
+      const done = !["pending", "streaming"].includes(String(state.state));
+      return json({ id: "story-ticket", export: "invocations", expires_at: "", done, ...state });
+    }
+    return inner(input, init);
+  };
+}
+
+/**
+ * Run `body` with every link click captured instead of followed, collecting
+ * each link's `href`: a download the page hands to the browser is a click on a
+ * hidden link, which a story must not let navigate.
+ */
+export async function captureFollowedLinks(
+  links: string[],
+  body: () => Promise<void>,
+): Promise<void> {
+  const original = HTMLAnchorElement.prototype.click;
+  HTMLAnchorElement.prototype.click = function capture(this: HTMLAnchorElement) {
+    links.push(this.getAttribute("href") ?? "");
+  };
+  try {
+    await body();
+  } finally {
+    HTMLAnchorElement.prototype.click = original;
+  }
 }
 
 /**

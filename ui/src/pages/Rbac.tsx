@@ -133,7 +133,10 @@ function cellState(resource: RbacResourceView, action: RbacAction, column: RoleC
   if (!view) return "na";
   // a deployment role (#1834) is held on the account, never at a scope, so no
   // column of this table reaches such a row either
-  if (view.superadmin_only || view.deployment_roles?.length) return "superadmin";
+  // unless it also takes a scoped role (#3362), which the columns below decide
+  if (view.superadmin_only || (view.deployment_roles?.length && view.minimum_role === null)) {
+    return "superadmin";
+  }
   if (view.authenticated_only) return "allowed";
   if (view.minimum_role !== null && column.rank >= RANK[view.minimum_role]) {
     return "allowed";
@@ -169,7 +172,7 @@ function CellMark({
       aria-hidden
       title={title}
       className={cn(
-        "flex items-center justify-center rounded-[6px] border font-mono text-2xs font-semibold",
+        "flex items-center justify-center rounded-sm border font-mono text-2xs font-semibold",
         className,
       )}
       style={CELL_STYLE[state]}
@@ -330,7 +333,7 @@ function MatrixTab({
       </div>
 
       {unknown.length > 0 && (
-        <p className="rounded-[10px] border border-[color:var(--border-subtle)] bg-[color:var(--surface-subtle)] px-3.5 py-2.5 text-xs text-muted-foreground">
+        <p className="rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-subtle)] px-3.5 py-2.5 text-xs text-muted-foreground">
           {t("pages.rbac.unknownGrants", { count: unknown.length })}
         </p>
       )}
@@ -349,7 +352,7 @@ function MatrixTab({
           against the page and widen the document to the table's full width */}
       <div
         tabIndex={0}
-        className="relative overflow-x-auto rounded-[10px] border border-[color:var(--border-subtle)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+        className="relative overflow-x-auto rounded-lg border border-[color:var(--border-subtle)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
       >
         <table className="w-full table-fixed border-collapse text-left" style={{ minWidth }}>
           <caption className="sr-only">{t("pages.rbac.tabs.matrix")}</caption>
@@ -710,7 +713,7 @@ function CustomRolesTab({ matrix, orgId }: { matrix: RbacMatrix; orgId?: string 
           return (
             <div
               key={role.id}
-              className="flex items-start gap-3 rounded-[10px] border border-[color:var(--border-default)] bg-card p-4"
+              className="flex items-start gap-3 rounded-lg border border-[color:var(--border-default)] bg-card p-4"
             >
               <IconFrame className="mt-0.5">
                 <KeySquare className="h-4 w-4" />
@@ -922,7 +925,7 @@ function RoleSheet({
         />
 
         {draft.unknown.length > 0 && (
-          <p className="rounded-[10px] border border-[color:var(--border-subtle)] bg-[color:var(--surface-subtle)] px-3.5 py-2.5 text-xs text-muted-foreground">
+          <p className="rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-subtle)] px-3.5 py-2.5 text-xs text-muted-foreground">
             {t("pages.rbac.custom.unknownCarried", { count: draft.unknown.length })}
           </p>
         )}
@@ -969,7 +972,7 @@ function GrantGrid({
         aria-label={t("pages.rbac.custom.filterPlaceholder")}
         onChange={(e) => setFilter(e.target.value)}
       />
-      <div className="max-h-[420px] overflow-y-auto rounded-[10px] border border-[color:var(--border-subtle)]">
+      <div className="max-h-[420px] overflow-y-auto rounded-lg border border-[color:var(--border-subtle)]">
         {matching.length === 0 && (
           <p className="px-3.5 py-6 text-center text-xs text-muted-foreground">
             {t("pages.rbac.custom.noResources")}
@@ -1016,7 +1019,9 @@ function GrantGrid({
                       </span>
                     );
                   }
-                  const deploymentWide = view.superadmin_only || !!view.deployment_roles?.length;
+                  const deploymentWide =
+                    view.superadmin_only ||
+                    (!!view.deployment_roles?.length && view.minimum_role === null);
                   return (
                     <span key={action} className="flex w-6 justify-center">
                       <Checkbox
@@ -1048,7 +1053,7 @@ function MatrixSkeleton() {
         <Skeleton width={320} height={16} />
         <Skeleton width={140} height={22} radius={999} className="ml-auto" />
       </div>
-      <div className="overflow-hidden rounded-[10px] border border-[color:var(--border-subtle)]">
+      <div className="overflow-hidden rounded-lg border border-[color:var(--border-subtle)]">
         <div className="flex items-center gap-3 border-b border-[color:var(--border-subtle)] bg-[color:var(--surface-subtle)] px-4 py-[13px]">
           <Skeleton width={90} height={12} />
           <Skeleton width={70} height={12} className="ml-auto" />

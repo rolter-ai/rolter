@@ -18,6 +18,13 @@
 //! [`problems`] holds every entry to the ADR's window, so shortening one has to
 //! say so (`security_fix`) rather than slip through a review.
 //!
+//! A superseded `/internal/snapshot` format is deprecated here too, as
+//! [`Target::SnapshotFormat`] (ADR-0038). Its headers are not added by
+//! [`apply`]: the snapshot handler asks [`for_snapshot_format`], since which
+//! format a poll is served depends on the gateway rather than on the path.
+//! [`snapshot_format_problems`] holds `MIN_SERVED_FORMAT` to this registry, so
+//! a format cannot be retired before its window has run.
+//!
 //! To deprecate something, add an entry to [`DEPRECATIONS`], run
 //! `ROLTER_TEST_UPDATE_DEPRECATIONS=1 cargo test -p rolter-control --lib
 //! deprecation`, and commit `deprecations.md` with it. The walkthrough is in
@@ -52,6 +59,10 @@ pub enum Target {
         field: &'static str,
         served_by: &'static [(&'static str, &'static str)],
     },
+    /// a superseded `/internal/snapshot` format (ADR-0038), deprecated by the
+    /// release that bumps `SNAPSHOT_FORMAT` past it. The snapshot handler sends
+    /// the headers with every snapshot served in this format
+    SnapshotFormat(u32),
 }
 
 /// One deprecation. Every date is `YYYY-MM-DD`, read as UTC.
@@ -82,6 +93,8 @@ impl Target {
         match self {
             Target::Operation { method, path } => vec![(*method, *path)],
             Target::Field { served_by, .. } => served_by.to_vec(),
+            // answered by the snapshot handler, not by the route middleware
+            Target::SnapshotFormat(_) => Vec::new(),
         }
     }
 
@@ -90,6 +103,7 @@ impl Target {
         match self {
             Target::Operation { method, path } => format!("{} {path}", method.to_uppercase()),
             Target::Field { schema, field, .. } => format!("{schema}.{field}"),
+            Target::SnapshotFormat(format) => format!("/internal/snapshot format {format}"),
         }
     }
 }
@@ -155,6 +169,12 @@ pub fn for_operation<'a>(
                 .any(|(m, p)| m.eq_ignore_ascii_case(method) && *p == path)
         })
         .min_by_key(|d| d.sunset)
+}
+
+/// The deprecation of snapshot format `format`, if it is deprecated.
+pub fn for_snapshot_format(list: &[Deprecation], format: u32) -> Option<&Deprecation> {
+    list.iter()
+        .find(|d| d.target == Target::SnapshotFormat(format))
 }
 
 /// Whether `GET /openapi.json` marks `method path` `deprecated: true`. A field
@@ -272,6 +292,14 @@ pub fn problems(
                 ));
             }
         }
+        if let Target::SnapshotFormat(format) = d.target {
+            if format == 0 || format >= rolter_core::snapshot_format::SNAPSHOT_FORMAT {
+                problems.push(here(format!(
+                    "deprecates a format this build does not supersede; it writes format {}",
+                    rolter_core::snapshot_format::SNAPSHOT_FORMAT
+                )));
+            }
+        }
         if parse_version(d.since).is_none() {
             problems.push(here(format!(
                 "has since = {:?}, which is not major.minor.patch",
@@ -295,6 +323,71 @@ pub fn problems(
                 "has an announced ({:?}) or sunset ({:?}) that is not YYYY-MM-DD",
                 d.announced, d.sunset
             ))),
+        }
+    }
+    problems
+}
+
+/// Every way `min_served`, the oldest snapshot format a control plane serves,
+/// falls short of `list` (ADR-0038 section 5).
+///
+/// A format a release supersedes (`min_served <= k < current`) is still served
+/// and must be announced as deprecated. A format it no longer serves
+/// (`k < min_served`) was removed, which ADR-0032 rule 3 allows only once its
+/// entry is past its sunset on `today` and `version` has reached the entry's
+/// [`Deprecation::removable_from`].
+pub fn snapshot_format_problems(
+    list: &[Deprecation],
+    min_served: u32,
+    current: u32,
+    today: NaiveDate,
+    version: &str,
+) -> Vec<String> {
+    let mut problems = Vec::new();
+    if min_served == 0 || min_served > current {
+        problems.push(format!(
+            "MIN_SERVED_FORMAT is {min_served}, outside 1..={current}, so this control plane \
+             would not serve its own format"
+        ));
+        return problems;
+    }
+    for format in 1..current {
+        let entry = for_snapshot_format(list, format);
+        let served = format >= min_served;
+        match entry {
+            None if served => problems.push(format!(
+                "snapshot format {format} is superseded by format {current} but has no \
+                 DEPRECATIONS entry, so nothing announces when it goes"
+            )),
+            None => problems.push(format!(
+                "snapshot format {format} is no longer served, but no DEPRECATIONS entry \
+                 shows that its window ran"
+            )),
+            Some(_) if served => {}
+            Some(d) => {
+                if d.sunset_date().is_none_or(|sunset| today < sunset) {
+                    problems.push(format!(
+                        "snapshot format {format} is no longer served before its sunset ({}); \
+                         MIN_SERVED_FORMAT may pass it only after that date",
+                        d.sunset
+                    ));
+                }
+                let removable = d.removable_from();
+                let reached = match (
+                    removable.as_deref().and_then(parse_version),
+                    parse_version(version),
+                ) {
+                    (Some(from), Some(now)) => now >= from,
+                    _ => false,
+                };
+                if !reached {
+                    problems.push(format!(
+                        "snapshot format {format} is no longer served in {version}, but it is \
+                         removable only from {} onwards",
+                        removable.unwrap_or_else(|| "?".to_string())
+                    ));
+                }
+            }
         }
     }
     problems
@@ -378,6 +471,90 @@ mod tests {
             crate::openapi::schema_has_property,
         );
         assert!(found.is_empty(), "{found:#?}");
+    }
+
+    /// ADR-0038 section 5: `MIN_SERVED_FORMAT` cannot pass a format before its
+    /// window has run, and every superseded format still served is announced.
+    #[test]
+    fn min_served_format_is_held_to_the_registry() {
+        use rolter_core::snapshot_format::{MIN_SERVED_FORMAT, SNAPSHOT_FORMAT};
+        let found = snapshot_format_problems(
+            DEPRECATIONS,
+            MIN_SERVED_FORMAT,
+            SNAPSHOT_FORMAT,
+            chrono::Utc::now().date_naive(),
+            env!("CARGO_PKG_VERSION"),
+        );
+        assert!(found.is_empty(), "{found:#?}");
+    }
+
+    const FORMAT_ONE: Deprecation = Deprecation {
+        target: Target::SnapshotFormat(1),
+        since: "1.2.0",
+        announced: "2027-01-15",
+        sunset: "2027-04-20",
+        replacement: "Upgrade the gateways to a release that reads format 2.",
+        security_fix: false,
+    };
+
+    fn day(text: &str) -> NaiveDate {
+        NaiveDate::parse_from_str(text, "%Y-%m-%d").unwrap()
+    }
+
+    #[test]
+    fn a_superseded_format_still_served_must_be_announced() {
+        let found = snapshot_format_problems(&[], 1, 2, day("2027-01-01"), "1.2.0");
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(found[0].contains("no DEPRECATIONS entry"), "{found:?}");
+        assert!(
+            snapshot_format_problems(&[FORMAT_ONE], 1, 2, day("2027-01-01"), "1.2.0").is_empty()
+        );
+    }
+
+    #[test]
+    fn a_format_is_retired_only_after_its_sunset_and_two_minors() {
+        let retire = |today: &str, version: &str| {
+            snapshot_format_problems(&[FORMAT_ONE], 2, 2, day(today), version)
+        };
+        // too early on both counts
+        assert_eq!(retire("2027-02-01", "1.3.0").len(), 2);
+        // the date has passed, the release has not
+        let early = retire("2027-05-01", "1.3.5");
+        assert_eq!(early.len(), 1, "{early:?}");
+        assert!(early[0].contains("removable only from 1.4.0"), "{early:?}");
+        // the release has, the date has not
+        let soon = retire("2027-04-19", "1.4.0");
+        assert_eq!(soon.len(), 1, "{soon:?}");
+        assert!(soon[0].contains("sunset"), "{soon:?}");
+        assert!(retire("2027-04-20", "1.4.0").is_empty());
+        // and retiring with no record of the window at all is a problem
+        assert_eq!(
+            snapshot_format_problems(&[], 2, 2, day("2030-01-01"), "9.0.0").len(),
+            1
+        );
+        assert!(!snapshot_format_problems(&[], 3, 2, day("2030-01-01"), "9.0.0").is_empty());
+    }
+
+    #[test]
+    fn a_snapshot_format_entry_names_a_superseded_format_and_no_route() {
+        // this build writes format 1, so deprecating 1 (or 0) is a problem
+        let own = Deprecation {
+            target: Target::SnapshotFormat(rolter_core::snapshot_format::SNAPSHOT_FORMAT),
+            ..FORMAT_ONE
+        };
+        let found = problems(&[own], |_, _| false, |_, _| false);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(found[0].contains("does not supersede"), "{found:?}");
+        // the headers come from the snapshot handler, never the middleware
+        assert!(own.target.operations().is_empty());
+        assert_eq!(for_snapshot_format(&[own], own_format()), Some(&own));
+        assert_eq!(for_snapshot_format(&[own], own_format() + 1), None);
+        assert!(render_notes(&[FORMAT_ONE])
+            .contains("`/internal/snapshot format 1`: deprecated in 1.2.0"));
+    }
+
+    fn own_format() -> u32 {
+        rolter_core::snapshot_format::SNAPSHOT_FORMAT
     }
 
     /// RFC 9745 wants a structured-field Date (`@` and Unix seconds); RFC 8594

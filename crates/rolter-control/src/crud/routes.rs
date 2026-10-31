@@ -8,6 +8,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use uuid::Uuid;
 
+use rolter_core::config::only_restricted_dialled;
+use rolter_core::failover::{all_targets_restricted, FailureClass};
 use rolter_core::{AdvancedModelConfig, Error, MAX_ROUTE_RETRIES};
 use rolter_store::postgres::models::{Route, RouteTarget, RouteVariant};
 use rolter_store::postgres::repo::{
@@ -26,7 +28,7 @@ use crate::ControlState;
 
 use super::provider_groups::require_providers_in_org;
 
-use super::provider_groups::taken_in_deployment;
+use super::provider_groups::taken_in_org;
 
 use super::provider_groups::validate_strategy;
 
@@ -61,9 +63,9 @@ pub(super) fn router() -> Router<ControlState> {
         .route("/api/v1/route-targets/{id}", delete(delete_route_target))
 }
 
-/// Refuse a route name the gateway already answers for someone else.
+/// Refuse a route name the gateway already answers for the caller's org.
 ///
-/// A name is taken when another route has it, when it is the builtin
+/// A name is taken when another route of the org has it, when it is the builtin
 /// `fake-llm` every org can call, or when it has the `slug/model` shape and
 /// the slug belongs to a provider or group of another org or of the bootstrap
 /// file. The gateway already treats a route outside the caller's org as
@@ -88,8 +90,10 @@ async fn require_route_name_free(
         )));
     }
     let routes = RouteRepo(pool(state));
-    if routes.model_in_use(model).await? {
-        return Err(taken_in_deployment("route name", model));
+    // names are per org (#1857): another org's route of the same name is no
+    // conflict, but a key resolves a name per org, so its projects share one
+    if routes.model_in_use(model, org_id).await? {
+        return Err(taken_in_org("route name", model));
     }
     if let Some(slug) = rolter_core::slug::address_slug(model) {
         if state.config_owned.holds_slug(slug)
@@ -257,9 +261,16 @@ async fn create_route(
     require_not_config_owned(&state.config_owned.models, &body.model, "model")?;
     validate_strategy(&body.strategy)?;
     require_route_name_free(&state, org_id, &body.model).await?;
-    let row = RouteRepo(pool(&state))
+    // the check above is a read, so a concurrent create in another project of
+    // the org can still win the name; `routes_org_model_unique` (#3459) then
+    // refuses this insert, and the caller reads the same refusal
+    let row = match RouteRepo(pool(&state))
         .create(project_id, &body.model, &body.strategy)
-        .await?;
+        .await
+    {
+        Err(Error::AlreadyExists(_)) => return Err(taken_in_org("route name", &body.model)),
+        other => other?,
+    };
     publish_config_change(&state).await?;
     log_audit(
         &state,
@@ -332,6 +343,18 @@ async fn update_route(
                 TargetPaths::InList,
             )
             .await?;
+            // a route left with nothing but restricted fallbacks to dial
+            // could never dial anything (#1584); a route with variants dials
+            // only them, so the new pool counts only without (#3487)
+            if only_restricted_dialled(
+                targets.iter().map(RouteTargetInput::is_restricted),
+                stored_variants_restricted(&state, id).await?,
+            ) {
+                return Err(invalid_field(
+                    "targets",
+                    all_targets_restricted(&existing.model),
+                ));
+            }
             Some(
                 targets
                     .iter()
@@ -703,9 +726,21 @@ struct RouteTargetInput {
     upstream_model: Option<String>,
     #[serde(default = "default_weight")]
     weight: i32,
+    /// the failure classes this target is a fallback for (#1584): `throttled`,
+    /// `timeout`, `transport`, `server_error`, `refusal` or
+    /// `refusal:<category>`. Omitted or empty, the target is an ordinary
+    /// member of the pool
+    #[serde(default)]
+    takes_over: Vec<String>,
 }
 
 impl RouteTargetInput {
+    /// Whether the target is a restricted fallback rather than a member of the
+    /// pool.
+    fn is_restricted(&self) -> bool {
+        !self.takes_over.is_empty()
+    }
+
     /// The target as the store takes it. A blank upstream model is stored as
     /// none, the way a provider group member's is: forwarding an empty model
     /// name upstream is never what was meant, and it would match no target
@@ -718,6 +753,9 @@ impl RouteTargetInput {
                 .clone()
                 .filter(|model| !model.trim().is_empty()),
             weight: self.weight,
+            // stored as the canonical token, which is what the input already
+            // is once `validate_route_targets` has parsed it
+            takes_over: self.takes_over.clone(),
         }
     }
 }
@@ -761,6 +799,7 @@ async fn validate_route_targets(
                 "weight must be > 0",
             ));
         }
+        validate_takes_over(&target.takes_over, &paths.field(index, "takes_over"))?;
     }
     let provider_ids: Vec<Uuid> = targets.iter().map(|t| t.provider_id).collect();
     if let Some(org_id) = org_id {
@@ -768,6 +807,47 @@ async fn validate_route_targets(
     }
     // a route may use its own project's providers and org-wide ones (#1919)
     require_providers_usable_from(state, &provider_ids, Some(project_id), "this route").await
+}
+
+/// A target's `takes_over` set: every entry a failure class, none twice.
+/// `field` names the set in the refusal.
+fn validate_takes_over(takes_over: &[String], field: &str) -> ApiResult<()> {
+    let mut classes: Vec<FailureClass> = Vec::with_capacity(takes_over.len());
+    for token in takes_over {
+        let class: FailureClass = token
+            .parse()
+            .map_err(|problem: String| invalid_field(field, problem))?;
+        if classes.contains(&class) {
+            return Err(invalid_field(
+                field,
+                format!("takes_over lists '{class}' twice"),
+            ));
+        }
+        classes.push(class);
+    }
+    Ok(())
+}
+
+/// Whether each of the route's stored variants' targets is restricted, one
+/// set per variant, for [`only_restricted_dialled`]: a route with variants
+/// dials only them, so they decide whether a write to its pool strands it
+/// (#3487).
+async fn stored_variants_restricted(
+    state: &ControlState,
+    route_id: Uuid,
+) -> ApiResult<Vec<Vec<bool>>> {
+    Ok(RouteVariantRepo(pool(state))
+        .list(route_id)
+        .await?
+        .iter()
+        .map(|variant| {
+            variant
+                .targets
+                .iter()
+                .map(|target| !target.takes_over.is_empty())
+                .collect()
+        })
+        .collect())
 }
 
 async fn create_route_target(
@@ -788,6 +868,23 @@ async fn create_route_target(
         TargetPaths::Alone,
     )
     .await?;
+    // a restricted target added to a route with no ordinary one to dial
+    // would leave the route nothing it may dial first (#1584, #3487)
+    if body.is_restricted() {
+        let existing = RouteTargetRepo(pool(&state)).list(route_id).await?;
+        if only_restricted_dialled(
+            existing
+                .iter()
+                .map(|t| !t.takes_over.is_empty())
+                .chain([true]),
+            stored_variants_restricted(&state, route_id).await?,
+        ) {
+            return Err(invalid_field(
+                "takes_over",
+                all_targets_restricted(&route.model),
+            ));
+        }
+    }
     let spec = body.spec();
     let row = RouteTargetRepo(pool(&state))
         .create(
@@ -795,6 +892,7 @@ async fn create_route_target(
             spec.provider_id,
             spec.upstream_model.as_deref(),
             spec.weight,
+            &spec.takes_over,
         )
         .await?;
     publish_config_change(&state).await?;
@@ -819,6 +917,21 @@ async fn delete_route_target(
     let target = RouteTargetRepo(pool(&state)).get(id).await?;
     let org_id =
         authorize_route(&state, &principal, target.route_id, cap!("route", Update)).await?;
+    // removing the last ordinary target to dial would leave only restricted
+    // fallbacks, which could never dial anything (#1584, #3487)
+    if target.takes_over.is_empty() {
+        let siblings = RouteTargetRepo(pool(&state)).list(target.route_id).await?;
+        if only_restricted_dialled(
+            siblings
+                .iter()
+                .filter(|t| t.id != id)
+                .map(|t| !t.takes_over.is_empty()),
+            stored_variants_restricted(&state, target.route_id).await?,
+        ) {
+            let route = RouteRepo(pool(&state)).get(target.route_id).await?;
+            return Err(ApiError::Conflict(all_targets_restricted(&route.model)));
+        }
+    }
     RouteTargetRepo(pool(&state)).delete(id).await?;
     publish_config_change(&state).await?;
     log_audit(
@@ -887,11 +1000,16 @@ struct VariantTargetInput {
     upstream_model: Option<String>,
     #[serde(default = "default_weight")]
     weight: i32,
+    /// the failure classes this target is a fallback for, as on a route
+    /// target (#3373). Omitted or empty, it is an ordinary member of the
+    /// variant
+    #[serde(default)]
+    takes_over: Vec<String>,
 }
 
 /// The checks a variant set passes before any provider is looked up, and the
-/// set as the store takes it: unique non-blank names, a variant weight of at
-/// least 1, target weights none negative and not all zero within a variant, at
+/// set as the store takes it: unique non-blank names, a variant weight of 0
+/// or more, target weights none negative and not all zero within a variant, at
 /// least one target per variant, and object params. Every refusal names
 /// the field it is about, `variants[i].targets[j].weight` say.
 fn variant_specs(variants: Vec<VariantInput>) -> ApiResult<Vec<RouteVariantSpec>> {
@@ -917,12 +1035,12 @@ fn variant_specs(variants: Vec<VariantInput>) -> ApiResult<Vec<RouteVariantSpec>
                 format!("variant name '{name}' is used twice; names must be unique in a route"),
             ));
         }
-        // a 0 would read as "fallback only", but the gateway samples it as a 1
-        // (#3341), so it is refused like a route target's until that changes
-        if variant.weight < 1 {
+        // a 0 is a fallback-only variant, and a set of only zeroes is sampled
+        // uniformly by the gateway (#3341, #3427)
+        if variant.weight < 0 {
             return Err(invalid_field(
                 format!("variants[{i}].weight"),
-                "weight must be at least 1",
+                "weight must be 0 or more",
             ));
         }
         if variant.targets.is_empty() {
@@ -944,6 +1062,10 @@ fn variant_specs(variants: Vec<VariantInput>) -> ApiResult<Vec<RouteVariantSpec>
                     "weight must be 0 or more",
                 ));
             }
+            validate_takes_over(
+                &target.takes_over,
+                &format!("variants[{i}].targets[{j}].takes_over"),
+            )?;
         }
         if variant.targets.iter().all(|t| t.weight == 0) {
             return Err(invalid_field(
@@ -964,11 +1086,29 @@ fn variant_specs(variants: Vec<VariantInput>) -> ApiResult<Vec<RouteVariantSpec>
                     // blank is none, as for a route target
                     upstream_model: target.upstream_model.filter(|m| !m.trim().is_empty()),
                     weight: target.weight,
+                    // the canonical tokens, which `validate_takes_over` has
+                    // just parsed
+                    takes_over: target.takes_over,
                 })
                 .collect(),
         });
     }
     Ok(specs)
+}
+
+/// Whether a route with `pool` as its classic targets and `variants` as its
+/// variant set would dial only restricted targets: the variants' targets when
+/// there are any, the pool otherwise (#3487).
+fn leaves_only_restricted(pool: &[RouteTarget], variants: &[RouteVariantSpec]) -> bool {
+    only_restricted_dialled(
+        pool.iter().map(|target| !target.takes_over.is_empty()),
+        variants.iter().map(|variant| {
+            variant
+                .targets
+                .iter()
+                .map(|target| !target.takes_over.is_empty())
+        }),
+    )
 }
 
 async fn set_route_variants(
@@ -982,6 +1122,17 @@ async fn set_route_variants(
     let org_id = chain.org;
     authorize(&state, &principal, chain, cap!("route", Update)).await?;
     let specs = variant_specs(body.variants)?;
+    // a route with variants dials only them and one without dials its pool,
+    // as the gateway's validation counts them: a set that leaves the route
+    // nothing but restricted fallbacks to dial could never dial anything
+    // (#3373, #3487)
+    let pool_targets = RouteTargetRepo(pool(&state)).list(id).await?;
+    if leaves_only_restricted(&pool_targets, &specs) {
+        return Err(invalid_field(
+            "variants",
+            all_targets_restricted(&route.model),
+        ));
+    }
     let mut provider_ids: Vec<Uuid> = specs
         .iter()
         .flat_map(|v| v.targets.iter().map(|t| t.provider_id))
@@ -1033,6 +1184,7 @@ mod variant_tests {
             provider_id: Uuid::nil(),
             upstream_model: None,
             weight,
+            takes_over: Vec::new(),
         }
     }
 
@@ -1062,6 +1214,7 @@ mod variant_tests {
                 provider_id: Uuid::nil(),
                 upstream_model: Some("  ".into()),
                 weight: 2,
+                takes_over: Vec::new(),
             },
             target(0),
         ];
@@ -1083,11 +1236,10 @@ mod variant_tests {
             refused_field(vec![variant("a", -1)]).as_deref(),
             Some("variants[0].weight")
         );
-        // a 0 is sampled as a 1 by the gateway (#3341), so it is refused
-        assert_eq!(
-            refused_field(vec![variant("a", 3), variant("b", 0)]).as_deref(),
-            Some("variants[1].weight")
-        );
+        // a 0 is a fallback-only variant, and a set of only zeroes is allowed
+        // (the gateway samples it uniformly, #3427)
+        assert!(variant_specs(vec![variant("a", 3), variant("b", 0)]).is_ok());
+        assert!(variant_specs(vec![variant("a", 0), variant("b", 0)]).is_ok());
         let mut negative_target = variant("a", 1);
         negative_target.targets = vec![target(1), target(-3)];
         assert_eq!(
@@ -1100,6 +1252,31 @@ mod variant_tests {
             refused_field(vec![idle_targets]).as_deref(),
             Some("variants[0].targets")
         );
+    }
+
+    /// #3373: a variant target's classes are checked like a route target's,
+    /// and stored as sent.
+    #[test]
+    fn a_variant_target_takes_over_known_classes_once() {
+        let mut fallback = variant("a", 1);
+        let mut burst = target(1);
+        burst.takes_over = vec!["throttled".into(), "refusal:violence".into()];
+        fallback.targets.push(burst);
+        let specs = variant_specs(vec![fallback]).unwrap();
+        assert_eq!(
+            specs[0].targets[1].takes_over,
+            ["throttled", "refusal:violence"]
+        );
+
+        for classes in [vec!["bogus"], vec!["timeout", "timeout"]] {
+            let mut bad = variant("a", 1);
+            bad.targets[0].takes_over = classes.iter().map(|c| c.to_string()).collect();
+            assert_eq!(
+                refused_field(vec![variant("ok", 1), bad]).as_deref(),
+                Some("variants[1].targets[0].takes_over"),
+                "{classes:?}"
+            );
+        }
     }
 
     #[test]

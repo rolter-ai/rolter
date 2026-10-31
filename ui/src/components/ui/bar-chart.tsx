@@ -1,4 +1,6 @@
 import { useFormat } from "@/lib/i18n/format";
+import { useMeasuredWidth } from "@/lib/use-measured-width";
+import { cn } from "@/lib/utils";
 
 // vertical bars (doubles as a histogram) with an optional horizontal ranked
 // mode for 10+ categories
@@ -42,6 +44,8 @@ export function BarChart({
   // axis labels are read by a person, so they follow the dashboard locale: the
   // hand-rolled `1.2k` printed a dot as the decimal mark in every language
   const fmt = useFormat();
+  // drawn at the width it is given, so its 11 unit labels are 11px at every width (#3450)
+  const { ref: frame, width: W } = useMeasuredWidth<HTMLDivElement>(!horizontal);
   if (horizontal) {
     return (
       <RankedBars
@@ -58,7 +62,6 @@ export function BarChart({
       />
     );
   }
-  const W = 640;
   const padL = 44;
   const padR = 12;
   const padT = 12;
@@ -74,7 +77,7 @@ export function BarChart({
   const ticks = 4;
 
   return (
-    <div className={className} {...props}>
+    <div ref={frame} className={className} {...props}>
       <svg
         viewBox={`0 0 ${W} ${H}`}
         width="100%"
@@ -98,9 +101,9 @@ export function BarChart({
               />
               <text
                 x={padL - 8}
-                y={y + 3}
+                y={y + 4}
                 textAnchor="end"
-                fontSize="10"
+                fontSize="11"
                 fontFamily="var(--font-mono)"
                 fill="var(--text-subtle)"
               >
@@ -123,7 +126,7 @@ export function BarChart({
             x={padL + band * i + band / 2}
             y={H - 8}
             textAnchor="middle"
-            fontSize="10"
+            fontSize="11"
             fontFamily="var(--font-mono)"
             fill="var(--text-subtle)"
           >
@@ -191,24 +194,11 @@ function RankedBars({
           >
             {r.label}
           </span>
-          <div
-            style={{
-              flex: 1,
-              height: 16,
-              background: "var(--surface-subtle)",
-              borderRadius: 3,
-              overflow: "hidden",
-            }}
-          >
-            <div
-              style={{
-                width: (r.v / mx) * 100 + "%",
-                height: "100%",
-                background: i === 0 ? highlightColor : color,
-                borderRadius: 3,
-              }}
-            />
-          </div>
+          <BarTrack
+            share={r.v / mx}
+            color={i === 0 ? highlightColor : color}
+            style={{ flex: 1, height: 16 }}
+          />
           <span
             style={{
               width: 56,
@@ -224,5 +214,47 @@ function RankedBars({
         </div>
       ))}
     </div>
+  );
+}
+
+/**
+ * One horizontal bar: a quiet track with a fill of `share` (0 to 1) of its
+ * width. The ranked chart draws each of its rows with it, and a table cell that
+ * wants a bar beside its number uses it too, sized by `className` or `style`
+ * (the dashboard's by-model table), so there is one bar and not one per screen.
+ * Decorative: the number beside it is what a reader takes in.
+ */
+export function BarTrack({
+  share,
+  color = "var(--zinc-500)",
+  className,
+  style,
+}: {
+  share: number;
+  color?: string;
+  className?: string;
+  style?: React.CSSProperties;
+}) {
+  return (
+    <span
+      aria-hidden
+      className={cn("block", className)}
+      style={{
+        background: "var(--surface-subtle)",
+        borderRadius: 3,
+        overflow: "hidden",
+        ...style,
+      }}
+    >
+      <span
+        style={{
+          display: "block",
+          width: `${Math.min(1, Math.max(0, share)) * 100}%`,
+          height: "100%",
+          background: color,
+          borderRadius: 3,
+        }}
+      />
+    </span>
   );
 }

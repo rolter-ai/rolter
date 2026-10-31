@@ -72,3 +72,7 @@
 
 **Learning:** MCP OAuth discovery in `crates/rolter-control/src/mcp_oauth_discovery.rs` constructed `DiscoveryError::Refused` and `tracing::debug!` messages using raw unredacted URLs and reqwest error strings. When discovery failed against URLs containing sensitive query parameters or userinfo credentials, those secrets could be exposed in API error messages and debug logs.
 **Prevention:** Always sanitize URLs and HTTP client error strings using `rolter_core::redact::redact_urls_in_text` before embedding them into `DiscoveryError::Refused` variants or `tracing` logs.
+## 2026-10-25 - Consistent 409 Conflict Errors for Config-Owned Provider Groups
+
+**Learning:** `require_group_not_config_owned` and `require_group_row_not_config_owned` in `crates/rolter-control/src/crud/provider_groups.rs` previously returned `ApiError::Core(Error::Config(...))` which rendered as HTTP 400 Bad Request, whereas mutating other config-owned resources (providers, routes, models) returned HTTP 409 Conflict.
+**Prevention:** Use shared `require_not_config_owned` and `require_row_not_config_owned` helpers across all CRUD handlers to ensure mutations targeting bootstrap config-owned entities consistently answer with HTTP 409 Conflict.

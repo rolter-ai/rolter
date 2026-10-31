@@ -163,15 +163,24 @@ const CLIENT_BOUND_GRACE_MS = 5_000;
 
 /// `fetch`, abandoned with a coded `request_timeout` once the control plane has
 /// had longer than its own bound to answer
-async function boundedFetch(url: string, init: RequestInit = {}): Promise<Response> {
+async function boundedFetch(
+  url: string,
+  init: RequestInit = {},
+  signal?: AbortSignal,
+): Promise<Response> {
   const bound = clientRequestBoundMs();
-  if (bound === undefined) return fetch(url, init);
+  if (bound === undefined) return fetch(url, signal ? { ...init, signal } : init);
   const controller = new AbortController();
+  // the caller's own abort goes through the same controller, and stays
+  // attached after the headers arrive so it also stops a body being read
+  if (signal?.aborted) controller.abort(signal.reason);
+  else signal?.addEventListener("abort", () => controller.abort(signal.reason), { once: true });
   const timer = setTimeout(() => controller.abort(), bound);
   try {
     return await fetch(url, { ...init, signal: controller.signal });
   } catch (error) {
-    if (controller.signal.aborted) {
+    // the caller's own abort is theirs to read, not a timeout
+    if (controller.signal.aborted && !signal?.aborted) {
       throw new ApiError(i18n.t("errors.api.codes.request_timeout"), 504, "request_timeout");
     }
     throw error;
@@ -225,10 +234,13 @@ export interface RequestOptions {
    * sends none, so a stale token cannot ride along
    */
   auth?: boolean;
-  /** signal a dead session on a 401 (default: whatever `auth` is) */
-  expireSession?: boolean;
   /** replace the error thrown for a failed response; return nothing to keep `err` */
   mapError?: (res: Response, err: ApiError) => Error | undefined;
+  /**
+   * abandon the request when this aborts, the body of a streamed answer
+   * included; the `AbortError` is thrown as it is, not as a timeout
+   */
+  signal?: AbortSignal;
 }
 
 /**
@@ -240,7 +252,7 @@ export async function requestResponse(
   url: string,
   options: RequestOptions = {},
 ): Promise<Response> {
-  const { method, body, auth = true, expireSession = auth, mapError } = options;
+  const { method, body, auth = true, mapError, signal } = options;
   const headers = auth ? authHeaders() : {};
   const init: RequestInit =
     method === undefined
@@ -253,12 +265,13 @@ export async function requestResponse(
           },
           body: body !== undefined ? JSON.stringify(body) : undefined,
         };
-  const res = await boundedFetch(url, init);
+  const res = await boundedFetch(url, init, signal);
   if (!res.ok) {
     const err = await apiError(res);
     const mapped = mapError?.(res, err);
     if (mapped) throw mapped;
-    if (expireSession) noteUnauthorized(url, "Authorization" in headers, err);
+    // a 401 made with a token signals a dead session, whichever route it came from
+    if (auth) noteUnauthorized(url, "Authorization" in headers, err);
     throw err;
   }
   return res;

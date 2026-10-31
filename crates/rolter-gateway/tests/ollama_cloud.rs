@@ -51,7 +51,7 @@ fn config(api_base: String, key_env: &str, upstream_model: &str) -> GatewayConfi
         targets: vec![Target {
             provider: "cloud".into(),
             model: Some(upstream_model.into()),
-            weight: 1,
+            ..Default::default()
         }],
         params: Default::default(),
         param_policy: Default::default(),

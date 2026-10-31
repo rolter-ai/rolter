@@ -1058,6 +1058,281 @@ export const RefusedToAViewer: Story = {
   },
 };
 
+// the org's enrolment roster (#3264): ada has an armed factor, grace has none,
+// and the deactivated account is not an active member, so it is not listed
+const FACTOR_ROSTER = [
+  {
+    user_id: "user-1",
+    email: "ada@example.com",
+    is_superadmin: true,
+    enabled: true,
+    recovery_codes_remaining: 8,
+  },
+  {
+    user_id: "user-2",
+    email: "grace@example.com",
+    is_superadmin: false,
+    enabled: false,
+    recovery_codes_remaining: 0,
+  },
+];
+
+const withRoster = (answer: () => Response | Promise<Response>): FetchStub => {
+  const inner = directory();
+  return scoped(async (input, init) =>
+    String(input).includes("/mfa-status") ? answer() : inner(input, init),
+  );
+};
+
+const factorRow = async (canvasElement: HTMLElement, email: string): Promise<HTMLElement> => {
+  const row = (await within(canvasElement).findByText(email)).closest('[role="row"]');
+  if (!row) throw new Error(`${email} is not rendered as a row`);
+  return row as HTMLElement;
+};
+
+/** Armed or not set up, found by the column's name and read per row. */
+export const ShowsWhoHasASecondFactor: Story = {
+  render: () => (
+    <Harness fetchStub={withRoster(() => json(FACTOR_ROSTER))} role="admin">
+      <Users />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByRole("columnheader", { name: "Second factor" })).toBeVisible();
+    await waitFor(() =>
+      expect(
+        within(canvasElement.querySelector('[role="table"]') as HTMLElement).getAllByText("Armed"),
+      ).toHaveLength(1),
+    );
+    await expect(
+      within(await factorRow(canvasElement, "ada@example.com")).getByText("Armed"),
+    ).toBeVisible();
+    await expect(
+      within(await factorRow(canvasElement, "grace@example.com")).getByText("Not set up"),
+    ).toBeVisible();
+    // an account the roster does not list is not claimed to lack a factor
+    await expect(
+      within(await factorRow(canvasElement, "former@example.com")).getByText("Not listed"),
+    ).toBeVisible();
+  },
+};
+
+export const SecondFactorStillLoading: Story = {
+  render: () => (
+    <Harness fetchStub={withRoster(() => new Promise<Response>(() => {}))} role="admin">
+      <Users />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await expect(
+      await within(canvasElement).findByRole("columnheader", { name: "Second factor" }),
+    ).toBeVisible();
+    const row = await factorRow(canvasElement, "ada@example.com");
+    // no verdict is drawn for a roster that has not arrived
+    await expect(within(row).queryByText("Armed")).toBeNull();
+    await expect(within(row).queryByText("Not set up")).toBeNull();
+  },
+};
+
+export const SecondFactorFailedToLoad: Story = {
+  render: () => (
+    <Harness
+      fetchStub={withRoster(() => json({ error: { message: "roster store is down" } }, 500))}
+      role="admin"
+    >
+      <Users />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await expectLoadError(canvasElement, /roster store is down/);
+    const row = await factorRow(canvasElement, "ada@example.com");
+    // a failed roster is not read as "nobody has a factor"
+    await expect(within(row).queryByText("Not set up")).toBeNull();
+  },
+};
+
+/** Below admin the endpoint is refused, so the column is not drawn at all. */
+export const SecondFactorHiddenBelowAdmin: Story = {
+  render: () => (
+    <Harness fetchStub={withRoster(() => json(FACTOR_ROSTER))} role="member">
+      <Users />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await expect(await within(canvasElement).findByText("ada@example.com")).toBeVisible();
+    await expectGateAnswered();
+    await expect(
+      within(canvasElement).queryByRole("columnheader", { name: "Second factor" }),
+    ).toBeNull();
+  },
+};
+
+// deployment roles (#3290): the list shows each account's role and a superadmin
+// sets or clears it with its own endpoint, never as a field of the account edit
+const withDeploymentRole = (record?: Recorder): FetchStub => {
+  const inner = directory();
+  const base: FetchStub = scoped(async (input, init) => {
+    const url = String(input);
+    const method = (init?.method ?? "GET").toUpperCase();
+    if (method === "PUT" && url.includes("/deployment-role")) {
+      const { role } = JSON.parse(String(init?.body)) as { role: string | null };
+      return json({ ...USERS[1], deployment_role: role });
+    }
+    if (method === "GET" && url.includes("/users") && !url.includes("/memberships")) {
+      const res = await inner(input, init);
+      const rows = (await res.json()) as UserRow[];
+      return json(
+        rows.map((u) => (u.id === "user-2" ? { ...u, deployment_role: "security_auditor" } : u)),
+      );
+    }
+    return inner(input, init);
+  });
+  return record ? record.stub : base;
+};
+
+export const ShowsTheDeploymentRole: Story = {
+  render: () => (
+    <Harness fetchStub={withDeploymentRole()} role="superadmin">
+      <Users />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const row = await factorRow(canvasElement, "grace@example.com");
+    await expect(within(row).getByText("Security auditor")).toBeVisible();
+    // an account without one carries no badge
+    const ada = await factorRow(canvasElement, "ada@example.com");
+    await expect(within(ada).queryByText("Security auditor")).toBeNull();
+    await expect(within(ada).queryByText("Operator")).toBeNull();
+  },
+};
+
+const setsDeploymentRole = recording(
+  scoped(async (input, init) => withDeploymentRole()(input, init)),
+);
+
+export const SetsADeploymentRole: Story = {
+  render: () => (
+    <Harness fetchStub={setsDeploymentRole.stub} role="superadmin">
+      <Users />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await userEvent.click(
+      await within(canvasElement).findByRole("button", {
+        name: "Set the deployment role of ada@example.com",
+      }),
+    );
+    await waitFor(() => expect(sheet()).toBeVisible());
+    const panel = within(sheet());
+    await pickOption(panel.getByLabelText("Deployment role"), /^Operator/);
+    await userEvent.click(panel.getByRole("button", { name: "Save" }));
+    const body = await setsDeploymentRole.expectSentBody<{ role: string | null }>(
+      "PUT",
+      "/api/v1/users/user-1/deployment-role",
+    );
+    await expect(body.role).toBe("operator");
+  },
+};
+
+export const ClearsADeploymentRole: Story = {
+  render: () => (
+    <Harness fetchStub={setsDeploymentRole.stub} role="superadmin">
+      <Users />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await userEvent.click(
+      await within(canvasElement).findByRole("button", {
+        name: "Set the deployment role of grace@example.com",
+      }),
+    );
+    await waitFor(() => expect(sheet()).toBeVisible());
+    const panel = within(sheet());
+    // opens on the role the account holds, and nothing to save until it moves
+    await expect(panel.getByLabelText("Deployment role")).toHaveValue("Security auditor");
+    await expect(panel.getByRole("button", { name: "Save" })).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
+    await pickOption(panel.getByLabelText("Deployment role"), /^None/);
+    await userEvent.click(panel.getByRole("button", { name: "Save" }));
+    await waitFor(() => {
+      const sent = setsDeploymentRole.calls.filter(
+        (c) => c.method === "PUT" && c.url.includes("/users/user-2/deployment-role"),
+      );
+      expect(sent.map((c) => JSON.parse(c.body ?? "{}").role)).toContain(null);
+    });
+  },
+};
+
+export const DeploymentRoleRefusedToAnAdmin: Story = {
+  render: () => (
+    <Harness fetchStub={withDeploymentRole()} role="admin">
+      <Users />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await expectRefused(
+      canvasElement,
+      "Set the deployment role of ada@example.com",
+      NEEDS_SUPERADMIN,
+    );
+  },
+};
+
+export const DeploymentRoleAllowedToASuperadmin: Story = {
+  render: () => (
+    <Harness fetchStub={withDeploymentRole()} role="superadmin">
+      <Users />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await expectAllowed(canvasElement, "Set the deployment role of ada@example.com");
+  },
+};
+
+export const DeploymentRoleRefusedByTheServer: Story = {
+  render: () => (
+    <Harness
+      fetchStub={scoped(async (input, init) =>
+        (init?.method ?? "GET").toUpperCase() === "PUT" &&
+        String(input).includes("/deployment-role")
+          ? json(
+              {
+                error: {
+                  message: "role must be one of operator, security_auditor, null",
+                  code: "invalid_field",
+                  field: "role",
+                },
+              },
+              400,
+            )
+          : directory()(input, init),
+      )}
+      role="superadmin"
+    >
+      <Users />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await userEvent.click(
+      await within(canvasElement).findByRole("button", {
+        name: "Set the deployment role of ada@example.com",
+      }),
+    );
+    await waitFor(() => expect(sheet()).toBeVisible());
+    const panel = within(sheet());
+    await pickOption(panel.getByLabelText("Deployment role"), /^Operator/);
+    await userEvent.click(panel.getByRole("button", { name: "Save" }));
+    await waitFor(() =>
+      expect(
+        panel.getAllByRole("alert").some((a) => /role must be one of/.test(a.textContent ?? "")),
+      ).toBe(true),
+    );
+  },
+};
+
 export const EditRefusedToAnAdmin: Story = {
   render: () => (
     <Harness fetchStub={loaded} role="admin">
@@ -1210,6 +1485,244 @@ export const RevokeIsConfirmedThenLands: Story = {
     const submit = await expectUxEvent("form_submit", "user-role-revoke");
     await expect(submit.outcome).toBe("ok");
     await expectUxEvent("save_confirmed", "user-role-revoke");
+  },
+};
+
+/** the fixture's first invitation, mailed once and not delivered (#3304) */
+const withFailedMail = (rows: Invitation[]): Invitation[] =>
+  rows.map((row) =>
+    row.id === "inv-1"
+      ? {
+          ...row,
+          mail_status: "failed" as const,
+          mail_attempted_at: "2026-09-25T00:00:00Z",
+          mail_error: "the mail server could not be reached",
+        }
+      : row,
+  );
+
+/**
+ * A pending invitation whose email failed can be mailed again from its row. The
+ * request names the invitation, the row says it was emailed once the relay
+ * took it, and a row that never went through a relay offers no resend at all.
+ */
+let resendInvite: Recorder;
+export const ResendingAnInvitationMailsItAgain: Story = {
+  render: () => {
+    resendInvite = recording(invitationsApi({ rows: withFailedMail(INVITATIONS) }));
+    return (
+      <Harness fetchStub={resendInvite.stub}>
+        <Toasted>
+          <Users />
+        </Toasted>
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const section = within(await pendingSection(canvasElement));
+    const resend = "Email the link to newcomer@example.com again";
+    await section.findByRole("button", { name: resend });
+    // lead@example.com was never mailed, so there is no link to send again
+    await expect(
+      section.queryByRole("button", { name: "Email the link to lead@example.com again" }),
+    ).toBeNull();
+    await expect(await section.findByText("Not emailed")).toBeVisible();
+
+    await userEvent.click(section.getByRole("button", { name: resend }));
+    await resendInvite.expectSent("POST", "/invitations/inv-1/resend");
+    await expectToast(canvasElement, /Emailed the link to newcomer@example\.com again/);
+    await waitFor(() => expect(section.getByText("Emailed")).toBeVisible());
+  },
+};
+
+/**
+ * Check mail relay (#3377): the action sits next to Invite user, sends the
+ * check for the org and says what came back in the dashboard's language.
+ */
+let mailCheck: Recorder;
+export const CheckingTheMailRelaySaysItIsFine: Story = {
+  render: () => {
+    mailCheck = recording(invitationsApi());
+    return (
+      <Harness fetchStub={mailCheck.stub}>
+        <Toasted>
+          <Users />
+        </Toasted>
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    await clickWhenEnabled(canvasElement, "Check mail relay");
+    await mailCheck.expectSent("POST", "/invitations/mail-check");
+    await expectToast(canvasElement, /mail relay accepted the connection and the credential/);
+  },
+};
+
+/** each stage that can fail is named, with the reason the API returns */
+const failedStage = (stage: "connect" | "tls" | "auth" | "relay", said: string): Story => ({
+  render: () => (
+    <Harness
+      fetchStub={invitationsApi({
+        onMailCheck: () => json({ ok: false, stage, reason: `reason for ${stage}` }),
+      })}
+    >
+      <Toasted>
+        <Users />
+      </Toasted>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await clickWhenEnabled(canvasElement, "Check mail relay");
+    await expectToast(canvasElement, new RegExp(`relay check failed at ${said}`), "error");
+    await expect(await within(canvasElement).findByText(`reason for ${stage}`)).toBeVisible();
+  },
+});
+
+export const MailRelayCheckFailsConnecting: Story = failedStage("connect", "connecting");
+export const MailRelayCheckFailsAtTls: Story = failedStage("tls", "setting up TLS");
+export const MailRelayCheckFailsSigningIn: Story = failedStage("auth", "signing in");
+export const MailRelayCheckFailsAtTheMailServer: Story = failedStage(
+  "relay",
+  "talking to the mail server",
+);
+
+/** a control plane with no relay is stated as such, not as an error */
+export const MailRelayCheckWithNoRelayIsNotAnError: Story = {
+  render: () => (
+    <Harness
+      fetchStub={invitationsApi({
+        onMailCheck: () =>
+          json({ error: { message: "invitation mail is not configured (ROLTER_SMTP_URL)" } }, 409),
+      })}
+    >
+      <Toasted>
+        <Users />
+      </Toasted>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await clickWhenEnabled(canvasElement, "Check mail relay");
+    await expectToast(canvasElement, /Mail is not configured on this control plane/);
+    // a status, not an alert: the alert region stays empty
+    const alerts = within(canvasElement).queryAllByRole("alert");
+    await expect(alerts.filter((node) => node.textContent)).toHaveLength(0);
+  },
+};
+
+/** a check run again within a few seconds is told to wait (#3394) */
+export const MailRelayCheckRunTooSoonSaysToWait: Story = {
+  render: () => (
+    <Harness
+      fetchStub={invitationsApi({
+        onMailCheck: () =>
+          new Response(
+            JSON.stringify({ error: { message: "too many", code: "too_many_attempts" } }),
+            {
+              status: 429,
+              headers: { "content-type": "application/json", "retry-after": "5" },
+            },
+          ),
+      })}
+    >
+      <Toasted>
+        <Users />
+      </Toasted>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await clickWhenEnabled(canvasElement, "Check mail relay");
+    await expectToast(canvasElement, /checked a moment ago/);
+  },
+};
+
+/** the check is in flight: the button says so and cannot be pressed again */
+export const MailRelayCheckInFlight: Story = {
+  render: () => (
+    <Harness fetchStub={invitationsApi({ onMailCheck: () => new Promise<Response>(() => {}) })}>
+      <Users />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await clickWhenEnabled(canvasElement, "Check mail relay");
+    const busy = await within(canvasElement).findByRole("button", { name: "Checking mail relay" });
+    await expect(busy).toBeDisabled();
+  },
+};
+
+/** the relay is the invitation bar's: a viewer is refused the check */
+export const MailRelayCheckRefusedToAViewer: Story = {
+  render: () => (
+    <Harness fetchStub={invitationsApi()} role="viewer">
+      <Users />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await expectRefused(canvasElement, "Check mail relay");
+  },
+};
+
+/** The relay still refuses: the toast says so, with the reason the row keeps. */
+export const ResendingAnInvitationThatFailsAgain: Story = {
+  render: () => (
+    <Harness
+      fetchStub={invitationsApi({
+        rows: withFailedMail(INVITATIONS),
+        onResend: (row) => json({ ...row, mail_error: "the mail server rejected the message" }),
+      })}
+    >
+      <Toasted>
+        <Users />
+      </Toasted>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const section = within(await pendingSection(canvasElement));
+    await userEvent.click(
+      await section.findByRole("button", { name: "Email the link to newcomer@example.com again" }),
+    );
+    await expectToast(
+      canvasElement,
+      /The link to newcomer@example\.com could not be emailed/,
+      "error",
+    );
+    await expectToast(canvasElement, /the mail server rejected the message/, "error");
+  },
+};
+
+/**
+ * A grant an LDAP sign-in wrote is marked like a single sign-on or SCIM one
+ * (#3261), and revoking or changing it says the directory's group mapping will
+ * grant it again.
+ */
+const viaLdap = (): FetchStub => {
+  const inner = directory();
+  return scoped(async (input, init) => {
+    const res = await inner(input, init);
+    const method = (init?.method ?? "GET").toUpperCase();
+    if (method !== "GET" || !String(input).includes("/memberships")) return res;
+    const rows = (await res.json()) as MembershipRow[];
+    return json(rows.map((g) => (g.id === "m-2" ? { ...g, source: "ldap" } : g)));
+  });
+};
+
+export const LdapGrantsAreMarkedAndExplained: Story = {
+  render: () => (
+    <Harness fetchStub={viaLdap()}>
+      <Users />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByText("from LDAP")).toBeVisible();
+    await userEvent.click(canvas.getByRole("button", { name: CHANGE_GRACE }));
+    await expect(
+      await within(document.body).findByText(/came from an LDAP group mapping/),
+    ).toBeVisible();
+    await cancelConfirmation();
+    await userEvent.click(canvas.getByRole("button", { name: REVOKE_GRACE }));
+    await expect(
+      await within(document.body).findByText(/The role came from an LDAP group mapping/),
+    ).toBeVisible();
   },
 };
 
@@ -1454,7 +1967,8 @@ export const SuperadminMayRevokeTheLastAdminGrant: Story = {
 /**
  * The list was stale: someone else's admin grant went away meanwhile, so the
  * control plane refuses with `last_org_admin`. The dialog stays open and says
- * why in the dashboard's words, branching on the code and not the message.
+ * why in the catalog's sentence for the code, the shared path every coded
+ * refusal takes (#3522), branching on the code and not the message.
  */
 export const RevokeRefusedAsTheLastAdmin: Story = {
   render: () => (
@@ -1468,9 +1982,7 @@ export const RevokeRefusedAsTheLastAdmin: Story = {
     const dialog = within(await confirmation());
     await userEvent.click(dialog.getByRole("button", { name: "Revoke role" }));
     await waitFor(() =>
-      expect(dialog.getByRole("alert")).toHaveTextContent(
-        "This is the organization's last admin grant. Grant admin to another person first, or ask a superadmin.",
-      ),
+      expect(dialog.getByRole("alert")).toHaveTextContent(en.errors.api.codes.last_org_admin),
     );
     await expect(within(document.body).getByRole("dialog")).toBeInTheDocument();
   },
@@ -1478,8 +1990,8 @@ export const RevokeRefusedAsTheLastAdmin: Story = {
 
 /**
  * Demoting the last admin grant is refused with the stable `last_org_admin`
- * code: the dialog stays open and says why in the dashboard's words, and the
- * row keeps its role.
+ * code: the dialog stays open and says why in the catalog's sentence for the
+ * code (#3522), and the row keeps its role.
  */
 export const ChangeOfTheLastAdminIsRefused: Story = {
   render: () => (
@@ -1494,9 +2006,7 @@ export const ChangeOfTheLastAdminIsRefused: Story = {
     await pickOption(dialog.getByLabelText("New role"), "Member");
     await userEvent.click(dialog.getByRole("button", { name: "Change role" }));
     await waitFor(() =>
-      expect(dialog.getByRole("alert")).toHaveTextContent(
-        "This is the organization's last admin grant. Grant admin to another person first, or ask a superadmin.",
-      ),
+      expect(dialog.getByRole("alert")).toHaveTextContent(en.errors.api.codes.last_org_admin),
     );
     await expect(within(document.body).getByRole("dialog")).toBeInTheDocument();
     await expect(canvas.getByRole("button", { name: CHANGE_ADA })).toBeInTheDocument();
@@ -1572,6 +2082,10 @@ function invitationsApi(
   answers: {
     rows?: Invitation[];
     onRevoke?: (id: string, rows: Invitation[]) => Promise<Response | null> | Response | null;
+    /** answers a resend of the invitation with this id; the default mails it */
+    onResend?: (row: Invitation) => Response;
+    /** answers a relay check; the default says the relay is fine */
+    onMailCheck?: () => Response | Promise<Response>;
   } = {},
 ): FetchStub {
   const rows = (answers.rows ?? INVITATIONS).map((row) => ({ ...row }));
@@ -1585,6 +2099,18 @@ function invitationsApi(
       const row = rows.find((candidate) => candidate.id === revoked[1]);
       if (!row) return json({ error: { message: "not found" } }, 404);
       row.revoked_at = "2026-09-30T00:00:00Z";
+      return json(row);
+    }
+    if (method === "POST" && url.includes("/invitations/mail-check")) {
+      return answers.onMailCheck ? answers.onMailCheck() : json({ ok: true });
+    }
+    const resent = url.match(/\/api\/v1\/invitations\/([^/?]+)\/resend$/);
+    if (method === "POST" && resent) {
+      const row = rows.find((candidate) => candidate.id === resent[1]);
+      if (!row) return json({ error: { message: "not found" } }, 404);
+      if (answers.onResend) return answers.onResend(row);
+      row.mail_status = "sent";
+      row.mail_error = null;
       return json(row);
     }
     if (method === "POST" && url.includes("/invitations")) {
@@ -2093,16 +2619,18 @@ export const PendingInvitationsHiddenFromAViewer: Story = {
   },
 };
 
-/** An org admin reads the list and may revoke from it. */
+/** An org admin reads the list and may revoke and resend from it. */
 export const PendingInvitationsOpenToAnAdmin: Story = {
   render: () => (
-    <Harness fetchStub={invitationsApi()} role="admin">
+    <Harness fetchStub={invitationsApi({ rows: withFailedMail(INVITATIONS) })} role="admin">
       <Users />
     </Harness>
   ),
   play: async ({ canvasElement }) => {
     const section = await pendingSection(canvasElement);
     await expectAllowed(section, revokeInvitationName("newcomer@example.com"));
+    // resending is `invitation:create`, the bar for sending it the first time
+    await expectAllowed(section, "Email the link to newcomer@example.com again");
   },
 };
 

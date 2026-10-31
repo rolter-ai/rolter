@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Pencil, Plus, Key } from "lucide-react";
+import { Pencil, Plus, Key, RotateCw } from "lucide-react";
 import * as React from "react";
 import { Trans, useTranslation } from "react-i18next";
 
@@ -56,6 +56,8 @@ import {
   primaryColumn,
 } from "@/components/screen";
 import { Badge } from "@/components/ui/badge";
+import { Combobox } from "@/components/ui/combobox";
+import { Field } from "@/components/ui/field";
 import { Button } from "@/components/ui/button";
 import { SecretRevealDialog } from "@/components/ui/secret-reveal";
 import { Tag } from "@/components/ui/tag";
@@ -63,6 +65,8 @@ import {
   PLAYGROUND_PURPOSE,
   createVirtualKey,
   deleteVirtualKey,
+  revokeVirtualKeyPreviousSecret,
+  rotateVirtualKey,
   fetchBusinessUnits,
   fetchCustomers,
   fetchOrgBudgetSpend,
@@ -86,9 +90,18 @@ import { useFormat } from "@/lib/i18n/format";
 import { useScope } from "@/lib/scope";
 import { describeError, errorText } from "@/lib/error-copy";
 import { useToast } from "@/lib/toast";
+import { useNow } from "@/lib/use-now";
 import { useScreenReady } from "@/lib/ux-react";
 
 const KEYS_QUERY_KEY = ["virtual-keys"];
+
+/** the overlap choices a rotation offers, in seconds; the server caps it at 30 days */
+const ROTATION_OVERLAPS: Record<string, number> = {
+  none: 0,
+  hour: 3600,
+  day: 86400,
+  week: 7 * 86400,
+};
 
 export default function Keys() {
   const { t } = useTranslation();
@@ -96,6 +109,8 @@ export default function Keys() {
   // the same short date the mint sheet previews, so a row and its preview
   // cannot disagree about when the key stops working (#1182)
   const fmt = useFormat();
+  // an overlap that has ended is no longer shown, even before the list refetches
+  const now = useNow();
   const queryClient = useQueryClient();
   const scope = useScope();
   // the scope hook names a catalog key rather than carrying english copy
@@ -186,6 +201,23 @@ export default function Keys() {
     onSuccess: invalidate,
   });
 
+  // an admin rotation (#1837): the same row gets a new secret, optionally with
+  // the old one still valid for a while. The overlap is a choice the operator
+  // makes per rotation, so it is picked in the confirmation rather than stored
+  const rotate = useMutation({
+    mutationFn: ({ id, overlapSeconds }: { id: string; overlapSeconds: number }) =>
+      rotateVirtualKey(id, overlapSeconds),
+    onSuccess: invalidate,
+  });
+  const revokePrevious = useMutation({
+    mutationFn: (id: string) => revokeVirtualKeyPreviousSecret(id),
+    onSuccess: invalidate,
+  });
+  const [rotateTarget, setRotateTarget] = React.useState<VirtualKeyRow | null>(null);
+  const [rotateOverlap, setRotateOverlap] = React.useState<string>("none");
+  const [revokeTarget, setRevokeTarget] = React.useState<VirtualKeyRow | null>(null);
+  const [rotated, setRotated] = React.useState<CreatedVirtualKey | null>(null);
+
   const [addOpen, setAddOpen] = React.useState(false);
   const [editTarget, setEditTarget] = React.useState<VirtualKeyRow | null>(null);
   const [deleteTarget, setDeleteTarget] = React.useState<VirtualKeyRow | null>(null);
@@ -237,7 +269,7 @@ export default function Keys() {
   // the cache policy is a combobox, and "наследовать" is its longest value: the
   // column keeps the 9rem that holds it whole beside the control's chevron
   // (#2830), and `minWidth` below carries what the floor takes from the others
-  const GRID = `${primaryColumn(1.2)} 1fr 1.4fr 1.4fr minmax(9rem, 1.1fr) 60px 68px`;
+  const GRID = `${primaryColumn(1.2)} 1fr 1.4fr 1.4fr minmax(9rem, 1.1fr) 60px 100px`;
 
   return (
     <PageBody>
@@ -340,6 +372,34 @@ export default function Keys() {
                 rateLimits={capsOfKey(rateLimits.data, key.id)}
                 spend={spend.isPending ? "loading" : spend.isError ? null : spend.data}
               />
+              {/* a rotation's overlap: the replaced secret still works, so
+                  the row says which one and until when, and offers to end it
+                  early rather than leaving the date to be waited out */}
+              {key.previous_expires_at &&
+                key.previous_key_prefix &&
+                new Date(key.previous_expires_at).getTime() > now && (
+                  <div className="flex min-w-0 items-center gap-1 text-2xs text-muted-foreground">
+                    <span className="truncate">
+                      {t("pages.virtualKeys.previousSecret", {
+                        prefix: key.previous_key_prefix,
+                        date: fmt.dateTime(key.previous_expires_at),
+                      })}
+                    </span>
+                    <GatedButton
+                      gate="virtual_key:update"
+                      control="key-revoke-previous"
+                      variant="ghost"
+                      size="sm"
+                      className="h-5 px-1 text-2xs"
+                      aria-label={t("pages.virtualKeys.revokePreviousAria", {
+                        name: key.name ?? key.key_prefix,
+                      })}
+                      onClick={() => setRevokeTarget(key)}
+                    >
+                      {t("pages.virtualKeys.revokePrevious")}
+                    </GatedButton>
+                  </div>
+                )}
             </ListCell>
             <ListCell className="flex min-w-0 items-center gap-0.5">
               <code className="min-w-0 flex-1 truncate font-mono text-xs text-[color:var(--text-secondary)]">
@@ -415,6 +475,21 @@ export default function Keys() {
                 onClick={() => setEditTarget(key)}
               >
                 <Pencil className="h-3.5 w-3.5" />
+              </RowIconButton>
+              <RowIconButton
+                gate="virtual_key:update"
+                control="key-rotate"
+                title={t("pages.virtualKeys.rotate")}
+                aria-label={t("pages.virtualKeys.rotateKey", {
+                  name: key.name ?? key.key_prefix,
+                })}
+                disabled={scopeBlocked}
+                onClick={() => {
+                  setRotateOverlap("none");
+                  setRotateTarget(key);
+                }}
+              >
+                <RotateCw className="h-3.5 w-3.5" />
               </RowIconButton>
               <DeleteIconButton
                 gate="virtual_key:delete"
@@ -529,6 +604,95 @@ export default function Keys() {
           });
         }}
       />
+
+      <ConfirmDialog
+        name="virtual-key-rotate"
+        tone="default"
+        open={!!rotateTarget}
+        onOpenChange={(open) => {
+          if (open) return;
+          setRotateTarget(null);
+          rotate.reset();
+        }}
+        title={t("pages.virtualKeys.confirm.rotateTitle", {
+          name: rotateTarget?.name ?? rotateTarget?.key_prefix ?? "",
+        })}
+        description={t("pages.virtualKeys.confirm.rotateBody")}
+        confirmLabel={t("pages.virtualKeys.confirm.rotateConfirm")}
+        pending={rotate.isPending}
+        error={rotate.error}
+        onConfirm={() => {
+          if (!rotateTarget) return;
+          rotate.mutate(
+            { id: rotateTarget.id, overlapSeconds: ROTATION_OVERLAPS[rotateOverlap] ?? 0 },
+            {
+              onSuccess: (key) => {
+                setRotateTarget(null);
+                setRotated(key);
+              },
+            },
+          );
+        }}
+      >
+        <Field label={t("pages.virtualKeys.confirm.overlapLabel")}>
+          <Combobox
+            value={rotateOverlap}
+            onChange={setRotateOverlap}
+            options={Object.keys(ROTATION_OVERLAPS).map((value) => ({
+              value,
+              label: t(`pages.virtualKeys.confirm.overlap.${value}`),
+            }))}
+          />
+        </Field>
+      </ConfirmDialog>
+
+      <ConfirmDialog
+        name="virtual-key-revoke-previous"
+        open={!!revokeTarget}
+        onOpenChange={(open) => {
+          if (open) return;
+          setRevokeTarget(null);
+          revokePrevious.reset();
+        }}
+        title={t("pages.virtualKeys.confirm.revokePreviousTitle", {
+          name: revokeTarget?.name ?? revokeTarget?.key_prefix ?? "",
+        })}
+        description={
+          <Trans
+            i18nKey="pages.virtualKeys.confirm.revokePreviousBody"
+            values={{ prefix: `${revokeTarget?.previous_key_prefix}…` }}
+            components={[<span key="prefix" className="font-mono" />]}
+          />
+        }
+        confirmLabel={t("pages.virtualKeys.confirm.revokePreviousConfirm")}
+        pending={revokePrevious.isPending}
+        error={revokePrevious.error}
+        onConfirm={() => {
+          if (!revokeTarget) return;
+          revokePrevious.mutate(revokeTarget.id, { onSuccess: () => setRevokeTarget(null) });
+        }}
+      />
+
+      {/* the rotated secret, shown once like a mint: `rotated` is dropped on
+          close and the control plane keeps only its digest */}
+      <SecretRevealDialog
+        name="virtual-key-rotated"
+        open={!!rotated}
+        onOpenChange={(open) => !open && setRotated(null)}
+        title={t("pages.virtualKeys.rotatedTitle")}
+        description={
+          rotated?.previous_expires_at
+            ? t("pages.virtualKeys.rotatedBodyOverlap", {
+                date: fmt.dateTime(rotated.previous_expires_at),
+              })
+            : t("pages.virtualKeys.rotatedBody")
+        }
+        secret={rotated?.key ?? ""}
+        copyLabel={t("common.copy")}
+        size="lg"
+      >
+        <KeyNextStep models={rotated?.models ?? []} />
+      </SecretRevealDialog>
 
       {/* the plaintext is shown once; `created` is dropped on close, so it is
           never re-fetchable */}

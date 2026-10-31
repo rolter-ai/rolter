@@ -216,6 +216,10 @@ pub enum Conformance {
     Partial,
     /// A provider's auth/path profile over an OpenAI-shaped transport.
     ProviderProfile,
+    /// A provider kind rolter ships a profile for, but whose public API
+    /// reference was not found: whether it speaks an OpenAI-compatible API at
+    /// a stable base URL is not established (#3428).
+    Unverified,
 }
 
 impl Conformance {
@@ -227,6 +231,7 @@ impl Conformance {
             Conformance::Extension => "extension",
             Conformance::Partial => "partial",
             Conformance::ProviderProfile => "provider-profile",
+            Conformance::Unverified => "unverified",
         }
     }
 }
@@ -290,6 +295,18 @@ pub fn registry() -> Option<&'static Registry> {
             }
         })
         .as_ref()
+}
+
+/// Whether the registry records `kind` as [`Conformance::Unverified`]: no
+/// public API reference was located for it (#3428). The dashboard marks such a
+/// kind from this rather than from a list of its own.
+pub fn is_unverified(kind: ProviderKind) -> bool {
+    registry().is_some_and(|registry| {
+        registry
+            .providers
+            .iter()
+            .any(|p| p.kind == kind && p.conformance == Conformance::Unverified)
+    })
 }
 
 const METHODS: &[&str] = &["GET", "POST", "PUT", "PATCH", "DELETE"];
@@ -368,9 +385,13 @@ impl Registry {
             }
             check_date(&mut problems, &at, &spec.reviewed_at);
             check_version(&mut problems, &at, spec);
-            if spec.conformance == Conformance::ProviderProfile {
+            if matches!(
+                spec.conformance,
+                Conformance::ProviderProfile | Conformance::Unverified
+            ) {
                 problems.push(format!(
-                    "{at}: provider-profile describes a [[provider]], not a [[spec]]"
+                    "{at}: {} describes a [[provider]], not a [[spec]]",
+                    spec.conformance.as_str()
                 ));
             }
             for endpoint in spec.gateway_endpoints.iter().chain(&spec.control_endpoints) {
@@ -883,5 +904,149 @@ mod tests {
         let mut control = json!({"paths": {}, "components": {"schemas": {"Example": {}}}});
         annotate_with(&registry, &mut control, Plane::Control);
         assert!(control["components"]["schemas"]["Example"]["externalDocs"].is_null());
+    }
+
+    /// The conformance fixtures, relative to the repository root (#3336).
+    const PROFILE_FIXTURES: &str = "crates/rolter-gateway/tests/provider_profiles.rs";
+
+    /// Each case of the fixtures file `source`, by test name, and whether its
+    /// `source:` is `Source::Fetched` rather than `Source::Recalled`. A case is
+    /// an `async fn` up to the next one; one with no `source:` reads as not
+    /// fetched.
+    fn fixture_sources(source: &str) -> Vec<(&str, bool)> {
+        let mut cases = Vec::new();
+        let mut rest = source;
+        while let Some(at) = rest.find("async fn ") {
+            rest = &rest[at + "async fn ".len()..];
+            let name_end = rest
+                .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                .unwrap_or(rest.len());
+            let name = &rest[..name_end];
+            let body = &rest[name_end..];
+            let body = &body[..body.find("async fn ").unwrap_or(body.len())];
+            let fetched = body
+                .find("source: Source::")
+                .is_some_and(|at| body[at..].starts_with("source: Source::Fetched("));
+            cases.push((name, fetched));
+        }
+        cases
+    }
+
+    /// The `provider-profile` records, `[[spec]]` and `[[provider]]` alike,
+    /// whose cited fixtures (`tests` entries in [`PROFILE_FIXTURES`]) include
+    /// no fetched one, or name a case the file does not have (#3495). A
+    /// recalled fixture is a regression guard for what rolter sends, not
+    /// evidence about the vendor, so it cannot carry the claim alone.
+    fn profiles_without_a_fetched_fixture(
+        registry: &Registry,
+        fixtures: &[(&str, bool)],
+    ) -> Vec<String> {
+        let records = registry
+            .specs
+            .iter()
+            .map(|spec| (spec.id.clone(), spec.conformance, &spec.tests))
+            .chain(registry.providers.iter().map(|provider| {
+                (
+                    format!("provider {:?}", provider.kind),
+                    provider.conformance,
+                    &provider.tests,
+                )
+            }));
+        let mut problems = Vec::new();
+        for (record, conformance, tests) in records {
+            if conformance != Conformance::ProviderProfile {
+                continue;
+            }
+            let cited: Vec<&str> = tests
+                .iter()
+                .filter_map(|test| test.strip_prefix(PROFILE_FIXTURES)?.strip_prefix("::"))
+                .collect();
+            for case in &cited {
+                if !fixtures.iter().any(|(name, _)| name == case) {
+                    problems.push(format!(
+                        "{record}: cites {PROFILE_FIXTURES}::{case}, which the file does not have"
+                    ));
+                }
+            }
+            let fetched = cited
+                .iter()
+                .any(|case| fixtures.iter().any(|(name, f)| name == case && *f));
+            if !cited.is_empty() && !fetched {
+                problems.push(format!(
+                    "{record}: claims provider-profile but cites no Fetched fixture in \
+                     {PROFILE_FIXTURES} (only {}); fetch the vendor page and mark the case \
+                     Fetched, or drop the claim",
+                    cited.join(", ")
+                ));
+            }
+        }
+        problems
+    }
+
+    #[test]
+    fn no_provider_profile_rests_on_a_recalled_fixture_only() {
+        let fixtures = std::fs::read_to_string(format!(
+            "{}/../../{PROFILE_FIXTURES}",
+            env!("CARGO_MANIFEST_DIR")
+        ))
+        .expect("the provider profile fixtures are readable");
+        let cases = fixture_sources(&fixtures);
+        assert!(
+            cases.iter().any(|(_, fetched)| *fetched),
+            "no Fetched case was read from {PROFILE_FIXTURES}: {cases:?}"
+        );
+        let problems = profiles_without_a_fetched_fixture(&embedded(), &cases);
+        assert!(problems.is_empty(), "{problems:#?}");
+    }
+
+    #[test]
+    fn a_profile_on_a_recalled_fixture_is_named() {
+        let fixtures = r#"
+            async fn fetched_case() {
+                replay(&Profile { source: Source::Fetched("2026-10-29"), });
+            }
+            async fn recalled_case() {
+                replay(&Profile { source: Source::Recalled, });
+            }
+        "#;
+        let cases = fixture_sources(fixtures);
+        assert_eq!(cases, [("fetched_case", true), ("recalled_case", false)]);
+        let record = |conformance: &str, case: &str| {
+            parse(
+                &MINIMAL
+                    .replace(
+                        "conformance = \"partial\"",
+                        &format!("conformance = \"{conformance}\""),
+                    )
+                    .replace(
+                        "tests = [\"crates/x/src/lib.rs::works\"]",
+                        &format!("tests = [\"{PROFILE_FIXTURES}::{case}\"]"),
+                    ),
+            )
+            .expect("the fixture parses")
+        };
+        let problems = profiles_without_a_fetched_fixture(
+            &record("provider-profile", "recalled_case"),
+            &cases,
+        );
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(problems[0].starts_with("example: "), "{problems:?}");
+        assert!(problems[0].contains("recalled_case"), "{problems:?}");
+        // a fetched case carries the claim, and a record that claims less
+        // needs none
+        assert!(profiles_without_a_fetched_fixture(
+            &record("provider-profile", "fetched_case"),
+            &cases
+        )
+        .is_empty());
+        assert!(profiles_without_a_fetched_fixture(
+            &record("transport-only", "recalled_case"),
+            &cases
+        )
+        .is_empty());
+        // a case the file does not have is named too
+        let missing =
+            profiles_without_a_fetched_fixture(&record("provider-profile", "gone_case"), &cases);
+        assert!(missing[0].contains("does not have"), "{missing:?}");
     }
 }

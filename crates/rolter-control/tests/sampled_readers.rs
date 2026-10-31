@@ -364,6 +364,44 @@ async fn alert_signals_scale_by_the_row_weight_and_the_error_rate_stays_a_ratio_
     near(read_alert(&stack, "error_rate").await, 0.75);
 }
 
+/// #3294: the error rate counts server failures and a request that never got
+/// a status (0), and leaves out a 4xx, which is the caller's own mistake.
+#[tokio::test]
+async fn the_error_rate_alert_counts_status_zero_and_leaves_out_a_4xx() {
+    let Some(stack) = stack().await else {
+        eprintln!("skipping: the postgres and clickhouse test servers are not both set");
+        return;
+    };
+    stack
+        .insert(&[
+            row("", 200, 1.0),
+            row("", 0, 1.0),
+            row("", 429, 1.0),
+            row("", 502, 1.0),
+        ])
+        .await;
+    near(read_alert(&stack, "error_rate").await, 0.5);
+}
+
+/// The p95 latency alert weights each kept row by the requests it stands for
+/// (#3355): one slow request among fifty-odd fast ones is not the 95th percentile,
+/// though it is one of three stored rows.
+#[tokio::test]
+async fn the_p95_latency_alert_weights_each_row_by_the_requests_it_stands_for() {
+    let Some(stack) = stack().await else {
+        eprintln!("skipping: the postgres and clickhouse test servers are not both set");
+        return;
+    };
+    let mut rows = vec![row("", 200, 50.0), row("", 200, 1.0), row("", 200, 1.0)];
+    for (stored, latency) in rows.iter_mut().zip([100, 200, 1000]) {
+        stored["latency_ms"] = json!(latency);
+    }
+    stack.insert(&rows).await;
+
+    // an unweighted reading of the three rows is the slow one, near 1000
+    near(read_alert(&stack, "p95_latency_ms").await, 100.0);
+}
+
 /// One kept row of `weight` requests whose plugins did `events` (#2243).
 fn plugin_row(org: &str, weight: f64, ts: &str, events: &[&str]) -> Value {
     let mut row = row("key-plugins", 200, weight);
@@ -446,4 +484,114 @@ async fn the_plugin_rollup_counts_each_outcome_by_weight_and_names_the_newest_er
     let other = find("org-b", "audit");
     assert_eq!(other["calls"].as_f64(), Some(3.0), "{body}");
     assert_eq!(other["errors"].as_f64(), Some(0.0), "{body}");
+}
+
+/// `row`, with `extra` merged over it.
+fn row_with(key: &str, status: u16, weight: f64, extra: Value) -> Value {
+    let mut row = row(key, status, weight);
+    if let (Some(row), Some(extra)) = (row.as_object_mut(), extra.as_object()) {
+        for (name, value) in extra {
+            row.insert(name.clone(), value.clone());
+        }
+    }
+    row
+}
+
+async fn get_json(stack: &Stack, path: &str) -> Value {
+    let response = stack
+        .http
+        .get(format!("http://{}{path}", stack.addr))
+        .bearer_auth(ADMIN_TOKEN)
+        .send()
+        .await
+        .unwrap();
+    let status = response.status();
+    let body: Value = response.json().await.unwrap_or(Value::Null);
+    assert!(status.is_success(), "{path}: {status} {body}");
+    body
+}
+
+/// #3323: the rollup's single scan (`sumMap` over the entries, then an `array
+/// join`) yields each parameter's weighted requests, the route's weighted
+/// total to that provider and their share, against the real column type.
+#[tokio::test]
+async fn the_param_adjustment_rollup_weighs_each_entry_against_the_route() {
+    let Some(stack) = stack().await else {
+        eprintln!("skipping: the postgres and clickhouse test servers are not both set");
+        return;
+    };
+    let adjusted = json!({"provider": "anthropic", "param_adjustments": ["dropped:top_k"]});
+    stack
+        .insert(&[
+            row_with("k", 200, 2.0, adjusted.clone()),
+            row_with("k", 200, 3.0, json!({"provider": "anthropic"})),
+            // another provider of the same route is its own total
+            row_with("k", 200, 5.0, json!({"provider": "openai"})),
+        ])
+        .await;
+
+    let body = get_json(&stack, "/api/v1/analytics/param-adjustments").await;
+    assert_eq!(body["recorded"], true, "{body}");
+    let rows = body["data"].as_array().expect("a data array");
+    assert_eq!(rows.len(), 1, "{body}");
+    let row = &rows[0];
+    assert_eq!(row["route"], "fake-llm", "{body}");
+    assert_eq!(row["provider"], "anthropic", "{body}");
+    assert_eq!(row["disposition"], "dropped", "{body}");
+    assert_eq!(row["param"], "top_k", "{body}");
+    let number = |name: &str| {
+        row[name]
+            .as_f64()
+            .or_else(|| row[name].as_str().and_then(|s| s.parse().ok()))
+    };
+    assert_eq!(number("requests"), Some(2.0), "{body}");
+    assert_eq!(number("route_requests"), Some(5.0), "{body}");
+    assert_eq!(number("share"), Some(0.4), "{body}");
+}
+
+/// #3307: `outcome=` narrows the list to rows recorded with it, and `unknown`
+/// matches a row written without one, which the column's default fills in.
+#[tokio::test]
+async fn the_invocation_list_filters_on_the_recorded_outcome() {
+    let Some(stack) = stack().await else {
+        eprintln!("skipping: the postgres and clickhouse test servers are not both set");
+        return;
+    };
+    stack
+        .insert(&[
+            row_with(
+                "k",
+                402,
+                1.0,
+                json!({"request_id": "refused-one", "outcome": "refused_budget"}),
+            ),
+            row_with(
+                "k",
+                200,
+                1.0,
+                json!({"request_id": "served-one", "outcome": "served"}),
+            ),
+            row_with("k", 200, 1.0, json!({"request_id": "older-one"})),
+        ])
+        .await;
+
+    for (outcome, want) in [
+        ("refused_budget", "refused-one"),
+        ("served", "served-one"),
+        ("unknown", "older-one"),
+    ] {
+        let body = get_json(
+            &stack,
+            &format!("/api/v1/analytics/invocations?outcome={outcome}"),
+        )
+        .await;
+        let ids: Vec<_> = body["data"]
+            .as_array()
+            .expect("a data array")
+            .iter()
+            .map(|row| row["request_id"].as_str().unwrap_or_default().to_string())
+            .collect();
+        assert_eq!(ids, [want], "{outcome}: {body}");
+        assert_eq!(body["data"][0]["outcome"], outcome, "{body}");
+    }
 }

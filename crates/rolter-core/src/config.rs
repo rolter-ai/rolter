@@ -31,8 +31,13 @@ pub struct GatewayConfig {
     /// a typo. This set lets that pass tell the two apart and prune the
     /// reference like any other omitted provider. Never read from or written
     /// to a file or the wire: it only travels from the store to the sanitizer.
+    ///
+    /// Each entry is `(org, name)`, with the global namespace written `""`
+    /// ([`crate::namespace::GLOBAL`]), since two orgs may each have a provider
+    /// of one name (#1857) and one org's unreadable row must not take the
+    /// other's references with it (#3464).
     #[serde(skip)]
-    pub left_out_providers: std::collections::HashSet<String>,
+    pub left_out_providers: std::collections::HashSet<(String, String)>,
     #[serde(default)]
     pub server: ServerConfig,
     /// outbound TLS trust configuration shared by upstream providers
@@ -84,6 +89,24 @@ pub struct GatewayConfig {
     /// organization with no entry has never saved any and gets the defaults
     #[serde(default)]
     pub mcp_settings: Vec<McpOrgSettingsConfig>,
+    /// Whether an organization that never saved MCP settings enforces its
+    /// servers' tool manifests (#3398). Read by `rolter-seed --import` and
+    /// written by `rolter config export`; the control plane never ships it in
+    /// the snapshot, which carries the marker inside each server instead.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mcp_manifest_enforcement: Vec<McpManifestEnforcementConfig>,
+    /// The MCP gateway settings an organization saved (#3482). Read by
+    /// `rolter-seed --import` and written by `rolter config export`; the
+    /// control plane never ships it in the snapshot, which carries the same
+    /// values per organization as `mcp_settings`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mcp_gateway_settings: Vec<McpGatewaySettingsConfig>,
+    /// The MCP tool groups an organization defined, with the teams, projects
+    /// and keys each is assigned to (#3514). Read by `rolter-seed --import`
+    /// and written by `rolter config export`; the control plane never ships it
+    /// in the snapshot, which carries the groups as `mcp_tool_groups`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mcp_gateway_tool_groups: Vec<McpGatewayToolGroupConfig>,
     #[serde(default)]
     pub model_prices: Vec<ModelPriceConfig>,
     /// settlement currency and rate table. Budgets and accumulated spend are
@@ -178,6 +201,12 @@ pub struct GatewayConfig {
     /// proxying, vendor-neutral. Disabled by default (ROL-257)
     #[serde(default)]
     pub guardrail_webhook: crate::guardrail_webhook::GuardrailWebhookConfig,
+    /// semantic guardrail providers that can run side by side, and the
+    /// policies scoped to the deployment, an org, a project, a route or a
+    /// virtual key that pick which of them judge a request (#459). Empty by
+    /// default
+    #[serde(default)]
+    pub semantic_guards: crate::semantic_guards::SemanticGuardsConfig,
     /// external PII sanitizer: a self-hosted service that returns *transformed*
     /// content (placeholders) rather than an allow/block decision, with
     /// opt-in restoration. Disabled by default (#848)
@@ -354,6 +383,7 @@ impl ProviderKind {
     ///
     /// `kind_is_listed_in_all` keeps this honest: it matches exhaustively, so
     /// adding a variant without adding it here fails to compile.
+    /// [`ProviderKind::Unknown`] is not listed: it is never configurable.
     pub const ALL: [ProviderKind; 50] = [
         ProviderKind::Openai,
         ProviderKind::Anthropic,
@@ -826,6 +856,13 @@ pub enum ProviderKind {
     /// a self-hosted michaelfeil/infinity server: openai-shaped embeddings and
     /// a cohere-style rerank, many models from one process, keyless by default
     Infinity,
+    /// a kind this build does not know, read from a newer control plane's
+    /// snapshot (#3347). Such a provider is never dialled: the snapshot
+    /// sanitizer omits it, and the routes, groups and keys that named it lose
+    /// those references through the same cascade as any other omitted provider.
+    /// A config file or an API request that names an unknown kind is refused
+    #[serde(other)]
+    Unknown,
 }
 
 /// Instruction-role semantics supported by an upstream target.
@@ -842,6 +879,10 @@ pub enum RoleProfile {
     SystemOnly,
     /// Anthropic Messages top-level `system` blocks.
     Anthropic,
+    /// a profile this build does not know (#3347); read as
+    /// [`RoleProfile::SystemOnly`], the one every upstream accepts
+    #[serde(other)]
+    Unknown,
 }
 
 /// An upstream provider rolter can forward to.
@@ -1048,15 +1089,15 @@ pub struct ApiKeyConfig {
     /// name of an environment variable to read the key from
     #[serde(default)]
     pub env: Option<String>,
-    /// relative selection weight; clamped to at least 1 when sampling
+    /// relative selection weight; 0 is never picked while another key has a positive weight
     #[serde(default = "default_weight")]
     pub weight: u32,
 }
 
 /// A defaulted entry carries no secret and the neutral weight the TOML
 /// `#[serde(default)]` would apply, so a fixture can name only the field it
-/// cares about. Derived `Default` would give `weight = 0`, which every sampler
-/// then has to clamp.
+/// cares about. Derived `Default` would give `weight = 0`, which now means
+/// "never picked while another key has a positive weight".
 impl Default for ApiKeyConfig {
     fn default() -> Self {
         Self {
@@ -1130,7 +1171,7 @@ impl ProviderConfig {
         }
         self.api_keys
             .iter()
-            .filter_map(|k| k.resolve().map(|s| (s, k.weight.max(1))))
+            .filter_map(|k| k.resolve().map(|s| (s, k.weight)))
             .collect()
     }
 
@@ -1261,6 +1302,12 @@ pub enum BalancingStrategy {
     /// modelled to cost on each, from the queue it would join and its own
     /// prompt size, rather than by a per-target average
     PredictedLatency,
+    /// a strategy this build does not know, read from a newer control plane's
+    /// snapshot (#3347). The route refuses: the snapshot sanitizer omits it,
+    /// so a request for its model is answered as for any unknown model rather
+    /// than balanced by a guess
+    #[serde(other)]
+    Unknown,
 }
 
 /// A named set of providers addressable as `group-slug/model` (ADR-0017
@@ -1321,6 +1368,35 @@ pub struct Target {
     pub model: Option<String>,
     #[serde(default = "default_weight")]
     pub weight: u32,
+    /// the failures this target is a fallback for (#1584). A target with a set
+    /// is never dialled first and never picked by ordinary balancing: it is
+    /// tried only after an attempt on another target failed with one of these
+    /// classes. Empty, the default, makes it an ordinary member of the pool.
+    /// See [`crate::failover`]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub takes_over: Vec<crate::failover::FailureClass>,
+}
+
+impl Default for Target {
+    /// An empty provider name with the weight an omitted `weight` key
+    /// deserializes to (1, not 0: a zero-weight target is never chosen). It
+    /// exists for fixtures; production code writes every field out.
+    fn default() -> Self {
+        Self {
+            provider: String::new(),
+            model: None,
+            weight: default_weight(),
+            takes_over: Vec::new(),
+        }
+    }
+}
+
+impl Target {
+    /// Whether this target is a restricted fallback rather than a member of
+    /// the pool.
+    pub fn is_restricted(&self) -> bool {
+        !self.takes_over.is_empty()
+    }
 }
 
 /// Extra settings attached to one public model route. These are deliberately
@@ -1806,6 +1882,49 @@ impl ModelRoute {
         )
     }
 
+    /// The targets the data plane dials first: the variants' targets when the
+    /// route has variants, because `forward_variants` never consults the
+    /// classic pool then, and the pool otherwise (#3430).
+    pub fn dialled_targets(&self) -> Box<dyn Iterator<Item = &Target> + '_> {
+        dialled_targets(&self.targets, &self.variants)
+    }
+
+    /// Whether this route has targets to dial and every one of them is
+    /// restricted, so it could never serve a first dial.
+    pub fn only_restricted_targets_dialled(&self) -> bool {
+        only_restricted_targets_dialled(&self.targets, &self.variants)
+    }
+
+    /// Every problem with the `takes_over` sets of this route's targets, the
+    /// classic pool's and every variant's together: a class listed twice on a
+    /// target, and a route whose every dialled target is restricted
+    /// ([`dialled_targets`](Self::dialled_targets)), which is refused by name
+    /// ([`crate::failover::ALL_TARGETS_RESTRICTED`]) because it could never
+    /// dial anything.
+    pub fn takes_over_problems(&self) -> Vec<String> {
+        // a class listed twice is judged over every target, but a route with
+        // variants dials only them, so "nothing to dial" is judged apart
+        let mut problems = crate::failover::duplicate_class_problems(
+            &self.model,
+            self.every_target()
+                .map(|t| (t.provider.as_str(), t.takes_over.as_slice())),
+        );
+        if self.only_restricted_targets_dialled() {
+            problems.push(crate::failover::all_targets_restricted(&self.model));
+        }
+        problems
+    }
+
+    /// Whether this route has a target that takes refusals over, which is
+    /// what makes the gateway read a refused attempt's body at all.
+    pub fn takes_over_refusals(&self) -> bool {
+        self.every_target().any(|t| {
+            t.takes_over
+                .iter()
+                .any(|c| c.kind == crate::failover::FailureKind::Refusal)
+        })
+    }
+
     /// Whether this route opts into response caching (the global `[cache]`
     /// switch still has to be on for caching to actually happen).
     pub fn cache_enabled(&self) -> bool {
@@ -1846,6 +1965,57 @@ impl ModelRoute {
     }
 }
 
+/// The targets the data plane dials first for a route with this pool and
+/// these variants: the variants' targets when there are any, the pool
+/// otherwise (#3430). The store's snapshot assembly applies the same rule
+/// before the route is built.
+pub fn dialled_targets<'a>(
+    pool: &'a [Target],
+    variants: &'a [Variant],
+) -> Box<dyn Iterator<Item = &'a Target> + 'a> {
+    if variants.is_empty() {
+        Box::new(pool.iter())
+    } else {
+        Box::new(variants.iter().flat_map(|v| v.targets.iter()))
+    }
+}
+
+/// Whether there are targets to dial and every one is restricted.
+pub fn only_restricted_targets_dialled(pool: &[Target], variants: &[Variant]) -> bool {
+    only_restricted_dialled(
+        pool.iter().map(Target::is_restricted),
+        variants
+            .iter()
+            .map(|variant| variant.targets.iter().map(Target::is_restricted)),
+    )
+}
+
+/// [`only_restricted_targets_dialled`] over any representation of a route's
+/// targets, given whether each one is restricted: `pool` holds one flag per
+/// pool target and `variants` one set of flags per variant. The variants'
+/// targets count when there are variants, the pool otherwise, as
+/// [`dialled_targets`] picks them. The control plane's write checks apply the
+/// rule to stored rows and request bodies through this (#3487).
+pub fn only_restricted_dialled<V>(
+    pool: impl IntoIterator<Item = bool>,
+    variants: impl IntoIterator<Item = V>,
+) -> bool
+where
+    V: IntoIterator<Item = bool>,
+{
+    fn all_restricted(mut restricted: impl Iterator<Item = bool>) -> bool {
+        restricted
+            .next()
+            .is_some_and(|first| first && restricted.all(|r| r))
+    }
+    let mut variants = variants.into_iter().peekable();
+    if variants.peek().is_none() {
+        all_restricted(pool.into_iter())
+    } else {
+        all_restricted(variants.flatten())
+    }
+}
+
 /// A weighted routing variant: a named, weighted bundle of ordered targets plus
 /// optional param defaults. A logical model maps to a set of these for A/B,
 /// canary, and per-key traffic splitting under one schema (TensorZero pattern).
@@ -1853,7 +2023,8 @@ impl ModelRoute {
 pub struct Variant {
     /// stable identifier for the variant (used in logs/metrics/attribution)
     pub name: String,
-    /// relative traffic share; clamped to at least 1 when sampling
+    /// relative traffic share; 0 takes no first attempts while another variant has
+    /// a positive weight (it is still a fallback), and an all-0 set is uniform
     #[serde(default = "default_weight")]
     pub weight: u32,
     /// ordered upstream targets tried within this variant (provider routing order)
@@ -1864,28 +2035,33 @@ pub struct Variant {
 }
 
 /// Pick an index from a sequence of weights proportional to weight, given a
-/// random draw `r` in `[0.0, 1.0)`. Each weight is clamped to at least 1 so a
-/// zero-weight entry can still be selected as a fallback. Returns `None` for an
-/// empty sequence.
+/// random draw `r` in `[0.0, 1.0)`. An entry with weight 0 is never picked
+/// while any entry has a positive weight (variant fallback goes through
+/// [`ModelRoute::fallback_order`], so it is still tried after a failure); a
+/// sequence whose weights are all 0 is sampled uniformly. Returns `None` for
+/// an empty sequence.
 fn weighted_index(weights: impl Iterator<Item = u32>, r: f64) -> Option<usize> {
-    let clamped: Vec<u64> = weights.map(|w| w.max(1) as u64).collect();
-    if clamped.is_empty() {
+    let mut shares: Vec<u64> = weights.map(u64::from).collect();
+    if shares.is_empty() {
         return None;
     }
-    let total: u64 = clamped.iter().sum();
+    if shares.iter().all(|&w| w == 0) {
+        shares.iter_mut().for_each(|w| *w = 1);
+    }
+    let total: u64 = shares.iter().sum();
     // map r into [0, total); guard against r outside [0,1) landing past the end
     let mut point = (r.clamp(0.0, 1.0) * total as f64) as u64;
     if point >= total {
         point = total - 1;
     }
     let mut acc = 0u64;
-    for (i, w) in clamped.iter().enumerate() {
+    for (i, w) in shares.iter().enumerate() {
         acc += w;
         if point < acc {
             return Some(i);
         }
     }
-    Some(clamped.len() - 1)
+    Some(shares.len() - 1)
 }
 
 /// Default override mode for a route's params: whether callers may override the
@@ -1898,6 +2074,10 @@ pub enum OverrideMode {
     Allow,
     /// callers may override no default except those in `allow`
     Deny,
+    /// a mode this build does not know (#3347); read as
+    /// [`OverrideMode::Deny`], so callers override only what `allow` lists
+    #[serde(other)]
+    Unknown,
 }
 
 /// Per-route policy governing whether callers may override the admin param
@@ -1920,7 +2100,7 @@ impl ParamPolicy {
     pub fn may_override(&self, param: &str) -> bool {
         match self.mode {
             OverrideMode::Allow => !self.deny.iter().any(|p| p == param),
-            OverrideMode::Deny => self.allow.iter().any(|p| p == param),
+            OverrideMode::Deny | OverrideMode::Unknown => self.allow.iter().any(|p| p == param),
         }
     }
 }
@@ -2039,7 +2219,10 @@ const UNNAMED_KEY: &str = "<unnamed>";
 /// A database-defined virtual key as seen by the gateway: the peppered digest
 /// (never the plaintext) plus the scope identity used for log attribution,
 /// budgets and rate limits.
-#[derive(Debug, Clone, Deserialize, Serialize)]
+///
+/// `Default` is an enabled key with no scope and no restrictions; it exists
+/// for fixtures, production code writes every field out.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct VirtualKeyRecord {
     /// `rolter_auth::hash_key(pepper, key)` — how the gateway looks the key up
     pub key_hash: String,
@@ -2078,6 +2261,22 @@ pub struct VirtualKeyRecord {
     /// does any key with no owner, since a policy is a property of a user.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub access_policy: Option<crate::access_policy::ModelPolicy>,
+    /// the secret this key was rotated away from, while its overlap window is
+    /// still open (#1837). `None` once the window closes or the old secret is
+    /// revoked early
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous: Option<PreviousKeySecret>,
+}
+
+/// The secret a rotated virtual key used to carry. It authenticates as the same
+/// key, with the same limits and attribution, until `valid_until`.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct PreviousKeySecret {
+    /// `rolter_auth::hash_key(pepper, key)` of the retired secret
+    pub key_hash: String,
+    /// last instant the retired secret authenticates; the key's own
+    /// `expires_at` still caps it when that is earlier
+    pub valid_until: DateTime<Utc>,
 }
 
 /// How the gateway authenticates to an MCP server.
@@ -2151,6 +2350,12 @@ pub struct McpServerConfig {
     /// means it declares none, which leaves nothing to check a call against
     #[serde(default)]
     pub tools: Vec<String>,
+    /// whether the server's organization enforces manifests until it saves MCP
+    /// settings of its own (#3334): true for an organization created after the
+    /// change, false for one that existed before it. A saved settings row
+    /// decides for itself and overrides this
+    #[serde(default)]
+    pub enforce_manifest_by_default: bool,
 }
 
 impl std::fmt::Debug for McpServerConfig {
@@ -2192,13 +2397,107 @@ pub struct McpOrgSettingsConfig {
     /// times a call is repeated after a connection that was never made; a
     /// call that reached the server is never repeated
     pub max_retries: u32,
-    /// what to do when a request cannot be inspected for tool policy: `true`
-    /// forwards it unchecked, `false` (the default) refuses it
+    /// Deprecated and ignored by the gateway (#3527): a request that cannot be
+    /// inspected for tool policy is refused whatever this says, since one a
+    /// more lenient upstream parser reads could call a refused tool. Still
+    /// carried so the snapshot stays at format 1; removed in 2.0.0.
     #[serde(default)]
     pub fail_open: bool,
     /// whether a call may name a tool the server's manifest does not declare
     #[serde(default)]
     pub allow_unlisted_tools: bool,
+}
+
+/// One organization's `orgs.mcp_enforce_manifests` marker in a bootstrap file
+/// (#3398): the organization by slug, and whether it enforces manifests until it
+/// saves MCP settings of its own.
+///
+/// An import never makes an existing organization stricter, so `enforce = true`
+/// is what a new organization already has and `enforce = false` is the only
+/// value that changes a row.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+pub struct McpManifestEnforcementConfig {
+    pub org: String,
+    pub enforce: bool,
+}
+
+/// One organization's saved `mcp_gateway_settings` row in a bootstrap file
+/// (#3482): the organization by slug, and the settings it saved.
+///
+/// Unlike [`McpManifestEnforcementConfig`] this is the desired state: an import
+/// sets the targeted organization to exactly these values, stricter or laxer
+/// than it was, and only that organization. `allow_unlisted_tools = false` is
+/// the organization enforcing its servers' tool manifests.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+pub struct McpGatewaySettingsConfig {
+    pub org: String,
+    /// one of [`MCP_TRANSPORTS`]
+    pub default_transport: String,
+    pub connect_timeout_ms: i32,
+    pub request_timeout_ms: i32,
+    pub max_retries: i32,
+    /// `fail_open` or `fail_closed`. Deprecated: accepted and exported, and
+    /// ignored by the gateway, which refuses every body it cannot judge (#3527)
+    pub default_failure_mode: String,
+    pub allow_unlisted_tools: bool,
+}
+
+/// One organization's MCP tool group in a bootstrap file (#3514): the group by
+/// its slug, the tools it allows and whom it is assigned to, every one of them
+/// named the way the file names it rather than by a database id.
+///
+/// The import is the desired state for the groups the file names, for the
+/// organization it targets only. An assignment whose team, project or key does
+/// not exist on the receiving deployment is skipped with a warning; the group
+/// is still created, so its other assignments still narrow their callers.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+pub struct McpGatewayToolGroupConfig {
+    /// the organization's slug
+    pub org: String,
+    /// the group's slug, unique within the organization
+    pub slug: String,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub description: String,
+    /// a disabled group governs no one but the callers assigned to it, who get
+    /// none of its tools
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// the tools the group allows, each on a server of the organization
+    #[serde(default)]
+    pub tools: Vec<McpGatewayToolRefConfig>,
+    /// teams the group is assigned to, as `org/team`
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub teams: Vec<String>,
+    /// projects the group is assigned to, as `org/team/project`
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub projects: Vec<String>,
+    /// virtual keys the group is assigned to
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub keys: Vec<McpGatewayKeyRefConfig>,
+}
+
+/// One tool of an [`McpGatewayToolGroupConfig`]: the server by its slug in the
+/// group's organization, and the tool by name.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+pub struct McpGatewayToolRefConfig {
+    pub server: String,
+    pub tool: String,
+}
+
+/// A virtual key an [`McpGatewayToolGroupConfig`] is assigned to, named by its
+/// project and its public identifier, never by its secret or digest: its
+/// `name` when it has one, else the `prefix` the dashboard shows. A reference
+/// that matches no key of the project, or more than one, is skipped by the
+/// import with a warning.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+pub struct McpGatewayKeyRefConfig {
+    /// the key's project, as `org/team/project`
+    pub project: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prefix: Option<String>,
 }
 
 /// One tool of one server, as a tool group names it.
@@ -2222,6 +2521,24 @@ pub struct McpToolGroupConfig {
     pub slug: String,
     #[serde(default)]
     pub tools: Vec<McpToolRefConfig>,
+    /// who the group is assigned to (#3295). A caller whose key, project or team
+    /// appears in the assignments of any enabled group is held to the groups
+    /// assigned to it; a caller named by none keeps the organization-wide set
+    #[serde(default)]
+    pub assignments: Vec<McpToolGroupSubjectConfig>,
+    /// a disabled group is carried only for the callers assigned to it (#3295):
+    /// it governs no one else, but those callers stay narrowed on the servers it
+    /// names and get none of its tools
+    #[serde(default)]
+    pub disabled: bool,
+}
+
+/// A virtual key, project or team an MCP tool group is assigned to (#3295).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+pub struct McpToolGroupSubjectConfig {
+    /// `virtual_key`, `project` or `team`; any other value matches no caller
+    pub kind: String,
+    pub id: String,
 }
 
 /// A live OAuth session the gateway may spend for one user and MCP server.
@@ -2577,12 +2894,21 @@ pub enum BudgetScope {
     /// (`created_by`), so "each engineer may spend $50 a month however many
     /// keys they mint" is expressible (#1830)
     User,
+    /// a scope this build does not know, read from a newer control plane's
+    /// snapshot (#3347). The cap cannot be matched to the requests it was
+    /// meant for, so it counts every request instead, against a counter of
+    /// its own: it can only bind sooner than configured, never later
+    #[serde(other)]
+    Unknown,
 }
 
 /// Where a [`BudgetScope::User`] cap applies, when it does not apply to the
 /// person's keys everywhere (#1830): only the keys they minted in one org, or
 /// in one project. Meaningless on every other scope, where the id already
 /// names a place.
+///
+/// Deliberately closed (#3347): it carries data, which `#[serde(other)]` cannot
+/// stand in for. A new kind of place is a snapshot format bump (ADR-0038).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ScopeWithin {
@@ -2623,6 +2949,9 @@ impl BudgetScope {
             BudgetScope::BusinessUnit => "business_unit",
             BudgetScope::Customer => "customer",
             BudgetScope::User => "user",
+            // a counter of its own, so an older gateway counting every request
+            // against it never charges a newer gateway's counter for that scope
+            BudgetScope::Unknown => "unknown",
         }
     }
 
@@ -2651,6 +2980,11 @@ pub enum BudgetPeriod {
     Daily,
     /// never resets — a lifetime cap
     Total,
+    /// a window this build does not know, read from a newer control plane's
+    /// snapshot (#3347). The gateway cannot tell where the window starts, so
+    /// the budget refuses every request it covers rather than letting them pass
+    #[serde(other)]
+    Unknown,
 }
 
 impl BudgetPeriod {
@@ -2694,6 +3028,9 @@ impl BudgetPeriod {
             BudgetPeriod::Daily => now.format("%Y%m%d").to_string(),
             BudgetPeriod::Monthly => now.format("%Y%m").to_string(),
             BudgetPeriod::Total => "all".to_string(),
+            // never read: a budget of an unknown period refuses before its
+            // counter is consulted
+            BudgetPeriod::Unknown => "unknown".to_string(),
         }
     }
 
@@ -2714,7 +3051,7 @@ impl BudgetPeriod {
                 };
                 Utc.with_ymd_and_hms(year, month, 1, 0, 0, 0).single()
             }
-            BudgetPeriod::Total => None,
+            BudgetPeriod::Total | BudgetPeriod::Unknown => None,
         }
     }
 
@@ -2724,7 +3061,7 @@ impl BudgetPeriod {
         match self {
             BudgetPeriod::Daily => Some(2 * 24 * 3600),
             BudgetPeriod::Monthly => Some(40 * 24 * 3600),
-            BudgetPeriod::Total => None,
+            BudgetPeriod::Total | BudgetPeriod::Unknown => None,
         }
     }
 }
@@ -2754,6 +3091,11 @@ pub enum UnpricedPolicy {
     /// refuse at admission with 402: a model with no price cannot be accounted
     /// for, so serving it would spend money the budget will never see
     Block,
+    /// a policy this build does not know, read from a newer control plane's
+    /// snapshot (#3347). Ordered above [`UnpricedPolicy::Block`] and refused
+    /// like it, so it is never loosened by a narrower scope
+    #[serde(other)]
+    Unknown,
 }
 
 /// A spend cap applied to a scope over a rolling [`BudgetPeriod`]. The gateway
@@ -3425,6 +3767,10 @@ pub enum BackpressurePolicy {
     /// immediately return a structured `queue_full` error
     #[default]
     Error,
+    /// a policy this build does not know (#3347); read as
+    /// [`BackpressurePolicy::Error`], which sheds rather than waits
+    #[serde(other)]
+    Unknown,
 }
 
 /// Per-provider upstream dispatch controls. Rolter creates an independent
@@ -3894,6 +4240,711 @@ fn fold_retired_virtual_key_required(server: &mut ServerConfig, value: &toml::Va
     }
 }
 
+/// One problem line per enum value in a file config that this build does not
+/// know (#3347). A file is written by hand, where an unknown value is a typo
+/// and must not quietly take its fail-closed reading.
+fn unknown_value<T: KnownValues>(
+    problems: &mut Vec<String>,
+    value: &T,
+    what: impl FnOnce() -> String,
+) {
+    if value.is_unknown() {
+        problems.push(format!(
+            "{} is not a value this build knows; expected one of {}",
+            what(),
+            T::spellings()
+        ));
+    }
+}
+
+/// An enum of the snapshot with an `Unknown` fallback (#3347), and the values
+/// a config file may spell, so a typo can be answered with the list.
+trait KnownValues {
+    /// whether this is the fallback rather than a value this build knows
+    fn is_unknown(&self) -> bool;
+    /// every value this build knows, as a file spells it
+    fn spellings() -> String;
+}
+
+/// [`KnownValues`] for an enum, from the list of its known variants. The
+/// `match` beside the list is exhaustive, so a variant added to the enum and
+/// not to the list fails to compile.
+macro_rules! known_values {
+    ($ty:ident { $($variant:ident),+ $(,)? }) => {
+        impl KnownValues for $ty {
+            fn is_unknown(&self) -> bool {
+                *self == $ty::Unknown
+            }
+
+            fn spellings() -> String {
+                const KNOWN: &[$ty] = &[$($ty::$variant),+];
+                spell(KNOWN)
+            }
+        }
+
+        const _: fn($ty) = |value| match value {
+            $($ty::$variant)|+ | $ty::Unknown => {}
+        };
+    };
+}
+
+/// The spellings of `values`, as serde writes them, joined for a sentence.
+fn spell<T: Serialize>(values: &[T]) -> String {
+    values
+        .iter()
+        .filter_map(|value| serde_json::to_value(value).ok())
+        .filter_map(|value| value.as_str().map(str::to_string))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+impl<T: KnownValues> KnownValues for Option<T> {
+    fn is_unknown(&self) -> bool {
+        self.as_ref().is_some_and(KnownValues::is_unknown)
+    }
+
+    fn spellings() -> String {
+        T::spellings()
+    }
+}
+
+impl KnownValues for ProviderKind {
+    fn is_unknown(&self) -> bool {
+        *self == ProviderKind::Unknown
+    }
+
+    fn spellings() -> String {
+        // `ALL` is held to the enum by `kind_is_listed_in_all`
+        spell(&ProviderKind::ALL)
+    }
+}
+
+mod known_values {
+    use super::*;
+    use crate::guardrail_webhook::FailureMode;
+    use crate::guardrail_webhook::GuardProviderKind;
+    use crate::guardrail_webhook::OnTruncated;
+    use crate::guardrails::{GuardAction, StreamingPostCall};
+    use crate::pii_sanitizer::{RestorationPolicy, SanitizeDirection, StreamingResponse};
+    use crate::semantic_guards::{StreamingStrategy, ViolationAction};
+
+    known_values!(RoleProfile {
+        Openai,
+        SystemOnly,
+        Anthropic
+    });
+    known_values!(BalancingStrategy {
+        RoundRobin,
+        Random,
+        PowerOfTwo,
+        ConsistentHash,
+        CacheAware,
+        Weighted,
+        Pipeline,
+        Cheapest,
+        Fastest,
+        PreciseCacheAware,
+        LmcacheAware,
+        Adaptive,
+        LoraAware,
+        PredictedLatency,
+    });
+    known_values!(OverrideMode { Allow, Deny });
+    known_values!(BudgetScope {
+        Org,
+        Team,
+        Project,
+        Key,
+        BusinessUnit,
+        Customer,
+        User
+    });
+    known_values!(BudgetPeriod {
+        Monthly,
+        Daily,
+        Total
+    });
+    known_values!(UnpricedPolicy {
+        Ignore,
+        Warn,
+        Block
+    });
+    known_values!(BackpressurePolicy { Drop, Block, Error });
+    known_values!(FailureMode {
+        FailOpen,
+        FailClosed
+    });
+    known_values!(OnTruncated { Score, FailClosed });
+    known_values!(GuardAction {
+        Annotate,
+        Block,
+        Redact
+    });
+    known_values!(StreamingPostCall {
+        Reject,
+        Passthrough
+    });
+    known_values!(SanitizeDirection {
+        Request,
+        Response,
+        Both
+    });
+    known_values!(StreamingResponse {
+        Reject,
+        Passthrough,
+        Restore
+    });
+    known_values!(RestorationPolicy {
+        Never,
+        TrustedDownstream,
+        CallerAuthorized
+    });
+    known_values!(ViolationAction { Block, Annotate });
+    known_values!(StreamingStrategy { Reject, Buffer });
+    known_values!(GuardProviderKind { Webhook, Local });
+}
+
+/// Every `takes_over` class of `route` this build does not know, with the
+/// provider of the target that carries it (#3390).
+fn unknown_failure_classes(route: &ModelRoute) -> impl Iterator<Item = (&str, String)> {
+    route
+        .targets
+        .iter()
+        .chain(route.variants.iter().flat_map(|v| v.targets.iter()))
+        .flat_map(|target| {
+            target
+                .takes_over
+                .iter()
+                .filter(|class| class.kind == crate::failover::FailureKind::Unknown)
+                .map(move |class| (target.provider.as_str(), class.to_string()))
+        })
+}
+
+/// Replace a value this build does not know with its fail-closed reading and
+/// say so (#3347).
+fn resolve_unknown<T: PartialEq + Copy>(
+    value: &mut T,
+    unknown: T,
+    reading: T,
+    problems: &mut UnknownValues,
+    kind: &'static str,
+    what: impl FnOnce() -> String,
+) {
+    if *value == unknown {
+        *value = reading;
+        problems.push(
+            kind,
+            format!(
+                "{} has a value this gateway does not know; it is read as the most \
+                 restrictive known value until the gateway is upgraded",
+                what()
+            ),
+        );
+    }
+}
+
+/// The values of a snapshot a gateway read fail-closed (#3347), from
+/// [`GatewayConfig::fail_closed_unknown_report`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct UnknownValues {
+    /// one line per value, plus one per entity a value made the sanitizer
+    /// leave out, for the gateway's log. Names entities, which are tenant
+    /// data, so it never becomes a metric label
+    pub lines: Vec<String>,
+    /// how many values of each kind were read fail-closed (#3424). A kind is
+    /// the enum or entity a value belongs to, from a fixed vocabulary
+    /// (`provider_kind`, `route_strategy`, `failure_mode`, ...), never the
+    /// value itself, so it is safe as a bounded metric label
+    pub kinds: std::collections::BTreeMap<&'static str, u32>,
+}
+
+impl UnknownValues {
+    fn push(&mut self, kind: &'static str, line: String) {
+        self.count(kind);
+        self.lines.push(line);
+    }
+
+    fn count(&mut self, kind: &'static str) {
+        *self.kinds.entry(kind).or_default() += 1;
+    }
+}
+
+impl GatewayConfig {
+    /// Read every enum value a newer control plane sent that this build does
+    /// not know, failing closed for that entity only (#3347).
+    ///
+    /// A gateway older than its control plane decodes such a value as the
+    /// enum's `Unknown` variant instead of refusing the whole snapshot, which
+    /// would keep it on its last config, revoked keys included, until it is
+    /// upgraded. What `Unknown` then means is decided here, in one place:
+    ///
+    /// - a provider of an unknown kind is never dialled: it is omitted, and
+    ///   the routes, groups and keys that named it lose those references
+    ///   through [`sanitize_for_snapshot`](Self::sanitize_for_snapshot)'s
+    ///   cascade;
+    /// - a route with an unknown strategy is omitted, and a provider group
+    ///   with one keeps no members, so neither is balanced by a guess;
+    /// - a setting with an unknown value takes its most restrictive known
+    ///   reading (a failure mode fails closed, a guard action blocks, an
+    ///   unpriced policy refuses, a restoration policy never restores);
+    /// - a budget or rate limit of an unknown scope, and a budget of an unknown
+    ///   period, stay `Unknown` and the gateway's enforcement treats them as
+    ///   binding (see `BudgetScope::Unknown` and `BudgetPeriod::Unknown`).
+    ///
+    /// Returns one line per value read this way, for the gateway's log. The
+    /// rest of the snapshot is untouched. Costs a walk of the config and
+    /// nothing more when every value is known.
+    pub fn fail_closed_unknown_values(&mut self) -> Vec<String> {
+        self.fail_closed_unknown_report().lines
+    }
+
+    /// [`fail_closed_unknown_values`](Self::fail_closed_unknown_values) with
+    /// a count of the values read per kind, which the gateway exports as
+    /// `rolter_snapshot_unknown_values{kind}` (#3424). A budget or rate limit
+    /// whose scope or period stays `Unknown` is counted, and logged, here too:
+    /// it is no less a value the gateway does not know for being enforced as
+    /// binding rather than rewritten.
+    pub fn fail_closed_unknown_report(&mut self) -> UnknownValues {
+        let mut problems = UnknownValues::default();
+        self.resolve_unknown_settings(&mut problems);
+        for budget in &self.budgets {
+            if budget.scope == BudgetScope::Unknown {
+                problems.push(
+                    "budget_scope",
+                    format!(
+                        "budget '{}' has a scope this gateway does not know; it is enforced \
+                         as binding until the gateway is upgraded",
+                        budget.id
+                    ),
+                );
+            }
+            if budget.period == BudgetPeriod::Unknown {
+                problems.push(
+                    "budget_period",
+                    format!(
+                        "budget {} '{}' has a period this gateway does not know; it is \
+                         enforced as binding until the gateway is upgraded",
+                        budget.scope.key_label(),
+                        budget.id
+                    ),
+                );
+            }
+        }
+        for limit in &self.rate_limits {
+            if limit.scope == BudgetScope::Unknown {
+                problems.push(
+                    "rate_limit_scope",
+                    format!(
+                        "rate limit '{}' has a scope this gateway does not know; it is \
+                         enforced as binding until the gateway is upgraded",
+                        limit.id
+                    ),
+                );
+            }
+        }
+        // refused per request by the MCP proxy rather than rewritten, so it
+        // is named here rather than in `resolve_unknown_settings`
+        for server in &self.mcp_servers {
+            if server.auth_kind == McpAuthKind::Unknown {
+                problems.push(
+                    "mcp_auth_kind",
+                    format!(
+                        "mcp server '{}' has an auth kind this gateway does not know; every \
+                         call through it is refused until the gateway is upgraded",
+                        server.slug
+                    ),
+                );
+            }
+        }
+        let unknown_kinds = self
+            .providers
+            .iter()
+            .filter(|p| p.kind == ProviderKind::Unknown)
+            .count();
+        let unknown_strategies = self
+            .routes
+            .iter()
+            .filter(|r| r.strategy == BalancingStrategy::Unknown)
+            .count();
+        for _ in 0..unknown_kinds {
+            problems.count("provider_kind");
+        }
+        for _ in 0..unknown_strategies {
+            problems.count("route_strategy");
+        }
+        if unknown_kinds + unknown_strategies > 0 {
+            problems.lines.extend(self.sanitize_for_snapshot());
+        }
+        problems
+    }
+
+    /// The settings half of
+    /// [`fail_closed_unknown_values`](Self::fail_closed_unknown_values), also
+    /// run first by the sanitizer so a control plane serves the same reading.
+    fn resolve_unknown_settings(&mut self, problems: &mut UnknownValues) {
+        use crate::guardrail_webhook::{FailureMode, OnTruncated};
+        use crate::guardrails::{GuardAction, StreamingPostCall};
+        use crate::pii_sanitizer::{RestorationPolicy, SanitizeDirection, StreamingResponse};
+        use crate::semantic_guards::{StreamingStrategy, ViolationAction};
+
+        resolve_unknown(
+            &mut self.unpriced_policy,
+            UnpricedPolicy::Unknown,
+            UnpricedPolicy::Block,
+            problems,
+            "unpriced_policy",
+            || "unpriced_policy".to_string(),
+        );
+        resolve_unknown(
+            &mut self.queue.backpressure,
+            BackpressurePolicy::Unknown,
+            BackpressurePolicy::Error,
+            problems,
+            "queue_backpressure",
+            || "queue.backpressure".to_string(),
+        );
+        for provider in &mut self.providers {
+            let name = provider.name.clone();
+            if let Some(profile) = provider.role_profile.as_mut() {
+                resolve_unknown(
+                    profile,
+                    RoleProfile::Unknown,
+                    RoleProfile::SystemOnly,
+                    problems,
+                    "role_profile",
+                    || format!("provider '{name}' role_profile"),
+                );
+            }
+            for (model, profile) in &mut provider.model_role_profiles {
+                resolve_unknown(
+                    profile,
+                    RoleProfile::Unknown,
+                    RoleProfile::SystemOnly,
+                    problems,
+                    "role_profile",
+                    || format!("provider '{name}' role profile for model '{model}'"),
+                );
+            }
+        }
+        for group in &mut self.provider_groups {
+            if group.strategy == BalancingStrategy::Unknown && !group.members.is_empty() {
+                group.members.clear();
+                problems.push(
+                    "provider_group_strategy",
+                    format!(
+                        "provider group '{}' has a balancing strategy this gateway does not know; \
+                     it keeps no members, so it resolves nothing until the gateway is upgraded",
+                        group_slug(group)
+                    ),
+                );
+            }
+        }
+        for route in &mut self.routes {
+            let model = route.model.clone();
+            resolve_unknown(
+                &mut route.param_policy.mode,
+                OverrideMode::Unknown,
+                OverrideMode::Deny,
+                problems,
+                "param_policy_mode",
+                || format!("route '{model}' param_policy.mode"),
+            );
+            // left in place: the class matches no failure, and keeping it keeps
+            // the target out of the pool (#3390)
+            for (provider, class) in unknown_failure_classes(route) {
+                problems.push(
+                    "failure_class",
+                    format!(
+                        "route '{model}' target '{provider}' takes over a failure class this \
+                         gateway does not know ('{class}'); it takes over nothing for it until \
+                         the gateway is upgraded"
+                    ),
+                );
+            }
+        }
+        for budget in &mut self.budgets {
+            let (scope, id) = (budget.scope.key_label(), budget.id.clone());
+            if let Some(policy) = budget.unpriced_policy.as_mut() {
+                resolve_unknown(
+                    policy,
+                    UnpricedPolicy::Unknown,
+                    UnpricedPolicy::Block,
+                    problems,
+                    "unpriced_policy",
+                    || format!("budget {scope} '{id}' unpriced_policy"),
+                );
+            }
+        }
+        for rule in &mut self.guardrails.rules {
+            let name = rule.name.clone();
+            resolve_unknown(
+                &mut rule.action,
+                GuardAction::Unknown,
+                GuardAction::Block,
+                problems,
+                "guard_action",
+                || format!("guardrail rule '{name}' action"),
+            );
+        }
+        resolve_unknown(
+            &mut self.guardrails.streaming_post_call,
+            StreamingPostCall::Unknown,
+            StreamingPostCall::Reject,
+            problems,
+            "streaming_post_call",
+            || "guardrails.streaming_post_call".to_string(),
+        );
+        resolve_unknown(
+            &mut self.guardrail_webhook.failure_mode,
+            FailureMode::Unknown,
+            FailureMode::FailClosed,
+            problems,
+            "failure_mode",
+            || "guardrail_webhook.failure_mode".to_string(),
+        );
+        resolve_unknown(
+            &mut self.guardrail_webhook.on_truncated,
+            OnTruncated::Unknown,
+            OnTruncated::FailClosed,
+            problems,
+            "on_truncated",
+            || "guardrail_webhook.on_truncated".to_string(),
+        );
+        for provider in &mut self.semantic_guards.providers {
+            let name = provider.name.clone();
+            resolve_unknown(
+                &mut provider.failure_mode,
+                FailureMode::Unknown,
+                FailureMode::FailClosed,
+                problems,
+                "failure_mode",
+                || format!("semantic guard provider '{name}' failure_mode"),
+            );
+            resolve_unknown(
+                &mut provider.on_truncated,
+                OnTruncated::Unknown,
+                OnTruncated::FailClosed,
+                problems,
+                "on_truncated",
+                || format!("semantic guard provider '{name}' on_truncated"),
+            );
+        }
+        for policy in &mut self.semantic_guards.policies {
+            let name = policy.name.clone();
+            resolve_unknown(
+                &mut policy.on_violation,
+                ViolationAction::Unknown,
+                ViolationAction::Block,
+                problems,
+                "violation_action",
+                || format!("semantic guard policy '{name}' on_violation"),
+            );
+            resolve_unknown(
+                &mut policy.streaming,
+                StreamingStrategy::Unknown,
+                StreamingStrategy::Reject,
+                problems,
+                "streaming_strategy",
+                || format!("semantic guard policy '{name}' streaming"),
+            );
+        }
+        // a guard provider of an unknown kind keeps its value: no known kind
+        // is a safe reading of it, so it blocks its stage per request instead,
+        // whatever its failure_mode (ADR-0039)
+        let guard_providers = std::iter::once(&self.guardrail_webhook)
+            .filter(|webhook| webhook.enabled)
+            .chain(&self.semantic_guards.providers);
+        for provider in guard_providers {
+            if provider.kind == crate::guardrail_webhook::GuardProviderKind::Unknown {
+                problems.push(
+                    "guard_provider_kind",
+                    format!(
+                    "semantic guard provider '{}' kind has a value this gateway does not know; \
+                     it blocks its stage until the gateway is upgraded",
+                    if provider.name.trim().is_empty() {
+                        "guardrail_webhook"
+                    } else {
+                        provider.name.trim()
+                    }
+                    ),
+                );
+            }
+        }
+        let pii = &mut self.pii_sanitizer;
+        resolve_unknown(
+            &mut pii.direction,
+            SanitizeDirection::Unknown,
+            SanitizeDirection::Both,
+            problems,
+            "pii_direction",
+            || "pii_sanitizer.direction".to_string(),
+        );
+        resolve_unknown(
+            &mut pii.restoration,
+            RestorationPolicy::Unknown,
+            RestorationPolicy::Never,
+            problems,
+            "pii_restoration",
+            || "pii_sanitizer.restoration".to_string(),
+        );
+        resolve_unknown(
+            &mut pii.streaming,
+            StreamingResponse::Unknown,
+            StreamingResponse::Reject,
+            problems,
+            "pii_streaming",
+            || "pii_sanitizer.streaming".to_string(),
+        );
+        resolve_unknown(
+            &mut pii.failure_mode,
+            FailureMode::Unknown,
+            FailureMode::FailClosed,
+            problems,
+            "failure_mode",
+            || "pii_sanitizer.failure_mode".to_string(),
+        );
+        for instance in &mut self.plugins.instances {
+            let slug = instance.slug.clone();
+            resolve_unknown(
+                &mut instance.failure_mode,
+                FailureMode::Unknown,
+                FailureMode::FailClosed,
+                problems,
+                "failure_mode",
+                || format!("plugin '{slug}' failure_mode"),
+            );
+        }
+    }
+
+    /// Every enum value in a file config this build does not know (#3347).
+    fn unknown_value_problems(&self) -> Vec<String> {
+        let mut p = Vec::new();
+        unknown_value(&mut p, &self.unpriced_policy, || {
+            "unpriced_policy".to_string()
+        });
+        unknown_value(&mut p, &self.queue.backpressure, || {
+            "queue.backpressure".to_string()
+        });
+        for provider in self.providers.iter().chain(&self.provider_defaults) {
+            let profiles = provider
+                .role_profile
+                .iter()
+                .chain(provider.model_role_profiles.values());
+            for profile in profiles {
+                unknown_value(&mut p, profile, || {
+                    format!("provider '{}' role profile", provider.name)
+                });
+            }
+        }
+        for provider in self.providers.iter().chain(&self.provider_defaults) {
+            unknown_value(&mut p, &provider.kind, || {
+                format!("provider '{}' kind", provider.name)
+            });
+        }
+        for group in self
+            .provider_groups
+            .iter()
+            .chain(&self.provider_group_defaults)
+        {
+            unknown_value(&mut p, &group.strategy, || {
+                format!("provider group '{}' strategy", group.name)
+            });
+        }
+        let routes = self
+            .routes
+            .iter()
+            .chain(&self.models.readonly)
+            .chain(&self.models.defaults);
+        for route in routes {
+            unknown_value(&mut p, &route.strategy, || {
+                format!("route '{}' strategy", route.model)
+            });
+            unknown_value(&mut p, &route.param_policy.mode, || {
+                format!("route '{}' param_policy.mode", route.model)
+            });
+            for (provider, class) in unknown_failure_classes(route) {
+                p.push(format!(
+                    "route '{}' target '{provider}' takes_over '{class}' is not a failure class \
+                     this build knows; expected one of throttled, timeout, transport, \
+                     server_error, refusal or refusal:<category>",
+                    route.model
+                ));
+            }
+        }
+        for budget in &self.budgets {
+            unknown_value(&mut p, &budget.scope, || {
+                format!("budget '{}' scope", budget.id)
+            });
+            unknown_value(&mut p, &budget.period, || {
+                format!("budget '{}' period", budget.id)
+            });
+            unknown_value(&mut p, &budget.unpriced_policy, || {
+                format!("budget '{}' unpriced_policy", budget.id)
+            });
+        }
+        for limit in &self.rate_limits {
+            unknown_value(&mut p, &limit.scope, || {
+                format!("rate limit '{}' scope", limit.id)
+            });
+        }
+        for rule in &self.guardrails.rules {
+            unknown_value(&mut p, &rule.action, || {
+                format!("guardrail rule '{}' action", rule.name)
+            });
+        }
+        unknown_value(&mut p, &self.guardrails.streaming_post_call, || {
+            "guardrails.streaming_post_call".to_string()
+        });
+        unknown_value(&mut p, &self.guardrail_webhook.failure_mode, || {
+            "guardrail_webhook.failure_mode".to_string()
+        });
+        unknown_value(&mut p, &self.guardrail_webhook.kind, || {
+            "guardrail_webhook.kind".to_string()
+        });
+        unknown_value(&mut p, &self.guardrail_webhook.on_truncated, || {
+            "guardrail_webhook.on_truncated".to_string()
+        });
+        for provider in &self.semantic_guards.providers {
+            unknown_value(&mut p, &provider.kind, || {
+                format!("semantic guard provider '{}' kind", provider.name)
+            });
+            unknown_value(&mut p, &provider.failure_mode, || {
+                format!("semantic guard provider '{}' failure_mode", provider.name)
+            });
+            unknown_value(&mut p, &provider.on_truncated, || {
+                format!("semantic guard provider '{}' on_truncated", provider.name)
+            });
+        }
+        for policy in &self.semantic_guards.policies {
+            unknown_value(&mut p, &policy.on_violation, || {
+                format!("semantic guard policy '{}' on_violation", policy.name)
+            });
+            unknown_value(&mut p, &policy.streaming, || {
+                format!("semantic guard policy '{}' streaming", policy.name)
+            });
+        }
+        let pii = &self.pii_sanitizer;
+        unknown_value(&mut p, &pii.direction, || {
+            "pii_sanitizer.direction".to_string()
+        });
+        unknown_value(&mut p, &pii.restoration, || {
+            "pii_sanitizer.restoration".to_string()
+        });
+        unknown_value(&mut p, &pii.streaming, || {
+            "pii_sanitizer.streaming".to_string()
+        });
+        unknown_value(&mut p, &pii.failure_mode, || {
+            "pii_sanitizer.failure_mode".to_string()
+        });
+        for instance in &self.plugins.instances {
+            unknown_value(&mut p, &instance.failure_mode, || {
+                format!("plugin '{}' failure_mode", instance.slug)
+            });
+        }
+        p
+    }
+}
+
 /// Effective slug for a provider group.
 fn group_slug(g: &ProviderGroupConfig) -> String {
     g.slug
@@ -3944,13 +4995,20 @@ impl GatewayConfig {
             .as_table_mut()
             .and_then(take_retired_virtual_key_required);
         let mut config: Self = doc.try_into()?;
+        config.provider_defaults = provider_defaults;
+        config.providers = provider_readonly;
+        config.provider_groups = group_readonly;
+        config.provider_group_defaults = group_defaults;
+        // a file is written by hand, so an enum value this build does not know
+        // is a typo there rather than a value from a newer release, and is
+        // refused here as it was before the enums gained `Unknown` (#3347)
+        let unknown = config.unknown_value_problems();
+        if !unknown.is_empty() {
+            return Err(crate::Error::Config(unknown.join("; ")));
+        }
         if let Some(value) = retired_vk {
             fold_retired_virtual_key_required(&mut config.server, &value);
         }
-        config.providers = provider_readonly;
-        config.provider_defaults = provider_defaults;
-        config.provider_groups = group_readonly;
-        config.provider_group_defaults = group_defaults;
 
         // a default-tier provider/group may not collide with a readonly one: the
         // readonly entry is immutable and would shadow the seeded DB row (ADR-0022)
@@ -4063,17 +5121,21 @@ impl GatewayConfig {
     /// operator can split the route. A target whose provider is unknown is not
     /// counted on either side.
     pub fn mixed_decision_route_warnings(&self) -> Vec<String> {
-        let kinds: HashMap<&str, ProviderKind> = self
-            .providers
-            .iter()
-            .map(|p| (p.name.as_str(), p.kind))
-            .collect();
+        let mut kinds = crate::namespace::Namespaced::new();
+        for p in &self.providers {
+            let _ = kinds.insert(
+                crate::namespace::org_of(p.tenancy.as_ref()),
+                &p.name,
+                p.kind,
+            );
+        }
         let mut warnings = Vec::new();
         for route in &self.routes {
+            let org = crate::namespace::org_of(route.tenancy.as_ref());
             let mut decision: Vec<&str> = Vec::new();
             let mut generative: Vec<&str> = Vec::new();
             for target in route.every_target() {
-                let Some(kind) = kinds.get(target.provider.as_str()) else {
+                let Some(kind) = kinds.get_ref(org, &target.provider) else {
                     continue;
                 };
                 let side = if kind.decision_only() {
@@ -4247,7 +5309,9 @@ impl GatewayConfig {
     /// every provider, route and file key it dropped whole, so a client does
     /// not have to read the sentences to learn which.
     pub fn sanitize_for_snapshot_report(&mut self) -> SnapshotReport {
-        let mut warnings = Vec::new();
+        let mut unknown = UnknownValues::default();
+        self.resolve_unknown_settings(&mut unknown);
+        let mut warnings = unknown.lines;
         let mut omitted_entries = Vec::new();
         self.prune_invalid_prompt_templates(&mut warnings);
         self.prune_invalid_model_prices(&mut warnings);
@@ -4263,26 +5327,34 @@ impl GatewayConfig {
         // would be worse than refusing, so `validate` still rejects those.
         self.strip_secret_env_credentials(&mut warnings);
         self.strip_unusable_telemetry(&mut warnings);
-        let mut omitted: std::collections::HashSet<String> = std::collections::HashSet::new();
-        let invalid: Vec<(usize, String, Vec<String>)> = self
+        // every provider as `(org, name)` before any is dropped, so a reference
+        // still resolves to the row it named once that row is gone (#1857)
+        let mut every_provider = crate::namespace::Namespaced::new();
+        for provider in &self.providers {
+            let org = crate::namespace::org_of(provider.tenancy.as_ref());
+            let _ = every_provider.insert(org, &provider.name, ());
+        }
+        let mut omitted: Vec<(String, String)> = Vec::new();
+        let invalid: Vec<(usize, String, String, Vec<String>)> = self
             .providers
             .iter()
             .enumerate()
             .filter_map(|(idx, provider)| {
                 let problems = self.provider_problems(provider);
-                (!problems.is_empty()).then(|| (idx, provider.name.clone(), problems))
+                let org = crate::namespace::org_of(provider.tenancy.as_ref()).to_string();
+                (!problems.is_empty()).then(|| (idx, org, provider.name.clone(), problems))
             })
             .collect();
         if !invalid.is_empty() {
             let dropped: std::collections::HashSet<usize> =
-                invalid.iter().map(|(i, _, _)| *i).collect();
+                invalid.iter().map(|(i, _, _, _)| *i).collect();
             let mut idx = 0;
             self.providers.retain(|_| {
                 let keep = !dropped.contains(&idx);
                 idx += 1;
                 keep
             });
-            for (index, name, problems) in invalid {
+            for (index, org, name, problems) in invalid {
                 let reason = problems.join("; ");
                 warnings.push(format!(
                     "provider '{name}' omitted from the snapshot: {reason}"
@@ -4293,24 +5365,22 @@ impl GatewayConfig {
                     reason,
                     index,
                 });
-                omitted.insert(name);
+                omitted.push((org, name));
             }
         }
-        // a name another provider still carries is not omitted: two rows
-        // sharing a name is a cross-row defect `validate` reports once one
-        // of them is gone, and pruning the references would take the
-        // surviving row's traffic with it
-        for provider in &self.providers {
-            omitted.remove(provider.name.as_str());
-        }
+        // a name another provider of the same org still carries is not
+        // omitted: two rows sharing a name is a cross-row defect `validate`
+        // reports once one of them is gone, and pruning the references would
+        // take the surviving row's traffic with it
+        omitted.retain(|(org, name)| {
+            !self
+                .providers
+                .iter()
+                .any(|p| &p.name == name && crate::namespace::org_of(p.tenancy.as_ref()) == org)
+        });
         // a provider the store loader left out never reached `providers`, so
         // the passes above could not see it (#2950); it is omitted all the same
-        omitted.extend(
-            self.left_out_providers
-                .iter()
-                .filter(|name| !self.providers.iter().any(|p| &p.name == *name))
-                .cloned(),
-        );
+        let omitted = OmittedProviders::new(every_provider, omitted, &self.left_out_providers);
 
         self.report_denied_operator_urls(&mut warnings);
         // the omission above leaves every reference to that provider dangling,
@@ -4320,45 +5390,66 @@ impl GatewayConfig {
         self.prune_omitted_provider_targets(&omitted, &mut warnings);
         self.prune_cross_project_targets(&mut warnings);
 
-        let provider_names: std::collections::HashSet<&str> = self
-            .providers
-            .iter()
-            .map(|p| p.name.as_str())
-            .filter(|n| !n.trim().is_empty())
-            .collect();
+        let mut provider_names = crate::namespace::Namespaced::new();
+        for provider in self.providers.iter().filter(|p| !p.name.trim().is_empty()) {
+            let org = crate::namespace::org_of(provider.tenancy.as_ref());
+            let _ = provider_names.insert(org, &provider.name, ());
+        }
 
         // a target can serve traffic only when it points at a known provider
         // with a non-zero weight; a variant needs at least one such target
         // tracked by index, not model name: a duplicated model must not let an
         // unservable row take its servable twin down with it (validate still
         // rejects the duplication itself)
-        let mut drops: Vec<(usize, String)> = Vec::new();
+        let mut drops: Vec<(usize, String, &'static str)> = Vec::new();
         for (idx, route) in self.routes.iter().enumerate() {
+            // a strategy from a newer release (#3347): the route refuses
+            // rather than being balanced by a guess
+            if route.strategy == BalancingStrategy::Unknown {
+                drops.push((
+                    idx,
+                    route.model.clone(),
+                    "its balancing strategy is not one this build knows",
+                ));
+                continue;
+            }
+            let org = crate::namespace::org_of(route.tenancy.as_ref());
+            let known = |provider: &str| provider_names.get_ref(org, provider).is_some();
             let servable_target = route
                 .targets
                 .iter()
-                .any(|t| provider_names.contains(t.provider.as_str()) && t.weight > 0);
-            let servable_variant = route.variants.iter().any(|v| {
-                !v.name.trim().is_empty()
-                    && v.targets
-                        .iter()
-                        .any(|t| provider_names.contains(t.provider.as_str()))
-            });
+                .any(|t| known(&t.provider) && t.weight > 0);
+            let servable_variant = route
+                .variants
+                .iter()
+                .any(|v| !v.name.trim().is_empty() && v.targets.iter().any(|t| known(&t.provider)));
             if !servable_target && !servable_variant {
-                drops.push((idx, route.model.clone()));
+                drops.push((
+                    idx,
+                    route.model.clone(),
+                    "it has no target that references a known provider with a positive weight",
+                ));
+            } else if route.only_restricted_targets_dialled() {
+                // what is left to dial is only fallbacks, which `validate_snapshot`
+                // refuses the whole snapshot over (#3431)
+                drops.push((
+                    idx,
+                    route.model.clone(),
+                    "every target it dials sets takes_over, so it could never serve a request \
+                     (all_targets_restricted)",
+                ));
             }
         }
         if !drops.is_empty() {
-            let dropped: std::collections::HashSet<usize> = drops.iter().map(|(i, _)| *i).collect();
+            let dropped: std::collections::HashSet<usize> =
+                drops.iter().map(|(i, _, _)| *i).collect();
             let mut idx = 0;
             self.routes.retain(|_| {
                 let keep = !dropped.contains(&idx);
                 idx += 1;
                 keep
             });
-            for (index, model) in drops {
-                let reason = "it has no target that references a known provider with a \
-                              positive weight";
+            for (index, model, reason) in drops {
                 warnings.push(format!(
                     "route '{model}' omitted from the snapshot: {reason}"
                 ));
@@ -4588,19 +5679,19 @@ impl GatewayConfig {
     /// route or group from a file carries no tenancy, which is org-wide too.
     fn prune_cross_project_targets(&mut self, warnings: &mut Vec<String>) {
         // owned, since the prune below borrows the whole config mutably
-        let scoped: HashMap<String, String> = self
-            .providers
-            .iter()
-            .filter_map(|p| {
-                let scope = p.tenancy.as_ref()?.project_id.clone()?;
-                Some((p.name.clone(), scope))
-            })
-            .collect();
-        if scoped.is_empty() {
+        let mut scoped = crate::namespace::Namespaced::new();
+        let mut any_scoped = false;
+        for p in &self.providers {
+            let org = crate::namespace::org_of(p.tenancy.as_ref()).to_string();
+            let scope = p.tenancy.as_ref().and_then(|t| t.project_id.clone());
+            any_scoped |= scope.is_some();
+            let _ = scoped.insert(&org, &p.name, scope);
+        }
+        if !any_scoped {
             return;
         }
-        self.prune_targets_where(warnings, |provider, owner, owner_kind| {
-            let scope = scoped.get(provider)?;
+        self.prune_targets_where(warnings, |provider, owner_org, owner, owner_kind| {
+            let scope = scoped.get_ref(owner_org, provider)?.as_ref()?;
             (owner != Some(scope.as_str())).then(|| {
                 format!("the provider is scoped to a project other than the {owner_kind}'s")
             })
@@ -4618,24 +5709,23 @@ impl GatewayConfig {
     /// so a route is only ever lost when nothing else on it can serve.
     fn prune_omitted_provider_targets(
         &mut self,
-        omitted: &std::collections::HashSet<String>,
+        omitted: &OmittedProviders,
         warnings: &mut Vec<String>,
     ) {
-        if omitted.is_empty() {
-            return;
-        }
-        self.prune_targets_where(warnings, |provider, _owner, _owner_kind| {
-            omitted
-                .contains(provider)
-                .then(|| "the provider is itself omitted from the snapshot".to_string())
+        // no early return on an empty omission: a reference to another org's
+        // provider is pruned here too
+        self.prune_targets_where(warnings, |provider, owner_org, _owner, _owner_kind| {
+            omitted.refusal(owner_org, provider).map(str::to_string)
         });
     }
 
     /// The pass behind both target prunes: remove every target, variant target
-    /// and group member for which `refuses(provider, owner_project, owner_kind)`
-    /// gives a reason, and report each one.
+    /// and group member for which
+    /// `refuses(provider, owner_org, owner_project, owner_kind)` gives a reason,
+    /// and report each one.
     ///
-    /// `owner_project` is the project the route or group belongs to, and
+    /// `owner_org` is the org the route or group belongs to, which is where its
+    /// provider names resolve first (#1857), `owner_project` its project, and
     /// `owner_kind` is `"route"` or `"group"` so a reason can name which.
     ///
     /// A variant left with no target is removed whole, because `validate` reads
@@ -4645,7 +5735,7 @@ impl GatewayConfig {
     fn prune_targets_where(
         &mut self,
         warnings: &mut Vec<String>,
-        refuses: impl Fn(&str, Option<&str>, &str) -> Option<String>,
+        refuses: impl Fn(&str, &str, Option<&str>, &str) -> Option<String>,
     ) {
         // a free function rather than a closure, since the variant pass below
         // needs the warnings while this one would still hold them
@@ -4668,8 +5758,9 @@ impl GatewayConfig {
         }
         for route in &mut self.routes {
             let owner = route.tenancy.as_ref().and_then(|t| t.project_id.clone());
+            let org = crate::namespace::org_of(route.tenancy.as_ref()).to_string();
             let model = route.model.clone();
-            let refuse = |provider: &str| refuses(provider, owner.as_deref(), "route");
+            let refuse = |provider: &str| refuses(provider, &org, owner.as_deref(), "route");
             prune(
                 &mut route.targets,
                 &format!("route '{model}'"),
@@ -4691,13 +5782,13 @@ impl GatewayConfig {
         }
         for group in &mut self.provider_groups {
             let owner = group.tenancy.as_ref().and_then(|t| t.project_id.clone());
+            let org = crate::namespace::org_of(group.tenancy.as_ref()).to_string();
             let slug = group
                 .slug
                 .clone()
                 .unwrap_or_else(|| crate::slug::slugify(&group.name));
-            group
-                .members
-                .retain(|m| match refuses(&m.provider, owner.as_deref(), "group") {
+            group.members.retain(
+                |m| match refuses(&m.provider, &org, owner.as_deref(), "group") {
                     Some(reason) => {
                         warnings.push(format!(
                             "provider group '{slug}' member '{}' omitted from the snapshot: \
@@ -4707,7 +5798,8 @@ impl GatewayConfig {
                         false
                     }
                     None => true,
-                });
+                },
+            );
         }
     }
 
@@ -4730,13 +5822,12 @@ impl GatewayConfig {
     /// Returns the loaded position of each file key that remains.
     fn prune_omitted_provider_settings(
         &mut self,
-        omitted: &std::collections::HashSet<String>,
+        omitted: &OmittedProviders,
         warnings: &mut Vec<String>,
         records: &mut Vec<OmittedEntry>,
     ) -> Vec<usize> {
-        if omitted.is_empty() {
-            return (0..self.virtual_keys.len()).collect();
-        }
+        // before the early return: a route naming another org's embeddings
+        // provider is repaired even when nothing was omitted
         for route in &mut self.routes {
             let Some(cache) = route.cache.as_mut() else {
                 continue;
@@ -4744,15 +5835,19 @@ impl GatewayConfig {
             let Some(semantic) = cache.semantic.as_ref() else {
                 continue;
             };
-            if omitted.contains(semantic.provider.as_str()) {
+            let org = crate::namespace::org_of(route.tenancy.as_ref());
+            if let Some(reason) = omitted.refusal(org, &semantic.provider) {
                 warnings.push(format!(
                     "route '{}' semantic cache omitted from the snapshot: its embeddings \
-                     provider '{}' is itself omitted from the snapshot, so the route serves \
-                     without semantic lookups",
+                     provider '{}' cannot be used ({reason}), so the route serves without \
+                     semantic lookups",
                     route.model, semantic.provider
                 ));
                 cache.semantic = None;
             }
+        }
+        if omitted.is_empty() {
+            return (0..self.virtual_keys.len()).collect();
         }
         let mut origin = Vec::with_capacity(self.virtual_keys.len());
         let mut index = 0;
@@ -4760,7 +5855,8 @@ impl GatewayConfig {
             let at = index;
             index += 1;
             let label = vk.name.clone().unwrap_or_else(|| UNNAMED_KEY.to_string());
-            match prune_key_allow_list(&mut vk.providers, &label, omitted, warnings) {
+            let omitted = omitted.names_for(crate::namespace::GLOBAL, &vk.providers);
+            match prune_key_allow_list(&mut vk.providers, &label, &omitted, warnings) {
                 Some(reason) => {
                     records.push(OmittedEntry {
                         kind: OmittedKind::VirtualKey,
@@ -4779,7 +5875,8 @@ impl GatewayConfig {
         // a store key is not in the dashboard's config read, so it has no row
         // to point at and stays a line only
         self.db_virtual_keys.retain_mut(|vk| {
-            prune_key_allow_list(&mut vk.providers, &vk.id, omitted, warnings).is_none()
+            let omitted = omitted.names_for(&vk.org_id, &vk.providers);
+            prune_key_allow_list(&mut vk.providers, &vk.id, &omitted, warnings).is_none()
         });
         origin
     }
@@ -4851,6 +5948,14 @@ impl GatewayConfig {
     /// should not be able to withhold the whole fleet's config (#926).
     pub fn provider_problems(&self, provider: &ProviderConfig) -> Vec<String> {
         let mut problems = Vec::new();
+        // a kind from a newer release (#3347): in a snapshot this omits the
+        // provider, so it is never dialled; in a file it is a typo
+        if provider.kind == ProviderKind::Unknown {
+            problems.push(format!(
+                "provider '{}' has a kind this build does not know",
+                provider.name
+            ));
+        }
         if !is_http_url(&provider.api_base) {
             problems.push(format!(
                 "provider '{}' has an invalid api_base '{}' (expected http:// or https:// url)",
@@ -5032,10 +6137,23 @@ impl GatewayConfig {
     /// [`provider_problems`](Self::provider_problems).
     pub fn operator_url_problems(&self) -> Vec<String> {
         let mut problems = Vec::new();
-        if self.guardrail_webhook.enabled {
+        // a local provider has no url: it runs in the gateway process (#3329)
+        let webhook = crate::guardrail_webhook::GuardProviderKind::Webhook;
+        if self.guardrail_webhook.enabled && self.guardrail_webhook.kind == webhook {
             problems.extend(
                 self.egress_problem(self.guardrail_webhook.url.trim(), "guardrail_webhook.url"),
             );
+        }
+        for provider in self
+            .semantic_guards
+            .providers
+            .iter()
+            .filter(|p| p.enabled && p.kind == webhook)
+        {
+            problems.extend(self.egress_problem(
+                provider.url.trim(),
+                &format!("semantic_guards.providers '{}' url", provider.name),
+            ));
         }
         if self.pii_sanitizer.enabled {
             problems
@@ -5115,12 +6233,14 @@ impl GatewayConfig {
             ));
         }
 
-        let mut provider_names = std::collections::HashSet::new();
+        // names are unique per org, never across orgs (#1857, ADR-0040)
+        let mut provider_names = crate::namespace::Namespaced::new();
         for provider in &self.providers {
+            let org = crate::namespace::org_of(provider.tenancy.as_ref());
             if provider.name.trim().is_empty() {
                 problems.push("provider has an empty name".to_string());
-            } else if !provider_names.insert(provider.name.as_str()) {
-                problems.push(format!("duplicate provider name '{}'", provider.name));
+            } else if provider_names.insert(org, &provider.name, ()).is_err() {
+                problems.push(duplicate_name("provider name", &provider.name, org));
             }
             problems.extend(self.provider_problems(provider));
         }
@@ -5209,12 +6329,15 @@ impl GatewayConfig {
             }
         }
 
-        let mut route_models = std::collections::HashSet::new();
+        let mut route_models = crate::namespace::Namespaced::new();
         for route in &self.routes {
+            // a route's targets name providers of its own org first, then global
+            let org = crate::namespace::org_of(route.tenancy.as_ref());
+            let known = |provider: &str| provider_names.get_ref(org, provider).is_some();
             if route.model.trim().is_empty() {
                 problems.push("route has an empty model name".to_string());
-            } else if !route_models.insert(route.model.as_str()) {
-                problems.push(format!("duplicate route model '{}'", route.model));
+            } else if route_models.insert(org, &route.model, ()).is_err() {
+                problems.push(duplicate_name("route model", &route.model, org));
             }
             if route.targets.is_empty() && route.variants.is_empty() {
                 problems.push(format!(
@@ -5222,8 +6345,9 @@ impl GatewayConfig {
                     route.model
                 ));
             }
+            problems.extend(route.takes_over_problems());
             for target in &route.targets {
-                if !provider_names.contains(target.provider.as_str()) {
+                if !known(&target.provider) {
                     problems.push(format!(
                         "route '{}' targets unknown provider '{}'",
                         route.model, target.provider
@@ -5250,7 +6374,7 @@ impl GatewayConfig {
                     ));
                 }
                 for target in &variant.targets {
-                    if !provider_names.contains(target.provider.as_str()) {
+                    if !known(&target.provider) {
                         problems.push(format!(
                             "route '{}' variant '{}' targets unknown provider '{}'",
                             route.model, variant.name, target.provider
@@ -5259,7 +6383,7 @@ impl GatewayConfig {
                 }
             }
             if let Some(semantic) = route.cache.as_ref().and_then(|c| c.semantic.as_ref()) {
-                if !provider_names.contains(semantic.provider.as_str()) {
+                if !known(&semantic.provider) {
                     problems.push(format!(
                         "route '{}' semantic cache uses unknown embeddings provider '{}'",
                         route.model, semantic.provider
@@ -5293,8 +6417,10 @@ impl GatewayConfig {
             } else if !key_values.insert(vk.key.as_str()) {
                 problems.push("duplicate virtual key value".to_string());
             }
+            // a file key has no org, so it names global providers, or the one
+            // org's provider when only one org has that name
             for provider in &vk.providers {
-                if !provider_names.contains(provider.as_str()) {
+                if !provider_names.contains_name(provider) {
                     problems.push(format!(
                         "virtual key '{}' allows unknown provider '{}'",
                         vk.name.as_deref().unwrap_or("<unnamed>"),
@@ -5395,6 +6521,7 @@ impl GatewayConfig {
 
         // validate the custom guardrail webhook (url/timeout/auth) at load time
         problems.append(&mut self.guardrail_webhook.validate());
+        problems.append(&mut self.semantic_guards.validate(&self.guardrail_webhook));
         problems.append(&mut self.pii_sanitizer.validate());
 
         // validate every enabled plugin instance's endpoint at load time
@@ -5412,6 +6539,101 @@ impl GatewayConfig {
         } else {
             Err(problems)
         }
+    }
+}
+
+/// The providers [`GatewayConfig::sanitize_for_snapshot`] left out, and how a
+/// reference to one is recognised: it is resolved the way the gateway would,
+/// in the referencing row's org first, then globally, against every provider
+/// the config held before any was dropped (#1857). A name that resolves to
+/// nothing is left out when the store loader left out a provider by that name
+/// (#2950).
+struct OmittedProviders {
+    every: crate::namespace::Namespaced<()>,
+    omitted: crate::namespace::Namespaced<()>,
+}
+
+impl OmittedProviders {
+    /// `every` is each provider as `(org, name)` before any was dropped,
+    /// `omitted` the ones the sanitizer dropped, and `left_out` the ones the
+    /// store loader never returned (#2950). A left-out provider joins both
+    /// tables, so a reference resolves to it by the same `(org, name)` rule as
+    /// to any other row and is pruned, rather than falling through to a
+    /// namesake: another org's (#3464), or a global row its own org's row
+    /// would have shadowed.
+    fn new(
+        mut every: crate::namespace::Namespaced<()>,
+        omitted: Vec<(String, String)>,
+        left_out: &std::collections::HashSet<(String, String)>,
+    ) -> Self {
+        let mut set = crate::namespace::Namespaced::new();
+        for (org, name) in &omitted {
+            let _ = set.insert(org, name, ());
+        }
+        for (org, name) in left_out {
+            // a provider the config still carries as `(org, name)` is that
+            // provider, not the row the store could not read
+            if every.owned_by(org, name).is_some() {
+                continue;
+            }
+            let _ = every.insert(org, name, ());
+            let _ = set.insert(org, name, ());
+        }
+        Self {
+            every,
+            omitted: set,
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.omitted.is_empty()
+    }
+
+    /// Why a row of `org` may not use the provider it calls `name`, if it
+    /// may not: the provider it resolves to (its org's, then a global one)
+    /// was left out, or the only providers by that name belong to other orgs,
+    /// which a row never reaches (ADR-0040 section 1). The second case is a
+    /// deployment-wide row from the bootstrap file naming a database provider,
+    /// pruned rather than refused so the snapshot keeps building.
+    fn refusal(&self, org: &str, name: &str) -> Option<&'static str> {
+        match self.every.resolve_ref(org, name) {
+            Some((owner, ())) => self
+                .omitted
+                .owned_by(owner, name)
+                .map(|()| "the provider is itself omitted from the snapshot"),
+            None if self.every.contains_name(name) && org.is_empty() => Some(
+                "a deployment-wide row uses deployment-wide providers only, and this provider \
+                 belongs to an organization",
+            ),
+            None if self.every.contains_name(name) => {
+                Some("the provider belongs to another organization, which this row cannot use")
+            }
+            None => None,
+        }
+    }
+
+    /// The names in a key's allow-list that reach a provider left out, for a
+    /// key of `org`. A key is a caller, so it resolves the way the gateway
+    /// resolves one: the sole org's provider is a match for a key with no org.
+    fn names_for(&self, org: &str, names: &[String]) -> std::collections::HashSet<String> {
+        names
+            .iter()
+            .filter(|name| match self.every.resolve(org, name) {
+                Some((owner, ())) => self.omitted.owned_by(owner, name).is_some(),
+                None => false,
+            })
+            .cloned()
+            .collect()
+    }
+}
+
+/// The problem line for a name its namespace holds twice: `what` is the kind,
+/// such as `provider name`, and `org` is empty for the global namespace.
+fn duplicate_name(what: &str, name: &str, org: &str) -> String {
+    if org.is_empty() {
+        format!("duplicate {what} '{name}'")
+    } else {
+        format!("duplicate {what} '{name}' in org '{org}'")
     }
 }
 
@@ -5764,6 +6986,23 @@ fn is_proxy_reference(s: &str) -> bool {
 mod tests {
     use super::*;
 
+    /// #3332: a fixture's `..Default::default()` must mean what an omitted key
+    /// means in a file. A derived default would give weight 0, which no
+    /// balancer ever picks.
+    #[test]
+    fn a_default_target_is_what_a_target_with_only_a_provider_parses_to() {
+        let parsed: Target = toml::from_str("provider = \"p\"").unwrap();
+        let default = Target {
+            provider: "p".into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            serde_json::to_value(&default).unwrap(),
+            serde_json::to_value(&parsed).unwrap()
+        );
+        assert_eq!(Target::default().weight, 1);
+    }
+
     /// #2936: a route's throughput caps need a value that can be met. Zero
     /// would refuse every request, so a file is told and a stored row is
     /// served without that cap.
@@ -6011,9 +7250,13 @@ mod tests {
                 ProviderKind::Falcon => "falcon",
                 ProviderKind::SystemOne => "system_one",
                 ProviderKind::Infinity => "infinity",
+                // deliberately absent from `ALL`: it names no kind anyone can
+                // configure, only one a newer control plane sent (#3347)
+                ProviderKind::Unknown => unreachable!("Unknown is not listed in ALL"),
             };
             assert!(!named.is_empty());
         }
+        assert!(!ProviderKind::ALL.contains(&ProviderKind::Unknown));
         assert_eq!(ProviderKind::ALL.len(), 50);
     }
 
@@ -6374,8 +7617,7 @@ mod tests {
         route.model = "m".to_string();
         route.targets = vec![Target {
             provider: "p".to_string(),
-            model: None,
-            weight: 1,
+            ..Default::default()
         }];
         cfg.routes.push(route);
         let problems = cfg.validate().unwrap_err().join("\n");
@@ -6469,8 +7711,7 @@ mod tests {
         route.model = "m".to_string();
         route.targets = vec![Target {
             provider: "p".to_string(),
-            model: None,
-            weight: 1,
+            ..Default::default()
         }];
         cfg.routes.push(route);
 
@@ -6861,14 +8102,14 @@ mod tests {
             ApiKeyConfig {
                 key: Some("k2".to_string()),
                 env: None,
-                weight: 0, // clamped to 1
+                weight: 0,
             },
         ]);
         // the legacy pair is ignored once api_keys is non-empty
         assert_eq!(p.resolve_api_key().as_deref(), Some("k1"));
         assert_eq!(
             p.resolve_api_keys(),
-            vec![("k1".to_string(), 3), ("k2".to_string(), 1)]
+            vec![("k1".to_string(), 3), ("k2".to_string(), 0)]
         );
     }
 
@@ -6948,6 +8189,37 @@ mod tests {
     }
 
     #[test]
+    fn a_zero_weight_key_is_picked_only_when_no_other_key_can_be() {
+        let keys = |weights: [u32; 2]| {
+            provider_with_keys(
+                weights
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &weight)| ApiKeyConfig {
+                        key: Some(format!("k{i}")),
+                        env: None,
+                        weight,
+                    })
+                    .collect(),
+            )
+        };
+        let draws = || (0..=100).map(|i| f64::from(i) / 100.0);
+        // [0, 9]: key 0 never takes a first pick
+        let skewed = keys([0, 9]);
+        for r in draws() {
+            assert_eq!(skewed.pick_api_key_indexed(r, |_| false).unwrap().0, 1);
+        }
+        // [0, 0]: uniform
+        let flat = keys([0, 0]);
+        assert_eq!(flat.pick_api_key_indexed(0.1, |_| false).unwrap().0, 0);
+        assert_eq!(flat.pick_api_key_indexed(0.9, |_| false).unwrap().0, 1);
+        // the 9-weight key parked on a cooldown: the zero-weight key is used
+        for r in draws() {
+            assert_eq!(skewed.pick_api_key_indexed(r, |i| i == 1).unwrap().0, 0);
+        }
+    }
+
+    #[test]
     fn api_keys_parse_from_toml_with_default_weight() {
         let cfg: ProviderConfig = toml::from_str(
             r#"
@@ -6982,8 +8254,24 @@ mod tests {
     fn weighted_index_clamps_out_of_range_and_empty() {
         assert_eq!(weighted_index([1u32, 1].into_iter(), 1.5), Some(1));
         assert_eq!(weighted_index(std::iter::empty::<u32>(), 0.5), None);
-        // zero-weight entries are clamped to 1 so they remain selectable
+        // an all-zero set falls back to uniform
         assert_eq!(weighted_index([0u32, 0].into_iter(), 0.0), Some(0));
+        assert_eq!(weighted_index([0u32, 0].into_iter(), 0.5), Some(1));
+    }
+
+    #[test]
+    fn a_zero_weight_entry_takes_no_first_attempts_while_another_is_positive() {
+        let w = || [0u32, 9, 0].into_iter();
+        for i in 0..=100 {
+            assert_eq!(weighted_index(w(), f64::from(i) / 100.0), Some(1));
+        }
+        // 9:0 never samples the zero-weight variant, which still falls back
+        let mut route = route_with(&[], ParamPolicy::default());
+        route.variants = vec![variant("a", 9), variant("b", 0)];
+        for i in 0..100 {
+            assert_eq!(route.sample_variant(f64::from(i) / 100.0), Some(0));
+        }
+        assert_eq!(route.fallback_order(0), vec![0, 1]);
     }
 
     #[test]
@@ -8747,6 +10035,102 @@ mod tests {
         assert!(cfg.routes.is_empty());
     }
 
+    /// two providers; `pool` and `variant` are TOML target tables for the
+    /// route `m`, so a case states only what differs
+    fn restricted_route_config(pool: &str, variant: &str) -> GatewayConfig {
+        toml::from_str(&format!(
+            r#"
+            [[providers]]
+            name = "a"
+            kind = "openai"
+            api_base = "https://api.openai.com/v1"
+            [[providers]]
+            name = "b"
+            kind = "openai"
+            api_base = "https://api.openai.com/v1"
+
+            [[routes]]
+            model = "m"
+            {pool}
+            {variant}
+
+            [[routes]]
+            model = "ok"
+            [[routes.targets]]
+            provider = "a"
+            "#
+        ))
+        .unwrap()
+    }
+
+    const ORDINARY_POOL: &str = r#"[[routes.targets]]
+            provider = "a""#;
+    const RESTRICTED_VARIANT: &str = r#"[[routes.variants]]
+            name = "v"
+            [[routes.variants.targets]]
+            provider = "b"
+            takes_over = ["throttled"]"#;
+    const ORDINARY_VARIANT: &str = r#"[[routes.variants]]
+            name = "v"
+            [[routes.variants.targets]]
+            provider = "b""#;
+
+    #[test]
+    fn a_route_with_variants_dials_only_them_when_checking_for_restricted_targets() {
+        // the pool has an ordinary target but the data plane never consults it
+        let stranded = restricted_route_config(ORDINARY_POOL, RESTRICTED_VARIANT);
+        let problems = stranded.validate().unwrap_err();
+        assert!(
+            problems
+                .iter()
+                .any(|p| p.contains(crate::failover::ALL_TARGETS_RESTRICTED)),
+            "{problems:?}"
+        );
+        // an ordinary variant target serves, whatever the pool holds
+        let served = restricted_route_config(ORDINARY_POOL, ORDINARY_VARIANT);
+        assert!(served.validate().is_ok(), "{:?}", served.validate());
+        // with no variants the pool is what is dialled
+        let pool_only = restricted_route_config(
+            r#"[[routes.targets]]
+            provider = "b"
+            takes_over = ["throttled"]"#,
+            "",
+        );
+        assert!(pool_only.validate().is_err());
+    }
+
+    #[test]
+    fn the_flag_form_of_the_dialled_rule_counts_variants_over_the_pool() {
+        let none: [[bool; 0]; 0] = [];
+        // without variants the pool is dialled
+        assert!(only_restricted_dialled([true, true], none));
+        assert!(!only_restricted_dialled([true, false], none));
+        // nothing to dial is not "only restricted"
+        assert!(!only_restricted_dialled([], none));
+        // with variants the pool does not count, whatever it holds
+        assert!(only_restricted_dialled([false], [vec![true], vec![true]]));
+        assert!(!only_restricted_dialled([true], [vec![true], vec![false]]));
+    }
+
+    #[test]
+    fn sanitize_drops_a_route_left_with_only_restricted_targets() {
+        let mut cfg = restricted_route_config(ORDINARY_POOL, RESTRICTED_VARIANT);
+        let report = cfg.sanitize_for_snapshot_report();
+        let models: Vec<_> = cfg.routes.iter().map(|r| r.model.as_str()).collect();
+        assert_eq!(models, ["ok"]);
+        assert!(
+            report
+                .problems
+                .iter()
+                .any(|p| p.contains("route 'm'") && p.contains("all_targets_restricted")),
+            "{:?}",
+            report.problems
+        );
+        // the rest of the snapshot still validates and applies
+        assert_eq!(cfg.validate_snapshot(), Ok(()));
+        assert!(cfg.validate().is_ok(), "{:?}", cfg.validate());
+    }
+
     #[test]
     fn sanitize_keeps_a_servable_duplicate_of_a_dropped_model() {
         // pruning is by index, so an unservable row must not take its servable
@@ -8919,6 +10303,42 @@ mod tests {
         );
     }
 
+    /// #3431: pruning the omitted provider's ordinary target can leave a pool of
+    /// only fallbacks, which `validate_snapshot` would refuse for every tenant
+    #[test]
+    fn sanitize_drops_a_route_whose_ordinary_target_was_pruned_with_its_provider() {
+        let mut cfg = fleet_with_an_omitted_provider(
+            r#"
+            [[routes]]
+            model = "m"
+            [[routes.targets]]
+            provider = "bad"
+            [[routes.targets]]
+            provider = "openai"
+            takes_over = ["throttled"]
+
+            [[routes]]
+            model = "ok"
+            [[routes.targets]]
+            provider = "openai"
+            "#,
+        );
+        assert!(cfg.validate_snapshot().is_err(), "precondition");
+
+        let warnings = cfg.sanitize_for_snapshot();
+
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains("route 'm'") && w.contains("all_targets_restricted")),
+            "{warnings:?}"
+        );
+        let models: Vec<_> = cfg.routes.iter().map(|r| r.model.as_str()).collect();
+        assert_eq!(models, ["ok"]);
+        assert_eq!(cfg.validate_snapshot(), Ok(()));
+        assert!(cfg.validate().is_ok(), "{:?}", cfg.validate());
+    }
+
     /// #2950: the loader left the provider out before the sanitizer ever saw
     /// it, so the file's reference to it was an unknown name and refused.
     #[test]
@@ -8947,7 +10367,8 @@ mod tests {
             cfg.validate_snapshot().is_err(),
             "precondition: an unknown name is refused"
         );
-        cfg.left_out_providers.insert("stored".to_string());
+        cfg.left_out_providers
+            .insert((String::new(), "stored".to_string()));
 
         let warnings = cfg.sanitize_for_snapshot();
 
@@ -8994,7 +10415,8 @@ mod tests {
             providers = ["stored"]
             "#,
         );
-        cfg.left_out_providers.insert("stored".to_string());
+        cfg.left_out_providers
+            .insert((String::new(), "stored".to_string()));
 
         let report = cfg.sanitize_for_snapshot_report();
 
@@ -9026,7 +10448,8 @@ mod tests {
             provider = "openai"
             "#,
         );
-        cfg.left_out_providers.insert("openai".to_string());
+        cfg.left_out_providers
+            .insert((String::new(), "openai".to_string()));
         let warnings = cfg.sanitize_for_snapshot();
         assert_eq!(cfg.routes[0].targets.len(), 1, "{warnings:?}");
     }
@@ -9177,18 +10600,8 @@ mod tests {
         let db_key = |id: &str, providers: &[&str]| VirtualKeyRecord {
             key_hash: format!("hash-{id}"),
             id: id.to_string(),
-            org_id: String::new(),
-            team_id: String::new(),
-            project_id: String::new(),
-            user_id: String::new(),
-            models: Vec::new(),
             providers: providers.iter().map(|p| p.to_string()).collect(),
-            disabled: false,
-            expires_at: None,
-            cache: None,
-            business_unit_id: String::new(),
-            customer_id: String::new(),
-            access_policy: None,
+            ..Default::default()
         };
         cfg.db_virtual_keys = vec![
             db_key("db-mixed", &["bad", "openai"]),
@@ -9565,6 +10978,269 @@ mod tests {
         assert_eq!(cfg.routes.len(), before.routes.len());
     }
 
+    /// Two orgs that each have an `openai` provider and a `gpt-4o` route on it,
+    /// as the store composes them (#1857).
+    fn two_orgs_one_name() -> GatewayConfig {
+        let mut cfg: GatewayConfig = toml::from_str(
+            r#"
+            [[providers]]
+            name = "openai"
+            kind = "openai"
+            api_base = "https://api.openai.com/v1"
+
+            [[providers]]
+            name = "openai"
+            kind = "openai"
+            api_base = "https://api.openai.com/v1"
+
+            [[routes]]
+            model = "gpt-4o"
+            [[routes.targets]]
+            provider = "openai"
+
+            [[routes]]
+            model = "gpt-4o"
+            [[routes.targets]]
+            provider = "openai"
+            "#,
+        )
+        .unwrap();
+        for (i, org) in ["org-a", "org-b"].into_iter().enumerate() {
+            let tenancy = Some(Tenancy {
+                org_id: org.to_string(),
+                project_id: None,
+            });
+            cfg.providers[i].tenancy = tenancy.clone();
+            cfg.routes[i].tenancy = tenancy;
+        }
+        cfg
+    }
+
+    #[test]
+    fn two_orgs_may_each_name_a_route_and_a_provider_the_same() {
+        let mut cfg = two_orgs_one_name();
+        assert!(cfg.sanitize_for_snapshot().is_empty());
+        assert_eq!((cfg.providers.len(), cfg.routes.len()), (2, 2));
+        cfg.validate_snapshot().unwrap();
+    }
+
+    #[test]
+    fn one_org_still_may_not_name_two_providers_or_routes_the_same() {
+        let mut cfg = two_orgs_one_name();
+        cfg.providers[1].tenancy = cfg.providers[0].tenancy.clone();
+        cfg.routes[1].tenancy = cfg.routes[0].tenancy.clone();
+        let problems = cfg.validate().unwrap_err();
+        assert!(
+            problems
+                .iter()
+                .any(|p| p == "duplicate provider name 'openai' in org 'org-a'"),
+            "{problems:?}"
+        );
+        assert!(
+            problems
+                .iter()
+                .any(|p| p == "duplicate route model 'gpt-4o' in org 'org-a'"),
+            "{problems:?}"
+        );
+    }
+
+    #[test]
+    fn a_route_resolves_its_own_orgs_provider_then_a_global_one_never_another_orgs() {
+        let mut cfg = two_orgs_one_name();
+        // org-b's provider is renamed away: org-b's route now names nothing of
+        // its own, and org-a's provider is not a fallback for it
+        cfg.providers[1].name = "elsewhere".to_string();
+        let problems = cfg.validate().unwrap_err();
+        assert!(
+            problems
+                .iter()
+                .any(|p| p.contains("route 'gpt-4o' targets unknown provider 'openai'")),
+            "{problems:?}"
+        );
+        // a global provider of that name is one
+        let mut global = cfg.providers[0].clone();
+        global.tenancy = None;
+        cfg.providers.push(global);
+        cfg.validate().unwrap();
+    }
+
+    #[test]
+    fn a_deployment_wide_route_never_reaches_one_orgs_provider() {
+        let mut cfg = two_orgs_one_name();
+        // org-b's provider goes, so org-a is the only org with an `openai`; a
+        // global route naming it with a global fallback beside it
+        cfg.providers.truncate(1);
+        cfg.routes.truncate(1);
+        let mut global: GatewayConfig = toml::from_str(
+            r#"
+            [[providers]]
+            name = "local"
+            kind = "openai"
+            api_base = "http://127.0.0.1:8000/v1"
+
+            [[routes]]
+            model = "shared"
+            [[routes.targets]]
+            provider = "openai"
+            [[routes.targets]]
+            provider = "local"
+            "#,
+        )
+        .unwrap();
+        cfg.providers.append(&mut global.providers);
+        cfg.routes.append(&mut global.routes);
+        let problems = cfg.sanitize_for_snapshot();
+        assert!(
+            problems
+                .iter()
+                .any(|p| p.contains("deployment-wide providers only")),
+            "{problems:?}"
+        );
+        let shared = cfg.routes.iter().find(|r| r.model == "shared").unwrap();
+        let targets: Vec<&str> = shared.targets.iter().map(|t| t.provider.as_str()).collect();
+        assert_eq!(targets, ["local"]);
+        cfg.validate_snapshot().unwrap();
+    }
+
+    #[test]
+    fn sanitizing_one_orgs_broken_provider_leaves_the_other_orgs_namesake_alone() {
+        let mut cfg = two_orgs_one_name();
+        cfg.providers[0].api_base = "not a url".to_string();
+        let problems = cfg.sanitize_for_snapshot();
+        assert!(
+            problems
+                .iter()
+                .any(|p| p.starts_with("provider 'openai' omitted")),
+            "{problems:?}"
+        );
+        // org-a's route lost its only target and went; org-b's kept its own
+        assert_eq!(cfg.providers.len(), 1);
+        assert_eq!(cfg.routes.len(), 1);
+        assert_eq!(
+            cfg.routes[0].tenancy.as_ref().map(|t| t.org_id.as_str()),
+            Some("org-b")
+        );
+        assert_eq!(cfg.routes[0].targets.len(), 1);
+        cfg.validate_snapshot().unwrap();
+    }
+
+    /// #3464: the store left out one org's `openai` because its row could not
+    /// be read. Only that org's references go: the other org's route and group
+    /// keep their own `openai`, and the left-out org's route does not fall
+    /// through to the global namesake its own row shadowed.
+    #[test]
+    fn a_left_out_provider_prunes_only_its_own_orgs_references() {
+        let mut cfg = two_orgs_one_name();
+        let mut extra: GatewayConfig = toml::from_str(
+            r#"
+            [[providers]]
+            name = "openai"
+            kind = "openai"
+            api_base = "https://api.openai.com/v1"
+
+            [[provider_groups]]
+            name = "pool-a"
+            slug = "pool-a"
+            [[provider_groups.members]]
+            provider = "openai"
+
+            [[provider_groups]]
+            name = "pool-b"
+            slug = "pool-b"
+            [[provider_groups.members]]
+            provider = "openai"
+
+            [[virtual_keys]]
+            key = "k"
+            name = "operator"
+            providers = ["openai"]
+            "#,
+        )
+        .unwrap();
+        for (i, org) in ["org-a", "org-b"].into_iter().enumerate() {
+            let tenancy = Some(Tenancy {
+                org_id: org.to_string(),
+                project_id: None,
+            });
+            extra.provider_groups[i].tenancy = tenancy;
+        }
+        // org-a's row never reached the config; the global `openai` did
+        cfg.providers.remove(0);
+        cfg.providers.append(&mut extra.providers);
+        cfg.provider_groups.append(&mut extra.provider_groups);
+        cfg.virtual_keys.append(&mut extra.virtual_keys);
+        cfg.left_out_providers
+            .insert(("org-a".to_string(), "openai".to_string()));
+
+        let problems = cfg.sanitize_for_snapshot();
+
+        let org = |t: Option<&Tenancy>| t.map(|t| t.org_id.clone());
+        let routes: Vec<_> = cfg
+            .routes
+            .iter()
+            .map(|r| (org(r.tenancy.as_ref()), r.targets.len()))
+            .collect();
+        assert_eq!(routes, [(Some("org-b".into()), 1)], "{problems:?}");
+        let groups: Vec<_> = cfg
+            .provider_groups
+            .iter()
+            .map(|g| (g.name.as_str(), g.members.len()))
+            .collect();
+        // org-a's group lost its member, and an empty group serves nothing
+        assert_eq!(groups, [("pool-a", 0), ("pool-b", 1)], "{problems:?}");
+        // the operator's key resolves the global `openai`, which is served
+        assert_eq!(cfg.virtual_keys[0].providers, ["openai"], "{problems:?}");
+        cfg.validate_snapshot().unwrap();
+    }
+
+    #[test]
+    fn a_gateway_that_predates_namespaces_gets_every_colliding_org_row_left_out() {
+        let mut cfg = two_orgs_one_name();
+        let mut global: GatewayConfig = toml::from_str(
+            r#"
+            [[providers]]
+            name = "local"
+            kind = "openai"
+            api_base = "http://127.0.0.1:8000/v1"
+
+            [[routes]]
+            model = "gpt-4o"
+            [[routes.targets]]
+            provider = "local"
+            "#,
+        )
+        .unwrap();
+        cfg.providers.append(&mut global.providers);
+        cfg.routes.append(&mut global.routes);
+        let mut problems = crate::namespace::fold_for_legacy_gateway(&mut cfg);
+        problems.extend(cfg.sanitize_for_snapshot());
+        // both orgs' rows go, the global ones stay, and nothing is guessed
+        assert_eq!(cfg.providers.len(), 1);
+        assert_eq!(cfg.providers[0].name, "local");
+        assert_eq!(cfg.routes.len(), 1);
+        assert!(cfg.routes[0].tenancy.is_none());
+        assert_eq!(
+            problems
+                .iter()
+                .filter(|p| p.contains("predates per-org namespaces"))
+                .count(),
+            4,
+            "{problems:?}"
+        );
+        cfg.validate_snapshot().unwrap();
+    }
+
+    #[test]
+    fn folding_for_an_older_gateway_costs_nothing_without_a_repeated_name() {
+        let mut cfg = two_orgs_one_name();
+        cfg.providers[1].name = "openai-b".to_string();
+        cfg.providers[1].slug = Some("openai-b".to_string());
+        cfg.routes[1].model = "gpt-4o-b".to_string();
+        cfg.routes[1].targets[0].provider = "openai-b".to_string();
+        assert!(crate::namespace::fold_for_legacy_gateway(&mut cfg).is_empty());
+        assert_eq!((cfg.providers.len(), cfg.routes.len()), (2, 2));
+    }
+
     #[test]
     fn a_duplicate_provider_name_still_refuses_rather_than_guessing() {
         // not row-local: both rows are individually fine, so dropping one would
@@ -9645,8 +11321,7 @@ mod tests {
                 .iter()
                 .map(|provider| Target {
                     provider: provider.to_string(),
-                    model: None,
-                    weight: 1,
+                    ..Default::default()
                 })
                 .collect(),
             params: Default::default(),
@@ -10424,5 +12099,277 @@ mod tests {
         )
         .expect("parses");
         assert!(cfg.project_scoped_warnings().is_empty());
+    }
+
+    // --- enum values from a newer release (#3347) ---
+
+    /// A snapshot carrying a value of every fallback enum that this build does
+    /// not know: as JSON from a newer control plane would.
+    fn snapshot_from_the_future() -> serde_json::Value {
+        serde_json::json!({
+            "unpriced_policy": "quarterly_review",
+            "queue": {"backpressure": "spill_to_disk"},
+            "providers": [
+                {"name": "known", "kind": "openai", "api_base": "https://api.openai.com",
+                 "role_profile": "telepathic", "model_role_profiles": {"m": "telepathic"}},
+                {"name": "future", "kind": "quantum", "api_base": "https://q.example"}
+            ],
+            "provider_groups": [
+                {"name": "pool", "strategy": "mind_reading",
+                 "members": [{"provider": "known"}]}
+            ],
+            "routes": [
+                {"model": "kept", "targets": [
+                    {"provider": "known"},
+                    {"provider": "known", "takes_over": ["quantum_flux"]}
+                 ],
+                 "param_policy": {"mode": "maybe"}},
+                {"model": "orphaned", "targets": [{"provider": "future"}]},
+                {"model": "guessing", "strategy": "mind_reading",
+                 "targets": [{"provider": "known"}]}
+            ],
+            "db_virtual_keys": [{"key_hash": "h", "id": "vk-1", "org_id": "org-1"}],
+            "budgets": [
+                {"scope": "galaxy", "id": "g", "limit_usd": 5},
+                {"scope": "org", "id": "org-1", "limit_usd": 5, "period": "fortnightly",
+                 "unpriced_policy": "quarterly_review"}
+            ],
+            "rate_limits": [{"scope": "galaxy", "id": "g", "rpm": 10}],
+            "guardrails": {
+                "streaming_post_call": "sometimes",
+                "rules": [{"name": "r", "builtin": "email", "action": "scold"}]
+            },
+            "guardrail_webhook": {"failure_mode": "fail_sideways"},
+            "semantic_guards": {
+                "providers": [{"name": "p", "url": "https://g.example",
+                               "failure_mode": "fail_sideways",
+                               "on_truncated": "ask_a_human"}],
+                "policies": [{"name": "pol", "on_violation": "scold", "streaming": "trickle"}]
+            },
+            "pii_sanitizer": {
+                "direction": "sideways", "restoration": "always",
+                "streaming": "trickle", "failure_mode": "fail_sideways"
+            },
+            "mcp_servers": [{"id": "m1", "org_id": "org-1", "slug": "tools",
+                             "url": "https://mcp.example", "transport": "streamable_http",
+                             "auth_kind": "telepathy"}],
+            "plugins": {"instances": [
+                {"slug": "pl", "org_id": "org-1", "stage": "pre_route", "position": 0,
+                 "failure_mode": "fail_sideways", "endpoint": "https://pl.example"}
+            ]}
+        })
+    }
+
+    /// Each value read fail-closed is counted under its kind, a fixed name
+    /// that never carries the value or the entity (#3424).
+    #[test]
+    fn unknown_values_are_counted_by_kind_and_never_by_value() {
+        let mut cfg: GatewayConfig = serde_json::from_value(snapshot_from_the_future())
+            .expect("a snapshot from a newer release decodes");
+        let report = cfg.fail_closed_unknown_report();
+        let count = |kind: &str| report.kinds.get(kind).copied().unwrap_or(0);
+        assert_eq!(count("provider_kind"), 1, "{:?}", report.kinds);
+        assert_eq!(count("route_strategy"), 1, "{:?}", report.kinds);
+        assert_eq!(count("provider_group_strategy"), 1, "{:?}", report.kinds);
+        assert_eq!(count("budget_scope"), 1, "{:?}", report.kinds);
+        assert_eq!(count("budget_period"), 1, "{:?}", report.kinds);
+        assert_eq!(count("rate_limit_scope"), 1, "{:?}", report.kinds);
+        assert_eq!(count("failure_class"), 1, "{:?}", report.kinds);
+        assert_eq!(count("unpriced_policy"), 2, "{:?}", report.kinds);
+        assert_eq!(count("role_profile"), 2, "{:?}", report.kinds);
+        assert_eq!(count("failure_mode"), 4, "{:?}", report.kinds);
+        assert_eq!(count("on_truncated"), 1, "{:?}", report.kinds);
+        assert_eq!(count("mcp_auth_kind"), 1, "{:?}", report.kinds);
+        for kind in report.kinds.keys() {
+            assert!(
+                kind.bytes().all(|b| b.is_ascii_lowercase() || b == b'_'),
+                "{kind}"
+            );
+            for value in ["quantum", "galaxy", "fortnightly", "future", "pool"] {
+                assert!(!kind.contains(value), "{kind}");
+            }
+        }
+        // every value is a line too, and the sanitizer's cascade adds more
+        let values: u32 = report.kinds.values().sum();
+        assert!(report.lines.len() >= values as usize, "{report:?}");
+        // a snapshot whose values are all known counts nothing
+        let mut known = GatewayConfig::default();
+        assert_eq!(known.fail_closed_unknown_report(), UnknownValues::default());
+    }
+
+    #[test]
+    fn unknown_enum_values_fail_closed_for_their_entity_and_the_rest_applies() {
+        use crate::guardrail_webhook::FailureMode;
+        use crate::guardrails::{GuardAction, StreamingPostCall};
+        use crate::pii_sanitizer::{RestorationPolicy, SanitizeDirection, StreamingResponse};
+        use crate::semantic_guards::{StreamingStrategy, ViolationAction};
+
+        let mut cfg: GatewayConfig = serde_json::from_value(snapshot_from_the_future())
+            .expect("a value this build does not know must not fail the decode");
+        let problems = cfg.fail_closed_unknown_values();
+
+        // the provider of an unknown kind is never dialled, and the route that
+        // only reached it goes with it; the route of an unknown strategy refuses
+        let providers: Vec<&str> = cfg.providers.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(providers, ["known"]);
+        let routes: Vec<&str> = cfg.routes.iter().map(|r| r.model.as_str()).collect();
+        assert_eq!(routes, ["kept"]);
+        assert!(cfg.provider_groups[0].members.is_empty());
+        // the rest of the snapshot, the keys above all, still applies
+        assert_eq!(cfg.db_virtual_keys.len(), 1);
+        assert!(
+            cfg.validate_snapshot().is_ok(),
+            "{:?}",
+            cfg.validate_snapshot()
+        );
+
+        // settings take their most restrictive known reading
+        assert_eq!(cfg.unpriced_policy, UnpricedPolicy::Block);
+        assert_eq!(cfg.queue.backpressure, BackpressurePolicy::Error);
+        assert_eq!(cfg.providers[0].role_profile, Some(RoleProfile::SystemOnly));
+        assert_eq!(
+            cfg.providers[0].model_role_profiles["m"],
+            RoleProfile::SystemOnly
+        );
+        assert_eq!(cfg.routes[0].param_policy.mode, OverrideMode::Deny);
+        // an unknown class stays in the set, matching nothing (#3390)
+        assert_eq!(
+            cfg.routes[0].targets[1].takes_over[0].kind,
+            crate::failover::FailureKind::Unknown
+        );
+        assert_eq!(cfg.budgets[1].unpriced_policy, Some(UnpricedPolicy::Block));
+        assert_eq!(cfg.guardrails.rules[0].action, GuardAction::Block);
+        assert_eq!(
+            cfg.guardrails.streaming_post_call,
+            StreamingPostCall::Reject
+        );
+        assert_eq!(cfg.guardrail_webhook.failure_mode, FailureMode::FailClosed);
+        assert_eq!(
+            cfg.semantic_guards.providers[0].failure_mode,
+            FailureMode::FailClosed
+        );
+        assert_eq!(
+            cfg.semantic_guards.providers[0].on_truncated,
+            crate::guardrail_webhook::OnTruncated::FailClosed
+        );
+        let policy = &cfg.semantic_guards.policies[0];
+        assert_eq!(policy.on_violation, ViolationAction::Block);
+        assert_eq!(policy.streaming, StreamingStrategy::Reject);
+        assert_eq!(cfg.pii_sanitizer.direction, SanitizeDirection::Both);
+        assert_eq!(cfg.pii_sanitizer.restoration, RestorationPolicy::Never);
+        assert_eq!(cfg.pii_sanitizer.streaming, StreamingResponse::Reject);
+        assert_eq!(cfg.pii_sanitizer.failure_mode, FailureMode::FailClosed);
+        assert_eq!(
+            cfg.plugins.instances[0].failure_mode,
+            FailureMode::FailClosed
+        );
+
+        // budgets and limits stay unknown: the gateway's enforcement binds them
+        assert_eq!(cfg.budgets[0].scope, BudgetScope::Unknown);
+        assert_eq!(cfg.budgets[1].period, BudgetPeriod::Unknown);
+        assert_eq!(cfg.rate_limits[0].scope, BudgetScope::Unknown);
+
+        for named in [
+            "future",
+            "guessing",
+            "pool",
+            "unpriced_policy",
+            "plugin 'pl'",
+            "quantum_flux",
+        ] {
+            assert!(
+                problems.iter().any(|p| p.contains(named)),
+                "no problem names {named}: {problems:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_snapshot_with_only_known_values_is_left_alone() {
+        let mut cfg: GatewayConfig = serde_json::from_value(serde_json::json!({
+            "providers": [{"name": "p", "kind": "openai", "api_base": "https://a.example"}],
+            "routes": [{"model": "m", "targets": [{"provider": "p"}]}]
+        }))
+        .unwrap();
+        assert!(cfg.fail_closed_unknown_values().is_empty());
+        assert_eq!(cfg.routes.len(), 1);
+    }
+
+    #[test]
+    fn a_config_file_refuses_a_value_this_build_does_not_know() {
+        for (toml, named) in [
+            (
+                "[[providers]]\nname = \"p\"\nkind = \"opneai\"\napi_base = \"https://a.example\"\n",
+                "provider 'p' kind",
+            ),
+            (
+                "[[routes]]\nmodel = \"m\"\nstrategy = \"round_robbin\"\ntargets = []\n",
+                "route 'm' strategy",
+            ),
+            ("unpriced_policy = \"blok\"\n", "unpriced_policy"),
+            (
+                "[[budgets]]\nscope = \"org\"\nid = \"o\"\nlimit_usd = 1\nperiod = \"weekly\"\n",
+                "budget 'o' period",
+            ),
+            (
+                "[guardrail_webhook]\nfailure_mode = \"fail_closd\"\n",
+                "guardrail_webhook.failure_mode",
+            ),
+            (
+                "[[routes]]\nmodel = \"m\"\n[[routes.targets]]\nprovider = \"p\"\n\
+                 takes_over = [\"throtled\"]\n",
+                "takes_over 'throtled'",
+            ),
+        ] {
+            let err = GatewayConfig::from_toml_str(toml)
+                .err()
+                .unwrap_or_else(|| panic!("{named}: a typo must not load"));
+            assert!(err.to_string().contains(named), "{named}: {err}");
+            // a typo is answered with what the build accepts
+            assert!(err.to_string().contains("expected one of"), "{named}: {err}");
+        }
+        let err = GatewayConfig::from_toml_str("unpriced_policy = \"blok\"\n")
+            .err()
+            .unwrap();
+        assert!(err.to_string().contains("ignore, warn, block"), "{err}");
+    }
+
+    #[test]
+    fn an_unknown_unpriced_policy_outranks_block() {
+        assert!(UnpricedPolicy::Unknown > UnpricedPolicy::Block);
+    }
+
+    #[test]
+    fn an_unknown_guard_provider_kind_is_named_and_left_to_fail_closed() {
+        use crate::guardrail_webhook::GuardProviderKind;
+        let mut cfg: GatewayConfig = serde_json::from_value(serde_json::json!({
+            "semantic_guards": {"providers": [
+                {"name": "future", "enabled": true, "kind": "quantum", "failure_mode": "fail_open"}
+            ]}
+        }))
+        .expect("an unknown kind must not fail the decode");
+        let problems = cfg.fail_closed_unknown_values().join("\n");
+        assert!(
+            problems.contains("semantic guard provider 'future' kind"),
+            "{problems}"
+        );
+        // kept as it is: the gateway blocks its stage per request
+        assert_eq!(
+            cfg.semantic_guards.providers[0].kind,
+            GuardProviderKind::Unknown
+        );
+        assert!(
+            cfg.validate_snapshot().is_ok(),
+            "{:?}",
+            cfg.validate_snapshot()
+        );
+
+        // a file is written by hand: the typo is refused with the list
+        let err = GatewayConfig::from_toml_str(
+            "[[semantic_guards.providers]]\nname = \"x\"\nkind = \"locl\"\n",
+        )
+        .err()
+        .unwrap_or_else(|| panic!("a typo must not load"));
+        assert!(err.to_string().contains("webhook, local"), "{err}");
     }
 }
