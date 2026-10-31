@@ -116,7 +116,7 @@ jobs:
     # may inherit the title-edit fast path, and a retarget (`changes.base`)
     # never takes it
     if: ${{ !(github.event_name == 'pull_request' && github.event.action == 'edited' && !github.event.changes.base) }}
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     permissions:
       contents: read
       security-events: write
@@ -185,7 +185,7 @@ jobs:
         with:
           toolchain: stable
       - if: matrix.leg == 'rust' && steps.scope.outputs.analyze != 'false'
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           save-if: ${{ github.ref == 'refs/heads/master' }}
       - if: matrix.leg == 'rust' && steps.scope.outputs.analyze != 'false'
@@ -202,6 +202,27 @@ jobs:
         if: matrix.leg == 'rust' && steps.scope.outputs.analyze != 'false'
         uses: github/codeql-action/analyze@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
         with:
+          # the cli writes the category into the sarif, and upload-sarif only
+          # fills in one the run lacks, so the category is set here rather
+          # than left to the upload step
+          category: "/language:rust"
+          upload: failure-only
+          output: ${{ runner.temp }}/codeql-sarif
+      # test fixtures (a deliberately wrong nonce, a loopback url) raise alerts
+      # on every pr that rewrites a test file and `paths-ignore` cannot stop the
+      # rust extractor, so results under crates/*/tests/ are dropped from the
+      # sarif before upload (#2749). crates/*/src/ keeps the full query suite
+      - name: drop test-fixture results (rust)
+        if: matrix.leg == 'rust' && steps.scope.outputs.analyze != 'false'
+        run: >-
+          bash scripts/filter-codeql-sarif.sh
+          "${RUNNER_TEMP}/codeql-sarif/rust.sarif"
+          "${RUNNER_TEMP}/codeql-sarif/rust.filtered.sarif"
+      - name: upload rust results
+        if: matrix.leg == 'rust' && steps.scope.outputs.analyze != 'false'
+        uses: github/codeql-action/upload-sarif@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
+        with:
+          sarif_file: ${{ runner.temp }}/codeql-sarif/rust.filtered.sarif
           category: "/language:rust"
       # analyze takes one `category` for every language it ran, and the cli
       # writes it verbatim into each run, so three languages under one
@@ -258,8 +279,31 @@ jobs:
     # records the verdict for the new base like any other gate run
     if: ${{ !(github.event_name == 'pull_request' && github.event.action == 'edited' && !github.event.changes.base) }}
     needs: [quality, codeql]
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
+    permissions:
+      contents: read
+      # a dispatched run resolves its pull request from the api to learn the
+      # base it gated (#2657)
+      pull-requests: read
     steps:
+      # a dispatch has no pull request in its payload, so the release PR's gate
+      # would record `none` and a title or body edit would go red until a new
+      # commit landed. resolve the pr by head ref instead (#2657). it runs on a
+      # dispatch only: every other event reads the base from its payload
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        with:
+          persist-credentials: false
+          sparse-checkout: scripts/resolve-gated-base.sh
+          sparse-checkout-cone-mode: false
+      - name: resolve the base the dispatched run gated
+        id: base
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          REF_NAME: ${{ github.ref_name }}
+        run: echo "sha=$(bash scripts/resolve-gated-base.sh)" >> "${GITHUB_OUTPUT}"
       # the step name is the record of which base this verdict is for. the
       # `edited` fast path (scripts/assert-gate-ran.sh) reads it back from the
       # jobs listing it already fetches and accepts only a run gated against
@@ -267,9 +311,10 @@ jobs:
       # been retargeted away from cannot vouch for the new one (#2649). the
       # run's own `pull_requests[].base.sha` cannot answer that: the api fills
       # it in live from the pr as it is now, not as it was when the run
-      # started. a run with no pull request in its payload (a dispatch, a
-      # push, a merge group) records `none`, which the fast path never accepts
-      - name: gated against base ${{ github.event.pull_request.base.sha || 'none' }}
+      # started. a dispatch records the base of the pr it resolved above, and a
+      # run with no pull request at all (a push, a merge group, a dispatch of a
+      # ref with no open pr) records `none`, which the fast path never accepts
+      - name: gated against base ${{ github.event.pull_request.base.sha || steps.base.outputs.sha || 'none' }}
         run: echo "quality and codeql both succeeded on this run"
 
   # single aggregating gate for branch protection. mark ONLY `ci-ok` as a
@@ -296,7 +341,7 @@ jobs:
     name: ci-ok
     if: always()
     needs: [quality, codeql]
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     # above the fast path's 90-minute wait for an in-flight gate
     # (scripts/assert-gate-ran.sh), so its own deadline, with a message that
     # says what to do, is what fires rather than a bare job timeout. every

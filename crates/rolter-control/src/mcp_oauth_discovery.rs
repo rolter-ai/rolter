@@ -31,6 +31,7 @@
 //! egress policy, and a client that does not follow redirects. See
 //! `docs/dev-docs/architecture/mcp-oauth.md` for the SSRF reasoning.
 
+// spec-ref: mcp-authorization, oauth2-protected-resource-metadata, oauth2-resource-indicators, oauth2-iss, oauth2-as-metadata
 use std::time::Duration;
 
 use serde::de::DeserializeOwned;
@@ -254,6 +255,20 @@ pub(crate) struct DiscoveredEndpoints {
     pub(crate) authorize_url: String,
     pub(crate) token_url: String,
     pub(crate) iss_supported: bool,
+    /// what the resource said about scopes. Not cached on the row: it is read
+    /// at authorize time, by a person, and chooses that one request's scopes
+    pub(crate) scopes: DiscoveredScopes,
+}
+
+/// The two places a resource names scopes (#1417).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct DiscoveredScopes {
+    /// `scope` from the `WWW-Authenticate` challenge of an unauthenticated
+    /// request: what the resource says this request needed
+    pub(crate) challenge: Vec<String>,
+    /// `scopes_supported` from the protected resource metadata: everything the
+    /// resource understands, which is a vocabulary rather than a need
+    pub(crate) supported: Vec<String>,
 }
 
 /// RFC 9728 protected resource metadata, narrowed to what rolter reads.
@@ -263,6 +278,8 @@ struct ProtectedResourceMetadata {
     resource: String,
     #[serde(default)]
     authorization_servers: Vec<String>,
+    #[serde(default)]
+    scopes_supported: Vec<String>,
 }
 
 /// RFC 8414 / OpenID Connect Discovery authorization server metadata, narrowed
@@ -288,7 +305,11 @@ pub(crate) async fn discover(
     state: &ControlState,
     resource: &ResourceUri,
 ) -> Result<DiscoveredEndpoints, DiscoveryError> {
-    let metadata = protected_resource_metadata(state, resource).await?;
+    let (metadata, challenge_scopes) = protected_resource_metadata(state, resource).await?;
+    let scopes = DiscoveredScopes {
+        challenge: challenge_scopes,
+        supported: rolter_core::mcp_challenge::parse_scopes(&metadata.scopes_supported.join(" ")),
+    };
     let servers = metadata.authorization_servers;
     if servers.is_empty() {
         return Err(DiscoveryError::NoAuthorizationServer(resource.to_string()));
@@ -296,7 +317,12 @@ pub(crate) async fn discover(
     let mut last: Option<DiscoveryError> = None;
     for issuer in servers.iter().take(MAX_AUTHORIZATION_SERVERS) {
         match authorization_server_metadata(state, issuer).await {
-            Ok(endpoints) => return Ok(endpoints),
+            Ok(endpoints) => {
+                return Ok(DiscoveredEndpoints {
+                    scopes,
+                    ..endpoints
+                })
+            }
             Err(error) => {
                 tracing::debug!(%issuer, error = %error, "mcp oauth: authorization server metadata unusable");
                 last = Some(error);
@@ -310,9 +336,10 @@ pub(crate) async fn discover(
 async fn protected_resource_metadata(
     state: &ControlState,
     resource: &ResourceUri,
-) -> Result<ProtectedResourceMetadata, DiscoveryError> {
+) -> Result<(ProtectedResourceMetadata, Vec<String>), DiscoveryError> {
     let mut candidates = Vec::new();
-    if let Some(from_challenge) = challenge_metadata_url(state, resource).await {
+    let challenge = challenge(state, resource).await;
+    if let Some(from_challenge) = challenge.metadata_url {
         candidates.push(from_challenge);
     }
     candidates.extend(protected_resource_metadata_urls(resource));
@@ -324,7 +351,7 @@ async fn protected_resource_metadata(
         // was fetched for. without this check a server can hand a client an
         // authorization server for somebody else's resource
         match ResourceUri::parse(&metadata.resource) {
-            Ok(declared) if declared == *resource => return Ok(metadata),
+            Ok(declared) if declared == *resource => return Ok((metadata, challenge.scopes)),
             _ => tracing::debug!(
                 %url,
                 declared = %metadata.resource,
@@ -336,22 +363,38 @@ async fn protected_resource_metadata(
     Err(DiscoveryError::NoResourceMetadata(resource.to_string()))
 }
 
-/// The `resource_metadata` URL an unauthenticated request is challenged with,
-/// if the server answers with one.
+/// What an unauthenticated request to the resource is challenged with: the
+/// `resource_metadata` URL, and the `scope` it says the request needed.
+#[derive(Default)]
+struct Challenge {
+    metadata_url: Option<String>,
+    scopes: Vec<String>,
+}
+
+/// Read the challenge an unauthenticated request to `resource` is answered with.
 ///
 /// A failure here is not an error: the well-known URIs are the documented
 /// fallback, and an MCP server that answers an unauthenticated `GET` with
 /// something other than a `401` has simply not told us anything.
-async fn challenge_metadata_url(state: &ControlState, resource: &ResourceUri) -> Option<String> {
+async fn challenge(state: &ControlState, resource: &ResourceUri) -> Challenge {
     let url = resource.as_str();
-    guard_url(state, url).ok()?;
-    let response = client(state).ok()?.get(url).send().await.ok()?;
-    let header = response
+    if guard_url(state, url).is_err() {
+        return Challenge::default();
+    }
+    let Some(response) = async { client(state).ok()?.get(url).send().await.ok() }.await else {
+        return Challenge::default();
+    };
+    let Some(header) = response
         .headers()
-        .get(reqwest::header::WWW_AUTHENTICATE)?
-        .to_str()
-        .ok()?;
-    resource_metadata_from_challenge(header)
+        .get(reqwest::header::WWW_AUTHENTICATE)
+        .and_then(|value| value.to_str().ok())
+    else {
+        return Challenge::default();
+    };
+    Challenge {
+        metadata_url: resource_metadata_from_challenge(header),
+        scopes: rolter_core::mcp_challenge::challenge_scopes(header),
+    }
 }
 
 /// Pull `resource_metadata` out of an RFC 9728 §5.1 `WWW-Authenticate`
@@ -359,38 +402,7 @@ async fn challenge_metadata_url(state: &ControlState, resource: &ResourceUri) ->
 /// the value is one quoted parameter among several and the scheme may not be
 /// `Bearer`.
 pub(crate) fn resource_metadata_from_challenge(header: &str) -> Option<String> {
-    const KEY: &str = "resource_metadata";
-    let mut rest = header;
-    while let Some(index) = rest.find(KEY) {
-        let (before, at_key) = rest.split_at(index);
-        // only a whole parameter counts: `x_resource_metadata` is a different
-        // parameter that happens to end in this name
-        let boundary = before
-            .chars()
-            .next_back()
-            .is_none_or(|c| c == ' ' || c == ',' || c == '\t');
-        let after = at_key[KEY.len()..].trim_start();
-        rest = &at_key[KEY.len()..];
-        if !boundary {
-            continue;
-        }
-        let Some(value) = after.strip_prefix('=') else {
-            continue;
-        };
-        let value = value.trim_start();
-        let parsed = match value.strip_prefix('"') {
-            Some(quoted) => quoted.split('"').next().map(str::to_string),
-            None => value
-                .split([',', ' ', '\t'])
-                .next()
-                .filter(|v| !v.is_empty())
-                .map(str::to_string),
-        };
-        if let Some(parsed) = parsed.filter(|v| !v.is_empty()) {
-            return Some(parsed);
-        }
-    }
-    None
+    rolter_core::mcp_challenge::challenge_param(header, "resource_metadata")
 }
 
 /// The well-known protected resource metadata URLs of `resource`, in the order
@@ -485,6 +497,7 @@ async fn authorization_server_metadata(
             authorize_url: metadata.authorization_endpoint,
             token_url: metadata.token_endpoint,
             iss_supported: metadata.authorization_response_iss_parameter_supported,
+            scopes: DiscoveredScopes::default(),
         });
     }
     Err(DiscoveryError::NoAuthorizationServerMetadata(

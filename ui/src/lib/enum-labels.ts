@@ -72,7 +72,7 @@ const SKILL_ROLE_KEYS = {
 /** the lowest role that may use a skill, translated */
 export const skillRoleLabel = (role: string, t: Translate) => enumLabel(t, SKILL_ROLE_KEYS, role);
 
-// how an MCP tool call ended (`MCP_STATUSES` in api.ts). the transport names
+// how an MCP tool call ended (`MCP_STATUSES` in api/mcp.ts). the transport names
 // beside it (`streamable_http`, `sse`) are protocol identifiers and stay verbatim
 const MCP_STATUS_KEYS = {
   success: "pages.mcpLogs.statuses.success",

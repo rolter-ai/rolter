@@ -133,6 +133,98 @@ pub fn unknown_keys(toml_src: &str) -> Result<Vec<UnknownKey>> {
     Ok(findings)
 }
 
+/// A key the config types still accept, as a deserialize-time shim, that the
+/// plural spelling has replaced (#1720).
+///
+/// Not an [`UnknownKey`]: the model reads it and the setting takes effect. It is
+/// reported separately because the answer is different — nothing is silently at
+/// its default, the file just says something the migration chain rewrites.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeprecatedKey {
+    /// dotted path to the key, with array elements indexed:
+    /// `providers.readonly[0].api_key_env`
+    pub path: String,
+    /// the spelling to write instead
+    pub use_instead: &'static str,
+}
+
+/// The singular provider fields and the plural spelling that replaces each.
+const DEPRECATED_PROVIDER_KEYS: [(&str, &str); 3] = [
+    ("api_key", "api_keys = [{ key = \"...\" }]"),
+    ("api_key_env", "api_keys = [{ env = \"...\" }]"),
+    ("egress_proxy", "egress_proxies = [\"...\"]"),
+];
+
+/// Report every singular provider key in `toml_src` that has a plural
+/// spelling. The singular fields stay accepted forever (a file has to load on
+/// the build it is rolled back onto); this only says they are deprecated.
+///
+/// Reads the file as written, for the reason [`crate::config_migrate`] gives:
+/// the paths are how an operator finds the line in their own file.
+pub fn deprecated_keys(toml_src: &str) -> Result<Vec<DeprecatedKey>> {
+    let doc: toml::Value = toml::from_str(toml_src)?;
+    let mut found = Vec::new();
+    let Some(providers) = doc.get("providers") else {
+        return Ok(found);
+    };
+    let mut tables: Vec<(String, &toml::Value)> = Vec::new();
+    match providers {
+        toml::Value::Array(entries) => {
+            for (index, entry) in entries.iter().enumerate() {
+                tables.push((format!("providers[{index}]"), entry));
+            }
+        }
+        toml::Value::Table(tiers) => {
+            for tier in TIER_KEYS {
+                let Some(toml::Value::Array(entries)) = tiers.get(tier) else {
+                    continue;
+                };
+                for (index, entry) in entries.iter().enumerate() {
+                    tables.push((format!("providers.{tier}[{index}]"), entry));
+                }
+            }
+        }
+        _ => {}
+    }
+    for (path, entry) in tables {
+        for (key, use_instead) in DEPRECATED_PROVIDER_KEYS {
+            if entry.get(key).is_some() {
+                found.push(DeprecatedKey {
+                    path: format!("{path}.{key}"),
+                    use_instead,
+                });
+            }
+        }
+    }
+    Ok(found)
+}
+
+/// What one deprecated key means, in the words every surface uses for it.
+pub fn describe_deprecated(key: &DeprecatedKey) -> String {
+    format!(
+        "`{}` is deprecated. It is still read, and stays readable so the file loads on an older \
+         build, but the current spelling is `{}`. `rolter check --migrations` shows the rewrite.",
+        key.path, key.use_instead
+    )
+}
+
+/// Log one warning per deprecated key in `toml_src`, naming `path`. Returns how
+/// many were reported; a file that is not TOML reports nothing here.
+pub fn warn_deprecated_keys(path: &Path, toml_src: &str) -> usize {
+    let Ok(findings) = deprecated_keys(toml_src) else {
+        return 0;
+    };
+    for key in &findings {
+        tracing::warn!(
+            config = %path.display(),
+            key = %key.path,
+            "deprecated config key: {}",
+            describe_deprecated(key)
+        );
+    }
+    findings.len()
+}
+
 /// What one unrecognised key means, in the words every surface uses for it.
 ///
 /// `rolter check` prints this as a finding's detail and every load path logs it
@@ -196,6 +288,9 @@ pub fn warn_unknown_keys_once(path: &Path, toml_src: &str) -> usize {
     if !first_time {
         return 0;
     }
+    // deprecated spellings are logged on the same once-per-file footing, but are
+    // not part of the count: it is the number of keys the model ignores
+    warn_deprecated_keys(path, toml_src);
     warn_unknown_keys(path, toml_src)
 }
 
@@ -374,6 +469,47 @@ mod tests {
             .into_iter()
             .map(|finding| finding.path)
             .collect()
+    }
+
+    #[test]
+    fn the_singular_provider_spellings_are_reported_as_deprecated_not_unknown() {
+        let flat = r#"
+            [[providers]]
+            name = "a"
+            kind = "openai"
+            api_base = "https://api.openai.com"
+            api_key_env = "A_KEY"
+            egress_proxy = "http://proxy:3128"
+        "#;
+        let found: Vec<String> = deprecated_keys(flat)
+            .expect("valid toml")
+            .into_iter()
+            .map(|key| key.path)
+            .collect();
+        assert_eq!(
+            found,
+            vec!["providers[0].api_key_env", "providers[0].egress_proxy"]
+        );
+        // still read by the model, so the unknown-key lint says nothing
+        assert!(paths(flat).is_empty());
+
+        let tiered = "[providers]\nreadonly = [{ name = \"b\", kind = \"openai\", \
+                      api_base = \"https://x.example\", api_key = \"inline\" }]\n";
+        let found = deprecated_keys(tiered).expect("valid toml");
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].path, "providers.readonly[0].api_key");
+        assert!(describe_deprecated(&found[0]).contains("api_keys"));
+    }
+
+    #[test]
+    fn the_plural_spellings_are_not_deprecated() {
+        let src = r#"
+            [providers]
+            readonly = [
+                { name = "a", kind = "openai", api_base = "https://api.openai.com", api_keys = [{ env = "A" }], egress_proxies = ["http://p:1"] },
+            ]
+        "#;
+        assert!(deprecated_keys(src).expect("valid toml").is_empty());
     }
 
     #[test]

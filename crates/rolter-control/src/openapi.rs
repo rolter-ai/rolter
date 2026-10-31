@@ -26,6 +26,7 @@
 //! open objects: imprecise, but present, so a generated SDK has the call even
 //! where it cannot yet have the struct.
 
+// spec-ref: openapi
 use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
@@ -128,6 +129,10 @@ impl QueryParam {
 const LAST_SUPERADMIN_409: &str =
     "error.code `last_superadmin`: the write would demote, deactivate or delete the last active superadmin";
 
+/// the `409` a token rotation answers for a token that no longer works
+const API_TOKEN_INACTIVE_409: &str =
+    "error.code `api_token_inactive`: the token is revoked or past its expiry, so there is nothing to rotate; mint a new one";
+
 /// the `409` a password change answers for an account with no local password
 const NO_LOCAL_PASSWORD_409: &str =
     "error.code `no_local_password`: the account signs in through single sign-on only, so there is no local password to change";
@@ -161,8 +166,18 @@ struct Op {
     /// when this operation can answer `409`, what that refusal means, naming
     /// the stable `error.code` where it carries one
     conflict: Option<&'static str>,
+    /// when this operation can answer `406`, what that refusal means
+    not_acceptable: Option<&'static str>,
+    /// when this operation can answer `429`, what bounds it
+    too_many_requests: Option<&'static str>,
     /// a ClickHouse-backed read, which can answer `502` or `504`
     clickhouse: bool,
+    /// cuts its window into buckets, so it can answer `400`
+    /// `too_many_buckets` (#3506)
+    bucketed: bool,
+    /// seals a credential with `ROLTER_KEK`, so it can answer `503`
+    /// `kek_unavailable` on a control plane that has none
+    needs_kek: bool,
 }
 
 impl Op {
@@ -184,7 +199,11 @@ impl Op {
             public: false,
             see_other: None,
             conflict: None,
+            not_acceptable: None,
+            too_many_requests: None,
             clickhouse: false,
+            bucketed: false,
+            needs_kek: false,
         }
     }
 
@@ -239,6 +258,26 @@ impl Op {
         self
     }
 
+    fn not_acceptable(mut self, description: &'static str) -> Self {
+        self.not_acceptable = Some(description);
+        self
+    }
+
+    /// Mark an operation bounded in how many may run at once: past the bound it
+    /// answers `429` with a `Retry-After` header.
+    fn too_many_requests(mut self, description: &'static str) -> Self {
+        self.too_many_requests = Some(description);
+        self
+    }
+
+    /// Mark an operation that seals a credential with `ROLTER_KEK`: without the
+    /// key it answers `503` `kek_unavailable` rather than a field-validation
+    /// `400` (#3218).
+    fn needs_kek(mut self) -> Self {
+        self.needs_kek = true;
+        self
+    }
+
     /// Mark a read that goes to ClickHouse: it answers `502`
     /// `analytics_query_failed`, or `504` `analytics_query_timeout` when the
     /// query ran past the control plane's request timeout.
@@ -247,10 +286,22 @@ impl Op {
         self
     }
 
+    /// Mark a read that cuts its window into buckets: one that would answer
+    /// more than `MAX_BUCKETS` points is a `400` `too_many_buckets` (#3506).
+    fn bucketed(mut self) -> Self {
+        self.bucketed = true;
+        self
+    }
+
     fn to_json(self) -> Value {
         let mut op = Map::new();
         op.insert("summary".into(), json!(self.summary));
         op.insert("operationId".into(), json!(self.id));
+        // the one registry that also drives the `Deprecation` and `Sunset`
+        // headers (ADR-0032, #1423)
+        if crate::deprecation::deprecates_operation(self.method, self.path) {
+            op.insert("deprecated".into(), json!(true));
+        }
         op.insert("tags".into(), json!([self.tag]));
         if !self.query.is_empty() {
             // operation-level parameters, so they merge with the path item's
@@ -290,6 +341,50 @@ impl Op {
         if let Some(description) = self.conflict {
             responses.insert(
                 "409".into(),
+                json!({"$ref": "#/components/responses/Error", "description": description}),
+            );
+        }
+        if let Some(description) = self.not_acceptable {
+            responses.insert(
+                "406".into(),
+                json!({"$ref": "#/components/responses/Error", "description": description}),
+            );
+        }
+        if let Some(description) = self.too_many_requests {
+            responses.insert(
+                "429".into(),
+                json!({
+                    "$ref": "#/components/responses/Error",
+                    "description": description,
+                    "headers": {"Retry-After": {"schema": {"type": "integer"}}}
+                }),
+            );
+        }
+        if self.needs_kek {
+            responses.insert(
+                "503".into(),
+                json!({
+                    "$ref": "#/components/responses/Error",
+                    "description": "`ROLTER_KEK` is not configured on the control plane, so the credential cannot be sealed (`kek_unavailable`)"
+                }),
+            );
+        }
+        // every read that takes a window refuses a bound it cannot read or that
+        // names a year outside the ones a window may (#1192, #3506)
+        let windowed = self.query.iter().any(|p| p.name == "since");
+        if windowed || self.bucketed {
+            let mut description = String::from(
+                "a `since` or `until` that does not parse (`invalid_time_bound`) or lies before \
+                 2000-01-01 or more than a day past now (`time_bound_out_of_range`)",
+            );
+            if self.bucketed {
+                description.push_str(
+                    ", or a `bucket` that would cut the window into more than 20000 points \
+                     (`too_many_buckets`)",
+                );
+            }
+            responses.insert(
+                "400".into(),
                 json!({"$ref": "#/components/responses/Error", "description": description}),
             );
         }
@@ -341,6 +436,44 @@ const UNTIL: QueryParam = QueryParam::new(
      does not parse is a 400",
 );
 
+/// What `GET /api/v1/config/export` narrows by.
+const CONFIG_EXPORT_QUERY: &[QueryParam] = &[
+    QueryParam::new(
+        "org",
+        "string",
+        "the slug of one organization: export its rows only (and those no organization owns), \
+         which is how a deployment whose organizations share a route or provider name is \
+         exported (without it that deployment answers a 400 with the code \
+         `config_export_needs_org`). A slug no organization has is a 400",
+    ),
+    QueryParam::new(
+        "without_person_caps",
+        "boolean",
+        "`true` leaves caps on a person out, which name an account by its email, and counts \
+         them in the trailing comment; defaults to `false`",
+    ),
+];
+
+/// What a gateway sends on every snapshot poll (ADR-0038).
+const SNAPSHOT_QUERY: &[QueryParam] = &[
+    QueryParam::new(
+        "version",
+        "integer",
+        "the config version the caller already holds; when it is current the answer is a \
+         bodyless `304`",
+    ),
+    QueryParam::new(
+        "formats",
+        "string",
+        "the snapshot formats the caller reads, as one format (`1`) or an inclusive range \
+         (`1-2`); absent means format 1 only. The reply's `format` names the one served, and \
+         a value that does not parse is a 400 `invalid_query`",
+    ),
+];
+
+/// the `406` the snapshot answers when it cannot serve the caller's formats
+const SNAPSHOT_406: &str = "error.code `snapshot_format_unsupported`: the control plane serves no snapshot format the caller reads, also when its `version` is current; or `snapshot_format_inexpressible`: the formats overlap, but the config holds a setting the older format cannot carry. `served` and `requested` give both ranges";
+
 /// The org-wide access profile assignment list: narrow it to one subject.
 const ASSIGNMENT_SUBJECT_QUERY: &[QueryParam] = &[
     QueryParam::new(
@@ -359,8 +492,25 @@ const ASSIGNMENT_SUBJECT_QUERY: &[QueryParam] = &[
 const ROUTE_INCLUDE_QUERY: &[QueryParam] = &[QueryParam::new(
     "include",
     "string",
-    "comma-separated extras to embed in each route: `targets` and `complexity`; omitted, the \
-     list carries neither, and a value outside those two is a 400",
+    "comma-separated extras to embed in each route: `targets`, `variants` and `complexity`; \
+     omitted, the list carries none of them, and a value outside those three is a 400",
+)];
+
+/// The model delete's query string: whose model it removes (#1857).
+const DELETE_MODEL_QUERY: &[QueryParam] = &[QueryParam::new(
+    "org_id",
+    "string",
+    "the organization whose routes of that name are deleted, across its projects; may be \
+     omitted only while one organization has the name, otherwise a 400",
+)];
+
+/// The access-profile list's query string: what to embed beside each profile.
+const PROFILE_INCLUDE_QUERY: &[QueryParam] = &[QueryParam::new(
+    "include",
+    "string",
+    "comma-separated extras to embed in each profile, as the detail returns them: `roles`, \
+     `assignments` and `policy`; omitted, the list carries none, and a value outside those \
+     three is a 400",
 )];
 
 /// The provider test's query string: the model to look up.
@@ -370,6 +520,25 @@ const PROVIDER_TEST_QUERY: &[QueryParam] = &[QueryParam::new(
     "an upstream model name to look up in the provider's catalogue; the response then carries \
      `model_listed`: true or false, or null when the provider has no catalogue to check",
 )];
+
+const PROVIDER_CACHE_PROBE_QUERY: &[QueryParam] = &[QueryParam::new(
+    "model",
+    "string",
+    "the upstream model to ask for one token (required); the probe is a completion, so it costs a token",
+)];
+
+const PRICE_CATALOGUE_QUERY: &[QueryParam] = &[
+    QueryParam::new(
+        "q",
+        "string",
+        "a substring of the model id; every model when omitted",
+    ),
+    QueryParam::new(
+        "limit",
+        "integer",
+        "at most this many entries (default and ceiling 200)",
+    ),
+];
 
 /// The MCP call log's query string. The same keyset-paging problem as the
 /// invocation log below, and the one #1412 names first: `next_cursor` comes
@@ -402,6 +571,21 @@ const MCP_LOGS_QUERY: &[QueryParam] = &[
         "string",
         "opaque keyset cursor; send back the previous page's `next_cursor` unchanged. one \
          whose timestamp does not parse is a 400",
+    ),
+];
+
+/// The subject lookup behind the Log erasure picker (#3385).
+const LOG_ERASURE_SUBJECT_QUERY: &[QueryParam] = &[
+    QueryParam::required("kind", "string", "virtual_key, user or org"),
+    QueryParam::new(
+        "q",
+        "string",
+        "part of a name or email, case-insensitive; omit for the first few",
+    ),
+    QueryParam::new(
+        "id",
+        "string",
+        "one subject by id, to name an id already in hand",
     ),
 ];
 
@@ -551,6 +735,40 @@ const DASHBOARD_QUERY: &[QueryParam] = &[
     PROJECT_FILTER,
 ];
 
+/// The savings advisor's window, scope and thresholds (#1581).
+const SAVINGS_QUERY: &[QueryParam] = &[
+    SINCE,
+    UNTIL,
+    QueryParam::new(
+        "org",
+        "string",
+        "exact org id; omit for every org the caller may read",
+    ),
+    PROJECT_FILTER,
+    QueryParam::new(
+        "route",
+        "string",
+        "exact route (its public model name); omit for every route",
+    ),
+    KEY_FILTER,
+    QueryParam::new(
+        "max_prompt_tokens",
+        "integer",
+        "a request with a longer prompt is not substitutable; defaults to 4000",
+    ),
+    QueryParam::new(
+        "max_completion_tokens",
+        "integer",
+        "a request with a longer output is not substitutable; defaults to 1000",
+    ),
+    QueryParam::new(
+        "output_margin",
+        "number",
+        "how much longer a candidate's answers are assumed to run at the high end of the \
+         range, as a fraction; defaults to 0.25 and is clamped to 0..4",
+    ),
+];
+
 /// The window plus the bucket only the timeseries endpoint reads, and the
 /// dashboard's row filters.
 const TIMESERIES_QUERY: &[QueryParam] = &[
@@ -559,13 +777,26 @@ const TIMESERIES_QUERY: &[QueryParam] = &[
     QueryParam::new(
         "bucket",
         "string",
-        "time bucket: `hour`, `day`, `week` or `month`",
+        "time bucket: `hour`, `day` (the default), `week` or `month`; one that cuts the \
+         window into more than 20000 points is a 400",
     ),
     MODEL_FILTER,
     KEY_FILTER,
     BUSINESS_UNIT_FILTER,
     CUSTOMER_FILTER,
     PROJECT_FILTER,
+];
+
+/// The health timeline's window plus the bucket it cuts it into.
+const HEALTH_TIMELINE_QUERY: &[QueryParam] = &[
+    SINCE,
+    UNTIL,
+    QueryParam::new(
+        "bucket",
+        "string",
+        "time bucket: `hour` (the default), `day`, `week` or `month`; one that cuts the window \
+         into more than 20000 points is a 400",
+    ),
 ];
 
 /// The uptime endpoint's window plus the target it measures against.
@@ -622,6 +853,35 @@ const LABEL_QUERY: &[QueryParam] = &[
         "source",
         "string",
         "how the label was set; omit for every source",
+    ),
+];
+
+/// The model-label listing: [`LABEL_QUERY`] plus the organization whose models
+/// to list the labels of (#3476).
+const MODEL_LABEL_QUERY: &[QueryParam] = &[
+    QueryParam::new(
+        "subject_type",
+        "string",
+        "what the label is attached to; omit for every kind",
+    ),
+    QueryParam::new(
+        "subject_id",
+        "string",
+        "exact subject id; omit for every subject",
+    ),
+    QueryParam::new("key", "string", "exact label key; omit for every key"),
+    QueryParam::new("value", "string", "exact label value; omit for every value"),
+    QueryParam::new(
+        "source",
+        "string",
+        "how the label was set; omit for every source",
+    ),
+    QueryParam::new(
+        "org_id",
+        "string",
+        "the labels that apply to this organization's models: its own, and each \
+         deployment-wide one whose model, source and key it has not set itself; omit for \
+         every model label",
     ),
 ];
 
@@ -686,6 +946,18 @@ const INVOCATIONS_QUERY: &[QueryParam] = &[
         "`true` returns only requests recorded as unpriced; omit for every request",
     ),
     QueryParam::new(
+        "withheld",
+        "boolean",
+        "`true` returns only requests whose response a policy withheld after the provider billed \
+         them; omit for every request",
+    ),
+    QueryParam::new(
+        "usage_unknown",
+        "boolean",
+        "`true` returns only requests the upstream answered without reporting usage, so their \
+         tokens and cost are unknown; omit for every request",
+    ),
+    QueryParam::new(
         "guardrail",
         "string",
         "only requests a guardrail acted on, named as the guardrails rollup does: \
@@ -698,6 +970,14 @@ const INVOCATIONS_QUERY: &[QueryParam] = &[
         "only requests a plugin acted on, named as the plugins rollup does: \
          `blocked:<slug>`, `transformed:<slug>`, `annotated:<slug>` or `error:<slug>:<kind>`; \
          omit for every request",
+    ),
+    QueryParam::new(
+        "outcome",
+        "string",
+        "only requests the gateway recorded with this outcome: `served`, `upstream_error`, \
+         `withheld`, `cancelled`, `refused_budget`, `refused_rate_limit`, `refused_guardrail`, \
+         `refused_plugin`, `refused_access`, `refused_invalid`, `refused`, or `unknown` for rows \
+         written before the outcome was recorded; any other value is a 400; omit for every request",
     ),
     QueryParam::new("limit", "integer", "page size, 1..=200; defaults to 50"),
     QueryParam::new(
@@ -714,6 +994,25 @@ const INVOCATIONS_QUERY: &[QueryParam] = &[
 /// grouping the dashboard and the SDKs use rather than repeating a literal.
 fn tagged(tag: &'static str, ops: Vec<Op>) -> Vec<Op> {
     ops.into_iter().map(|op| Op { tag, ..op }).collect()
+}
+
+/// Whether the document publishes `method path` (the OpenAPI path template).
+/// The deprecation registry is held to this so it cannot name an operation that
+/// does not exist, and the seed lint so a renamed route it names fails a test.
+#[cfg(test)]
+pub(crate) fn documents_operation(method: &str, path: &str) -> bool {
+    operations()
+        .iter()
+        .any(|op| op.method.eq_ignore_ascii_case(method) && op.path == path)
+}
+
+/// Whether `components/schemas` has `schema` with a property `field`.
+#[cfg(test)]
+pub(crate) fn schema_has_property(schema: &str, field: &str) -> bool {
+    schemas()
+        .get(schema)
+        .and_then(|s| s.get("properties"))
+        .is_some_and(|p| p.get(field).is_some())
 }
 
 /// Every operation the control plane serves.
@@ -762,7 +1061,8 @@ fn operations() -> Vec<Op> {
                 "/api/v1/config/export",
                 "exportConfig",
                 "The live configuration as an importable rolter.toml",
-            ),
+            )
+            .query(CONFIG_EXPORT_QUERY),
             Op::get(
                 "/api/v1/currency",
                 "getCurrency",
@@ -800,11 +1100,18 @@ fn operations() -> Vec<Op> {
                 "/internal/snapshot",
                 "getSnapshot",
                 "The config snapshot the gateway polls",
-            ),
+            )
+            .query(SNAPSHOT_QUERY)
+            .not_acceptable(SNAPSHOT_406),
             Op::post(
                 "/internal/adaptive-telemetry",
                 "ingestAdaptiveTelemetry",
                 "Accept adaptive-routing samples pushed by a gateway",
+            ),
+            Op::post(
+                "/internal/breaker-state",
+                "ingestBreakerState",
+                "Accept circuit-breaker state pushed by a gateway",
             ),
         ],
     ));
@@ -831,6 +1138,7 @@ fn operations() -> Vec<Op> {
                 "beginSignInMfaEnrolment",
                 "Issue a TOTP secret against an enrolment challenge (shown once)",
             )
+            .needs_kek()
             .public(),
             Op::post(
                 "/api/v1/auth/mfa/confirm",
@@ -1037,6 +1345,13 @@ fn operations() -> Vec<Op> {
                 .body(Payload::Ref("UpdateUser"))
                 .ok(Payload::Ref("User"))
                 .conflict(LAST_SUPERADMIN_409),
+            Op::put(
+                "/api/v1/users/{id}/deployment-role",
+                "setUserDeploymentRole",
+                "Give an account a deployment role (operator or security auditor), or clear it (superadmin)",
+            )
+            .body(Payload::Ref("SetDeploymentRole"))
+            .ok(Payload::Ref("User")),
             Op::delete("/api/v1/users/{id}", "deleteUser", "Delete an account")
                 .conflict(LAST_SUPERADMIN_409),
             Op::get(
@@ -1125,8 +1440,9 @@ fn operations() -> Vec<Op> {
             Op::get(
                 "/api/v1/orgs/{org_id}/access-profiles",
                 "listAccessProfiles",
-                "List access profiles",
-            ),
+                "List access profiles; `include` embeds each profile's roles, assignments and policy so a screen needs one request, not one per profile",
+            )
+            .query(PROFILE_INCLUDE_QUERY),
             Op::post(
                 "/api/v1/orgs/{org_id}/access-profiles",
                 "createAccessProfile",
@@ -1190,6 +1506,7 @@ fn operations() -> Vec<Op> {
                 "createProvider",
                 "Register an upstream provider",
             )
+            .needs_kek()
             .body(Payload::Ref("CreateProvider"))
             .ok(Payload::Ref("Provider")),
             Op::put(
@@ -1197,6 +1514,7 @@ fn operations() -> Vec<Op> {
                 "updateProvider",
                 "Update an upstream provider",
             )
+            .needs_kek()
             .body(Payload::Ref("UpdateProvider"))
             .ok(Payload::Ref("Provider")),
             Op::delete(
@@ -1212,6 +1530,20 @@ fn operations() -> Vec<Op> {
             )
             .query(PROVIDER_TEST_QUERY)
             .body(Payload::Empty),
+            Op::post(
+                "/api/v1/providers/{id}/probe-cache",
+                "probeProviderCache",
+                "Ask a provider for one token and record whether the answer's usage carries prompt-cache metrics (needs provider:update)",
+            )
+            .query(PROVIDER_CACHE_PROBE_QUERY)
+            .body(Payload::Empty)
+            .ok(Payload::Open),
+            Op::get(
+                "/api/v1/orgs/{org_id}/provider-cache-probes",
+                "listProviderCacheProbes",
+                "List the stored prompt-cache reporting verdicts of an org's providers; a provider with no entry was never probed",
+            )
+            .ok(Payload::Open),
             Op::get(
                 "/api/v1/providers/{id}/models",
                 "listProviderModels",
@@ -1258,12 +1590,13 @@ fn operations() -> Vec<Op> {
             Op::delete(
                 "/api/v1/models/{model}",
                 "deleteModel",
-                "Delete every route publishing a model name",
-            ),
+                "Delete the routes publishing a model name in one organization; `org_id` names it, and is required once two organizations share the name",
+            )
+            .query(DELETE_MODEL_QUERY),
             Op::get(
                 "/api/v1/projects/{project_id}/routes",
                 "listRoutes",
-                "List a project's routes; `include` embeds each route's targets and complexity policy so a screen needs one request, not one per route",
+                "List a project's routes; `include` embeds each route's targets, variants and complexity policy so a screen needs one request, not one per route",
             )
             .query(ROUTE_INCLUDE_QUERY)
             .ok(Payload::List("Route")),
@@ -1294,6 +1627,19 @@ fn operations() -> Vec<Op> {
                 "Replace a route's catalog metadata and execution policy (headers, timeout, retries, output-token cap, visibility, guardrails)",
             )
             .ok(Payload::Ref("Route")),
+            Op::get(
+                "/api/v1/routes/{id}/variants",
+                "listRouteVariants",
+                "List a route's weighted variants in fallback order, each with its targets in routing order",
+            )
+            .ok(Payload::List("RouteVariant")),
+            Op::put(
+                "/api/v1/routes/{id}/variants",
+                "setRouteVariants",
+                "Replace a route's weighted variants; an empty list puts the route back on its own targets",
+            )
+            .body(Payload::Ref("SetRouteVariants"))
+            .ok(Payload::List("RouteVariant")),
             Op::get(
                 "/api/v1/routes/{id}/complexity",
                 "getRouteComplexity",
@@ -1326,6 +1672,11 @@ fn operations() -> Vec<Op> {
                 "/api/v1/route-targets/{id}",
                 "deleteRouteTarget",
                 "Remove an upstream target from a route",
+            )
+            .conflict(
+                "removing the target would leave the route only targets that set `takes_over` \
+                 to dial (the variants' targets when it has variants, its own otherwise), which \
+                 could never be dialled first (`all_targets_restricted`)",
             ),
         ],
     ));
@@ -1339,6 +1690,12 @@ fn operations() -> Vec<Op> {
                 "List a project's virtual keys",
             )
             .ok(Payload::List("VirtualKey")),
+            Op::get(
+                "/api/v1/orgs/{org_id}/virtual-keys",
+                "listOrgVirtualKeys",
+                "List the virtual keys of every project of an organization the caller may read",
+            )
+            .ok(Payload::List("OrgVirtualKey")),
             Op::post(
                 "/api/v1/projects/{project_id}/virtual-keys",
                 "createVirtualKey",
@@ -1379,6 +1736,21 @@ fn operations() -> Vec<Op> {
             )
             .body(Payload::Ref("SetVirtualKeyCache"))
             .ok(Payload::Ref("VirtualKey")),
+            Op::post(
+                "/api/v1/virtual-keys/{id}/rotate",
+                "rotateVirtualKey",
+                "Issue a new secret for a shared key, optionally keeping the old one valid for an overlap",
+            )
+            .body(Payload::Ref("RotateVirtualKey"))
+            .ok(Payload::Ref("CreatedVirtualKey"))
+            .conflict("the key is personal: the member who minted it rotates it from Account"),
+            Op::delete(
+                "/api/v1/virtual-keys/{id}/previous-secret",
+                "revokeVirtualKeyPreviousSecret",
+                "End a rotation's overlap now so the old secret stops authenticating",
+            )
+            .ok(Payload::Ref("VirtualKey"))
+            .conflict("the key is personal: the member who minted it manages its secrets"),
         ],
     ));
 
@@ -1417,6 +1789,11 @@ fn operations() -> Vec<Op> {
             )
             .clickhouse_read()
             .query(WINDOW_QUERY),
+            Op::get(
+                "/api/v1/me/budgets",
+                "getMyBudgets",
+                "The per-user budgets and rate limits that count the calling account's keys, with the spend so far",
+            ),
             Op::patch(
                 "/api/v1/me/profile",
                 "updateMyProfile",
@@ -1459,6 +1836,11 @@ fn operations() -> Vec<Op> {
                 "Delete a saved filter preset",
             ),
             Op::get(
+                "/api/v1/orgs/{org_id}/mfa-status",
+                "getOrgMfaStatus",
+                "Which members of an organization have an armed second factor",
+            ),
+            Op::get(
                 "/api/v1/me/mfa",
                 "getMyMfa",
                 "Second-factor state and policy for the calling account",
@@ -1467,7 +1849,8 @@ fn operations() -> Vec<Op> {
                 "/api/v1/me/mfa/enroll",
                 "beginMyMfaEnrolment",
                 "Issue a TOTP secret for the calling account (shown once)",
-            ),
+            )
+            .needs_kek(),
             Op::post(
                 "/api/v1/me/mfa/confirm",
                 "confirmMyMfaEnrolment",
@@ -1502,9 +1885,15 @@ fn operations() -> Vec<Op> {
             Op::get(
                 "/api/v1/orgs/{org_id}/budgets",
                 "listOrgBudgets",
-                "List every spend budget in this organization the caller may read, at any scope",
+                "List every spend budget in this organization the caller may read, at any scope; a key's budget carries `scope_name`",
             )
             .ok(Payload::List("Budget")),
+            Op::get(
+                "/api/v1/orgs/{org_id}/budgets/spend",
+                "getOrgBudgetSpend",
+                "Spend so far against every budget in this organization the caller may read, from the gateway's Redis counters",
+            )
+            .ok(Payload::Ref("BudgetSpendReport")),
             Op::post("/api/v1/budgets", "createBudget", "Create a spend budget")
                 .body(Payload::Ref("CreateBudget"))
                 .ok(Payload::Ref("Budget")),
@@ -1566,6 +1955,20 @@ fn operations() -> Vec<Op> {
                 "deleteModelPrice",
                 "Delete a model's price",
             ),
+            Op::get(
+                "/api/v1/model-prices/catalogue",
+                "listPriceCatalogue",
+                "Search the vendored price catalogue the importer reads (offline), with its source, licence and snapshot date",
+            )
+            .query(PRICE_CATALOGUE_QUERY)
+            .ok(Payload::Open),
+            Op::post(
+                "/api/v1/model-prices/import",
+                "importModelPrices",
+                "Import the named models' prices from the vendored catalogue; an operator-set price is never replaced",
+            )
+            .body(Payload::Open)
+            .ok(Payload::Open),
         ],
     ));
 
@@ -1670,7 +2073,7 @@ fn operations() -> Vec<Op> {
             Op::get(
                 "/api/v1/guardrails/effective",
                 "getEffectiveGuardrails",
-                "Read the guardrail rules and webhook the gateways run, each with where it comes from (config file or dashboard row)",
+                "Read the guardrail rules, semantic guardrail providers and policies the gateways run, each with where it comes from (config file or dashboard row)",
             ),
             Op::get(
                 "/api/v1/guardrails/providers",
@@ -1680,7 +2083,7 @@ fn operations() -> Vec<Op> {
             Op::post(
                 "/api/v1/guardrails/providers",
                 "createGuardrailProvider",
-                "Register a guardrail provider",
+                "Register a guardrail provider: a webhook, or a local classifier the gateways run in process",
             ),
             Op::put(
                 "/api/v1/guardrails/providers/{id}",
@@ -1691,6 +2094,29 @@ fn operations() -> Vec<Op> {
                 "/api/v1/guardrails/providers/{id}",
                 "deleteGuardrailProvider",
                 "Delete a guardrail provider",
+            )
+            .conflict("a guardrail policy still lists the provider"),
+            Op::get(
+                "/api/v1/guardrails/policies",
+                "listGuardrailPolicies",
+                "List scoped semantic guardrail policies, narrowest scope first",
+            ),
+            Op::post(
+                "/api/v1/guardrails/policies",
+                "createGuardrailPolicy",
+                "Create a guardrail policy scoped to the deployment, an org, a project, a route or a virtual key",
+            )
+            .conflict("a policy of that name, or an enabled policy for the same scope, already exists"),
+            Op::put(
+                "/api/v1/guardrails/policies/{id}",
+                "updateGuardrailPolicy",
+                "Replace a guardrail policy and its ordered provider list",
+            )
+            .conflict("a policy of that name, or an enabled policy for the same scope, already exists"),
+            Op::delete(
+                "/api/v1/guardrails/policies/{id}",
+                "deleteGuardrailPolicy",
+                "Delete a guardrail policy",
             ),
             Op::post(
                 "/api/v1/guardrails/providers/test",
@@ -1757,23 +2183,31 @@ fn operations() -> Vec<Op> {
             Op::get(
                 "/api/v1/model-labels",
                 "listModelLabels",
-                "List model labels",
+                "List model labels. A label carries `org_id`, the organization whose model it is \
+                 on, or `null` for a deployment-wide one; an organization's labels are listed \
+                 only to a caller who reaches that organization",
             )
-            .query(LABEL_QUERY),
+            .query(MODEL_LABEL_QUERY),
             Op::post(
                 "/api/v1/model-labels",
                 "createModelLabel",
-                "Attach a custom label to a model",
+                "Attach a custom label to a model: `model`, `key`, an optional `value`, and an \
+                 optional `org_id` naming the organization whose model it is (a 404 when that \
+                 organization serves no route of that name); without `org_id` the label is \
+                 deployment-wide. A label naming an organization takes that organization's \
+                 `label:create`; a deployment-wide one is superadmin-only",
             ),
             Op::put(
                 "/api/v1/model-labels/{id}",
                 "updateModelLabel",
-                "Change a custom model label's value",
+                "Change a custom model label's value. Takes `label:update` in the label's \
+                 organization, or superadmin for a deployment-wide label",
             ),
             Op::delete(
                 "/api/v1/model-labels/{id}",
                 "deleteModelLabel",
-                "Remove a custom model label",
+                "Remove a custom model label. Takes `label:delete` in the label's organization, \
+                 or superadmin for a deployment-wide label",
             ),
         ],
     ));
@@ -1808,12 +2242,14 @@ fn operations() -> Vec<Op> {
                 "/api/v1/orgs/{org_id}/mcp-servers",
                 "createMcpServer",
                 "Register an MCP server",
-            ),
+            )
+            .needs_kek(),
             Op::patch(
                 "/api/v1/mcp-servers/{id}",
                 "updateMcpServer",
                 "Update a registered MCP server",
-            ),
+            )
+            .needs_kek(),
             Op::delete(
                 "/api/v1/mcp-servers/{id}",
                 "deleteMcpServer",
@@ -1823,6 +2259,27 @@ fn operations() -> Vec<Op> {
                 "/api/v1/mcp-servers/{id}/auth",
                 "setMcpServerAuth",
                 "Set how rolter authenticates to an MCP server",
+            )
+            .needs_kek(),
+            Op::post(
+                "/api/v1/mcp-servers/{id}/discover",
+                "discoverMcpServerTools",
+                "Ask an MCP server for its tools with tools/list",
+            ),
+            Op::post(
+                "/api/v1/mcp-servers/{id}/test",
+                "testMcpServerConnection",
+                "Run the MCP handshake against a server and report its status",
+            ),
+            Op::post(
+                "/api/v1/mcp-servers/{id}/tools/call",
+                "callMcpServerTool",
+                "Run one of an MCP server's tools and return the raw exchange",
+            ),
+            Op::get(
+                "/api/v1/mcp-servers/{id}/tools",
+                "listMcpServerTools",
+                "List an MCP server's tools with their input schemas",
             ),
             Op::get(
                 "/api/v1/mcp-servers/{id}/oauth-client",
@@ -1833,7 +2290,8 @@ fn operations() -> Vec<Op> {
                 "/api/v1/mcp-servers/{id}/oauth-client",
                 "setMcpOauthClient",
                 "Replace an MCP server's OAuth client",
-            ),
+            )
+            .needs_kek(),
             Op::post(
                 "/api/v1/mcp-servers/{id}/oauth/authorize",
                 "startMcpAuthorize",
@@ -1885,6 +2343,16 @@ fn operations() -> Vec<Op> {
                 "/api/v1/mcp/tool-groups/{id}",
                 "deleteMcpToolGroup",
                 "Delete an MCP tool group",
+            ),
+            Op::get(
+                "/api/v1/orgs/{org_id}/mcp/tool-group-assignments",
+                "listMcpToolGroupAssignments",
+                "List the keys, projects and teams MCP tool groups are assigned to",
+            ),
+            Op::put(
+                "/api/v1/mcp/tool-groups/{id}/assignments",
+                "replaceMcpToolGroupAssignments",
+                "Replace the keys, projects and teams an MCP tool group is assigned to",
             ),
             Op::get(
                 "/api/v1/orgs/{org_id}/mcp/grants",
@@ -1952,28 +2420,34 @@ fn operations() -> Vec<Op> {
             Op::get(
                 "/api/v1/alert-channels",
                 "listAlertChannels",
-                "List alert channels",
+                "List the alert channels the caller may use: their orgs' and the deployment's",
             ),
             Op::post(
                 "/api/v1/alert-channels",
                 "createAlertChannel",
-                "Create an alert channel",
-            ),
+                "Create an alert channel, owned by an org (org admin) or the deployment (superadmin)",
+            )
+            .needs_kek(),
             Op::put(
                 "/api/v1/alert-channels/{id}",
                 "updateAlertChannel",
                 "Update an alert channel",
-            ),
+            )
+            .needs_kek(),
             Op::delete(
                 "/api/v1/alert-channels/{id}",
                 "deleteAlertChannel",
                 "Delete an alert channel",
             ),
-            Op::get("/api/v1/alert-rules", "listAlertRules", "List alert rules"),
+            Op::get(
+                "/api/v1/alert-rules",
+                "listAlertRules",
+                "List the alert rules the caller owns",
+            ),
             Op::post(
                 "/api/v1/alert-rules",
                 "createAlertRule",
-                "Create an alert rule",
+                "Create an alert rule scoped to an org, team, project, key, business unit or customer",
             ),
             Op::put(
                 "/api/v1/alert-rules/{id}",
@@ -2017,11 +2491,41 @@ fn operations() -> Vec<Op> {
                 "Bucketed spend and usage over a window",
             )
             .clickhouse_read()
+            .bucketed()
             .query(TIMESERIES_QUERY),
             Op::get(
                 "/api/v1/analytics/by-model",
                 "getAnalyticsByModel",
-                "Spend and usage grouped by model",
+                "Spend and usage grouped by organization and model: a row carries `org_id` (an empty string for a request no organization owns) beside `model`, since two organizations may each have a route of one name",
+            )
+            .clickhouse_read()
+            .query(DASHBOARD_QUERY),
+            Op::get(
+                "/api/v1/analytics/by-variant",
+                "getAnalyticsByVariant",
+                "Spend and usage grouped by organization, route and the weighted variant that served it \
+                 (`model` narrows to one route): a row carries `org_id` (an empty string for a request no \
+                 organization owns) beside `model` and `variant`, since two organizations may each have a \
+                 route of one name; requests served without a variant come back under the empty string. \
+                 `requests` counts every request the variant answered, failovers included; \
+                 `first_attempt_requests` counts those it served on the first attempt (no \
+                 `fallback_reason`, `clickhouse/023`), the closer comparison with the configured \
+                 weights; a request that failed over from another variant counts for neither. It is `null` on a ClickHouse that has not applied \
+                 `023`, which cannot tell the two apart. `assigned_requests` counts the requests each \
+                 variant was dialled to first (`first_variant`, `clickhouse/048`), so a request that \
+                 failed over counts for the variant it was dialled to first and a variant that \
+                 answered nothing still has a row. It is not the sampled split: a variant skipped \
+                 while its breaker is open or its targets are parked is dialled first by none of the \
+                 requests sampled for it; requests \
+                 served without a variant count under the empty string. A row written before `048` \
+                 counts for the variant that answered it when it has no `fallback_reason`, and for no \
+                 variant otherwise. It is `null` on a ClickHouse that has not applied `048`. \
+                 `sampled_requests` counts the requests the weighted split sampled each variant for \
+                 (`sampled_variant`, `clickhouse/050`), before the gateway skips a variant whose \
+                 breaker is open or whose targets are parked or unhealthy, so it is the comparison \
+                 with the configured weights; a variant row written before `050` counts for no \
+                 variant, requests served without a variant count under the empty string, and it is \
+                 `null` on a ClickHouse that has not applied `050`",
             )
             .clickhouse_read()
             .query(DASHBOARD_QUERY),
@@ -2045,10 +2549,81 @@ fn operations() -> Vec<Op> {
                  `cache_write_1h_tokens`, `guardrail_events` (an array of strings, one per guardrail \
                  action) and `plugin_events` (the same for plugin calls) come from ClickHouse files an operator applies by hand \
                  (`clickhouse/015` to `019`): on a table that lacks one the field is still on every row, \
-                 as `0` (an empty string for `lifecycle_operation`), and the list does not fail",
+                 as `0` (an empty string for `lifecycle_operation`), and the list does not fail. \
+                 `fallback_reason` (`clickhouse/023`) is the failure class that sent the request on to \
+                 the target that answered it (`throttled`, `timeout`, `transport`, `server_error`, \
+                 `refusal` or `refusal:<category>`), and an empty string when the first dial answered, \
+                 for a row older than the column, or on a table that lacks it. \
+                 `first_variant` (`clickhouse/048`) is the weighted variant the request was first \
+                 dialled to, which differs from `variant` when it failed over to another variant, and \
+                 an empty string on the classic pool, for a row older than the column, or on a table \
+                 that lacks it. \
+                 `sampled_variant` (`clickhouse/050`) is the variant the route's weighted split picked \
+                 as primary before the gateway skipped one whose breaker is open or whose targets are \
+                 parked or unhealthy, which differs from `first_variant` when the request was routed \
+                 around it; on a realtime turn row it is the variant the session's dial walk led with, \
+                 the route's first variant with a non-zero weight (#3553). An empty string on the \
+                 classic pool, for a row older than the column, or on a table that lacks it. \
+                 `outcome` (a string, `clickhouse/030`) names what happened to the request: `served`, \
+                 `upstream_error`, `withheld`, `cancelled` or a `refused_*` reason, and `unknown` for a \
+                 row written before the gateway recorded one or on a table without the column. \
+                 `has_tools`, `has_image_input`, `has_audio_input`, `has_response_schema` (each `0` or \
+                 `1`) and `turns` (`clickhouse/031`) say what the request asked the model to do beyond \
+                 its tokens, `0` on an older row or a table without the columns. \
+                 `param_adjustments` (an array of `<disposition>:<param>` strings, `clickhouse/022`) \
+                 lists the request parameters dialect translation dropped, clamped or translated, \
+                 empty when every parameter went through",
             )
             .clickhouse_read()
             .query(INVOCATIONS_QUERY),
+            Op::get(
+                "/api/v1/analytics/by-attribution/export",
+                "exportAnalyticsByAttribution",
+                "The attribution rollup as CSV for a window, flagging totals that hold unpriced requests; the file name carries the window and currency",
+            )
+            .clickhouse_read()
+            .query(ATTRIBUTION_QUERY),
+            Op::get(
+                "/api/v1/analytics/timeseries/export",
+                "exportAnalyticsTimeseries",
+                "Requests, tokens and cost per bucket as CSV, flagging buckets that hold unpriced requests",
+            )
+            .clickhouse_read()
+            .bucketed()
+            .query(TIMESERIES_QUERY),
+            Op::get(
+                "/api/v1/analytics/invocations/export",
+                "exportInvocations",
+                "Stream the request log as CSV, metadata only (never bodies or error text), under the same row scoping as the JSON list; `limit` and `cursor` are ignored. An export is bounded in rows and in time: past either the body ends in an error rather than passing for a complete file",
+            )
+            .too_many_requests(
+                "too many request log exports are running, in this process or for this caller; wait for `Retry-After` seconds",
+            )
+            .clickhouse_read()
+            .query(INVOCATIONS_QUERY),
+            Op::post(
+                "/api/v1/analytics/exports/tickets",
+                "mintExportTicket",
+                "Mint a single-use download ticket for one export, for a browser that cannot stream the file to disk itself (#3504). The body names `path` (one of the three `.../export` routes above, or on a control plane with a database the audit log's `/api/v1/audit-log/export` or `/api/v1/orgs/{org_id}/audit-log/export` with the org's id, #3545; any other is a `400`) and `query`, the query string that export would be sent, which is checked as the export checks it. The export's own credential and scope checks run here (the audit log's `audit_log:read` or `deployment_audit_log:read` for its exports, again at redemption), and the request log export is refused with `429` at once when its concurrency bound is full. Answers `id`, `download_url` (the secret is in it: hand it to the browser, never log it), `status_url` and `expires_at`, 60 seconds out",
+            )
+            .body(Payload::Ref("ExportTicketRequest"))
+            .ok(Payload::Ref("ExportTicket"))
+            .too_many_requests(
+                "the request log export's concurrency bound is already full, in this process or for this caller; wait for `Retry-After` seconds",
+            ),
+            Op::get(
+                "/api/v1/analytics/exports/tickets/{id}",
+                "getExportTicket",
+                "How a ticket's export is going, for the principal that minted it only (anyone else gets `404`). `state` is `pending`, `streaming` (with `rows` so far), `complete` (`rows`), `truncated` (`rows` and a `reason`: `row_limit`, `time_limit`, `read_error`, `client_closed`, or `interrupted` when the replica serving it stopped reporting), `refused` (the download's HTTP `status`, and `retry_after` for a `429`) or `expired` (never redeemed); `done` is `true` once it can no longer change",
+            )
+            .ok(Payload::Ref("ExportTicketStatus")),
+            Op::get(
+                "/api/v1/analytics/exports/download/{ticket}",
+                "downloadExport",
+                "Redeem a download ticket and send its export as the bearer route would, under the principal that minted it, re-checked now. The ticket in the path is the credential, and it is spent by the first request whatever its outcome; an unknown, used or expired ticket is one uniform `410`, and any method but `GET` (a `HEAD` from a link checker included) is a `405` that leaves the ticket unspent. Answers `Cache-Control: no-store` and `Referrer-Policy: no-referrer`. The body is CSV, or the audit log's CSV or JSON, not a JSON answer",
+            )
+            .public()
+            .clickhouse_read(),
             Op::get(
                 "/api/v1/analytics/guardrails",
                 "getAnalyticsGuardrails",
@@ -2076,6 +2651,32 @@ fn operations() -> Vec<Op> {
             )
             .clickhouse_read()
             .query(WINDOW_QUERY),
+            Op::get(
+                "/api/v1/analytics/param-adjustments",
+                "getAnalyticsParamAdjustments",
+                "Which request parameters dialect translation did not forward as sent, per route \
+                 and provider, in the window: one row per `route` (the public model), `provider`, \
+                 `disposition` (`dropped`, `clamped` or `translated`) and `param`, with the \
+                 `requests` that had it, the `route_requests` that route sent that provider in all \
+                 and their ratio as `share`. `recorded` is `false` when the ClickHouse table lacks \
+                 `clickhouse/022_param_adjustments.sql`, in which case `data` is empty",
+            )
+            .clickhouse_read()
+            .query(WINDOW_QUERY),
+            Op::get(
+                "/api/v1/analytics/savings",
+                "getAnalyticsSavings",
+                "The savings advisor: where the window's spend went (by route, upstream model and \
+                 caller, with retries and failovers, failed requests and response-cache misses \
+                 called out), which requests were substitutable, and what they would have cost at \
+                 each cheaper model already in the same route's pool, as a `low`/`high` range. It \
+                 re-prices and never evaluates quality, so it is a shortlist to test, not a \
+                 recommendation; `limits` says so on every answer. A request or a candidate whose \
+                 price is unknown is excluded and counted under `excluded`, never priced at zero",
+            )
+            .clickhouse_read()
+            .query(SAVINGS_QUERY)
+            .ok(Payload::Ref("SavingsReport")),
             Op::get(
                 "/api/v1/analytics/sampling",
                 "getAnalyticsSampling",
@@ -2106,7 +2707,8 @@ fn operations() -> Vec<Op> {
                 "Per-provider health transitions over a window",
             )
             .clickhouse_read()
-            .query(WINDOW_QUERY),
+            .bucketed()
+            .query(HEALTH_TIMELINE_QUERY),
             Op::get(
                 "/api/v1/health/mttr",
                 "getMttr",
@@ -2135,6 +2737,11 @@ fn operations() -> Vec<Op> {
                 "getAdaptiveTelemetry",
                 "Samples the gateways have pushed back",
             ),
+            Op::get(
+                "/api/v1/breaker-state",
+                "getBreakerState",
+                "Circuit-breaker state of every target, across the gateway fleet",
+            ),
         ],
     ));
 
@@ -2145,12 +2752,19 @@ fn operations() -> Vec<Op> {
                 "/api/v1/cluster/nodes",
                 "listClusterNodes",
                 "List gateway nodes that have registered",
+            )
+            .ok(Payload::List("ClusterNode")),
+            Op::get(
+                "/api/v1/cluster/summary",
+                "getClusterSummary",
+                "Counts of live, stale and lagging gateways, with no node identities",
             ),
             Op::put(
                 "/api/v1/cluster/nodes/{id}/drain",
                 "setClusterNodeDrain",
                 "Drain or un-drain a gateway node",
-            ),
+            )
+            .ok(Payload::Ref("ClusterNode")),
             Op::delete(
                 "/api/v1/cluster/nodes/{id}",
                 "forgetClusterNode",
@@ -2171,12 +2785,14 @@ fn operations() -> Vec<Op> {
                 "/api/v1/connectors",
                 "createConnector",
                 "Create an observability connector",
-            ),
+            )
+            .needs_kek(),
             Op::put(
                 "/api/v1/connectors/{id}",
                 "updateConnector",
                 "Update an observability connector (managed_auth_secret: omit to keep, null or blank to remove)",
-            ),
+            )
+            .needs_kek(),
             Op::delete(
                 "/api/v1/connectors/{id}",
                 "deleteConnector",
@@ -2240,6 +2856,32 @@ fn operations() -> Vec<Op> {
                 "Replace the request-logging, retention and UX-event settings",
             ),
             Op::get(
+                "/api/v1/log-erasures",
+                "listLogErasures",
+                "List recent subject-scoped log erasures",
+            ),
+            Op::post(
+                "/api/v1/log-erasures",
+                "createLogErasure",
+                "Erase one virtual key's, user's, organization's or single request's logs and captured payloads",
+            ),
+            Op::get(
+                "/api/v1/log-erasures/subjects",
+                "findLogErasureSubjects",
+                "Find the named virtual keys, users or organizations the erasure form offers (superadmin)",
+            )
+            .query(LOG_ERASURE_SUBJECT_QUERY),
+            Op::get(
+                "/api/v1/log-erasures/{id}",
+                "getLogErasure",
+                "Read an erasure, settling it once ClickHouse reports its mutations done",
+            ),
+            Op::post(
+                "/api/v1/logging-settings/redaction-preview",
+                "previewPayloadRedaction",
+                "Dry-run the payload redaction policy against a pasted sample; stores and logs nothing",
+            ),
+            Op::get(
                 "/api/v1/client-settings",
                 "getClientSettings",
                 "Read the upstream HTTP client settings",
@@ -2293,6 +2935,27 @@ fn operations() -> Vec<Op> {
                 "Revoke an invitation",
             )
             .ok(Payload::Ref("Invitation")),
+            Op::post(
+                "/api/v1/invitations/{id}/resend",
+                "resendInvitation",
+                "Email a pending invitation's link again (at most once a minute; `429` with `Retry-After` otherwise)",
+            )
+            .body(Payload::Empty)
+            .ok(Payload::Ref("Invitation"))
+            .conflict(
+                "the invitation is not pending, has expired, has no kept link, or mail is not configured",
+            ),
+            Op::post(
+                "/api/v1/orgs/{org_id}/invitations/mail-check",
+                "checkInvitationMailRelay",
+                "Check the mail relay without sending an invitation",
+            )
+            .body(Payload::Empty)
+            .ok(Payload::Open)
+            .too_many_requests(
+                "the relay was checked a moment ago, by this caller (every five seconds) or by anyone (every two); `Retry-After` says how long to wait",
+            )
+            .conflict("mail is not configured on this control plane"),
             Op::get(
                 "/api/v1/invitations/accept/{token}",
                 "previewInvitation",
@@ -2321,6 +2984,47 @@ fn operations() -> Vec<Op> {
     ));
 
     ops.extend(tagged(
+        "ldap",
+        vec![
+            Op::get(
+                "/api/v1/orgs/{org_id}/ldap-directories",
+                "listLdapDirectories",
+                "Read an organization's LDAP directory",
+            ),
+            Op::post(
+                "/api/v1/orgs/{org_id}/ldap-directories",
+                "createLdapDirectory",
+                "Register an LDAP directory",
+            ),
+            Op::put(
+                "/api/v1/ldap-directories/{id}",
+                "updateLdapDirectory",
+                "Update an LDAP directory in place",
+            ),
+            Op::delete(
+                "/api/v1/ldap-directories/{id}",
+                "deleteLdapDirectory",
+                "Delete an LDAP directory",
+            ),
+            Op::get(
+                "/api/v1/ldap-directories/{id}/group-mappings",
+                "listLdapGroupMappings",
+                "List an LDAP directory's group mappings",
+            ),
+            Op::post(
+                "/api/v1/ldap-directories/{id}/group-mappings",
+                "createLdapGroupMapping",
+                "Map a directory group to a role at a scope",
+            ),
+            Op::delete(
+                "/api/v1/ldap-group-mappings/{id}",
+                "deleteLdapGroupMapping",
+                "Delete an LDAP group mapping",
+            ),
+        ],
+    ));
+
+    ops.extend(tagged(
         "sso",
         vec![
             Op::get(
@@ -2332,12 +3036,14 @@ fn operations() -> Vec<Op> {
                 "/api/v1/orgs/{org_id}/sso-providers",
                 "createSsoProvider",
                 "Register an SSO provider",
-            ),
+            )
+            .needs_kek(),
             Op::put(
                 "/api/v1/sso-providers/{id}",
                 "updateSsoProvider",
                 "Update an SSO provider in place",
-            ),
+            )
+            .needs_kek(),
             Op::delete(
                 "/api/v1/sso-providers/{id}",
                 "deleteSsoProvider",
@@ -2370,7 +3076,7 @@ fn operations() -> Vec<Op> {
                  dashboard's `/login` screen with `sso_error=sso_disabled&sso=` instead, and any \
                  other caller gets a `403` with `error.code` `sso_disabled`. A slug no enabled provider \
                  answers to sends a browser to `/login` with `sso_error=unknown_provider`, and any \
-                 other caller a `400`",
+                 other caller a `400` with `error.code` `unknown_provider`",
             ),
             Op::get(
                 "/auth/sso/{slug}/callback",
@@ -2382,7 +3088,9 @@ fn operations() -> Vec<Op> {
                 "sent to a browser (`Accept: text/html`): the dashboard's `/login` screen, with \
                  `sso_code=` (a one-time code for `POST /auth/sso/exchange`) on success or \
                  `sso_error=` (a stable code, plus `sso=` once the provider is known) on a \
-                 refusal. Any other caller gets the session JSON or the error",
+                 refusal. Any other caller gets the session JSON, or on a refusal the status it \
+                 always had with the same code as `error.code` and a fixed message that names \
+                 no account",
             ),
             Op::post(
                 "/auth/sso/exchange",
@@ -2390,6 +3098,38 @@ fn operations() -> Vec<Op> {
                 "Redeem the one-time code a browser SSO sign-in ended with for its session",
             )
             .public(),
+        ],
+    ));
+
+    ops.extend(tagged(
+        "api-tokens",
+        vec![
+            Op::get(
+                "/api/v1/orgs/{org_id}/api-tokens",
+                "listApiTokens",
+                "List an organization's scoped API tokens",
+            )
+            .ok(Payload::List("ApiToken")),
+            Op::post(
+                "/api/v1/orgs/{org_id}/api-tokens",
+                "createApiToken",
+                "Mint a scoped API token; the secret is returned once",
+            )
+            .body(Payload::Ref("CreateApiToken"))
+            .ok(Payload::Ref("SecretApiToken")),
+            Op::post(
+                "/api/v1/api-tokens/{id}/rotate",
+                "rotateApiToken",
+                "Replace a token's secret; the old one stops working at once",
+            )
+            .ok(Payload::Ref("SecretApiToken"))
+            .conflict(API_TOKEN_INACTIVE_409),
+            Op::delete(
+                "/api/v1/api-tokens/{id}",
+                "revokeApiToken",
+                "Revoke a scoped API token",
+            )
+            .ok(Payload::Ref("ApiToken")),
         ],
     ));
 
@@ -2546,6 +3286,8 @@ fn tags() -> Value {
         {"name": "settings", "description": "deployment-wide singletons the gateway reads from the snapshot"},
         {"name": "invitations", "description": "email invitations into an organization"},
         {"name": "sso", "description": "SSO providers, group mappings and the login redirect"},
+        {"name": "api-tokens", "description": "scoped control-plane API tokens for automation"},
+        {"name": "ldap", "description": "LDAP directories and the group mappings that turn directory groups into roles"},
         {"name": "scim", "description": "SCIM 2.0 provisioning and the tokens that authenticate it"},
         {"name": "proxy", "description": "the dashboard Playground's authenticated passthrough to the data plane"}
     ])
@@ -2592,7 +3334,7 @@ fn build_document() -> Value {
         paths.insert(path.to_string(), Value::Object(item));
     }
 
-    json!({
+    let mut doc = json!({
         "openapi": "3.1.0",
         "info": {
             "title": "rolter control plane",
@@ -2625,7 +3367,14 @@ fn build_document() -> Value {
             },
             "schemas": schemas()
         }
-    })
+    });
+    // `externalDocs` and `x-rolter-*` provenance from the specification
+    // registry (#907)
+    rolter_core::spec_registry::annotate_openapi(
+        &mut doc,
+        rolter_core::spec_registry::Plane::Control,
+    );
+    doc
 }
 
 /// The primitive schemas the entity definitions reuse, so a `uuid` is spelled
@@ -2674,12 +3423,82 @@ fn schemas() -> Value {
         stability_schemas(&p),
         alerting_schemas(&p),
         config_problem_schemas(&p),
+        cluster_schemas(&p),
+        export_ticket_schemas(&p),
     ] {
         if let Value::Object(entries) = group {
             out.extend(entries);
         }
     }
-    Value::Object(out)
+    let mut schemas = Value::Object(out);
+    crate::deprecation::mark_fields(&mut schemas);
+    schemas
+}
+
+/// The download tickets of the analytics CSV exports (#3504).
+fn export_ticket_schemas(p: &Prim) -> Value {
+    let uuid = &p.uuid;
+    let timestamp = &p.timestamp;
+    json!({
+        "ExportTicketRequest": {
+            "type": "object",
+            "required": ["path"],
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "the export, by the exact path of its bearer route: `/api/v1/analytics/by-attribution/export`, `/api/v1/analytics/timeseries/export`, `/api/v1/analytics/invocations/export`, and on a control plane with a database `/api/v1/audit-log/export` or `/api/v1/orgs/{org_id}/audit-log/export` with the org's hyphenated id"
+                },
+                "query": {
+                    "type": "string",
+                    "description": "the query string that export would be sent, without the `?`; checked as the export checks it"
+                }
+            }
+        },
+        "ExportTicket": {
+            "type": "object",
+            "required": ["id", "download_url", "status_url", "expires_at"],
+            "properties": {
+                "id": uuid,
+                "download_url": {
+                    "type": "string",
+                    "description": "the same-origin link that downloads the export once; it carries the secret, so hand it to the browser and never log it"
+                },
+                "status_url": {"type": "string"},
+                "expires_at": timestamp
+            }
+        },
+        "ExportTicketStatus": {
+            "type": "object",
+            "required": ["id", "export", "expires_at", "done", "state"],
+            "properties": {
+                "id": uuid,
+                "export": {"type": "string", "enum": ["attribution", "timeseries", "invocations", "audit_log", "org_audit_log"]},
+                "expires_at": timestamp,
+                "done": {"type": "boolean", "description": "the state can no longer change"},
+                "state": {
+                    "type": "string",
+                    "enum": ["pending", "streaming", "complete", "truncated", "refused", "expired"]
+                },
+                "rows": {
+                    "type": "integer",
+                    "description": "rows written so far, on `streaming`, `complete` and `truncated`"
+                },
+                "reason": {
+                    "type": "string",
+                    "enum": ["row_limit", "time_limit", "read_error", "client_closed", "interrupted"],
+                    "description": "why a `truncated` export stopped short"
+                },
+                "status": {
+                    "type": "integer",
+                    "description": "the HTTP status a `refused` download was answered with"
+                },
+                "retry_after": {
+                    "type": "integer",
+                    "description": "seconds to wait, on a `refused` `429`"
+                }
+            }
+        }
+    })
 }
 
 /// Alert history rows and rules, where the stable `detail_code` and
@@ -2775,6 +3594,53 @@ fn config_problem_schemas(p: &Prim) -> Value {
                     "type": "integer",
                     "minimum": 0,
                     "description": "the row's position in the matching list of GET /api/v1/config (providers, routes or virtual_keys); a name alone can match several rows, as tenancy is not in that response"
+                }
+            }
+        }
+    })
+}
+
+/// One node of the cluster inventory (#543), with the snapshot formats it reads
+/// and was last served (ADR-0038, #3351).
+fn cluster_schemas(p: &Prim) -> Value {
+    let string = &p.string;
+    let timestamp = &p.timestamp;
+    json!({
+        "ClusterNode": {
+            "type": "object",
+            "required": [
+                "id", "role", "build_version", "config_version", "desired_state",
+                "state_changed_at", "first_seen_at", "last_seen_at", "formats_min",
+                "formats_max", "served_format", "live", "converged"
+            ],
+            "properties": {
+                "id": string,
+                "role": {"type": "string", "enum": ["gateway", "control"]},
+                "build_version": string,
+                "config_version": {"type": "integer", "format": "int64"},
+                "desired_state": {"type": "string", "enum": ["active", "draining"]},
+                "state_changed_at": timestamp,
+                "first_seen_at": timestamp,
+                "last_seen_at": timestamp,
+                "formats_min": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "the oldest snapshot format the node stated it reads; 1 for a node that states none"
+                },
+                "formats_max": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "the newest snapshot format the node stated it reads"
+                },
+                "served_format": {
+                    "type": ["integer", "null"],
+                    "minimum": 1,
+                    "description": "the format the node's last poll was answered in; null when that poll was refused for its format"
+                },
+                "live": {"type": "boolean"},
+                "converged": {
+                    "type": "boolean",
+                    "description": "the node reported the current config version and was not last served an older snapshot format"
                 }
             }
         }
@@ -3005,8 +3871,63 @@ fn identity_schemas(p: &Prim) -> Value {
                 "id": uuid, "email": {"type": "string", "format": "email"},
                 "is_superadmin": {"type": "boolean"},
                 "deactivated_at": nullable_timestamp,
-                "created_at": timestamp
+                "created_at": timestamp,
+                "deployment_role": {"type": ["string", "null"], "enum": ["operator", "security_auditor", null]}
             }
+        },
+        "SetDeploymentRole": {
+            "type": "object",
+            "required": ["role"],
+            "properties": {
+                "role": {"type": ["string", "null"], "enum": ["operator", "security_auditor", null],
+                    "description": "null clears the account's deployment role"}
+            },
+            "additionalProperties": false
+        },
+        "ApiToken": {
+            "type": "object",
+            "required": ["id", "org_id", "name", "token_prefix", "created_at"],
+            "properties": {
+                "id": uuid, "org_id": uuid,
+                "team_id": {"type": ["string", "null"], "format": "uuid"},
+                "project_id": {"type": ["string", "null"], "format": "uuid"},
+                "name": {"type": "string"},
+                "role": {"type": ["string", "null"], "enum": ["admin", "member", "viewer", null]},
+                "custom_role_id": {"type": ["string", "null"], "format": "uuid"},
+                "token_prefix": {"type": "string", "description": "the first characters of the value, to recognise it in a list"},
+                "expires_at": nullable_timestamp,
+                "created_by": {"type": ["string", "null"], "format": "uuid"},
+                "created_at": timestamp,
+                "rotated_at": nullable_timestamp,
+                "last_used_at": nullable_timestamp,
+                "revoked_at": nullable_timestamp
+            }
+        },
+        "SecretApiToken": {
+            "type": "object",
+            "required": ["id", "org_id", "name", "token_prefix", "created_at", "secret"],
+            "description": "an ApiToken plus its secret, returned this once and never again",
+            "properties": {
+                "id": uuid, "org_id": uuid,
+                "name": {"type": "string"},
+                "token_prefix": {"type": "string"},
+                "created_at": timestamp,
+                "secret": {"type": "string", "description": "the bearer value, `rolter_api_…`"}
+            }
+        },
+        "CreateApiToken": {
+            "type": "object",
+            "required": ["name"],
+            "properties": {
+                "name": {"type": "string", "maxLength": 80},
+                "team_id": {"type": ["string", "null"], "format": "uuid", "description": "omit team_id and project_id for an org-wide token"},
+                "project_id": {"type": ["string", "null"], "format": "uuid"},
+                "role": {"type": ["string", "null"], "enum": ["admin", "member", "viewer", null]},
+                "custom_role_id": {"type": ["string", "null"], "format": "uuid", "description": "give exactly one of role and custom_role_id"},
+                "expires_in_days": {"type": ["integer", "null"], "minimum": 1, "maximum": 730, "default": 90},
+                "never_expires": {"type": "boolean", "default": false}
+            },
+            "additionalProperties": false
         },
         "CreateUser": {
             "type": "object",
@@ -3278,6 +4199,17 @@ fn routing_schemas(p: &Prim) -> Value {
     let timestamp = &p.timestamp;
     let string = &p.string;
     let nullable_string = &p.nullable_string;
+    // a variant target's classes (#3373), built apart: the schema below is
+    // already as deep as `json!` expands
+    let variant_takes_over = json!({
+        "type": "array",
+        "default": [],
+        "items": {
+            "type": "string",
+            "pattern": "^(throttled|timeout|transport|server_error|refusal(:[a-z0-9_-]{1,64})?)$"
+        },
+        "description": "the failure classes this target takes over, as on a route target. A route with variants dials only the variants' targets, and one without dials its own: a set that leaves the route only such targets to dial is refused naming `all_targets_restricted`"
+    });
     json!({
         "Route": {
             "type": "object",
@@ -3295,6 +4227,11 @@ fn routing_schemas(p: &Prim) -> Value {
                     "type": "array",
                     "description": "the route's targets, as GET /api/v1/routes/{route_id}/targets lists them; present only when the list was asked for `include=targets`",
                     "items": {"$ref": "#/components/schemas/RouteTarget"}
+                },
+                "variants": {
+                    "type": "array",
+                    "description": "the route's weighted variants, as GET /api/v1/routes/{id}/variants lists them; present only when the list was asked for `include=variants`",
+                    "items": {"$ref": "#/components/schemas/RouteVariant"}
                 },
                 "complexity": {
                     "type": "object",
@@ -3318,7 +4255,8 @@ fn routing_schemas(p: &Prim) -> Value {
                         "properties": {
                             "provider": string,
                             "model": nullable_string,
-                            "weight": {"type": "integer"}
+                            "weight": {"type": "integer"},
+                            "takes_over": {"type": "array", "items": string, "description": "the failure classes the target is a fallback for; absent for an ordinary target"}
                         }
                     }
                 },
@@ -3359,8 +4297,80 @@ fn routing_schemas(p: &Prim) -> Value {
                 "id": uuid, "route_id": uuid, "provider_id": uuid,
                 "upstream_model": nullable_string,
                 "weight": {"type": "integer"},
+                "takes_over": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "the failure classes this target is a fallback for; empty for an ordinary member of the pool. A target with classes is never dialled first and is tried only after another target failed with one of them"
+                },
                 "created_at": timestamp
             }
+        },
+        "RouteVariant": {
+            "type": "object",
+            "required": ["id", "route_id", "name", "weight", "position", "params", "targets", "created_at"],
+            "properties": {
+                "id": uuid, "route_id": uuid,
+                "name": {"type": "string", "description": "the variant's name, unique in its route; request logs and metrics carry it"},
+                "weight": {"type": "integer", "minimum": 0, "description": "relative share of the requests that sample this variant as their primary. A weight of 0 is accepted: the variant stays and takes no first attempts while another variant has a positive weight, and is still tried in fallback order (a set of only zeroes is sampled uniformly)"},
+                "position": {"type": "integer", "description": "the declared order, which is the fallback chain after the sampled primary"},
+                "params": {"type": "object", "description": "variant-scoped default inference params, layered over the route's"},
+                "targets": {
+                    "type": "array",
+                    "description": "the variant's targets in routing order",
+                    "items": {"$ref": "#/components/schemas/RouteVariantTarget"}
+                },
+                "created_at": timestamp
+            }
+        },
+        "RouteVariantTarget": {
+            "type": "object",
+            "required": ["id", "variant_id", "provider_id", "weight", "position", "takes_over"],
+            "properties": {
+                "id": uuid, "variant_id": uuid, "provider_id": uuid,
+                "upstream_model": nullable_string,
+                "weight": {"type": "integer", "minimum": 0},
+                "position": {"type": "integer"},
+                "takes_over": {"type": "array", "items": string, "description": "the failure classes this target takes over; empty for an ordinary target"}
+            }
+        },
+        "SetRouteVariants": {
+            "type": "object",
+            "required": ["variants"],
+            "properties": {
+                "variants": {
+                    "type": "array",
+                    "maxItems": 32,
+                    "description": "the route's whole variant set in fallback order. A variant's weight is 0 or more (0 takes no first attempts while another variant has a positive weight and is still tried in fallback order; a set of only zeroes is sampled uniformly); names are unique and not blank; each variant names 1 to 32 targets, each a provider of the route's org its project may use",
+                    "items": {
+                        "type": "object",
+                        "required": ["name", "targets"],
+                        "properties": {
+                            "name": string,
+                            "weight": {"type": "integer", "default": 1, "minimum": 0, "description": "relative share of first attempts; 0 is accepted and takes none while another variant has a positive weight (the variant stays and is still tried in fallback order), and a set of only zeroes is sampled uniformly"},
+                            "params": {"type": ["object", "null"], "description": "variant-scoped default inference params; omitted or null is none"},
+                            "targets": {
+                                "type": "array",
+                                "minItems": 1,
+                                "maxItems": 32,
+                                "description": "in routing order; at least one needs a weight above 0",
+                                "items": {
+                                    "type": "object",
+                                    "required": ["provider_id"],
+                                    "properties": {
+                                        "provider_id": uuid,
+                                        "upstream_model": {"type": ["string", "null"], "description": "the model name sent upstream; omitted, null or blank forwards the route's public name"},
+                                        "weight": {"type": "integer", "default": 1, "minimum": 0},
+                                        "takes_over": variant_takes_over
+                                    },
+                                    "additionalProperties": false
+                                }
+                            }
+                        },
+                        "additionalProperties": false
+                    }
+                }
+            },
+            "additionalProperties": false
         },
         "CreateRouteTarget": {
             "type": "object",
@@ -3368,7 +4378,16 @@ fn routing_schemas(p: &Prim) -> Value {
             "properties": {
                 "provider_id": uuid,
                 "upstream_model": {"type": ["string", "null"], "description": "the model name sent upstream; omitted, null or blank forwards the route's public name"},
-                "weight": {"type": "integer", "default": 1, "minimum": 1}
+                "weight": {"type": "integer", "default": 1, "minimum": 1},
+                "takes_over": {
+                    "type": "array",
+                    "default": [],
+                    "items": {
+                        "type": "string",
+                        "pattern": "^(throttled|timeout|transport|server_error|refusal(:[a-z0-9_-]{1,64})?)$"
+                    },
+                    "description": "the failure classes this target takes over (`throttled`, `timeout`, `transport`, `server_error`, `refusal` or `refusal:<category>`), each at most once. A target with classes is never dialled first and is tried only after another target failed with one of them. A route may not be left with only such targets to dial (the variants' targets when it has variants, its own otherwise): that is refused naming `all_targets_restricted`"
+                }
             },
             "additionalProperties": false
         }
@@ -3389,7 +4408,6 @@ fn virtual_key_schemas(p: &Prim) -> Value {
             "required": ["id", "project_id", "key_prefix", "models", "providers", "disabled", "created_at"],
             "properties": {
                 "id": uuid, "project_id": uuid,
-                "key_hash": {"type": "string", "description": "peppered digest; never the plaintext"},
                 "key_prefix": string,
                 "name": nullable_string,
                 "models": string_list,
@@ -3400,6 +4418,28 @@ fn virtual_key_schemas(p: &Prim) -> Value {
                 "created_by": nullable_uuid,
                 "business_unit_id": nullable_uuid,
                 "customer_id": nullable_uuid,
+                "created_at": timestamp,
+                "previous_key_prefix": {"type": ["string", "null"], "description": "first characters of the secret an admin rotation replaced, while its overlap is open"},
+                "previous_expires_at": {"type": ["string", "null"], "format": "date-time", "description": "when the replaced secret stops authenticating; null when no overlap is running"}
+            }
+        },
+        "OrgVirtualKey": {
+            "type": "object",
+            "description": "a virtual key as the organization-wide listing returns it: no digest of any secret",
+            "required": ["id", "project_id", "key_prefix", "models", "providers", "disabled", "created_at"],
+            "properties": {
+                "id": uuid, "project_id": uuid,
+                "key_prefix": string,
+                "name": nullable_string,
+                "models": string_list,
+                "providers": string_list,
+                "disabled": {"type": "boolean"},
+                "expires_at": nullable_timestamp,
+                "cache_enabled": {"type": ["boolean", "null"]},
+                "created_by": nullable_uuid,
+                "business_unit_id": nullable_uuid,
+                "customer_id": nullable_uuid,
+                "purpose": {"type": ["string", "null"]},
                 "created_at": timestamp
             }
         },
@@ -3423,7 +4463,26 @@ fn virtual_key_schemas(p: &Prim) -> Value {
                 "models": string_list,
                 "providers": string_list,
                 "cache": {"type": ["boolean", "null"]},
-                "expires_in_days": {"type": ["integer", "null"], "minimum": 1}
+                "expires_in_days": {"type": ["integer", "null"], "minimum": 1},
+                "budget": {
+                    "type": ["object", "null"],
+                    "description": "a spend cap minted with the key: a budget scoped to the key, written in the same transaction (#1171)",
+                    "required": ["limit_usd"],
+                    "properties": {
+                        "limit_usd": {"type": "string", "description": "decimal, 0 to 99999999.9999"},
+                        "period": {"type": "string", "description": "daily, monthly or total (default monthly)"}
+                    },
+                    "additionalProperties": false
+                },
+                "rate_limit": {
+                    "type": ["object", "null"],
+                    "description": "a throughput cap minted with the key: a rate limit scoped to the key (#1171). At least one of rpm and tpm, each at least 1",
+                    "properties": {
+                        "rpm": {"type": ["integer", "null"], "minimum": 1},
+                        "tpm": {"type": ["integer", "null"], "minimum": 1}
+                    },
+                    "additionalProperties": false
+                }
             },
             "additionalProperties": false
         },
@@ -3444,6 +4503,14 @@ fn virtual_key_schemas(p: &Prim) -> Value {
             "properties": {"disabled": {"type": "boolean"}},
             "additionalProperties": false
         },
+        "RotateVirtualKey": {
+            "type": "object",
+            "description": "the body may be omitted, which rotates with no overlap",
+            "properties": {
+                "overlap_seconds": {"type": "integer", "minimum": 0, "maximum": 2592000, "description": "how long the replaced secret keeps authenticating; 0 or omitted ends it at once"}
+            },
+            "additionalProperties": false
+        },
         "SetVirtualKeyCache": {
             "type": "object",
             "properties": {
@@ -3459,13 +4526,13 @@ fn governance_schemas(p: &Prim) -> Value {
     let timestamp = &p.timestamp;
     let string = &p.string;
     let nullable_string = &p.nullable_string;
-    // the `SCOPE_TYPES` allowlist in `crud.rs`: business unit and customer are
+    // the `SCOPE_TYPES` allowlist in `crud/`: business unit and customer are
     // the governance dimensions a key's spend rolls up to (#539)
     let scope_type = json!({
         "type": "string",
-        "enum": ["org", "team", "project", "virtual_key", "business_unit", "customer"]
+        "enum": ["org", "team", "project", "virtual_key", "business_unit", "customer", "user"]
     });
-    // what `validate_period` in `crud.rs` accepts, read off the same table the
+    // what `validate_period` in `crud/` accepts, read off the same table the
     // snapshot loader uses, so the documented set cannot drift from it (#1902)
     let periods: Vec<&str> = rolter_core::BudgetPeriod::SPELLINGS
         .iter()
@@ -3490,7 +4557,10 @@ fn governance_schemas(p: &Prim) -> Value {
                     "description": "as stored. A budget written before the period was checked may hold a value the gateway does not recognise; it is enforced as monthly and listed by GET /api/v1/config/problems"
                 },
                 "unpriced_policy": {"type": ["string", "null"], "enum": ["ignore", "warn", "block", null]},
-                "created_at": timestamp
+                "created_at": timestamp,
+                "within_org_id": {"type": ["string", "null"], "format": "uuid", "description": "a user cap only: counts the keys the person minted in this org"},
+                "within_project_id": {"type": ["string", "null"], "format": "uuid", "description": "a user cap only: counts the keys the person minted in this project"},
+                "scope_name": {"type": ["string", "null"], "description": "the org-wide list only: the name (else the prefix) of the key a virtual_key budget caps"}
             }
         },
         "BudgetSpendReport": {
@@ -3529,7 +4599,9 @@ fn governance_schemas(p: &Prim) -> Value {
                     "description": period["description"],
                     "default": "30d"
                 },
-                "unpriced_policy": {"type": ["string", "null"], "enum": ["ignore", "warn", "block", null]}
+                "unpriced_policy": {"type": ["string", "null"], "enum": ["ignore", "warn", "block", null]},
+                "within_org_id": {"type": ["string", "null"], "format": "uuid", "description": "a user cap only: counts the keys the person minted in this org"},
+                "within_project_id": {"type": ["string", "null"], "format": "uuid", "description": "a user cap only: counts the keys the person minted in this project"}
             },
             "additionalProperties": false
         },
@@ -3557,7 +4629,10 @@ fn governance_schemas(p: &Prim) -> Value {
                 "scope_id": uuid,
                 "rpm": {"type": ["integer", "null"]},
                 "tpm": {"type": ["integer", "null"]},
-                "created_at": timestamp
+                "created_at": timestamp,
+                "within_org_id": {"type": ["string", "null"], "format": "uuid", "description": "a user cap only: counts the keys the person minted in this org"},
+                "within_project_id": {"type": ["string", "null"], "format": "uuid", "description": "a user cap only: counts the keys the person minted in this project"},
+                "scope_name": {"type": ["string", "null"], "description": "the org-wide list only: the name (else the prefix) of the key a virtual_key limit caps"}
             }
         },
         "CreateRateLimit": {
@@ -3568,7 +4643,9 @@ fn governance_schemas(p: &Prim) -> Value {
                 "scope_type": scope_type,
                 "scope_id": uuid,
                 "rpm": {"type": ["integer", "null"], "minimum": 1},
-                "tpm": {"type": ["integer", "null"], "minimum": 1}
+                "tpm": {"type": ["integer", "null"], "minimum": 1},
+                "within_org_id": {"type": ["string", "null"], "format": "uuid", "description": "a user cap only: counts the keys the person minted in this org"},
+                "within_project_id": {"type": ["string", "null"], "format": "uuid", "description": "a user cap only: counts the keys the person minted in this project"}
             },
             "additionalProperties": false
         },
@@ -3623,7 +4700,16 @@ fn governance_schemas(p: &Prim) -> Value {
                     "description": "price per million cached audio input tokens; null charges them at cached_input_per_mtok when that is set, otherwise at the audio input rate"
                 },
                 "currency": string,
-                "created_at": timestamp
+                "created_at": timestamp,
+                "source": {
+                    "type": ["string", "null"],
+                    "description": "the catalogue this price was imported from (e.g. litellm), a value subject to change; null is a price an operator set, which is an override that an import never replaces"
+                },
+                "source_imported_at": {
+                    "type": ["string", "null"],
+                    "format": "date-time",
+                    "description": "the day the catalogue snapshot behind an imported price was taken; null for an operator-set price"
+                }
             }
         },
         "UpsertModelPrice": {
@@ -3678,6 +4764,65 @@ fn governance_schemas(p: &Prim) -> Value {
                 "currency": {"type": "string", "default": "USD"}
             },
             "additionalProperties": false
+        },
+        "SavingsReport": {
+            "type": "object",
+            "description": "money is in the deployment's base `currency`; counts and costs are scaled by the sampling weight",
+            "required": ["currency", "limits", "assumptions", "spend", "substitutable", "candidates", "excluded"],
+            "properties": {
+                "currency": {"type": "string"},
+                "limits": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "what the report does not claim, in prose"
+                },
+                "assumptions": {
+                    "type": "object",
+                    "description": "the thresholds and margin the report was built with, after defaults and clamping",
+                    "properties": {
+                        "max_prompt_tokens": {"type": "integer"},
+                        "max_completion_tokens": {"type": "integer"},
+                        "output_margin": {"type": "number"}
+                    }
+                },
+                "spend": {
+                    "type": "object",
+                    "description": "where the money went: totals, `multi_attempt` (requests that took more than one upstream attempt), `failed`, `cache` (hits, and misses on routes that cache), and `by_route`, `by_model` (upstream model) and `by_caller` (project and virtual key, the 50 most expensive, each with the name given to its key as `key_name`, `null` for a key with no name, one that is gone, or a deployment without a store)",
+                    "properties": {
+                        "requests": {"type": "number"},
+                        "cost_usd": {"type": "number"},
+                        "unpriced_requests": {"type": "number"},
+                        "multi_attempt": {"type": "object"},
+                        "failed": {"type": "object"},
+                        "cache": {"type": "object"},
+                        "by_route": {"type": "array", "items": {"type": "object"}},
+                        "by_model": {"type": "array", "items": {"type": "object"}},
+                        "by_caller": {"type": "array", "items": {"type": "object"}}
+                    }
+                },
+                "substitutable": {
+                    "type": "object",
+                    "description": "the requests with at least one cheaper candidate, their recorded cost, and the saving at the best candidate of each as `{low, high}`",
+                    "properties": {
+                        "requests": {"type": "number"},
+                        "current_cost_usd": {"type": "number"},
+                        "projected_savings_usd": {"type": "object"}
+                    }
+                },
+                "candidates": {
+                    "type": "array",
+                    "description": "one entry per route and current upstream model, biggest conservative saving first; each lists its `candidates` with `projected_cost_usd` and `savings_usd` as `{low, high}`",
+                    "items": {"type": "object"}
+                },
+                "excluded": {
+                    "type": "object",
+                    "description": "`requests` counts what was not re-priced by reason (`unpriced`, `failed`, `cache_hit`, `usage_unknown`, `not_a_model_call`, `uses_tools`, `image_input`, `audio_input`, `structured_output`, `multi_turn`, `no_token_usage`, `prompt_too_large`, `output_too_large`, `route_not_configured`, `no_cheaper_candidate`); `unknown_candidate_prices` names pool models with no price",
+                    "properties": {
+                        "requests": {"type": "object", "additionalProperties": {"type": "number"}},
+                        "unknown_candidate_prices": {"type": "array", "items": {"type": "string"}}
+                    }
+                }
+            }
         },
         "LogSampling": {
             "type": "object",
@@ -3922,6 +5067,57 @@ mod tests {
         );
     }
 
+    // #3427: a variant weight of 0 is accepted, so the published schema must not
+    // refuse it to a client that validates against it
+    #[test]
+    fn a_variant_weight_of_zero_is_within_the_published_schema() {
+        let doc = document();
+        let schemas = &doc["components"]["schemas"];
+        assert_eq!(
+            schemas["SetRouteVariants"]["properties"]["variants"]["items"]["properties"]["weight"]
+                ["minimum"],
+            0
+        );
+        assert_eq!(
+            schemas["RouteVariant"]["properties"]["weight"]["minimum"],
+            0
+        );
+    }
+
+    // #907: a control-plane endpoint the specification registry names must
+    // exist, and must carry the registry's provenance in the served document
+    #[test]
+    fn registry_endpoints_are_documented_with_their_provenance() {
+        let registry = rolter_core::spec_registry::registry().expect("the registry parses");
+        let doc = document();
+        assert_eq!(
+            doc["externalDocs"]["url"],
+            rolter_core::spec_registry::REGISTRY_URL
+        );
+        let mut checked = 0;
+        for spec in &registry.specs {
+            for endpoint in &spec.control_endpoints {
+                let (method, path) =
+                    rolter_core::spec_registry::parse_endpoint(endpoint).expect("validated");
+                let method = method.to_ascii_lowercase();
+                assert!(
+                    documents_operation(&method, path),
+                    "the registry names {endpoint}, which the document does not have"
+                );
+                let refs = doc["paths"][path][&method]["x-rolter-spec-refs"]
+                    .as_array()
+                    .unwrap_or_else(|| panic!("{endpoint} carries no x-rolter-spec-refs"));
+                assert!(refs.iter().any(|id| id == spec.id.as_str()), "{endpoint}");
+                checked += 1;
+            }
+        }
+        assert!(checked > 0);
+        assert_eq!(
+            doc["paths"]["/scim/v2/Users"]["get"]["externalDocs"]["url"],
+            "https://www.rfc-editor.org/rfc/rfc7644"
+        );
+    }
+
     #[test]
     fn operation_ids_are_unique() {
         let mut seen = BTreeSet::new();
@@ -4100,6 +5296,7 @@ mod tests {
             "/api/v1/analytics/summary",
             "/api/v1/analytics/timeseries",
             "/api/v1/analytics/by-model",
+            "/api/v1/analytics/by-variant",
         ] {
             let names = names_of(path);
             for filter in [
@@ -4139,6 +5336,11 @@ mod tests {
         assert!(names.contains("trace_id"), "{names:?}");
         // and the unpriced ones can be asked for by themselves
         assert!(names.contains("unpriced"), "{names:?}");
+        // and so can the withheld and the unknown-usage ones (#3302)
+        assert!(names.contains("withheld"), "{names:?}");
+        assert!(names.contains("usage_unknown"), "{names:?}");
+        // and by the outcome the gateway recorded (#3307)
+        assert!(names.contains("outcome"), "{names:?}");
         // the list no longer pages on an offset, so documenting one would send
         // a caller down a path that silently returns the same page (#1394)
         assert!(!names.contains("offset"), "{names:?}");
@@ -4162,10 +5364,10 @@ mod tests {
     /// Handler names in one file whose signature takes an axum `Query<T>`.
     ///
     /// Scoped to a single file on purpose. Keying by bare function name across
-    /// the crate collides: `list_users` exists in both `crud.rs` (no query
+    /// the crate collides: `list_users` exists in both `crud/` (no query
     /// string) and `scim.rs` (RFC 7644's), and `callback` in both
     /// `mcp_oauth_flow.rs` and `sso.rs`. A crate-wide map reported the
-    /// `crud.rs` route as taking a query string it does not take. Handlers and
+    /// `crud/` route as taking a query string it does not take. Handlers and
     /// the `router()` that mounts them live in the same module here, so
     /// matching within the file is both correct and stricter.
     fn handlers_taking_query(text: &str) -> BTreeSet<String> {
@@ -4277,12 +5479,6 @@ mod tests {
             "/scim/v2/Groups",
             "get",
             "same: RFC 7644 defines this query string",
-        ),
-        (
-            "/internal/snapshot",
-            "get",
-            "control-plane to data-plane only; `version` is the 304 short-circuit \
-             the gateway sends back, not a public knob",
         ),
         (
             "/auth/mcp/callback",
@@ -4410,6 +5606,48 @@ mod tests {
         }
     }
 
+    /// The operations that seal a credential with `ROLTER_KEK` document the
+    /// `503` `kek_unavailable` refusal, and no other operation claims it (#3218).
+    #[test]
+    fn the_credential_sealing_operations_document_the_kek_refusal() {
+        let doc = document();
+        let sealing = [
+            ("post", "/api/v1/orgs/{org_id}/providers"),
+            ("put", "/api/v1/providers/{id}"),
+            ("post", "/api/v1/orgs/{org_id}/mcp-servers"),
+            ("patch", "/api/v1/mcp-servers/{id}"),
+            ("put", "/api/v1/mcp-servers/{id}/auth"),
+            ("put", "/api/v1/mcp-servers/{id}/oauth-client"),
+            ("post", "/api/v1/alert-channels"),
+            ("put", "/api/v1/alert-channels/{id}"),
+            ("post", "/api/v1/connectors"),
+            ("put", "/api/v1/connectors/{id}"),
+            ("post", "/api/v1/orgs/{org_id}/sso-providers"),
+            ("put", "/api/v1/sso-providers/{id}"),
+            ("post", "/api/v1/me/mfa/enroll"),
+            ("post", "/api/v1/auth/mfa/enroll"),
+        ];
+        for (method, path) in sealing {
+            assert!(
+                doc["paths"][path][method]["responses"]["503"].is_object(),
+                "{method} {path} seals a credential, so it must document the 503"
+            );
+        }
+        let mut documented = 0;
+        for (path, item) in doc["paths"].as_object().expect("paths") {
+            for (method, op) in item.as_object().into_iter().flatten() {
+                if op["responses"]["503"].is_object() {
+                    documented += 1;
+                    assert!(
+                        sealing.contains(&(method.as_str(), path.as_str())),
+                        "{method} {path} documents a 503 but is not a sealing operation"
+                    );
+                }
+            }
+        }
+        assert_eq!(documented, sealing.len());
+    }
+
     #[test]
     fn the_source_scan_finds_the_routes_it_is_meant_to() {
         let routes = registered_routes();
@@ -4421,6 +5659,67 @@ mod tests {
         assert!(routes.contains(&("/gw/{path}".into(), "any".into())));
         // `#[cfg(test)]` fixtures stand up their own routers; none of them count
         assert!(!routes.contains(&("/v1/ping".into(), "get".into())));
+    }
+
+    #[test]
+    fn every_windowed_read_documents_its_400() {
+        // #3506: a bound outside the years a window may name is a coded 400,
+        // and so is a bucket that cuts the window too fine
+        let doc = document();
+        let mut windowed = 0;
+        for (path, item) in doc["paths"].as_object().expect("paths") {
+            for (method, op) in item.as_object().expect("an item") {
+                let takes_since = op["parameters"].as_array().is_some_and(|ps| {
+                    ps.iter()
+                        .any(|p| p["in"] == "query" && p["name"] == "since")
+                });
+                if !takes_since {
+                    continue;
+                }
+                windowed += 1;
+                let description = op["responses"]["400"]["description"]
+                    .as_str()
+                    .unwrap_or_else(|| panic!("{method} {path} declares no 400"));
+                assert!(
+                    description.contains("time_bound_out_of_range"),
+                    "{method} {path}: {description}"
+                );
+            }
+        }
+        assert!(windowed >= 15, "{windowed}");
+        // the reads the extractor holds to the bucket limit are the ones the
+        // document says it holds, and each documents the parameter it names
+        let mut bucketed: Vec<&str> = operations()
+            .iter()
+            .filter(|op| op.bucketed)
+            .map(|op| op.path)
+            .collect();
+        bucketed.sort_unstable();
+        let mut checked = crate::time_bounds::BUCKETED_READS.to_vec();
+        checked.sort_unstable();
+        assert_eq!(bucketed, checked);
+        for path in checked {
+            let params = doc["paths"][path]["get"]["parameters"]
+                .as_array()
+                .unwrap_or_else(|| panic!("{path} documents no parameters"));
+            assert!(
+                params.iter().any(|p| p["name"] == "bucket"),
+                "{path} documents no bucket"
+            );
+        }
+        for path in [
+            "/api/v1/analytics/timeseries",
+            "/api/v1/analytics/timeseries/export",
+            "/api/v1/health/timeline",
+        ] {
+            assert!(
+                doc["paths"][path]["get"]["responses"]["400"]["description"]
+                    .as_str()
+                    .is_some_and(|d| d.contains("too_many_buckets")
+                        && d.contains(&crate::time_bounds::MAX_BUCKETS.to_string())),
+                "{path}"
+            );
+        }
     }
 
     #[test]

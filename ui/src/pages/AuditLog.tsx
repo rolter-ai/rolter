@@ -1,9 +1,10 @@
-import { useMutation, useQuery } from "@tanstack/react-query";
-import { Building2, Download, ScrollText } from "lucide-react";
+import { useQuery } from "@tanstack/react-query";
+import { Building2, ScrollText } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 import { Link } from "react-router";
 
+import { ExportCsvButton } from "@/components/ExportCsvButton";
 import { LoadError } from "@/components/LoadError";
 import { TableSkeleton } from "@/components/LoadingState";
 import { PageBody } from "@/components/screen";
@@ -17,9 +18,8 @@ import { Input } from "@/components/ui/input";
 import { Segmented } from "@/components/ui/segmented";
 import { Table, type TableColumn } from "@/components/ui/table";
 import {
-  fetchAuditLogExport,
+  auditLogExport,
   fetchAuditLogPage,
-  isEndpointNotMounted,
   fetchDeploymentAuditLogPage,
   fetchDeploymentUsers,
   fetchUsers,
@@ -31,17 +31,14 @@ import {
   auditExportRow,
   auditJson,
   collectAuditLog,
-  downloadBlob,
   downloadText,
   type AuditExportFormat,
 } from "@/lib/audit-export";
-import { errorText } from "@/lib/error-copy";
 import { AUDIT_TARGET_TYPES, auditGroup, groupedActions } from "@/lib/audit-vocabulary";
 import { useOptionalAuth } from "@/lib/auth";
 import { useCan } from "@/lib/can";
 import { useFormat } from "@/lib/i18n/format";
 import { useScope } from "@/lib/scope";
-import { useToast } from "@/lib/toast";
 import { useScreenReady } from "@/lib/ux-react";
 
 const PAGE_SIZE = 25;
@@ -73,6 +70,9 @@ const TARGET_PATH: Record<string, string> = {
   // identity: the screens that own each target, so an SSO or SCIM row links out
   sso_provider: "/sso",
   sso_group_mapping: "/sso",
+  ldap_directory: "/ldap",
+  ldap_group_mapping: "/ldap",
+  api_token: "/api-tokens",
   scim_token: "/user-provisioning",
   scim_group: "/user-provisioning",
   scim_group_mapping: "/user-provisioning",
@@ -84,6 +84,7 @@ const TARGET_PATH: Record<string, string> = {
   provider_group: "/provider-groups",
   guardrail_rule: "/guardrail-rules",
   guardrail_provider: "/guardrail-providers",
+  guardrail_policy: "/guardrail-policies",
   mcp_server: "/mcp-catalog",
   plugin: "/plugins",
   prompt_template: "/prompt-repo",
@@ -91,6 +92,7 @@ const TARGET_PATH: Record<string, string> = {
   feature_flags: "/feature-flags",
   client_settings: "/client-settings",
   logging_settings: "/logs-settings",
+  log_erasure: "/log-erasure",
   compatibility_policy: "/compatibility",
   cluster_node: "/cluster",
 };
@@ -217,74 +219,49 @@ export default function AuditLog() {
     if (page.data?.total !== undefined) setTotal(page.data.total);
   }, [page.data]);
 
-  // the active filters, read again from the control plane a page at a time, so
-  // the file holds the whole filtered log and not the 25 rows on screen (#2130).
-  // the window is anchored at the moment of the press, like the screen's own
-  const toast = useToast();
+  // the whole filtered log, streamed by the control plane with no row cap
+  // (#3051) and never held in the tab (#3545): `ExportCsvButton` streams it to
+  // a picked file where the browser can, and otherwise hands it to the
+  // browser's download manager through a single-use ticket. the window is
+  // anchored at the moment of the press, like the screen's own
   const orgLabel = deployment
     ? "deployment"
     : (scope.orgs.find((o) => o.id === scope.orgId)?.slug ?? scope.orgId ?? "org");
-  const exportLog = useMutation({
-    mutationFn: async (format: AuditExportFormat) => {
-      const hours = RANGES[rangeIdx].hours;
-      const exportFrom =
-        hours != null ? new Date(Date.now() - hours * 3_600_000).toISOString() : undefined;
-      const filters = {
-        action: action || undefined,
-        target_type: target || undefined,
-        actor: actorParam,
-        from: exportFrom,
-      };
-      // the control plane streams the whole filtered log with no row cap; only
-      // one that predates the endpoint sends the browser back to reading pages
-      try {
-        const file = await fetchAuditLogExport(
-          deployment ? "deployment" : (scope.orgId as string),
-          format,
-          filters,
-        );
-        downloadBlob(
-          file.name ?? auditExportName({ org: orgLabel, from: exportFrom, format }),
-          file.blob,
-        );
-        return { count: null, truncated: false };
-      } catch (error) {
-        if (!isEndpointNotMounted(error)) throw error;
-      }
-      const { entries, truncated } = await collectAuditLog(
-        (query) =>
-          deployment
-            ? fetchDeploymentAuditLogPage(query)
-            : fetchAuditLogPage(scope.orgId as string, query),
-        filters,
-      );
-      const out = entries.map((e) => auditExportRow(e, emailOf));
-      downloadText(
-        auditExportName({ org: orgLabel, from: exportFrom, format }),
-        format === "csv" ? auditCsv(out) : auditJson(out),
-        format === "csv" ? "text/csv" : "application/json",
-      );
-      return { count: out.length, truncated };
-    },
-    onSuccess: ({ count, truncated }) => {
-      toast.push({
-        tone: truncated ? "info" : "success",
-        title:
-          count == null
-            ? t("pages.auditLog.export.downloaded")
-            : t(truncated ? "pages.auditLog.export.truncated" : "pages.auditLog.export.done", {
-                count,
-              }),
-      });
-    },
-    onError: (error) => {
-      toast.push({
-        tone: "error",
-        title: t("toast.exportFailed", { what: t("errors.resources.auditLogExport") }),
-        detail: errorText(error, t),
-      });
-    },
+  const exportFrom = () => {
+    const hours = RANGES[rangeIdx].hours;
+    return hours != null ? new Date(Date.now() - hours * 3_600_000).toISOString() : undefined;
+  };
+  const exportFilters = (from: string | undefined) => ({
+    action: action || undefined,
+    target_type: target || undefined,
+    actor: actorParam,
+    from,
   });
+  // a control plane that predates the export: the filters read again a page
+  // at a time, so the file still holds the filtered log and not the 25 rows on
+  // screen (#2130), capped as it always was there
+  const readPagesInstead = async (format: AuditExportFormat) => {
+    const from = exportFrom();
+    const { entries, truncated } = await collectAuditLog(
+      (query) =>
+        deployment
+          ? fetchDeploymentAuditLogPage(query)
+          : fetchAuditLogPage(scope.orgId as string, query),
+      exportFilters(from),
+    );
+    const out = entries.map((e) => auditExportRow(e, emailOf));
+    downloadText(
+      auditExportName({ org: orgLabel, from, format }),
+      format === "csv" ? auditCsv(out) : auditJson(out),
+      format === "csv" ? "text/csv" : "application/json",
+    );
+    return {
+      tone: truncated ? ("info" as const) : ("success" as const),
+      title: t(truncated ? "pages.auditLog.export.truncated" : "pages.auditLog.export.done", {
+        count: out.length,
+      }),
+    };
+  };
 
   const columns: TableColumn<AuditLogEntry>[] = [
     {
@@ -480,18 +457,31 @@ export default function AuditLog() {
             />
             <div className="ml-auto flex gap-1">
               {(["csv", "json"] as const).map((format) => (
-                <Button
+                <ExportCsvButton
                   key={format}
-                  size="sm"
-                  variant="outline"
-                  disabled={exportLog.isPending || page.isLoading || !!page.error}
-                  onClick={() => exportLog.mutate(format)}
-                >
-                  <Download className="h-3.5 w-3.5" />
-                  {exportLog.isPending && exportLog.variables === format
-                    ? t("pages.auditLog.export.pending")
-                    : t(`pages.auditLog.export.${format}`)}
-                </Button>
+                  toDisk
+                  fileType={format}
+                  label={t(`pages.auditLog.export.${format}`)}
+                  what={t("errors.resources.auditLogExport")}
+                  disabled={page.isLoading || !!page.error}
+                  request={() =>
+                    auditLogExport(
+                      deployment ? "deployment" : (scope.orgId as string),
+                      format,
+                      exportFilters(exportFrom()),
+                    )
+                  }
+                  fallbackName={() =>
+                    auditExportName({ org: orgLabel, from: exportFrom(), format })
+                  }
+                  done={{
+                    saved: t("pages.auditLog.export.saved"),
+                    downloaded: t("pages.auditLog.export.downloaded"),
+                  }}
+                  fallback={() => readPagesInstead(format)}
+                  // the audit log export has no row or time limit
+                  bounded={false}
+                />
               ))}
             </div>
           </div>

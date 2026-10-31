@@ -1,20 +1,21 @@
 ---
 title: "Which Key Do I Need? Virtual Keys, Provider Keys and the Admin Token"
 sidebarTitle: "Which key do I need?"
-description: "Rolter handles three different credentials that all get called an API key. This page names each one, says who holds it, and shows how to tell them apart."
+description: "Rolter handles four different credentials that all get called an API key. This page names each one, says who holds it, and shows how to tell them apart."
 ---
 
-Three different credentials pass through rolter, and every one of them is an
+Four different credentials pass through rolter, and every one of them is an
 "API key" to somebody. Sending the wrong one is the single most common
 first-run mistake, so this page names each one.
 
-## The three credentials
+## The four credentials
 
 | Credential       | Looks like                                                      | Who holds it                | Where it is set                                                                                              |
 | ---------------- | --------------------------------------------------------------- | --------------------------- | ------------------------------------------------------------------------------------------------------------ |
 | **Virtual key**  | `sk-rolter-…`                                                   | your applications and users | minted in the dashboard under **Governance → Virtual Keys**, or your own under **Settings → Account & keys** |
 | **Provider key** | whatever the provider issues — `sk-ant-…`, `sk-proj-…`, `AIza…` | rolter itself               | **Providers → provider → Provider key**, or a `ROLTER_*`/provider env var                                    |
 | **Admin token**  | opaque, operator-chosen                                         | operators and automation    | `ROLTER_ADMIN_TOKEN` on the control plane                                                                    |
+| **API token**    | `rolter_api_…`                                                  | one automation job          | minted through the control-plane API at one org, team or project, see [API tokens](/api/api-tokens)          |
 
 ### Virtual key
 
@@ -45,6 +46,15 @@ The control plane's own credential, used for CRUD over providers, routes, keys
 and settings — the dashboard and any automation that configures rolter. It is
 not accepted by the gateway's `/v1/*` surface. See
 [Authentication](/security/authentication).
+
+### API token
+
+A scoped control-plane credential for automation: it holds one role at one
+organization, team or project, expires, and can be rotated and revoked. Use it
+where a CI job or a provisioning script would otherwise run as the admin token,
+which is superadmin over the whole deployment. It is not a virtual key and the
+gateway does not accept it; it is not the admin token either, and it never
+reaches deployment-wide settings. See [API tokens](/api/api-tokens).
 
 ## Telling them apart when something fails
 

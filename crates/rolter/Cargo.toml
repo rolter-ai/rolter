@@ -42,6 +42,10 @@ uuid.workspace = true
 
 [features]
 default = []
+# LDAP sign-in (#1826); the published image does not enable it yet (#3262)
+ldap = ["rolter-control/ldap"]
+# `onnx/1` local guardrail models in the gateway (#3443); off by default
+onnx = ["rolter-gateway/onnx"]
 # enable the control plane's postgres-backed store, CRUD API and migrations,
 # and the database path of `easy-up` (migrations + idempotent seed)
 postgres = [

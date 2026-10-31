@@ -4,6 +4,7 @@
 //! dialects add a protocol mapping and a pair implementation here; forwarding,
 //! retries, caching and response accounting do not need provider-specific code.
 
+// spec-ref: translation-openai-anthropic, translation-responses, translation-gemini
 use std::collections::{HashMap, VecDeque};
 use std::pin::Pin;
 use std::task::{Context, Poll};
@@ -14,6 +15,8 @@ use rolter_core::{
     upstream, CompatibilityConfig, Error, ModelDefaultsConfig, ProviderKind, Result, RoleProfile,
 };
 use serde_json::{json, Map, Value};
+
+use crate::adjustments::{Disposition, ParamAdjustments};
 
 /// Public wire dialect presented by a client or accepted by an upstream.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -27,6 +30,9 @@ pub enum Protocol {
     /// stateful agentic surface whose thread is carried by
     /// `previous_interaction_id`
     GeminiInteractions,
+    /// a michaelfeil/infinity rerank (`POST {api_base}/rerank`): the client's
+    /// Cohere/Jina rerank with its documents reshaped (see `crate::infinity`)
+    InfinityRerank,
     Passthrough,
 }
 
@@ -42,6 +48,8 @@ enum StreamTranslation {
     InteractionsToOpenAi,
     InteractionsToAnthropic,
     InteractionsToResponses,
+    /// a pair whose upstream never streams: frames are handed on unchanged
+    Verbatim,
 }
 
 struct TranslationPair {
@@ -50,8 +58,9 @@ struct TranslationPair {
     /// Fallible because a dialect with no equivalent for a content part must
     /// fail closed rather than drop it: a translator that silently shortens the
     /// body sends the provider a request the caller never made, and both ends
-    /// return a normal 200 (#882, ADR-0014)
-    request: fn(Value) -> Result<Value>,
+    /// return a normal 200 (#882, ADR-0014). A parameter it does not forward
+    /// as sent is recorded in the [`ParamAdjustments`] instead (#1586)
+    request: fn(Value, &mut ParamAdjustments) -> Result<Value>,
     response: fn(Value) -> Value,
     stream: StreamTranslation,
 }
@@ -60,28 +69,28 @@ static TRANSLATION_PAIRS: &[TranslationPair] = &[
     TranslationPair {
         source: Protocol::OpenAiChat,
         target: Protocol::AnthropicMessages,
-        request: |v| Ok(openai_request(v)),
+        request: |v, adj| Ok(openai_request(v, adj)),
         response: anthropic_response,
         stream: StreamTranslation::AnthropicToOpenAi,
     },
     TranslationPair {
         source: Protocol::OpenAiResponses,
         target: Protocol::OpenAiChat,
-        request: |v| Ok(responses_request(v)),
+        request: |v, adj| Ok(responses_request(v, adj)),
         response: responses_from_openai,
         stream: StreamTranslation::OpenAiToResponses,
     },
     TranslationPair {
         source: Protocol::OpenAiResponses,
         target: Protocol::AnthropicMessages,
-        request: |v| Ok(responses_to_anthropic_request(v)),
+        request: |v, adj| Ok(responses_to_anthropic_request(v, adj)),
         response: responses_from_anthropic,
         stream: StreamTranslation::AnthropicToResponses,
     },
     TranslationPair {
         source: Protocol::AnthropicMessages,
         target: Protocol::OpenAiChat,
-        request: |v| Ok(anthropic_request(v)),
+        request: |v, adj| Ok(anthropic_request(v, adj)),
         response: openai_response,
         stream: StreamTranslation::OpenAiToAnthropic,
     },
@@ -127,8 +136,16 @@ static TRANSLATION_PAIRS: &[TranslationPair] = &[
         response: interactions_to_responses,
         stream: StreamTranslation::InteractionsToResponses,
     },
+    TranslationPair {
+        source: Protocol::Passthrough,
+        target: Protocol::InfinityRerank,
+        request: |v, _| crate::infinity::rerank_request(v),
+        response: crate::infinity::rerank_response,
+        stream: StreamTranslation::Verbatim,
+    },
 ];
 
+// spec-ref: anthropic-messages
 /// The Anthropic Messages API rejects a request without `max_tokens`, so a
 /// translated request that carried neither `max_tokens` nor
 /// `max_completion_tokens` gets the deployment's configured default (#546).
@@ -151,7 +168,10 @@ fn max_tokens_key(upstream: Protocol) -> Option<&'static str> {
     match upstream {
         Protocol::OpenAiChat | Protocol::AnthropicMessages => Some("max_tokens"),
         Protocol::OpenAiResponses => Some("max_output_tokens"),
-        Protocol::GeminiGenerate | Protocol::GeminiInteractions | Protocol::Passthrough => None,
+        Protocol::GeminiGenerate
+        | Protocol::GeminiInteractions
+        | Protocol::InfinityRerank
+        | Protocol::Passthrough => None,
     }
 }
 
@@ -256,6 +276,11 @@ impl TranslationPlan {
             (Protocol::OpenAiResponses, ProviderKind::Openai) => Protocol::OpenAiResponses,
             (Protocol::OpenAiResponses, ProviderKind::Anthropic) => Protocol::AnthropicMessages,
             (Protocol::OpenAiResponses, _) => Protocol::OpenAiChat,
+            // infinity's rerank differs from the cohere/jina one only in how a
+            // document is written; every other endpoint it serves is openai's
+            (Protocol::Passthrough, ProviderKind::Infinity) if path == upstream::RERANK_PATH => {
+                Protocol::InfinityRerank
+            }
             (other, _) => other,
         };
         Self {
@@ -311,6 +336,7 @@ impl TranslationPlan {
             // interactions is a single model-less endpoint; the model travels
             // in the body, so the gateway route path is replaced outright
             Protocol::GeminiInteractions => upstream::GEMINI_INTERACTIONS_PATH,
+            Protocol::InfinityRerank => upstream::RERANK_PATH,
             Protocol::Passthrough => original,
         }
     }
@@ -333,6 +359,21 @@ impl TranslationPlan {
         body: Bytes,
         compat: &CompatibilityConfig,
     ) -> Result<Bytes> {
+        self.translate_request_reporting(body, compat)
+            .map(|(body, _)| body)
+    }
+
+    /// [`Self::translate_request_with`], also returning every caller parameter
+    /// the translation dropped, clamped or translated (#1586). It is decided
+    /// here, before the upstream is called, so a streamed answer can carry it
+    /// in its headers. Empty, and allocation-free, whenever the plan does not
+    /// translate.
+    pub fn translate_request_reporting(
+        self,
+        body: Bytes,
+        compat: &CompatibilityConfig,
+    ) -> Result<(Bytes, ParamAdjustments)> {
+        let mut adjustments = ParamAdjustments::default();
         // the interactions surface only accepts chat-shaped dialects; any other
         // endpoint (embeddings, audio, …) fails closed rather than being
         // forwarded verbatim to an endpoint that cannot serve it
@@ -346,24 +387,28 @@ impl TranslationPlan {
             ));
         }
         let Ok(mut value) = serde_json::from_slice::<Value>(&body) else {
-            return Ok(body);
+            return Ok((body, adjustments));
         };
         validate_instruction_roles(&value, self.client, self.role_profile)?;
         if !self.is_translation() {
             normalize_openai_roles(&mut value, self.client, self.role_profile);
-            return serde_json::to_vec(&value).map(Bytes::from).map_err(|err| {
-                Error::Config(format!("role_capability: failed to encode request: {err}"))
-            });
+            return serde_json::to_vec(&value)
+                .map(|encoded| (Bytes::from(encoded), adjustments))
+                .map_err(|err| {
+                    Error::Config(format!("role_capability: failed to encode request: {err}"))
+                });
         }
         let Some(pair) = registered_pair(self.client, self.upstream) else {
-            return Ok(body);
+            return Ok((body, adjustments));
         };
-        value = (pair.request)(value)?;
+        value = (pair.request)(value, &mut adjustments)?;
         apply_max_tokens_default(&mut value, self.upstream, compat.default_max_tokens);
         normalize_openai_roles(&mut value, self.upstream, self.role_profile);
-        serde_json::to_vec(&value).map(Bytes::from).map_err(|err| {
-            Error::Config(format!("role_capability: failed to encode request: {err}"))
-        })
+        serde_json::to_vec(&value)
+            .map(|encoded| (Bytes::from(encoded), adjustments))
+            .map_err(|err| {
+                Error::Config(format!("role_capability: failed to encode request: {err}"))
+            })
     }
 
     /// Fill in the deployment's inference defaults on an already-translated
@@ -573,7 +618,7 @@ fn normalize_openai_roles(value: &mut Value, protocol: Protocol, profile: RolePr
 
 /// Lower a Responses request to Chat Completions without dropping text, image,
 /// file, function-tool, or tool-result content that has a Chat equivalent.
-fn responses_request(mut v: Value) -> Value {
+fn responses_request(mut v: Value, adjustments: &mut ParamAdjustments) -> Value {
     let Some(obj) = v.as_object_mut() else {
         return v;
     };
@@ -627,7 +672,7 @@ fn responses_request(mut v: Value) -> Value {
             }
         }
     }
-    remove_keys(
+    drop_keys(
         obj,
         &[
             "background",
@@ -636,6 +681,7 @@ fn responses_request(mut v: Value) -> Value {
             "reasoning",
             "text",
         ],
+        adjustments,
     );
     v
 }
@@ -667,8 +713,9 @@ fn responses_content_to_chat(content: Value) -> Value {
     }
 }
 
-fn responses_to_anthropic_request(v: Value) -> Value {
-    openai_request(responses_request(v))
+fn responses_to_anthropic_request(v: Value, adjustments: &mut ParamAdjustments) -> Value {
+    let chat = responses_request(v, adjustments);
+    openai_request(chat, adjustments)
 }
 
 fn responses_from_openai(v: Value) -> Value {
@@ -733,7 +780,7 @@ fn translate_json(body: Bytes, from: Protocol, to: Protocol, thinking: ThinkingC
         .unwrap_or(body)
 }
 
-fn openai_request(mut v: Value) -> Value {
+fn openai_request(mut v: Value, adjustments: &mut ParamAdjustments) -> Value {
     let Some(obj) = v.as_object_mut() else {
         return v;
     };
@@ -793,7 +840,11 @@ fn openai_request(mut v: Value) -> Value {
             obj.insert("max_tokens".into(), max);
         }
     }
-    obj.remove("max_completion_tokens");
+    // both caps set: `max_tokens` is the one anthropic reads
+    if obj.remove("max_completion_tokens").is_some() {
+        adjustments.record("max_completion_tokens", Disposition::Dropped);
+    }
+    clamp_temperature(obj, adjustments);
     if let Some(stop) = obj.remove("stop") {
         obj.insert(
             "stop_sequences".into(),
@@ -829,20 +880,44 @@ fn openai_request(mut v: Value) -> Value {
             other => other,
         };
     }
-    remove_keys(
+    drop_keys(
         obj,
-        &[
-            "n",
-            "presence_penalty",
-            "frequency_penalty",
-            "logprobs",
-            "stream_options",
-        ],
+        &["n", "presence_penalty", "frequency_penalty", "logprobs"],
+        adjustments,
     );
+    // anthropic always reports usage on a stream, which the stream translation
+    // hands on, so `include_usage` is honoured rather than dropped
+    obj.remove("stream_options");
     v
 }
 
-fn anthropic_request(mut v: Value) -> Value {
+/// The highest `temperature` Anthropic Messages accepts. OpenAI's Chat
+/// Completions and Responses accept up to 2.
+const ANTHROPIC_MAX_TEMPERATURE: f64 = 1.0;
+
+/// Clamp a chat `temperature` above Anthropic's range down to its maximum and
+/// report it as `clamped`, so a request that is valid in the dialect the caller
+/// speaks is not refused by the upstream for it (#3324, maintainer's decision:
+/// clamp rather than forward or scale). Scaling (`t / 2`) was weighed and not
+/// taken: it would change every request's temperature, in range or not, where
+/// a clamp changes only the ones Anthropic would refuse. A value at or below 1,
+/// or one that is not a number, is left for the upstream to judge.
+fn clamp_temperature(obj: &mut serde_json::Map<String, Value>, adjustments: &mut ParamAdjustments) {
+    let Some(temperature) = obj.get_mut("temperature") else {
+        return;
+    };
+    if temperature
+        .as_f64()
+        .is_some_and(|t| t > ANTHROPIC_MAX_TEMPERATURE)
+    {
+        *temperature = json!(ANTHROPIC_MAX_TEMPERATURE);
+        adjustments.record("temperature", Disposition::Clamped);
+    }
+}
+
+// the shared translator signature; since #3325 carries `disable_parallel_tool_use`
+// to chat, nothing in this direction is reported
+fn anthropic_request(mut v: Value, _adjustments: &mut ParamAdjustments) -> Value {
     let Some(obj) = v.as_object_mut() else {
         return v;
     };
@@ -909,6 +984,22 @@ fn anthropic_request(mut v: Value) -> Value {
             }
             *tool = translated;
         }
+    }
+    // chat carries anthropic's per-choice switch as a top-level flag (#3325).
+    // `false` is chat's default and is left unset, and so is `true` on a
+    // request with no tools, which openai refuses the flag on and which has no
+    // call to parallelise anyway
+    let serial_calls = obj
+        .get("tool_choice")
+        .and_then(|choice| choice.get("disable_parallel_tool_use"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let has_tools = obj
+        .get("tools")
+        .and_then(Value::as_array)
+        .is_some_and(|tools| !tools.is_empty());
+    if serial_calls && has_tools {
+        obj.insert("parallel_tool_calls".into(), Value::Bool(false));
     }
     if let Some(choice) = obj.get_mut("tool_choice") {
         *choice = match choice.take() {
@@ -1056,21 +1147,54 @@ fn anthropic_block_to_openai(block: Value) -> Value {
 /// - `cached_tokens` at the top of `usage`: Kimi (Moonshot), beside the details
 ///   block, and gateways that flatten it
 /// - `precached_prompt_tokens`: GigaChat
+/// - `cache_read_input_tokens` at the top of `usage`: Databricks' Claude
+///   endpoints (#2882), last in line and read as inside the prompt total like
+///   any body that carries `prompt_tokens`; the reference does not say
 ///
-/// The first spelling present wins. Anthropic's `cache_read_input_tokens` is
-/// not here on purpose: it sits *beside* `input_tokens`, not inside it, so the
-/// callers that read it also add it back into the prompt.
+/// The first spelling present wins. Anthropic's own `cache_read_input_tokens`
+/// sits *beside* `input_tokens`, not inside it, so the callers that read an
+/// Anthropic-shaped body (`merge_usage`, `TokenUsage::from_anthropic`) read it
+/// themselves and add it back into the prompt; this list is only for a body
+/// that states `prompt_tokens` or the Responses API's `input_tokens` with the
+/// details block.
 pub fn cached_prompt_tokens(usage: &Value) -> Option<u64> {
-    const SPELLINGS: [&str; 5] = [
-        "/prompt_tokens_details/cached_tokens",
-        "/input_tokens_details/cached_tokens",
-        "/prompt_cache_hit_tokens",
-        "/cached_tokens",
-        "/precached_prompt_tokens",
-    ];
-    SPELLINGS
+    CACHE_HIT_SPELLINGS
         .iter()
         .find_map(|pointer| usage.pointer(pointer)?.as_u64())
+}
+
+/// The JSON pointer of the first prompt-cache hit spelling `usage` carries,
+/// a zero included (#984). A provider that states `cached_tokens: 0` reports
+/// cache metrics; one that omits the field does not, and the control plane's
+/// probe tells the two apart with this.
+pub fn cached_prompt_tokens_spelling(usage: &Value) -> Option<&'static str> {
+    CACHE_HIT_SPELLINGS
+        .iter()
+        .copied()
+        .find(|pointer| usage.pointer(pointer).and_then(Value::as_u64).is_some())
+}
+
+const CACHE_HIT_SPELLINGS: [&str; 6] = [
+    "/prompt_tokens_details/cached_tokens",
+    "/input_tokens_details/cached_tokens",
+    "/prompt_cache_hit_tokens",
+    "/cached_tokens",
+    "/precached_prompt_tokens",
+    "/cache_read_input_tokens",
+];
+
+/// The response header Fireworks puts the prompt-cache hit in, for dedicated
+/// deployments (#2882). The count is "out of" the prompt tokens, so it is
+/// inside the prompt total like every body spelling. A header is invisible to
+/// `merge_usage`, which only reads the body, so the gateway reads it with
+/// [`cached_prompt_tokens_header`] and fills the row's `cache_read_tokens`
+/// when the body states none.
+pub const CACHED_PROMPT_TOKENS_HEADER: &str = "fireworks-cached-prompt-tokens";
+
+/// The prompt-cache hit a [`CACHED_PROMPT_TOKENS_HEADER`] value states, `None`
+/// for a value that is not a non-negative integer.
+pub fn cached_prompt_tokens_header(value: &str) -> Option<u64> {
+    value.trim().parse().ok()
 }
 
 /// The prompt tokens an OpenAI-shaped `usage` object says were written to the
@@ -1664,21 +1788,49 @@ fn data_url(url: &str) -> Option<(&str, &str)> {
     Some((meta.strip_suffix(";base64").unwrap_or(meta), data))
 }
 
-fn remove_keys(obj: &mut Map<String, Value>, keys: &[&str]) {
+/// Remove `keys` the upstream dialect has no equivalent for, recording each
+/// one the caller actually sent.
+fn drop_keys(
+    obj: &mut Map<String, Value>,
+    keys: &[&'static str],
+    adjustments: &mut ParamAdjustments,
+) {
     for key in keys {
-        obj.remove(*key);
+        if obj.remove(*key).is_some() {
+            adjustments.record(key, Disposition::Dropped);
+        }
+    }
+}
+
+/// Record every known parameter still left in `obj` once a translator that
+/// builds its output afresh has taken what it maps: none of them is sent.
+fn record_leftovers(obj: &Map<String, Value>, adjustments: &mut ParamAdjustments) {
+    for key in obj.keys() {
+        adjustments.record_known(key, Disposition::Dropped);
+    }
+}
+
+/// How a function-calling `tool_choice` the caller sent reached a dialect
+/// that knows only a calling mode: a forced function becomes "any function",
+/// and a value with no mode at all is not sent.
+fn record_tool_choice_mode(mode: Option<&str>, choice: &Value, adjustments: &mut ParamAdjustments) {
+    match (mode, choice) {
+        (None, _) => adjustments.record("tool_choice", Disposition::Dropped),
+        (Some(_), Value::Object(_)) => adjustments.record("tool_choice", Disposition::Translated),
+        _ => {}
     }
 }
 
 // --- google gemini native generateContent translation ----------------------
 
+// spec-ref: gemini-generate-content
 /// Translate an OpenAI Chat Completions request into a Gemini `generateContent`
 /// body. System/developer messages become `systemInstruction`; user/assistant
 /// turns become `contents` with roles `user`/`model`; tool messages become
 /// `functionResponse` parts; OpenAI functions become `tools.functionDeclarations`;
 /// sampling params become `generationConfig`. The `model` and `stream` fields are
 /// dropped here — the forwarder carries the model and streaming method in the URL.
-fn openai_to_gemini(mut v: Value) -> Result<Value> {
+fn openai_to_gemini(mut v: Value, adjustments: &mut ParamAdjustments) -> Result<Value> {
     let Some(obj) = v.as_object_mut() else {
         return Ok(v);
     };
@@ -1776,6 +1928,11 @@ fn openai_to_gemini(mut v: Value) -> Result<Value> {
         Value::Array(a) => Some(a),
         _ => None,
     }) {
+        // a tool that is not a function (a hosted search, say) has no
+        // declaration to become
+        if tools.iter().any(|tool| tool.get("function").is_none()) {
+            adjustments.record("tools", Disposition::Translated);
+        }
         let declarations: Vec<Value> = tools
             .iter()
             .filter_map(|tool| tool.get("function"))
@@ -1807,6 +1964,7 @@ fn openai_to_gemini(mut v: Value) -> Result<Value> {
             Value::Object(_) => Some("ANY"),
             _ => None,
         };
+        record_tool_choice_mode(mode, &choice, adjustments);
         if let Some(mode) = mode {
             out.insert(
                 "toolConfig".into(),
@@ -1814,16 +1972,35 @@ fn openai_to_gemini(mut v: Value) -> Result<Value> {
             );
         }
     }
+    // the output above is built afresh, so whatever is left was not sent
+    record_leftovers(obj, adjustments);
 
     Ok(Value::Object(out))
 }
 
-fn anthropic_to_gemini(v: Value) -> Result<Value> {
-    openai_to_gemini(anthropic_request(v))
+fn anthropic_to_gemini(v: Value, adjustments: &mut ParamAdjustments) -> Result<Value> {
+    let mut chat = anthropic_request(v, adjustments);
+    lose_the_parallel_switch(&mut chat, adjustments);
+    openai_to_gemini(chat, adjustments)
 }
 
-fn responses_to_gemini(v: Value) -> Result<Value> {
-    openai_to_gemini(responses_request(v))
+/// Take back the `parallel_tool_calls` that `anthropic_request` carried an
+/// Anthropic `disable_parallel_tool_use` into, for a dialect with no such
+/// switch (#3325). The caller never sent `parallel_tool_calls`, so the loss is
+/// reported against the `tool_choice` it came in on, as before the switch was
+/// carried to Chat.
+fn lose_the_parallel_switch(chat: &mut Value, adjustments: &mut ParamAdjustments) {
+    let carried = chat
+        .as_object_mut()
+        .and_then(|obj| obj.remove("parallel_tool_calls"));
+    if carried.is_some() {
+        adjustments.record("tool_choice", Disposition::Translated);
+    }
+}
+
+fn responses_to_gemini(v: Value, adjustments: &mut ParamAdjustments) -> Result<Value> {
+    let chat = responses_request(v, adjustments);
+    openai_to_gemini(chat, adjustments)
 }
 
 /// Build Gemini `parts` from an OpenAI message `content` value (string, or an
@@ -1933,6 +2110,7 @@ fn gemini_finish(v: Option<&Value>) -> Value {
     }
 }
 
+// spec-ref: gemini-interactions
 /// Translate an OpenAI Chat Completions request into a Gemini Interactions
 /// `interactions.create` body (#599).
 ///
@@ -1946,7 +2124,7 @@ fn gemini_finish(v: Option<&Value>) -> Value {
 /// explicit `previous_interaction_id` is forwarded as
 /// `previous_interaction_id`, and the interaction id is echoed back as the
 /// response `id`, so a thread is resumed without rolter keeping its own store.
-fn openai_to_interactions(mut v: Value) -> Result<Value> {
+fn openai_to_interactions(mut v: Value, adjustments: &mut ParamAdjustments) -> Result<Value> {
     let Some(obj) = v.as_object_mut() else {
         return Ok(v);
     };
@@ -2067,6 +2245,7 @@ fn openai_to_interactions(mut v: Value) -> Result<Value> {
             Value::Object(_) => Some("any"),
             _ => None,
         };
+        record_tool_choice_mode(mode, &choice, adjustments);
         if let Some(mode) = mode {
             generation.insert("tool_choice".into(), json!(mode));
         }
@@ -2100,30 +2279,37 @@ fn openai_to_interactions(mut v: Value) -> Result<Value> {
             out.insert("tools".into(), Value::Array(declared));
         }
     }
+    // the output above is built afresh, so whatever is left was not sent
+    record_leftovers(obj, adjustments);
 
     Ok(Value::Object(out))
 }
 
-fn anthropic_to_interactions(v: Value) -> Result<Value> {
-    openai_to_interactions(anthropic_request(v))
+fn anthropic_to_interactions(v: Value, adjustments: &mut ParamAdjustments) -> Result<Value> {
+    let mut chat = anthropic_request(v, adjustments);
+    lose_the_parallel_switch(&mut chat, adjustments);
+    openai_to_interactions(chat, adjustments)
 }
 
 /// Lower a Responses request onto interactions. `responses_request` drops the
 /// stateful fields on its way to Chat, so they are captured first and restored
 /// as their interactions equivalents.
-fn responses_to_interactions(v: Value) -> Result<Value> {
+fn responses_to_interactions(v: Value, adjustments: &mut ParamAdjustments) -> Result<Value> {
     let previous = v
         .get("previous_response_id")
         .cloned()
         .filter(|v| !v.is_null());
     let store = v.get("store").cloned().filter(|v| !v.is_null());
-    let mut out = openai_to_interactions(responses_request(v))?;
+    let chat = responses_request(v, adjustments);
+    let mut out = openai_to_interactions(chat, adjustments)?;
     if let Some(obj) = out.as_object_mut() {
         if let Some(previous) = previous {
             obj.insert("previous_interaction_id".into(), previous);
+            adjustments.forget("previous_response_id");
         }
         if let Some(store) = store {
             obj.insert("store".into(), store);
+            adjustments.forget("store");
         }
     }
     Ok(out)
@@ -2332,6 +2518,7 @@ fn interaction_finish(status: Option<&Value>) -> Value {
     }
 }
 
+// spec-ref: sse
 struct SseConverter {
     plan: TranslationPlan,
     pending: Vec<u8>,
@@ -2471,7 +2658,9 @@ impl SseConverter {
                     .flat_map(|chunk| self.openai_to_responses_frame(&chunk))
                     .collect()
             }
-            None => vec![Bytes::from(format!("{text}\n\n"))],
+            Some(StreamTranslation::Verbatim) | None => {
+                vec![Bytes::from(format!("{text}\n\n"))]
+            }
         }
     }
 
@@ -3033,29 +3222,38 @@ mod tests {
     /// identical, which silently drops the field and the leading separator.
     #[test]
     fn an_empty_system_turn_is_still_a_system_turn() {
-        let out = openai_to_interactions(json!({
-            "model": "m",
-            "messages": [{"role": "system"}, {"role": "user", "content": "hi"}]
-        }))
+        let out = openai_to_interactions(
+            json!({
+                "model": "m",
+                "messages": [{"role": "system"}, {"role": "user", "content": "hi"}]
+            }),
+            &mut ParamAdjustments::default(),
+        )
         .unwrap();
         assert_eq!(out.get("system_instruction"), Some(&json!("")));
 
-        let out = openai_to_interactions(json!({
-            "model": "m",
-            "messages": [
-                {"role": "system", "content": ""},
-                {"role": "system", "content": "abc"},
-                {"role": "user", "content": "hi"}
-            ]
-        }))
+        let out = openai_to_interactions(
+            json!({
+                "model": "m",
+                "messages": [
+                    {"role": "system", "content": ""},
+                    {"role": "system", "content": "abc"},
+                    {"role": "user", "content": "hi"}
+                ]
+            }),
+            &mut ParamAdjustments::default(),
+        )
         .unwrap();
         assert_eq!(out.get("system_instruction"), Some(&json!("\nabc")));
 
         // and no system turn at all still omits the field entirely
-        let out = openai_to_interactions(json!({
-            "model": "m",
-            "messages": [{"role": "user", "content": "hi"}]
-        }))
+        let out = openai_to_interactions(
+            json!({
+                "model": "m",
+                "messages": [{"role": "user", "content": "hi"}]
+            }),
+            &mut ParamAdjustments::default(),
+        )
         .unwrap();
         assert!(out.get("system_instruction").is_none());
     }
@@ -5199,6 +5397,35 @@ mod tests {
         }
     }
 
+    #[test]
+    fn captured_yandexgpt_cache_hit_is_inside_the_prompt_total() {
+        // captured from ai.api.cloud.yandex.net/v1/chat/completions on
+        // 2026-10-28, yandexgpt/latest, after repeating a 3595-token prompt
+        // twice (5s, then 60s apart); only the usage object is retained
+        let body: Value =
+            serde_json::from_str(include_str!("../tests/fixtures/yandexgpt-cache-hit.json"))
+                .unwrap();
+        let usage = &body["usage"];
+        assert_eq!(cached_prompt_tokens(usage), Some(3008));
+        assert_eq!(
+            cached_prompt_tokens_spelling(usage),
+            Some("/prompt_tokens_details/cached_tokens")
+        );
+        let read = TokenUsage::from_openai(usage);
+        assert_eq!(read.cache_read, Some(3008));
+        assert_eq!(read.prompt, 3595);
+        assert_eq!(read.completion, 2);
+        assert_eq!(usage["total_tokens"], read.prompt + read.completion);
+        // rereading a capture must neither add the cached share to the prompt
+        // nor lose it, and a reported miss remains distinct from no report
+        assert_eq!(TokenUsage::from_openai(usage).prompt, read.prompt);
+        let mut miss = usage.clone();
+        miss["prompt_tokens_details"]["cached_tokens"] = json!(0);
+        assert_eq!(cached_prompt_tokens(&miss), Some(0));
+        assert_eq!(TokenUsage::from_openai(&miss).prompt, 3595);
+        assert_eq!(cached_prompt_tokens(&json!({})), None);
+    }
+
     /// Cohere's native v2 chat spells the hit `usage.cached_tokens`, at the top
     /// of `usage` beside `billed_units` and `tokens`. Its OpenAI-compatible
     /// endpoint does not say what it returns, so only the native shape is read
@@ -5211,6 +5438,55 @@ mod tests {
             "cached_tokens":64
         });
         assert_eq!(cached_prompt_tokens(&native), Some(64));
+    }
+
+    /// databricks' claude endpoints put `cache_read_input_tokens` at the top of
+    /// an OpenAI-shaped `usage` that states `prompt_tokens` (#2882)
+    #[test]
+    fn databricks_top_level_cache_read_is_read_on_the_openai_path() {
+        let usage = json!({
+            "prompt_tokens":120,"completion_tokens":5,"total_tokens":125,
+            "cache_read_input_tokens":80,"cache_creation_input_tokens":10
+        });
+        assert_eq!(cached_prompt_tokens(&usage), Some(80));
+        let read = TokenUsage::from_openai(&usage);
+        assert_eq!(read.cache_read, Some(80));
+        assert_eq!(read.prompt, 120);
+        // a details block still wins over the flat spelling
+        let both = json!({
+            "prompt_tokens":120,
+            "prompt_tokens_details":{"cached_tokens":64},
+            "cache_read_input_tokens":80
+        });
+        assert_eq!(cached_prompt_tokens(&both), Some(64));
+    }
+
+    /// #984: a stated zero is a provider that reports, an absent field is not
+    #[test]
+    fn the_spelling_found_is_named_and_a_zero_counts() {
+        let zero = json!({"prompt_tokens":9,"prompt_tokens_details":{"cached_tokens":0}});
+        assert_eq!(
+            cached_prompt_tokens_spelling(&zero),
+            Some("/prompt_tokens_details/cached_tokens")
+        );
+        let flat = json!({"prompt_tokens":9,"cache_read_input_tokens":0});
+        assert_eq!(
+            cached_prompt_tokens_spelling(&flat),
+            Some("/cache_read_input_tokens")
+        );
+        let none = json!({"prompt_tokens":9,"completion_tokens":1});
+        assert_eq!(cached_prompt_tokens_spelling(&none), None);
+        let null = json!({"prompt_tokens_details":{"cached_tokens":null}});
+        assert_eq!(cached_prompt_tokens_spelling(&null), None);
+    }
+
+    #[test]
+    fn fireworks_header_value_is_read_as_a_count() {
+        assert_eq!(cached_prompt_tokens_header("1920"), Some(1920));
+        assert_eq!(cached_prompt_tokens_header(" 0 "), Some(0));
+        assert_eq!(cached_prompt_tokens_header(""), None);
+        assert_eq!(cached_prompt_tokens_header("-3"), None);
+        assert_eq!(cached_prompt_tokens_header("many"), None);
     }
 
     #[test]
@@ -5832,5 +6108,263 @@ data: [DONE]
             let v: Value = serde_json::from_slice(&out).unwrap();
             assert_eq!(v["usage"]["output_tokens"], 18, "{kind:?}");
         }
+    }
+
+    /// The adjustments one request gets on `path` against `kind`, and the body
+    /// that was sent.
+    fn reported(path: &str, kind: ProviderKind, body: Value) -> (Value, Vec<String>) {
+        let plan = TranslationPlan::resolve(path, kind, RoleProfile::Openai);
+        let (sent, adjustments) = plan
+            .translate_request_reporting(
+                Bytes::from(serde_json::to_vec(&body).unwrap()),
+                &CompatibilityConfig::default(),
+            )
+            .unwrap();
+        (
+            serde_json::from_slice(&sent).unwrap(),
+            adjustments.log_entries(),
+        )
+    }
+
+    #[test]
+    fn chat_to_anthropic_reports_the_sampling_fields_it_drops() {
+        let (sent, entries) = reported(
+            "/v1/chat/completions",
+            ProviderKind::Anthropic,
+            json!({
+                "model": "m", "messages": [{"role": "user", "content": "hi"}],
+                "n": 2, "presence_penalty": 0.5, "logprobs": true,
+                "max_tokens": 10, "max_completion_tokens": 20,
+                "stream": true, "stream_options": {"include_usage": true}
+            }),
+        );
+        assert_eq!(
+            entries,
+            [
+                "dropped:max_completion_tokens",
+                "dropped:n",
+                "dropped:presence_penalty",
+                "dropped:logprobs"
+            ]
+        );
+        assert!(sent.get("n").is_none());
+        assert_eq!(sent["max_tokens"], 10);
+    }
+
+    #[test]
+    fn chat_to_anthropic_clamps_a_temperature_above_one() {
+        for path in ["/v1/chat/completions", "/v1/responses"] {
+            let body = if path == "/v1/responses" {
+                json!({"model": "m", "input": "hi", "temperature": 1.3})
+            } else {
+                json!({"model": "m", "messages": [{"role": "user", "content": "hi"}],
+                       "temperature": 1.3})
+            };
+            let (sent, entries) = reported(path, ProviderKind::Anthropic, body);
+            assert_eq!(sent["temperature"], 1.0, "{path}");
+            assert_eq!(entries, ["clamped:temperature"], "{path}");
+        }
+    }
+
+    #[test]
+    fn a_temperature_anthropic_accepts_is_forwarded_as_sent() {
+        for temperature in [json!(0), json!(0.7), json!(1), json!(1.0), json!("hot")] {
+            let (sent, entries) = reported(
+                "/v1/chat/completions",
+                ProviderKind::Anthropic,
+                json!({"model": "m", "messages": [{"role": "user", "content": "hi"}],
+                       "temperature": temperature}),
+            );
+            assert_eq!(sent["temperature"], temperature);
+            assert!(entries.is_empty(), "{temperature}: {entries:?}");
+        }
+        // and a chat upstream, whose range is OpenAI's, keeps 1.3
+        let (sent, entries) = reported(
+            "/v1/chat/completions",
+            ProviderKind::Openai,
+            json!({"model": "m", "messages": [], "temperature": 1.3}),
+        );
+        assert_eq!(sent["temperature"], 1.3);
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn a_renamed_parameter_is_not_an_adjustment() {
+        let (sent, entries) = reported(
+            "/v1/chat/completions",
+            ProviderKind::Anthropic,
+            json!({
+                "model": "m", "messages": [{"role": "user", "content": "hi"}],
+                "max_completion_tokens": 20, "stop": "x", "temperature": 0.2,
+                "tool_choice": "required"
+            }),
+        );
+        assert!(entries.is_empty(), "{entries:?}");
+        assert_eq!(sent["max_tokens"], 20);
+        assert_eq!(sent["stop_sequences"], json!(["x"]));
+    }
+
+    #[test]
+    fn anthropic_disable_parallel_tool_use_becomes_chat_parallel_tool_calls() {
+        let tools = json!([{"name": "lookup", "input_schema": {"type": "object"}}]);
+        for (kind, choice) in [
+            (
+                "auto",
+                json!({"type": "auto", "disable_parallel_tool_use": true}),
+            ),
+            (
+                "any",
+                json!({"type": "any", "disable_parallel_tool_use": true}),
+            ),
+            (
+                "tool",
+                json!({"type": "tool", "name": "lookup", "disable_parallel_tool_use": true}),
+            ),
+        ] {
+            let (sent, entries) = reported(
+                "/v1/messages",
+                ProviderKind::Openai,
+                json!({
+                    "model": "m", "max_tokens": 5, "tools": tools,
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "tool_choice": choice
+                }),
+            );
+            assert_eq!(sent["parallel_tool_calls"], false, "{kind}");
+            assert!(
+                entries.is_empty(),
+                "{kind}: carried, not translated: {entries:?}"
+            );
+            assert!(
+                sent["tool_choice"]
+                    .get("disable_parallel_tool_use")
+                    .is_none(),
+                "{kind}: {sent}"
+            );
+        }
+    }
+
+    /// Gemini has no parallel-calls switch: the loss is still named against the
+    /// `tool_choice` the caller sent, never as a `parallel_tool_calls` it did not
+    #[test]
+    fn a_dialect_without_the_switch_reports_tool_choice_translated() {
+        for kind in [ProviderKind::GeminiNative, ProviderKind::GeminiInteractions] {
+            let (sent, entries) = reported(
+                "/v1/messages",
+                kind,
+                json!({
+                    "model": "m", "max_tokens": 5,
+                    "tools": [{"name": "lookup", "input_schema": {"type": "object"}}],
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "tool_choice": {"type": "auto", "disable_parallel_tool_use": true}
+                }),
+            );
+            assert!(
+                entries.contains(&"translated:tool_choice".to_string()),
+                "{kind:?}: {entries:?}"
+            );
+            assert!(
+                !entries.iter().any(|e| e.contains("parallel_tool_calls")),
+                "{kind:?}: {entries:?}"
+            );
+            assert!(!sent.to_string().contains("parallel"), "{kind:?}: {sent}");
+        }
+    }
+
+    #[test]
+    fn a_disable_parallel_tool_use_of_false_or_without_tools_leaves_chat_unset() {
+        let tools = json!([{"name": "lookup", "input_schema": {"type": "object"}}]);
+        for body in [
+            json!({"model": "m", "max_tokens": 5, "tools": tools,
+                   "messages": [{"role": "user", "content": "hi"}],
+                   "tool_choice": {"type": "auto", "disable_parallel_tool_use": false}}),
+            json!({"model": "m", "max_tokens": 5,
+                   "messages": [{"role": "user", "content": "hi"}],
+                   "tool_choice": {"type": "auto", "disable_parallel_tool_use": true}}),
+        ] {
+            let (sent, entries) = reported("/v1/messages", ProviderKind::Openai, body);
+            assert!(sent.get("parallel_tool_calls").is_none(), "{sent}");
+            assert!(entries.is_empty(), "{entries:?}");
+        }
+    }
+
+    #[test]
+    fn responses_to_chat_reports_the_stateful_fields_it_drops() {
+        let (sent, entries) = reported(
+            "/v1/responses",
+            ProviderKind::Mistral,
+            json!({
+                "model": "m", "input": "hi", "store": true,
+                "reasoning": {"effort": "high"}, "max_output_tokens": 9
+            }),
+        );
+        assert_eq!(entries, ["dropped:store", "dropped:reasoning"]);
+        assert_eq!(sent["max_completion_tokens"], 9);
+    }
+
+    #[test]
+    fn gemini_reports_every_known_field_it_leaves_behind() {
+        let (sent, entries) = reported(
+            "/v1/messages",
+            ProviderKind::GeminiNative,
+            json!({
+                "model": "m", "max_tokens": 5, "stream": true,
+                "messages": [{"role": "user", "content": "hi"}],
+                "top_k": 40, "temperature": 0.3, "x-caller-secret": "v"
+            }),
+        );
+        assert_eq!(entries, ["dropped:top_k"]);
+        assert_eq!(sent["generationConfig"]["temperature"], 0.3);
+    }
+
+    #[test]
+    fn gemini_reports_a_forced_function_sent_as_any_function() {
+        let (sent, entries) = reported(
+            "/v1/chat/completions",
+            ProviderKind::GeminiNative,
+            json!({
+                "model": "m", "messages": [{"role": "user", "content": "hi"}],
+                "tools": [
+                    {"type": "function", "function": {"name": "f"}},
+                    {"type": "web_search"}
+                ],
+                "tool_choice": {"type": "function", "function": {"name": "f"}},
+                "seed": 7
+            }),
+        );
+        assert_eq!(
+            entries,
+            ["translated:tools", "translated:tool_choice", "dropped:seed"]
+        );
+        assert_eq!(
+            sent["toolConfig"]["functionCallingConfig"]["mode"],
+            json!("ANY")
+        );
+    }
+
+    #[test]
+    fn interactions_keeps_the_thread_fields_responses_would_drop() {
+        let (sent, entries) = reported(
+            "/v1/responses",
+            ProviderKind::GeminiInteractions,
+            json!({
+                "model": "m", "input": "hi", "store": true,
+                "previous_response_id": "r1", "reasoning": {"effort": "low"},
+                "tool_choice": "sometimes"
+            }),
+        );
+        assert_eq!(entries, ["dropped:reasoning", "dropped:tool_choice"]);
+        assert_eq!(sent["previous_interaction_id"], json!("r1"));
+        assert_eq!(sent["store"], json!(true));
+    }
+
+    #[test]
+    fn an_untranslated_request_reports_nothing() {
+        let (_, entries) = reported(
+            "/v1/chat/completions",
+            ProviderKind::Openai,
+            json!({"model": "m", "messages": [], "top_k": 5, "n": 3}),
+        );
+        assert!(entries.is_empty());
     }
 }

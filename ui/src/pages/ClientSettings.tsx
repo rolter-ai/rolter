@@ -14,7 +14,7 @@ import { CodeBlock } from "@/components/ui/code-block";
 import { DeleteIconButton } from "@/components/ui/delete-icon-button";
 import { FieldError } from "@/components/ui/field-error";
 import { Input } from "@/components/ui/input";
-import { SaveBar } from "@/components/ui/save-bar";
+import { SettingsSaveBar } from "@/components/SettingsSaveBar";
 import { SettingsPanel } from "@/components/ui/settings-panel";
 import { Textarea } from "@/components/ui/textarea";
 import { fetchClientSettings, updateClientSettings, type ClientSettingsDto } from "@/lib/api";
@@ -22,8 +22,8 @@ import { errorText } from "@/lib/error-copy";
 import { serverFieldPath } from "@/lib/field-errors";
 import { gatewayBase } from "@/lib/gateway";
 import { useToast } from "@/lib/toast";
-import { useFieldErrors } from "@/lib/use-field-errors";
-import { useLeaveGuard } from "@/lib/use-leave-guard";
+import type { FieldEquality } from "@/lib/use-draft";
+import { useSettingsForm } from "@/lib/use-settings-form";
 import { CLIENT_SETTINGS_QUERY_KEY } from "@/lib/use-gateway-base";
 import { KEY_ENV } from "@/lib/snippets";
 import { useScreenReady } from "@/lib/ux-react";
@@ -69,6 +69,22 @@ const toPayload = (f: FormState) => ({
   ),
   request_id_header: f.requestIdHeader.trim().toLowerCase(),
 });
+
+// what a save would send is what "changed" means: a header typed in another
+// case, a blank row or the space around a comma is not an unsaved change
+const EQUALS: FieldEquality<FormState> = {
+  publicBaseUrl: (a, b) => a.trim() === b.trim(),
+  forwarded: (a, b) => splitList(a).join(",") === splitList(b).join(","),
+  injected: (a, b) => {
+    const sent = (rows: HeaderPair[]) =>
+      JSON.stringify(
+        toPayload({ publicBaseUrl: "", forwarded: "", requestIdHeader: "", injected: rows })
+          .injected_headers,
+      );
+    return sent(a) === sent(b);
+  },
+  requestIdHeader: (a, b) => a.trim().toLowerCase() === b.trim().toLowerCase(),
+};
 
 const fromDto = (dto: ClientSettingsDto): FormState => ({
   publicBaseUrl: dto.public_base_url ?? "",
@@ -200,40 +216,42 @@ function ClientSettingsScreen() {
   // `settings` is the query the user is actually waiting on for this screen
   useScreenReady(!settings.isLoading);
 
-  const [form, setForm] = React.useState<FormState | null>(null);
   const base = React.useId();
   const idOf = (key: FieldKey) => {
     if (key === "publicBaseUrl") return "client-public-base-url";
     if (key === "requestIdHeader") return "client-request-id-header";
     return `${base}-${key}`;
   };
-  React.useEffect(() => {
-    if (settings.data && form === null) {
-      setForm(fromDto(settings.data));
-    }
-  }, [settings.data, form]);
-
-  const fields = useFieldErrors<FieldKey>({
-    order: form ? fieldOrder(form) : [],
-    wire: WIRE_FIELDS,
-    idOf,
-    local:
-      form && settings.data
-        ? Object.fromEntries(
-            Object.entries(
-              validate(form, settings.data.reserved, settings.data.request_id_refused ?? []),
-            ).map(([key, found]) => [key, t(found.key, found.values)]),
-          )
-        : {},
-    // an injected header is refused by row: `injected_headers.<name>`
-    place: (error) => {
-      const path = serverFieldPath(error);
-      if (!path?.path.startsWith("injected_headers.") || !(error instanceof Error)) return null;
-      const name = path.path.slice("injected_headers.".length);
-      const row = form?.injected.find((r) => r.name.trim().toLowerCase() === name);
-      return row ? { field: nameKey(row), message: error.message } : null;
-    },
+  const source = React.useMemo(
+    () => (settings.data ? fromDto(settings.data) : undefined),
+    [settings.data],
+  );
+  const sf = useSettingsForm<FormState, FieldKey>({
+    source,
+    equals: EQUALS,
+    fieldErrors: (draft) => ({
+      order: draft ? fieldOrder(draft) : [],
+      wire: WIRE_FIELDS,
+      idOf,
+      local:
+        draft && settings.data
+          ? Object.fromEntries(
+              Object.entries(
+                validate(draft, settings.data.reserved, settings.data.request_id_refused ?? []),
+              ).map(([key, found]) => [key, t(found.key, found.values)]),
+            )
+          : {},
+      // an injected header is refused by row: `injected_headers.<name>`
+      place: (error) => {
+        const path = serverFieldPath(error);
+        if (!path?.path.startsWith("injected_headers.") || !(error instanceof Error)) return null;
+        const name = path.path.slice("injected_headers.".length);
+        const row = draft?.injected.find((r) => r.name.trim().toLowerCase() === name);
+        return row ? { field: nameKey(row), message: error.message } : null;
+      },
+    }),
   });
+  const { draft: form, fields } = sf;
 
   const save = useMutation({
     mutationFn: (f: FormState) => updateClientSettings(toPayload(f)),
@@ -242,8 +260,7 @@ function ClientSettingsScreen() {
       // the cached write alone left every other reader of this key on the
       // value it already had; the refetch is what makes the save stick (#1197)
       void queryClient.invalidateQueries({ queryKey: CLIENT_SETTINGS_QUERY_KEY });
-      setForm(fromDto(dto));
-      fields.clear();
+      sf.commit(fromDto(dto));
       // the screen changes gateway behaviour live, so the toast says when it
       // takes effect rather than leaving a restart to be guessed at (#2076)
       toast.push({
@@ -261,14 +278,6 @@ function ClientSettingsScreen() {
       });
     },
   });
-
-  // pending versus applied matters on a screen that changes the gateway live:
-  // Save waits for a change, the bar says one is pending, and leaving asks first
-  const dirty =
-    form !== null &&
-    settings.data !== undefined &&
-    JSON.stringify(toPayload(form)) !== JSON.stringify(toPayload(fromDto(settings.data)));
-  const leavePrompt = useLeaveGuard(dirty);
 
   if (settings.isLoading) {
     return (
@@ -292,9 +301,7 @@ function ClientSettingsScreen() {
   if (!form || !settings.data) return null;
 
   const dto = settings.data;
-  const set = (patch: Partial<FormState>) => {
-    setForm((f) => (f ? { ...f, ...patch } : f));
-  };
+  const { set } = sf;
   // an edit answers the server's complaint about that field
   const edit = (key: FieldKey, patch: Partial<FormState>) => {
     set(patch);
@@ -306,7 +313,7 @@ function ClientSettingsScreen() {
   const exampleBase = gatewayBase(form.publicBaseUrl)?.url ?? null;
 
   return (
-    <SettingsBody>
+    <SettingsBody onSubmit={() => fields.submit(() => save.mutate(form))}>
       <SettingsPanel
         title={t("pages.clientSettings.baseUrl")}
         description={t("pages.clientSettings.baseUrlHint")}
@@ -463,14 +470,7 @@ function ClientSettingsScreen() {
         </div>
       </SettingsPanel>
 
-      <SaveBar
-        invalid={fields.invalid.length}
-        pending={save.isPending}
-        disabled={!dirty}
-        status={dirty ? t("pages.clientSettings.unsaved") : undefined}
-        onSave={() => fields.submit(() => save.mutate(form))}
-      />
-      {leavePrompt}
+      <SettingsSaveBar form={sf} pending={save.isPending} updatedAt={dto.updated_at} />
     </SettingsBody>
   );
 }
@@ -493,4 +493,8 @@ function Snippet({ base }: { base: string }) {
 // deployment-scoped settings: superadmin-only in the capability table, so a
 // lesser caller sees the refusal instead of a screen that loads and then 403s
 // (#1183)
-export default superadminOnly(ClientSettingsScreen, "errors.resources.clientSettings");
+export default superadminOnly(
+  ClientSettingsScreen,
+  "errors.resources.clientSettings",
+  "client_settings:read",
+);

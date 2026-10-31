@@ -80,7 +80,8 @@ export function AssignProfileSheet({
         kind === "user" ? { user_id: subject } : { team_id: subject },
       ),
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["access-profile", profile.id] });
+      // the Access Profiles cards are drawn from the list read (#3301)
+      void queryClient.invalidateQueries({ queryKey: ["access-profiles"] });
       void queryClient.invalidateQueries({ queryKey: ASSIGNMENTS_KEY() });
       toast.push({
         tone: "success",
@@ -106,7 +107,7 @@ export function AssignProfileSheet({
       saveLabel={t("pages.accessProfiles.assign.save")}
       canSave={subject !== ""}
       saving={assign.isPending}
-      onSave={() => assign.mutate()}
+      onSubmit={() => assign.mutate()}
     >
       <div className="space-y-3.5">
         <Segmented<Kind>
@@ -133,6 +134,7 @@ export function AssignProfileSheet({
               ? t("pages.accessProfiles.assign.userHint")
               : t("pages.accessProfiles.assign.teamHint")
           }
+          required
         >
           <Combobox
             options={options}

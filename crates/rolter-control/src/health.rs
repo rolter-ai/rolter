@@ -20,6 +20,18 @@
 //! adding them up. `uptime` also returns `sources`, the distinct event sources
 //! behind the row, so a card can say what actually fed it.
 //!
+//! # One series per provider, across a name becoming shared
+//!
+//! Two orgs may each have a provider called `openai` (#1857, ADR-0040), so a
+//! row is keyed by `(org_id, provider, target_id)`, never by the name alone,
+//! and returns `org_id`: a caller who sees both orgs gets two series (#3441).
+//! The key is the provider's stable identity, never its runtime id. A probe
+//! event names the provider itself as `target_id`, and gateways from #1857 on
+//! wrote the *runtime* id there, which changes from `openai` to
+//! `openai@<org>` the moment a second org takes the name; [`EVENTS`] reads
+//! such a `target_id` back as the display name, so the series neither splits
+//! nor loses its `provider` grain at that moment.
+//!
 //! Injection safety is the same as the analytics module: time bounds are passed
 //! as ClickHouse query **parameters**, and the only value spliced into SQL text
 //! (the timeline bucket) is validated against a fixed whitelist first. The SLA
@@ -44,6 +56,18 @@ use crate::analytics_access::{AnalyticsAccess, PROVIDER_VISIBLE};
 /// itself as their `target_id`, passive events name the route's real target, so
 /// this expression recovers which of the two a grouped row describes.
 const GRAIN: &str = "if(target_id = provider, 'provider', 'target') as grain";
+
+/// The window's health events the caller may read, with `target_id` keyed on
+/// the provider's stable identity: a probe row that recorded the provider's
+/// runtime id, `provider@org_id`, reads as `provider`, as every other row of
+/// that provider does (see the module docs).
+fn events() -> String {
+    format!(
+        "(select ts, org_id, provider, source, outcome, \
+                 if(target_id = concat(provider, '@', org_id), provider, target_id) as stable_target \
+          from provider_health_events where {WHERE_WINDOW} and {PROVIDER_VISIBLE})"
+    )
+}
 
 pub fn router() -> Router<crate::ControlState> {
     Router::new()
@@ -94,8 +118,9 @@ async fn uptime(
 /// string. Rows carry their [`grain`](self) and the distinct sources behind
 /// them.
 fn uptime_sql(sla: f64) -> String {
+    let events = events();
     format!(
-        "select provider, target_id, \
+        "select org_id, provider, stable_target as target_id, \
                 {GRAIN}, \
                 arraySort(groupUniqArray(source)) as sources, \
                 count() as events, \
@@ -107,8 +132,8 @@ fn uptime_sql(sla: f64) -> String {
                 round((1 - countIf(outcome = 'ok') / count()) / (1 - {sla}), 6) as error_budget_burn, \
                 (1 - countIf(outcome = 'ok') / count()) > (1 - {sla}) as sla_breached, \
                 max(ts) as last_event \
-         from provider_health_events where {WHERE_WINDOW} and {PROVIDER_VISIBLE} \
-         group by provider, target_id, grain order by uptime asc format JSON"
+         from {events} \
+         group by org_id, provider, target_id, grain order by uptime asc format JSON"
     )
 }
 
@@ -138,28 +163,29 @@ async fn mttr(
 /// probe outage and a passive outage on the same provider stay separate
 /// incidents; each row names its [`grain`](self).
 fn mttr_sql() -> String {
+    let events = events();
     format!(
-        "select provider, target_id, \
+        "select org_id, provider, stable_target as target_id, \
                 {GRAIN}, \
                 round(avg(mttr_seconds), 1) as mttr_seconds, \
                 count() as incidents \
          from ( \
-             select provider, target_id, good_before, \
+             select org_id, provider, stable_target, good_before, \
                     dateDiff('second', minIf(ts, outcome != 'ok'), minIf(ts, outcome = 'ok')) as mttr_seconds, \
                     countIf(outcome != 'ok') as bad_n, \
                     countIf(outcome = 'ok') as good_n \
              from ( \
-                 select provider, target_id, ts, outcome, \
+                 select org_id, provider, stable_target, ts, outcome, \
                         sum(outcome = 'ok') over ( \
-                            partition by provider, target_id order by ts \
+                            partition by org_id, provider, stable_target order by ts \
                             rows between unbounded preceding and 1 preceding \
                         ) as good_before \
-                 from provider_health_events where {WHERE_WINDOW} and {PROVIDER_VISIBLE} \
+                 from {events} \
              ) \
-             group by provider, target_id, good_before \
+             group by org_id, provider, stable_target, good_before \
              having bad_n > 0 and good_n > 0 and mttr_seconds > 0 \
          ) \
-         group by provider, target_id, grain order by mttr_seconds desc format JSON"
+         group by org_id, provider, target_id, grain order by mttr_seconds desc format JSON"
     )
 }
 
@@ -182,6 +208,9 @@ async fn timeline(
         )
             .into_response();
     };
+    if let Err(refused) = q.check_buckets(bucket) {
+        return refused.into_response();
+    }
     run(ch
         .query(
             &timeline_sql(bucket_expr),
@@ -194,15 +223,16 @@ async fn timeline(
 /// against [`bucket_expr`]'s fixed whitelist by the caller, so no untrusted value
 /// reaches the SQL text.
 fn timeline_sql(bucket_expr: &str) -> String {
+    let events = events();
     format!(
-        "select {bucket_expr} as bucket, provider, target_id, \
+        "select {bucket_expr} as bucket, org_id, provider, stable_target as target_id, \
                 {GRAIN}, \
                 count() as events, \
                 countIf(outcome = 'ok') as ok, \
                 countIf(outcome = 'error') as errors, \
                 countIf(outcome = 'timeout') as timeouts \
-         from provider_health_events where {WHERE_WINDOW} and {PROVIDER_VISIBLE} \
-         group by bucket, provider, target_id, grain order by bucket format JSON"
+         from {events} \
+         group by bucket, org_id, provider, target_id, grain order by bucket format JSON"
     )
 }
 
@@ -259,6 +289,39 @@ mod tests {
             );
             assert!(sql.contains(", grain order by"), "grain not grouped: {sql}");
         }
+    }
+
+    /// #3441: two orgs' `openai` are two series, keyed on the provider's
+    /// stable identity rather than its runtime id.
+    #[test]
+    fn every_rollup_keys_a_provider_by_its_org_and_stable_name() {
+        for (sql, group) in [
+            (
+                uptime_sql(0.99),
+                "group by org_id, provider, target_id, grain",
+            ),
+            (mttr_sql(), "group by org_id, provider, target_id, grain"),
+            (
+                timeline_sql("toStartOfHour(ts, 'UTC')"),
+                "group by bucket, org_id, provider, target_id, grain",
+            ),
+        ] {
+            assert!(sql.contains(group), "{sql}");
+            assert!(
+                sql.contains("org_id, provider, stable_target as target_id,"),
+                "{sql}"
+            );
+            // a probe row that recorded the runtime id reads as the name
+            assert!(
+                sql.contains(
+                    "if(target_id = concat(provider, '@', org_id), provider, target_id) \
+                     as stable_target"
+                ),
+                "{sql}"
+            );
+        }
+        // an episode never spans two orgs' providers
+        assert!(mttr_sql().contains("partition by org_id, provider, stable_target order by ts"));
     }
 
     #[test]

@@ -40,7 +40,7 @@ jobs:
     name: ${{ inputs.engine || 'sim' }} smoke
     # CPU-only on GitHub-hosted runners: this is an API/SSE compatibility test,
     # not an inference-engine performance benchmark.
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -58,7 +58,7 @@ jobs:
       # job. nothing built here is published, so the cache cannot poison a
       # release
       - uses: ./.github/actions/wild-linker
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2 # zizmor: ignore[cache-poisoning]
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.2 # zizmor: ignore[cache-poisoning]
         with:
           shared-key: rust-build
           save-if: ${{ github.ref == 'refs/heads/master' }}

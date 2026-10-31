@@ -34,7 +34,7 @@ spec:
       {{- include "rolter.preflight" (dict "root" . "env" $gatewayEnv "role" "gateway") | nindent 6 }}
       containers:
         - name: gateway
-          image: {{ include "rolter.image" . | quote }}
+          image: {{ include "rolter.image" (dict "root" . "component" "gateway") | quote }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           command: ["rolter-gateway"]
           args: ["--config", "/etc/rolter/rolter.toml", "--snapshot-url", "http://{{ include "rolter.fullname" . }}-control:{{ .Values.control.service.port }}/internal/snapshot", "--admin-url", "http://{{ include "rolter.fullname" . }}-control:{{ .Values.control.service.port }}"]
@@ -47,8 +47,12 @@ spec:
             - name: config
               mountPath: /etc/rolter
               readOnly: true
-          # /readyz reports not-ready while the instance is draining, so a
-          # drained gateway leaves the Service instead of being killed;
+          # /readyz answers 503 with one of three bodies, each keeping the pod
+          # out of the Service instead of killing it: `draining` (the control
+          # plane marked the node as draining), `awaiting_snapshot` (no first
+          # snapshot applied yet) and `snapshot_format_unsupported` (the control
+          # plane cannot serve a snapshot format this gateway can read, as when
+          # a new gateway leads its control plane, ADR-0038, #3348).
           # /healthz stays a pure liveness signal (#1081)
           readinessProbe:
             httpGet: {path: /readyz, port: http}

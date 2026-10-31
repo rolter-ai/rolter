@@ -21,6 +21,7 @@
 //! reports *which* step a presented code matched, so the caller can compare it
 //! against the last one it accepted.
 
+// spec-ref: totp
 use hmac::{Hmac, KeyInit, Mac};
 use sha1::Sha1;
 

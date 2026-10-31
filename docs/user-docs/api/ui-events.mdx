@@ -63,19 +63,19 @@ most **100** events per request; a larger batch is rejected with `400`.
 
 ### Fields
 
-| Field                               | Required | Notes                                                    |
-| ----------------------------------- | -------- | -------------------------------------------------------- |
-| `event_id`                          | yes      | client-generated id, ≤ 96 chars                          |
-| `screen`                            | yes      | stable screen key (a route id), **not** a URL            |
-| `action`                            | yes      | see the enum below                                       |
-| `outcome`                           | no       | `ok`, `error` or `cancelled`; defaults to `ok`           |
-| `target`                            | no       | name of the form, control or validation rule             |
-| `from_screen`                       | no       | previous screen, so navigation paths are queryable       |
-| `duration_ms`                       | no       | time-to-interactive, form dwell, or save-to-confirmation |
-| `trace_id`                          | no       | joins to the gateway request this caused                 |
-| `session_id`                        | no       | groups a single browsing session                         |
-| `org_id` / `team_id` / `project_id` | no       | grouping labels                                          |
-| `app_version`                       | no       | dashboard build                                          |
+| Field                               | Required | Notes                                                     |
+| ----------------------------------- | -------- | --------------------------------------------------------- |
+| `event_id`                          | yes      | client-generated id, ≤ 96 chars                           |
+| `screen`                            | yes      | stable screen key (a route id, or `shell`), **not** a URL |
+| `action`                            | yes      | see the enum below                                        |
+| `outcome`                           | no       | `ok`, `error` or `cancelled`; defaults to `ok`            |
+| `target`                            | no       | name of the form, control or validation rule              |
+| `from_screen`                       | no       | previous screen, so navigation paths are queryable        |
+| `duration_ms`                       | no       | time-to-interactive, form dwell, or save-to-confirmation  |
+| `trace_id`                          | no       | joins to the gateway request this caused                  |
+| `session_id`                        | no       | groups a single browsing session                          |
+| `org_id` / `team_id` / `project_id` | no       | grouping labels                                           |
+| `app_version`                       | no       | dashboard build                                           |
 
 `action` is one of `screen_view`, `time_to_interactive`, `navigate`,
 `back_out`, `form_submit`, `form_abandon`, `validation_error`, `empty_state`,
@@ -88,6 +88,14 @@ most **100** events per request; a larger batch is rejected with `400`.
   — a URL carries ids and query parameters, which turns a key column into an
   unbounded one and degrades the table.
 </Warning>
+
+### Reserved screen key
+
+`screen` is a route id, with one exception: `shell` names the dashboard's own chrome rather than a
+screen. The scope switcher in the sidebar raises its delete confirmations and create dialogs
+outside any screen, so their `form_submit`, `save_confirmed` and `form_abandon` rows carry
+`screen = shell` and a `target` such as `org-delete` or `team-create`. No route uses the id, so
+filtering on it leaves out every screen.
 
 ## What the dashboard sends
 

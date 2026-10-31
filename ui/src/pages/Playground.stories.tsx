@@ -93,7 +93,6 @@ const expiry = () => new Date(Date.now() + 30 * 60_000).toISOString();
 const minted = (key = "sk-rolter-minted") => ({
   id: "vk-1",
   project_id: "project-1",
-  key_hash: "hash",
   key_prefix: key.slice(0, 12),
   name: "Playground",
   models: ["minicpm5-1b"],
@@ -310,6 +309,19 @@ const unknownKey = () => json({ error: { message: "invalid api key" } }, 401);
  */
 function shortKeyWait() {
   setKeyPropagationForTests({ budgetMs: 300, firstDelayMs: 50, maxDelayMs: 100 });
+  return () => setKeyPropagationForTests(null);
+}
+
+/**
+ * The opposite of {@link shortKeyWait}: a window that is still open when the
+ * first message goes out, for a story that has to see the refusal retried.
+ * The mint-to-send path (the composer, `userEvent` typing) can outlast 300 ms
+ * on a loaded runner, and the retry it asserts only happens inside the window
+ * (#3227). The retry delay is `min(budget / 2, left)`, well inside the 5 s
+ * `asyncUtilTimeout`.
+ */
+function openKeyWindow() {
+  setKeyPropagationForTests({ budgetMs: 2000, firstDelayMs: 50, maxDelayMs: 100 });
   return () => setKeyPropagationForTests(null);
 }
 
@@ -1217,7 +1229,7 @@ const lateReplica = recording(
 );
 
 export const ARefusedFirstMessageOnAFreshKeyIsSentAgain: Story = {
-  beforeEach: shortKeyWait,
+  beforeEach: openKeyWindow,
   render: () => <Screen fetchStub={lateReplica.stub} />,
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);

@@ -57,6 +57,42 @@ impl Action {
     const ALL: [Action; 4] = [Action::Read, Action::Create, Action::Update, Action::Delete];
 }
 
+/// A delegable deployment role (#1834): a job short of superadmin that still
+/// needs deployment-wide settings, which have no org to define a role in.
+///
+/// Held on the account (`users.deployment_role`), granted only by a superadmin,
+/// and read only by the guard on a capability that names it. It confers nothing
+/// at an org, team or project, so neither role reads tenant request logs or
+/// payloads, mints or reads a credential, or grants any role.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum DeploymentRole {
+    /// maintains the deployment: cluster, runtime policy, feature flags,
+    /// alerting and connectors, read and write
+    Operator,
+    /// reviews how it is secured, read-only: security, logging, guardrail and
+    /// compatibility settings, the deployment audit log and the config export
+    SecurityAuditor,
+}
+
+impl DeploymentRole {
+    /// every deployment role, in the order the matrix presents them
+    pub(crate) const ALL: [DeploymentRole; 2] =
+        [DeploymentRole::Operator, DeploymentRole::SecurityAuditor];
+
+    /// the stored spelling, as `users.deployment_role` and the API carry it
+    pub(crate) const fn key(self) -> &'static str {
+        match self {
+            DeploymentRole::Operator => "operator",
+            DeploymentRole::SecurityAuditor => "security_auditor",
+        }
+    }
+
+    pub(crate) fn parse(key: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|role| role.key() == key)
+    }
+}
+
 /// The authority an action takes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Authority {
@@ -64,6 +100,19 @@ pub(crate) enum Authority {
     Role(Role),
     /// deployment-wide settings only the admin token or a superadmin may touch
     Superadmin,
+    /// deployment-wide settings a superadmin, or an account holding one of
+    /// these deployment roles (#1834), may touch. Like [`Authority::Superadmin`]
+    /// no scoped role and no custom role reaches it
+    Deployment(&'static [DeploymentRole]),
+    /// a scoped role at the row's scope, **or** one of these deployment roles
+    /// (#3362). For a row delegated to the people who own a slice of the
+    /// deployment (alerting, #1829) that a deployment role still runs whole,
+    /// whichever org owns it: the role reaches every scope without a
+    /// membership, and the scoped role reaches its own. A superadmin passes as
+    /// ever; a custom role grants the pair as it does for [`Authority::Role`];
+    /// an API token holds no deployment role, so it falls back to the scoped
+    /// half
+    RoleOrDeployment(Role, &'static [DeploymentRole]),
     /// any authenticated caller, with no membership anywhere. Reserved for
     /// global read-only catalogs that carry no tenant's data: there is no
     /// deployment-scoped membership to hold, so naming a role here would
@@ -87,9 +136,13 @@ pub(crate) struct Requirement {
 
 impl Requirement {
     /// const-friendly discriminant test, so [`superadmin_cap!`] can reject a
-    /// scoped requirement at compile time
+    /// scoped requirement at compile time. True for a requirement no scoped
+    /// role can satisfy: superadmin alone, or superadmin and a deployment role
     pub(crate) const fn is_superadmin(self) -> bool {
-        matches!(self.authority, Authority::Superadmin)
+        matches!(
+            self.authority,
+            Authority::Superadmin | Authority::Deployment(_)
+        )
     }
 
     /// A superadmin requirement that names no route capability, for the one
@@ -134,6 +187,15 @@ const VIEWER: Option<Authority> = Some(Authority::Role(Role::Viewer));
 const MEMBER: Option<Authority> = Some(Authority::Role(Role::Member));
 const ADMIN: Option<Authority> = Some(Authority::Role(Role::Admin));
 const SUPER: Option<Authority> = Some(Authority::Superadmin);
+/// a superadmin or an operator (#1834)
+const OPERATOR: Option<Authority> = Some(Authority::Deployment(&[DeploymentRole::Operator]));
+/// an admin at the row's scope, or a deployment operator at any (#3362)
+const ADMIN_OR_OPERATOR: Option<Authority> = Some(Authority::RoleOrDeployment(
+    Role::Admin,
+    &[DeploymentRole::Operator],
+));
+/// a superadmin or a security auditor (#1834), for a read
+const AUDITOR: Option<Authority> = Some(Authority::Deployment(&[DeploymentRole::SecurityAuditor]));
 /// any authenticated caller; see [`Authority::Authenticated`]
 const ANYONE: Option<Authority> = Some(Authority::Authenticated);
 /// the resource has no such action
@@ -191,7 +253,7 @@ const CAPABILITIES: &[Capability] = &[
     // a provider or group may be scoped to one project of an org (#1919), whose
     // admin then manages it. The scope is `project` so the advisory answer
     // reaches a project role; an org admin still passes there through the
-    // org membership. An org-wide row stays an org admin's: crud.rs checks
+    // org membership. An org-wide row stays an org admin's: the crud module checks
     // the org for it, and that, not this table, is the authority.
     // The provider test, with or without its `model` lookup (#2008), and the
     // model listing both spend the stored credential, so they stay behind
@@ -238,7 +300,8 @@ const CAPABILITIES: &[Capability] = &[
         action_scopes: NONE,
     },
     Capability {
-        // a label on a provider, provider group or route. its own capability
+        // a label on a provider, provider group or route, or on a model of the
+        // org's own (a model label with `org_id`, #3520). its own capability
         // rather than the subject's, so an operator role can be allowed to
         // annotate a provider without being allowed to re-point it
         resource: "label",
@@ -250,9 +313,11 @@ const CAPABILITIES: &[Capability] = &[
         action_scopes: NONE,
     },
     Capability {
-        // a label on a model. models live in the deployment-wide pricing
-        // catalog and not in any one org, so labelling one is a
-        // deployment-wide act and mirrors `model_price` exactly
+        // a deployment-wide label on a model. models live in the
+        // deployment-wide pricing catalog and not in any one org, so a label
+        // that names no org is a deployment-wide act and mirrors
+        // `model_price` exactly. one that names an org is written under that
+        // org's `label` instead (#3520)
         resource: "model_label",
         scope: "deployment",
         read: ANYONE,
@@ -295,6 +360,19 @@ const CAPABILITIES: &[Capability] = &[
     // a role in and nothing else — never the deployment as a whole
     Capability {
         resource: "analytics",
+        scope: "project",
+        read: VIEWER,
+        create: NA,
+        update: NA,
+        delete: NA,
+        action_scopes: NONE,
+    },
+    // the savings advisor (#1581): spend re-priced at the cheaper models of
+    // each route's pool. It reads the same rows as `analytics`, scoped the
+    // same way, and names nothing those rows do not already show, so the same
+    // floor; its own row so a custom role can grant or withhold it alone
+    Capability {
+        resource: "savings",
         scope: "project",
         read: VIEWER,
         create: NA,
@@ -417,6 +495,19 @@ const CAPABILITIES: &[Capability] = &[
         delete: NA,
         action_scopes: NONE,
     },
+    // an account reading the caps that count its own keys and what is left of
+    // them (#1830). Every signed-in account's to read, a viewer included: the
+    // route returns only rows whose scope is the caller, so it widens no
+    // `budget:read`, which reads the caps of a place
+    Capability {
+        resource: "my_budget",
+        scope: "deployment",
+        read: ANYONE,
+        create: NA,
+        update: NA,
+        delete: NA,
+        action_scopes: NONE,
+    },
     Capability {
         resource: "business_unit",
         scope: "org",
@@ -532,6 +623,17 @@ const CAPABILITIES: &[Capability] = &[
         delete: ADMIN,
         action_scopes: NONE,
     },
+    // which keys, projects and teams a tool group narrows (#3295). It decides
+    // what a caller may call, so it is changed with the same role as the group
+    Capability {
+        resource: "mcp_tool_group_assignment",
+        scope: "org",
+        read: VIEWER,
+        create: NA,
+        update: ADMIN,
+        delete: NA,
+        action_scopes: NONE,
+    },
     Capability {
         resource: "mcp_settings",
         scope: "org",
@@ -625,7 +727,7 @@ const CAPABILITIES: &[Capability] = &[
     Capability {
         resource: "deployment_audit_log",
         scope: "deployment",
-        read: SUPER,
+        read: AUDITOR,
         create: NA,
         update: NA,
         delete: NA,
@@ -636,7 +738,7 @@ const CAPABILITIES: &[Capability] = &[
     Capability {
         resource: "deployment_user",
         scope: "deployment",
-        read: SUPER,
+        read: AUDITOR,
         create: NA,
         update: NA,
         delete: NA,
@@ -674,6 +776,28 @@ const CAPABILITIES: &[Capability] = &[
         delete: ADMIN,
         action_scopes: NONE,
     },
+    // LDAP sign-in: a directory and its group mappings decide who gets which
+    // role at sign-in, so they need the same admin bar as single sign-on
+    Capability {
+        resource: "ldap_directory",
+        scope: "org",
+        read: ADMIN,
+        create: ADMIN,
+        // editing a directory can rotate its bind password and take it in and
+        // out of service, which is the same grant as registering one
+        update: ADMIN,
+        delete: ADMIN,
+        action_scopes: NONE,
+    },
+    Capability {
+        resource: "ldap_group_mapping",
+        scope: "org",
+        read: ADMIN,
+        create: ADMIN,
+        update: NA,
+        delete: ADMIN,
+        action_scopes: NONE,
+    },
     Capability {
         resource: "org_auth_policy",
         scope: "org",
@@ -683,39 +807,76 @@ const CAPABILITIES: &[Capability] = &[
         delete: NA,
         action_scopes: NONE,
     },
+    // scoped automation tokens (#1836). A token lives at an org, team or
+    // project and is minted, rotated and revoked by an admin of that very
+    // scope, so the row declares `project` and a list may ask shallower. A
+    // token itself never reaches this row: the handlers refuse one
+    Capability {
+        resource: "api_token",
+        scope: "project",
+        read: ADMIN,
+        create: ADMIN,
+        update: ADMIN,
+        delete: ADMIN,
+        action_scopes: NONE,
+    },
+    // who holds a deployment role (#1834). Granting one is a way to widen who
+    // reaches deployment-wide settings, so it is a superadmin's alone: neither
+    // deployment role can grant itself or the other
+    Capability {
+        resource: "deployment_role",
+        scope: "deployment",
+        read: NA,
+        create: NA,
+        update: SUPER,
+        delete: NA,
+        action_scopes: NONE,
+    },
     // deployment-wide policy: no tenancy scope exists to be a member of, so
     // these are the admin token's (or a superadmin's) alone
     Capability {
         resource: "feature_flags",
         scope: "deployment",
-        read: SUPER,
+        read: OPERATOR,
         create: NA,
-        update: SUPER,
+        update: OPERATOR,
         delete: NA,
         action_scopes: NONE,
     },
     Capability {
         resource: "runtime_policy",
         scope: "deployment",
-        read: SUPER,
+        read: OPERATOR,
         create: NA,
-        update: SUPER,
+        update: OPERATOR,
         delete: NA,
         action_scopes: NONE,
     },
     Capability {
         resource: "logging_settings",
         scope: "deployment",
-        read: SUPER,
+        read: AUDITOR,
         create: NA,
         update: SUPER,
+        delete: NA,
+        action_scopes: NONE,
+    },
+    // erasing one subject's request logs and captured payloads (#1085):
+    // irreversible, and the one place the control plane deletes log data on
+    // demand, so a superadmin's alone
+    Capability {
+        resource: "log_erasure",
+        scope: "deployment",
+        read: SUPER,
+        create: SUPER,
+        update: NA,
         delete: NA,
         action_scopes: NONE,
     },
     Capability {
         resource: "compatibility_policy",
         scope: "deployment",
-        read: SUPER,
+        read: AUDITOR,
         create: NA,
         update: SUPER,
         delete: NA,
@@ -751,7 +912,7 @@ const CAPABILITIES: &[Capability] = &[
     Capability {
         resource: "guardrail_rule",
         scope: "deployment",
-        read: SUPER,
+        read: AUDITOR,
         create: SUPER,
         update: SUPER,
         delete: SUPER,
@@ -760,7 +921,19 @@ const CAPABILITIES: &[Capability] = &[
     Capability {
         resource: "guardrail_provider",
         scope: "deployment",
-        read: SUPER,
+        read: AUDITOR,
+        create: SUPER,
+        update: SUPER,
+        delete: SUPER,
+        action_scopes: NONE,
+    },
+    Capability {
+        // a policy can be scoped to one org, project, route or key, but it is
+        // still the deployment's enforcement: only a superadmin sets it, and the
+        // security auditor reads it with the other guardrail settings
+        resource: "guardrail_policy",
+        scope: "deployment",
+        read: AUDITOR,
         create: SUPER,
         update: SUPER,
         delete: SUPER,
@@ -778,18 +951,43 @@ const CAPABILITIES: &[Capability] = &[
         action_scopes: NONE,
     },
     Capability {
+        // read-only: the data plane writes it over the internal channel. Any
+        // signed-in caller may read it, narrowed in the handler to the models
+        // they see in the catalog (the row has no org to name), and node ids
+        // are shown only to a caller who sees everything (#2254)
+        resource: "breaker_state",
+        scope: "deployment",
+        read: ANYONE,
+        create: NA,
+        update: NA,
+        delete: NA,
+        action_scopes: NONE,
+    },
+    Capability {
         resource: "cluster_node",
         scope: "deployment",
-        read: SUPER,
+        read: OPERATOR,
         create: NA,
-        update: SUPER,
-        delete: SUPER,
+        update: OPERATOR,
+        delete: OPERATOR,
+        action_scopes: NONE,
+    },
+    Capability {
+        // counts of the gateway fleet and nothing that names a node (#2013),
+        // so the header's gateway pill and the dashboard home can show it to a
+        // viewer. The identities stay behind `cluster_node`
+        resource: "cluster_summary",
+        scope: "deployment",
+        read: ANYONE,
+        create: NA,
+        update: NA,
+        delete: NA,
         action_scopes: NONE,
     },
     Capability {
         resource: "security_settings",
         scope: "deployment",
-        read: SUPER,
+        read: AUDITOR,
         create: NA,
         update: SUPER,
         delete: NA,
@@ -801,7 +999,7 @@ const CAPABILITIES: &[Capability] = &[
     Capability {
         resource: "config_export",
         scope: "deployment",
-        read: SUPER,
+        read: AUDITOR,
         create: NA,
         update: NA,
         delete: NA,
@@ -813,37 +1011,46 @@ const CAPABILITIES: &[Capability] = &[
     Capability {
         resource: "connector",
         scope: "deployment",
-        read: SUPER,
-        create: SUPER,
-        update: SUPER,
-        delete: SUPER,
+        read: OPERATOR,
+        create: OPERATOR,
+        update: OPERATOR,
+        delete: OPERATOR,
         action_scopes: NONE,
     },
+    // alerting is delegated to the people who own a slice of spend or
+    // reliability (#1829). A channel belongs to one org, so an org admin owns
+    // it; a rule is scoped to an org, team, project, key, business unit or
+    // customer and is an admin's of that scope. A deployment operator runs every
+    // channel and rule, whichever org owns it (#3362), so the rows are an admin
+    // at the scope or an operator. A deployment-wide channel or rule (no owning
+    // org) stays with the superadmin and the operator: the handlers refuse it
+    // for anyone else, since no membership could satisfy it
     Capability {
         resource: "alert_channel",
-        scope: "deployment",
-        read: SUPER,
-        create: SUPER,
-        update: SUPER,
-        delete: SUPER,
+        scope: "org",
+        read: ADMIN_OR_OPERATOR,
+        create: ADMIN_OR_OPERATOR,
+        update: ADMIN_OR_OPERATOR,
+        delete: ADMIN_OR_OPERATOR,
         action_scopes: NONE,
     },
     Capability {
         resource: "alert_rule",
-        scope: "deployment",
-        read: SUPER,
-        create: SUPER,
-        update: SUPER,
-        delete: SUPER,
+        scope: "project",
+        read: ADMIN_OR_OPERATOR,
+        create: ADMIN_OR_OPERATOR,
+        update: ADMIN_OR_OPERATOR,
+        delete: ADMIN_OR_OPERATOR,
         action_scopes: NONE,
     },
     // notification history is append-only; "create" is asking the deployment to
-    // evaluate a rule now, which can emit one
+    // evaluate a rule now, which can emit one. Both are decided at the rule's
+    // own scope
     Capability {
         resource: "alert_history",
-        scope: "deployment",
-        read: SUPER,
-        create: SUPER,
+        scope: "project",
+        read: ADMIN_OR_OPERATOR,
+        create: ADMIN_OR_OPERATOR,
         update: NA,
         delete: NA,
         action_scopes: NONE,
@@ -939,8 +1146,11 @@ const MULTI_SCOPE: &[&str] = &[
     "provider_group",
     "budget",
     "rate_limit",
+    "alert_rule",
+    "alert_history",
     "membership",
     "invitation",
+    "api_token",
 ];
 
 /// How many levels of the org, team, project chain a guard names.
@@ -1031,6 +1241,12 @@ struct ActionView {
     /// to every authenticated caller
     minimum_role: Option<Role>,
     superadmin_only: bool,
+    /// the deployment roles that also reach this action (#1834), besides a
+    /// superadmin; empty for every action that takes a scoped role alone or a
+    /// superadmin alone. An action that takes a scoped role *or* a deployment
+    /// role (#3362) carries both this and `minimum_role`
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    deployment_roles: Vec<DeploymentRole>,
     /// no membership required: any authenticated caller may perform it
     authenticated_only: bool,
     /// the scope this action is decided at when it is not the resource's
@@ -1082,6 +1298,8 @@ struct CustomRoleView {
 #[derive(Debug, Serialize)]
 struct MatrixView {
     roles: Vec<RoleView>,
+    /// the delegable deployment roles (#1834), which no scope holds
+    deployment_roles: Vec<DeploymentRole>,
     resources: Vec<ResourceView>,
     /// org-defined roles, present only when the caller asked for an org they
     /// may read. Empty for a deployment that defines none, which keeps the
@@ -1148,6 +1366,7 @@ fn builtin_matrix() -> MatrixView {
                 rank: role_rank(role),
             })
             .collect(),
+        deployment_roles: DeploymentRole::ALL.to_vec(),
         resources: CAPABILITIES.iter().map(resource_view).collect(),
         custom_roles: Vec::new(),
     }
@@ -1202,10 +1421,18 @@ fn resource_view(cap: &Capability) -> ResourceView {
                 cap.authority(action).map(|authority| ActionView {
                     action,
                     minimum_role: match authority {
-                        Authority::Role(role) => Some(role),
-                        Authority::Superadmin | Authority::Authenticated => None,
+                        Authority::Role(role) | Authority::RoleOrDeployment(role, _) => Some(role),
+                        Authority::Superadmin
+                        | Authority::Deployment(_)
+                        | Authority::Authenticated => None,
                     },
                     superadmin_only: authority == Authority::Superadmin,
+                    deployment_roles: match authority {
+                        Authority::Deployment(roles) | Authority::RoleOrDeployment(_, roles) => {
+                            roles.to_vec()
+                        }
+                        _ => Vec::new(),
+                    },
                     authenticated_only: authority == Authority::Authenticated,
                     scope: cap
                         .action_scopes
@@ -1240,6 +1467,10 @@ struct EffectiveView {
     /// true when the caller is the admin token or a superadmin user (which is
     /// also every caller while the control plane runs in open mode)
     superadmin: bool,
+    /// the caller's deployment role (#1834), absent for a superadmin and for
+    /// anyone holding none. A superadmin passes every deployment capability
+    /// without one
+    deployment_role: Option<DeploymentRole>,
     /// the caller's resolved role at the requested scope chain, absent when no
     /// membership reaches it. Raised by a custom role's `base_role` where an
     /// access profile confers one at that scope
@@ -1266,8 +1497,15 @@ async fn get_effective(
         team: query.team_id,
         project: query.project_id,
     };
+    let deployment_role = principal.deployment_role();
     let (superadmin, memberships, grants, policies) = match &principal {
         Principal::Superadmin { .. } => (true, Vec::new(), Vec::new(), Vec::new()),
+        Principal::Token(held) => (
+            false,
+            held.memberships.clone(),
+            held.grants.clone(),
+            Vec::new(),
+        ),
         Principal::User(user) => {
             let profiles = AccessProfileRepo(pool(&state));
             (
@@ -1282,7 +1520,7 @@ async fn get_effective(
         resolve_role(&memberships, chain.org, chain.team, chain.project),
         custom_base_role(&grants, chain),
     );
-    let mut allowed = allowed_for(superadmin, &memberships, &grants, chain);
+    let mut allowed = allowed_for(superadmin, deployment_role, &memberships, &grants, chain);
     // the matrix states the default `request_payload` floor; a project admin
     // may lower it to viewer for their own project (#1820). Any role at all is
     // at least a viewer's, so holding one there is enough
@@ -1296,6 +1534,7 @@ async fn get_effective(
     }
     Ok(Json(EffectiveView {
         superadmin,
+        deployment_role,
         role,
         allowed,
         custom_roles: held_roles(&grants, chain),
@@ -1386,6 +1625,7 @@ fn chain_at(scope: &str, chain: ScopeChain) -> ScopeChain {
 /// scope gets only what needs none.
 fn allowed_for(
     superadmin: bool,
+    deployment_role: Option<DeploymentRole>,
     memberships: &[Membership],
     grants: &[EffectiveGrant],
     chain: ScopeChain,
@@ -1401,8 +1641,25 @@ fn allowed_for(
                 // deployment-wide policy is never reachable through a custom
                 // role, so the grants are not consulted here
                 Authority::Superadmin => superadmin,
+                Authority::Deployment(roles) => {
+                    superadmin || deployment_role.is_some_and(|held| roles.contains(&held))
+                }
                 // reaching this code path means the caller is authenticated
                 Authority::Authenticated => true,
+                Authority::RoleOrDeployment(required, roles) => {
+                    superadmin
+                        || deployment_role.is_some_and(|held| roles.contains(&held))
+                        || user_authorized(memberships, at, required)
+                        || custom_grants_allow(
+                            grants,
+                            at,
+                            Requirement {
+                                resource: cap.resource,
+                                action,
+                                authority,
+                            },
+                        )
+                }
                 Authority::Role(required) => {
                     superadmin
                         || user_authorized(memberships, at, required)
@@ -1494,7 +1751,7 @@ mod tests {
     fn a_project_admin_is_told_the_lists_and_not_the_writes() {
         let c = chain();
         let ms = [membership(None, None, c.project, "admin")];
-        let allowed = allowed_for(false, &ms, &[], c);
+        let allowed = allowed_for(false, None, &ms, &[], c);
         for pair in ["project:read", "user:read"] {
             assert!(allowed.contains(&pair.to_string()), "{pair}");
         }
@@ -1528,13 +1785,172 @@ mod tests {
         for cap in CAPABILITIES.iter().filter(|cap| cap.scope == "deployment") {
             for action in Action::ALL {
                 assert!(
-                    !matches!(cap.authority(action), Some(Authority::Role(_))),
+                    !matches!(
+                        cap.authority(action),
+                        Some(Authority::Role(_) | Authority::RoleOrDeployment(..))
+                    ),
                     "{}:{} is deployment-scoped but takes a role",
                     cap.resource,
                     action_key(action)
                 );
             }
         }
+    }
+
+    /// every `resource:action` a deployment role is named for in the table
+    fn named_for(role: DeploymentRole) -> Vec<String> {
+        let mut named = Vec::new();
+        for cap in CAPABILITIES {
+            for action in Action::ALL {
+                if let Some(Authority::Deployment(roles) | Authority::RoleOrDeployment(_, roles)) =
+                    cap.authority(action)
+                {
+                    if roles.contains(&role) {
+                        named.push(format!("{}:{}", cap.resource, action_key(action)));
+                    }
+                }
+            }
+        }
+        named
+    }
+
+    #[test]
+    fn a_deployment_role_reaches_what_the_table_names_and_nothing_else() {
+        // no membership, no custom grant: the role is the only authority held,
+        // asked at a whole chain so no scope rule narrows the answer
+        for role in DeploymentRole::ALL {
+            let allowed = allowed_for(false, Some(role), &[], &[], chain());
+            let named = named_for(role);
+            assert!(!named.is_empty(), "{role:?} is named for nothing");
+            for pair in &named {
+                assert!(allowed.contains(pair), "{role:?} should reach {pair}");
+            }
+            // everything else it is told it may do is open to any signed-in
+            // caller, so the role adds exactly its named pairs
+            let anyone = allowed_for(false, None, &[], &[], chain());
+            for pair in &allowed {
+                assert!(
+                    named.contains(pair) || anyone.contains(pair),
+                    "{role:?} reaches {pair}, which the table does not name for it"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_deployment_roles_split_the_work_as_the_issue_describes() {
+        let operator = named_for(DeploymentRole::Operator);
+        let auditor = named_for(DeploymentRole::SecurityAuditor);
+        for pair in [
+            "cluster_node:update",
+            "runtime_policy:update",
+            "feature_flags:update",
+            "connector:update",
+        ] {
+            assert!(
+                operator.contains(&pair.to_string()),
+                "operator lacks {pair}"
+            );
+        }
+        // alerting is delegated to scoped admins (#1829) and an operator still
+        // runs every rule and channel, which the table publishes as an admin at
+        // the scope or an operator (#3362)
+        for pair in [
+            "alert_channel:create",
+            "alert_channel:read",
+            "alert_rule:update",
+            "alert_rule:delete",
+            "alert_history:read",
+            "alert_history:create",
+        ] {
+            assert!(
+                operator.contains(&pair.to_string()),
+                "operator lacks {pair}"
+            );
+        }
+        // and the auditor, who reads policy and never alerting, does not
+        assert!(!auditor.iter().any(|pair| pair.starts_with("alert_")));
+        // the auditor reads and never writes
+        assert!(
+            auditor.iter().all(|pair| pair.ends_with(":read")),
+            "{auditor:?}"
+        );
+        for pair in [
+            "security_settings:read",
+            "logging_settings:read",
+            "guardrail_rule:read",
+            "compatibility_policy:read",
+            "deployment_audit_log:read",
+            // the audit log names an actor from any org by this list
+            "deployment_user:read",
+            "config_export:read",
+        ] {
+            assert!(auditor.contains(&pair.to_string()), "auditor lacks {pair}");
+        }
+        // the two jobs do not overlap: an operator sets no security policy and
+        // an auditor changes nothing
+        assert!(!operator
+            .iter()
+            .any(|pair| pair.starts_with("security_settings")));
+        assert!(!auditor.iter().any(|pair| pair.starts_with("cluster_node")));
+    }
+
+    #[test]
+    fn a_deployment_role_never_reaches_tenant_data_credentials_or_grants() {
+        // what a tenant owns, a credential, or a way to grant a role: none of
+        // it may be named for either role, so neither can read or mint them
+        let forbidden = [
+            "request_log",
+            "request_payload",
+            "mcp_log",
+            "virtual_key",
+            "provider",
+            "membership",
+            "invitation",
+            "custom_role",
+            "access_profile",
+            "sso_provider",
+            "scim_token",
+            "user",
+            "deployment_role",
+            "org",
+        ];
+        for role in DeploymentRole::ALL {
+            for pair in named_for(role) {
+                let resource = pair.split(':').next().unwrap_or_default();
+                assert!(
+                    !forbidden.contains(&resource),
+                    "{role:?} is named for {pair}, a tenant or credential capability"
+                );
+            }
+        }
+        // and granting a deployment role stays a superadmin's alone
+        assert_eq!(
+            requirement_for("deployment_role", Action::Update).authority,
+            Authority::Superadmin
+        );
+    }
+
+    #[test]
+    fn a_deployment_row_is_deployment_scoped() {
+        // a role on the account is the only thing that reaches such a row, so a
+        // row that also names a tenancy scope would promise a chain it ignores
+        for cap in CAPABILITIES {
+            for action in Action::ALL {
+                if matches!(cap.authority(action), Some(Authority::Deployment(_))) {
+                    assert_eq!(cap.scope_of(action), "deployment", "{}", cap.resource);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn deployment_roles_round_trip_through_their_stored_spelling() {
+        for role in DeploymentRole::ALL {
+            assert_eq!(DeploymentRole::parse(role.key()), Some(role));
+        }
+        assert_eq!(DeploymentRole::parse("superadmin"), None);
+        assert_eq!(DeploymentRole::parse(""), None);
     }
 
     fn membership(
@@ -1576,13 +1992,13 @@ mod tests {
             })
             .into_iter()
             .collect();
-        allowed_for(false, &memberships, &[], chain())
+        allowed_for(false, None, &memberships, &[], chain())
     }
 
     #[test]
     fn a_team_admin_is_not_promised_org_scoped_capabilities() {
         let ms = [membership(chain().org, chain().team, None, "admin")];
-        let allowed = allowed_for(false, &ms, &[], chain());
+        let allowed = allowed_for(false, None, &ms, &[], chain());
         // org is org-scoped: the guard checks the org alone and a team
         // membership does not reach it
         assert!(!allowed.contains(&"team:create".to_string()));
@@ -1599,7 +2015,7 @@ mod tests {
             chain().project,
             "member",
         )];
-        let allowed = allowed_for(false, &ms, &[], chain());
+        let allowed = allowed_for(false, None, &ms, &[], chain());
         assert!(!allowed.contains(&"custom_role:read".to_string()));
         assert!(!allowed.contains(&"team:read".to_string()));
     }
@@ -1610,7 +2026,7 @@ mod tests {
     fn a_project_viewer_reads_budgets_and_rate_limits_but_writes_none() {
         let c = chain();
         let viewer = [membership(c.org, c.team, c.project, "viewer")];
-        let allowed = allowed_for(false, &viewer, &[], c);
+        let allowed = allowed_for(false, None, &viewer, &[], c);
         for res in ["budget", "rate_limit"] {
             assert!(allowed.contains(&format!("{res}:read")), "{res}:read");
             for action in ["create", "update", "delete"] {
@@ -1622,26 +2038,26 @@ mod tests {
         }
         // asked at the org alone, or by a caller with no role, nothing is read
         let org_only = ScopeChain::org(c.org.unwrap_or_default());
-        let allowed = allowed_for(false, &viewer, &[], org_only);
+        let allowed = allowed_for(false, None, &viewer, &[], org_only);
         assert!(!allowed.contains(&"budget:read".to_string()));
-        let allowed = allowed_for(false, &[], &[], c);
+        let allowed = allowed_for(false, None, &[], &[], c);
         assert!(!allowed.contains(&"rate_limit:read".to_string()));
         // an org viewer still reads at any chain
         let org_viewer = [membership(c.org, None, None, "viewer")];
         for chain in [c, org_only] {
-            let allowed = allowed_for(false, &org_viewer, &[], chain);
+            let allowed = allowed_for(false, None, &org_viewer, &[], chain);
             assert!(allowed.contains(&"budget:read".to_string()));
         }
     }
 
     /// a provider or group may be scoped to one project (#1919), so a project
-    /// admin's own project reaches the capability crud.rs grants them, while a
+    /// admin's own project reaches the capability the crud module grants them, while a
     /// project viewer and a caller who names no project get no write
     #[test]
     fn a_project_admin_is_promised_provider_writes_on_their_project() {
         let c = chain();
         let admin = [membership(c.org, c.team, c.project, "admin")];
-        let allowed = allowed_for(false, &admin, &[], c);
+        let allowed = allowed_for(false, None, &admin, &[], c);
         for res in ["provider", "provider_group"] {
             for action in ["read", "create", "update", "delete"] {
                 assert!(
@@ -1654,20 +2070,20 @@ mod tests {
         assert!(!allowed.contains(&"team:create".to_string()));
 
         let viewer = [membership(c.org, c.team, c.project, "viewer")];
-        let allowed = allowed_for(false, &viewer, &[], c);
+        let allowed = allowed_for(false, None, &viewer, &[], c);
         assert!(allowed.contains(&"provider:read".to_string()));
         assert!(!allowed.contains(&"provider:create".to_string()));
         assert!(!allowed.contains(&"provider_group:delete".to_string()));
 
         // asked at the org alone, a project membership does not reach it
         let org_only = ScopeChain::org(c.org.unwrap_or_default());
-        let allowed = allowed_for(false, &admin, &[], org_only);
+        let allowed = allowed_for(false, None, &admin, &[], org_only);
         assert!(!allowed.contains(&"provider:create".to_string()));
 
         // an org admin still passes, with or without a project in the query
         let org_admin = [membership(c.org, None, None, "admin")];
         for chain in [c, org_only] {
-            let allowed = allowed_for(false, &org_admin, &[], chain);
+            let allowed = allowed_for(false, None, &org_admin, &[], chain);
             assert!(allowed.contains(&"provider:create".to_string()));
             assert!(allowed.contains(&"provider_group:update".to_string()));
         }
@@ -1695,7 +2111,7 @@ mod tests {
     #[test]
     fn a_team_custom_grant_is_trimmed_like_a_membership() {
         let g = [grant(chain().org, chain().team, "team", "create")];
-        let allowed = allowed_for(false, &[], &g, chain());
+        let allowed = allowed_for(false, None, &[], &g, chain());
         assert!(!allowed.contains(&"team:create".to_string()));
     }
 
@@ -1721,7 +2137,7 @@ mod tests {
                 ];
                 for use_grants in [false, true] {
                     let g: &[EffectiveGrant] = if use_grants { &grants } else { &[] };
-                    let allowed = allowed_for(false, &ms, g, c);
+                    let allowed = allowed_for(false, None, &ms, g, c);
                     for cap in CAPABILITIES {
                         // what the route's guard passes to `authorize`
                         for action in Action::ALL {
@@ -1737,7 +2153,9 @@ mod tests {
                                 },
                                 _ => c,
                             };
-                            let Authority::Role(required) = authority else {
+                            let (Authority::Role(required)
+                            | Authority::RoleOrDeployment(required, _)) = authority
+                            else {
                                 continue;
                             };
                             let requirement = Requirement {
@@ -1843,14 +2261,23 @@ mod tests {
                 "public_url:read",
                 // changing one's own password (#2804): the route writes only
                 // the caller's own row, so there is no membership to hold
-                "my_password:update"
+                "my_password:update",
+                // reading the caps that count one's own keys (#1830): the route
+                // returns only rows whose scope is the caller
+                "my_budget:read",
+                // the fleet's breaker state (#2254): the handler narrows it to
+                // the models the caller sees, so with no membership that is
+                // the deployment's own, as for `model:read`
+                "breaker_state:read",
+                // the fleet's gateway counts (#2013): no node is named
+                "cluster_summary:read"
             ]
         );
     }
 
     #[test]
     fn superadmin_holds_every_supported_action() {
-        let allowed = allowed_for(true, &[], &[], ScopeChain::default());
+        let allowed = allowed_for(true, None, &[], &[], ScopeChain::default());
         let supported: usize = CAPABILITIES
             .iter()
             .map(|cap| {
@@ -1866,7 +2293,7 @@ mod tests {
     #[test]
     fn unsupported_actions_are_absent_for_everyone() {
         for allowed in [
-            allowed_for(true, &[], &[], ScopeChain::default()),
+            allowed_for(true, None, &[], &[], ScopeChain::default()),
             as_role(Some(Role::Admin)),
         ] {
             // an audit log is append-only; nobody deletes one through the API
@@ -1885,6 +2312,22 @@ mod tests {
         assert_eq!(names, deduped, "duplicate resource in the capability table");
     }
 
+    #[test]
+    fn every_write_refused_to_a_token_names_a_resource_with_writes() {
+        for resource in crate::rbac::TOKEN_REFUSED_WRITES {
+            let row = CAPABILITIES
+                .iter()
+                .find(|c| c.resource == *resource)
+                .unwrap_or_else(|| panic!("{resource} is not in the capability table"));
+            assert!(
+                [Action::Create, Action::Update, Action::Delete]
+                    .into_iter()
+                    .any(|action| row.authority(action).is_some()),
+                "{resource} has no write for a token to be refused"
+            );
+        }
+    }
+
     // ------------------------------------------------------------------- //
     // drift guards (#704): the table is the only place a requirement lives //
     // ------------------------------------------------------------------- //
@@ -1899,11 +2342,15 @@ mod tests {
             include_str!("adaptive_telemetry.rs"),
         ),
         ("alerting.rs", include_str!("alerting.rs")),
+        ("api_tokens.rs", include_str!("api_tokens.rs")),
         ("analytics.rs", include_str!("analytics.rs")),
         ("analytics_access.rs", include_str!("analytics_access.rs")),
+        ("analytics_export.rs", include_str!("analytics_export.rs")),
         ("audit_export.rs", include_str!("audit_export.rs")),
         ("auth.rs", include_str!("auth.rs")),
         ("auth_policy.rs", include_str!("auth_policy.rs")),
+        ("breaker_state.rs", include_str!("breaker_state.rs")),
+        ("call_gap.rs", include_str!("call_gap.rs")),
         ("cluster.rs", include_str!("cluster.rs")),
         ("client_settings.rs", include_str!("client_settings.rs")),
         ("collector_config.rs", include_str!("collector_config.rs")),
@@ -1913,11 +2360,40 @@ mod tests {
         ),
         ("config_export.rs", include_str!("config_export.rs")),
         ("connectors.rs", include_str!("connectors.rs")),
+        ("conn_close.rs", include_str!("conn_close.rs")),
         ("cors.rs", include_str!("cors.rs")),
-        ("crud.rs", include_str!("crud.rs")),
+        ("deprecation.rs", include_str!("deprecation.rs")),
+        ("crud/mod.rs", include_str!("crud/mod.rs")),
+        ("crud/audit_log.rs", include_str!("crud/audit_log.rs")),
+        ("crud/budgets.rs", include_str!("crud/budgets.rs")),
+        (
+            "crud/business_units.rs",
+            include_str!("crud/business_units.rs"),
+        ),
+        ("crud/customers.rs", include_str!("crud/customers.rs")),
+        ("crud/memberships.rs", include_str!("crud/memberships.rs")),
+        ("crud/models.rs", include_str!("crud/models.rs")),
+        ("crud/pricing.rs", include_str!("crud/pricing.rs")),
+        ("crud/prompts.rs", include_str!("crud/prompts.rs")),
+        (
+            "crud/provider_groups.rs",
+            include_str!("crud/provider_groups.rs"),
+        ),
+        ("crud/providers.rs", include_str!("crud/providers.rs")),
+        ("crud/rate_limits.rs", include_str!("crud/rate_limits.rs")),
+        ("crud/routes.rs", include_str!("crud/routes.rs")),
+        ("crud/skills.rs", include_str!("crud/skills.rs")),
+        ("crud/tenancy.rs", include_str!("crud/tenancy.rs")),
+        ("crud/users.rs", include_str!("crud/users.rs")),
+        ("crud/virtual_keys.rs", include_str!("crud/virtual_keys.rs")),
         ("egress_client.rs", include_str!("egress_client.rs")),
         ("feature_flags.rs", include_str!("feature_flags.rs")),
         ("expiry_sweep.rs", include_str!("expiry_sweep.rs")),
+        ("export_tickets.rs", include_str!("export_tickets.rs")),
+        (
+            "guardrail_policies.rs",
+            include_str!("guardrail_policies.rs"),
+        ),
         ("guardrail_trial.rs", include_str!("guardrail_trial.rs")),
         ("guardrails.rs", include_str!("guardrails.rs")),
         ("labels.rs", include_str!("labels.rs")),
@@ -1925,11 +2401,17 @@ mod tests {
         ("ingest_failure.rs", include_str!("ingest_failure.rs")),
         ("invitations.rs", include_str!("invitations.rs")),
         ("ldap.rs", include_str!("ldap.rs")),
+        ("ldap_signin.rs", include_str!("ldap_signin.rs")),
         ("lib.rs", include_str!("lib.rs")),
+        ("log_erasure.rs", include_str!("log_erasure.rs")),
         ("logging_settings.rs", include_str!("logging_settings.rs")),
         ("login_throttle.rs", include_str!("login_throttle.rs")),
+        ("mail.rs", include_str!("mail.rs")),
         ("main.rs", include_str!("main.rs")),
+        ("mcp_client.rs", include_str!("mcp_client.rs")),
+        ("mcp_discovery.rs", include_str!("mcp_discovery.rs")),
         ("mcp_logs.rs", include_str!("mcp_logs.rs")),
+        ("mcp_probe.rs", include_str!("mcp_probe.rs")),
         ("model_defaults.rs", include_str!("model_defaults.rs")),
         ("mcp_oauth.rs", include_str!("mcp_oauth.rs")),
         (
@@ -1945,6 +2427,7 @@ mod tests {
         ("openapi.rs", include_str!("openapi.rs")),
         ("proxy.rs", include_str!("proxy.rs")),
         ("plugins.rs", include_str!("plugins.rs")),
+        ("price_catalogue.rs", include_str!("price_catalogue.rs")),
         ("public_routes.rs", include_str!("public_routes.rs")),
         ("public_url.rs", include_str!("public_url.rs")),
         ("rbac.rs", include_str!("rbac.rs")),
@@ -1955,12 +2438,17 @@ mod tests {
         ),
         ("request_timeout.rs", include_str!("request_timeout.rs")),
         ("runtime_policy.rs", include_str!("runtime_policy.rs")),
+        ("savings.rs", include_str!("savings.rs")),
         ("scim.rs", include_str!("scim.rs")),
         ("scim_groups.rs", include_str!("scim_groups.rs")),
         ("secret_env.rs", include_str!("secret_env.rs")),
         ("session_guard.rs", include_str!("session_guard.rs")),
         ("security.rs", include_str!("security.rs")),
         ("seed.rs", include_str!("seed.rs")),
+        (
+            "snapshot_negotiation.rs",
+            include_str!("snapshot_negotiation.rs"),
+        ),
         ("sso.rs", include_str!("sso.rs")),
         ("stability.rs", include_str!("stability.rs")),
         ("telemetry.rs", include_str!("telemetry.rs")),
@@ -2007,13 +2495,24 @@ mod tests {
     #[test]
     fn the_module_list_covers_the_whole_control_plane() {
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-        let mut on_disk: Vec<String> = std::fs::read_dir(dir)
-            .expect("src/ is readable")
-            .filter_map(|entry| {
-                let name = entry.ok()?.file_name().to_string_lossy().into_owned();
-                name.ends_with(".rs").then_some(name)
-            })
-            .collect();
+        // a module directory (`crud/`) is walked too, its files named by their
+        // path under src/, so a submodule cannot quietly escape the checks
+        fn rust_files(dir: &std::path::Path, prefix: &str, found: &mut Vec<String>) {
+            for entry in std::fs::read_dir(dir).expect("src/ is readable").flatten() {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                if entry.path().is_dir() {
+                    // `bin/` holds separate binaries, not control-plane handlers
+                    if name == "bin" {
+                        continue;
+                    }
+                    rust_files(&entry.path(), &format!("{prefix}{name}/"), found);
+                } else if name.ends_with(".rs") {
+                    found.push(format!("{prefix}{name}"));
+                }
+            }
+        }
+        let mut on_disk = Vec::new();
+        rust_files(&dir, "", &mut on_disk);
         on_disk.sort();
         let mut listed: Vec<String> = MODULES.iter().map(|(name, _)| name.to_string()).collect();
         listed.sort();
@@ -2122,10 +2621,14 @@ mod tests {
         );
         assert_eq!(
             cap!("feature_flags", Update).authority,
-            Authority::Superadmin
+            Authority::Deployment(&[DeploymentRole::Operator])
         );
         assert_eq!(
             superadmin_cap!("cluster_node", Delete).authority,
+            Authority::Deployment(&[DeploymentRole::Operator])
+        );
+        assert_eq!(
+            superadmin_cap!("user", Update).authority,
             Authority::Superadmin
         );
         // and the pair travels with the requirement, which is what lets the
@@ -2149,6 +2652,7 @@ mod tests {
         #[serde(rename = "$comment")]
         comment: &'static str,
         roles: Vec<RoleView>,
+        deployment_roles: Vec<DeploymentRole>,
         resources: Vec<ResourceView>,
         /// the chain fields `chain_at` clears for a row of each scope the
         /// table uses, so the dashboard's port of `allowed_for` can be pinned
@@ -2185,12 +2689,16 @@ mod tests {
 
     fn render_artifact() -> String {
         let MatrixView {
-            roles, resources, ..
+            roles,
+            deployment_roles,
+            resources,
+            ..
         } = builtin_matrix();
         let artifact = MatrixArtifact {
             comment: "written by the rolter-control test suite from CAPABILITIES in \
                       src/rbac_matrix.rs (`just gen-rbac`) — do not edit by hand",
             roles,
+            deployment_roles,
             resources,
             chain_at: chain_trims(),
         };

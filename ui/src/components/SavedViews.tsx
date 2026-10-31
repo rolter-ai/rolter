@@ -289,7 +289,7 @@ export function SavedViews({ surface, current, onApply }: SavedViewsProps) {
                               rename.reset();
                               setRenaming({ id: view.id, name: view.name });
                             }}
-                            className="flex flex-none rounded-[6px] border border-[color:var(--border-subtle)] p-1.5 text-[color:var(--text-secondary)] transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                            className="flex flex-none rounded-sm border border-[color:var(--border-subtle)] p-1.5 text-[color:var(--text-secondary)] transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                           >
                             <Pencil aria-hidden className="h-3.5 w-3.5" />
                           </button>

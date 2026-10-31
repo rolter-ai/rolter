@@ -585,6 +585,8 @@ async fn send_sample(
         tenant: WebhookTenant::default(),
         truncated,
         content: &payload,
+        policy: None,
+        streamed: false,
     };
 
     let fail = |error: TrialError, http_status: Option<u16>, started: Instant| ProviderTestResult {
@@ -662,17 +664,18 @@ async fn send_sample(
     }
 
     let latency_ms = started.elapsed().as_millis() as u64;
-    // strict, unlike `WebhookDecision::parse`: the gateway reads anything it
-    // cannot parse as allow, and a test that did the same would report a
-    // broken endpoint as a passing one
+    // the same strict reading the gateway applies (#459): an answer that is
+    // not a decision resolves through the provider's failure mode there, so a
+    // test must not report it as a passing one
     let decision =
-        match serde_json::from_slice::<WebhookDecision>(&bytes) {
-            Ok(decision) => decision,
-            Err(_) => return fail(
+        match rolter_core::ScoredDecision::parse(&bytes) {
+            Some(scored) => scored.decision,
+            None => return fail(
                 TrialError::new(
                     TrialErrorKind::Unparsable,
                     "the answer is not a decision (an object with an \"action\" of allow, block, \
-                     transform or annotate); the gateway would treat it as allow",
+                     transform or annotate, or scored \"categories\"); the gateway would apply \
+                     the provider's failure mode",
                 ),
                 Some(status),
                 started,

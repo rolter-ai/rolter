@@ -31,7 +31,14 @@ import {
   type Recorder,
   withDocsBase,
 } from "./story-harness";
-import type { LabelRow, ProviderGroupRow, ProviderRow, ProviderTestResult } from "@/lib/api";
+import type {
+  LabelRow,
+  ProviderCacheProbeResult,
+  ProviderCacheVerdict,
+  ProviderGroupRow,
+  ProviderRow,
+  ProviderTestResult,
+} from "@/lib/api";
 import en from "@/lib/i18n/locales/en.json";
 import ru from "@/lib/i18n/locales/ru.json";
 import {
@@ -67,6 +74,8 @@ const PROVIDERS: ProviderRow[] = [
     created_at: "2026-01-09T00:00:00Z",
   },
 ];
+
+let probed: Recorder;
 
 const loaded = routes([
   ["/providers", () => PROVIDERS],
@@ -881,17 +890,21 @@ const GROUPS: ProviderGroupRow[] = [
 
 const target = (provider: string) => ({ provider, weight: 1 });
 
+/** the scope's organization, which owns every stored provider these stories list */
+const OWN = { org_id: "org-1", project_id: "project-1" };
+
 const EFFECTIVE = {
   providers: [],
   virtual_keys: [],
   routes: [
-    { model: "gpt-4o", strategy: "weighted", targets: [target("openai-prod")] },
+    { model: "gpt-4o", strategy: "weighted", tenancy: OWN, targets: [target("openai-prod")] },
     {
       model: "chat",
       strategy: "weighted",
+      tenancy: OWN,
       targets: [target("openai-prod"), target("anthropic-eu")],
     },
-    { model: "claude", strategy: "weighted", targets: [target("anthropic-eu")] },
+    { model: "claude", strategy: "weighted", tenancy: OWN, targets: [target("anthropic-eu")] },
   ],
 };
 
@@ -937,6 +950,50 @@ export const DeleteNamesTheRoutesAndGroupsThatUseTheProvider: Story = {
     await expect(dialog.getByText(/take it out of those first/)).toBeVisible();
     await expect(dialog.getByText("openai-prod/model")).toBeVisible();
     await expect(dialog.getByRole("button", { name: "Delete provider" })).toBeEnabled();
+  },
+};
+
+/**
+ * #3460: another organization also has an `openai-prod`, and routes of its own
+ * through it. Deleting this organization's provider lists this organization's
+ * routes only, and judges "only target" on them alone.
+ */
+export const DeleteNamesOnlyItsOwnOrganizationsRoutes: Story = {
+  render: () => (
+    <Harness
+      fetchStub={withUsage({
+        config: async () =>
+          json({
+            ...EFFECTIVE,
+            routes: [
+              ...EFFECTIVE.routes,
+              {
+                model: "theirs",
+                strategy: "weighted",
+                tenancy: { org_id: "org-2", project_id: "project-9" },
+                targets: [target("openai-prod")],
+              },
+              // their `chat` names only their own `openai-prod`
+              {
+                model: "chat",
+                strategy: "weighted",
+                tenancy: { org_id: "org-2", project_id: "project-9" },
+                targets: [target("openai-prod")],
+              },
+            ],
+          }),
+      })}
+    >
+      <Providers />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const dialog = await openDeleteFor(canvasElement, "openai-prod");
+    await dialog.findByText("Target of 2 routes");
+    await expect(dialog.queryByText("theirs")).toBeNull();
+    // this organization's `chat` still has another target, whatever theirs has
+    await expect(dialog.getAllByText("only target")).toHaveLength(1);
+    await expect(dialog.getByText("chat").parentElement).not.toHaveTextContent("only target");
   },
 };
 
@@ -1020,10 +1077,11 @@ export const DeleteUsageHandlesManyAndLongNames: Story = {
     const many = {
       ...EFFECTIVE,
       routes: [
-        { model: long, strategy: "weighted", targets: [target("openai-prod")] },
+        { model: long, strategy: "weighted", tenancy: OWN, targets: [target("openai-prod")] },
         ...Array.from({ length: 11 }, (_, i) => ({
           model: `route-${String(i).padStart(2, "0")}`,
           strategy: "weighted",
+          tenancy: OWN,
           targets: [target("openai-prod"), target("anthropic-eu")],
         })),
       ],
@@ -1085,7 +1143,7 @@ export const ShowsWhichProjectEachProviderIsScopedTo: Story = {
  *
  * `provider` is a project capability, so asked at their own project the
  * effective answer grants the writes, and a page-level gate would offer Edit
- * and Delete on the org-wide row too — which `crud.rs` refuses, because it
+ * and Delete on the org-wide row too — which `crud/providers.rs` refuses, because it
  * checks such a row at the org. Each row is gated at its own scope instead: the
  * project's row is theirs, the org-wide one names the role it takes.
  */
@@ -1135,3 +1193,246 @@ const providersFit = phoneFits({
 });
 export const MobileInRussian: Story = providersFit("mobile", "ru");
 export const ActionsStayInReachAtMobile: Story = providersFit("mobile", "en");
+
+// --- whether a provider reports prompt-cache metrics (#984)
+
+const VERDICTS: ProviderCacheVerdict[] = [
+  {
+    provider_id: "p-1",
+    reports: true,
+    spelling: "cached_tokens",
+    model: "gpt-4o-mini",
+    probed_at: "2026-10-01T10:00:00Z",
+  },
+  {
+    provider_id: "p-2",
+    reports: false,
+    spelling: null,
+    model: "claude-haiku",
+    probed_at: "2026-09-20T10:00:00Z",
+  },
+];
+// a third provider no one has probed, and one whose kind cannot be probed
+const UNPROBED: ProviderRow = {
+  ...PROVIDERS[0],
+  id: "p-3",
+  name: "vllm-lab",
+  slug: "vllm-lab",
+  kind: "openai_compatible",
+  api_base: "http://vllm.lab:8000/v1",
+};
+const BEDROCK: ProviderRow = {
+  ...PROVIDERS[0],
+  id: "p-4",
+  name: "bedrock-us",
+  slug: "bedrock-us",
+  kind: "bedrock",
+  api_base: "https://bedrock-runtime.us-east-1.amazonaws.com",
+};
+
+const rowOf = async (canvas: ReturnType<typeof within>, name: string) =>
+  within((await canvas.findAllByText(name))[0].closest('[role="row"]') as HTMLElement);
+
+/**
+ * The three states read apart: reports (success), does not report (warning) and
+ * never probed (outline). A provider with no verdict is "not probed yet", never
+ * "no cache metrics"; the title says which model and field the verdict rests on.
+ */
+export const CacheReportingShowsThreeStates: Story = {
+  render: () => (
+    <Harness
+      fetchStub={routes([
+        ["/provider-cache-probes", () => VERDICTS],
+        ["/providers", () => [...PROVIDERS, UNPROBED]],
+        ["/config/problems", () => ({ problems: [] })],
+      ])}
+    >
+      <Providers />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const reports = await (await rowOf(canvas, "openai-prod")).findByText(/^Reports cache/);
+    await expect(reports).toHaveAttribute("title", expect.stringContaining("Model: gpt-4o-mini"));
+    await expect(reports).toHaveAttribute("title", expect.stringContaining("Field: cached_tokens"));
+    await expect(
+      await (await rowOf(canvas, "anthropic-eu")).findByText(/^No cache metrics/),
+    ).toBeVisible();
+    await expect(
+      await (await rowOf(canvas, "vllm-lab")).findByText("Not probed yet"),
+    ).toBeVisible();
+    // the unprobed one is not reported as a "no"
+    await expect((await rowOf(canvas, "vllm-lab")).queryByText(/No cache metrics/)).toBeNull();
+  },
+};
+
+/** A failed or pending read of the verdicts claims nothing, least of all "not probed yet". */
+export const CacheReportingFailedReadShowsNothing: Story = {
+  render: () => (
+    <Harness
+      fetchStub={scoped(async (input) => {
+        const url = String(input);
+        if (url.includes("/provider-cache-probes")) {
+          return json({ error: { message: "boom" } }, 500);
+        }
+        if (url.includes("/config/problems")) return json({ problems: [] });
+        return json(PROVIDERS);
+      })}
+    >
+      <Providers />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getAllByText("openai-prod").length).toBeGreaterThan(0));
+    // the screen still works; the probe action is still offered
+    await expect(
+      canvas.getByRole("button", { name: "Probe cache reporting of openai-prod" }),
+    ).toBeVisible();
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    await expect(canvas.queryByText(/Not probed yet|Reports cache|No cache metrics/)).toBeNull();
+  },
+};
+
+export const CacheReportingPendingShowsNothing: Story = {
+  render: () => (
+    <Harness
+      fetchStub={scoped(async (input) => {
+        const url = String(input);
+        if (url.includes("/provider-cache-probes")) return new Promise<Response>(() => {});
+        if (url.includes("/config/problems")) return json({ problems: [] });
+        return json(PROVIDERS);
+      })}
+    >
+      <Providers />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getAllByText("openai-prod").length).toBeGreaterThan(0));
+    await expect(canvas.queryByText(/Not probed yet|Reports cache|No cache metrics/)).toBeNull();
+  },
+};
+
+/** The probe is a real completion: it asks for the model, sends it, and shows what was learned. */
+export const ProbeCacheAsksForAModelAndRecordsTheVerdict: Story = {
+  render: () => {
+    let verdicts: ProviderCacheVerdict[] = [];
+    const result: ProviderCacheProbeResult = {
+      recorded: true,
+      verdict: {
+        provider_id: "p-1",
+        reports: true,
+        spelling: "cached_tokens",
+        model: "gpt-4o-mini",
+        probed_at: "2026-10-27T10:00:00Z",
+      },
+      probed_url: "https://api.openai.com/v1/chat/completions",
+      status: 200,
+      latency_ms: 412,
+      error: null,
+    };
+    probed = recording(
+      scoped(async (input, init) => {
+        const url = String(input);
+        if (init?.method === "POST" && url.includes("/probe-cache")) {
+          verdicts = [result.verdict as ProviderCacheVerdict];
+          return json(result);
+        }
+        if (url.includes("/provider-cache-probes")) return json(verdicts);
+        if (url.includes("/config/problems")) return json({ problems: [] });
+        return json(PROVIDERS);
+      }),
+    );
+    return (
+      <Harness fetchStub={probed.stub}>
+        <Providers />
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(
+      await (await rowOf(canvas, "openai-prod")).findByText("Not probed yet"),
+    ).toBeVisible();
+    await userEvent.click(
+      await canvas.findByRole("button", { name: "Probe cache reporting of openai-prod" }),
+    );
+    const dialog = within(await within(document.body).findByRole("dialog"));
+    // nothing is sent until a model is named
+    probed.expectNotSent("POST", "/probe-cache");
+    await userEvent.type(await dialog.findByLabelText(/Upstream model/), "gpt-4o-mini");
+    await userEvent.click(dialog.getByRole("button", { name: "Run probe" }));
+    await probed.expectSent("POST", "/providers/p-1/probe-cache?model=gpt-4o-mini");
+    await dialog.findByText(/Recorded: the provider reports prompt-cache usage \(cached_tokens\)/);
+    await dialog.findByText(/answered 200 in 412 ms/);
+    // the list picks the new verdict up
+    await expect(
+      await (await rowOf(canvas, "openai-prod")).findByText(/^Reports cache/),
+    ).toBeVisible();
+  },
+};
+
+/** A probe that learned nothing says why and leaves the earlier verdict standing. */
+export const ProbeCacheNotRecordedKeepsTheOldVerdict: Story = {
+  render: () => (
+    <Harness
+      fetchStub={scoped(async (input, init) => {
+        const url = String(input);
+        if (init?.method === "POST" && url.includes("/probe-cache")) {
+          return json({
+            recorded: false,
+            verdict: null,
+            probed_url: "https://api.openai.com/v1/chat/completions",
+            status: 401,
+            latency_ms: 90,
+            error: "upstream answered 401",
+          } satisfies ProviderCacheProbeResult);
+        }
+        if (url.includes("/provider-cache-probes")) return json(VERDICTS);
+        if (url.includes("/config/problems")) return json({ problems: [] });
+        return json(PROVIDERS);
+      })}
+    >
+      <Providers />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(
+      await canvas.findByRole("button", { name: "Probe cache reporting of openai-prod" }),
+    );
+    const dialog = within(await within(document.body).findByRole("dialog"));
+    // the model of the standing verdict is offered again
+    await waitFor(() => expect(dialog.getByLabelText(/Upstream model/)).toHaveValue("gpt-4o-mini"));
+    await userEvent.click(dialog.getByRole("button", { name: "Run probe" }));
+    await dialog.findByText(
+      /Nothing learned, the earlier verdict is unchanged. upstream answered 401/,
+    );
+    await expect((await rowOf(canvas, "openai-prod")).getByText(/^Reports cache/)).toBeVisible();
+  },
+};
+
+/** A kind that cannot be probed is not offered the action; the others are gated as an edit. */
+export const ProbeCacheIsOfferedOnlyForProbeableKindsAndGated: Story = {
+  render: () => (
+    <Harness
+      role="viewer"
+      fetchStub={routes([
+        ["/provider-cache-probes", () => VERDICTS],
+        ["/providers", () => [...PROVIDERS, BEDROCK]],
+        ["/config/problems", () => ({ problems: [] })],
+      ])}
+    >
+      <Providers />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getAllByText("bedrock-us").length).toBeGreaterThan(0));
+    await expect(
+      canvas.queryByRole("button", { name: "Probe cache reporting of bedrock-us" }),
+    ).toBeNull();
+    await expectRefused(canvasElement, "Probe cache reporting of openai-prod");
+  },
+};

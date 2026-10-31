@@ -36,7 +36,6 @@ from rolter_e2e.stack import CONTROL_URL
 
 pytestmark = pytest.mark.idp
 
-USER = KeycloakUser(username="ada", email="ada@example.com", password="ada-password")
 GROUP_PLATFORM = "platform"
 GROUP_UNMAPPED = "contractors"
 
@@ -45,16 +44,27 @@ def _rand(prefix: str) -> str:
     return f"{prefix}-{uuid.uuid4().hex[:8]}"
 
 
+def _new_user(keycloak: Keycloak, *, member_of: list[str]) -> KeycloakUser:
+    """A user no other test has signed in as.
+
+    Rolter refuses to adopt an account that already holds roles in another org
+    (`account_outside_org`), so a user shared across tests, each signing in
+    through its own org's provider, would be refused from the second test on.
+    """
+    name = _rand("user")
+    user = KeycloakUser(username=name, email=f"{name}@example.com", password=f"{name}-password")
+    keycloak.add_user(REALM, user, member_of)
+    return user
+
+
 @pytest.fixture(scope="module")
-def keycloak(stack) -> Keycloak:  # noqa: ANN001 - session fixture from conftest
+def keycloak(stack) -> Keycloak:
     kc = Keycloak()
     kc.wait_ready()
     kc.provision_realm(
         realm=REALM,
         redirect_uris=[f"{CONTROL_URL}/*"],
         groups=[GROUP_PLATFORM, GROUP_UNMAPPED],
-        user=USER,
-        member_of=[GROUP_PLATFORM],
     )
     try:
         yield kc
@@ -68,19 +78,24 @@ def _start_login(slug: str) -> tuple[str, httpx.Response]:
     return resp.headers["location"], resp
 
 
-def _finish_login(browser: BrowserSession, authorize_url: str) -> httpx.Response:
+def _finish_login(
+    browser: BrowserSession, authorize_url: str, user: KeycloakUser
+) -> httpx.Response:
     """Log in at Keycloak and follow its redirect back into rolter."""
-    redirect = browser.log_in(authorize_url, USER.username, USER.password)
+    redirect = browser.log_in(authorize_url, user.username, user.password)
     assert redirect.status_code in (302, 303), redirect.text
     callback = redirect.headers["location"]
     assert callback.startswith(CONTROL_URL), f"keycloak redirected off-site: {callback}"
     return browser.get(callback)
 
 
-def test_sso_login_grants_the_role_the_idp_group_maps_to(admin: ControlClient, keycloak: Keycloak) -> None:
+def test_sso_login_grants_the_role_the_idp_group_maps_to(
+    admin: ControlClient, keycloak: Keycloak
+) -> None:
     org = admin.create_org()
     team = admin.create_team(org["id"])
     slug = _rand("kc")
+    user = _new_user(keycloak, member_of=[GROUP_PLATFORM])
 
     provider = admin._http.json(
         "POST",
@@ -108,19 +123,19 @@ def test_sso_login_grants_the_role_the_idp_group_maps_to(admin: ControlClient, k
 
     browser = BrowserSession()
     try:
-        landed = _finish_login(browser, authorize_url)
+        landed = _finish_login(browser, authorize_url, user)
     finally:
         browser.close()
     assert landed.status_code == 200, landed.text
     body = landed.json()
-    assert body["user"]["email"] == USER.email
+    assert body["user"]["email"] == user.email
     assert body["granted_roles"] == ["admin"]
 
     # the session is a real one, and the mapped role really works: keycloak's
     # `/platform` group became team-scoped admin in rolter
     session = ControlClient(CONTROL_URL, token=body["token"])
     try:
-        assert session.me()["user"]["email"] == USER.email
+        assert session.me()["user"]["email"] == user.email
         project = session.create_project(team["id"], name=_rand("from-sso"))
         assert project["team_id"] == team["id"]
         # ...and nothing above that scope
@@ -132,10 +147,13 @@ def test_sso_login_grants_the_role_the_idp_group_maps_to(admin: ControlClient, k
         session.close()
 
 
-def test_leaving_the_idp_group_revokes_the_role_it_granted(admin: ControlClient, keycloak: Keycloak) -> None:
+def test_leaving_the_idp_group_revokes_the_role_it_granted(
+    admin: ControlClient, keycloak: Keycloak
+) -> None:
     org = admin.create_org()
     team = admin.create_team(org["id"])
     slug = _rand("kc")
+    user = _new_user(keycloak, member_of=[GROUP_PLATFORM])
     provider = admin._http.json(
         "POST",
         f"/api/v1/orgs/{org['id']}/sso-providers",
@@ -156,7 +174,7 @@ def test_leaving_the_idp_group_revokes_the_role_it_granted(admin: ControlClient,
     browser = BrowserSession()
     try:
         authorize_url, _ = _start_login(slug)
-        first = _finish_login(browser, authorize_url)
+        first = _finish_login(browser, authorize_url, user)
         assert first.status_code == 200
         user_id = first.json()["user"]["id"]
 
@@ -174,13 +192,12 @@ def test_leaving_the_idp_group_revokes_the_role_it_granted(admin: ControlClient,
 
         # the IdP admin removes them from the group; the next login is refused
         # because nothing maps any more, and the role that group granted is gone
-        keycloak.set_group_membership(REALM, USER.username, GROUP_PLATFORM, member=False)
+        keycloak.set_group_membership(REALM, user.username, GROUP_PLATFORM, member=False)
         authorize_url, _ = _start_login(slug)
-        refused = _finish_login(browser, authorize_url)
+        refused = _finish_login(browser, authorize_url, user)
         assert refused.status_code == 403, refused.text
     finally:
         browser.close()
-        keycloak.set_group_membership(REALM, USER.username, GROUP_PLATFORM, member=True)
 
     roles = {
         (m["role"], m["source"])
@@ -195,6 +212,7 @@ def test_the_authorize_url_is_rejected_when_the_state_is_replayed(
 ) -> None:
     org = admin.create_org()
     slug = _rand("kc")
+    user = _new_user(keycloak, member_of=[])
     provider = admin._http.json(
         "POST",
         f"/api/v1/orgs/{org['id']}/sso-providers",
@@ -212,7 +230,7 @@ def test_the_authorize_url_is_rejected_when_the_state_is_replayed(
     browser = BrowserSession()
     try:
         authorize_url, _ = _start_login(slug)
-        redirect = browser.log_in(authorize_url, USER.username, USER.password)
+        redirect = browser.log_in(authorize_url, user.username, user.password)
         callback = redirect.headers["location"]
         first = browser.get(callback)
         assert first.status_code == 200, first.text

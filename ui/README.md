@@ -136,7 +136,7 @@ Notes:
 
 Stories currently cover the core UI-kit primitives (button, input, textarea,
 select, switch, badge, tag, card, stat-card, empty-state, skeleton, tabs), the
-overlays (dialog, sheet), the charts (sparkline, donut, bar/line), and the
+overlays (dialog, sheet), the charts (sparkline, bar/line, scatter), and the
 navigation shells (`NavSidebar`, `FilterPanel`), under `src/components/ui/`.
 
 ## Structure
@@ -145,5 +145,5 @@ navigation shells (`NavSidebar`, `FilterPanel`), under `src/components/ui/`.
 - `src/App.tsx` — layout + routes
 - `src/pages/` — Models, Keys, Logs
 - `src/components/ui/` — shadcn components
-- `src/lib/api.ts` — typed fetch helpers for the control API
+- `src/lib/api/` — typed fetch helpers for the control API, one module per resource group (`index.ts` re-exports them all)
 - `src/lib/utils.ts` — `cn()` class helper

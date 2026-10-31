@@ -6,12 +6,11 @@ import { useTranslation } from "react-i18next";
 import { superadminOnly } from "@/components/ForbiddenScreen";
 import { LoadError } from "@/components/LoadError";
 import { PanelSkeleton } from "@/components/LoadingState";
-import { Button } from "@/components/ui/button";
 import { Combobox } from "@/components/ui/combobox";
 import { Badge } from "@/components/ui/badge";
 import { Field } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
-import { SaveBar } from "@/components/ui/save-bar";
+import { SettingsSaveBar } from "@/components/SettingsSaveBar";
 import { SettingsPanel } from "@/components/ui/settings-panel";
 import { Switch } from "@/components/ui/switch";
 import {
@@ -23,8 +22,8 @@ import {
 } from "@/lib/api";
 import { errorText } from "@/lib/error-copy";
 import { useToast } from "@/lib/toast";
-import { translateErrors, useFieldErrors } from "@/lib/use-field-errors";
-import { useLeaveGuard } from "@/lib/use-leave-guard";
+import { translateErrors } from "@/lib/use-field-errors";
+import { useSettingsForm } from "@/lib/use-settings-form";
 import { useScreenReady } from "@/lib/ux-react";
 
 interface FormState {
@@ -166,34 +165,26 @@ function PerformanceScreen() {
   // `policy` is the query the user is actually waiting on for this screen
   useScreenReady(!policy.isLoading);
 
-  const [form, setForm] = React.useState<FormState | null>(null);
   const base = React.useId();
   const idOf = (key: FieldKey) => `${base}-${key}`;
-  React.useEffect(() => {
-    if (policy.data && form === null) {
-      setForm(fromDto(policy.data));
-    }
-  }, [policy.data, form]);
-
-  // the fields that differ from what the server holds; an edit that is typed
-  // back to the stored value is no edit, and a draft is lost on navigation
-  // (#2584)
-  const changed = React.useMemo(() => {
-    if (!form || !policy.data) return [];
-    const stored = fromDto(policy.data);
-    return (Object.keys(stored) as (keyof FormState)[]).filter((key) => form[key] !== stored[key]);
-  }, [form, policy.data]);
-  const dirty = changed.length > 0;
-  const leavePrompt = useLeaveGuard(dirty);
-
-  const fields = useFieldErrors<FieldKey>({
-    order: FIELD_ORDER,
-    wire: WIRE_FIELDS,
-    idOf,
-    // a disabled field cannot be fixed, so no complaint about it holds Save
-    skip: (key) => form !== null && fieldDisabled(form, key),
-    local: form ? translateErrors(validate(form), t) : {},
+  // an edit typed back to the stored value is no edit, and a draft is lost on
+  // navigation (#2584), which the shared form state guards
+  const source = React.useMemo(
+    () => (policy.data ? fromDto(policy.data) : undefined),
+    [policy.data],
+  );
+  const sf = useSettingsForm<FormState, FieldKey>({
+    source,
+    fieldErrors: (draft) => ({
+      order: FIELD_ORDER,
+      wire: WIRE_FIELDS,
+      idOf,
+      // a disabled field cannot be fixed, so no complaint about it holds Save
+      skip: (key) => draft !== null && fieldDisabled(draft, key),
+      local: draft ? translateErrors(validate(draft), t) : {},
+    }),
   });
+  const { draft: form, fields, changed } = sf;
 
   const save = useMutation({
     mutationFn: (f: FormState) => {
@@ -225,8 +216,7 @@ function PerformanceScreen() {
       // the cached write alone left every other reader of this key on the
       // value it already had; the refetch is what makes the save stick (#1197)
       void queryClient.invalidateQueries({ queryKey: ["runtime-policy"] });
-      setForm(fromDto(dto));
-      fields.clear();
+      sf.commit(fromDto(dto));
       toast.push({
         tone: "success",
         title: t("toast.saved"),
@@ -264,19 +254,14 @@ function PerformanceScreen() {
   }
   if (!form) return null;
 
-  const set = (patch: Partial<FormState>) => {
-    setForm((f) => (f ? { ...f, ...patch } : f));
-  };
   // the props every number field shares: its id, its value, its error, and an
   // edit that answers the server's complaint about that field
+  const { set } = sf;
   const numberField = (key: FieldKey) => ({
     id: idOf(key),
     value: form[key],
     error: fields.errorOf(key),
-    onChange: (v: string) => {
-      set({ [key]: v });
-      fields.edit(key);
-    },
+    onChange: (v: string) => set({ [key]: v }),
   });
   const queue = form.queueEnabled;
   // a panel says it holds an edit, so the field that moved is findable among ten
@@ -284,15 +269,9 @@ function PerformanceScreen() {
     keys.some((key) => changed.includes(key)) ? (
       <Badge tone="warning">{t("pages.performance.edited")}</Badge>
     ) : undefined;
-  const discard = () => {
-    if (policy.data) setForm(fromDto(policy.data));
-    fields.clear();
-    save.reset();
-  };
-  const status = dirty ? t("pages.performance.status.changed", { count: changed.length }) : null;
 
   return (
-    <SettingsBody>
+    <SettingsBody onSubmit={() => fields.submit(() => save.mutate(form))}>
       <SettingsPanel
         title={t("pages.performance.retries.title")}
         description={t("pages.performance.retries.desc")}
@@ -330,13 +309,8 @@ function PerformanceScreen() {
       <SettingsPanel
         title={t("pages.performance.queue.title")}
         description={t("pages.performance.queue.desc")}
-        badge={editedBadge(
-          "queueEnabled",
-          "queueCapacity",
-          "queueWorkers",
-          "queueBackpressure",
-          "queueBlockMs",
-        )}
+        badge={editedBadge("queueCapacity", "queueWorkers", "queueBackpressure", "queueBlockMs")}
+        unsaved={changed.includes("queueEnabled")}
         dimmed={!queue}
         action={
           <Switch
@@ -379,18 +353,7 @@ function PerformanceScreen() {
         />
       </SettingsPanel>
 
-      <SaveBar
-        invalid={fields.invalid.length}
-        pending={save.isPending}
-        disabled={!dirty}
-        status={status}
-        onSave={() => fields.submit(() => save.mutate(form))}
-      >
-        <Button variant="outline" disabled={!dirty || save.isPending} onClick={discard}>
-          {t("pages.performance.discard")}
-        </Button>
-      </SaveBar>
-      {leavePrompt}
+      <SettingsSaveBar form={sf} pending={save.isPending} updatedAt={policy.data?.updated_at} />
     </SettingsBody>
   );
 }
@@ -429,4 +392,8 @@ function NumberField({
 // deployment-scoped settings: superadmin-only in the capability table, so a
 // lesser caller sees the refusal instead of a screen that loads and then 403s
 // (#1183)
-export default superadminOnly(PerformanceScreen, "errors.resources.performanceSettings");
+export default superadminOnly(
+  PerformanceScreen,
+  "errors.resources.performanceSettings",
+  "runtime_policy:read",
+);

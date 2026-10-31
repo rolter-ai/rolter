@@ -12,6 +12,7 @@ use rolter_core::{Error, Result};
 
 use super::super::models::{
     McpGatewaySettings, McpLoginState, McpOAuthGrant, McpOAuthSession, McpServer, McpToolGroup,
+    McpToolGroupAssignment,
 };
 use super::support::{fetch_optional_or_not_found, require_affected, store_err};
 
@@ -27,6 +28,9 @@ const MCP_SERVER_COLUMNS: &str = "id, org_id, name, slug, url, transport, descri
      auth_kind, auth_header_name, connect_timeout_ms, request_timeout_ms, max_retries, \
      oauth_issuer, oauth_discovery, oauth_discovered_issuer, oauth_discovered_authorize_url, \
      oauth_discovered_token_url, oauth_discovered_iss_supported, oauth_discovered_at, \
+     tools_stale, tools_discovery_status, tools_discovery_error, tools_discovered_at, \
+     tools_discovery_attempted_at, last_contact_at, last_protocol_version, last_server_name, \
+     last_error_kind, last_error_at, \
      (client_secret_ciphertext is not null) as has_client_secret, \
      (credential_ciphertext is not null) as has_credential";
 
@@ -62,6 +66,27 @@ pub struct McpServerUpdate<'a> {
     pub connect_timeout_ms: Option<i32>,
     pub request_timeout_ms: Option<i32>,
     pub max_retries: Option<i32>,
+}
+
+/// One conversation with a server, as recorded on its row (#951).
+#[derive(Debug, Clone, Copy)]
+pub enum McpContact<'a> {
+    /// the `initialize` handshake completed
+    Reached {
+        protocol_version: &'a str,
+        server_name: Option<&'a str>,
+    },
+    /// it did not; `kind` is one of the values the column's check allows
+    Failed { kind: &'a str },
+}
+
+/// What a successful `tools/list` call leaves on the row (#1283).
+#[derive(Debug, Clone, Copy)]
+pub struct McpToolDiscovery<'a> {
+    pub tools: &'a [String],
+    pub stale: &'a [String],
+    /// a JSON array of `{name, description, input_schema}` objects
+    pub schemas: &'a serde_json::Value,
 }
 
 /// How rolter authenticates to a server, as an operator is setting it.
@@ -234,6 +259,8 @@ impl McpServerRepo<'_> {
                 "update mcp_servers set name = $2, url = $3, transport = $4, description = $5, \
                  enabled = $6, tools = $7, required_scopes = $8, connect_timeout_ms = $9, \
                  request_timeout_ms = $10, max_retries = $11, \
+                 tools_stale = coalesce((select array_agg(t) from unnest(tools_stale) t \
+                     where t = any($7)), '{{}}'), \
                  {CLEAR_DISCOVERY_ON_URL_CHANGE} \
                  where id = $1 returning {MCP_SERVER_COLUMNS}"
             )))
@@ -252,6 +279,94 @@ impl McpServerRepo<'_> {
             || format!("mcp server {id}"),
         )
         .await
+    }
+
+    /// The descriptions and input schemas the last discovery saw, as the JSON
+    /// array it stored. Served by its own endpoint so a server listing does
+    /// not carry every tool's schema.
+    pub async fn tool_schemas(&self, id: Uuid) -> Result<serde_json::Value> {
+        let row: Option<(serde_json::Value,)> =
+            sqlx::query_as("select tool_schemas from mcp_servers where id = $1")
+                .bind(id)
+                .fetch_optional(self.0)
+                .await
+                .map_err(store_err)?;
+        row.map(|(schemas,)| schemas)
+            .ok_or_else(|| Error::NotFound(format!("mcp server {id}")))
+    }
+
+    /// Store what a `tools/list` call returned (#1283). `tools` is the
+    /// reconciled manifest and `stale` the names in it the server no longer
+    /// returns; both are computed by the caller so the policy lives in one
+    /// tested function rather than in a SQL expression.
+    pub async fn record_tool_discovery(
+        &self,
+        id: Uuid,
+        discovery: McpToolDiscovery<'_>,
+    ) -> Result<McpServer> {
+        fetch_optional_or_not_found(
+            sqlx::query_as(sqlx::AssertSqlSafe(format!(
+                "update mcp_servers set tools = $2, tools_stale = $3, tool_schemas = $4, \
+                 tools_discovery_status = 'discovered', tools_discovery_error = null, \
+                 tools_discovered_at = now(), tools_discovery_attempted_at = now() \
+                 where id = $1 returning {MCP_SERVER_COLUMNS}"
+            )))
+            .bind(id)
+            .bind(discovery.tools)
+            .bind(discovery.stale)
+            .bind(discovery.schemas),
+            self.0,
+            || format!("mcp server {id}"),
+        )
+        .await
+    }
+
+    /// Note that discovery ran and got no answer. The manifest, the stale
+    /// flags and `tools_discovered_at` are left exactly as they were: a server
+    /// being down must neither empty its tools nor look freshly discovered.
+    /// A server that was never discovered stays `pending` rather than
+    /// becoming `failed`, so a card keeps saying it is the catalog's list.
+    pub async fn record_tool_discovery_failure(&self, id: Uuid, error: &str) -> Result<McpServer> {
+        fetch_optional_or_not_found(
+            sqlx::query_as(sqlx::AssertSqlSafe(format!(
+                "update mcp_servers set tools_discovery_error = $2, \
+                 tools_discovery_attempted_at = now(), \
+                 tools_discovery_status = case when tools_discovered_at is null \
+                     then 'pending' else 'failed' end \
+                 where id = $1 returning {MCP_SERVER_COLUMNS}"
+            )))
+            .bind(id)
+            .bind(error),
+            self.0,
+            || format!("mcp server {id}"),
+        )
+        .await
+    }
+
+    /// Note what a conversation with the server came to (#951). A failure
+    /// leaves the last success alone and a success leaves the last failure
+    /// alone, so the row can say both "reached it at" and "it last broke at".
+    pub async fn record_contact(&self, id: Uuid, contact: McpContact<'_>) -> Result<()> {
+        let query = match contact {
+            McpContact::Reached {
+                protocol_version,
+                server_name,
+            } => sqlx::query(
+                "update mcp_servers set last_contact_at = now(), last_protocol_version = $2, \
+                 last_server_name = $3 where id = $1",
+            )
+            .bind(id)
+            .bind(protocol_version)
+            .bind(server_name),
+            McpContact::Failed { kind } => sqlx::query(
+                "update mcp_servers set last_error_kind = $2, last_error_at = now() \
+                 where id = $1",
+            )
+            .bind(id)
+            .bind(kind),
+        };
+        query.execute(self.0).await.map_err(store_err)?;
+        Ok(())
     }
 
     /// Set how rolter authenticates to this server, sealing the credential
@@ -489,6 +604,19 @@ impl McpServerRepo<'_> {
     }
 }
 
+/// A tool group being created, with the subjects it is assigned to.
+#[derive(Debug, Clone, Copy)]
+pub struct NewMcpToolGroup<'a> {
+    pub org_id: Uuid,
+    pub name: &'a str,
+    pub slug: &'a str,
+    pub description: &'a str,
+    pub enabled: bool,
+    pub tools: &'a serde_json::Value,
+    /// `(kind, subject id)`, written in the group's own transaction
+    pub assignments: &'a [(String, Uuid)],
+}
+
 /// Organization-owned tool-group policy manifests.
 pub struct McpToolGroupRepo<'a>(pub &'a PgPool);
 
@@ -519,16 +647,21 @@ impl McpToolGroupRepo<'_> {
         .await
     }
 
-    pub async fn create(
-        &self,
-        org_id: Uuid,
-        name: &str,
-        slug: &str,
-        description: &str,
-        enabled: bool,
-        tools: &serde_json::Value,
-    ) -> Result<McpToolGroup> {
-        sqlx::query_as(sqlx::AssertSqlSafe(format!(
+    /// Create a group and, in the same transaction, the subjects it is assigned
+    /// to, so a group meant to be narrowed is never visible to a gateway as
+    /// applying to the whole organization (#3295).
+    pub async fn create(&self, new: NewMcpToolGroup<'_>) -> Result<McpToolGroup> {
+        let NewMcpToolGroup {
+            org_id,
+            name,
+            slug,
+            description,
+            enabled,
+            tools,
+            assignments,
+        } = new;
+        let mut tx = self.0.begin().await.map_err(store_err)?;
+        let group: McpToolGroup = sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "insert into mcp_tool_groups (org_id, name, slug, description, enabled, tools) \
              values ($1, $2, $3, $4, $5, $6) returning {MCP_TOOL_GROUP_COLUMNS}"
         )))
@@ -538,9 +671,23 @@ impl McpToolGroupRepo<'_> {
         .bind(description)
         .bind(enabled)
         .bind(tools)
-        .fetch_one(self.0)
+        .fetch_one(&mut *tx)
         .await
-        .map_err(store_err)
+        .map_err(store_err)?;
+        for (kind, subject_id) in assignments {
+            sqlx::query(
+                "insert into mcp_tool_group_assignments (group_id, subject_kind, subject_id) \
+                 values ($1, $2, $3) on conflict do nothing",
+            )
+            .bind(group.id)
+            .bind(kind)
+            .bind(subject_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(store_err)?;
+        }
+        tx.commit().await.map_err(store_err)?;
+        Ok(group)
     }
 
     pub async fn update(
@@ -577,6 +724,87 @@ impl McpToolGroupRepo<'_> {
     }
 }
 
+/// The subjects an MCP tool group is assigned to (#3295).
+pub struct McpToolGroupAssignmentRepo<'a>(pub &'a PgPool);
+
+/// What a tool group can be assigned to.
+pub const MCP_ASSIGNMENT_KINDS: &[&str] = &["virtual_key", "project", "team"];
+
+impl McpToolGroupAssignmentRepo<'_> {
+    /// Every assignment of every group of an organization.
+    pub async fn list_for_org(&self, org_id: Uuid) -> Result<Vec<McpToolGroupAssignment>> {
+        sqlx::query_as(
+            "select a.group_id, a.subject_kind, a.subject_id, a.created_at \
+             from mcp_tool_group_assignments a \
+             join mcp_tool_groups g on g.id = a.group_id \
+             where g.org_id = $1 order by a.group_id, a.subject_kind, a.subject_id",
+        )
+        .bind(org_id)
+        .fetch_all(self.0)
+        .await
+        .map_err(store_err)
+    }
+
+    /// The subjects a group is assigned to now.
+    pub async fn list_for_group(&self, group_id: Uuid) -> Result<Vec<(String, Uuid)>> {
+        sqlx::query_as(
+            "select subject_kind, subject_id from mcp_tool_group_assignments where group_id = $1",
+        )
+        .bind(group_id)
+        .fetch_all(self.0)
+        .await
+        .map_err(store_err)
+    }
+
+    /// Whether `subject_id` is a `kind` that belongs to the organization. A key
+    /// and a project belong to it through their team.
+    pub async fn subject_in_org(&self, kind: &str, subject_id: Uuid, org_id: Uuid) -> Result<bool> {
+        let sql = match kind {
+            "team" => "select 1 from teams where id = $1 and org_id = $2",
+            "project" => {
+                "select 1 from projects p join teams t on t.id = p.team_id \
+                 where p.id = $1 and t.org_id = $2"
+            }
+            "virtual_key" => {
+                "select 1 from virtual_keys k join projects p on p.id = k.project_id \
+                 join teams t on t.id = p.team_id where k.id = $1 and t.org_id = $2"
+            }
+            _ => return Ok(false),
+        };
+        let found: Option<i32> = sqlx::query_scalar(sql)
+            .bind(subject_id)
+            .bind(org_id)
+            .fetch_optional(self.0)
+            .await
+            .map_err(store_err)?;
+        Ok(found.is_some())
+    }
+
+    /// Replace the whole assignment set of a group in one transaction, so a
+    /// gateway never loads half of it.
+    pub async fn replace(&self, group_id: Uuid, subjects: &[(String, Uuid)]) -> Result<()> {
+        let mut tx = self.0.begin().await.map_err(store_err)?;
+        sqlx::query("delete from mcp_tool_group_assignments where group_id = $1")
+            .bind(group_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(store_err)?;
+        for (kind, subject_id) in subjects {
+            sqlx::query(
+                "insert into mcp_tool_group_assignments (group_id, subject_kind, subject_id) \
+                 values ($1, $2, $3) on conflict do nothing",
+            )
+            .bind(group_id)
+            .bind(kind)
+            .bind(subject_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(store_err)?;
+        }
+        tx.commit().await.map_err(store_err)
+    }
+}
+
 /// Per-organization MCP gateway defaults.
 pub struct McpGatewaySettingsRepo<'a>(pub &'a PgPool);
 
@@ -594,7 +822,7 @@ pub struct McpGatewaySettingsUpdate<'a> {
 
 impl McpGatewaySettingsRepo<'_> {
     pub async fn get(&self, org_id: Uuid) -> Result<McpGatewaySettings> {
-        sqlx::query_as(
+        let stored: Option<McpGatewaySettings> = sqlx::query_as(
             "select org_id, default_transport, connect_timeout_ms, request_timeout_ms, \
              max_retries, default_failure_mode, allow_unlisted_tools, updated_at \
              from mcp_gateway_settings where org_id = $1",
@@ -602,18 +830,34 @@ impl McpGatewaySettingsRepo<'_> {
         .bind(org_id)
         .fetch_optional(self.0)
         .await
-        .map_err(store_err)
-        .map(|stored| {
-            stored.unwrap_or_else(|| McpGatewaySettings {
+        .map_err(store_err)?;
+        if let Some(stored) = stored {
+            return Ok(stored);
+        }
+        // no row: the defaults, which are not written anywhere so they follow
+        // later changes. whether manifests are enforced is the one thing the
+        // organization carries itself (#3334)
+        let enforcing: Option<bool> =
+            sqlx::query_scalar("select mcp_enforce_manifests from orgs where id = $1")
+                .bind(org_id)
+                .fetch_optional(self.0)
+                .await
+                .map_err(store_err)?;
+        Ok({
+            McpGatewaySettings {
                 org_id,
                 default_transport: "streamable_http".to_string(),
                 connect_timeout_ms: 5_000,
                 request_timeout_ms: 30_000,
                 max_retries: 1,
                 default_failure_mode: "fail_closed".to_string(),
-                allow_unlisted_tools: false,
+                // what the proxy does for an org with no row (`mcp_policy`):
+                // an org created before #3334 lets unlisted tools pass until
+                // it saves settings refusing them; a newer one refuses them
+                // until it saves settings allowing them
+                allow_unlisted_tools: !enforcing.unwrap_or(false),
                 updated_at: Utc::now(),
-            })
+            }
         })
     }
 

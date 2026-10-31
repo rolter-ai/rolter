@@ -7,7 +7,7 @@ language = "en"
 
 # contributor docs are authored as plain markdown under docs/dev-docs/ and
 # rendered to a static site by mdbook; the polished user-facing docs are the
-# sibling tree docs/user-docs/ (mintlify). build output goes to
+# sibling tree docs/user-docs/ (docs7). build output goes to
 # docs/dev-docs/book/ (gitignored).
 [output.html]
 git-repository-url = "https://github.com/rolter-ai/rolter"

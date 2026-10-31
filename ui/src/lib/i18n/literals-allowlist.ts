@@ -35,9 +35,16 @@ export const NOT_COPY: AllowList = {
   "src/components/ui/auth-card.tsx": {
     rolter: "the product's name in the wordmark, spelled the same in every locale",
   },
+  "src/pages/GuardrailPolicies.tsx": {
+    violence:
+      "an example category name in the threshold field's placeholder: a key the provider returns, typed verbatim",
+  },
   "src/pages/Connectors.tsx": {
     datadog:
       "an example connector name in the name field's placeholder: the vendor's own name, spelled the same in every locale",
+  },
+  "src/pages/Ldap.tsx": {
+    mail: "the directory attribute the server defaults the email field to, typed verbatim into the filter",
   },
   "src/pages/Playground.tsx": {
     nova: "a voice id the speech endpoint takes verbatim (OpenAI's own names), spliced into the translated `voiceOption` label",

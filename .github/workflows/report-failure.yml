@@ -1,0 +1,72 @@
+name: report failure
+
+# one tracking issue per workflow whose run failed, opened or commented on by
+# `scripts/report-failure.sh`. extended.yml, ui-e2e.yml and sso-e2e.yml gate
+# nothing, so without this a red night sat unread in the Actions tab (#2677,
+# #2682); it was once a copy in each of them, and the copies drift.
+#
+# the caller decides when to report (a failed job, on master) and passes its own
+# issue title, so the suites never share an issue. the job holds `issues: write`
+# and `actions: write` at job level, never at workflow level, where zizmor rates
+# them high; a caller must grant the same two scopes on the job that calls this.
+# `quality.yml` does not call it and stays secret-free (#734).
+#
+# the checkout is sparse (the one script), takes no credentials into the work
+# tree, and only ever runs on the ref the caller already runs on.
+on:
+  workflow_call:
+    inputs:
+      title:
+        description: the tracking issue title, unique per calling workflow
+        type: string
+        required: true
+      results:
+        description: one `label|result` line per job, rendered as the issue's table
+        type: string
+        required: true
+      area:
+        description: the project board area the new issue is triaged into (ci, ui, ...)
+        type: string
+        required: true
+      effort:
+        description: the project board effort the new issue is triaged into (XS, S, ...)
+        type: string
+        required: true
+      note:
+        description: a sentence added under the table, for where to find the evidence
+        type: string
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  report-failure:
+    name: report failure
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+      actions: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: scripts/report-failure.sh
+          sparse-checkout-cone-mode: false
+      - name: open or comment on the tracking issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          REF: ${{ github.ref_name }}
+          SHA: ${{ github.sha }}
+          TITLE: ${{ inputs.title }}
+          RESULTS: ${{ inputs.results }}
+          AREA: ${{ inputs.area }}
+          EFFORT: ${{ inputs.effort }}
+          NOTE: ${{ inputs.note }}
+          MILESTONE: Maintenance, CI & DX
+        run: bash scripts/report-failure.sh

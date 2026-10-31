@@ -11,7 +11,7 @@ import {
 } from "@/lib/api";
 
 // client session state. a real login (POST /api/v1/auth/login) stores an opaque
-// bearer token that api.ts attaches to every request, which is what the
+// bearer token that api/request.ts attaches to every request, which is what the
 // self-service /me/* endpoints need. login stays optional: against an open-mode
 // deployment (no accounts) the Login screen falls back to an email-only gate
 // with no token, and the admin dashboard keeps working exactly as before.

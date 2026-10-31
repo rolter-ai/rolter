@@ -94,9 +94,9 @@ const ADVANCED_ROUTE: RouteRow = {
 };
 
 const MODELS: EffectiveModelDto[] = [
-  { model: "gpt-4o", strategy: "round_robin", targets: 1, source: "db" },
+  { model: "gpt-4o", strategy: "round_robin", targets: 1, source: "db", org_id: ORG.id },
   { model: "fake-llm", strategy: "round_robin", targets: 1, source: "config" },
-  { model: "llama-70b", strategy: "cache_aware", targets: 3, source: "db" },
+  { model: "llama-70b", strategy: "cache_aware", targets: 3, source: "db", org_id: ORG.id },
 ];
 
 /**
@@ -185,6 +185,7 @@ function Stage({
   configTargets,
   stub = backing,
   providers = PROVIDERS,
+  models = MODELS,
   toasts = false,
   role,
 }: {
@@ -194,6 +195,8 @@ function Stage({
   configTargets?: React.ComponentProps<typeof ModelSheet>["configTargets"];
   stub?: FetchStub;
   providers?: ProviderRow[];
+  /** the catalog the name check reads */
+  models?: EffectiveModelDto[];
   /** mount the toast queue, for a story that asserts what the save announced */
   toasts?: boolean;
   /** mount the capability gate as this role, for a story that asserts it */
@@ -222,7 +225,7 @@ function Stage({
           route={route}
           configModel={configModel}
           configTargets={configTargets}
-          models={MODELS}
+          models={models}
           routes={[ROUTE, FLEET_ROUTE]}
           onDone={() => {}}
         />
@@ -728,6 +731,29 @@ export const NameConflict: Story = {
 };
 
 /**
+ * #3460: another organization's `gpt-4o` is no conflict. Names are unique per
+ * organization (#1857), and the control plane accepts the route, so the sheet
+ * does not refuse it on a name only another organization uses.
+ */
+export const AnotherOrganizationsNameIsNoConflict: Story = {
+  render: () => (
+    <Stage mode="add" models={[{ ...MODELS[0], org_id: "org-2" }, MODELS[1], MODELS[2]]} />
+  ),
+  play: async () => {
+    const dialog = within(sheet());
+    await seededBlank(dialog);
+    await pickOption(dialog.getByLabelText("Target 1 provider"), "vllm-cluster");
+    const name = dialog.getByLabelText("Route name");
+    await userEvent.type(name, "gpt-4o");
+    await userEvent.tab();
+    await userEvent.click(dialog.getByRole("button", { name: "Add route" }));
+    await calls.expectSent("POST", `/projects/${PROJECT.id}/routes`);
+    await expect(name).not.toHaveAttribute("aria-invalid");
+    await expect(dialog.queryByText(/already exists/)).toBeNull();
+  },
+};
+
+/**
  * A retry budget past the ceiling is refused before it reaches the control
  * plane — said when the field is left, not on the way to a valid number
  * (#2810). Zero is a value, not a blank: it turns retries off for the route.
@@ -784,7 +810,7 @@ export const AddsAModel: Story = {
       upstream_model?: string;
       weight: number;
     };
-    await expect(target).toEqual({ provider_id: "prov-2", weight: 1 });
+    await expect(target).toEqual({ provider_id: "prov-2", weight: 1, takes_over: [] });
   },
 };
 
@@ -821,9 +847,60 @@ export const AddsACacheAwareFleet: Story = {
     await expect(route.strategy).toBe("cache_aware");
     await waitFor(() => expect(sentBodies("POST", "/routes/route-new/targets")).toHaveLength(2));
     await expect(sentBodies("POST", "/routes/route-new/targets")).toEqual([
-      { provider_id: "prov-2", upstream_model: "meta-llama/Llama-3.1-70B", weight: 1 },
-      { provider_id: "prov-1", weight: 3 },
+      {
+        provider_id: "prov-2",
+        upstream_model: "meta-llama/Llama-3.1-70B",
+        weight: 1,
+        takes_over: [],
+      },
+      { provider_id: "prov-1", weight: 3, takes_over: [] },
     ]);
+  },
+};
+
+/**
+ * A fallback target is created after the ordinary ones (#3319): the control
+ * plane refuses a fallback on a route with no ordinary target yet, and a
+ * fallback is never dialled first, so the order moves no traffic. Its classes
+ * go out with it.
+ */
+export const AddsAModelWithAFallbackTarget: Story = {
+  render: () => <Stage mode="add" />,
+  play: async () => {
+    const dialog = within(sheet());
+    await seededBlank(dialog);
+    await userEvent.type(dialog.getByLabelText("Route name"), "gpt-burst");
+    await pickOption(dialog.getByLabelText("Target 1 provider"), "vllm-cluster");
+    const first = within(dialog.getByRole("group", { name: "Fallback classes of target 1" }));
+    await userEvent.click(first.getByRole("button", { name: "Ordinary target" }));
+    await userEvent.click(first.getByRole("button", { name: "throttled" }));
+    await expect(first.getByTestId("fallback-badge")).toBeVisible();
+    await userEvent.click(dialog.getByRole("button", { name: "Add target" }));
+    await pickOption(await dialog.findByLabelText("Target 2 provider"), "openai-prod");
+
+    await userEvent.click(dialog.getByRole("button", { name: "Add route" }));
+    await waitFor(() => expect(sentBodies("POST", "/routes/route-new/targets")).toHaveLength(2));
+    await expect(sentBodies("POST", "/routes/route-new/targets")).toEqual([
+      { provider_id: "prov-1", weight: 1, takes_over: [] },
+      { provider_id: "prov-2", weight: 1, takes_over: ["throttled"] },
+    ]);
+  },
+};
+
+/** A sheet whose every target is a fallback cannot be saved, and says why at the list. */
+export const RefusesAModelOfOnlyFallbacks: Story = {
+  render: () => <Stage mode="add" />,
+  play: async () => {
+    const dialog = within(sheet());
+    await seededBlank(dialog);
+    await userEvent.type(dialog.getByLabelText("Route name"), "gpt-stranded");
+    await pickOption(dialog.getByLabelText("Target 1 provider"), "vllm-cluster");
+    const first = within(dialog.getByRole("group", { name: "Fallback classes of target 1" }));
+    await userEvent.click(first.getByRole("button", { name: "Ordinary target" }));
+    await userEvent.click(first.getByRole("button", { name: "refusal" }));
+    await userEvent.click(dialog.getByRole("button", { name: "Add route" }));
+    await waitFor(() => expect(dialog.getByText(/Every target is a fallback/)).toBeVisible());
+    calls.expectNotSent("POST", `/projects/${PROJECT.id}/routes`);
   },
 };
 
@@ -901,6 +978,7 @@ export const PickingASuggestionSendsItUpstream: Story = {
       provider_id: "prov-2",
       upstream_model: "meta-llama/Llama-3.1-8B",
       weight: 1,
+      takes_over: [],
     });
   },
 };
@@ -1046,6 +1124,7 @@ function refusedListing(status: number, message: string): Story {
         provider_id: "prov-2",
         upstream_model: "meta-llama/Llama-3.1-8B",
         weight: 1,
+        takes_over: [],
       });
     },
   };
@@ -1138,8 +1217,13 @@ export const EditsEveryTargetOfAFleet: Story = {
     const body = await routeUpdate("route-2");
     await expect(body).toEqual({
       targets: [
-        { provider_id: "prov-2", upstream_model: "meta-llama/Llama-3.1-70B", weight: 1 },
-        { provider_id: "prov-1", upstream_model: null, weight: 2 },
+        {
+          provider_id: "prov-2",
+          upstream_model: "meta-llama/Llama-3.1-70B",
+          weight: 1,
+          takes_over: [],
+        },
+        { provider_id: "prov-1", upstream_model: null, weight: 2, takes_over: [] },
       ],
     });
     calls.expectNotSent("POST", "/routes/route-2/targets");
@@ -1177,7 +1261,7 @@ export const KeepsAStoredUpstreamEqualToTheRouteName: Story = {
     await userEvent.type(weight, "4");
     await userEvent.click(dialog.getByRole("button", { name: "Save route" }));
     await expect(await routeUpdate("route-1")).toEqual({
-      targets: [{ provider_id: "prov-1", upstream_model: "gpt-4o", weight: 4 }],
+      targets: [{ provider_id: "prov-1", upstream_model: "gpt-4o", weight: 4, takes_over: [] }],
     });
     calls.expectNotSent("POST", "/routes/route-1/targets");
     calls.expectNotSent("DELETE", "/route-targets/");
@@ -1194,8 +1278,101 @@ export const ChangesTheStrategy: Story = {
     await userEvent.click(dialog.getByRole("button", { name: "Save route" }));
     await expect(await routeUpdate("route-1")).toEqual({
       strategy: "weighted",
-      targets: [{ provider_id: "prov-1", upstream_model: null, weight: 1 }],
+      targets: [{ provider_id: "prov-1", upstream_model: null, weight: 1, takes_over: [] }],
     });
+  },
+};
+
+/** route-1 read with one variant whose only target takes over `takesOver` */
+const withVariant =
+  (takesOver: string[]): FetchStub =>
+  (input, init) =>
+    String(input).includes("/routes/route-1/variants")
+      ? Promise.resolve(
+          json([
+            {
+              id: "var-1",
+              route_id: "route-1",
+              name: "canary",
+              weight: 1,
+              position: 0,
+              params: {},
+              created_at: "2026-05-01T00:00:00Z",
+              targets: [
+                {
+                  id: "vt-1",
+                  variant_id: "var-1",
+                  provider_id: "prov-2",
+                  upstream_model: null,
+                  weight: 1,
+                  position: 0,
+                  takes_over: takesOver,
+                },
+              ],
+            },
+          ]),
+        )
+      : backing(input, init);
+
+/**
+ * A route with variants dials only the variants' targets (#3487): a variant
+ * with an ordinary target lets every target of the list be a fallback, and the
+ * sheet saves it.
+ */
+export const AVariantsOrdinaryTargetAllowsAListOfFallbacks: Story = {
+  render: () => <Stage mode="edit" route={ROUTE} stub={withVariant([])} />,
+  play: async () => {
+    const dialog = within(sheet());
+    await seeded(dialog);
+    const first = within(dialog.getByRole("group", { name: "Fallback classes of target 1" }));
+    await userEvent.click(first.getByRole("button", { name: "Ordinary target" }));
+    await userEvent.click(first.getByRole("button", { name: "timeout" }));
+    await userEvent.click(dialog.getByRole("button", { name: "Save route" }));
+    await expect(await routeUpdate("route-1")).toEqual({
+      targets: [
+        { provider_id: "prov-1", upstream_model: null, weight: 1, takes_over: ["timeout"] },
+      ],
+    });
+  },
+};
+
+/** With every variant target a fallback too, the route could dial nothing: refused in the sheet. */
+export const VariantFallbacksCountTowardsAllFallbacks: Story = {
+  render: () => <Stage mode="edit" route={ROUTE} stub={withVariant(["throttled"])} />,
+  play: async () => {
+    const dialog = within(sheet());
+    await seeded(dialog);
+    const first = within(dialog.getByRole("group", { name: "Fallback classes of target 1" }));
+    await userEvent.click(first.getByRole("button", { name: "Ordinary target" }));
+    await userEvent.click(first.getByRole("button", { name: "timeout" }));
+    await userEvent.click(dialog.getByRole("button", { name: "Save route" }));
+    await waitFor(() => expect(dialog.getByText(/Every target is a fallback/)).toBeVisible());
+    calls.expectNotSent("PUT", "/routes/route-1");
+  },
+};
+
+/**
+ * The converse (#3487): variants that hold only fallbacks strand the route even
+ * over an ordinary list, since the list is not dialled while they exist. The
+ * sheet refuses the save and sends nothing.
+ */
+export const FallbackOnlyVariantsOverAnOrdinaryListAreRefused: Story = {
+  render: () => <Stage mode="edit" route={ROUTE} stub={withVariant(["throttled"])} />,
+  play: async () => {
+    const dialog = within(sheet());
+    await seeded(dialog);
+    const weight = dialog.getByLabelText("Target 1 weight");
+    await userEvent.clear(weight);
+    await userEvent.type(weight, "2");
+    await userEvent.click(dialog.getByRole("button", { name: "Save route" }));
+    // the variants strand it, so the message sits beside them rather than under
+    // the list, and focus moves to where they are edited (#3510)
+    const edit = dialog.getByRole("link", { name: "Edit the variants on Routing Rules" });
+    await waitFor(() => expect(edit).toHaveFocus());
+    await expect(edit).toHaveAccessibleDescription(/Variants.*every one of this route's/);
+    await expect(dialog.getAllByText(/Every target is a fallback/)).toHaveLength(1);
+    await expect(dialog.getByLabelText("Target 1 weight")).toBeValid();
+    calls.expectNotSent("PUT", "/routes/route-1");
   },
 };
 
@@ -1410,6 +1587,48 @@ export const ShowsAConfigRoutesGuardrailOverridesReadOnly: Story = {
 };
 
 /**
+ * #3460: an organization's route of the same name comes first in the effective
+ * config and switches `email` off. The config-file route's sheet shows the
+ * file route's own overrides, never the organization's namesake's.
+ */
+export const AConfigRoutesOverridesAreNotItsNamesakes: Story = {
+  render: () => (
+    <Stage
+      mode="view"
+      configModel={{ model: "fake-llm", strategy: "weighted", targets: 1, source: "config" }}
+      stub={async (input, init) =>
+        /\/api\/v1\/config(\?|$)/.test(String(input))
+          ? json({
+              ...POLICY_DOC,
+              routes: [
+                {
+                  model: "fake-llm",
+                  tenancy: { org_id: "org-2", project_id: "project-9" },
+                  advanced: { guardrails: { disable: ["email"] } },
+                },
+                ...POLICY_DOC.routes,
+              ],
+            })
+          : backing(input, init)
+      }
+    />
+  ),
+  play: async () => {
+    const dialog = within(sheet());
+    await userEvent.click(await dialog.findByRole("button", { name: "Guardrails" }));
+    const off = within(await dialog.findByRole("group", { name: "Switched off on this route" }));
+    await expect(await off.findByRole("button", { name: "phone" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    await expect(off.getByRole("button", { name: "email" })).toHaveAttribute(
+      "aria-pressed",
+      "false",
+    );
+  },
+};
+
+/**
  * A read-only sheet has nothing to discard, so its footer offers a single
  * Close rather than a Cancel beside a Close that do the same (#2046).
  */
@@ -1604,6 +1823,104 @@ export const SavesTheThroughputCaps: Story = {
     await expect(body.advanced.limits.rpm).toBe(120);
     await expect(body.advanced.limits).not.toHaveProperty("tpm");
     await expect(body.advanced.limits.concurrency).toBe(4);
+  },
+};
+
+/**
+ * A route's context window is typed in the sheet and travels in the advanced
+ * blob as `context_length` (#3265): the stored value seeds the row, an edit is
+ * sent as a number, and a cleared field drops it rather than sending a zero.
+ */
+export const EditsTheContextLength: Story = {
+  render: () => (
+    <Stage
+      mode="edit"
+      route={{ ...LEGACY_ROUTE, advanced: { ...LEGACY_ROUTE.advanced, context_length: 200000 } }}
+    />
+  ),
+  play: async () => {
+    const dialog = within(sheet());
+    await seeded(dialog);
+    await userEvent.click(dialog.getByRole("button", { name: "Limits & network" }));
+    const field = await dialog.findByLabelText("Context length (tokens)");
+    await expect(field).toHaveValue(200000);
+    await expect(field).toHaveAccessibleDescription(/served on GET \/v1\/models/);
+    await userEvent.clear(field);
+    await userEvent.type(field, "128000");
+    await userEvent.click(dialog.getByRole("button", { name: "Save route" }));
+    const body = (await calls.expectSentBody("PUT", "/routes/route-1/advanced")) as {
+      advanced: Record<string, unknown>;
+    };
+    await expect(body.advanced.context_length).toBe(128000);
+  },
+};
+
+export const ClearingTheContextLengthDropsIt: Story = {
+  render: () => (
+    <Stage
+      mode="edit"
+      route={{ ...LEGACY_ROUTE, advanced: { ...LEGACY_ROUTE.advanced, context_length: 200000 } }}
+    />
+  ),
+  play: async () => {
+    const dialog = within(sheet());
+    await seeded(dialog);
+    await userEvent.click(dialog.getByRole("button", { name: "Limits & network" }));
+    await userEvent.clear(await dialog.findByLabelText("Context length (tokens)"));
+    await userEvent.click(dialog.getByRole("button", { name: "Save route" }));
+    const body = (await calls.expectSentBody("PUT", "/routes/route-1/advanced")) as {
+      advanced: Record<string, unknown>;
+    };
+    await expect(body.advanced).not.toHaveProperty("context_length");
+  },
+};
+
+export const ContextLengthOfZeroIsRefused: Story = {
+  render: () => <Stage mode="add" />,
+  play: async () => {
+    const dialog = within(sheet());
+    await seededBlank(dialog);
+    await userEvent.click(dialog.getByRole("button", { name: "Limits & network" }));
+    const field = await dialog.findByLabelText("Context length (tokens)");
+    await userEvent.type(field, "0");
+    await userEvent.tab();
+    await waitFor(() => expect(field).toHaveAttribute("aria-invalid", "true"));
+    await expect(field).toHaveAccessibleDescription(/whole number of tokens, 1 or more/);
+  },
+};
+
+/**
+ * `GET /v1/models` serves a route's context length whatever its model type, and
+ * an embedding model's input limit is the one clients most need to size
+ * against (#3406). The row is in Limits & network, which every type shows, so an
+ * embedding route seeds it, edits it and saves it like a chat one, with no
+ * Capabilities section in the sheet at all.
+ */
+export const EditsTheContextLengthOfAnEmbeddingRoute: Story = {
+  render: () => (
+    <Stage
+      mode="edit"
+      route={{
+        ...LEGACY_ROUTE,
+        advanced: { ...LEGACY_ROUTE.advanced, model_type: "embedding", context_length: 8192 },
+      }}
+    />
+  ),
+  play: async () => {
+    const dialog = within(sheet());
+    await seeded(dialog);
+    await expect(dialog.queryByRole("button", { name: "Capabilities" })).toBeNull();
+    await userEvent.click(dialog.getByRole("button", { name: "Limits & network" }));
+    const field = await dialog.findByLabelText("Context length (tokens)");
+    await expect(field).toHaveValue(8192);
+    await userEvent.clear(field);
+    await userEvent.type(field, "32768");
+    await userEvent.click(dialog.getByRole("button", { name: "Save route" }));
+    const body = (await calls.expectSentBody("PUT", "/routes/route-1/advanced")) as {
+      advanced: Record<string, unknown>;
+    };
+    await expect(body.advanced.context_length).toBe(32768);
+    await expect(body.advanced.model_type).toBe("embedding");
   },
 };
 
@@ -1888,7 +2205,7 @@ export const LeavesTheAdvancedBlobAloneWhenUntouched: Story = {
     calls.expectNotSent("PUT", "/routes/route-1/advanced");
     // the targets go back unchanged in the one update call, never line by line
     await expect(await routeUpdate("route-1")).toEqual({
-      targets: [{ provider_id: "prov-1", upstream_model: null, weight: 1 }],
+      targets: [{ provider_id: "prov-1", upstream_model: null, weight: 1, takes_over: [] }],
     });
     calls.expectNotSent("POST", "/routes/route-1/targets");
     calls.expectNotSent("DELETE", "/route-targets/");
@@ -2054,6 +2371,8 @@ function pricedAt(
       | "audio_input_per_mtok"
       | "audio_output_per_mtok"
       | "cached_audio_input_per_mtok"
+      | "source"
+      | "source_imported_at"
     >
   > = {},
 ): FetchStub {
@@ -2713,5 +3032,91 @@ export const TargetRefusedByTheProvidersScope: Story = {
     await expectToast(canvasElement, /cannot use provider 'search-private'/, "error");
     // the sheet stays open on the draft
     await expect(sheet()).toBeVisible();
+  },
+};
+
+// --- where the model's price came from (#966) ---
+
+const CATALOGUE_PROVENANCE = {
+  source: "LiteLLM model_prices_and_context_window",
+  source_imported_at: "2026-10-01T00:00:00Z",
+};
+
+/** an imported price is named as a catalogue value that can change, with its snapshot */
+export const NamesACataloguePriceAsSubjectToChange: Story = {
+  render: () => (
+    <Stage mode="edit" route={ROUTE} stub={pricedAt(null, null, CATALOGUE_PROVENANCE)} />
+  ),
+  play: async () => {
+    const dialog = within(sheet());
+    await seeded(dialog);
+    await userEvent.click(dialog.getByRole("button", { name: "Pricing override" }));
+    await expect(
+      dialog.getByText(
+        "Catalogue price from LiteLLM model_prices_and_context_window, snapshot Oct 1, 2026 — subject to change.",
+      ),
+    ).toBeInTheDocument();
+  },
+};
+
+/** saving the route does not write a catalogue price back, which would make it an override */
+export const SavingTheRouteKeepsACataloguePriceACataloguePrice: Story = {
+  render: () => (
+    <Stage mode="edit" route={ROUTE} stub={pricedAt(null, null, CATALOGUE_PROVENANCE)} />
+  ),
+  play: async () => {
+    const dialog = within(sheet());
+    await seeded(dialog);
+    await userEvent.click(dialog.getByRole("button", { name: "Pricing override" }));
+    await pickOption(dialog.getByLabelText("Strategy"), /^weighted\b/);
+    await userEvent.click(dialog.getByRole("button", { name: "Save route" }));
+    await waitFor(() => expect(calls.calls.some((c) => c.method === "PUT")).toBe(true));
+    calls.expectNotSent("PUT", "/api/v1/model-prices");
+  },
+};
+
+/** editing the rates is the operator taking the price over, so it is written */
+export const EditingACataloguePriceWritesIt: Story = {
+  render: () => (
+    <Stage mode="edit" route={ROUTE} stub={pricedAt(null, null, CATALOGUE_PROVENANCE)} />
+  ),
+  play: async () => {
+    const dialog = within(sheet());
+    await seeded(dialog);
+    await userEvent.click(dialog.getByRole("button", { name: "Pricing override" }));
+    const input = dialog.getByLabelText("Input USD/Mtok");
+    await userEvent.clear(input);
+    await userEvent.type(input, "3");
+    await userEvent.click(dialog.getByRole("button", { name: "Save route" }));
+    await calls.expectSentBody("PUT", "/api/v1/model-prices");
+  },
+};
+
+export const NamesAnOperatorPriceAsYours: Story = {
+  render: () => (
+    <Stage
+      mode="edit"
+      route={ROUTE}
+      stub={pricedAt(null, null, { source: null, source_imported_at: null })}
+    />
+  ),
+  play: async () => {
+    const dialog = within(sheet());
+    await seeded(dialog);
+    await userEvent.click(dialog.getByRole("button", { name: "Pricing override" }));
+    await expect(dialog.getByText("Your price (override).")).toBeInTheDocument();
+    await expect(dialog.queryByText(/Catalogue price from/)).toBeNull();
+  },
+};
+
+/** a model with no price says nothing about where it came from */
+export const SaysNothingAboutAnUnpricedModel: Story = {
+  render: () => <Stage mode="edit" route={ROUTE} />,
+  play: async () => {
+    const dialog = within(sheet());
+    await seeded(dialog);
+    await userEvent.click(dialog.getByRole("button", { name: "Pricing override" }));
+    await expect(dialog.queryByText(/Catalogue price from/)).toBeNull();
+    await expect(dialog.queryByText(/Your price \(override\)/)).toBeNull();
   },
 };

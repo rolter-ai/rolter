@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 import * as React from "react";
 
 import { SCREENS } from "@/App";
+import { SHELL_SCREEN } from "@/lib/ux-react";
 
 // #1709: the dashboard shipped as one chunk, so the first paint of the sign-in
 // screen carried every screen in the rail. Splitting it is one `React.lazy` per
@@ -25,5 +26,11 @@ describe("every navigable screen is its own chunk", () => {
 
   it("covers every screen, so the check cannot pass by finding nothing", () => {
     expect(Object.keys(SCREENS).length).toBeGreaterThan(40);
+  });
+
+  // #1895: `shell` keys the UX rows of the rail's own surfaces (the scope
+  // switcher), so a route taking the id would merge its rows with theirs
+  it("leaves the shell's reserved screen key to the shell", () => {
+    expect(Object.keys(SCREENS)).not.toContain(SHELL_SCREEN);
   });
 });

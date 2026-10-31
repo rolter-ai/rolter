@@ -171,15 +171,41 @@ fn full_row(request_id: &str) -> Value {
 }
 
 /// A deployment whose `request_logs` was migrated through `last` and nothing
-/// after, holding one full row, read through the control plane. Returns the
-/// row as the list answered it.
-async fn list_after(last: u32) -> Option<Value> {
+/// after, holding `rows` inserted the way a gateway inserts them, read through
+/// the control plane at `path`. Returns the status and body of the answer.
+async fn read_after(last: u32, rows: &[Value], path: &str) -> Option<(StatusCode, Value)> {
+    read_without(last, &[], rows, path).await
+}
+
+/// As [`read_after`], with each of `dropped` then removed from `request_logs`:
+/// a table that has every later migration but lacks one column, which no
+/// prefix of the migrations produces.
+async fn read_without(
+    last: u32,
+    dropped: &[&str],
+    rows: &[Value],
+    path: &str,
+) -> Option<(StatusCode, Value)> {
     let base = clickhouse_url().filter(|_| test_database::is_configured())?;
     let http = reqwest::Client::new();
     let scratch = ScratchDatabase::create(&http, &base).await;
     clickhouse_ddl::apply_schema_through(&http, &base, Some(&scratch.name), last).await;
+    for column in dropped {
+        let response = http
+            .post(format!("{base}/"))
+            .query(&[("database", scratch.name.as_str())])
+            .body(format!("alter table request_logs drop column {column}"))
+            .send()
+            .await
+            .expect("reach clickhouse");
+        assert!(
+            response.status().is_success(),
+            "drop {column}: {}",
+            response.text().await.unwrap_or_default()
+        );
+    }
 
-    let request_id = format!("optional-columns-{}", Uuid::new_v4().simple());
+    let body: String = rows.iter().map(|row| format!("{row}\n")).collect();
     let insert = http
         .post(format!("{base}/"))
         .query(&[
@@ -188,7 +214,7 @@ async fn list_after(last: u32) -> Option<Value> {
             ("date_time_input_format", "best_effort"),
             ("input_format_skip_unknown_fields", "1"),
         ])
-        .body(format!("{}\n", full_row(&request_id)))
+        .body(body)
         .send()
         .await
         .expect("reach clickhouse");
@@ -219,23 +245,35 @@ async fn list_after(last: u32) -> Option<Value> {
     let addr = serve(app).await;
 
     let response = http
-        .get(format!(
-            "http://{addr}/api/v1/analytics/invocations?request_id={request_id}"
-        ))
+        .get(format!("http://{addr}{path}"))
         .bearer_auth(ADMIN_TOKEN)
         .send()
         .await
         .unwrap();
     let status = response.status();
     let body: Value = response.json().await.unwrap();
+    drop(schema);
+    drop(scratch);
+    Some((status, body))
+}
+
+/// A deployment whose `request_logs` was migrated through `last` and nothing
+/// after, holding one full row, read through the control plane. Returns the
+/// row as the list answered it.
+async fn list_after(last: u32) -> Option<Value> {
+    let request_id = format!("optional-columns-{}", Uuid::new_v4().simple());
+    let (status, body) = read_after(
+        last,
+        &[full_row(&request_id)],
+        &format!("/api/v1/analytics/invocations?request_id={request_id}"),
+    )
+    .await?;
     assert_eq!(
         status, 200,
         "the list failed after migration {last}: {body}"
     );
     let rows = body["data"].as_array().expect("a data array");
     assert_eq!(rows.len(), 1, "{body}");
-    drop(schema);
-    drop(scratch);
     Some(rows[0].clone())
 }
 
@@ -287,4 +325,475 @@ async fn a_clickhouse_with_015_and_016_but_not_017_defaults_only_the_share() {
     assert_eq!(row["upstream_status"], 429, "{row}");
     assert_eq!(row["lifecycle_operation"], "retrieve", "{row}");
     assert_eq!(row["cache_write_1h_tokens"], 0, "{row}");
+}
+
+/// A figure ClickHouse sends as a number or, for a wide integer, as a string.
+fn number(value: &Value) -> f64 {
+    match value {
+        Value::String(text) => text.parse().unwrap_or_else(|_| panic!("{text} parses")),
+        other => other
+            .as_f64()
+            .unwrap_or_else(|| panic!("{other} is a number")),
+    }
+}
+
+/// Two requests answered by one variant, one of them after a failover, as a
+/// current gateway writes them (the second carries `fallback_reason`).
+fn variant_rows(route: &str) -> Vec<Value> {
+    let ts = chrono::Utc::now()
+        .format("%Y-%m-%d %H:%M:%S%.3f")
+        .to_string();
+    let row = |reason: &str| {
+        let mut row = json!({
+            "ts": ts, "request_id": format!("variant-{}", Uuid::new_v4().simple()),
+            "model": route, "variant": "canary", "status": 200, "latency_ms": 100,
+        });
+        if !reason.is_empty() {
+            row["fallback_reason"] = json!(reason);
+        }
+        row
+    };
+    vec![row(""), row("timeout")]
+}
+
+/// #3409: a ClickHouse from before `023` cannot tell a first attempt from a
+/// failover. The select must not name the column (it would fail), the answer
+/// is still a `200` with the variant's requests, and `first_attempt_requests`
+/// is `null` rather than a claim that every request was a first attempt.
+#[tokio::test]
+async fn by_variant_on_a_clickhouse_without_023_reports_no_first_attempt_count() {
+    let _ = skip_without_stack!();
+    let route = format!("variant-route-{}", Uuid::new_v4().simple());
+    // 022 is the last file before the fallback reason
+    let (status, body) = read_after(
+        22,
+        &variant_rows(&route),
+        &format!("/api/v1/analytics/by-variant?model={route}"),
+    )
+    .await
+    .expect("a configured stack");
+    assert_eq!(status, 200, "{body}");
+    let rows = body["data"].as_array().expect("a data array");
+    assert_eq!(rows.len(), 1, "{body}");
+    assert_eq!(rows[0]["variant"], "canary", "{body}");
+    assert_eq!(number(&rows[0]["requests"]), 2.0, "{body}");
+    assert!(rows[0]["first_attempt_requests"].is_null(), "{body}");
+}
+
+/// With `023` applied the same two requests split: one first attempt, one failover.
+#[tokio::test]
+async fn by_variant_on_a_clickhouse_with_023_counts_the_first_attempts() {
+    let _ = skip_without_stack!();
+    let route = format!("variant-route-{}", Uuid::new_v4().simple());
+    let (status, body) = read_after(
+        23,
+        &variant_rows(&route),
+        &format!("/api/v1/analytics/by-variant?model={route}"),
+    )
+    .await
+    .expect("a configured stack");
+    assert_eq!(status, 200, "{body}");
+    let rows = body["data"].as_array().expect("a data array");
+    assert_eq!(rows.len(), 1, "{body}");
+    assert_eq!(number(&rows[0]["requests"]), 2.0, "{body}");
+    assert_eq!(number(&rows[0]["first_attempt_requests"]), 1.0, "{body}");
+}
+
+/// Requests answered by two variants of one route, one of them failed over to,
+/// as a current gateway writes them.
+fn two_variant_rows(route: &str) -> Vec<Value> {
+    let ts = chrono::Utc::now()
+        .format("%Y-%m-%d %H:%M:%S%.3f")
+        .to_string();
+    let row = |variant: &str, reason: &str| {
+        json!({
+            "ts": ts, "request_id": format!("variant-{}", Uuid::new_v4().simple()),
+            "model": route, "variant": variant, "status": 200, "latency_ms": 100,
+            "fallback_reason": reason,
+        })
+    };
+    vec![
+        row("canary", ""),
+        row("canary", "timeout"),
+        row("stable", ""),
+        row("stable", ""),
+        row("stable", ""),
+    ]
+}
+
+/// The variants a by-variant answer lists, with their request counts.
+fn requests_by_variant(body: &Value) -> Vec<(String, f64)> {
+    let mut rows: Vec<(String, f64)> = body["data"]
+        .as_array()
+        .expect("a data array")
+        .iter()
+        .map(|row| {
+            (
+                row["variant"].as_str().unwrap_or_default().to_string(),
+                number(&row["requests"]),
+            )
+        })
+        .collect();
+    rows.sort_by(|a, b| a.0.cmp(&b.0));
+    rows
+}
+
+/// #3497: a table with every migration but without `fallback_reason` (dropped
+/// by hand, or never added while later files were) still answers by-variant.
+/// No prefix of the migrations is this table, so the 022 test above does not
+/// cover it: the probe has to name the one column missing among the later ones.
+#[tokio::test]
+async fn by_variant_on_a_current_clickhouse_without_fallback_reason_reports_no_first_attempt_count()
+{
+    let _ = skip_without_stack!();
+    let route = format!("variant-route-{}", Uuid::new_v4().simple());
+    let path = format!("/api/v1/analytics/by-variant?model={route}");
+    let rows = two_variant_rows(&route);
+
+    let (status, full) = read_without(u32::MAX, &[], &rows, &path)
+        .await
+        .expect("a configured stack");
+    assert_eq!(status, 200, "{full}");
+    let (status, lacking) = read_without(u32::MAX, &["fallback_reason"], &rows, &path)
+        .await
+        .expect("a configured stack");
+    assert_eq!(status, 200, "{lacking}");
+
+    // every row says the split is unknown rather than reading as first attempts
+    let data = lacking["data"].as_array().expect("a data array");
+    assert_eq!(data.len(), 2, "{lacking}");
+    for row in data {
+        assert!(row["first_attempt_requests"].is_null(), "{lacking}");
+    }
+    // and the requests are the ones the full table counts
+    assert_eq!(requests_by_variant(&lacking), requests_by_variant(&full));
+    assert_eq!(
+        requests_by_variant(&lacking),
+        vec![("canary".to_string(), 2.0), ("stable".to_string(), 3.0)]
+    );
+}
+
+/// A by-variant row's `(requests, first_attempt_requests, assigned_requests)`
+/// per variant, sorted by variant.
+fn split_by_variant(body: &Value) -> Vec<(String, f64, f64, Option<f64>)> {
+    let mut rows: Vec<_> = body["data"]
+        .as_array()
+        .expect("a data array")
+        .iter()
+        .map(|row| {
+            (
+                row["variant"].as_str().unwrap_or_default().to_string(),
+                number(&row["requests"]),
+                number(&row["first_attempt_requests"]),
+                (!row["assigned_requests"].is_null()).then(|| number(&row["assigned_requests"])),
+            )
+        })
+        .collect();
+    rows.sort_by(|a, b| a.0.cmp(&b.0));
+    rows
+}
+
+/// #3505: requests on one route as a gateway with `first_variant` writes them,
+/// beside rows written before the column. `flaky` was dialled first by two
+/// requests: one it answered and one that failed over to `stable`. `stable`
+/// answered three requests of its own on the first attempt. Of the two old
+/// rows (no `first_variant`), the one with no fallback reason counts for the
+/// variant that answered it and the failed-over one counts for no variant.
+fn assigned_rows(route: &str) -> Vec<Value> {
+    let ts = chrono::Utc::now()
+        .format("%Y-%m-%d %H:%M:%S%.3f")
+        .to_string();
+    let row = |variant: &str, first: &str, reason: &str| {
+        let mut row = json!({
+            "ts": ts, "request_id": format!("assigned-{}", Uuid::new_v4().simple()),
+            "model": route, "variant": variant, "status": 200, "latency_ms": 100,
+        });
+        if !first.is_empty() {
+            row["first_variant"] = json!(first);
+        }
+        if !reason.is_empty() {
+            row["fallback_reason"] = json!(reason);
+        }
+        row
+    };
+    vec![
+        row("flaky", "flaky", ""),
+        // dialled to `flaky`, answered by `stable`
+        row("stable", "flaky", "server_error"),
+        row("stable", "stable", ""),
+        row("stable", "stable", ""),
+        row("stable", "stable", ""),
+        // written before the column: one counted, one not
+        row("stable", "", ""),
+        row("stable", "", "timeout"),
+    ]
+}
+
+#[tokio::test]
+async fn by_variant_counts_a_failover_for_the_variant_first_dialled() {
+    let _ = skip_without_stack!();
+    let route = format!("variant-route-{}", Uuid::new_v4().simple());
+    let (status, body) = read_after(
+        u32::MAX,
+        &assigned_rows(&route),
+        &format!("/api/v1/analytics/by-variant?model={route}"),
+    )
+    .await
+    .expect("a configured stack");
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(
+        split_by_variant(&body),
+        vec![
+            // answered 1, first attempts 1, assigned 2 (its own and the failover)
+            ("flaky".to_string(), 1.0, 1.0, Some(2.0)),
+            // answered 6, first attempts 4 (three new, one old), assigned 4:
+            // the failover is `flaky`'s and the old failed-over row is no one's
+            ("stable".to_string(), 6.0, 4.0, Some(4.0)),
+        ],
+        "{body}"
+    );
+}
+
+/// A variant that only ever failed over answered nothing, and still has a row:
+/// its assigned share is what the dashboard compares with its weight.
+#[tokio::test]
+async fn by_variant_lists_a_variant_that_answered_nothing_by_its_assignments() {
+    let _ = skip_without_stack!();
+    let route = format!("variant-route-{}", Uuid::new_v4().simple());
+    let ts = chrono::Utc::now()
+        .format("%Y-%m-%d %H:%M:%S%.3f")
+        .to_string();
+    let rows = vec![json!({
+        "ts": ts, "request_id": format!("down-{}", Uuid::new_v4().simple()),
+        "model": route, "variant": "stable", "first_variant": "down",
+        "fallback_reason": "transport", "status": 200, "latency_ms": 100,
+    })];
+    let (status, body) = read_after(
+        u32::MAX,
+        &rows,
+        &format!("/api/v1/analytics/by-variant?model={route}"),
+    )
+    .await
+    .expect("a configured stack");
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(
+        split_by_variant(&body),
+        vec![
+            ("down".to_string(), 0.0, 0.0, Some(1.0)),
+            ("stable".to_string(), 1.0, 0.0, Some(0.0)),
+        ],
+        "{body}"
+    );
+}
+
+/// On a ClickHouse without `048` by-variant still answers, and
+/// `assigned_requests` is `null` rather than a guess; the other counts are the
+/// ones the full table gives.
+#[tokio::test]
+async fn by_variant_on_a_clickhouse_without_048_reports_no_assigned_count() {
+    let _ = skip_without_stack!();
+    let route = format!("variant-route-{}", Uuid::new_v4().simple());
+    let path = format!("/api/v1/analytics/by-variant?model={route}");
+    let rows = assigned_rows(&route);
+    // 047 is the last file before the column
+    let (status, before) = read_after(47, &rows, &path)
+        .await
+        .expect("a configured stack");
+    assert_eq!(status, 200, "{before}");
+    let (status, dropped) = read_without(u32::MAX, &["first_variant"], &rows, &path)
+        .await
+        .expect("a configured stack");
+    assert_eq!(status, 200, "{dropped}");
+    for body in [&before, &dropped] {
+        assert_eq!(
+            split_by_variant(body),
+            vec![
+                // the rows land under the variant that answered, as before
+                ("flaky".to_string(), 1.0, 1.0, None),
+                ("stable".to_string(), 6.0, 4.0, None),
+            ],
+            "{body}"
+        );
+    }
+}
+
+/// The invocation list returns `first_variant` beside `variant`, and an empty
+/// string on a table without the column.
+#[tokio::test]
+async fn the_invocation_list_returns_the_first_variant() {
+    let _ = skip_without_stack!();
+    let request_id = format!("first-variant-{}", Uuid::new_v4().simple());
+    let mut row = full_row(&request_id);
+    row["variant"] = json!("stable");
+    row["first_variant"] = json!("flaky");
+    let path = format!("/api/v1/analytics/invocations?request_id={request_id}");
+    for (last, expected) in [(u32::MAX, "flaky"), (47, "")] {
+        let (status, body) = read_after(last, std::slice::from_ref(&row), &path)
+            .await
+            .expect("a configured stack");
+        assert_eq!(status, 200, "{body}");
+        let listed = &body["data"][0];
+        assert_eq!(listed["variant"], "stable", "{body}");
+        assert_eq!(listed["first_variant"], expected, "{body}");
+    }
+}
+
+/// A by-variant row's `(requests, assigned_requests, sampled_requests)` per
+/// variant, sorted by variant.
+fn sampled_by_variant(body: &Value) -> Vec<(String, f64, f64, Option<f64>)> {
+    let mut rows: Vec<_> = body["data"]
+        .as_array()
+        .expect("a data array")
+        .iter()
+        .map(|row| {
+            (
+                row["variant"].as_str().unwrap_or_default().to_string(),
+                number(&row["requests"]),
+                number(&row["assigned_requests"]),
+                (!row["sampled_requests"].is_null()).then(|| number(&row["sampled_requests"])),
+            )
+        })
+        .collect();
+    rows.sort_by(|a, b| a.0.cmp(&b.0));
+    rows
+}
+
+/// #3547: requests on one route as a gateway with `sampled_variant` writes
+/// them. The split sampled `parked` three times, but its breaker was open for
+/// two of them, which the gateway dialled to `spare` first; `spare` was
+/// sampled once and answered it. A classic row counts under the empty string,
+/// and a variant row written before the column (no `sampled_variant`) is
+/// left out of the sampled count.
+fn sampled_rows(route: &str) -> Vec<Value> {
+    let ts = chrono::Utc::now()
+        .format("%Y-%m-%d %H:%M:%S%.3f")
+        .to_string();
+    let row = |sampled: &str, first: &str, variant: &str| {
+        let mut row = json!({
+            "ts": ts, "request_id": format!("sampled-{}", Uuid::new_v4().simple()),
+            "model": route, "variant": variant, "status": 200, "latency_ms": 100,
+        });
+        if !first.is_empty() {
+            row["first_variant"] = json!(first);
+        }
+        if !sampled.is_empty() {
+            row["sampled_variant"] = json!(sampled);
+        }
+        row
+    };
+    vec![
+        row("parked", "parked", "parked"),
+        // sampled `parked`, skipped while its breaker was open
+        row("parked", "spare", "spare"),
+        row("parked", "spare", "spare"),
+        row("spare", "spare", "spare"),
+        // the classic pool
+        row("", "", ""),
+        // written before the column
+        row("", "spare", "spare"),
+    ]
+}
+
+#[tokio::test]
+async fn by_variant_counts_the_sampled_primary_beside_the_variant_first_dialled() {
+    let _ = skip_without_stack!();
+    let route = format!("variant-route-{}", Uuid::new_v4().simple());
+    let (status, body) = read_after(
+        u32::MAX,
+        &sampled_rows(&route),
+        &format!("/api/v1/analytics/by-variant?model={route}"),
+    )
+    .await
+    .expect("a configured stack");
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(
+        sampled_by_variant(&body),
+        vec![
+            ("".to_string(), 1.0, 1.0, Some(1.0)),
+            // answered 1, dialled first 1, sampled 3
+            ("parked".to_string(), 1.0, 1.0, Some(3.0)),
+            // answered 4, dialled first 4, sampled 1: the old row has no sample
+            ("spare".to_string(), 4.0, 4.0, Some(1.0)),
+        ],
+        "{body}"
+    );
+}
+
+/// On a ClickHouse without `050` by-variant still answers, `sampled_requests`
+/// is `null` rather than a guess, and the other counts are the full table's.
+#[tokio::test]
+async fn by_variant_on_a_clickhouse_without_050_reports_no_sampled_count() {
+    let _ = skip_without_stack!();
+    let route = format!("variant-route-{}", Uuid::new_v4().simple());
+    let path = format!("/api/v1/analytics/by-variant?model={route}");
+    let rows = sampled_rows(&route);
+    // 048 is the last file this count does not need
+    let (status, before) = read_after(48, &rows, &path)
+        .await
+        .expect("a configured stack");
+    assert_eq!(status, 200, "{before}");
+    let (status, dropped) = read_without(u32::MAX, &["sampled_variant"], &rows, &path)
+        .await
+        .expect("a configured stack");
+    assert_eq!(status, 200, "{dropped}");
+    for body in [&before, &dropped] {
+        assert_eq!(
+            sampled_by_variant(body),
+            vec![
+                ("".to_string(), 1.0, 1.0, None),
+                ("parked".to_string(), 1.0, 1.0, None),
+                ("spare".to_string(), 4.0, 4.0, None),
+            ],
+            "{body}"
+        );
+    }
+    // and a table with `050` but not `048` counts the samples, not the assignments
+    let (status, body) = read_without(u32::MAX, &["first_variant"], &rows, &path)
+        .await
+        .expect("a configured stack");
+    assert_eq!(status, 200, "{body}");
+    let mut unassigned: Vec<_> = body["data"]
+        .as_array()
+        .expect("a data array")
+        .iter()
+        .map(|row| {
+            (
+                row["variant"].as_str().unwrap_or_default().to_string(),
+                row["assigned_requests"].is_null(),
+                number(&row["sampled_requests"]) as u32,
+            )
+        })
+        .collect();
+    unassigned.sort();
+    assert_eq!(
+        unassigned,
+        vec![
+            ("".to_string(), true, 1),
+            ("parked".to_string(), true, 3),
+            ("spare".to_string(), true, 1),
+        ],
+        "{body}"
+    );
+}
+
+/// The invocation list returns `sampled_variant` beside `first_variant`, and
+/// an empty string on a table without the column.
+#[tokio::test]
+async fn the_invocation_list_returns_the_sampled_variant() {
+    let _ = skip_without_stack!();
+    let request_id = format!("sampled-variant-{}", Uuid::new_v4().simple());
+    let mut row = full_row(&request_id);
+    row["variant"] = json!("spare");
+    row["first_variant"] = json!("spare");
+    row["sampled_variant"] = json!("parked");
+    let path = format!("/api/v1/analytics/invocations?request_id={request_id}");
+    for (last, expected) in [(u32::MAX, "parked"), (48, "")] {
+        let (status, body) = read_after(last, std::slice::from_ref(&row), &path)
+            .await
+            .expect("a configured stack");
+        assert_eq!(status, 200, "{body}");
+        let listed = &body["data"][0];
+        assert_eq!(listed["first_variant"], "spare", "{body}");
+        assert_eq!(listed["sampled_variant"], expected, "{body}");
+    }
 }

@@ -7,6 +7,8 @@ import { Link } from "react-router";
 import { AnalyticsUnavailable } from "@/components/AnalyticsUnavailable";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { EditorSheet } from "@/components/EditorSheet";
+import { TimeWindowPicker } from "@/components/TimeWindowPicker";
+import { ExportCsvButton } from "@/components/ExportCsvButton";
 import { GatedButton } from "@/components/GatedButton";
 import { LoadError } from "@/components/LoadError";
 import { LoadingRegion, TableSkeleton } from "@/components/LoadingState";
@@ -25,6 +27,7 @@ import {
   createCustomer,
   deleteBusinessUnit,
   deleteCustomer,
+  attributionExport,
   fetchAttributionSpend,
   fetchBusinessUnits,
   fetchCustomers,
@@ -44,12 +47,13 @@ import { useToast } from "@/lib/toast";
 import { useScope } from "@/lib/scope";
 import { slugify } from "@/lib/slug";
 import {
-  isTimeWindow,
+  isCustomWindow,
   useTimeWindow,
-  useTimeWindowOptions,
   windowBounds,
   windowSpan,
   type TimeWindow,
+  type WindowSelection,
+  useWindowQueryKey,
 } from "@/lib/time-window";
 import { cn } from "@/lib/utils";
 import { useScreenReady } from "@/lib/ux-react";
@@ -67,7 +71,7 @@ interface WindowSpend {
 // (#2107). the span travels with the rows, so the caption names the range these
 // figures cover rather than one a later render would work out
 async function fetchWindowSpend(
-  window: TimeWindow,
+  window: WindowSelection,
   dimension: AttributionDimension,
 ): Promise<WindowSpend> {
   const at = new Date();
@@ -83,12 +87,15 @@ async function fetchWindowSpend(
  * so the business units and the customers of one chargeback are read over the
  * same month. The key holds the window's name rather than its bounds, which
  * would differ on every render; picking another window changes the name, so it
- * refetches.
+ * refetches, and so does a change of the chart zone a window of calendar days
+ * is counted in (`useWindowQueryKey`).
  */
 function useWindowSpend(dimension: AttributionDimension) {
   const [spendWindow, setSpendWindow] = useTimeWindow();
+  // the window's days are the chart zone's, so a zone change reads it again (#3519)
+  const windowKey = useWindowQueryKey(spendWindow);
   const spend = useQuery({
-    queryKey: ["analytics", "by-attribution", dimension, spendWindow],
+    queryKey: ["analytics", "by-attribution", dimension, ...windowKey],
     queryFn: () => fetchWindowSpend(spendWindow, dimension),
     retry: false,
   });
@@ -164,7 +171,7 @@ function Editor({
   const { t } = useTranslation();
   return (
     <>
-      <Field label={t("pages.costAttribution.editor.name")}>
+      <Field label={t("pages.costAttribution.editor.name")} required>
         <Input
           aria-label={t("pages.costAttribution.editor.name")}
           value={form.name}
@@ -244,7 +251,7 @@ function SpendStrip({
   error,
   onRetry,
 }: {
-  window: TimeWindow;
+  window: WindowSelection;
   /** the range the figures were read over, once they have been */
   span?: { from: Date; to: Date };
   rows: AttributionSpendRow[];
@@ -300,9 +307,11 @@ function SpendStrip({
   const share = total > 0 ? unattributed / total : 0;
 
   return (
-    <div className="flex flex-wrap items-start gap-x-10 gap-y-3 rounded-[10px] border border-[color:var(--border-default)] bg-card px-4 py-3">
+    <div className="flex flex-wrap items-start gap-x-10 gap-y-3 rounded-lg border border-[color:var(--border-default)] bg-card px-4 py-3">
       <SpendFigure
-        label={labels[window]}
+        label={
+          isCustomWindow(window) ? t("pages.costAttribution.spendWindows.custom") : labels[window]
+        }
         value={fmt.currency(total, currency)}
         // the dates, in the viewer's calendar, are what tells "last month"
         // apart from the last thirty days on a chargeback
@@ -494,8 +503,8 @@ function AttributionScreen<T extends BusinessUnitRow | CustomerRow>({
   mutationError?: Error;
   disabled: boolean;
   /** the window the strip and every card report over */
-  spendWindow: TimeWindow;
-  onSpendWindowChange: (next: TimeWindow) => void;
+  spendWindow: WindowSelection;
+  onSpendWindowChange: (next: WindowSelection) => void;
   spendSpan?: { from: Date; to: Date };
   /** window spend keyed by the dimension's own id; the empty id is the
    *  unattributed bucket, which has no card of its own */
@@ -506,7 +515,6 @@ function AttributionScreen<T extends BusinessUnitRow | CustomerRow>({
   onRetrySpend: () => void;
 }) {
   const { t } = useTranslation();
-  const windowOptions = useTimeWindowOptions();
   const [open, setOpen] = React.useState(false);
   const [form, setForm] = React.useState<EditorState>(blank);
   // what the form opened with, so closing it with a draft in it can ask first
@@ -626,12 +634,22 @@ function AttributionScreen<T extends BusinessUnitRow | CustomerRow>({
           </span>
         )}
         <div className="ml-auto flex flex-wrap items-center gap-2">
-          <Combobox
+          <TimeWindowPicker
             className="w-48"
             aria-label={t("common.timeWindow.label")}
             value={spendWindow}
-            onChange={(next) => isTimeWindow(next) && onSpendWindowChange(next)}
-            options={windowOptions}
+            onChange={onSpendWindowChange}
+          />
+          <ExportCsvButton
+            what={t("errors.resources.attributionExport")}
+            fallbackName="cost-attribution.csv"
+            disabled={disabled}
+            request={() =>
+              attributionExport(
+                windowBounds(spendWindow),
+                kind === "unit" ? "business_unit" : "customer",
+              )
+            }
           />
           <GatedButton
             gate={gate}
@@ -693,7 +711,7 @@ function AttributionScreen<T extends BusinessUnitRow | CustomerRow>({
                 // a retired unit reads as a quieter card, not as faded text:
                 // container opacity takes every glyph under 4.5:1 (#1181)
                 className={cn(
-                  "flex flex-col gap-3 rounded-[10px] border border-[color:var(--border-default)] p-4",
+                  "flex flex-col gap-3 rounded-lg border border-[color:var(--border-default)] p-4",
                   row.retired_at ? "bg-[color:var(--surface-subtle)]/60" : "bg-card",
                 )}
               >
@@ -806,7 +824,7 @@ function AttributionScreen<T extends BusinessUnitRow | CustomerRow>({
         saveLabel={form.id ? t("common.save") : t("common.create")}
         canSave={!!form.name.trim() && !slugError}
         saving={saving}
-        onSave={() => {
+        onSubmit={() => {
           // closing here unconditionally threw the draft away whenever the
           // control plane refused the save — the name, the slug and the
           // slug-change acknowledgement the operator ticked on purpose (#1626)

@@ -2,6 +2,8 @@ import { useQuery } from "@tanstack/react-query";
 import { AlertTriangle, HeartPulse } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
+import { BreakerBadge } from "@/components/BreakerBadge";
+import { OwnerOrgPill, sharedNames } from "@/components/OwnerOrgPill";
 import { Overline } from "@/components/ui/overline";
 import { LoadError } from "@/components/LoadError";
 import { CardGridSkeleton } from "@/components/LoadingState";
@@ -12,6 +14,10 @@ import {
   fetchHealthTimeline,
   fetchMttr,
   fetchUptime,
+  isTripped,
+  useBreakerState,
+  type BreakerStateDto,
+  type BreakerTargetDto,
   type MttrRow,
   type TimelineRow,
   type UptimeRow,
@@ -27,6 +33,13 @@ import {
   type SlaState,
 } from "@/lib/route-targets";
 import { cn } from "@/lib/utils";
+import {
+  eventAt,
+  groupByProvider,
+  headline,
+  providerKey,
+  type ProviderGroup,
+} from "@/lib/provider-health";
 import { useNow } from "@/lib/use-now";
 import { useScreenReady } from "@/lib/ux-react";
 
@@ -36,12 +49,6 @@ const REFETCH_MS = 30_000;
 // a provider that has reported nothing for this long is quiet enough to say so:
 // several probe sweeps, and long enough that a lull in passive traffic is not
 const STALE_AFTER_MS = 15 * 60 * 1000;
-
-/** when a rollup row last saw an event, in ms; the zone-less ClickHouse form is read as UTC */
-function eventAt(row: UptimeRow): number | undefined {
-  const at = bucketStart(row.last_event);
-  return Number.isNaN(at) ? undefined : at;
-}
 
 /** the status fill for a state's dots and border */
 const SLA_FILL: Record<SlaState, string> = {
@@ -81,112 +88,6 @@ function pct(fmt: Formatters, v: number | undefined): string {
 
 function mttrLabel(fmt: Formatters, seconds: number | undefined): string {
   return seconds === undefined ? "—" : fmt.duration(seconds);
-}
-
-/**
- * The two grains the gateway observes a provider at, as returned by the
- * rollups. `provider` rows come from probes and status-page polls and describe
- * the provider as a whole; `target` rows come from real traffic and describe
- * one route through it. Before #1257 the screen laid both out as peer cards,
- * so one dead provider rendered as several unrelated cards with contradictory
- * counts. They are never summed together — a probe every interval and a
- * per-request observation count different things — so a provider's target rows
- * are nested inside its own card instead.
- */
-type Grain = "provider" | "target";
-
-interface ProviderGroup {
-  provider: string;
-  /** the provider-grain row, when probes or a status page feed this provider */
-  overall: UptimeRow | undefined;
-  targets: UptimeRow[];
-}
-
-interface Headline {
-  /** undefined when no event was observed: a figure nobody measured is not shown */
-  uptime: number | undefined;
-  /** the newest event behind the card, in ms */
-  lastEvent: number | undefined;
-  events: number;
-  failures: number;
-  burn: number;
-  breached: boolean;
-  /** true when there is no provider-grain row and the numbers are a roll-up */
-  derived: boolean;
-  sources: string[];
-}
-
-/**
- * The card's top-line numbers. A provider-grain row is used verbatim when one
- * exists. Without one, the target rows are disjoint views of the same provider
- * — every request went through exactly one of them — so summing them is the
- * honest roll-up; `derived` says so and the card labels it.
- */
-function headline(group: ProviderGroup): Headline {
-  const row = group.overall;
-  if (row) {
-    return {
-      uptime: row.events === 0 ? undefined : row.uptime,
-      lastEvent: eventAt(row),
-      events: row.events,
-      failures: row.errors + row.timeouts,
-      burn: row.error_budget_burn,
-      breached: row.sla_breached === 1,
-      derived: false,
-      sources: row.sources ?? [],
-    };
-  }
-  let events = 0;
-  let ok = 0;
-  let failures = 0;
-  let burn = 0;
-  let lastEvent: number | undefined;
-  const sources = new Set<string>();
-  for (const t of group.targets) {
-    events += t.events;
-    ok += t.ok;
-    failures += t.errors + t.timeouts;
-    // the budget is per target, so the card reports the worst one rather than
-    // an average that would hide it
-    burn = Math.max(burn, t.error_budget_burn);
-    const at = eventAt(t);
-    if (at !== undefined) lastEvent = Math.max(lastEvent ?? at, at);
-    for (const s of t.sources ?? []) sources.add(s);
-  }
-  return {
-    // no events is no data, not a perfect score
-    uptime: events === 0 ? undefined : ok / events,
-    lastEvent,
-    events,
-    failures,
-    burn,
-    breached: group.targets.some((t) => t.sla_breached === 1),
-    derived: true,
-    sources: [...sources].sort(),
-  };
-}
-
-function groupByProvider(rows: UptimeRow[]): ProviderGroup[] {
-  const byProvider = new Map<string, ProviderGroup>();
-  for (const row of rows) {
-    let group = byProvider.get(row.provider);
-    if (!group) {
-      group = { provider: row.provider, overall: undefined, targets: [] };
-      byProvider.set(row.provider, group);
-    }
-    // fall back on the id comparison the server derives `grain` from, so a
-    // control plane that predates the column still groups correctly
-    const grain: Grain = (row.grain ??
-      (row.target_id === row.provider ? "provider" : "target")) as Grain;
-    if (grain === "provider") group.overall = row;
-    else group.targets.push(row);
-  }
-  const groups = [...byProvider.values()];
-  for (const group of groups) group.targets.sort((a, b) => a.uptime - b.uptime);
-  // worst first, the same intent as the server's `order by uptime asc`; a
-  // provider with nothing measured goes last
-  groups.sort((a, b) => (headline(a).uptime ?? 2) - (headline(b).uptime ?? 2));
-  return groups;
 }
 
 /** Merge timeline rows that share a bucket, for a card's roll-up strip. */
@@ -367,6 +268,161 @@ function SlaPill({ state }: { state: SlaState }) {
   );
 }
 
+interface ProviderBreakers {
+  /**
+   * the organization of the routes whose targets these are, `""` for a
+   * config-file route: two organizations' routes may name providers of one
+   * name, and each organization's are listed apart (#3460)
+   */
+  org_id: string;
+  provider: string;
+  /** the tripped targets, open ones first */
+  targets: BreakerTargetDto[];
+  /** the worst of them, as a breaker the badge can draw */
+  worst: BreakerTargetDto;
+}
+
+/**
+ * the tripped breakers grouped by the provider they sit in front of and the
+ * organization of their routes, open ones first, keyed by {@link providerKey}
+ */
+function breakersByProvider(state: BreakerStateDto | undefined): Map<string, ProviderBreakers> {
+  const byProvider = new Map<string, ProviderBreakers>();
+  for (const tg of state?.targets ?? []) {
+    if (!isTripped(tg)) continue;
+    const org = tg.org_id ?? "";
+    const k = providerKey(org, tg.provider);
+    const entry = byProvider.get(k);
+    if (!entry) byProvider.set(k, { org_id: org, provider: tg.provider, targets: [tg], worst: tg });
+    else entry.targets.push(tg);
+  }
+  for (const entry of byProvider.values()) {
+    entry.targets.sort((a, b) => (a.state === b.state ? 0 : a.state === "open" ? -1 : 1));
+    // open sorts first, so the first target is the worst one
+    entry.worst = entry.targets[0];
+  }
+  return byProvider;
+}
+
+/**
+ * The worst tripped breaker in front of the provider a health card is about.
+ * A route reaches its own organization's provider first and a config-file one
+ * after it (#1857), so a card of an organization's provider takes that
+ * organization's breakers, and a config-file provider's card the breakers of
+ * every route with no provider of that name in its own organization.
+ */
+function cardBreaker(
+  group: ProviderGroup,
+  byProvider: Map<string, ProviderBreakers>,
+  cards: Set<string>,
+): BreakerTargetDto | undefined {
+  const own = byProvider.get(providerKey(group.org_id, group.provider));
+  if (group.org_id !== "") return own?.worst;
+  const reached = [...byProvider.values()].filter(
+    (entry) =>
+      entry.provider === group.provider &&
+      (entry.org_id === "" || !cards.has(providerKey(entry.org_id, entry.provider))),
+  );
+  return reached.find((entry) => entry.worst.state === "open")?.worst ?? reached[0]?.worst;
+}
+
+/**
+ * What the gateways report about their circuit breakers right now. It is each
+ * gateway's in-memory state, reported about every 10 seconds, and says nothing
+ * of the 7-day SLA verdict beside it, which is recorded traffic. A provider
+ * whose breaker is open or probing is listed with the models it affects; with
+ * none, the panel says so, and with no gateway reporting it says that instead.
+ */
+function BreakerPanel({
+  state,
+  byProvider,
+}: {
+  state: BreakerStateDto;
+  byProvider: Map<string, ProviderBreakers>;
+}) {
+  const { t } = useTranslation();
+  const providers = [...byProvider.values()];
+  const shared = sharedNames(providers.map((p) => ({ name: p.provider, orgId: p.org_id })));
+  return (
+    <section
+      aria-labelledby="health-breakers-title"
+      data-testid="health-breakers"
+      className="flex flex-col gap-2.5 rounded-lg border bg-card p-4"
+    >
+      <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
+        <h2 id="health-breakers-title" className="text-sm font-semibold">
+          {t("pages.health.breakerTitle")}
+        </h2>
+      </div>
+      <p className="text-xs text-muted-foreground">
+        {state.gateways_live > 0
+          ? t("pages.health.breakerNote", { count: state.gateways_live })
+          : t("pages.health.breakerNoGateways")}
+      </p>
+      {state.gateways_live > 0 && providers.length === 0 && (
+        <p className="text-xs text-[color:var(--text-secondary)]">
+          {t("pages.health.breakerNone")}
+        </p>
+      )}
+      {providers.length > 0 && (
+        <ul className="divide-y divide-[color:var(--border-subtle)]">
+          {providers.map((entry) => (
+            <li
+              key={providerKey(entry.org_id, entry.provider)}
+              data-testid={`health-breaker-${entry.provider}`}
+              data-org={entry.org_id}
+              className="flex flex-col gap-1.5 py-2 first:pt-0 last:pb-0"
+            >
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="font-mono text-sm font-semibold">{entry.provider}</span>
+                {shared.has(entry.provider) && <OwnerOrgPill orgId={entry.org_id} />}
+                <BreakerBadge breaker={entry.worst} />
+              </div>
+              <ul className="flex flex-col gap-1">
+                {entry.targets.map((tg) => (
+                  <li key={`${tg.model}-${tg.target_index}`} className="flex flex-col gap-0.5">
+                    <div className="flex flex-wrap items-center gap-x-2 font-mono text-xs">
+                      <span className="text-[color:var(--text-secondary)]">
+                        {t("pages.health.breakerTarget", {
+                          model: tg.model,
+                          index: tg.target_index + 1,
+                          upstream: tg.upstream_model,
+                        })}
+                      </span>
+                      <BreakerBadge breaker={tg} />
+                    </div>
+                    {tg.nodes.length > 0 && <BreakerNodes nodes={tg.nodes} />}
+                  </li>
+                ))}
+              </ul>
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  );
+}
+
+/** the per-gateway breakers, which only a superadmin's answer carries */
+function BreakerNodes({ nodes }: { nodes: BreakerTargetDto["nodes"] }) {
+  const { t } = useTranslation();
+  const fmt = useFormat();
+  return (
+    <ul className="flex flex-col gap-0.5 pl-3 text-xs text-[color:var(--text-subtle)]">
+      {nodes
+        .filter((n) => n.state !== "closed")
+        .map((n) => (
+          <li key={n.node_id} className="font-mono">
+            {n.node_id} · {t(`breaker.states.${n.state}`)} ·{" "}
+            {t("breaker.failures", { count: n.consecutive_failures })}
+            {n.retry_after_secs !== undefined &&
+              ` · ${t("breaker.retryIn", { duration: fmt.duration(n.retry_after_secs) })}`}
+          </li>
+        ))}
+    </ul>
+  );
+}
+
 function Stat({ label, value }: { label: string; value: string }) {
   return (
     <div>
@@ -450,6 +506,9 @@ export default function Health() {
     queryFn: () => fetchHealthTimeline("hour"),
     refetchInterval: REFETCH_MS,
   });
+  // the gateways' live breakers: optional context, so a failed read draws nothing
+  const breakers = useBreakerState();
+  const breakersByName = breakersByProvider(breakers.data);
   // one clock for every relative time on the screen, so "3 minutes ago" keeps
   // ageing between refetches and the cards do not drift apart
   const now = useNow(30_000);
@@ -459,17 +518,24 @@ export default function Health() {
   const isLoading = uptime.isLoading || mttr.isLoading || timeline.isLoading;
   const error = uptime.error || mttr.error || timeline.error;
 
-  const key = (provider: string, target: string) => `${provider}::${target}`;
-  const mttrByTarget = new Map((mttr.data ?? []).map((m) => [key(m.provider, m.target_id), m]));
+  // a provider is its organization and its name: two organizations may each
+  // have an `openai`, and the rollups answer a series for each (#3441)
+  const key = (org: string | undefined, provider: string, target: string) =>
+    `${providerKey(org, provider)}::${target}`;
+  const mttrByTarget = new Map(
+    (mttr.data ?? []).map((m) => [key(m.org_id, m.provider, m.target_id), m]),
+  );
   const timelineByTarget = new Map<string, TimelineRow[]>();
   for (const row of timeline.data ?? []) {
-    const k = key(row.provider, row.target_id);
+    const k = key(row.org_id, row.provider, row.target_id);
     const list = timelineByTarget.get(k) ?? [];
     list.push(row);
     timelineByTarget.set(k, list);
   }
   const sourceLabel = useSourceLabel();
   const groups = groupByProvider(uptime.data ?? []);
+  const cards = new Set(groups.map((g) => providerKey(g.org_id, g.provider)));
+  const shared = sharedNames(groups.map((g) => ({ name: g.provider, orgId: g.org_id })));
   const since = recentSince(timeline.data ?? []);
 
   return (
@@ -487,6 +553,7 @@ export default function Health() {
           </span>
         )}
       </div>
+      {breakers.data && <BreakerPanel state={breakers.data} byProvider={breakersByName} />}
       {isLoading && <CardGridSkeleton cards={4} height={218} min={340} />}
       {error && (
         <LoadError
@@ -517,27 +584,26 @@ export default function Health() {
       <div className="grid gap-3.5 [grid-template-columns:repeat(auto-fill,minmax(min(340px,100%),1fr))]">
         {groups.map((group) => {
           const head = headline(group);
+          const at = (target: string) => key(group.org_id, group.provider, target);
           const providerMttr =
-            mttrByTarget.get(key(group.provider, group.provider)) ??
+            mttrByTarget.get(at(group.provider)) ??
             (group.overall
               ? undefined
               : // no provider-grain incidents to report: fall back to the worst
                 // target's, which is the one an operator is chasing
                 [...group.targets]
-                  .map((tgt) => mttrByTarget.get(key(group.provider, tgt.target_id)))
+                  .map((tgt) => mttrByTarget.get(at(tgt.target_id)))
                   .filter((m): m is MttrRow => !!m)
                   .sort((a, b) => b.mttr_seconds - a.mttr_seconds)[0]);
           const headBuckets = group.overall
-            ? (timelineByTarget.get(key(group.provider, group.provider)) ?? [])
+            ? (timelineByTarget.get(at(group.provider)) ?? [])
             : mergeBuckets(
-                group.targets.flatMap(
-                  (tgt) => timelineByTarget.get(key(group.provider, tgt.target_id)) ?? [],
-                ),
+                group.targets.flatMap((tgt) => timelineByTarget.get(at(tgt.target_id)) ?? []),
               );
           const targetState = (row: UptimeRow) =>
             slaState(
               row.sla_breached === 1,
-              recentBurn(timelineByTarget.get(key(group.provider, row.target_id)) ?? [], since),
+              recentBurn(timelineByTarget.get(at(row.target_id)) ?? [], since),
             );
           // a probed provider is judged on its own row, like its headline; a
           // rolled-up card takes its worst target, as `headline` does for a breach
@@ -546,9 +612,10 @@ export default function Health() {
             : worstState(group.targets.map(targetState));
           return (
             <div
-              key={group.provider}
+              key={providerKey(group.org_id, group.provider)}
               data-testid={`health-card-${group.provider}`}
-              className="flex flex-col gap-3.5 rounded-[10px] border bg-card p-4"
+              data-org={group.org_id}
+              className="flex flex-col gap-3.5 rounded-lg border bg-card p-4"
               style={{
                 borderColor:
                   state === "within"
@@ -558,6 +625,7 @@ export default function Health() {
             >
               <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1.5">
                 <span className="font-mono text-sm font-semibold">{group.provider}</span>
+                {shared.has(group.provider) && <OwnerOrgPill orgId={group.org_id} />}
                 <span className="font-mono text-xs text-[color:var(--text-subtle)]">
                   {head.derived
                     ? t("pages.health.grainDerived")
@@ -565,6 +633,7 @@ export default function Health() {
                         sources: head.sources.map(sourceLabel).join(", ") || "—",
                       })}
                 </span>
+                <BreakerBadge breaker={cardBreaker(group, breakersByName, cards)} />
                 <SlaPill state={state} />
               </div>
               <div className="flex items-end gap-3">
@@ -601,8 +670,8 @@ export default function Health() {
                       <TargetRow
                         key={row.target_id}
                         row={row}
-                        mttr={mttrByTarget.get(key(group.provider, row.target_id))}
-                        buckets={timelineByTarget.get(key(group.provider, row.target_id)) ?? []}
+                        mttr={mttrByTarget.get(at(row.target_id))}
+                        buckets={timelineByTarget.get(at(row.target_id)) ?? []}
                         state={targetState(row)}
                         now={now}
                       />

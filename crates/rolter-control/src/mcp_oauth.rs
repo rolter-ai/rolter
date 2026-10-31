@@ -29,10 +29,12 @@ use uuid::Uuid;
 use rolter_core::MCP_TRANSPORTS as TRANSPORTS;
 use rolter_store::postgres::models::{
     McpGatewaySettings, McpOAuthGrant, McpOAuthSession, McpServer, McpToolGroup,
+    McpToolGroupAssignment,
 };
 use rolter_store::postgres::repo::{
     McpAuthConfig, McpGatewaySettingsRepo, McpGatewaySettingsUpdate, McpOAuthRepo, McpServerRepo,
-    McpServerUpdate, McpToolGroupRepo, NewMcpServer,
+    McpServerUpdate, McpToolGroupAssignmentRepo, McpToolGroupRepo, NewMcpServer, NewMcpToolGroup,
+    MCP_ASSIGNMENT_KINDS,
 };
 
 use crate::crud::{
@@ -70,6 +72,14 @@ pub(crate) fn router() -> Router<ControlState> {
         .route(
             "/api/v1/mcp/tool-groups/{id}",
             delete(delete_tool_group).put(update_tool_group),
+        )
+        .route(
+            "/api/v1/orgs/{org_id}/mcp/tool-group-assignments",
+            get(list_tool_group_assignments),
+        )
+        .route(
+            "/api/v1/mcp/tool-groups/{id}/assignments",
+            axum::routing::put(replace_tool_group_assignments),
         )
         .route(
             "/api/v1/orgs/{org_id}/mcp/settings",
@@ -122,6 +132,8 @@ async fn owner_filter(
     Ok(match principal {
         Principal::Superadmin { .. } => None,
         Principal::User(user) => Some(user.id),
+        // a token owns no OAuth session, so it lists none
+        Principal::Token(_) => Some(Uuid::nil()),
     })
 }
 
@@ -194,7 +206,18 @@ async fn create_server(
     require_non_empty(&body.name, "name")?;
     require_non_empty(&body.slug, "slug")?;
     require_non_empty(&body.url, "url")?;
-    let transport = body.transport.as_deref().unwrap_or("streamable_http");
+    // a server registered without a transport gets the organization's saved
+    // default (#1404); a stored row always names its own, so this is the one
+    // place the default is read
+    let org_default = match body.transport {
+        Some(_) => None,
+        None => Some(McpGatewaySettingsRepo(pool(&state)).get(org_id).await?),
+    };
+    let transport = body
+        .transport
+        .as_deref()
+        .or(org_default.as_ref().map(|s| s.default_transport.as_str()))
+        .unwrap_or("streamable_http");
     if !TRANSPORTS.contains(&transport) {
         return Err(invalid_field(
             "transport",
@@ -255,6 +278,10 @@ async fn create_server(
         serde_json::json!({"slug": server.slug, "transport": server.transport}),
     )
     .await;
+    // ask the server for its tools without holding this response: a server
+    // that is down, or one that needs a credential that is set next, only
+    // leaves a note on the row (#1283)
+    crate::mcp_discovery::discover_in_background(&state, server.id, None);
     Ok(Json(server))
 }
 
@@ -565,6 +592,10 @@ async fn set_auth(
         }),
     )
     .await;
+    // a credential the server now accepts is what discovery was waiting for
+    if matches!(server.auth_kind.as_str(), "bearer" | "header") {
+        crate::mcp_discovery::discover_in_background(&state, server.id, None);
+    }
     Ok(Json(server))
 }
 
@@ -622,13 +653,15 @@ struct LibraryDefinition {
 /// The curated catalog.
 ///
 /// Every entry is a **snapshot** of what the upstream server published, taken
-/// by hand. It is not discovered: nothing here is re-checked against the live
-/// server, so a tool renamed upstream goes stale here until someone edits this
-/// list. That is a deliberate, cheap first step — an empty list was worse,
-/// because it made a card claim the server declares no tools at all, left the
-/// installed server contributing nothing to the tool tally, and made the entry
-/// unpickable in a tool group (#1252). Replacing this with a `tools/list` call
-/// on install is tracked separately.
+/// by hand, and since #1283 it is only the **fallback**: an installed server
+/// is asked for its tools with `tools/list` (see [`crate::mcp_discovery`]), and
+/// what it answers replaces this list on the row. The snapshot is what a server
+/// carries until that has happened, and what stays if the server cannot be
+/// reached, so an empty list never makes a card claim the server declares no
+/// tools at all (#1252). Because it is not re-checked against the live server,
+/// a tool renamed upstream stays here until someone edits this list; the row's
+/// `tools_discovery_status` says whether its manifest is this fallback
+/// (`pending`) or the server's own answer (`discovered`).
 ///
 /// The install path in [`create_server`] compares a `library` request against
 /// these lists element for element, so filling them in here is what makes an
@@ -852,6 +885,10 @@ struct ToolGroupInput {
     enabled: bool,
     #[serde(default)]
     tools: Vec<ToolRef>,
+    /// who the group is assigned to, written in the same transaction as the
+    /// group (#3295); empty applies it to the whole organization
+    #[serde(default)]
+    assignments: Vec<AssignmentSubject>,
 }
 
 fn validate_tool_refs(tools: &[ToolRef]) -> ApiResult<()> {
@@ -935,17 +972,19 @@ async fn create_tool_group(
     require_non_empty(&body.name, "name")?;
     require_non_empty(&body.slug, "slug")?;
     validate_tool_refs_for_org(&state, org_id, &body.tools).await?;
+    let subjects = validate_assignments(&state, org_id, &body.assignments, &[]).await?;
     let tools = serde_json::to_value(&body.tools)
         .map_err(|_| ApiError::Curated("tools could not be stored".into()))?;
     let group = McpToolGroupRepo(pool(&state))
-        .create(
+        .create(NewMcpToolGroup {
             org_id,
-            &body.name,
-            &body.slug,
-            &body.description,
-            body.enabled,
-            &tools,
-        )
+            name: &body.name,
+            slug: &body.slug,
+            description: &body.description,
+            enabled: body.enabled,
+            tools: &tools,
+            assignments: &subjects,
+        })
         .await?;
     log_audit(
         &state,
@@ -1031,6 +1070,138 @@ async fn delete_tool_group(
     )
     .await;
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// One virtual key, project or team a group is assigned to.
+#[derive(Debug, Deserialize)]
+struct AssignmentSubject {
+    kind: String,
+    id: Uuid,
+}
+
+#[derive(Debug, Deserialize)]
+struct ReplaceAssignments {
+    assignments: Vec<AssignmentSubject>,
+}
+
+/// The most subjects one group may be assigned to; the set travels in every
+/// snapshot, so it is bounded rather than left to grow.
+const MAX_ASSIGNMENTS_PER_GROUP: usize = 500;
+
+/// Check the subjects of a group's assignments: a known kind, inside the
+/// organization. One that is not in the organization any more is dropped when it
+/// is among `stored` (the group is already assigned to it) and refused
+/// otherwise. Duplicates collapse.
+async fn validate_assignments(
+    state: &ControlState,
+    org_id: Uuid,
+    requested: &[AssignmentSubject],
+    stored: &[(String, Uuid)],
+) -> ApiResult<Vec<(String, Uuid)>> {
+    if requested.len() > MAX_ASSIGNMENTS_PER_GROUP {
+        return Err(invalid_field(
+            "assignments",
+            format!("a group can be assigned to at most {MAX_ASSIGNMENTS_PER_GROUP} subjects"),
+        ));
+    }
+    let repo = McpToolGroupAssignmentRepo(pool(state));
+    let mut subjects: Vec<(String, Uuid)> = Vec::new();
+    for subject in requested {
+        if !MCP_ASSIGNMENT_KINDS.contains(&subject.kind.as_str()) {
+            return Err(invalid_field(
+                "assignments",
+                format!(
+                    "assignment kind must be one of {}",
+                    MCP_ASSIGNMENT_KINDS.join(", ")
+                ),
+            ));
+        }
+        let pair = (subject.kind.clone(), subject.id);
+        if subjects.contains(&pair) {
+            continue;
+        }
+        if !repo
+            .subject_in_org(&subject.kind, subject.id, org_id)
+            .await?
+        {
+            if stored.contains(&pair) {
+                continue;
+            }
+            return Err(invalid_field(
+                "assignments",
+                format!(
+                    "{} {} does not exist in this organization",
+                    subject.kind.replace('_', " "),
+                    subject.id
+                ),
+            ));
+        }
+        subjects.push(pair);
+    }
+    Ok(subjects)
+}
+
+async fn list_tool_group_assignments(
+    principal: Principal,
+    State(state): State<ControlState>,
+    Path(org_id): Path<Uuid>,
+) -> ApiResult<Json<Vec<McpToolGroupAssignment>>> {
+    authorize(
+        &state,
+        &principal,
+        ScopeChain::org(org_id),
+        cap!("mcp_tool_group_assignment", Read),
+    )
+    .await?;
+    Ok(Json(
+        McpToolGroupAssignmentRepo(pool(&state))
+            .list_for_org(org_id)
+            .await?,
+    ))
+}
+
+/// Replace the set of keys, projects and teams a group is assigned to (#3295).
+/// An empty set removes every assignment, which hands the group back to the
+/// whole organization.
+async fn replace_tool_group_assignments(
+    principal: Principal,
+    State(state): State<ControlState>,
+    Path(id): Path<Uuid>,
+    SafeJson(body): SafeJson<ReplaceAssignments>,
+) -> ApiResult<Json<Vec<McpToolGroupAssignment>>> {
+    let group = McpToolGroupRepo(pool(&state)).get(id).await?;
+    authorize(
+        &state,
+        &principal,
+        ScopeChain::org(group.org_id),
+        cap!("mcp_tool_group_assignment", Update),
+    )
+    .await?;
+    let repo = McpToolGroupAssignmentRepo(pool(&state));
+    // a subject that is gone and still assigned is dropped rather than
+    // refused, so a stale row can never block saving the group. deleting a
+    // subject sweeps its rows (0200), so this is left to a row written
+    // concurrently with the delete and to one from before the sweep
+    let stored = repo.list_for_group(id).await?;
+    let subjects = validate_assignments(&state, group.org_id, &body.assignments, &stored).await?;
+    repo.replace(id, &subjects).await?;
+    log_audit(
+        &state,
+        &principal,
+        Some(group.org_id),
+        "mcp_tool_group.update",
+        "mcp_tool_group",
+        group.id,
+        serde_json::json!({"assignments": subjects.len()}),
+    )
+    .await;
+    let assigned = repo
+        .list_for_org(group.org_id)
+        .await?
+        .into_iter()
+        .filter(|row| row.group_id == id)
+        .collect();
+    Ok(Json(assigned))
 }
 
 async fn get_mcp_settings(
@@ -1184,7 +1355,7 @@ async fn may_revoke(
     match principal {
         Principal::Superadmin { .. } => Ok(()),
         Principal::User(user) if user.id == owner_id => Ok(()),
-        Principal::User(_) => Err(ApiError::Forbidden),
+        Principal::User(_) | Principal::Token(_) => Err(ApiError::Forbidden),
     }
 }
 

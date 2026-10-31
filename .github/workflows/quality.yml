@@ -61,7 +61,7 @@ jobs:
   # fails the job when one was skipped
   rust-lint:
     name: rust lint
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     # about 4 min warm and 8-10 cold after a Cargo.lock bump, which pull
     # requests no longer cache for each other. a hung step fails the gate in
     # half an hour instead of GitHub's 360-minute default
@@ -77,7 +77,7 @@ jobs:
         with:
           toolchain: stable
           components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         if: ${{ !cancelled() }}
         with:
           save-if: ${{ github.ref == 'refs/heads/master' }}
@@ -226,7 +226,7 @@ jobs:
   # failure into a warning, never an error (ADR-0032, ADR-0034)
   rust-build:
     name: rust build
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     # about 3.5 min warm before the image smoke, which adds a debug build of the
     # image binaries, a vite build and the smoke itself; the builds can take 20
     # cold, and the semver step carries a limit of its own
@@ -256,12 +256,12 @@ jobs:
       # engine-integration.yml restores this cache too (#2203): a renamed job
       # would otherwise leave that smoke cold without a word. the name matches
       # the job id, so it is the key this job always had
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         if: ${{ !cancelled() }}
         with:
           shared-key: rust-build
           save-if: ${{ github.ref == 'refs/heads/master' }}
-      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         id: uv
         if: ${{ !cancelled() }}
 
@@ -300,8 +300,11 @@ jobs:
         if: ${{ !cancelled() && steps.smoke-build.outcome == 'success' }}
         run: |
           set -euo pipefail
-          # no config file: the gateway starts open with the built-in fake-llm
-          ./target/debug/rolter-gateway --config /nonexistent.toml &
+          # no config file: the gateway starts open with the built-in fake-llm.
+          # only the default path (rolter.toml, absent from the checkout) may be
+          # missing; a --config that names a missing file refuses to start (#3511)
+          test ! -e rolter.toml
+          env -u ROLTER_CONFIG ./target/debug/rolter-gateway &
           pid=$!
           trap 'kill "$pid" 2>/dev/null || true' EXIT
           # wait for the listener
@@ -344,10 +347,10 @@ jobs:
       # it now builds `runtime-prebuilt`, the same runtime layout (base, user,
       # workdir, bundled config, env, ports, default command) around debug
       # binaries built here on this job's warm cache and a dashboard built
-      # here with vite. its base is distroless debian13 rather than the
-      # published debian12: this runner's glibc headers make aws-lc link
-      # glibc 2.38 symbols, which debian 12's 2.36 lacks, so the binaries would
-      # not start there. the release build itself is still exercised: nightly by
+      # here with vite, on the same distroless debian13 base the published
+      # image uses (#2702), so the runner's glibc must be no newer than the
+      # base's 2.41 for the binaries to start. the release build itself is still
+      # exercised: nightly by
       # extended.yml's compose smoke, and before anything is published by
       # release.yml's `smoke image`, which runs the same script against every
       # pushed architecture's digest
@@ -381,7 +384,6 @@ jobs:
         if: ${{ !cancelled() && steps.image-ui.outcome == 'success' && steps.image-bins.outcome == 'success' }}
         run: |
           docker build -f docker/Dockerfile --target runtime-prebuilt \
-            --build-arg RUNTIME_DISTRO=debian13 \
             --build-context rolter-bin="${RUNNER_TEMP}/image-bin" \
             --build-context rolter-ui=ui/dist \
             -t rolter:image-smoke .
@@ -549,14 +551,14 @@ jobs:
             "uvx --from \"\$(bash scripts/tool-pin.sh maturin)\" maturin sdist --out target/sdist"
           row "gateway smoke (fake-llm)" "build gateway" "${OUTCOME_SMOKE_BUILD}" "cargo build -p rolter-gateway"
           row "gateway smoke (fake-llm)" "boot + probe" "${OUTCOME_SMOKE_PROBE}" \
-            "./target/debug/rolter-gateway --config /nonexistent.toml, then the curl probes of this step in quality.yml"
+            "./target/debug/rolter-gateway (no rolter.toml in the checkout), then the curl probes of this step in quality.yml"
           row "image smoke (published ports)" "set up bun" "${OUTCOME_SETUP_BUN}" "${setup}"
           row "image smoke (published ports)" "build the dashboard for the image" "${OUTCOME_IMAGE_UI}" \
             "cd ui && bun install --frozen-lockfile && bun run build"
           row "image smoke (published ports)" "build the image binaries" "${OUTCOME_IMAGE_BINS}" \
             "cargo build --workspace --features postgres --locked"
           row "image smoke (published ports)" "build the image (runtime-prebuilt)" "${OUTCOME_IMAGE_BUILD}" \
-            "docker build -f docker/Dockerfile --target runtime-prebuilt --build-arg RUNTIME_DISTRO=debian13 --build-context rolter-bin=target/debug --build-context rolter-ui=ui/dist -t rolter:image-smoke ."
+            "docker build -f docker/Dockerfile --target runtime-prebuilt --build-context rolter-bin=target/debug --build-context rolter-ui=ui/dist -t rolter:image-smoke ."
           row "image smoke (published ports)" "run it with published ports and curl both planes" "${OUTCOME_IMAGE_SMOKE}" \
             "bash docker/smoke/image-smoke.sh rolter:image-smoke"
           advisory "semver-checks (advisory)" "install cargo-semver-checks" "${OUTCOME_SEMVER_INSTALL}" \
@@ -578,6 +580,9 @@ jobs:
   # explicit doc-test pass since nextest does not run doc tests.
   test:
     name: nextest / doctests
+    # still 24.04: some tests shell out to the runner's pg_dump and psql against
+    # the postgres:16 service, and 26.04 ships a postgres 18 client whose dumps
+    # a 16 server refuses (`SET transaction_timeout`). moves with #3235
     runs-on: ubuntu-24.04
     # warm runs take 6-10 min. the limit leaves room for a cold build after a
     # Cargo.lock bump, which pull requests no longer cache for each other, while
@@ -644,20 +649,59 @@ jobs:
         with:
           toolchain: stable
       - uses: ./.github/actions/wild-linker
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           save-if: ${{ github.ref == 'refs/heads/master' }}
       - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
         with:
           tool: nextest
+      - name: set up uv
+        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+      # the gateway's presidio_shim test spawns the reference shim under uvicorn
+      # (#3444). naming the interpreter makes a missing dependency fail that test
+      # instead of skipping it
+      - name: presidio shim virtualenv
+        run: |
+          uv venv --python 3.13 "${RUNNER_TEMP}/shim-venv"
+          uv pip install --python "${RUNNER_TEMP}/shim-venv" -r examples/presidio-restore-shim/requirements.txt
+          echo "ROLTER_TEST_SHIM_PYTHON=${RUNNER_TEMP}/shim-venv/bin/python" >> "${GITHUB_ENV}"
+      # all-features includes the optional ONNX backend. a missing library must
+      # fail its inference tests, not turn them into self-skipping green tests
+      - name: pinned ONNX Runtime (required inference)
+        run: |
+          uv venv --python 3.13 "${RUNNER_TEMP}/onnx-venv"
+          uv pip install --python "${RUNNER_TEMP}/onnx-venv" "$(bash scripts/tool-pin.sh onnxruntime)"
+          "${RUNNER_TEMP}/onnx-venv/bin/python" -I - <<'PY' >> "${GITHUB_ENV}"
+          from importlib.metadata import distribution
+          package = distribution("onnxruntime")
+          libraries = {
+              package.locate_file(path).resolve()
+              for path in package.files or []
+              if path.name.startswith("libonnxruntime.so")
+          }
+          assert len(libraries) == 1, f"expected one ONNX Runtime shared library: {libraries}"
+          library = libraries.pop()
+          assert library.is_file(), library
+          print(f"ORT_DYLIB_PATH={library}")
+          print("ROLTER_TEST_REQUIRE_ORT=1")
+          PY
       - name: nextest (workspace, all features)
-        run: cargo nextest run --workspace --all-features
+        # `shell: bash` adds pipefail, so the `| tee` keeps nextest's exit status
+        shell: bash
+        run: |
+          # a failing job's only annotation is "Process completed with exit code
+          # 100", and job logs are not readable from every place that triages
+          # it, so a failing test is named in an annotation as well as the log
+          # (#2771)
+          log="${RUNNER_TEMP}/nextest.log"
+          if ! cargo nextest run --workspace --all-features --color never 2>&1 | tee "${log}"; then
+            bash .github/scripts/annotate-test-failures.sh "${log}" "nextest test failed"
+            exit 1
+          fi
       - name: doc tests
         run: cargo test --doc --workspace --all-features
       # the chart's own preflight must pass on the env it renders (#1939). it
       # needs the built launcher, which nextest has just compiled
-      - name: set up uv
-        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
       - name: set up helm
         uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
         with:
@@ -694,7 +738,7 @@ jobs:
   # report, or it runs without the report ever vouching for it
   static:
     name: static checks
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     # about 90 s of work. without a timeout a hung step would hold the runner,
     # and every sibling's verdict with it, for GitHub's 360-minute default
     timeout-minutes: 20
@@ -774,7 +818,7 @@ jobs:
       - name: set up uv
         id: uv
         if: ${{ !cancelled() }}
-        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
       - name: set up helm
         id: helm
         if: ${{ !cancelled() }}
@@ -1004,18 +1048,38 @@ jobs:
         if: ${{ !cancelled() }}
         run: bash scripts/test-release-gate.sh
 
-      # ── python: the gate scripts under scripts/ ───────────────────────────
+      # ── python: the gate scripts under scripts/ and the harnesses under integration/
       # the release handoff and rendered-manifest checkers are part of the merge
-      # gate, so drift in them is drift in the gate. rules live in ruff.toml;
-      # the pin is bumped by hand like the zizmor one (#2185). formatting is
-      # gated too, like prettier is for the docs (#2769)
-      - name: ruff (scripts)
+      # gate, so drift in them is drift in the gate. rules live in ruff.toml
+      # (integration/e2e/ruff.toml overrides only its python floor); the pin is
+      # bumped by hand like the zizmor one (#2185). formatting is gated too, like
+      # prettier is for the docs (#2769), and covers integration/ since #2669
+      - name: ruff (python)
         id: ruff
         if: ${{ !cancelled() && steps.uv.outcome == 'success' }}
         run: |
           ruff=$(bash scripts/tool-pin.sh ruff)
-          uvx --from "$ruff" ruff check scripts
-          uvx --from "$ruff" ruff format --check scripts
+          uvx --from "$ruff" ruff check scripts integration
+          uvx --from "$ruff" ruff format --check scripts integration
+
+      # ── examples: the reference services under examples/ ──────────────────
+      # `examples/presidio-restore-shim/` has its own pytest suite, which
+      # nothing ran until #3429, so it could rot unseen when presidio or
+      # starlette moved. each example installs its own pinned
+      # requirements-dev.txt, which dependabot's pip entry for the directory
+      # bumps. the trainer printed on the semantic guard policies page is held
+      # to the golden vectors the gateway's local classifier is also tested
+      # against (#3455)
+      - name: examples (presidio restore shim, pytest)
+        id: examples-shim
+        if: ${{ !cancelled() && steps.uv.outcome == 'success' }}
+        working-directory: examples/presidio-restore-shim
+        run: uv run --no-project --python 3.13 --with-requirements requirements-dev.txt pytest -q
+      - name: examples (rolter-linear/1 trainer vectors, pytest)
+        id: examples-trainer
+        if: ${{ !cancelled() && steps.uv.outcome == 'success' }}
+        working-directory: examples/rolter-linear-trainer
+        run: uv run --no-project --python 3.13 --with-requirements requirements-dev.txt pytest -q
 
       # ── board automation: the add-to-board retry policy ───────────────────
       # project-automation.yml decides which GitHub API failures to wait out and
@@ -1035,6 +1099,20 @@ jobs:
       # nothing else ran them. this drives them against a stub http server
       # that plays SigNoz's and the control plane's answers, so it needs no
       # docker and no secrets (#1928)
+      # the annotator behind the failing-test annotations of the nextest and
+      # coverage jobs is parsing, and parsing breaks quietly when nextest
+      # changes its output. this runs it over a nextest and a libtest log (#2771)
+      - name: failing-test annotations
+        id: annotate-test-failures
+        if: ${{ !cancelled() }}
+        run: bash scripts/test-annotate-test-failures.sh
+      # the nightly suites gate nothing, so their `report failure` job is the
+      # only thing that makes a red night visible, and it only runs when
+      # something is already broken. this drives it against a fake gh (#2682)
+      - name: report-failure against a fake gh
+        id: report-failure
+        if: ${{ !cancelled() }}
+        run: bash scripts/test-report-failure.sh
       - name: dogfood scripts against a stub server
         id: dogfood-scripts
         if: ${{ !cancelled() }}
@@ -1096,6 +1174,12 @@ jobs:
         id: helm-update-check
         if: ${{ !cancelled() && steps.helm.outcome == 'success' && steps.uv.outcome == 'success' }}
         run: bash scripts/check-helm-chart.sh update-check
+      # the control plane and the gateways are tagged apart, so an upgrade can
+      # move the control plane first (#3352)
+      - name: helm chart (per-component image tags)
+        id: helm-image-tags
+        if: ${{ !cancelled() && steps.helm.outcome == 'success' && steps.uv.outcome == 'success' }}
+        run: bash scripts/check-helm-chart.sh image-tags
 
       # the verdict for the whole job, and the one place that knows which step
       # must run on which event. outcomes arrive through env, never inline in
@@ -1129,6 +1213,8 @@ jobs:
           OUTCOME_RELEASE_HANDOFF_SELF_TEST: ${{ steps.release-handoff-self-test.outcome }}
           OUTCOME_RELEASE_GATE: ${{ steps.release-gate.outcome }}
           OUTCOME_RUFF: ${{ steps.ruff.outcome }}
+          OUTCOME_EXAMPLES_SHIM: ${{ steps.examples-shim.outcome }}
+          OUTCOME_EXAMPLES_TRAINER: ${{ steps.examples-trainer.outcome }}
           OUTCOME_PROJECT_AUTOMATION: ${{ steps.project-automation.outcome }}
           OUTCOME_DOGFOOD_SCRIPTS: ${{ steps.dogfood-scripts.outcome }}
           OUTCOME_SHELLCHECK: ${{ steps.shellcheck.outcome }}
@@ -1138,6 +1224,7 @@ jobs:
           OUTCOME_HELM_RENDER_NO_PREFLIGHT: ${{ steps.helm-render-no-preflight.outcome }}
           OUTCOME_HELM_RENDER_ALL_PREFLIGHT: ${{ steps.helm-render-all-preflight.outcome }}
           OUTCOME_HELM_UPDATE_CHECK: ${{ steps.helm-update-check.outcome }}
+          OUTCOME_HELM_IMAGE_TAGS: ${{ steps.helm-image-tags.outcome }}
         run: |
           set -euo pipefail
           summary="${GITHUB_STEP_SUMMARY}"
@@ -1218,7 +1305,11 @@ jobs:
             "prek run release-handoff-self-test --all-files"
           row "release handoff wired" "release gate scripts against a fake gh" "${OUTCOME_RELEASE_GATE}" yes \
             "prek run release-gate --all-files"
-          row "ruff" "ruff (scripts)" "${OUTCOME_RUFF}" yes "prek run ruff --all-files"
+          row "ruff" "ruff (python)" "${OUTCOME_RUFF}" yes "prek run ruff --all-files"
+          row "examples" "presidio restore shim (pytest)" "${OUTCOME_EXAMPLES_SHIM}" yes \
+            "cd examples/presidio-restore-shim && uv run --no-project --python 3.13 --with-requirements requirements-dev.txt pytest"
+          row "examples" "rolter-linear/1 trainer vectors (pytest)" "${OUTCOME_EXAMPLES_TRAINER}" yes \
+            "cd examples/rolter-linear-trainer && uv run --no-project --python 3.13 --with-requirements requirements-dev.txt pytest"
           row "board automation retry policy" "board automation retry policy" "${OUTCOME_PROJECT_AUTOMATION}" yes \
             "prek run project-automation --all-files"
           row "dogfood scripts" "dogfood scripts against a stub server" "${OUTCOME_DOGFOOD_SCRIPTS}" yes \
@@ -1236,6 +1327,8 @@ jobs:
             "bash scripts/check-helm-chart.sh all-preflight (or prek run helm-render --all-files for all of them)"
           row "helm chart" "helm chart (update check reaches every launcher container)" "${OUTCOME_HELM_UPDATE_CHECK}" yes \
             "bash scripts/check-helm-chart.sh update-check (or prek run helm-render --all-files for all of them)"
+          row "helm chart" "helm chart (per-component image tags)" "${OUTCOME_HELM_IMAGE_TAGS}" yes \
+            "bash scripts/check-helm-chart.sh image-tags (or prek run helm-render --all-files for all of them)"
 
           echo >> "${summary}"
           if [ "${failed}" -ne 0 ]; then
@@ -1261,7 +1354,7 @@ jobs:
   # `bun install` does not hide a docs failure
   ui:
     name: ui, storybook, docs
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     # about 4 min, three of them the play tests (2,146 stories on vitest, #2907);
     # the chromium download and the storybook build are under a minute together.
     # a hung play test fails the gate in 25 minutes instead of GitHub's
@@ -1556,6 +1649,7 @@ jobs:
   coverage:
     name: coverage (informational)
     if: github.event_name == 'pull_request'
+    # still 24.04 for the same postgres client reason as the nextest job (#3235)
     runs-on: ubuntu-24.04
     continue-on-error: true
     # same postgres service as the nextest job so the store + control-plane
@@ -1599,7 +1693,7 @@ jobs:
           toolchain: stable
           components: llvm-tools-preview
       - uses: ./.github/actions/wild-linker
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: coverage
           save-if: ${{ github.ref == 'refs/heads/master' }}

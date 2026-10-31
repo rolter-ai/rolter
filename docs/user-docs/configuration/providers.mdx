@@ -12,7 +12,7 @@ The **Credential** column says where each provider's key comes from: **Sealed** 
 
 The name is fixed once the provider is created, and the form says so. The slug, which is the `provider-slug/model` address, is fixed too. Leave the slug blank and its placeholder shows the one the name will give.
 
-The **Kind** picker lists each provider by display name with a line on what it is (_OpenAI-compatible: vLLM, TGI, LM Studio or any server that speaks the OpenAI API_); the stored id sits under it. Below **API base** the form previews the address requests go to, and that depends on the kind: `/v1/messages` for Anthropic, an embeddings endpoint for Hugging Face TEI, `/v1/systemone` for a [System One decision server](/configuration/system-one), `/v1/chat/completions` for most of the rest. The hint under **Provider key** says which header the key is sent in.
+The **Kind** picker lists each provider by display name with a line on what it is (_OpenAI-compatible: vLLM, TGI, LM Studio or any server that speaks the OpenAI API_); the stored id sits under it. Below **API base** the form previews the address requests go to, and that depends on the kind: `/v1/messages` for Anthropic, an embeddings endpoint for Hugging Face TEI and [Infinity](/configuration/infinity), `/v1/systemone` for a [System One decision server](/configuration/system-one), `/v1/chat/completions` for most of the rest. The hint under **Provider key** says which header the key is sent in.
 
 ---
 
@@ -117,6 +117,8 @@ That case is reported as its own thing — a 2xx status with `reachable: false`:
 The usual cause is a duplicated path segment in `api_base` — see [the `/v1` rule](#where-the-credential-lives) — where the upstream's own catch-all answers `200` at the doubled path.
 
 The dashboard renders this as its own amber state — _Answered, but not with a model list_ — rather than the red used for a refused connection or a rejected key. The host is up, and it is the URL or the service behind it that is wrong, which is a different thing to go and fix.
+
+A route whose targets are all Hugging Face TEI or Infinity servers answers `POST /v1/embeddings` (and `POST /v1/rerank` when one of them is Infinity), and refuses chat completions, messages, responses, images and audio, and rerank on TEI alone, with `400 unsupported_endpoint` without calling the server, which has no such endpoint.
 
 Kinds whose probe is a liveness endpoint rather than a catalogue keep 2xx as the criterion. Hugging Face TEI is probed at `/health`, which has no catalogue to return, so a bare `200` there is the whole verdict and `models_found` stays `null`.
 

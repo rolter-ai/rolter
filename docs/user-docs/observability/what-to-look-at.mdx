@@ -62,7 +62,7 @@ SELECT
     count()                                    AS requests,
     round(quantile(0.50)(latency_ms))          AS p50_ms,
     round(quantile(0.95)(latency_ms))          AS p95_ms,
-    round(100 * countIf(status >= 400) / count(), 2) AS error_pct
+    round(100 * countIf(status = 0 OR status >= 400) / count(), 2) AS error_pct
 FROM request_logs
 WHERE ts > now() - INTERVAL 24 HOUR
 GROUP BY model

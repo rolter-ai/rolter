@@ -77,7 +77,7 @@ counter rather than only as a client-side status code.
 
 ## API
 
-Both endpoints are **superadmin only**, and every update is audited.
+Both endpoints are for a **superadmin** or an **operator** (a [deployment role](/security/rbac#deployment-roles)). Every update is audited.
 
 ```bash
 curl -H "Authorization: Bearer $ROLTER_ADMIN_TOKEN" \

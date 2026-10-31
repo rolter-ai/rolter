@@ -27,6 +27,8 @@ pub struct ProviderQueues {
 #[derive(Clone)]
 struct QueueEntry {
     config: QueueConfig,
+    /// the snapshot generation that installed this queue ([`ProviderQueues::sender_for`])
+    generation: u64,
     sender: mpsc::Sender<Job>,
 }
 
@@ -104,6 +106,7 @@ impl ProviderQueues {
     pub async fn forward_json(
         &self,
         config: &QueueConfig,
+        generation: u64,
         provider: &ProviderConfig,
         path: &str,
         body: Bytes,
@@ -144,13 +147,15 @@ impl ProviderQueues {
             parent: tracing::Span::current(),
             queued: QueuedGuard::new(self.metrics.provider_load(&provider.name)),
         };
-        self.dispatch(config, &provider.name, job, result).await
+        self.dispatch(config, generation, &provider.name, job, result)
+            .await
     }
 
     #[allow(clippy::too_many_arguments)]
     pub async fn forward_raw(
         &self,
         config: &QueueConfig,
+        generation: u64,
         provider: &ProviderConfig,
         path: &str,
         body: Bytes,
@@ -191,17 +196,19 @@ impl ProviderQueues {
             parent: tracing::Span::current(),
             queued: QueuedGuard::new(self.metrics.provider_load(&provider.name)),
         };
-        self.dispatch(config, &provider.name, job, result).await
+        self.dispatch(config, generation, &provider.name, job, result)
+            .await
     }
 
     async fn dispatch(
         &self,
         config: &QueueConfig,
+        generation: u64,
         provider: &str,
         job: Job,
         result: oneshot::Receiver<Result<reqwest::Response>>,
     ) -> Result<reqwest::Response> {
-        let sender = self.sender_for(provider, config);
+        let sender = self.sender_for(provider, config, generation);
         if let Err(err) = enqueue(&sender, job, config).await {
             self.record_rejection(err);
             return Err(Error::Upstream(err.message().to_string()));
@@ -211,9 +218,31 @@ impl ProviderQueues {
             .map_err(|_| Error::Upstream(QueueError::Closed.message().to_string()))?
     }
 
-    fn sender_for(&self, provider: &str, config: &QueueConfig) -> mpsc::Sender<Job> {
+    /// The queue a call to `provider` under `config` goes through.
+    ///
+    /// `generation` identifies the snapshot the caller read `config` from, and
+    /// only grows: a newer snapshot has a larger one. A queue is replaced only
+    /// by a caller with a newer generation than the one that installed it, so
+    /// a request still holding the pre-reload snapshot (in auth, in a retry
+    /// backoff) is handed the current queue instead of swapping its stale
+    /// config back in and spawning another set of workers (#1932).
+    ///
+    /// What replacement still costs: the replaced queue is not stopped. Its
+    /// workers run until the jobs already buffered in it drain, while the new
+    /// queue's workers take new jobs, so for that short window a provider can
+    /// see up to old `workers` plus new `workers` calls at once. That happens
+    /// once per `[queue]` change, never per flip, and is accepted: draining
+    /// the old queue is what keeps buffered jobs from being lost, and holding
+    /// the new one back until it empties would stall every request for as long
+    /// as the slowest buffered call takes.
+    fn sender_for(
+        &self,
+        provider: &str,
+        config: &QueueConfig,
+        generation: u64,
+    ) -> mpsc::Sender<Job> {
         if let Some(entry) = self.queues.get(provider) {
-            if entry.config == *config {
+            if entry.config == *config || entry.generation >= generation {
                 return entry.sender.clone();
             }
         }
@@ -222,22 +251,20 @@ impl ProviderQueues {
         // caller in the burst spawn a queue of its own, and a provider with
         // `workers = 2` took five calls at once (#1815). Spawning never
         // blocks, so holding the shard across it is brief
-        //
-        // a config change is not handled as well. A replaced queue's workers
-        // keep running until its buffered jobs drain, and a caller still on
-        // the pre-reload snapshot sees a mismatch and swaps its config back
-        // in, spawning another set. During a reload under load the provider
-        // can therefore see more than `workers` calls at once (#1932)
         let mut entry = self
             .queues
             .entry(provider.to_string())
             .or_insert_with(|| QueueEntry {
                 config: config.clone(),
+                generation,
                 sender: spawn_queue(config.clone(), self.forwarder.clone()),
             });
-        if entry.config != *config {
+        // re-checked under the lock: another caller may have replaced the queue
+        // between the read above and here
+        if entry.config != *config && entry.generation < generation {
             *entry = QueueEntry {
                 config: config.clone(),
+                generation,
                 sender: spawn_queue(config.clone(), self.forwarder.clone()),
             };
         }
@@ -388,10 +415,13 @@ async fn enqueue<T>(
             mpsc::error::TrySendError::Full(_) => QueueError::Dropped,
             mpsc::error::TrySendError::Closed(_) => QueueError::Closed,
         }),
-        BackpressurePolicy::Error => sender.try_send(item).map_err(|err| match err {
-            mpsc::error::TrySendError::Full(_) => QueueError::Full,
-            mpsc::error::TrySendError::Closed(_) => QueueError::Closed,
-        }),
+        // a policy from a newer release sheds, as `error` does (#3347)
+        BackpressurePolicy::Error | BackpressurePolicy::Unknown => {
+            sender.try_send(item).map_err(|err| match err {
+                mpsc::error::TrySendError::Full(_) => QueueError::Full,
+                mpsc::error::TrySendError::Closed(_) => QueueError::Closed,
+            })
+        }
         BackpressurePolicy::Block => match tokio::time::timeout(
             Duration::from_millis(config.block_timeout_ms),
             sender.send(item),
@@ -537,6 +567,7 @@ mod tests {
         queues
             .forward_json(
                 config,
+                0,
                 provider,
                 "/v1/chat/completions",
                 Bytes::from_static(br#"{"model":"m","messages":[]}"#),
@@ -580,5 +611,93 @@ mod tests {
             assert_eq!(call.await.unwrap(), Some(200));
         }
         assert_eq!(held.peak.load(Ordering::SeqCst), 2);
+    }
+
+    fn queue_config(workers: usize) -> QueueConfig {
+        QueueConfig {
+            enabled: true,
+            capacity: 16,
+            workers,
+            backpressure: BackpressurePolicy::Block,
+            block_timeout_ms: 5_000,
+        }
+    }
+
+    fn idle_queues() -> ProviderQueues {
+        ProviderQueues::new(Arc::new(Forwarder::new()), Arc::new(Metrics::default()))
+    }
+
+    /// #1932: a caller still holding the pre-reload snapshot is handed the
+    /// current queue. It used to see a config mismatch, swap its stale config
+    /// back in and spawn another set of workers, and the next new-snapshot
+    /// caller swapped again.
+    #[tokio::test]
+    async fn an_old_config_call_after_a_new_one_shares_its_queue() {
+        let queues = idle_queues();
+        let (old, new) = (queue_config(8), queue_config(2));
+        let first = queues.sender_for("p", &old, 1);
+        let current = queues.sender_for("p", &new, 2);
+        assert!(!first.same_channel(&current), "a newer snapshot replaces");
+
+        // the request that loaded the old snapshot, and every retry it makes
+        for _ in 0..3 {
+            let stale = queues.sender_for("p", &old, 1);
+            assert!(
+                stale.same_channel(&current),
+                "a stale caller spawned a queue of its own"
+            );
+            let fresh = queues.sender_for("p", &new, 2);
+            assert!(
+                fresh.same_channel(&current),
+                "the new config was swapped out"
+            );
+        }
+        // one entry, and only two sets of workers were ever spawned: the
+        // replaced queue's (still draining) and the current one's
+        assert_eq!(queues.queues.len(), 1);
+    }
+
+    /// A newer snapshot still wins, whichever order the callers arrive in, and
+    /// a reload that leaves the queue config alone keeps the queue.
+    #[tokio::test]
+    async fn a_newer_snapshot_replaces_and_an_unchanged_config_keeps_the_queue() {
+        let queues = idle_queues();
+        let (a, b) = (queue_config(4), queue_config(1));
+        let first = queues.sender_for("p", &a, 5);
+        // a reload that did not touch `[queue]`
+        assert!(queues.sender_for("p", &a, 6).same_channel(&first));
+        // the generation is not bumped by that, so a stale-config caller from
+        // between the two does not replace either
+        assert!(queues.sender_for("p", &b, 5).same_channel(&first));
+        let replaced = queues.sender_for("p", &b, 7);
+        assert!(!replaced.same_channel(&first));
+        assert!(queues.sender_for("p", &a, 6).same_channel(&replaced));
+        // other providers are untouched
+        assert!(!queues.sender_for("q", &a, 1).same_channel(&replaced));
+        assert_eq!(queues.queues.len(), 2);
+    }
+
+    /// Concurrent callers on both sides of a reload land on one queue.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn racing_old_and_new_callers_settle_on_the_new_queue() {
+        let queues = idle_queues();
+        let (old, new) = (queue_config(8), queue_config(2));
+        queues.sender_for("p", &old, 1);
+        let mut tasks = Vec::new();
+        for i in 0..64 {
+            let (queues, old, new) = (queues.clone(), old.clone(), new.clone());
+            tasks.push(tokio::spawn(async move {
+                if i % 2 == 0 {
+                    queues.sender_for("p", &old, 1)
+                } else {
+                    queues.sender_for("p", &new, 2)
+                }
+            }));
+        }
+        for task in tasks {
+            task.await.unwrap();
+        }
+        let settled = queues.sender_for("p", &new, 2);
+        assert!(queues.sender_for("p", &old, 1).same_channel(&settled));
     }
 }

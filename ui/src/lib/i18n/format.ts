@@ -84,8 +84,76 @@ function subscribeTimeZone(listener: () => void): () => void {
   };
 }
 
+/** the chart time zone, re-rendering the caller whenever it changes */
+export function useChartTimeZone(): string | undefined {
+  return React.useSyncExternalStore(subscribeTimeZone, chartTimeZone, chartTimeZone);
+}
+
 // first paint: the cached preference, before the fetch has answered
 activeTimeZone = validTimeZone(readCachedPreferences()?.chart_time_zone);
+
+/** a wall-clock reading in some zone; `month` counts from 0, as `Date`'s does */
+export interface WallClock {
+  year: number;
+  month: number;
+  day: number;
+  hour: number;
+  minute: number;
+  second: number;
+  ms: number;
+}
+
+const PART_FORMATS = new Map<string, Intl.DateTimeFormat>();
+
+/**
+ * What the clock on the wall reads at `instant` in `zone`, the browser's when
+ * `undefined`: the calendar arithmetic of a reporting window counts days in the
+ * chart zone with it (#3500).
+ */
+export function wallClock(instant: Date, zone: string | undefined): WallClock {
+  if (!zone) {
+    return {
+      year: instant.getFullYear(),
+      month: instant.getMonth(),
+      day: instant.getDate(),
+      hour: instant.getHours(),
+      minute: instant.getMinutes(),
+      second: instant.getSeconds(),
+      ms: instant.getMilliseconds(),
+    };
+  }
+  let format = PART_FORMATS.get(zone);
+  if (!format) {
+    format = new Intl.DateTimeFormat("en-US", {
+      timeZone: zone,
+      hourCycle: "h23",
+      year: "numeric",
+      month: "numeric",
+      day: "numeric",
+      hour: "numeric",
+      minute: "numeric",
+      second: "numeric",
+    });
+    PART_FORMATS.set(zone, format);
+  }
+  const parts = format.formatToParts(instant);
+  const part = (type: Intl.DateTimeFormatPartTypes) =>
+    Number(parts.find((p) => p.type === type)?.value ?? 0);
+  return {
+    year: part("year"),
+    month: part("month") - 1,
+    day: part("day"),
+    hour: part("hour"),
+    minute: part("minute"),
+    second: part("second"),
+    ms: instant.getMilliseconds(),
+  };
+}
+
+/** the zone the browser itself reads clocks in */
+export function browserTimeZone(): string {
+  return Intl.DateTimeFormat().resolvedOptions().timeZone;
+}
 
 /** the house short date — `medium` so `10/5` is never read as 5 October */
 const DATE: Intl.DateTimeFormatOptions = { dateStyle: "medium" };
@@ -161,6 +229,12 @@ export interface Formatters {
    * the day only on the rows where the clock alone would read as today's
    */
   dayUnlessToday: (value: Date | string | number, now?: Date | string | number) => string;
+  /**
+   * A calendar day written `YYYY-MM-DD` (a custom range's start or end), as a
+   * date. It names a day, not an instant, so the chart zone does not move it
+   * to its neighbour; an unreadable value comes back as it was
+   */
+  calendarDay: (value: string) => string;
   /** `3m ago` / `in 2h`, relative to `now` (defaults to the current time) */
   relative: (value: Date | string | number, now?: Date | string | number) => string;
 }
@@ -227,6 +301,13 @@ export function formattersFor(locale: Locale): Formatters {
       // the same calendar day *in the chart zone*, not in the browser's
       if (stamp(date, DAY_KEY) === stamp(today, DAY_KEY)) return "";
       return stamp(date, DAY);
+    },
+    calendarDay: (value) => {
+      const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+      if (!match) return value;
+      // noon UTC, formatted in UTC: the day reads the same in every zone
+      const noon = Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]), 12);
+      return dateFormat(locale, { ...DATE, timeZone: "UTC" }).format(noon);
     },
     relative: (value, now) => {
       const date = toDate(value);

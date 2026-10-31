@@ -43,6 +43,26 @@ export const Unauthenticated: Story = {
   },
 };
 
+/**
+ * A control plane with no database has no sessions, so the analytics and health
+ * routes accept the admin token alone (#1909). "Sign in again" would offer the
+ * same email prompt that produced the error, so the action is the token entry
+ * under its own name, and retrying is not offered.
+ */
+export const AdminTokenRequired: Story = {
+  args: { error: new ApiError("admin token required", 401, "admin_token_required"), onRetry: fn() },
+  play: async ({ canvas }) => {
+    const alert = await canvas.findByRole("alert");
+    await expect(alert).toHaveTextContent(/needs the admin token/);
+    await expect(alert).toHaveTextContent(/ROLTER_ADMIN_TOKEN/);
+    await expect(
+      canvas.getByRole("button", { name: /enter the admin token/i }),
+    ).toBeInTheDocument();
+    await expect(canvas.queryByRole("button", { name: /sign in again/i })).toBeNull();
+    await expect(canvas.queryByRole("button", { name: /try again/i })).toBeNull();
+  },
+};
+
 /** Signed in, wrong role. Retrying cannot help, so it is not offered. */
 export const Forbidden: Story = {
   args: { error: new ApiError("insufficient role", 403), onRetry: fn() },

@@ -27,12 +27,12 @@ Each release publishes five wheels plus a source distribution:
 
 | artifact            | built on                                                     |
 | ------------------- | ------------------------------------------------------------ |
-| `manylinux…x86_64`  | `ubuntu-24.04`, `target: x86_64`                             |
-| `manylinux…aarch64` | `ubuntu-24.04`, `target: aarch64`                            |
+| `manylinux…x86_64`  | `ubuntu-26.04`, `target: x86_64`                             |
+| `manylinux…aarch64` | `ubuntu-26.04`, `target: aarch64`                            |
 | `macosx…arm64`      | `macos-latest` (Apple Silicon, native)                       |
 | `macosx…x86_64`     | `macos-latest`, cross-compiled `target: x86_64-apple-darwin` |
 | `win_amd64`         | `windows-latest`                                             |
-| `.tar.gz` (sdist)   | `ubuntu-24.04`, `command: sdist`                             |
+| `.tar.gz` (sdist)   | `ubuntu-26.04`, `command: sdist`                             |
 
 The macOS x86_64 wheel is cross-compiled rather than built on an Intel runner —
 the macOS SDK carries both architectures, so it needs no extra runner. The sdist
@@ -431,10 +431,18 @@ leaving a channel behind.
   attestation API.
 - **A CycloneDX SBOM per platform image**, attested with
   `cosign attest --type cyclonedx`. `scripts/image-sbom.sh` builds it: syft
-  over the image layers, merged with syft over the tagged `Cargo.lock` and
-  `ui/bun.lock`. The image scan alone finds only the distroless Debian
-  packages, since the binaries are not built with `cargo auditable` and the
-  dashboard is a bundle. The SBOMs are also uploaded as the run's `sbom`
+  over the image layers, merged with syft over the tagged `ui/bun.lock`. The
+  Dockerfile builds the binaries with `cargo auditable` (#2747), so the image
+  scan reads the exact linked crate graph out of them and `Cargo.lock` is not
+  scanned (any cargo package the directory scan reports is dropped); the
+  script fails if the image scan finds no cargo package, so a binary built
+  without it cannot be attested. The dashboard is a bundle with no
+  `node_modules`, so its packages still come from `bun.lock`. That scan keeps
+  dev dependencies (`SYFT_JAVASCRIPT_INCLUDE_DEV_DEPENDENCIES=true`) because
+  syft 1.54's production/dev split for bun is nondeterministic; the switch
+  stays until anchore/syft fixes it, and then this note and the user docs'
+  over-reporting paragraph are updated. The `release.yml` job still checks out
+  `Cargo.lock`; the script ignores it. The SBOMs are also uploaded as the run's `sbom`
   artifact.
 
 It then runs `scripts/verify-image.sh` on the tag it just signed. That script

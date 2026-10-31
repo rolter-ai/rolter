@@ -35,7 +35,7 @@ export function compare(
  * good news, errors and latency going up are bad, and spend going up is
  * neither on its own. Flat is always neutral.
  */
-export function toneOfChange(trend: StatTrend, rise: StatTone): StatTone {
+export function toneOfChange(trend: StatTrend, rise: Exclude<StatTone, "warning">): StatTone {
   if (trend === "flat" || rise === "neutral") return "neutral";
   if (trend === "up") return rise;
   return rise === "good" ? "bad" : "good";

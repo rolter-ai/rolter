@@ -1,11 +1,11 @@
 // What each alert signal measures, and how the dashboard reads and writes it
 // (#2125).
 //
-// `ALERT_SIGNALS` in `api.ts` is the contract. The units come from `metric_sql`
+// `ALERT_SIGNALS` in `api/alerts.ts` is the contract. The units come from `metric_sql`
 // in `crates/rolter-control/src/alerting.rs`, and a rule's threshold and
 // `last_value` are stored in the unit that query returns:
 //
-//   - `error_rate` is `countIf(status >= 500) / count()`, a fraction from 0 to
+//   - `error_rate` is `countIf(status = 0 or status >= 500) / count()`, a fraction from 0 to
 //     1. An operator thinks in percent, and a `5` typed for 5 % made a rule
 //     that could never fire, so the form takes a percentage and sends the
 //     fraction;

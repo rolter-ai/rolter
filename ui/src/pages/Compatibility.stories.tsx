@@ -269,3 +269,28 @@ export const LoadFailsAndRetries: Story = {
     );
   },
 };
+
+// Save waits for an edit, and Enter in the field presses it (#2214, #1205)
+export const SaveWaitsForAnEditAndEnterSaves: Story = {
+  render: () => {
+    const stub: FetchStub = async (_input, init) =>
+      init?.method === "PUT" ? json({ ...BASE, ...JSON.parse(String(init.body)) }) : json(BASE);
+    return <Harness fetchStub={stub} />;
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const tokens = await canvas.findByLabelText("Default max tokens");
+    await expect(canvas.getByRole("button", { name: "Save changes" })).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
+    await userEvent.clear(tokens);
+    await userEvent.type(tokens, "8192");
+    await expect(canvas.getByRole("button", { name: "Save changes" })).not.toHaveAttribute(
+      "aria-disabled",
+    );
+    await userEvent.type(tokens, "{Enter}");
+    await expectToast(canvasElement, /compatibility settings updated/i);
+    await expect(canvas.getByText(/^Saved at /)).toBeVisible();
+  },
+};

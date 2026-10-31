@@ -43,6 +43,7 @@ const RETENTION_SECS: i64 = 3600;
 const MAX_ROUTES: usize = 500;
 const MAX_TARGETS: usize = 256;
 const MAX_MODEL_LEN: usize = 512;
+const MAX_ORG_LEN: usize = 128;
 
 pub(crate) fn router() -> Router<ControlState> {
     Router::new().route("/api/v1/adaptive-routing-telemetry", get(get_telemetry))
@@ -69,6 +70,10 @@ struct DecisionCounts {
 /// failing the whole report.
 #[derive(Debug, Clone, Deserialize)]
 struct RouteReport {
+    /// the org that owns the route, empty for a deployment-wide route and from
+    /// a gateway that predates per-org namespaces (#3458)
+    #[serde(default)]
+    org_id: String,
     model: String,
     #[serde(default)]
     engaged: bool,
@@ -146,13 +151,14 @@ async fn ingest(
         .into_iter()
         .filter(|route| {
             let model = route.model.trim();
-            !model.is_empty() && model.len() <= MAX_MODEL_LEN
+            !model.is_empty() && model.len() <= MAX_MODEL_LEN && route.org_id.len() <= MAX_ORG_LEN
         })
         .take(MAX_ROUTES)
         .collect();
     let samples: Vec<AdaptiveRoutingSample<'_>> = reports
         .iter()
         .map(|route| AdaptiveRoutingSample {
+            org_id: route.org_id.trim(),
             model: route.model.trim(),
             engaged: route.engaged,
             observed: route.observed,
@@ -201,9 +207,12 @@ struct NodeTelemetry {
 }
 
 /// A route and every node balancing it, so the dashboard renders one card per
-/// route rather than one per (node, route) pair.
+/// route rather than one per (node, route) pair. A route is `(org_id, model)`:
+/// two orgs may each have a route of one name (#1857, #3458).
 #[derive(Debug, Serialize)]
 struct RouteTelemetry {
+    /// the org that owns the route, empty for a deployment-wide route
+    org_id: String,
     model: String,
     /// true when at least one node has the blend engaged for this route
     engaged: bool,
@@ -241,7 +250,7 @@ async fn get_telemetry(
 }
 
 /// Fold `(node, route)` rows into one entry per route. Rows arrive ordered by
-/// model, so this is a single pass and the route order is stable.
+/// model and org, so this is a single pass and the route order is stable.
 fn group_by_route(rows: Vec<AdaptiveRoutingTelemetry>) -> Vec<RouteTelemetry> {
     let mut routes: Vec<RouteTelemetry> = Vec::new();
     for row in rows {
@@ -259,11 +268,12 @@ fn group_by_route(rows: Vec<AdaptiveRoutingTelemetry>) -> Vec<RouteTelemetry> {
             reported_at: row.reported_at,
         };
         match routes.last_mut() {
-            Some(route) if route.model == row.model => {
+            Some(route) if route.model == row.model && route.org_id == row.org_id => {
                 route.engaged |= node.engaged;
                 route.nodes.push(node);
             }
             _ => routes.push(RouteTelemetry {
+                org_id: row.org_id,
                 model: row.model,
                 engaged: node.engaged,
                 nodes: vec![node],
@@ -282,6 +292,7 @@ mod tests {
     fn row(node_id: &str, model: &str, engaged: bool) -> AdaptiveRoutingTelemetry {
         AdaptiveRoutingTelemetry {
             node_id: node_id.to_string(),
+            org_id: String::new(),
             model: model.to_string(),
             engaged,
             observed: 10,
@@ -311,9 +322,42 @@ mod tests {
         assert!(routes[1].engaged);
     }
 
+    /// #3458: two orgs' `gpt-4o` are two routes on the scoreboard, not one
+    /// row the second report overwrites.
+    #[test]
+    fn two_orgs_same_named_routes_are_two_entries() {
+        let of = |org: &str, node: &str, engaged: bool| AdaptiveRoutingTelemetry {
+            org_id: org.to_string(),
+            ..row(node, "gpt-4o", engaged)
+        };
+        // ordered by model and org, as the repo returns them
+        let rows = vec![
+            of("org-a", "gw-1", true),
+            of("org-a", "gw-2", false),
+            of("org-b", "gw-1", false),
+        ];
+        let routes = group_by_route(rows);
+        let seen: Vec<_> = routes
+            .iter()
+            .map(|r| {
+                (
+                    r.org_id.as_str(),
+                    r.model.as_str(),
+                    r.engaged,
+                    r.nodes.len(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            seen,
+            [("org-a", "gpt-4o", true, 2), ("org-b", "gpt-4o", false, 1)]
+        );
+    }
+
     #[test]
     fn target_labels_are_folded_into_the_signals() {
         let report = RouteReport {
+            org_id: String::new(),
             model: "gpt-4o".to_string(),
             engaged: true,
             observed: 3,
@@ -331,6 +375,7 @@ mod tests {
     #[test]
     fn a_label_never_overwrites_a_reported_signal() {
         let report = RouteReport {
+            org_id: String::new(),
             model: "gpt-4o".to_string(),
             engaged: false,
             observed: 0,
@@ -345,6 +390,7 @@ mod tests {
     #[test]
     fn missing_labels_leave_the_signals_alone() {
         let report = RouteReport {
+            org_id: String::new(),
             model: "gpt-4o".to_string(),
             engaged: false,
             observed: 0,
@@ -361,6 +407,7 @@ mod tests {
     #[test]
     fn an_oversized_target_list_is_truncated_not_rejected() {
         let report = RouteReport {
+            org_id: String::new(),
             model: "gpt-4o".to_string(),
             engaged: false,
             observed: 0,

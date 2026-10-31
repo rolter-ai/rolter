@@ -126,9 +126,6 @@ export function afterRevoke(
   return grant ? { kind: "fallback", grant } : { kind: "none" };
 }
 
-/** `error.code` of the 409 for revoking an org's last admin grant (#2311) */
-export const LAST_ORG_ADMIN = "last_org_admin";
-
 /**
  * Whether this grant is the org's last admin grant: an org-scoped `admin`
  * with no other one held by an account that is not deactivated. Mirrors the

@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-import type { RbacResourceView, RbacRoleView } from "../src/lib/api";
+import type { DeploymentRole, RbacResourceView, RbacRoleView } from "../src/lib/api";
 
 /**
  * Where the capability matrix lives on each side (#1369).
@@ -29,6 +29,7 @@ const CHAIN_FIELDS: readonly string[] = ["org", "team", "project"];
  */
 export interface MatrixArtifact {
   roles: RbacRoleView[];
+  deployment_roles: DeploymentRole[];
   resources: RbacResourceView[];
   chain_at: Record<string, ChainField[]>;
 }
@@ -68,14 +69,21 @@ export function parseMatrix(text: string, path: string): MatrixArtifact {
     throw new Error(`${path} gives no \`chain_at\` rule for scope ${unscoped.join(", ")}`);
   }
   // `src/lib/rbac-capabilities.ts` reads each action as exactly one authority,
-  // the way `resource_view` writes it; refuse a view it would have to guess at
+  // the way `resource_view` writes it; refuse a view it would have to guess at.
+  // One pair is a single authority too: a scoped role together with one
+  // deployment role, "this role at the row's scope, or that deployment role"
+  // (#3362)
   const ambiguous = parsed.resources.flatMap(({ resource, actions }) =>
     actions
-      .filter(
-        (a) =>
-          [a.minimum_role !== null, a.superadmin_only, a.authenticated_only].filter(Boolean)
-            .length !== 1,
-      )
+      .filter((a) => {
+        const scoped = a.minimum_role !== null;
+        const deployment = a.deployment_roles?.length ?? 0;
+        const held = [scoped, a.superadmin_only, a.authenticated_only, deployment > 0].filter(
+          Boolean,
+        ).length;
+        if (deployment > 1) return true;
+        return held === 2 ? !(scoped && deployment === 1) : held !== 1;
+      })
       .map((a) => `${resource}:${a.action}`),
   );
   if (ambiguous.length > 0) {

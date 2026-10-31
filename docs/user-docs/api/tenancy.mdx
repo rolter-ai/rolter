@@ -29,12 +29,13 @@ All calls below go to the **control plane**, not the gateway. Authenticate with
 a dashboard session or the deployment admin token. The API is available in
 Postgres-backed deployments; see the [control-plane reference](/api/control-plane-openapi).
 
-| Request                                | Result                                                                      |
-| -------------------------------------- | --------------------------------------------------------------------------- |
-| `GET /api/v1/orgs`                     | Organizations the caller can reach through an org, team or project role     |
-| `GET /api/v1/orgs/{org_id}/teams`      | Visible teams in the organization                                           |
-| `GET /api/v1/teams/{team_id}/projects` | Visible projects in one team                                                |
-| `GET /api/v1/orgs/{org_id}/projects`   | Visible projects across the organization, including each owning team's name |
+| Request                                  | Result                                                                              |
+| ---------------------------------------- | ----------------------------------------------------------------------------------- |
+| `GET /api/v1/orgs`                       | Organizations the caller can reach through an org, team or project role             |
+| `GET /api/v1/orgs/{org_id}/teams`        | Visible teams in the organization                                                   |
+| `GET /api/v1/teams/{team_id}/projects`   | Visible projects in one team                                                        |
+| `GET /api/v1/orgs/{org_id}/projects`     | Visible projects across the organization, including each owning team's name         |
+| `GET /api/v1/orgs/{org_id}/virtual-keys` | Visible virtual keys across the organization's projects, each with its `project_id` |
 
 Lists follow the caller's scope. An org-wide reader can list all its projects;
 a team- or project-scoped reader gets only projects covered by their grants,

@@ -5,14 +5,21 @@
 //! authorizes exactly like the page read it mirrors, then streams the body by
 //! walking the log with the keyset cursor, one page in memory at a time, so a
 //! year of changes costs one page of memory whatever its length.
+//!
+//! A browser without the File System Access API downloads it through a
+//! single-use ticket instead (#3545, ADR-0041): `export_tickets` mints one for
+//! either path after [`authorize_export`] and [`check_query`] have run, and
+//! [`run_redeemed`] runs the export for it under the same capability check.
 
 use std::collections::{HashMap, HashSet};
 use std::io;
+use std::sync::Arc;
 
 use axum::body::{Body, Bytes};
-use axum::extract::{Path, Query, State};
+use axum::extract::{FromRequestParts, Path, Query, State};
+use axum::http::request::Parts;
 use axum::http::{header, HeaderValue, StatusCode};
-use axum::response::Response;
+use axum::response::{IntoResponse, Response};
 use chrono::{DateTime, SecondsFormat, Utc};
 use futures_util::stream;
 use serde::{Deserialize, Serialize};
@@ -26,6 +33,7 @@ use rolter_store::postgres::repo::{
     AuditLogCursor, AuditLogDirection, AuditLogFilter, AuditLogRepo, OrgRepo, UserRepo,
 };
 
+use crate::analytics_export::{csv_cell, ExportKind, ExportProgress};
 use crate::crud::{normalized_filter, pool, ApiError, ApiResult};
 use crate::rbac::{authorize, authorize_superadmin, Principal, ScopeChain};
 use crate::rbac_matrix::{cap, superadmin_cap};
@@ -162,22 +170,6 @@ impl ExportRow {
     }
 }
 
-/// One CSV field. A spreadsheet runs a cell that starts with `=`, `+`, `-`, `@`,
-/// a tab or a carriage return as a formula, and a target id or an e-mail is
-/// typed by someone other than the reader, so such a cell gets a leading `'`.
-/// Kept identical to `cell` in `ui/src/lib/audit-export.ts`.
-fn csv_cell(value: &str) -> String {
-    let mut text = value.to_string();
-    if text.starts_with(['=', '+', '-', '@', '\t', '\r']) {
-        text.insert(0, '\'');
-    }
-    if text.contains(['"', ',', '\r', '\n']) {
-        format!("\"{}\"", text.replace('"', "\"\""))
-    } else {
-        text
-    }
-}
-
 fn csv_header() -> String {
     format!("{}\r\n", COLUMNS.join(","))
 }
@@ -235,6 +227,10 @@ struct Walk {
     filter: AuditLogFilter,
     format: ExportFormat,
     emails: HashMap<Uuid, String>,
+    /// where a download ticket's export reports the rows written so far
+    progress: Option<Arc<ExportProgress>>,
+    /// data rows written so far
+    written: u64,
     /// the header (or `[`) has not gone out yet
     started: bool,
     /// a JSON row has gone out, so the next one needs a separator
@@ -262,6 +258,10 @@ impl Walk {
             Source::Deployment => repo.list_page_all(&self.filter, PAGE_SIZE).await?,
         };
         self.resolve_emails(&page.entries).await?;
+        self.written += page.entries.len() as u64;
+        if let Some(progress) = &self.progress {
+            progress.set_rows(self.written);
+        }
         for entry in &page.entries {
             let row = ExportRow::new(entry, &self.emails);
             match self.format {
@@ -380,6 +380,100 @@ async fn record(
     Ok(())
 }
 
+/// The capability check an export of `kind` takes: the page read's, so an
+/// export is never wider than what the caller can page. Run by the bearer
+/// routes, by the mint of a download ticket and again when it is redeemed.
+pub(crate) async fn authorize_export(
+    state: &ControlState,
+    principal: &Principal,
+    kind: ExportKind,
+) -> ApiResult<()> {
+    match kind {
+        ExportKind::OrgAudit(org_id) => {
+            authorize(
+                state,
+                principal,
+                ScopeChain::org(org_id),
+                cap!("audit_log", Read),
+            )
+            .await
+        }
+        ExportKind::DeploymentAudit => {
+            authorize_superadmin(principal, superadmin_cap!("deployment_audit_log", Read))
+        }
+        // not an audit export: nothing here may run it
+        ExportKind::Attribution | ExportKind::Timeseries | ExportKind::Invocations => {
+            Err(ApiError::Forbidden)
+        }
+    }
+}
+
+/// Parse a stored query as the export would, so a ticket for a query it would
+/// refuse is refused when it is minted.
+#[allow(clippy::result_large_err)]
+pub(crate) async fn check_query(parts: &mut Parts, state: &ControlState) -> Result<(), Response> {
+    let Query(query) = Query::<ExportQuery>::from_request_parts(parts, state)
+        .await
+        .map_err(IntoResponse::into_response)?;
+    query
+        .filter()
+        .map(drop)
+        .map_err(IntoResponse::into_response)
+}
+
+/// Run the export `kind` for a redeemed download ticket, as the bearer route
+/// does: the capability check again for the principal the ticket re-resolved
+/// to, the audit row and the walk, reporting its rows to `progress`.
+pub(crate) async fn run_redeemed(
+    state: ControlState,
+    kind: ExportKind,
+    mut parts: Parts,
+    principal: Principal,
+    progress: Arc<ExportProgress>,
+) -> Response {
+    let query = match Query::<ExportQuery>::from_request_parts(&mut parts, &state).await {
+        Ok(Query(query)) => query,
+        Err(refused) => return refused.into_response(),
+    };
+    export(state, principal, kind, query, Some(progress))
+        .await
+        .into_response()
+}
+
+/// An export of `kind` for `principal`: authorized, recorded, then streamed.
+async fn export(
+    state: ControlState,
+    principal: Principal,
+    kind: ExportKind,
+    query: ExportQuery,
+    progress: Option<Arc<ExportProgress>>,
+) -> ApiResult<Response> {
+    authorize_export(&state, &principal, kind).await?;
+    let filter = query.filter()?;
+    let (org_id, source, label) = match kind {
+        ExportKind::OrgAudit(org_id) => {
+            let org = OrgRepo(pool(&state)).get(org_id).await?;
+            (Some(org_id), Source::Org(org_id), org.slug)
+        }
+        _ => (None, Source::Deployment, "deployment".to_string()),
+    };
+    record(&state, &principal, org_id, &query, &filter).await?;
+    let name = file_name(&label, &filter, Utc::now(), query.format);
+    let walk = Walk {
+        pool: pool(&state).clone(),
+        source,
+        filter,
+        format: query.format,
+        emails: HashMap::new(),
+        progress,
+        written: 0,
+        started: false,
+        wrote_row: false,
+        done: false,
+    };
+    response(walk, &name, query.format)
+}
+
 /// `GET /api/v1/orgs/{org_id}/audit-log/export`: gated and scoped exactly as
 /// the page read, so an export is never wider than what the caller can page.
 pub(crate) async fn export_org_audit_log(
@@ -388,28 +482,7 @@ pub(crate) async fn export_org_audit_log(
     Path(org_id): Path<Uuid>,
     Query(query): Query<ExportQuery>,
 ) -> ApiResult<Response> {
-    authorize(
-        &state,
-        &principal,
-        ScopeChain::org(org_id),
-        cap!("audit_log", Read),
-    )
-    .await?;
-    let filter = query.filter()?;
-    let org = OrgRepo(pool(&state)).get(org_id).await?;
-    record(&state, &principal, Some(org_id), &query, &filter).await?;
-    let name = file_name(&org.slug, &filter, Utc::now(), query.format);
-    let walk = Walk {
-        pool: pool(&state).clone(),
-        source: Source::Org(org_id),
-        filter,
-        format: query.format,
-        emails: HashMap::new(),
-        started: false,
-        wrote_row: false,
-        done: false,
-    };
-    response(walk, &name, query.format)
+    export(state, principal, ExportKind::OrgAudit(org_id), query, None).await
 }
 
 /// `GET /api/v1/audit-log/export`: the deployment-wide log, superadmin only
@@ -419,21 +492,7 @@ pub(crate) async fn export_deployment_audit_log(
     State(state): State<ControlState>,
     Query(query): Query<ExportQuery>,
 ) -> ApiResult<Response> {
-    authorize_superadmin(&principal, superadmin_cap!("deployment_audit_log", Read))?;
-    let filter = query.filter()?;
-    record(&state, &principal, None, &query, &filter).await?;
-    let name = file_name("deployment", &filter, Utc::now(), query.format);
-    let walk = Walk {
-        pool: pool(&state).clone(),
-        source: Source::Deployment,
-        filter,
-        format: query.format,
-        emails: HashMap::new(),
-        started: false,
-        wrote_row: false,
-        done: false,
-    };
-    response(walk, &name, query.format)
+    export(state, principal, ExportKind::DeploymentAudit, query, None).await
 }
 
 #[cfg(test)]

@@ -16,12 +16,25 @@ const LABELLED_TARGET: &str = "rolter_target_requests_total";
 const LABELLED_VARIANT: &str = "rolter_variant_requests_total";
 const LABELLED_COMPLEXITY: &str = "rolter_complexity_route_requests_total";
 const LABELLED_ROUTE_LIMIT: &str = "rolter_route_limit_blocks_total";
+const LABELLED_REJECTED: &str = "rolter_rejected_requests_total";
 const LABELLED_REDIS_RECONNECTS: &str = "rolter_redis_reconnects_total";
 const LABELLED_REDIS_CONNECT_FAILURES: &str = "rolter_redis_connect_failures_total";
 const LABELLED_FAIL_OPEN: &str = "rolter_fail_open_total";
 const LABELLED_PROVIDER_INFLIGHT: &str = "rolter_provider_inflight";
 const LABELLED_PROVIDER_QUEUE_DEPTH: &str = "rolter_provider_queue_depth";
 const LABELLED_REDIS_CONNECTED: &str = "rolter_redis_connected";
+const LABELLED_SNAPSHOT_UNKNOWN: &str = "rolter_snapshot_unknown_values";
+const LABELLED_LOCAL_MODELS: &str = "rolter_local_classifier_models";
+const LABELLED_GUARD_DECISIONS: &str = "rolter_guardrail_policy_decisions_total";
+const LABELLED_GUARD_VIOLATIONS: &str = "rolter_guardrail_policy_violations_total";
+const GUARD_PROVIDER_LATENCY: &str = "rolter_guardrail_provider_latency_ms";
+const LABELLED_LOCAL_TRUNCATED: &str = "rolter_semantic_local_truncated_total";
+const LABELLED_MCP_UNREAD: &str = "rolter_mcp_unread_bodies_total";
+
+/// Why the MCP relay forwarded a body without reading it, the `reason` label
+/// of `rolter_mcp_unread_bodies_total` (#3528): `encoded` (a
+/// `Content-Encoding`) or `unparseable` (not JSON).
+pub const MCP_UNREAD_REASONS: [&str; 2] = ["encoded", "unparseable"];
 
 /// The labelled counter families, declared up front for the OTLP exporter. At
 /// install time the gateway has served nothing, so every family is
@@ -44,6 +57,10 @@ pub const LABELLED_FAMILIES: &[rolter_core::telemetry::LabelledFamily] = &[
         "requests refused by a route's own rpm, tpm or concurrency cap, per route and cap",
     ),
     (
+        LABELLED_REJECTED,
+        "requests refused before a key was resolved, per reason; they leave no request-log row",
+    ),
+    (
         LABELLED_REDIS_RECONNECTS,
         "redis connections re-established after one was lost, per consumer",
     ),
@@ -54,6 +71,22 @@ pub const LABELLED_FAMILIES: &[rolter_core::telemetry::LabelledFamily] = &[
     (
         LABELLED_FAIL_OPEN,
         "requests a budget or rate limit let through unchecked because redis was unavailable",
+    ),
+    (
+        LABELLED_GUARD_DECISIONS,
+        "semantic guardrail provider calls by policy, provider, stage and outcome",
+    ),
+    (
+        LABELLED_GUARD_VIOLATIONS,
+        "scored categories that crossed a semantic guardrail policy threshold, by policy, category and action",
+    ),
+    (
+        LABELLED_MCP_UNREAD,
+        "mcp request bodies forwarded to an ungoverned server without being read, so their calls are not itemised, by reason",
+    ),
+    (
+        LABELLED_LOCAL_TRUNCATED,
+        "local semantic guard calls whose text was longer than the provider's max_scored_bytes, so part of it was not read, by provider",
     ),
 ];
 
@@ -70,6 +103,14 @@ pub const LABELLED_GAUGE_FAMILIES: &[rolter_core::telemetry::LabelledFamily] = &
     (
         LABELLED_REDIS_CONNECTED,
         "1 while a redis consumer holds a live connection, 0 once its last attempt failed or its connection was lost",
+    ),
+    (
+        LABELLED_SNAPSHOT_UNKNOWN,
+        "values of the last applied snapshot this gateway does not know and read fail-closed, by the kind of enum or entity",
+    ),
+    (
+        LABELLED_LOCAL_MODELS,
+        "1 for the state each local semantic guard provider's model is in, loaded or failed, 0 for the other",
     ),
 ];
 
@@ -293,6 +334,16 @@ pub struct Metrics {
     pub config_reloads_total: AtomicU64,
     /// failed snapshot fetches/parses since start
     pub config_reload_failures_total: AtomicU64,
+    /// the `/internal/snapshot` format of the snapshot applied last, or `0`
+    /// while the gateway holds only its bootstrap file (ADR-0038)
+    pub snapshot_format: AtomicU64,
+    /// `1` while the control plane's last answer was a snapshot format this
+    /// gateway cannot read, `0` once a compatible answer arrives (ADR-0038)
+    pub snapshot_format_refused: AtomicU64,
+    /// set the first time the control plane serves this gateway a snapshot
+    /// format it marks deprecated, so the warning is said once per process
+    /// rather than on every poll (ADR-0038). Not exported
+    pub snapshot_format_deprecation_warned: std::sync::atomic::AtomicBool,
     /// live per-(model, target) circuit-breaker entries after the last reload,
     /// so registry growth across config generations is observable (#1053)
     pub breaker_entries: AtomicU64,
@@ -334,8 +385,12 @@ pub struct Metrics {
     pub guardrail_output_blocks_total: AtomicU64,
     /// individual guardrail redactions applied to response content
     pub guardrail_output_redactions_total: AtomicU64,
-    /// streamed requests refused because the route has post-call rules
+    /// streamed requests refused because the route has post-call rules, or
+    /// because their semantic guardrail policy refuses streams (#459)
     pub guardrail_stream_rejections_total: AtomicU64,
+    /// streamed responses held in full so a `post_call` semantic guardrail
+    /// provider could judge them (ADR-0037)
+    pub guardrail_streams_buffered_total: AtomicU64,
     /// streamed requests refused because a fail-closed `post_response` plugin
     /// applies to them and cannot inspect a stream (#1776)
     pub plugin_stream_rejections_total: AtomicU64,
@@ -450,6 +505,12 @@ pub struct Metrics {
     /// refusals by a route's own `advanced.limits` cap, keyed by (route, cap:
     /// `rpm`, `tpm` or `concurrency`). The route label is configuration-bounded
     by_route_limit: DashMap<(String, &'static str), AtomicU64>,
+    /// requests refused before a key was resolved, keyed by reason (#1395).
+    /// The reasons are a fixed set of literals, so the label set is bounded
+    by_rejection: DashMap<&'static str, AtomicU64>,
+    /// MCP bodies forwarded unread, one counter per `MCP_UNREAD_REASONS` entry
+    /// in the same order (#3528)
+    mcp_unread: [AtomicU64; MCP_UNREAD_REASONS.len()],
     /// queue depth, in-flight count and queue wait per provider name. Names
     /// come from the configured providers, so the label set is bounded by the
     /// config
@@ -458,6 +519,29 @@ pub struct Metrics {
     /// is built against a redis url. A deployment without redis registers
     /// none and reports none (#1772)
     redis: DashMap<RedisConsumer, Arc<RedisConnStats>>,
+    /// how many values of each kind the last applied snapshot carried that
+    /// this build does not know (#3424). A kind is a fixed name
+    /// (`rolter_core::UnknownValues::kinds`), never a value or an entity, so
+    /// the label set is bounded by the build; a kind once seen stays at `0`
+    snapshot_unknown: DashMap<&'static str, AtomicU64>,
+    /// whether each local semantic guard provider's model is loaded, shared
+    /// with the gateway's `LocalClassifiers` (#3452). Keyed by provider name,
+    /// which the configuration bounds; a path is never a label
+    local_models: std::sync::OnceLock<Arc<crate::local_classifier::ModelStates>>,
+    /// semantic guardrail calls keyed by (policy, provider, stage, outcome)
+    /// (#459). Policy and provider names come from the configuration; stage
+    /// and outcome are fixed vocabularies
+    by_guard_decision: DashMap<(String, String, &'static str, &'static str), AtomicU64>,
+    /// threshold violations keyed by (policy, category, action). The category
+    /// is one the policy names a threshold for, or `other`, so a provider can
+    /// never mint a label value
+    by_guard_violation: DashMap<(String, String, &'static str), AtomicU64>,
+    /// how long each semantic guardrail provider took to answer, failures
+    /// included, keyed by provider name
+    by_guard_latency: DashMap<String, Histogram>,
+    /// local classifier calls that could not read all of their text, keyed
+    /// by provider name (#3513)
+    by_local_truncated: DashMap<String, AtomicU64>,
 }
 
 /// One scalar metric: its Prometheus type, name, help text, and current value.
@@ -478,18 +562,22 @@ pub struct Scalar {
 
 impl Metrics {
     /// Record one completed request's total latency and time-to-first-token
-    /// against the `model` label. Called once per request from the log sink.
+    /// against the `model` label, which is `series`: the requested route's
+    /// runtime namespace, so two orgs' same-named routes are two series
+    /// (#3462). The OTLP histograms keep the requested `model`, which the GenAI
+    /// conventions define. Called once per request from the log sink.
     pub fn observe_request(
         &self,
         provider: &str,
         model: &str,
+        series: &str,
         latency_ms: u32,
         ttft_ms: u32,
         output_tokens: u32,
     ) {
         let hist = self
             .by_model
-            .entry(model.to_string())
+            .entry(series.to_string())
             .or_insert_with(ModelHist::new);
         hist.latency.observe(latency_ms);
         hist.ttft.observe(ttft_ms);
@@ -521,7 +609,8 @@ impl Metrics {
     }
 
     /// Record one completed request against the A/B variant that served it.
-    /// Classic single-pool routes pass an empty variant and are not counted.
+    /// `model` is the route's runtime namespace (#3462). Classic single-pool
+    /// routes pass an empty variant and are not counted.
     pub fn observe_variant(&self, model: &str, variant: &str) {
         if variant.is_empty() {
             return;
@@ -532,9 +621,11 @@ impl Metrics {
             .fetch_add(1, Relaxed);
     }
 
-    /// Record an opt-in complexity-routing decision. `fallback` means the
-    /// selected tier route was unavailable or not permitted, so the request
-    /// kept its originally requested route.
+    /// Record an opt-in complexity-routing decision. `model` and `route` are
+    /// the requested and the selected route's runtime namespaces, so two orgs'
+    /// same-named routes are two series (#3462). `fallback` means the selected
+    /// tier route was unavailable or not permitted, so the request kept its
+    /// originally requested route.
     pub fn observe_complexity(&self, model: &str, tier: &str, route: &str, fallback: bool) {
         self.by_complexity
             .entry((
@@ -554,10 +645,83 @@ impl Metrics {
     /// Record a request refused by `route`'s own `kind` cap (#2936). Also
     /// counted in `rolter_rate_limit_blocks_total`, which stays the total of
     /// every throughput refusal.
+    /// Count one semantic guardrail provider call (#459). Carries names and a
+    /// fixed outcome only, never content.
+    pub fn observe_guard_decision(
+        &self,
+        policy: &str,
+        provider: &str,
+        stage: &'static str,
+        outcome: &'static str,
+    ) {
+        self.by_guard_decision
+            .entry((policy.to_string(), provider.to_string(), stage, outcome))
+            .or_default()
+            .fetch_add(1, Relaxed);
+    }
+
+    /// Count one scored category over a policy threshold (#459). `category`
+    /// must already be bounded by the policy (see `CompiledPolicy::category_label`).
+    pub fn observe_guard_violation(&self, policy: &str, category: &str, action: &'static str) {
+        self.by_guard_violation
+            .entry((policy.to_string(), category.to_string(), action))
+            .or_default()
+            .fetch_add(1, Relaxed);
+    }
+
+    /// Count one local classifier call whose text was longer than its
+    /// provider's `max_scored_bytes` (#3513).
+    pub fn observe_local_truncated(&self, provider: &str) {
+        if let Some(count) = self.by_local_truncated.get(provider) {
+            count.fetch_add(1, Relaxed);
+            return;
+        }
+        self.by_local_truncated
+            .entry(provider.to_string())
+            .or_default()
+            .fetch_add(1, Relaxed);
+    }
+
+    /// Record how long one semantic guardrail provider call took.
+    pub fn observe_guard_latency(&self, provider: &str, ms: u32) {
+        if let Some(hist) = self.by_guard_latency.get(provider) {
+            hist.observe(ms);
+            return;
+        }
+        self.by_guard_latency
+            .entry(provider.to_string())
+            .or_insert_with(Histogram::new)
+            .observe(ms);
+    }
+
     pub fn observe_route_limit(&self, route: &str, kind: &'static str) {
         self.rate_limit_blocks_total.fetch_add(1, Relaxed);
         self.by_route_limit
             .entry((route.to_string(), kind))
+            .or_default()
+            .fetch_add(1, Relaxed);
+    }
+
+    /// Count an MCP request body forwarded to an ungoverned server without
+    /// being read, by one of `MCP_UNREAD_REASONS` (#3528). Its calls have no
+    /// rows of their own, so this is the only count of that traffic when the
+    /// MCP log is off.
+    pub fn observe_mcp_unread(&self, reason: &str) {
+        if let Some(index) = MCP_UNREAD_REASONS.iter().position(|r| *r == reason) {
+            self.mcp_unread[index].fetch_add(1, Relaxed);
+        }
+    }
+
+    /// Record a request refused before any key was resolved, by `reason`
+    /// (`missing_key`, `invalid_key` or `required_header_missing`). Such a
+    /// request has no owner, so it is counted here and never written to the
+    /// request log, which an unauthenticated caller could otherwise fill
+    /// without limit (#1395). Also counted in `rolter_auth_failures_total`,
+    /// which stays the total.
+    pub fn observe_rejection(&self, reason: &'static str) {
+        self.auth_failures_total.fetch_add(1, Relaxed);
+        self.by_rejection
+            .entry(reason)
             .or_default()
             .fetch_add(1, Relaxed);
     }
@@ -636,6 +800,18 @@ impl Metrics {
                 name: "rolter_config_reload_failures_total",
                 help: "failed config snapshot fetches",
                 value: self.config_reload_failures_total.load(Relaxed),
+            },
+            Scalar {
+                kind: "gauge",
+                name: "rolter_snapshot_format",
+                help: "snapshot format of the config snapshot applied last; 0 while only the bootstrap file is held",
+                value: self.snapshot_format.load(Relaxed),
+            },
+            Scalar {
+                kind: "gauge",
+                name: "rolter_snapshot_format_refused",
+                help: "1 while the control plane serves no snapshot format this gateway reads",
+                value: self.snapshot_format_refused.load(Relaxed),
             },
             Scalar {
                 kind: "gauge",
@@ -732,6 +908,12 @@ impl Metrics {
                 name: "rolter_guardrail_stream_rejections_total",
                 help: "streamed requests refused because the route has post-call rules",
                 value: self.guardrail_stream_rejections_total.load(Relaxed),
+            },
+            Scalar {
+                kind: "counter",
+                name: "rolter_guardrail_streams_buffered_total",
+                help: "streamed responses buffered in full for a post_call semantic guardrail provider",
+                value: self.guardrail_streams_buffered_total.load(Relaxed),
             },
             Scalar {
                 kind: "counter",
@@ -1051,11 +1233,57 @@ impl Metrics {
                 entry.value().load(Relaxed),
             ));
         }
+        for entry in self.by_guard_decision.iter() {
+            let (policy, provider, stage, outcome) = entry.key();
+            out.push((
+                LABELLED_GUARD_DECISIONS,
+                vec![
+                    ("policy", policy.clone()),
+                    ("provider", provider.clone()),
+                    ("stage", (*stage).to_string()),
+                    ("outcome", (*outcome).to_string()),
+                ],
+                entry.value().load(Relaxed),
+            ));
+        }
+        for entry in self.by_guard_violation.iter() {
+            let (policy, category, action) = entry.key();
+            out.push((
+                LABELLED_GUARD_VIOLATIONS,
+                vec![
+                    ("policy", policy.clone()),
+                    ("category", category.clone()),
+                    ("action", (*action).to_string()),
+                ],
+                entry.value().load(Relaxed),
+            ));
+        }
+        for entry in self.by_local_truncated.iter() {
+            out.push((
+                LABELLED_LOCAL_TRUNCATED,
+                vec![("provider", entry.key().clone())],
+                entry.value().load(Relaxed),
+            ));
+        }
         for entry in self.by_route_limit.iter() {
             let (route, kind) = entry.key();
             out.push((
                 LABELLED_ROUTE_LIMIT,
                 vec![("route", route.clone()), ("kind", (*kind).to_string())],
+                entry.value().load(Relaxed),
+            ));
+        }
+        for (reason, value) in MCP_UNREAD_REASONS.iter().zip(&self.mcp_unread) {
+            out.push((
+                LABELLED_MCP_UNREAD,
+                vec![("reason", (*reason).to_string())],
+                value.load(Relaxed),
+            ));
+        }
+        for entry in self.by_rejection.iter() {
+            out.push((
+                LABELLED_REJECTED,
+                vec![("reason", (*entry.key()).to_string())],
                 entry.value().load(Relaxed),
             ));
         }
@@ -1095,7 +1323,58 @@ impl Metrics {
                 ));
             }
         }
+        for entry in self.snapshot_unknown.iter() {
+            out.push((
+                LABELLED_SNAPSHOT_UNKNOWN,
+                vec![("kind", (*entry.key()).to_string())],
+                entry.value().load(Relaxed),
+            ));
+        }
+        for (provider, state, value) in self.local_model_series() {
+            out.push((
+                LABELLED_LOCAL_MODELS,
+                vec![("provider", provider), ("state", state.to_string())],
+                value,
+            ));
+        }
         out
+    }
+
+    /// Report the local classifiers' model states from now on (#3452).
+    pub(crate) fn watch_local_classifiers(
+        &self,
+        states: Arc<crate::local_classifier::ModelStates>,
+    ) {
+        let _ = self.local_models.set(states);
+    }
+
+    /// `(provider, state, value)` for every local provider and both states.
+    fn local_model_series(&self) -> Vec<(String, &'static str, u64)> {
+        let Some(states) = self.local_models.get() else {
+            return Vec::new();
+        };
+        let states = states.lock();
+        let mut series = Vec::with_capacity(states.len() * 2);
+        for (provider, loaded) in states.iter() {
+            series.push((provider.clone(), "loaded", u64::from(*loaded)));
+            series.push((provider.clone(), "failed", u64::from(!*loaded)));
+        }
+        series
+    }
+
+    /// Append `rolter_local_classifier_models{provider,state}` (#3452).
+    fn render_local_models(&self, out: &mut String) {
+        let name = LABELLED_LOCAL_MODELS;
+        let help = family_help(name);
+        let _ = writeln!(out, "# HELP {name} {help}");
+        let _ = writeln!(out, "# TYPE {name} gauge");
+        for (provider, state, value) in self.local_model_series() {
+            let provider = escape_label(&provider);
+            let _ = writeln!(
+                out,
+                "{name}{{provider=\"{provider}\",state=\"{state}\"}} {value}"
+            );
+        }
     }
 
     /// Hand the request path an OTLP histogram recorder.
@@ -1172,9 +1451,53 @@ impl Metrics {
         self.render_variant_counters(&mut out);
         self.render_complexity_counters(&mut out);
         self.render_route_limit_counters(&mut out);
+        self.render_guard_series(&mut out);
+        self.render_rejection_counters(&mut out);
+        self.render_mcp_unread(&mut out);
         self.render_provider_load(&mut out);
         self.render_redis(&mut out);
+        self.render_snapshot_unknown(&mut out);
+        self.render_local_models(&mut out);
         out
+    }
+
+    /// Record what the snapshot just applied read fail-closed (#3424): each
+    /// kind's count, and `0` for a kind an earlier snapshot had and this one
+    /// does not. Called once per applied snapshot, off the request path.
+    pub fn set_snapshot_unknown_values(
+        &self,
+        kinds: &std::collections::BTreeMap<&'static str, u32>,
+    ) {
+        // each series is written once with its final value, so a scrape in
+        // between never reads a kind that persists as 0
+        for entry in self.snapshot_unknown.iter() {
+            let count = kinds.get(entry.key()).copied().unwrap_or(0);
+            entry.value().store(u64::from(count), Relaxed);
+        }
+        for (kind, count) in kinds {
+            if !self.snapshot_unknown.contains_key(kind) {
+                self.snapshot_unknown
+                    .entry(kind)
+                    .or_default()
+                    .store(u64::from(*count), Relaxed);
+            }
+        }
+    }
+
+    /// Append `rolter_snapshot_unknown_values{kind}` (#3424).
+    fn render_snapshot_unknown(&self, out: &mut String) {
+        let name = LABELLED_SNAPSHOT_UNKNOWN;
+        let help = family_help(name);
+        let _ = writeln!(out, "# HELP {name} {help}");
+        let _ = writeln!(out, "# TYPE {name} gauge");
+        for entry in self.snapshot_unknown.iter() {
+            let _ = writeln!(
+                out,
+                "{name}{{kind=\"{}\"}} {}",
+                entry.key(),
+                entry.value().load(Relaxed)
+            );
+        }
     }
 
     /// Append the per-provider queue gauges and the queue-wait histogram
@@ -1256,6 +1579,87 @@ impl Metrics {
                     entry.value().fail_open.load(Relaxed)
                 );
             }
+        }
+    }
+
+    /// Append the semantic guardrail decision and violation counters and the
+    /// per-provider latency histogram (#459).
+    fn render_guard_series(&self, out: &mut String) {
+        let name = LABELLED_GUARD_DECISIONS;
+        let _ = writeln!(out, "# HELP {name} {}", family_help(name));
+        let _ = writeln!(out, "# TYPE {name} counter");
+        for entry in self.by_guard_decision.iter() {
+            let (policy, provider, stage, outcome) = entry.key();
+            let _ = writeln!(
+                out,
+                "{name}{{policy=\"{}\",provider=\"{}\",stage=\"{stage}\",outcome=\"{outcome}\"}} {}",
+                escape_label(policy),
+                escape_label(provider),
+                entry.value().load(Relaxed)
+            );
+        }
+        let name = LABELLED_GUARD_VIOLATIONS;
+        let _ = writeln!(out, "# HELP {name} {}", family_help(name));
+        let _ = writeln!(out, "# TYPE {name} counter");
+        for entry in self.by_guard_violation.iter() {
+            let (policy, category, action) = entry.key();
+            let _ = writeln!(
+                out,
+                "{name}{{policy=\"{}\",category=\"{}\",action=\"{action}\"}} {}",
+                escape_label(policy),
+                escape_label(category),
+                entry.value().load(Relaxed)
+            );
+        }
+        let name = LABELLED_LOCAL_TRUNCATED;
+        let _ = writeln!(out, "# HELP {name} {}", family_help(name));
+        let _ = writeln!(out, "# TYPE {name} counter");
+        for entry in self.by_local_truncated.iter() {
+            let _ = writeln!(
+                out,
+                "{name}{{provider=\"{}\"}} {}",
+                escape_label(entry.key()),
+                entry.value().load(Relaxed)
+            );
+        }
+        let name = GUARD_PROVIDER_LATENCY;
+        let _ = writeln!(
+            out,
+            "# HELP {name} semantic guardrail provider call latency in milliseconds, failures included"
+        );
+        let _ = writeln!(out, "# TYPE {name} histogram");
+        for entry in self.by_guard_latency.iter() {
+            let provider = escape_label(entry.key());
+            write_histogram_series(out, name, "provider", &provider, entry.value());
+        }
+    }
+
+    /// Append the pre-authentication refusal counter, one `{reason}` series per
+    /// reason that has refused something.
+    fn render_rejection_counters(&self, out: &mut String) {
+        let name = LABELLED_REJECTED;
+        let help = family_help(name);
+        let _ = writeln!(out, "# HELP {name} {help}");
+        let _ = writeln!(out, "# TYPE {name} counter");
+        for entry in self.by_rejection.iter() {
+            let _ = writeln!(
+                out,
+                "{name}{{reason=\"{}\"}} {}",
+                entry.key(),
+                entry.value().load(Relaxed)
+            );
+        }
+    }
+
+    /// Append `rolter_mcp_unread_bodies_total{reason}`, every reason written
+    /// from the first scrape so a rate over it never starts from a gap.
+    fn render_mcp_unread(&self, out: &mut String) {
+        let name = LABELLED_MCP_UNREAD;
+        let help = family_help(name);
+        let _ = writeln!(out, "# HELP {name} {help}");
+        let _ = writeln!(out, "# TYPE {name} counter");
+        for (reason, value) in MCP_UNREAD_REASONS.iter().zip(&self.mcp_unread) {
+            let _ = writeln!(out, "{name}{{reason=\"{reason}\"}} {}", value.load(Relaxed));
         }
     }
 
@@ -1452,6 +1856,7 @@ mod tests {
         m.observe_complexity("gpt-4o", "cheap", "mini", false);
         m.observe_complexity("gpt-4o", "cheap", "mini", true);
         m.observe_route_limit("gpt-4o", "rpm");
+        m.observe_rejection("invalid_key");
         let _queued = QueuedGuard::new(m.provider_load("vllm"));
         let _inflight = QueuedGuard::new(m.provider_load("vllm")).picked();
         watch_all_redis_consumers(&m);
@@ -1473,6 +1878,21 @@ mod tests {
                 "OTLP series absent from prometheus text: {line}"
             );
         }
+    }
+
+    #[test]
+    fn a_rejection_counts_by_reason_and_in_the_auth_failure_total() {
+        let m = Metrics::default();
+        m.observe_rejection("missing_key");
+        m.observe_rejection("invalid_key");
+        m.observe_rejection("invalid_key");
+        assert_eq!(m.auth_failures_total.load(Relaxed), 3);
+        let text = m.render();
+        assert!(
+            text.contains("rolter_rejected_requests_total{reason=\"invalid_key\"} 2"),
+            "{text}"
+        );
+        assert!(text.contains("rolter_rejected_requests_total{reason=\"missing_key\"} 1"));
     }
 
     /// Escaping is a Prometheus text-format concern and must not leak into OTLP.
@@ -1516,10 +1936,15 @@ mod tests {
         m.observe_variant("gpt-4o", "b");
         m.observe_complexity("gpt-4o", "cheap", "mini", false);
         m.observe_route_limit("gpt-4o", "tpm");
+        m.observe_rejection("missing_key");
 
         // one ok + one error per target, one per variant, one per complexity
-        // key, one per route cap that refused
-        assert_eq!(m.labelled_for_export().len(), 2 + 1 + 1 + 1);
+        // key, one per route cap that refused, one per rejection reason, and
+        // every reason an mcp body goes unread for, zeros included
+        assert_eq!(
+            m.labelled_for_export().len(),
+            2 + 1 + 1 + 1 + 1 + MCP_UNREAD_REASONS.len()
+        );
     }
 
     /// Every family the exporter registers must be one the gateway actually
@@ -1531,8 +1956,16 @@ mod tests {
         m.observe_variant("gpt-4o", "b");
         m.observe_complexity("gpt-4o", "cheap", "mini", false);
         m.observe_route_limit("gpt-4o", "concurrency");
+        m.observe_guard_decision("support", "toxicity", "post_call", "allow");
+        m.observe_guard_violation("support", "violence", "block");
+        m.observe_local_truncated("injection");
+        m.observe_rejection("missing_key");
         let _load = m.provider_load("vllm");
         watch_all_redis_consumers(&m);
+        m.set_snapshot_unknown_values(&[("provider_kind", 1)].into_iter().collect());
+        let local_models = Arc::new(crate::local_classifier::ModelStates::default());
+        local_models.lock().insert("injection".to_string(), false);
+        m.watch_local_classifiers(local_models);
 
         let produced: Vec<&str> = m
             .labelled_for_export()
@@ -1636,12 +2069,12 @@ mod tests {
     fn request_observation_works_without_an_otlp_recorder() {
         let m = Metrics::default();
         // the OnceLock is empty here, which is the default deployment
-        m.observe_request("openai", "gpt-4o", 42, 7, 0);
+        m.observe_request("openai", "gpt-4o", "gpt-4o", 42, 7, 0);
         assert!(m.render().contains("rolter_request_latency_ms"));
 
         // and an inert recorder is safe to install and record into
         m.set_otlp_histograms(rolter_core::telemetry::RequestHistograms::default());
-        m.observe_request("openai", "gpt-4o", 9, 3, 0);
+        m.observe_request("openai", "gpt-4o", "gpt-4o", 9, 3, 0);
         assert!(!rolter_core::telemetry::RequestHistograms::default().is_active());
     }
 
@@ -1651,9 +2084,9 @@ mod tests {
     fn histogram_observe_and_render() {
         let m = Metrics::default();
         // three requests on one model: 3ms, 40ms, 8000ms (last > 5000 bucket)
-        m.observe_request("openai", "gpt-4o", 3, 2, 0);
-        m.observe_request("openai", "gpt-4o", 40, 10, 0);
-        m.observe_request("openai", "gpt-4o", 8000, 200, 0);
+        m.observe_request("openai", "gpt-4o", "gpt-4o", 3, 2, 0);
+        m.observe_request("openai", "gpt-4o", "gpt-4o", 40, 10, 0);
+        m.observe_request("openai", "gpt-4o", "gpt-4o", 8000, 200, 0);
         let out = m.render();
 
         // type header emitted once

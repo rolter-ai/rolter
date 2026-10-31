@@ -234,6 +234,44 @@ curl -sS -X PUT https://rolter.example.com/api/v1/orgs/$ORG/auth-policy \
   -d '{"allow_password_login":true,"allow_sso":true,"mfa_policy":"required_all"}'
 ```
 
+### See who a policy would lock out
+
+Before you choose a `required_*` value, read who in the org has an armed factor. The dashboard shows the same roster as a **Second factor** column on **Governance › Users** (armed or not set up, for admins), and the confirmation for a `required_*` policy on **Single Sign-On → Sign-in policy** says how many of the members it binds have none (for `required_superadmin`, only superadmins are counted):
+
+```bash
+curl -sS https://rolter.example.com/api/v1/orgs/$ORG/mfa-status \
+  -H "authorization: Bearer $TOKEN"
+```
+
+```json
+[
+  {
+    "user_id": "…",
+    "email": "ada@example.com",
+    "is_superadmin": false,
+    "enabled": true,
+    "recovery_codes_remaining": 8
+  },
+  {
+    "user_id": "…",
+    "email": "bob@example.com",
+    "is_superadmin": false,
+    "enabled": false,
+    "recovery_codes_remaining": 0
+  }
+]
+```
+
+There is one row per active member, counted once however many roles they hold
+across the org, its teams and its projects. `enabled` is an armed factor; a
+half-finished enrolment is not one. Under `required_all` every row with
+`enabled: false` is sent through enrolment at their next password sign-in, and
+under `required_superadmin` it is the rows with `is_superadmin: true`.
+`recovery_codes_remaining` is a count, never a code: `0` on an enrolled member
+is someone one lost phone away from the break-glass reset. The read needs the
+same role as reading the policy itself (org admin), and nothing in it is a
+secret.
+
 A user in several orgs gets the strictest policy across all of them — a
 relaxed membership never softens a hardened one.
 

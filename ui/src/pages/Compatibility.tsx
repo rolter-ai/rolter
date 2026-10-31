@@ -4,12 +4,13 @@ import * as React from "react";
 import { Trans, useTranslation } from "react-i18next";
 
 import { superadminOnly } from "@/components/ForbiddenScreen";
+import { ParamAdjustmentsPanel } from "@/components/ParamAdjustmentsPanel";
 import { LoadError } from "@/components/LoadError";
 import { PanelSkeleton } from "@/components/LoadingState";
 import { Badge } from "@/components/ui/badge";
 import { FieldError } from "@/components/ui/field-error";
 import { Input } from "@/components/ui/input";
-import { SaveBar } from "@/components/ui/save-bar";
+import { SettingsSaveBar } from "@/components/SettingsSaveBar";
 import { SettingsPanel } from "@/components/ui/settings-panel";
 import {
   fetchCompatibilityPolicy,
@@ -17,7 +18,8 @@ import {
   type CompatibilityPolicyDto,
 } from "@/lib/api";
 import { errorText } from "@/lib/error-copy";
-import { translateErrors, useFieldErrors } from "@/lib/use-field-errors";
+import { translateErrors } from "@/lib/use-field-errors";
+import { useSettingsForm } from "@/lib/use-settings-form";
 import { useToast } from "@/lib/toast";
 import { useScreenReady } from "@/lib/ux-react";
 
@@ -81,13 +83,6 @@ function CompatibilityScreen() {
   // `policy` is the query the user is actually waiting on for this screen
   useScreenReady(!policy.isLoading);
 
-  const [form, setForm] = React.useState<FormState | null>(null);
-  React.useEffect(() => {
-    if (policy.data && form === null) {
-      setForm(fromDto(policy.data));
-    }
-  }, [policy.data, form]);
-
   const versionId = React.useId();
   const tokensId = React.useId();
   const ids: Record<keyof FormState, string> = {
@@ -95,12 +90,20 @@ function CompatibilityScreen() {
     defaultMaxTokens: tokensId,
   };
 
-  const fields = useFieldErrors<keyof FormState>({
-    order: FIELD_ORDER,
-    wire: WIRE_FIELDS,
-    idOf: (key) => ids[key],
-    local: form ? translateErrors(validate(form), t) : {},
+  const source = React.useMemo(
+    () => (policy.data ? fromDto(policy.data) : undefined),
+    [policy.data],
+  );
+  const sf = useSettingsForm<FormState, keyof FormState>({
+    source,
+    fieldErrors: (draft) => ({
+      order: FIELD_ORDER,
+      wire: WIRE_FIELDS,
+      idOf: (key) => ids[key],
+      local: draft ? translateErrors(validate(draft), t) : {},
+    }),
   });
+  const { draft: form, fields, set } = sf;
 
   const save = useMutation({
     mutationFn: (f: FormState) =>
@@ -113,8 +116,7 @@ function CompatibilityScreen() {
       // the cached write alone left every other reader of this key on the
       // value it already had; the refetch is what makes the save stick (#1197)
       void queryClient.invalidateQueries({ queryKey: ["compatibility-policy"] });
-      setForm(fromDto(dto));
-      fields.clear();
+      sf.commit(fromDto(dto));
       toast.push({
         tone: "success",
         title: t("toast.saved"),
@@ -152,16 +154,12 @@ function CompatibilityScreen() {
   }
   if (!form) return null;
 
-  const set = (patch: Partial<FormState>) => {
-    setForm((f) => (f ? { ...f, ...patch } : f));
-    fields.edit(...(Object.keys(patch) as (keyof FormState)[]));
-  };
   // the server owns this list, so the screen warns without knowing which
   // fields need a restart
   const restartRequired = policy.data?.restart_required ?? [];
 
   return (
-    <SettingsBody>
+    <SettingsBody onSubmit={() => fields.submit(() => save.mutate(form))}>
       <SettingsPanel
         title={t("pages.compatibility.version.title")}
         description={
@@ -208,8 +206,12 @@ function CompatibilityScreen() {
         />
       </SettingsPanel>
 
+      {/* read-only: what translation does to callers' parameters per route,
+          beside the settings that shape that translation (#3323) */}
+      <ParamAdjustmentsPanel />
+
       {restartRequired.length > 0 && (
-        <section className="flex items-start gap-3 rounded-[10px] border border-[color:var(--border-subtle)] p-4">
+        <section className="flex items-start gap-3 rounded-lg border border-[color:var(--border-subtle)] p-4">
           <Badge tone="warning">{t("pages.compatibility.restart")}</Badge>
           <p className="text-sm text-muted-foreground">
             <Trans
@@ -221,10 +223,13 @@ function CompatibilityScreen() {
         </section>
       )}
 
-      <SaveBar
-        invalid={fields.invalid.length}
+      <SettingsSaveBar
+        form={sf}
         pending={save.isPending}
-        onSave={() => fields.submit(() => save.mutate(form))}
+        updatedAt={policy.data?.updated_at}
+        // a field that needs a restart is not picked up by the running gateways,
+        // so "applied to N gateways" would not be true of it
+        gateways={restartRequired.length === 0}
       />
     </SettingsBody>
   );
@@ -233,4 +238,8 @@ function CompatibilityScreen() {
 // deployment-scoped settings: superadmin-only in the capability table, so a
 // lesser caller sees the refusal instead of a screen that loads and then 403s
 // (#1183)
-export default superadminOnly(CompatibilityScreen, "errors.resources.compatibilitySettings");
+export default superadminOnly(
+  CompatibilityScreen,
+  "errors.resources.compatibilitySettings",
+  "compatibility_policy:read",
+);

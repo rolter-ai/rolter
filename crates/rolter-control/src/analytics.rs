@@ -35,6 +35,9 @@ pub struct ClickHouseClient {
     /// what the last `system.columns` probe found, shared by every clone so the
     /// whole control plane asks once per window (#2903)
     columns: Arc<ColumnCache>,
+    /// the same for `mcp_tool_call_logs`' optional columns (#3375)
+    #[cfg_attr(not(feature = "postgres"), allow(dead_code))]
+    pub(crate) mcp_columns: Arc<crate::request_log_columns::McpColumnCache>,
 }
 
 /// How long a connection to ClickHouse may take to open. A healthy server on
@@ -116,6 +119,7 @@ impl ClickHouseClient {
             base: url.trim_end_matches('/').to_string(),
             client: build_http(connect, request, pool_idle),
             columns: Arc::new(ColumnCache::new()),
+            mcp_columns: Arc::new(crate::request_log_columns::McpColumnCache::default()),
         }
     }
 
@@ -224,6 +228,30 @@ impl ClickHouseClient {
         Ok(())
     }
 
+    /// Run one already-built statement that returns no rows — an
+    /// `alter table … delete`, whose predicate cannot be a query parameter.
+    /// Every value in it is a validated id or an escaped string; see
+    /// [`crate::log_erasure`]. A mutation is queued, not finished, when this
+    /// returns.
+    // only reachable via the postgres-gated log-erasure router
+    #[cfg_attr(not(feature = "postgres"), allow(dead_code))]
+    pub(crate) async fn execute_ddl(&self, statement: &str) -> anyhow::Result<()> {
+        let response = self
+            .client
+            .post(format!("{}/", self.base))
+            .body(statement.to_string())
+            .timeout(DDL_TIMEOUT)
+            .send()
+            .await
+            .map_err(strip_url)?;
+        if response.status().is_success() {
+            return Ok(());
+        }
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        anyhow::bail!("clickhouse statement failed ({status}): {body}")
+    }
+
     /// Persist one already-sanitized MCP tool-call event. The table and insert
     /// statement are fixed here rather than supplied by a caller, so event
     /// metadata can never alter ClickHouse SQL.
@@ -234,9 +262,12 @@ impl ClickHouseClient {
             .client
             .post(format!(
                 // best_effort so the row's own RFC 3339 `ts` is read into the
-                // DateTime64(3) column instead of being rejected (#1210)
+                // DateTime64(3) column instead of being rejected (#1210).
+                // unknown fields are skipped, as the gateway's writer does, so
+                // a row naming a column a hand-applied migration has not added
+                // yet (`notification`, 047) is still stored (#3466)
                 "{}/?query=INSERT%20INTO%20mcp_tool_call_logs%20FORMAT%20JSONEachRow\
-                 &date_time_input_format=best_effort",
+                 &date_time_input_format=best_effort&input_format_skip_unknown_fields=1",
                 self.base
             ))
             .body(serde_json::to_vec(event)?)
@@ -327,6 +358,25 @@ impl TimeBounds for WindowQuery {
     fn time_bounds(&self) -> (Option<&str>, Option<&str>) {
         (self.since.as_deref(), self.until.as_deref())
     }
+
+    fn bucket(&self) -> Option<&str> {
+        self.bucket.as_deref()
+    }
+}
+
+impl WindowQuery {
+    /// Refuse `bucket`, the one this read cuts the window by (the caller's or
+    /// the handler's default), when it would answer more than
+    /// [`crate::time_bounds::MAX_BUCKETS`] points (#3506). [`Query`] already
+    /// checked a bucket the caller sent; this covers the default.
+    pub(crate) fn check_buckets(&self, bucket: &str) -> Result<(), InvalidParam> {
+        crate::time_bounds::check_buckets(
+            self.since.as_deref(),
+            self.until.as_deref(),
+            bucket,
+            chrono::Utc::now(),
+        )
+    }
 }
 
 /// Build the `param_*` bindings for the time window, applying defaults.
@@ -375,6 +425,10 @@ pub struct DashboardQuery {
 impl TimeBounds for DashboardQuery {
     fn time_bounds(&self) -> (Option<&str>, Option<&str>) {
         self.window.time_bounds()
+    }
+
+    fn bucket(&self) -> Option<&str> {
+        self.window.bucket()
     }
 }
 
@@ -470,10 +524,16 @@ pub fn router() -> Router<crate::ControlState> {
         .route("/api/v1/analytics/summary", get(summary))
         .route("/api/v1/analytics/timeseries", get(timeseries))
         .route("/api/v1/analytics/by-model", get(by_model))
+        .route("/api/v1/analytics/by-variant", get(by_variant))
         .route("/api/v1/analytics/by-attribution", get(by_attribution))
         .route("/api/v1/analytics/invocations", get(invocations))
         .route("/api/v1/analytics/guardrails", get(guardrails))
         .route("/api/v1/analytics/plugins", get(plugins))
+        .merge(crate::analytics_export::router())
+        .route(
+            "/api/v1/analytics/param-adjustments",
+            get(param_adjustments),
+        )
 }
 
 /// Map a cost-attribution dimension name to its whitelisted column. Anything
@@ -486,12 +546,26 @@ pub(crate) fn attribution_column(dimension: &str) -> Option<&'static str> {
     }
 }
 
+/// What the dashboard calls an error: a status the caller received that is a
+/// client or server failure (`>= 400`), or `0`, the row of a transport failure
+/// or an exhausted retry that never got a status (#1995, #3294). One spelling
+/// for the LLM Logs `error` filter ([`status_predicate`]) and the error totals
+/// ([`ERRORS`]), so the two screens cannot disagree about how many requests
+/// failed. Parenthesised because it is spliced after `and`.
+pub(crate) const ERROR_STATUS: &str = "(status = 0 or status >= 400)";
+
 /// Map a status filter name to a whitelisted SQL predicate. Anything else is
 /// rejected so it can never be spliced into SQL. `all` applies no filter.
+///
+/// `error` includes status `0`, the row of a transport failure or an exhausted
+/// retry that never got an upstream status: the dashboard paints it as `ERR`,
+/// and an "errors" filter that dropped it hid the failures an operator most
+/// needs to see (#1995). The predicate is spliced after `and`, so the `or` is
+/// parenthesised.
 pub(crate) fn status_predicate(status: &str) -> Option<&'static str> {
     match status {
         "all" => Some("1"),
-        "error" => Some("status >= 400"),
+        "error" => Some(ERROR_STATUS),
         "success" => Some("status > 0 and status < 400"),
         _ => None,
     }
@@ -515,9 +589,23 @@ pub(crate) fn clamp_limit(limit: Option<u32>) -> u32 {
 /// The timestamp half has to be one [`is_time_bound`] accepts. It reaches the
 /// same `OrZero` parse as a window bound, so a cursor edited by hand used to
 /// resume from the epoch and read as the end of the list (#1192).
+#[cfg(any(test, feature = "postgres"))]
 pub(crate) fn parse_keyset_cursor(
     cursor: Option<&str>,
     id_label: &str,
+) -> Result<(String, String), String> {
+    parse_keyset_cursor_within(cursor, id_label, MAX_CURSOR_ID_LEN)
+}
+
+/// The longest id half a keyset cursor may carry.
+const MAX_CURSOR_ID_LEN: usize = 256;
+
+/// [`parse_keyset_cursor`] with its own bound on the id half, for a list whose
+/// id half also holds something besides the id.
+pub(crate) fn parse_keyset_cursor_within(
+    cursor: Option<&str>,
+    id_label: &str,
+    max_id_len: usize,
 ) -> Result<(String, String), String> {
     let Some(cursor) = cursor.filter(|value| !value.is_empty()) else {
         return Ok((String::new(), String::new()));
@@ -526,7 +614,7 @@ pub(crate) fn parse_keyset_cursor(
     let Some((timestamp, id)) = cursor.split_once('|') else {
         return Err(malformed());
     };
-    if timestamp.is_empty() || id.is_empty() || timestamp.len() > 64 || id.len() > 256 {
+    if timestamp.is_empty() || id.is_empty() || timestamp.len() > 64 || id.len() > max_id_len {
         return Err(malformed());
     }
     if !is_time_bound(timestamp) {
@@ -551,6 +639,7 @@ pub(crate) fn parse_keyset_cursor(
 /// of the bound constant even though the `= ''` disjunct already short-circuits
 /// the predicate, so a strict parse failed every first page with "Cannot read
 /// DateTime" (#1177).
+#[cfg(feature = "postgres")]
 pub(crate) fn keyset_predicate(id_column: &str) -> String {
     format!(
         "({{cursor_ts:String}} = '' or ts < parseDateTime64BestEffortOrZero({{cursor_ts:String}}) \
@@ -561,12 +650,71 @@ pub(crate) fn keyset_predicate(id_column: &str) -> String {
 
 /// The cursor that resumes paging after the last row of `rows`, or `None` when
 /// the page came back empty and there is nothing left to resume from.
+#[cfg(any(test, feature = "postgres"))]
 pub(crate) fn next_keyset_cursor(rows: &[Value], id_column: &str) -> Option<String> {
     let row = rows.last()?;
     Some(format!(
         "{}|{}",
         row.get("ts")?.as_str()?,
         row.get(id_column)?.as_str()?
+    ))
+}
+
+/// The `where` fragment that resumes the invocation list after the row its
+/// cursor names. The list orders by `(ts desc, seq desc, request_id desc)`:
+/// `seq` is the gateway's start sequence (#1392), which orders requests that
+/// began inside one millisecond by when they began, and `request_id` still
+/// makes the key total for rows with the same `seq` (every row written before
+/// the column, and those of two gateways that happened to agree). Binds
+/// `{cursor_ts}`, `{cursor_seq}` and `{cursor_id}`; `seq` is the column, or its
+/// default on a table that lacks it.
+pub(crate) fn invocations_keyset_predicate(seq: &str) -> String {
+    format!(
+        "({{cursor_ts:String}} = '' or ts < parseDateTime64BestEffortOrZero({{cursor_ts:String}}) \
+              or (ts = parseDateTime64BestEffortOrZero({{cursor_ts:String}}) \
+                  and ({seq} < {{cursor_seq:UInt64}} \
+                       or ({seq} = {{cursor_seq:UInt64}} and request_id < {{cursor_id:String}}))))"
+    )
+}
+
+/// `<seq>|` at its longest: twenty digits and the bar.
+const MAX_CURSOR_SEQ_LEN: usize = 21;
+
+/// The `seq` a cursor from before the sequence existed resumes from: past every
+/// row of its millisecond, so such a cursor can repeat rows of that one
+/// millisecond but never skip one.
+const LEGACY_CURSOR_SEQ: &str = "18446744073709551615";
+
+/// A cursor's id half is `<seq>|<request_id>`. One without the number is a
+/// `timestamp|request_id` cursor handed out before the sequence, still valid.
+pub(crate) fn split_invocations_cursor(id: &str) -> (String, String) {
+    match id.split_once('|') {
+        Some((seq, request_id))
+            if !seq.is_empty()
+                && seq.len() <= 20
+                && seq.bytes().all(|b| b.is_ascii_digit())
+                && seq.parse::<u64>().is_ok() =>
+        {
+            (seq.to_string(), request_id.to_string())
+        }
+        _ => (LEGACY_CURSOR_SEQ.to_string(), id.to_string()),
+    }
+}
+
+/// The cursor that resumes the invocation list after the last of `rows`:
+/// `<ts>|<seq>|<request_id>`.
+pub(crate) fn next_invocations_cursor(rows: &[Value]) -> Option<String> {
+    let row = rows.last()?;
+    // ClickHouse quotes a 64-bit integer in JSON output
+    let seq = match row.get("seq")? {
+        Value::String(text) => text.clone(),
+        other => other.to_string(),
+    };
+    Some(format!(
+        "{}|{}|{}",
+        row.get("ts")?.as_str()?,
+        seq,
+        row.get("request_id")?.as_str()?
     ))
 }
 
@@ -637,7 +785,7 @@ pub(crate) fn query_failed(what: &'static str, err: &anyhow::Error) -> Response 
 
 /// Whether the request never got an answer from ClickHouse: a refused or
 /// timed-out connection, as opposed to a status line carrying its error.
-fn is_transport(err: &anyhow::Error) -> bool {
+pub(crate) fn is_transport(err: &anyhow::Error) -> bool {
     err.chain()
         .any(|cause| cause.downcast_ref::<reqwest::Error>().is_some())
 }
@@ -652,7 +800,8 @@ fn is_timeout(err: &anyhow::Error) -> bool {
     })
 }
 
-/// Totals over the window: request count, tokens, cost, error count, avg latency.
+/// Totals over the window: request count, tokens, cost, error count, response-cache
+/// hits, and the mean and 95th-percentile latency.
 /// Totals for the window, plus how much of the window is **unpriced**.
 ///
 /// `cost_usd` alone cannot say whether it is a complete figure: traffic against
@@ -669,35 +818,144 @@ async fn summary(
         Ok(ch) => ch,
         Err(resp) => return resp,
     };
-    let sql = format!(
-        "select {REQUESTS} as requests, \
+    let columns = match ch.request_log_columns().await {
+        Ok(columns) => columns,
+        Err(error) => return query_failed("analytics query failed", &error),
+    };
+    let sql = |cache_measured: &str| {
+        format!(
+            "select {REQUESTS} as requests, \
                 {TOKENS} as tokens, \
                 {PROMPT_TOKENS} as prompt_tokens, \
                 {COMPLETION_TOKENS} as completion_tokens, \
+                {CACHE_READ_TOKENS} as cache_read_tokens, \
+                {cache_measured}\
                 {COST} as cost_usd, \
                 {UNPRICED} as unpriced_requests, \
                 uniqIf(model, unpriced = 1) as unpriced_models, \
+                {WITHHELD} as withheld_requests, \
+                {WITHHELD_COST} as withheld_cost, \
+                {USAGE_UNKNOWN} as usage_unknown_requests, \
+                {CACHE_HITS} as cache_hit_requests, \
                 {ERRORS} as errors, \
-                round(avg(latency_ms), 1) as avg_latency_ms \
+                {AVG_LATENCY} as avg_latency_ms, \
+                {P95_LATENCY} as p95_latency_ms \
          from request_logs where {WHERE_WINDOW} and {ROW_VISIBLE} and {ROW_FILTERS} \
          format JSON"
-    );
-    run(ch.query(&sql, &with_access(q.params(), &access)).await)
+        )
+    };
+    let params = with_access(q.params(), &access);
+    let cache_measured = cache_measured_terms(&columns);
+    let mut result = ch.query(&sql(&cache_measured), &params).await;
+    if result.is_err() {
+        // the table may have changed under the probe's answer
+        ch.forget_request_log_columns();
+        // and a probe that could not read `system.columns` assumes every
+        // column is there: the home summary then answers without the
+        // prompt-cache measurement, as an older control plane does, rather
+        // than failing over a column the table lacks (#3410)
+        if !cache_measured.is_empty() {
+            result = ch.query(&sql(""), &params).await;
+        }
+    }
+    run(result)
 }
+
+/// The summary's prompt-cache measurement (#3410): the prompt tokens of the
+/// requests whose upstream stated its cache reads, the denominator of the read
+/// share, and how many requests with a prompt it could not measure. Empty when
+/// `request_logs` lacks `cache_usage_reported`
+/// (`clickhouse/045_cache_usage_reported.sql`): every row would read as
+/// unmeasured, so the two fields are left out and the dashboard keeps the share
+/// over every prompt token, as an older control plane does.
+fn cache_measured_terms(columns: &Columns) -> String {
+    if !columns.has("cache_usage_reported") {
+        return String::new();
+    }
+    format!(
+        "{CACHE_REPORTED_PROMPT_TOKENS} as cache_reported_prompt_tokens, \
+         {CACHE_UNMEASURED} as cache_unmeasured_requests, "
+    )
+}
+
+/// The 95th latency percentile, weighted by `sample_weight` (#3355): each kept row
+/// stands for that many real requests, so a log whose sample rate changed
+/// inside the window, or a route sampled at another rate than the rest, does not
+/// over-represent its lightly sampled traffic.
+///
+/// `quantileExactWeighted` and not `quantileWeighted` or
+/// `quantileTimingWeighted`: ClickHouse's weighted quantiles take an unsigned
+/// integer weight, and `sample_weight` is a `Float64` (`1 / sample_rate`), so it
+/// is scaled to thousandths and rounded, a constant factor that moves no
+/// quantile and keeps three digits of a weight like `3.333`. The timing variant
+/// is out because it clamps every value over 30 000 ms, and a slow completion
+/// legitimately runs longer. The exact variant keeps one counter per distinct
+/// latency, which a column of millisecond integers bounds. The result is
+/// rounded like the other latency figures, and is `0` for no rows.
+pub(crate) const P95_LATENCY: &str =
+    "round(quantileExactWeighted(0.95)(latency_ms, toUInt64(round(sample_weight * 1000))), 1)";
+/// The mean latency, weighted by `sample_weight` like the percentiles (#3420):
+/// `sum(latency * weight) / sum(weight)`, so a kept row counts as the requests
+/// it stands for and unequal weights (a sample rate that changed inside the
+/// window, a route sampled apart from the rest) do not skew it. With every
+/// weight equal it is the plain mean. `0` for no rows, where the quotient has
+/// no denominator, the way the percentiles read.
+pub(crate) const AVG_LATENCY: &str = "if(sum(sample_weight) > 0, \
+     round(sum(latency_ms * sample_weight) / sum(sample_weight), 1), 0)";
+/// The median counterpart of [`P95_LATENCY`].
+pub(crate) const P50_LATENCY: &str =
+    "round(quantileExactWeighted(0.5)(latency_ms, toUInt64(round(sample_weight * 1000))), 1)";
 
 // Request-log sampling keeps 1 row in `1 / sample_rate`, and each stored row
 // carries `sample_weight` (clickhouse/014) = how many real requests it stands
 // for. Counts and sums are scaled by it so a sampled log does not under-report
-// traffic or spend (#2239); averages and percentiles are left alone, since a
-// uniform sample already estimates them. Rows written unsampled, or before the
-// column existed, weigh 1.
+// traffic or spend (#2239). The mean and the percentiles are weighted too
+// (#3420, #3355), see `AVG_LATENCY` and `P95_LATENCY`. Rows written unsampled, or before the column existed,
+// weigh 1.
 pub(crate) const REQUESTS: &str = "round(sum(sample_weight))";
 pub(crate) const TOKENS: &str = "round(sum(total_tokens * sample_weight))";
 pub(crate) const PROMPT_TOKENS: &str = "round(sum(prompt_tokens * sample_weight))";
 pub(crate) const COMPLETION_TOKENS: &str = "round(sum(completion_tokens * sample_weight))";
+/// Prompt tokens the provider served from its own prompt cache (#3356), the
+/// numerator of a read share over `prompt_tokens`. This is the provider's
+/// cache, not rolter's response cache (`cache_hit`). The column is qualified
+/// because the summary also selects this sum as `cache_read_tokens`, and
+/// ClickHouse resolves a bare name to the select alias before the column.
+pub(crate) const CACHE_READ_TOKENS: &str =
+    "round(sum(request_logs.cache_read_tokens * sample_weight))";
+/// The prompt tokens of the requests whose upstream stated its prompt-cache
+/// reads, zero included (#3410): the read share's denominator, so a provider
+/// that does not report them does not dilute it. Qualified for the same reason
+/// as [`CACHE_READ_TOKENS`].
+pub(crate) const CACHE_REPORTED_PROMPT_TOKENS: &str =
+    "round(sumIf(request_logs.prompt_tokens * sample_weight, cache_usage_reported = 1))";
+/// Requests with a prompt whose upstream did not state its prompt-cache reads,
+/// so the read share leaves them out (#3410).
+pub(crate) const CACHE_UNMEASURED: &str =
+    "round(sumIf(sample_weight, cache_usage_reported = 0 and request_logs.prompt_tokens > 0))";
 pub(crate) const COST: &str = "round(sum(cost_usd * sample_weight), 6)";
 pub(crate) const UNPRICED: &str = "round(sumIf(sample_weight, unpriced = 1))";
-pub(crate) const ERRORS: &str = "round(sumIf(sample_weight, status >= 400))";
+/// Requests whose provider answered, and billed, but whose response a post-call
+/// policy refused to deliver (#1478). Their cost is already inside `cost_usd`;
+/// the figures below say how much of it bought an answer nobody saw (#1774).
+pub(crate) const WITHHELD: &str = "round(sumIf(sample_weight, withheld = 1))";
+/// `cost_usd` is qualified because the reads that use this also select `{COST}
+/// as cost_usd`, and ClickHouse resolves a bare name to a select alias before a
+/// column: unqualified, it would nest that sum inside this one and the query
+/// would fail.
+pub(crate) const WITHHELD_COST: &str =
+    "round(sumIf(request_logs.cost_usd * sample_weight, withheld = 1), 6)";
+/// Requests the upstream answered successfully but reported no usage for, so
+/// their zero tokens and cost are unknown rather than free (#1478).
+pub(crate) const USAGE_UNKNOWN: &str = "round(sumIf(sample_weight, usage_unknown = 1))";
+/// Requests the gateway answered from a cache (#1978): the numerator of the
+/// dashboard's cache-hit rate, over `requests`. `cache_hit` is not a select
+/// alias in any read that uses this, so it needs no table qualifier.
+pub(crate) const CACHE_HITS: &str = "round(sumIf(sample_weight, cache_hit = 1))";
+/// Requests that ended in an error, by the same rule as the LLM Logs `error`
+/// filter ([`ERROR_STATUS`]): status `0` counts, so a request that never got an
+/// answer is in the error totals and rates (#3294).
+pub(crate) const ERRORS: &str = "round(sumIf(sample_weight, (status = 0 or status >= 400)))";
 
 /// Per-bucket time series of requests, tokens and cost.
 async fn timeseries(
@@ -717,6 +975,9 @@ async fn timeseries(
         )
             .into_response();
     };
+    if let Err(refused) = q.window.check_buckets(bucket) {
+        return refused.into_response();
+    }
     let sql = format!(
         "select {bucket_expr} as bucket, \
                 {REQUESTS} as requests, \
@@ -729,6 +990,11 @@ async fn timeseries(
 }
 
 /// Per-model aggregates: requests, tokens, cost, error rate, latency percentiles.
+///
+/// A row is one organization's model, `(org_id, model)` (#3486): since #1857
+/// two organizations may each have a route named `gpt-4o`, and a caller who
+/// reads both (a superadmin, a member of two) gets them as two rows rather
+/// than one whose figures are summed across tenants.
 async fn by_model(
     access: AnalyticsAccess,
     State(state): State<crate::ControlState>,
@@ -738,19 +1004,239 @@ async fn by_model(
         Ok(ch) => ch,
         Err(resp) => return resp,
     };
-    let sql = format!(
-        "select model, \
+    run(ch
+        .query(&by_model_sql(), &with_access(q.params(), &access))
+        .await)
+}
+
+/// The select behind [`by_model`].
+pub(crate) fn by_model_sql() -> String {
+    format!(
+        "select org_id, model, \
                 {REQUESTS} as requests, \
                 {TOKENS} as tokens, \
                 {COST} as cost_usd, \
                 {UNPRICED} as unpriced_requests, \
+                {WITHHELD} as withheld_requests, \
+                {WITHHELD_COST} as withheld_cost, \
+                {USAGE_UNKNOWN} as usage_unknown_requests, \
                 {ERRORS} as errors, \
-                round(quantile(0.5)(latency_ms), 1) as p50_latency_ms, \
-                round(quantile(0.95)(latency_ms), 1) as p95_latency_ms \
+                {P50_LATENCY} as p50_latency_ms, \
+                {P95_LATENCY} as p95_latency_ms \
          from request_logs where {WHERE_WINDOW} and {ROW_VISIBLE} and {ROW_FILTERS} \
-         group by model order by cost_usd desc format JSON"
+         group by org_id, model order by cost_usd desc, org_id, model format JSON"
+    )
+}
+
+/// Per-variant aggregates (#3342): what each weighted variant of a route
+/// served, so an operator running an A/B split or a canary can compare the
+/// observed share, errors, latency and cost with the configured split.
+///
+/// A variant name means something only inside its route, so rows are keyed by
+/// `(org_id, model, variant)` and a caller reading one route passes `model`.
+/// The organization is part of the key for [`by_model`]'s reason (#3548):
+/// since #1857 two organizations may each have a route of one name, and a
+/// caller who reads both gets each organization's variants as their own rows. Rows the
+/// gateway served without a variant (the classic single pool, or traffic from
+/// before the route had variants) come back under the empty string, so a
+/// route's shares add up to its whole traffic. Everything else is
+/// [`by_model`]'s: the same window, row filters and `AnalyticsAccess` scoping.
+async fn by_variant(
+    access: AnalyticsAccess,
+    State(state): State<crate::ControlState>,
+    Query(q): Query<DashboardQuery>,
+) -> Response {
+    let ch = match client_or_503(&state) {
+        Ok(ch) => ch,
+        Err(resp) => return resp,
+    };
+    // `fallback_reason` (`023`) is applied by hand, so whether the table has it
+    // decides what the first-attempt count reads
+    let columns = match ch.request_log_columns().await {
+        Ok(columns) => columns,
+        Err(error) => return query_failed("analytics query failed", &error),
+    };
+    let sql = by_variant_sql(&columns);
+    match ch.query(&sql, &with_access(q.params(), &access)).await {
+        Ok(data) => Json(json!({"data": data})).into_response(),
+        Err(error) => {
+            // the table may have changed under the cached answer: look again next time
+            ch.forget_request_log_columns();
+            query_failed("analytics query failed", &error)
+        }
+    }
+}
+
+/// The requests a variant served on the first attempt (#3409): those the log
+/// records with no `fallback_reason`, which is empty when the first dial
+/// answered. Counted beside `requests`, which is every request the variant
+/// answered, so the share a variant took in by-variant can be told apart from
+/// the share the router gave it: a variant others fail over to reads higher
+/// than its weight in `requests` and at its weight here. Weighted by
+/// `sample_weight` like every count. The column is qualified with the table.
+pub(crate) const FIRST_ATTEMPT_REQUESTS: &str =
+    "round(sumIf(sample_weight, request_logs.fallback_reason = ''))";
+
+/// The variant a row counts for in the assigned count (#3505): the one the
+/// gateway first dialled (`first_variant`, `clickhouse/048`), or, for a row
+/// that records none, the one that answered it. Which of those rows count at
+/// all is [`assigned_rows`]'s rule.
+const ASSIGNED_VARIANT: &str =
+    "if(request_logs.first_variant != '', request_logs.first_variant, request_logs.variant)";
+
+/// The rows the assigned count reads, for a table that has (or lacks) the
+/// `fallback_reason` column.
+///
+/// A row that names its first-dialled variant counts for that variant. A row
+/// served without a variant (the classic pool) has nothing to be reassigned
+/// from and counts under the empty string. A variant row without
+/// `first_variant` was written before `048` (or by an older gateway): it
+/// counts for the variant that answered it only when it records no
+/// `fallback_reason`, since a request that failed over could have been
+/// assigned to any variant, and is otherwise left out rather than guessed. On
+/// a table without `fallback_reason` no such row can be placed.
+fn assigned_rows(columns: &Columns) -> &'static str {
+    if columns.has("fallback_reason") {
+        "(request_logs.first_variant != '' or request_logs.variant = '' \
+          or request_logs.fallback_reason = '')"
+    } else {
+        "(request_logs.first_variant != '' or request_logs.variant = '')"
+    }
+}
+
+/// The variant a row counts for in the sampled count (#3547): the one the
+/// weighted split sampled as its primary (`sampled_variant`, `clickhouse/050`).
+/// A row served without a variant (the classic pool) counts under the empty
+/// string; a variant row that records no sampled variant was written before
+/// `050` (or by an older gateway), and the sample it was given is not known,
+/// so it is left out rather than guessed.
+const SAMPLED_ROWS: &str = "(request_logs.sampled_variant != '' or request_logs.variant = '')";
+
+/// The variant a row counts for in the sampled count (#3547). Parenthesised
+/// so the literal is not a bare dotted name, which the dashboard's audit
+/// vocabulary scan (`ui/scripts/audit-vocabulary-source.ts`) reads as an
+/// audit action.
+const SAMPLED_VARIANT: &str = "(request_logs.sampled_variant)";
+
+/// The null a count reads as on a table that cannot make it.
+const UNKNOWN_COUNT: &str = "CAST(NULL AS Nullable(Float64))";
+
+/// The by-variant rollup's select, for a table that has (or lacks) the
+/// `fallback_reason`, `first_variant` and `sampled_variant` columns.
+///
+/// A table without `fallback_reason` cannot say which requests failed over,
+/// and reading every row as a first attempt would claim they all were, so
+/// `first_attempt_requests` is `null` there and the dashboard states that the
+/// split is unknown. A row logged before the column was applied reads as a
+/// first attempt on a table that has it, the same default the invocation list
+/// gives such a row.
+///
+/// `assigned_requests` (#3505) counts the requests each variant was dialled to
+/// first, grouped by that variant rather than the one that answered, so a
+/// variant that only ever failed over still has a row (with no answered
+/// requests) and its assigned share. `sampled_requests` (#3547) counts the
+/// requests the weighted split sampled each variant for, before the gateway
+/// skipped a parked, unhealthy or open-breaker one, so a variant the gateway
+/// routes around keeps its sampled share while its assigned share falls. Each
+/// is a half over the same window and filters, grouped by its own variant,
+/// beside the answered half grouped by the answering one; the halves are
+/// summed per `(org_id, model, variant)`. Each half holds a key at most once,
+/// so a sum (and a `max` for the percentiles) adds a figure to zero and is
+/// exact. A count is `null` on a table without its column, and its half is
+/// left out.
+pub(crate) fn by_variant_sql(columns: &Columns) -> String {
+    let has_first_attempt = columns.has("fallback_reason");
+    let has_assigned = columns.has("first_variant");
+    let has_sampled = columns.has("sampled_variant");
+    let first_attempt = if has_first_attempt {
+        FIRST_ATTEMPT_REQUESTS
+    } else {
+        UNKNOWN_COUNT
+    };
+    // without its column a count is not claimed; with it, every half but its
+    // own contributes nothing to it
+    let zero_unless = |known: bool| if known { "toFloat64(0)" } else { UNKNOWN_COUNT };
+    let (assigned_zero, sampled_zero) = (zero_unless(has_assigned), zero_unless(has_sampled));
+    // `org_id`, `model` and `variant` are selected under their own names, so
+    // all three are qualified with the table: ClickHouse resolves a bare name
+    // to the alias before the column. the sums alias other names, which carry
+    // their own qualifiers where they need them
+    let answered = format!(
+        "select request_logs.org_id as org_id, request_logs.model as model, \
+                request_logs.variant as variant, \
+                {REQUESTS} as requests, \
+                {first_attempt} as first_attempt_requests, \
+                {assigned_zero} as assigned_requests, \
+                {sampled_zero} as sampled_requests, \
+                {TOKENS} as tokens, \
+                {COST} as cost_usd, \
+                {UNPRICED} as unpriced_requests, \
+                {ERRORS} as errors, \
+                {P50_LATENCY} as p50_latency_ms, \
+                {P95_LATENCY} as p95_latency_ms \
+         from request_logs where {WHERE_WINDOW} and {ROW_VISIBLE} and {ROW_FILTERS} \
+         group by request_logs.org_id, request_logs.model, request_logs.variant"
     );
-    run(ch.query(&sql, &with_access(q.params(), &access)).await)
+    // a union matches its halves by position and takes the first one's names,
+    // so the other halves' columns carry names no column of `request_logs`
+    // has (an alias such as `cost_usd` would shadow the column). typed as the
+    // answered half's figures, or as their common supertype
+    let first_attempt_zero = zero_unless(has_first_attempt);
+    let half = |variant: &str, rows: &str, assigned: &str, sampled: &str| {
+        format!(
+            " union all \
+             select request_logs.org_id as org_id, request_logs.model as model, \
+                    {variant} as counted_variant, \
+                    toFloat64(0) as zero_requests, {first_attempt_zero} as zero_first_attempts, \
+                    {assigned} as counted_assigned, {sampled} as counted_sampled, \
+                    toFloat64(0) as zero_tokens, \
+                    toFloat64(0) as zero_cost, toFloat64(0) as zero_unpriced, \
+                    toFloat64(0) as zero_errors, toFloat64(0) as zero_p50, \
+                    toFloat64(0) as zero_p95 \
+             from request_logs \
+             where {WHERE_WINDOW} and {ROW_VISIBLE} and {ROW_FILTERS} and {rows} \
+             group by request_logs.org_id, request_logs.model, {variant}"
+        )
+    };
+    let mut halves = String::new();
+    if has_assigned {
+        halves.push_str(&half(
+            ASSIGNED_VARIANT,
+            assigned_rows(columns),
+            REQUESTS,
+            sampled_zero,
+        ));
+    }
+    if has_sampled {
+        halves.push_str(&half(
+            SAMPLED_VARIANT,
+            SAMPLED_ROWS,
+            assigned_zero,
+            REQUESTS,
+        ));
+    }
+    if halves.is_empty() {
+        return format!("{answered} order by requests desc, org_id, model, variant format JSON");
+    }
+    // the outer sums read the union through its alias, since a bare
+    // `requests` inside `sum(...) as requests` would name the sum itself
+    format!(
+        "select by_role.org_id as org_id, by_role.model as model, \
+                by_role.variant as variant, \
+                sum(by_role.requests) as requests, \
+                sum(by_role.first_attempt_requests) as first_attempt_requests, \
+                sum(by_role.assigned_requests) as assigned_requests, \
+                sum(by_role.sampled_requests) as sampled_requests, \
+                sum(by_role.tokens) as tokens, \
+                sum(by_role.cost_usd) as cost_usd, \
+                sum(by_role.unpriced_requests) as unpriced_requests, \
+                sum(by_role.errors) as errors, \
+                max(by_role.p50_latency_ms) as p50_latency_ms, \
+                max(by_role.p95_latency_ms) as p95_latency_ms \
+         from ({answered}{halves}) as by_role \
+         group by by_role.org_id, by_role.model, by_role.variant \
+         order by requests desc, org_id, model, variant format JSON"
+    )
 }
 
 /// Query params for the cost-attribution rollup: the shared time window plus
@@ -833,7 +1319,7 @@ async fn guardrails(
     state: State<crate::ControlState>,
     q: Query<WindowQuery>,
 ) -> Response {
-    events_rollup(access, state, q, "guardrail_events", guardrails_sql()).await
+    events_rollup(access, state, q, "guardrail_events", |_| guardrails_sql()).await
 }
 
 /// What each plugin did to requests in the window (#2243): one row per
@@ -858,17 +1344,69 @@ async fn plugins(
     state: State<crate::ControlState>,
     q: Query<WindowQuery>,
 ) -> Response {
-    events_rollup(access, state, q, "plugin_events", plugins_sql()).await
+    events_rollup(access, state, q, "plugin_events", |_| plugins_sql()).await
+}
+
+/// Which request parameters dialect translation did not forward as sent, per
+/// route and provider, in the window (#3323): one row per `route` (the public
+/// model), `provider`, `disposition` (`dropped`, `clamped` or `translated`)
+/// and `param`, with the `requests` that had it and the `route_requests` the
+/// route sent that provider in all, so `share` is the part of the traffic it
+/// touched. This is what lets an operator see "this route silently drops
+/// `top_k` on 40% of its traffic" instead of each caller finding out alone.
+/// Counts are scaled by the sampling weight like every other count here. A
+/// table without `clickhouse/022_param_adjustments.sql` answers
+/// `recorded: false` with no rows.
+async fn param_adjustments(
+    access: AnalyticsAccess,
+    state: State<crate::ControlState>,
+    q: Query<WindowQuery>,
+) -> Response {
+    events_rollup(access, state, q, "param_adjustments", param_adjustments_sql).await
+}
+
+/// The rollup behind [`param_adjustments`]. One scan: each `(route, provider)`
+/// group sums its weight and, with `sumMap`, the weight of every
+/// `<disposition>:<param>` entry its rows carry, which the outer query unfolds
+/// into a row per entry. The gateway records a parameter once per request, so
+/// an entry's weight is the requests it touched. The disposition never holds a
+/// `:`, so the first one splits the entry.
+///
+/// A provider is `(provider_org_id, provider)`: two orgs may each have an
+/// `openai` (#1857), and a caller who sees both gets a row for each (#3441).
+/// A table without `clickhouse/037_request_log_provider_org.sql` reads every
+/// row's org as empty, which is what a row written before it holds.
+fn param_adjustments_sql(columns: &Columns) -> String {
+    let provider_org_id = columns.expr("provider_org_id");
+    format!(
+        "select route, provider_org_id, provider, \
+            substring(event, 1, position(event, ':') - 1) as disposition, \
+            substring(event, position(event, ':') + 1) as param, \
+            round(weight) as requests, \
+            round(total) as route_requests, \
+            round(weight / total, 4) as share \
+         from (\
+            select model as route, {provider_org_id} as provider_org_id, provider, \
+                sum(sample_weight) as total, \
+                sumMap(param_adjustments, arrayMap(entry -> sample_weight, param_adjustments)) as adjusted \
+            from request_logs where {WHERE_WINDOW} and {ROW_VISIBLE} \
+            group by route, provider_org_id, provider) \
+         array join adjusted.1 as event, adjusted.2 as weight \
+         where position(event, ':') > 0 \
+         order by requests desc, route, provider, provider_org_id, disposition, param format JSON"
+    )
 }
 
 /// Run an event-array rollup over `column`, answering `recorded: false` while
-/// the table lacks the column.
+/// the table lacks the column. `sql` builds the query from the columns the
+/// table has, so it can read another optional column through
+/// [`Columns::expr`].
 async fn events_rollup(
     access: AnalyticsAccess,
     State(state): State<crate::ControlState>,
     Query(q): Query<WindowQuery>,
     column: &str,
-    sql: String,
+    sql: impl FnOnce(&Columns) -> String,
 ) -> Response {
     let ch = match client_or_503(&state) {
         Ok(ch) => ch,
@@ -881,6 +1419,7 @@ async fn events_rollup(
     if !columns.has(column) {
         return Json(json!({"data": [], "recorded": false})).into_response();
     }
+    let sql = sql(&columns);
     match ch
         .query(&sql, &with_access(window_params(&q), &access))
         .await
@@ -962,6 +1501,14 @@ pub struct InvocationsQuery {
     /// `true` narrows the log to requests the gateway recorded as unpriced;
     /// `false` or omitted applies no filter
     pub(crate) unpriced: Option<bool>,
+    /// `true` narrows the log to requests whose response a post-call policy
+    /// withheld after the provider billed them (#3302); `false` or omitted
+    /// applies no filter
+    pub(crate) withheld: Option<bool>,
+    /// `true` narrows the log to requests the upstream answered without
+    /// reporting usage, so their zero tokens and cost are unknown (#3302);
+    /// `false` or omitted applies no filter
+    pub(crate) usage_unknown: Option<bool>,
     /// one guardrail event to filter to, as the `guardrails` rollup names it
     /// (`blocked:<rule>`, `redacted:<rule>`, `annotated:<rule>`,
     /// `provider_blocked`, `provider_transformed`); empty/omitted applies no
@@ -971,6 +1518,11 @@ pub struct InvocationsQuery {
     /// (`blocked:<slug>`, `transformed:<slug>`, `annotated:<slug>` or
     /// `error:<slug>:<kind>`); empty/omitted applies no filter (#2243)
     pub(crate) plugin: Option<String>,
+    /// one request outcome to filter to (#3307): a name from
+    /// `rolter_core::request_outcome::RequestOutcome`, or `unknown` for rows
+    /// written before the gateway recorded one; empty/omitted applies no
+    /// filter
+    pub(crate) outcome: Option<String>,
     /// page size, 1..=200 (defaults to 50)
     pub(crate) limit: Option<u32>,
     /// opaque `timestamp|request_id` cursor returned as the preceding page's
@@ -1031,6 +1583,10 @@ impl TimeBounds for InvocationsQuery {
 /// window as the rows, since a body outside it has no row to join to, and
 /// grouped on the key so a row never repeats.
 ///
+/// `withheld` and `usage_unknown` ride along for the same reason (#1774): a
+/// withheld row's 403 carries the cost the provider billed, and a zero token
+/// count with `usage_unknown` set means "not reported", not "none".
+///
 /// `unpriced` rides along with `cost_usd` because the two are only meaningful
 /// together: a zero cost means "free" when the flag is clear and "unknown" when
 /// it is set. The gateway decides that per request, against the catalogue that
@@ -1040,15 +1596,17 @@ impl TimeBounds for InvocationsQuery {
 /// reason the attribution dimensions do: a page cut first and filtered after
 /// would hold fewer rows than `limit` asked for.
 ///
-/// Four columns are optional: `upstream_status`, `attempts` (`015`),
-/// `lifecycle_operation` (`016`) and `cache_write_1h_tokens` (`017`). An
+/// Several columns are optional: `upstream_status`, `attempts` (`015`),
+/// `lifecycle_operation` (`016`), `cache_write_1h_tokens` (`017`),
+/// `guardrail_events` (`018`), `plugin_events` (`019`) and `fallback_reason`
+/// (`023`). An
 /// existing deployment applies those files by hand, possibly after it has
 /// upgraded the control plane, and a select that names a column the table lacks
 /// fails the whole list. `columns` says which of them the table has; one it
 /// lacks is read as the default ClickHouse would have filled in for an older
 /// row, under its own name, so the row has the same shape either way (#2903).
 ///
-/// Paging is a keyset over `(ts, request_id)`, never an offset. `request_logs`
+/// Paging is a keyset over `(ts, seq, request_id)`, never an offset. `request_logs`
 /// is written continuously by the gateway, so rows land above the window
 /// between one page and the next; counting from the top then shows a row twice
 /// or skips it entirely, which for this screen is the normal case rather than
@@ -1060,25 +1618,50 @@ impl TimeBounds for InvocationsQuery {
 /// is not a total order and ClickHouse may return tied rows in any order it
 /// likes (#1344). With `request_id` in both the sort and the cursor, tied
 /// timestamps have one order and the cursor names exactly one row.
-fn invocations_sql(status_expr: &str, columns: &Columns) -> String {
-    let cursor = keyset_predicate("request_id");
+pub(crate) fn invocations_sql(status_expr: &str, columns: &Columns) -> String {
+    let cursor = invocations_keyset_predicate(&columns.expr("seq"));
+    let seq = columns.select("seq");
+    let seq_order = columns.expr("seq");
     let cache_write_1h_tokens = columns.select("cache_write_1h_tokens");
     let upstream_status = columns.select("upstream_status");
     let attempts = columns.select("attempts");
     let lifecycle_operation = columns.select("lifecycle_operation");
     let guardrail_events = columns.select("guardrail_events");
     let plugin_events = columns.select("plugin_events");
+    let fallback_reason = columns.select("fallback_reason");
+    let param_adjustments = columns.select("param_adjustments");
     // the filter reads the column, which an older table lacks: it then matches
     // nothing, which is true, since no event was ever recorded there
     let guardrail_filter = columns.expr("guardrail_events");
     let plugin_filter = columns.expr("plugin_events");
+    // without the column every row reads `unknown`, which is what the filter
+    // then matches: true, since no outcome was ever recorded there
+    let outcome = columns.select("outcome");
+    let outcome_filter = columns.expr("outcome");
+    // what the request asked for beyond its tokens (#3317)
+    let has_tools = columns.select("has_tools");
+    let has_image_input = columns.select("has_image_input");
+    let has_audio_input = columns.select("has_audio_input");
+    let has_response_schema = columns.select("has_response_schema");
+    let turns = columns.select("turns");
+    // the org that owns the provider (#1857), beside its name
+    let provider_org_id = columns.select("provider_org_id");
+    // whether the row's cache reads were stated at all (#3410)
+    let cache_usage_reported = columns.select("cache_usage_reported");
+    // the variant dialled first, beside the one that answered (#3505)
+    let first_variant = columns.select("first_variant");
+    // and the one the weighted split sampled (#3547)
+    let sampled_variant = columns.select("sampled_variant");
     format!(
         "select ts, request_id, trace_id, org_id, team_id, project_id, virtual_key_id, \
                 business_unit_id, customer_id, \
-                model, provider, target, variant, status, stream, cache_hit, cache_read_tokens, cache_write_tokens, \
+                model, provider, {provider_org_id}, target, variant, {first_variant}, {sampled_variant}, status, stream, cache_hit, cache_read_tokens, cache_write_tokens, \
                 {cache_write_1h_tokens}, \
-                prompt_tokens, completion_tokens, total_tokens, cost_usd, unpriced, latency_ms, ttft_ms, error, \
-                {upstream_status}, {attempts}, {lifecycle_operation}, {guardrail_events}, {plugin_events}, \
+                prompt_tokens, completion_tokens, total_tokens, cost_usd, unpriced, withheld, usage_unknown, latency_ms, ttft_ms, error, \
+                {upstream_status}, {attempts}, {lifecycle_operation}, {guardrail_events}, {plugin_events}, {seq}, \
+                {fallback_reason}, {param_adjustments}, \
+                {outcome}, {has_tools}, {has_image_input}, {has_audio_input}, {has_response_schema}, {turns}, \
+                {cache_usage_reported}, \
                 if({PAYLOAD_VISIBLE}, payload.request_payload, '') as request_payload, \
                 if({PAYLOAD_VISIBLE}, payload.response_payload, '') as response_payload, \
                 toUInt8(not {PAYLOAD_VISIBLE} \
@@ -1096,13 +1679,34 @@ fn invocations_sql(status_expr: &str, columns: &Columns) -> String {
            and ({{request_id:String}} = '' or request_id = {{request_id:String}}) \
            and ({{trace_id:String}} = '' or trace_id = {{trace_id:String}}) \
            and ({{unpriced:UInt8}} = 0 or unpriced = 1) \
+           and ({{withheld:UInt8}} = 0 or request_logs.withheld = 1) \
+           and ({{usage_unknown:UInt8}} = 0 or request_logs.usage_unknown = 1) \
            and ({{guardrail:String}} = '' or has({guardrail_filter}, {{guardrail:String}})) \
            and ({{plugin:String}} = '' or has({plugin_filter}, {{plugin:String}})) \
+           and ({{outcome:String}} = '' or {outcome_filter} = {{outcome:String}}) \
            and {status_expr} \
            and {cursor} \
-         order by ts desc, request_id desc \
+         order by ts desc, {seq_order} desc, request_id desc \
          limit {{limit:UInt32}} format JSON"
     )
+}
+
+/// The values the invocation list's `outcome` filter accepts: every outcome a
+/// gateway writes, then `unknown` for the rows from before it wrote one.
+pub(crate) fn outcome_filter_values() -> Vec<&'static str> {
+    use rolter_core::request_outcome::{RequestOutcome, UNKNOWN_OUTCOME};
+    RequestOutcome::ALL
+        .iter()
+        .map(|outcome| outcome.as_str())
+        .chain([UNKNOWN_OUTCOME])
+        .collect()
+}
+
+/// Whether `outcome` is a value the `outcome` filter accepts; empty is no
+/// filter. Checked before the query so a typo answers 400 rather than an
+/// empty page that reads as "no such requests".
+pub(crate) fn is_outcome_filter(outcome: &str) -> bool {
+    outcome.is_empty() || outcome_filter_values().contains(&outcome)
 }
 
 /// Individual gateway invocations, newest first. Returns every persisted column
@@ -1129,10 +1733,36 @@ async fn invocations(
         )
             .into_response();
     };
-    let (cursor_ts, cursor_id) = match parse_keyset_cursor(q.cursor.as_deref(), "request_id") {
+    let outcome = q.outcome.clone().unwrap_or_default();
+    if !is_outcome_filter(&outcome) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": {"message": format!(
+                "outcome must be one of {}",
+                outcome_filter_values().join("|")
+            )}})),
+        )
+            .into_response();
+    }
+    // the id half is `<seq>|<request_id>`: room for the number, while the
+    // request id keeps the limit it always had
+    let (cursor_ts, cursor_tail) = match parse_keyset_cursor_within(
+        q.cursor.as_deref(),
+        "request_id",
+        MAX_CURSOR_ID_LEN + MAX_CURSOR_SEQ_LEN,
+    ) {
         Ok(cursor) => cursor,
         Err(message) => return InvalidParam::cursor(message).into_response(),
     };
+    let (cursor_seq, cursor_id) = if cursor_tail.is_empty() {
+        ("0".to_string(), String::new())
+    } else {
+        split_invocations_cursor(&cursor_tail)
+    };
+    if cursor_id.len() > MAX_CURSOR_ID_LEN {
+        return InvalidParam::cursor("cursor must be timestamp|request_id".to_string())
+            .into_response();
+    }
     let limit = clamp_limit(q.limit);
     // after the request is known to be well formed, so a refused one costs
     // ClickHouse nothing
@@ -1163,6 +1793,12 @@ async fn invocations(
         "param_unpriced".to_string(),
         u8::from(q.unpriced.unwrap_or(false)).to_string(),
     ));
+    for (name, on) in [("withheld", q.withheld), ("usage_unknown", q.usage_unknown)] {
+        params.push((
+            format!("param_{name}"),
+            u8::from(on.unwrap_or(false)).to_string(),
+        ));
+    }
     params.push((
         "param_guardrail".to_string(),
         q.guardrail.clone().unwrap_or_default(),
@@ -1171,6 +1807,7 @@ async fn invocations(
         "param_plugin".to_string(),
         q.plugin.clone().unwrap_or_default(),
     ));
+    params.push(("param_outcome".to_string(), outcome));
     params.extend(row_filter_params(
         q.model.as_deref(),
         q.key.as_deref(),
@@ -1179,11 +1816,12 @@ async fn invocations(
         q.project.as_deref(),
     ));
     params.push(("param_cursor_ts".to_string(), cursor_ts));
+    params.push(("param_cursor_seq".to_string(), cursor_seq));
     params.push(("param_cursor_id".to_string(), cursor_id));
     params.push(("param_limit".to_string(), limit.to_string()));
     match ch.query(&sql, &with_access(params, &access)).await {
         Ok(data) => {
-            let next_cursor = next_keyset_cursor(&data, "request_id");
+            let next_cursor = next_invocations_cursor(&data);
             Json(json!({"data": data, "next_cursor": next_cursor})).into_response()
         }
         Err(error) => {
@@ -1445,10 +2083,30 @@ mod tests {
         );
     }
 
+    /// The read share's measurement is selected only when the table can say
+    /// which requests reported their cache reads (#3410), and is weighted like
+    /// every other sum.
+    #[test]
+    fn the_summary_measures_the_prompt_cache_only_with_the_reported_column() {
+        let terms = cache_measured_terms(&Columns::default());
+        assert!(terms.contains("as cache_reported_prompt_tokens"), "{terms}");
+        assert!(terms.contains("as cache_unmeasured_requests"), "{terms}");
+        for expr in [CACHE_REPORTED_PROMPT_TOKENS, CACHE_UNMEASURED] {
+            assert!(expr.contains("sample_weight"), "{expr}");
+            assert!(expr.contains("cache_usage_reported"), "{expr}");
+        }
+        // an un-migrated table leaves both fields out rather than reading
+        // every request as unmeasured
+        assert_eq!(
+            cache_measured_terms(&Columns::lacking(&["cache_usage_reported"])),
+            ""
+        );
+    }
+
     #[test]
     fn counts_and_sums_scale_by_the_row_sample_weight() {
         // at a 50 % rate each kept row weighs 2, so no count()/sum() may read
-        // a row once; averages and percentiles stay unweighted
+        // a row once, and the mean and the percentiles are weighted too
         for expr in [
             REQUESTS,
             TOKENS,
@@ -1466,8 +2124,212 @@ mod tests {
             ..src.find("pub struct InvocationsQuery").unwrap()];
         assert!(!handlers.contains("count()"), "an unweighted count()");
         assert!(!handlers.contains("countIf("), "an unweighted countIf()");
-        assert!(handlers.contains("avg(latency_ms)"));
-        assert!(handlers.contains("quantile(0.95)(latency_ms)"));
+        // the mean is weighted too (#3420), not a plain avg()
+        assert!(handlers.contains("{AVG_LATENCY}"));
+        assert!(!handlers.contains("avg(latency_ms)"), "an unweighted mean");
+        assert!(
+            AVG_LATENCY.contains("sum(latency_ms * sample_weight) / sum(sample_weight)"),
+            "{AVG_LATENCY}"
+        );
+        // and the divisor is guarded, so an empty window is 0 and not nan
+        assert!(
+            AVG_LATENCY.contains("sum(sample_weight) > 0"),
+            "{AVG_LATENCY}"
+        );
+        // the percentiles are weighted too (#3355), by an integer weight
+        assert!(handlers.contains("{P95_LATENCY}"));
+        assert!(!handlers.contains("quantile(0.95)(latency_ms)"));
+        for expr in [P50_LATENCY, P95_LATENCY] {
+            assert!(
+                expr.contains("quantileExactWeighted(") && expr.contains("toUInt64("),
+                "{expr}"
+            );
+            assert!(expr.contains("sample_weight"), "{expr}");
+            // the timing variant clamps at 30 000 ms, below a slow completion
+            assert!(!expr.contains("Timing"), "{expr}");
+        }
+    }
+
+    #[test]
+    fn by_variant_counts_first_attempts_beside_the_requests_that_answered() {
+        // #3409: `requests` is every request the variant answered; the first
+        // attempt count leaves out those another target failed over to it
+        let sql = by_variant_sql(&Columns::default());
+        assert!(
+            sql.contains("round(sumIf(sample_weight, request_logs.fallback_reason = ''))"),
+            "{sql}"
+        );
+        assert!(sql.contains("as first_attempt_requests"), "{sql}");
+        // the column is qualified, and no count reads a row once
+        assert!(!sql.contains("count()"), "{sql}");
+        // the counts and the grouping are still the by-model ones
+        assert!(
+            sql.contains("group by request_logs.org_id, request_logs.model, request_logs.variant"),
+            "{sql}"
+        );
+        assert!(sql.contains(&format!("{REQUESTS} as requests")), "{sql}");
+    }
+
+    #[test]
+    fn by_variant_counts_the_requests_the_split_assigned_each_variant() {
+        // #3505: grouped by the variant first dialled, beside the answered
+        // counts, from one window and the same filters
+        let sql = by_variant_sql(&Columns::default());
+        assert!(sql.contains("as assigned_requests"), "{sql}");
+        assert!(
+            sql.contains(&format!(
+                "group by request_logs.org_id, request_logs.model, {ASSIGNED_VARIANT}"
+            )),
+            "{sql}"
+        );
+        // a row from before `048` counts only when it never failed over, and
+        // a classic row counts under the empty string
+        assert!(
+            sql.contains(
+                "(request_logs.first_variant != '' or request_logs.variant = '' \
+                 or request_logs.fallback_reason = '')"
+            ),
+            "{sql}"
+        );
+        assert_eq!(
+            sql.matches(&format!(
+                "{WHERE_WINDOW} and {ROW_VISIBLE} and {ROW_FILTERS}"
+            ))
+            .count(),
+            3,
+            "every half reads the same window and filters: {sql}"
+        );
+        // the figures are summed per key, so the answered half is unchanged
+        assert!(sql.contains("sum(by_role.requests) as requests"), "{sql}");
+        assert!(sql.contains("max(by_role.p95_latency_ms)"), "{sql}");
+        assert!(sql.ends_with("order by requests desc, org_id, model, variant format JSON"));
+    }
+
+    #[test]
+    fn by_variant_keeps_two_orgs_same_named_routes_apart() {
+        // #3548: as by-model since #3486, every half is keyed on the org too,
+        // with or without the assigned half
+        for columns in [
+            Columns::default(),
+            Columns::lacking(&["first_variant", "sampled_variant"]),
+        ] {
+            let sql = by_variant_sql(&columns);
+            assert!(sql.starts_with("select "), "{sql}");
+            assert!(sql.contains("as org_id"), "{sql}");
+            assert!(!sql.contains("group by request_logs.model"), "{sql}");
+            for group in sql.split("group by ").skip(1) {
+                assert!(
+                    group.starts_with("request_logs.org_id, ")
+                        || group.starts_with("by_role.org_id, "),
+                    "{group}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn by_variant_does_not_claim_an_assignment_a_table_without_first_variant_cannot_make() {
+        let sql = by_variant_sql(&Columns::lacking(&["first_variant", "sampled_variant"]));
+        assert!(
+            sql.contains("CAST(NULL AS Nullable(Float64)) as assigned_requests"),
+            "{sql}"
+        );
+        assert!(!sql.contains("first_variant"), "{sql}");
+        assert!(!sql.contains("union all"), "{sql}");
+        // with `050` but not `048` the sampled half still reads, and the
+        // assigned count is null in every half
+        let sql = by_variant_sql(&Columns::lacking(&["first_variant"]));
+        assert!(!sql.contains("first_variant"), "{sql}");
+        assert_eq!(sql.matches("union all").count(), 1, "{sql}");
+        assert!(
+            sql.contains("CAST(NULL AS Nullable(Float64)) as counted_assigned"),
+            "{sql}"
+        );
+        // the first-attempt count is still read
+        assert!(sql.contains(FIRST_ATTEMPT_REQUESTS), "{sql}");
+    }
+
+    #[test]
+    fn by_variant_counts_the_requests_the_split_sampled_each_variant() {
+        // #3547: grouped by the variant the split sampled, before skipping;
+        // a classic row counts under the empty string and an old variant row
+        // that records no sample is left out
+        let sql = by_variant_sql(&Columns::default());
+        assert!(
+            sql.contains("sum(by_role.sampled_requests) as sampled_requests"),
+            "{sql}"
+        );
+        assert!(
+            sql.contains(&format!(
+                "group by request_logs.org_id, request_logs.model, {SAMPLED_VARIANT}"
+            )),
+            "{sql}"
+        );
+        assert!(sql.contains(SAMPLED_ROWS), "{sql}");
+        // the answered and assigned halves contribute nothing to it
+        assert!(sql.contains("toFloat64(0) as sampled_requests"), "{sql}");
+        assert!(sql.contains("toFloat64(0) as counted_sampled"), "{sql}");
+    }
+
+    #[test]
+    fn by_variant_does_not_claim_a_sample_a_table_without_sampled_variant_cannot_make() {
+        let sql = by_variant_sql(&Columns::lacking(&["sampled_variant"]));
+        assert!(
+            sql.contains("CAST(NULL AS Nullable(Float64)) as sampled_requests"),
+            "{sql}"
+        );
+        assert!(!sql.contains("sampled_variant"), "{sql}");
+        // the assigned half is still read
+        assert_eq!(sql.matches("union all").count(), 1, "{sql}");
+        assert!(sql.contains(ASSIGNED_VARIANT), "{sql}");
+    }
+
+    #[test]
+    fn by_variant_places_no_old_failed_over_row_without_fallback_reason() {
+        // with `048` but not `023`, a variant row from before `048` cannot be
+        // told apart from a failover, so only rows that name their variant
+        // and classic rows count
+        let sql = by_variant_sql(&Columns::lacking(&["fallback_reason"]));
+        assert!(
+            sql.contains("(request_logs.first_variant != '' or request_logs.variant = '')"),
+            "{sql}"
+        );
+        assert!(!sql.contains("fallback_reason"), "{sql}");
+    }
+
+    #[test]
+    fn by_variant_does_not_claim_a_first_attempt_split_a_table_without_the_column_cannot_make() {
+        // 023 is applied by hand: without it every row would read as a first
+        // attempt, which is a claim, so the count is null and the select does
+        // not name the column
+        let sql = by_variant_sql(&Columns::lacking(&["fallback_reason"]));
+        assert!(
+            sql.contains("CAST(NULL AS Nullable(Float64)) as first_attempt_requests"),
+            "{sql}"
+        );
+        assert!(!sql.contains("fallback_reason"), "{sql}");
+        // and the rest of the select is unchanged
+        assert!(sql.contains(&format!("{REQUESTS} as requests")), "{sql}");
+    }
+
+    #[test]
+    fn the_error_totals_count_the_same_statuses_as_the_error_filter() {
+        // a request that never got a status (0) is an error in the list and in
+        // the totals, or the screens disagree about how many requests failed
+        assert_eq!(
+            ERRORS,
+            format!("round(sumIf(sample_weight, {ERROR_STATUS}))")
+        );
+    }
+
+    #[test]
+    fn by_model_keeps_two_orgs_same_named_routes_apart() {
+        // #3486: grouping by the bare name summed two tenants' routes
+        let sql = by_model_sql();
+        assert!(sql.starts_with("select org_id, model,"), "{sql}");
+        assert!(sql.contains("group by org_id, model "), "{sql}");
+        assert!(!sql.contains("group by model "), "{sql}");
+        assert!(sql.contains(ROW_VISIBLE), "{sql}");
     }
 
     #[test]
@@ -1589,8 +2451,88 @@ mod tests {
                 "from {table} where {{WHERE_WINDOW}} and {{ROW_VISIBLE}}"
             ))
             .count();
-        assert_eq!(rollups, 4, "summary, timeseries, by-model, by-attribution");
+        assert_eq!(
+            rollups, 6,
+            "summary, timeseries, by-model, by-variant, by-attribution, param-adjustments"
+        );
         assert_eq!(filtered, rollups);
+    }
+
+    #[test]
+    fn the_param_adjustment_rollup_is_scoped_and_weighted() {
+        let sql = param_adjustments_sql(&Columns::default());
+        assert!(
+            sql.contains(&format!("where {WHERE_WINDOW} and {ROW_VISIBLE}")),
+            "{sql}"
+        );
+        assert!(sql.contains("sum(sample_weight) as total"), "{sql}");
+        assert!(
+            sql.contains("arrayMap(entry -> sample_weight, param_adjustments)"),
+            "{sql}"
+        );
+        assert!(
+            sql.contains("group by route, provider_org_id, provider"),
+            "{sql}"
+        );
+        assert!(sql.contains("as share"), "{sql}");
+        assert!(!sql.contains("count()"), "an unweighted count: {sql}");
+    }
+
+    /// #3441: two orgs' `openai` are two providers in the rollup, and a table
+    /// without `037` reads every row's org as empty rather than failing.
+    #[test]
+    fn the_param_adjustment_rollup_keys_a_provider_by_its_org() {
+        let sql = param_adjustments_sql(&Columns::default());
+        assert!(
+            sql.contains("provider_org_id as provider_org_id, provider,"),
+            "{sql}"
+        );
+        assert!(sql.starts_with("select route, provider_org_id, provider,"));
+        let old = param_adjustments_sql(&Columns::lacking(&["provider_org_id"]));
+        assert!(old.contains("'' as provider_org_id, provider,"), "{old}");
+        assert!(
+            old.contains("group by route, provider_org_id, provider"),
+            "{old}"
+        );
+    }
+
+    #[test]
+    fn the_invocation_list_reads_and_filters_the_outcome() {
+        let sql = invocations_sql(
+            status_predicate("all").expect("all is whitelisted"),
+            &Columns::default(),
+        );
+        assert!(sql.contains(" outcome, "), "{sql}");
+        assert!(
+            sql.contains("({outcome:String} = '' or outcome = {outcome:String})"),
+            "{sql}"
+        );
+        // a table without 030 reads every row as unknown, selected and filtered
+        let old = invocations_sql(
+            status_predicate("all").expect("all is whitelisted"),
+            &Columns::lacking(&["outcome"]),
+        );
+        assert!(old.contains("'unknown' as outcome"), "{old}");
+        assert!(
+            old.contains("({outcome:String} = '' or 'unknown' = {outcome:String})"),
+            "{old}"
+        );
+    }
+
+    #[test]
+    fn the_outcome_filter_accepts_the_published_names_and_unknown() {
+        assert!(is_outcome_filter(""));
+        for name in [
+            "served",
+            "refused_budget",
+            "refused_rate_limit",
+            "upstream_error",
+            "unknown",
+        ] {
+            assert!(is_outcome_filter(name), "{name}");
+        }
+        assert!(!is_outcome_filter("refused_budget' or 1=1"));
+        assert!(!is_outcome_filter("Served"));
     }
 
     #[test]
@@ -1614,7 +2556,7 @@ mod tests {
                 "from {table} where {{WHERE_WINDOW}} and {{ROW_VISIBLE}} and {{ROW_FILTERS}}"
             ))
             .count();
-        assert_eq!(filtered, 3, "summary, timeseries, by-model");
+        assert_eq!(filtered, 4, "summary, timeseries, by-model, by-variant");
     }
 
     #[test]
@@ -1755,6 +2697,28 @@ mod tests {
     }
 
     #[test]
+    fn withheld_and_unknown_usage_are_weighted_sums_of_the_recorded_flags() {
+        // sampled logs stand each row in for `sample_weight` requests (#2239),
+        // and the flags are the ones the gateway recorded (#1774)
+        assert_eq!(WITHHELD, "round(sumIf(sample_weight, withheld = 1))");
+        assert_eq!(
+            WITHHELD_COST,
+            "round(sumIf(request_logs.cost_usd * sample_weight, withheld = 1), 6)"
+        );
+        assert_eq!(
+            USAGE_UNKNOWN,
+            "round(sumIf(sample_weight, usage_unknown = 1))"
+        );
+    }
+
+    #[test]
+    fn cache_hits_are_a_weighted_sum_of_the_recorded_flag() {
+        // the numerator of the dashboard's cache-hit rate, scaled by the
+        // sampling weight like the `requests` it is divided by (#1978)
+        assert_eq!(CACHE_HITS, "round(sumIf(sample_weight, cache_hit = 1))");
+    }
+
+    #[test]
     fn invocations_sql_selects_the_unpriced_flag_next_to_cost() {
         let sql = invocations_sql(
             status_predicate("all").expect("all is whitelisted"),
@@ -1763,7 +2727,7 @@ mod tests {
         // a zero cost_usd is ambiguous on its own: free, or no price row at all.
         // the flag the gateway recorded per request has to travel with it, or
         // the dashboard re-derives it from the live catalogue and drifts (#1226)
-        assert!(sql.contains("cost_usd, unpriced"));
+        assert!(sql.contains("cost_usd, unpriced, withheld, usage_unknown"));
     }
 
     #[test]
@@ -1804,6 +2768,40 @@ mod tests {
     }
 
     #[test]
+    fn invocations_sql_filters_withheld_and_unknown_usage_on_the_recorded_flags() {
+        let sql = invocations_sql(
+            status_predicate("all").expect("all is whitelisted"),
+            &Columns::default(),
+        );
+        // bound values over the flags the gateway recorded (#3302), qualified
+        // by the table because the select list names the same columns and a
+        // bare name resolves to a select alias before a column. an unset
+        // filter lets every row through, and the row scope still applies
+        assert!(sql.contains("({withheld:UInt8} = 0 or request_logs.withheld = 1)"));
+        assert!(sql.contains("({usage_unknown:UInt8} = 0 or request_logs.usage_unknown = 1)"));
+        assert!(sql.contains(ROW_VISIBLE));
+    }
+
+    #[test]
+    fn the_withheld_and_unknown_usage_filters_read_true_and_nothing_else_narrows() {
+        let read = |query: &str| {
+            let uri: axum::http::Uri = format!("/api/v1/analytics/invocations{query}")
+                .parse()
+                .expect("a valid uri");
+            axum::extract::Query::<InvocationsQuery>::try_from_uri(&uri)
+                .map(|q| (q.0.withheld, q.0.usage_unknown))
+        };
+        assert_eq!(read("").expect("no filter"), (None, None));
+        assert_eq!(
+            read("?withheld=true&usage_unknown=true").expect("both on"),
+            (Some(true), Some(true))
+        );
+        assert_eq!(read("?withheld=false").expect("off"), (Some(false), None));
+        assert!(read("?withheld=maybe").is_err());
+        assert!(read("?usage_unknown=maybe").is_err());
+    }
+
+    #[test]
     fn the_unpriced_filter_reads_true_and_nothing_else_narrows() {
         let read = |query: &str| {
             let uri: axum::http::Uri = format!("/api/v1/analytics/invocations{query}")
@@ -1830,7 +2828,7 @@ mod tests {
             // so ordering on ts alone leaves tied rows in an arbitrary order
             // that limit/offset paging can repeat or skip (#1344)
             assert!(
-                sql.contains("order by ts desc, request_id desc"),
+                sql.contains("order by ts desc, seq desc, request_id desc"),
                 "invocations must order on a total key, got: {sql}"
             );
         }
@@ -1842,14 +2840,82 @@ mod tests {
             status_predicate("error").expect("error is whitelisted"),
             &Columns::default(),
         );
-        assert!(sql.contains("and status >= 400"));
+        assert!(sql.contains("and (status = 0 or status >= 400)"));
         assert!(sql.contains("{model:String}"));
         assert!(sql.contains("{key:String}"));
         assert!(sql.contains("{limit:UInt32}"));
         assert!(sql.contains("{cursor_ts:String}"));
+        assert!(sql.contains("{cursor_seq:UInt64}"));
         assert!(sql.contains("{cursor_id:String}"));
         // the shared window clause is inlined, so it must be empty-safe here too
         assert!(!sql.contains("parseDateTime64BestEffort("));
+    }
+
+    #[test]
+    fn the_start_sequence_orders_requests_inside_one_millisecond() {
+        // a table with the column sorts and resumes on it
+        let sql = invocations_sql("1", &Columns::default());
+        assert!(sql.contains("seq,"), "{sql}");
+        assert!(sql.contains("order by ts desc, seq desc, request_id desc"));
+        assert!(sql.contains("(seq < {cursor_seq:UInt64} or (seq = {cursor_seq:UInt64}"));
+        // one without it reads every row as sequence 0, under its own name, so
+        // the list still works before an operator applies 021
+        let lacking = invocations_sql("1", &Columns::lacking(&["seq"]));
+        assert!(lacking.contains("toUInt64(0) as seq"), "{lacking}");
+        assert!(lacking.contains("order by ts desc, toUInt64(0) desc, request_id desc"));
+    }
+
+    #[test]
+    fn the_sequence_does_not_shrink_the_request_id_a_cursor_may_name() {
+        // a 256 character request id used to page; with `<seq>|` in front of it
+        // the whole tail is longer than 256, and must still parse
+        let id = "r".repeat(MAX_CURSOR_ID_LEN);
+        let cursor = format!("2026-10-01T10:00:00.123Z|18446744073709551615|{id}");
+        let (_, tail) = parse_keyset_cursor_within(
+            Some(&cursor),
+            "request_id",
+            MAX_CURSOR_ID_LEN + MAX_CURSOR_SEQ_LEN,
+        )
+        .expect("the longest sequence and request id parse");
+        assert_eq!(split_invocations_cursor(&tail).1, id);
+        // the plain parse keeps its old limit for the lists that use it
+        assert!(parse_keyset_cursor(Some(&cursor), "request_id").is_err());
+    }
+
+    #[test]
+    fn a_cursor_carries_the_sequence_and_an_older_one_still_resumes() {
+        let rows =
+            vec![json!({"ts": "2026-10-01T10:00:00.123Z", "seq": "42", "request_id": "req-a"})];
+        assert_eq!(
+            next_invocations_cursor(&rows).as_deref(),
+            Some("2026-10-01T10:00:00.123Z|42|req-a")
+        );
+        let numeric = vec![json!({"ts": "2026-10-01T10:00:00.123Z", "seq": 7, "request_id": "r"})];
+        assert_eq!(
+            next_invocations_cursor(&numeric).as_deref(),
+            Some("2026-10-01T10:00:00.123Z|7|r")
+        );
+        assert_eq!(
+            split_invocations_cursor("42|req-a"),
+            ("42".to_string(), "req-a".to_string())
+        );
+        // a request id with a bar in it survives the round trip
+        assert_eq!(
+            split_invocations_cursor("9|a|b"),
+            ("9".to_string(), "a|b".to_string())
+        );
+        // a cursor from before the sequence resumes past its whole millisecond
+        // (repeating rows there at worst), and a request id that merely starts
+        // with digits and a bar is not mistaken for a sequence too large to fit
+        assert_eq!(
+            split_invocations_cursor("req-a"),
+            (LEGACY_CURSOR_SEQ.to_string(), "req-a".to_string())
+        );
+        assert_eq!(
+            split_invocations_cursor("99999999999999999999|x").0,
+            LEGACY_CURSOR_SEQ
+        );
+        assert_eq!(next_invocations_cursor(&[]), None);
     }
 
     #[test]
@@ -1862,10 +2928,10 @@ mod tests {
         // writing to, so a row ingested between two pages repeats or hides one
         // (#1394)
         assert!(!sql.contains("offset"));
-        assert!(sql.contains(&keyset_predicate("request_id")));
+        assert!(sql.contains(&invocations_keyset_predicate("seq")));
         // request_id is what makes the sort key total: without it tied
         // timestamps have no defined order and the cursor names no single row
-        assert!(sql.contains("order by ts desc, request_id desc"));
+        assert!(sql.contains("order by ts desc, seq desc, request_id desc"));
     }
 
     #[test]
@@ -1970,7 +3036,8 @@ mod tests {
     #[test]
     fn status_predicate_whitelists() {
         assert_eq!(status_predicate("all"), Some("1"));
-        assert_eq!(status_predicate("error"), Some("status >= 400"));
+        assert_eq!(status_predicate("error"), Some(ERROR_STATUS));
+        assert_eq!(ERROR_STATUS, "(status = 0 or status >= 400)");
         assert_eq!(
             status_predicate("success"),
             Some("status > 0 and status < 400")
@@ -2303,8 +3370,10 @@ mod optional_column_tests {
         }
         // a select that names a column the table lacks is an error, as it is
         // in clickhouse; it only does so when the name stands bare in the list
+        // a bare select-list entry, or a predicate that reads the column
         let missing = every_optional().into_iter().find(|name| {
-            !stub.columns.lock().contains(name) && sql.contains(&format!(", {name},"))
+            !stub.columns.lock().contains(name)
+                && (sql.contains(&format!(", {name},")) || sql.contains(&format!("{name} = ")))
         });
         if let Some(name) = missing {
             return (
@@ -2323,6 +3392,40 @@ mod optional_column_tests {
         let mut state = crate::tests::state_with_token(None);
         state.clickhouse = Some(ch);
         router().with_state(state)
+    }
+
+    /// #3410: a probe that cannot read `system.columns` assumes every column,
+    /// so on a table without `cache_usage_reported` the summary's first select
+    /// fails; it answers without the prompt-cache measurement instead of 502.
+    #[tokio::test]
+    async fn the_summary_degrades_when_the_probe_misses_a_lacking_column() {
+        let stub = Stub::start(REQUIRED).await;
+        stub.refuse_probe.store(true, Ordering::SeqCst);
+        let app = app_over(ClickHouseClient::new(&stub.url));
+        let response = app
+            .clone()
+            .oneshot(
+                Request::get("/api/v1/analytics/summary")
+                    .body(Body::empty())
+                    .expect("a valid request"),
+            )
+            .await
+            .expect("the router answers");
+        assert_eq!(response.status(), StatusCode::OK);
+        let selects: Vec<String> = stub
+            .statements
+            .lock()
+            .iter()
+            .filter(|sql| sql.contains("from request_logs"))
+            .cloned()
+            .collect();
+        assert_eq!(selects.len(), 2, "{selects:?}");
+        assert!(selects[0].contains("cache_reported_prompt_tokens"));
+        assert!(
+            !selects[1].contains("cache_usage_reported"),
+            "{}",
+            selects[1]
+        );
     }
 
     async fn list(app: &Router, query: &str) -> (StatusCode, Value) {
@@ -2408,6 +3511,80 @@ mod optional_column_tests {
         let (status, body) = rollup(&app).await;
 
         // not a 502: the file is not a condition of upgrading the control plane
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["recorded"], false, "{body}");
+        assert_eq!(body["data"], json!([]), "{body}");
+    }
+
+    /// An outcome the gateway never writes is a 400 on the list and on its
+    /// export alike, before ClickHouse is asked anything (#3307, #3386).
+    #[tokio::test]
+    async fn an_unknown_outcome_is_refused_by_the_list_and_the_export() {
+        let stub = Stub::start(REQUIRED).await;
+        let app = app_over(ClickHouseClient::new(&stub.url));
+        for path in [
+            "/api/v1/analytics/invocations",
+            "/api/v1/analytics/invocations/export",
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::get(format!("{path}?outcome=refused_everything"))
+                        .body(Body::empty())
+                        .expect("a valid request"),
+                )
+                .await
+                .expect("the router answers");
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{path}");
+            let body = to_bytes(response.into_body(), 1 << 20)
+                .await
+                .expect("a readable body");
+            let body: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
+            let message = body["error"]["message"].as_str().unwrap_or_default();
+            assert!(message.contains("refused_budget"), "{path}: {body}");
+        }
+    }
+
+    async fn adjustment_rollup(app: &Router) -> (StatusCode, Value) {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::get("/api/v1/analytics/param-adjustments")
+                    .body(Body::empty())
+                    .expect("a valid request"),
+            )
+            .await
+            .expect("the router answers");
+        let status = response.status();
+        let body = to_bytes(response.into_body(), 1 << 20)
+            .await
+            .expect("a readable body");
+        (status, serde_json::from_slice(&body).unwrap_or(Value::Null))
+    }
+
+    #[tokio::test]
+    async fn the_param_adjustment_rollup_reads_the_column_when_the_table_has_it() {
+        let mut columns = REQUIRED.to_vec();
+        columns.extend(every_optional());
+        let stub = Stub::start(&columns).await;
+        let app = app_over(ClickHouseClient::new(&stub.url));
+
+        let (status, body) = adjustment_rollup(&app).await;
+
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["recorded"], true, "{body}");
+        let sql = stub.list_sql();
+        assert!(sql.contains("sumMap(param_adjustments"), "{sql}");
+        assert!(sql.contains(&format!("and {ROW_VISIBLE}")), "{sql}");
+    }
+
+    #[tokio::test]
+    async fn the_param_adjustment_rollup_says_so_when_the_table_does_not_record_them() {
+        let stub = Stub::start(REQUIRED).await;
+        let app = app_over(ClickHouseClient::new(&stub.url));
+
+        let (status, body) = adjustment_rollup(&app).await;
+
         assert_eq!(status, StatusCode::OK, "{body}");
         assert_eq!(body["recorded"], false, "{body}");
         assert_eq!(body["data"], json!([]), "{body}");

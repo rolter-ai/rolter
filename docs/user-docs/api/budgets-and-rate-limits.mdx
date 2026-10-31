@@ -4,13 +4,14 @@ sidebarTitle: "Budgets & rate limits"
 description: "List, create, edit in place and delete spend budgets and rate limits through the control plane. PATCH changes a cap without a window where the scope has none."
 ---
 
-Budgets and rate limits stored in the database are managed through the control plane. Each one hangs off a **scope**: an org, team, project, virtual key, business unit or customer, named by `scope_type` and `scope_id`. What the caps do once they reach the gateway is covered in [Budgets & Rate Limits](/security/budgets-and-rate-limits); this page is the API.
+Budgets and rate limits stored in the database are managed through the control plane. Each one hangs off a **scope**: an org, team, project, virtual key, business unit, customer or user, named by `scope_type` and `scope_id`. What the caps do once they reach the gateway is covered in [Budgets & Rate Limits](/security/budgets-and-rate-limits); this page is the API.
 
 | Method   | Path                                            | What it does                                 |
 | -------- | ----------------------------------------------- | -------------------------------------------- |
 | `GET`    | `/api/v1/budgets?scope_type=…&scope_id=…`       | list the budgets on one scope                |
 | `GET`    | `/api/v1/budgets/spend?scope_type=…&scope_id=…` | spend so far against each of those budgets   |
 | `GET`    | `/api/v1/orgs/{org_id}/budgets`                 | list the budgets across one organization     |
+| `GET`    | `/api/v1/orgs/{org_id}/budgets/spend`           | spend so far against all of those budgets    |
 | `POST`   | `/api/v1/budgets`                               | create a budget                              |
 | `PATCH`  | `/api/v1/budgets/{id}`                          | change a budget in place                     |
 | `DELETE` | `/api/v1/budgets/{id}`                          | delete a budget                              |
@@ -20,7 +21,7 @@ Budgets and rate limits stored in the database are managed through the control p
 | `PATCH`  | `/api/v1/rate-limits/{id}`                      | change a rate limit in place                 |
 | `DELETE` | `/api/v1/rate-limits/{id}`                      | delete a rate limit                          |
 
-`scope_type` is one of `org`, `team`, `project`, `virtual_key`, `business_unit` or `customer`. Both list routes require both query parameters and answer `400` without them.
+`scope_type` is one of `org`, `team`, `project`, `virtual_key`, `business_unit`, `customer` or `user`. Both list routes require both query parameters and answer `400` without them.
 
 The organization-wide lists answer "which caps exist here?" in one request. They return every budget (or rate limit) set at the organization or at anything inside it: its teams, projects and virtual keys, and its business units and customers. Each row carries its own `scope_type` and `scope_id`. The rows are the ones the per-scope read would have returned: a caller who holds a role only on one project gets that project's caps, its team's and the organization's, and nothing from a sibling project. A caller with no role anywhere in the organization gets `403`; one with a role below it gets the rows they may read, which can be none. The dashboard's Budgets & Limits screen reads these when no single scope is picked.
 
@@ -100,6 +101,8 @@ The row keeps its `id` and `created_at`. Spend counters in Redis are keyed by sc
 
 </Note>
 
+The organization-wide lists name a key's cap: a row whose `scope_type` is `virtual_key` carries `scope_name`, the key's name (its prefix when it has none), and it is `null` on every other scope. Keys have no list of their own across an organization, so without it a key's cap could only be told apart by the start of its id.
+
 ### Spend so far
 
 `GET /api/v1/budgets/spend?scope_type=…&scope_id=…` returns, for each budget on the scope, what the gateway has counted against it in the current window. It reads the same Redis counter the gateway checks on every request, so the figure is the one a `402` is decided on. It needs the same permission as listing the budgets.
@@ -117,9 +120,21 @@ The row keeps its `id` and `created_at`. Spend counters in Redis are keyed by sc
 }
 ```
 
+`GET /api/v1/orgs/{org_id}/budgets/spend` is the same read for every budget in the organization the caller may read (exactly the rows of the organization-wide list), in one request and one Redis round trip, so a screen that lists many caps does not issue one spend read per scope. It answers with the same body and the same `status` and `null` rules.
+
 `resets_at` is the start of the next window in UTC, and `null` for a budget that never resets. An absent counter is a window nothing has been spent in, so it reads `"0.0000"`.
 
 `status` says whether the figures can be trusted. `ok` means the counters were read. `not_configured` means the control plane has no `ROLTER_REDIS_URL`, and `unavailable` means Redis did not answer within two seconds. In both of those `spent_usd` is `null` for every budget, never zero: a budget that cannot be read is unknown, not untouched. The control plane must point at the same Redis as the gateways, or it reads counters nobody writes.
+
+### Caps on a person
+
+`scope_type: "user"` with the person's id caps everything they minted, across every key. A person belongs to no org, so the cap is managed through the place it is narrowed to: send `within_org_id` or `within_project_id` (not both) on create, and the caller needs the same role there as for any other cap at that place. Without either, the cap counts the person's keys everywhere and only a superadmin can create, edit, read or delete it. Both fields are on the returned row, `GET /api/v1/budgets?scope_type=user&scope_id=…` takes them as query parameters to read one narrowing, and the organization-wide lists include the user caps narrowed to that org or to one of its projects. An unknown user id is a `404`, and `within_*` on any other scope is a `400`.
+
+`GET /api/v1/me/budgets` returns the calling account's own user budgets and rate limits with the spend so far, using the same `status` and `spent_usd` rules as `/api/v1/budgets/spend`. It takes the account from the session, so there is no parameter to ask for someone else's, and any signed-in role may call it.
+
+### Minting a key with a cap
+
+A key's cap is an ordinary budget or rate limit whose scope is the key. You do not have to create the key and then make a second call: `POST /api/v1/projects/{project_id}/virtual-keys` and `POST /api/v1/me/projects/{project_id}/virtual-keys` accept a `budget` (`{"limit_usd": "50", "period": "monthly"}`) and a `rate_limit` (`{"rpm": 30, "tpm": 20000}`) alongside the name and expiry. They are validated by the rules on this page before the key exists and written in the same transaction as the key, so a refused cap leaves no key behind. Rotating the key copies them onto the new key, and deleting the key deletes them.
 
 ## Rate limits
 

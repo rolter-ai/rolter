@@ -167,7 +167,7 @@ fn config(
         targets: vec![Target {
             provider: "up".into(),
             model: Some("test-model".into()),
-            weight: 1,
+            ..Default::default()
         }],
         params: Default::default(),
         param_policy: Default::default(),
@@ -177,20 +177,10 @@ fn config(
         tenancy: None,
     });
     config.db_virtual_keys.push(VirtualKeyRecord {
-        access_policy: None,
         key_hash: rolter_auth::hash_key(&config.server.resolve_key_pepper(), &key()),
         id: KEY_ID.into(),
         org_id: "org-cache-write-pricing".into(),
-        team_id: String::new(),
-        project_id: String::new(),
-        user_id: String::new(),
-        models: vec![],
-        providers: vec![],
-        disabled: false,
-        expires_at: None,
-        cache: None,
-        business_unit_id: String::new(),
-        customer_id: String::new(),
+        ..Default::default()
     });
     let mut price = json!({
         "model": "test-model",
@@ -361,6 +351,9 @@ async fn exchange_with_rates(
 fn assert_row(row: &Value, cost: f64) {
     assert_eq!(row["prompt_tokens"], 2000, "request-log row");
     assert_eq!(row["cache_read_tokens"], 1500, "request-log row");
+    // the provider stated its reads, so they count towards the read share
+    // (#3410)
+    assert_eq!(row["cache_usage_reported"], 1, "request-log row");
     assert_eq!(row["cache_write_tokens"], 100, "request-log row");
     assert_eq!(row["completion_tokens"], 3, "request-log row");
     assert_eq!(row["cost_usd"], cost, "request-log row");

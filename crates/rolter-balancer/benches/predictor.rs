@@ -67,10 +67,7 @@ fn bench_pick(c: &mut Criterion) {
     for n in [2_usize, 8, 32] {
         let stack = Pipeline::predicted_latency_stack(n, warm(n));
         let loads: Vec<u64> = (0..n as u64).collect();
-        let ctx = RouteContext {
-            prompt: Some(&prompt),
-            ..Default::default()
-        };
+        let ctx = RouteContext::new().with_prompt(Some(&prompt));
         group.bench_with_input(BenchmarkId::from_parameter(n), &n, |b, _| {
             b.iter(|| black_box(stack.pick(black_box(&ctx), black_box(&loads))))
         });

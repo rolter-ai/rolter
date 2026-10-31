@@ -148,13 +148,15 @@ The team stack layers `docker/docker-compose.team.yml` over the same file. It cl
 
   </Step>
   <Step title="Create the first administrator and sign in">
-    Postgres is published on `127.0.0.1` for this. `rolter-seed` does not ship in the image yet ([#1897](https://github.com/rolter-ai/rolter/issues/1897)), so run it from a checkout of the repository on the same host:
+    `rolter seed` ships in the image, so run it in the control container; it already has the database URL:
 
     ```bash
-    ROLTER_DATABASE_URL="postgres://rolter:<ROLTER_PG_PASSWORD>@127.0.0.1:5432/rolter" \
-      cargo run -p rolter-control --features postgres --bin rolter-seed -- \
-      --admin-email you@example.com --admin-password '<a long password>'
+    docker compose -f docker/docker-compose.yml -f docker/docker-compose.team.yml \
+      --env-file .env exec -T control rolter seed \
+      --admin-email you@example.com --admin-password-stdin < password.txt
     ```
+
+    Postgres is also published on `127.0.0.1`, so the same command works from a host that has the `rolter` CLI (`pip install rolter`) with `ROLTER_DATABASE_URL="postgres://rolter:<ROLTER_PG_PASSWORD>@127.0.0.1:5432/rolter"` set.
 
     Open `http://127.0.0.1:4001` and sign in. The provider keys you add in the dashboard are sealed under `ROLTER_KEK`, and the gateway picks up providers, routes and virtual keys within seconds.
 

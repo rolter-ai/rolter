@@ -10,7 +10,9 @@ import {
   BEARER,
   BY_KIND,
   CONNECTABLE,
+  DISCOVERED_OK,
   HEADER,
+  NOT_PROBED,
   Harness,
   KEK_REFUSAL,
   SERVERS,
@@ -39,7 +41,14 @@ import {
   type Recorder,
 } from "./story-harness";
 import { Toaster } from "@/components/ui/toaster";
-import type { McpOAuthGrantRow, McpOAuthSessionRow, McpServerRow } from "@/lib/api";
+import type {
+  McpConnectionTest,
+  McpOAuthGrantRow,
+  McpOAuthSessionRow,
+  McpServerRow,
+  McpServerToolsResponse,
+  McpToolCallResult,
+} from "@/lib/api";
 import { AuthProvider } from "@/lib/auth";
 import { CONSENT_CHANNEL, type ConsentAnnouncement } from "@/lib/mcp-consent";
 import { ToastProvider } from "@/lib/toast";
@@ -169,7 +178,10 @@ export const ValidatesEndpoint: Story = {
     const dialog = within(await within(document.body).findByRole("dialog"));
     await userEvent.type(dialog.getByLabelText("Name"), "Local tools");
     await userEvent.type(dialog.getByLabelText("Endpoint URL"), "ftp://invalid");
-    await expect(dialog.getByRole("button", { name: "Register server" })).toBeDisabled();
+    await expect(dialog.getByRole("button", { name: "Register server" })).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
   },
 };
 /**
@@ -367,7 +379,10 @@ export const RefusesAHalfClient: Story = {
     await expect(
       dialog.getAllByText("Must be an https URL (http is accepted only on loopback).").length,
     ).toBeGreaterThan(0);
-    await expect(dialog.getByRole("button", { name: "Save server" })).toBeDisabled();
+    await expect(dialog.getByRole("button", { name: "Save server" })).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
     await userEvent.clear(dialog.getByLabelText("Authorization URL"));
     await userEvent.type(
       dialog.getByLabelText("Authorization URL"),
@@ -376,7 +391,10 @@ export const RefusesAHalfClient: Story = {
     await expect(dialog.getByRole("alert")).toHaveTextContent(
       /Enter both the authorization URL and the token URL/,
     );
-    await expect(dialog.getByRole("button", { name: "Save server" })).toBeDisabled();
+    await expect(dialog.getByRole("button", { name: "Save server" })).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
   },
 };
 
@@ -827,7 +845,10 @@ export const AuthBearerNeedsACredential: Story = {
     await userEvent.click(dialog.getByRole("radio", { name: /^Bearer token/ }));
     await expect(dialog.getByText("No credential stored")).toBeVisible();
     // nothing stored and nothing typed is what the API refuses, so the form does first
-    await expect(dialog.getByRole("button", { name: "Save server" })).toBeDisabled();
+    await expect(dialog.getByRole("button", { name: "Save server" })).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
     await userEvent.type(dialog.getByLabelText("Bearer token"), "ctx7_live_abc");
     await userEvent.click(dialog.getByRole("button", { name: "Save server" }));
     await expect(await bearerArms.sent("PUT", "/mcp-servers/server-sentry/auth")).toEqual({
@@ -885,7 +906,10 @@ export const AuthHeaderRefusesReservedNames: Story = {
     await userEvent.clear(header);
     await userEvent.type(header, "Authorization");
     await expect(dialog.getByText(/rolter sets Authorization itself/)).toBeVisible();
-    await expect(dialog.getByRole("button", { name: "Save server" })).toBeDisabled();
+    await expect(dialog.getByRole("button", { name: "Save server" })).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
     await userEvent.clear(header);
     await userEvent.type(header, "X Api Key");
     await expect(dialog.getByText(/valid HTTP header name/)).toBeVisible();
@@ -1053,7 +1077,10 @@ export const OverridesKeepAbsentAndNullApart: Story = {
     const retries = dialog.getByLabelText("Maximum retries");
     await userEvent.clear(retries);
     await userEvent.type(retries, "9");
-    await expect(dialog.getByRole("button", { name: "Save server" })).toBeDisabled();
+    await expect(dialog.getByRole("button", { name: "Save server" })).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
     await userEvent.clear(retries);
     await userEvent.click(dialog.getByRole("button", { name: "Save server" }));
     const patch = (await overrides.sent("PATCH", "/mcp-servers/server-exa")) as Record<
@@ -1081,6 +1108,7 @@ export const GatedForViewer: Story = {
   play: async ({ canvasElement }) => {
     await expectRefused(canvasElement, "Register server");
     await expectRefused(canvasElement, "Configure server Context7");
+    await expectRefused(canvasElement, "Discover tools of server Context7");
   },
 };
 
@@ -1219,7 +1247,10 @@ export const OAuthManualRequiresEndpoints: Story = {
     await expect(dialog.getByRole("alert")).toHaveTextContent(
       /Manual discovery needs an authorization URL and a token URL/,
     );
-    await expect(dialog.getByRole("button", { name: "Save server" })).toBeDisabled();
+    await expect(dialog.getByRole("button", { name: "Save server" })).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
     await userEvent.type(dialog.getByLabelText("Authorization URL"), "https://www.figma.com/oauth");
     await expect(dialog.getByRole("alert")).toHaveTextContent(
       /Enter both the authorization URL and the token URL/,
@@ -1282,7 +1313,10 @@ export const OAuthIssuerChangeResetsDiscovery: Story = {
     await expect(
       dialog.getByText("Must be an https URL (http is accepted only on loopback)."),
     ).toBeVisible();
-    await expect(dialog.getByRole("button", { name: "Save server" })).toBeDisabled();
+    await expect(dialog.getByRole("button", { name: "Save server" })).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
     await userEvent.clear(dialog.getByLabelText("Issuer"));
     await userEvent.type(dialog.getByLabelText("Issuer"), "https://api.notion.com");
     await expect(dialog.getByText(/clears these results/)).toBeVisible();
@@ -1463,3 +1497,739 @@ const sheetFits = (locale: "en" | "ru") => ({
 });
 export const RegisterSheetOnAPhone: Story = sheetFits("en");
 export const RegisterSheetOnAPhoneInRussian: Story = sheetFits("ru");
+
+// ---------------------------------------------------------------------------
+// tools/list discovery (#1283): a manifest is pending, answered (possibly
+// empty), failed with the last answer kept, and may carry stale names
+
+const FAILED_AT = "2026-09-13T10:00:00Z";
+const oneServer = (over: Partial<McpServerRow>): McpServerRow => ({
+  ...SERVERS[0],
+  ...DISCOVERED_OK,
+  ...over,
+});
+const withRows = (rows: McpServerRow[]) => (
+  <Harness fetchStub={routed({ servers: async () => json(rows) })}>
+    <McpCatalog />
+  </Harness>
+);
+
+// never answered: the tools shown are the catalog's, and the card says so
+export const DiscoveryPending: Story = {
+  render: () => withRows([oneServer({ ...NOT_PROBED, tools_discovery_attempted_at: FAILED_AT })]),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByText(/^Not discovered yet\./)).toBeVisible();
+    await expect(canvas.queryByText(/Declares no tools/)).not.toBeInTheDocument();
+  },
+};
+
+// OAuth server nobody has connected to: the reason is the dashboard's own words
+export const DiscoveryPendingNeedsSession: Story = {
+  render: () =>
+    withRows([
+      oneServer({
+        ...NOT_PROBED,
+        tools_discovery_attempted_at: FAILED_AT,
+        tools_discovery_error: "needs_session",
+      }),
+    ]),
+  play: async ({ canvasElement }) => {
+    await expect(
+      await within(canvasElement).findByText("Not discovered yet: waiting for a user to connect."),
+    ).toBeVisible();
+  },
+};
+
+// the background discovery after an install has not run yet: the list is read
+// again until it has, and the result appears without a reload
+export const DiscoveryPollsUntilAttempted: Story = {
+  render: () => {
+    let reads = 0;
+    return (
+      <Harness
+        fetchStub={routed({
+          servers: async () => {
+            reads += 1;
+            return json([
+              reads < 2 ? oneServer({ ...NOT_PROBED }) : oneServer({ tools: ["search_code"] }),
+            ]);
+          },
+        })}
+      >
+        <McpCatalog />
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByText("Discovering tools…")).toBeVisible();
+    await waitFor(() => expect(canvas.getByText(/^Last discovered /)).toBeVisible(), {
+      timeout: 6000,
+    });
+  },
+};
+
+export const DiscoveryDiscovered: Story = {
+  render: () => withRows([oneServer({})]),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByText(/^Last discovered /)).toBeVisible();
+    await expect(canvas.getByText("search_code")).toBeVisible();
+  },
+};
+
+// an answer with nothing in it is not "not discovered"
+export const DiscoveryDeclaresNoTools: Story = {
+  render: () => withRows([oneServer({ tools: [] })]),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByText(/^Declares no tools\./)).toBeVisible();
+    await expect(canvas.queryByText(/Not discovered yet/)).not.toBeInTheDocument();
+  },
+};
+
+export const DiscoveryFailedAfterSuccess: Story = {
+  render: () =>
+    withRows([
+      oneServer({
+        tools_discovery_status: "failed",
+        tools_discovery_error: "unreachable",
+        tools_discovery_attempted_at: FAILED_AT,
+      }),
+    ]),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(
+      await canvas.findByText(/^Last discovery failed: the server could not be reached\./),
+    ).toBeVisible();
+    await expect(canvas.getByText(/Last succeeded /)).toBeVisible();
+    // the last manifest is kept
+    await expect(canvas.getByText("search_code")).toBeVisible();
+  },
+};
+
+export const DiscoveryFlagsStaleTools: Story = {
+  render: () => withRows([oneServer({ tools_stale: ["create_issue"] })]),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const stale = await canvas.findByText("create_issue");
+    await expect(stale.closest("span")).toHaveAttribute(
+      "title",
+      expect.stringMatching(/kept so tool groups naming it keep working/),
+    );
+    await expect(canvas.getByText(/^1 tool was not returned by the last discovery/)).toBeVisible();
+  },
+};
+
+const discoverNow = (() => {
+  let discovered = false;
+  return recording(
+    routed({
+      servers: async (input, init) => {
+        if (urlOf(input).endsWith("/discover") && init?.method === "POST") {
+          discovered = true;
+          return json(oneServer({ tools: ["search_code", "open_pr"] }));
+        }
+        return json([
+          discovered
+            ? oneServer({ tools: ["search_code", "open_pr"] })
+            : oneServer({ ...NOT_PROBED, tools_discovery_attempted_at: FAILED_AT }),
+        ]);
+      },
+    }),
+  );
+})();
+export const DiscoverNow: Story = {
+  render: () => (
+    <Harness fetchStub={discoverNow.stub}>
+      <McpCatalog />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByText(/^Not discovered yet\./)).toBeVisible();
+    await userEvent.click(canvas.getByRole("button", { name: "Discover tools of server GitHub" }));
+    await discoverNow.expectSent("POST", "/mcp-servers/server-github/discover");
+    await waitFor(() => expect(canvas.getByText("open_pr")).toBeVisible());
+    await expect(canvas.getByText(/^Last discovered /)).toBeVisible();
+  },
+};
+
+export const DiscoverNowFails: Story = {
+  render: () => (
+    <Harness
+      fetchStub={routed({
+        servers: async (input, init) =>
+          urlOf(input).endsWith("/discover") && init?.method === "POST"
+            ? json({ error: { message: "registry offline" } }, 503)
+            : json([oneServer({})]),
+      })}
+    >
+      <Toasts>
+        <McpCatalog />
+      </Toasts>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(
+      await canvas.findByRole("button", { name: "Discover tools of server GitHub" }),
+    );
+    await waitFor(() =>
+      expect(within(document.body).getByText("Could not discover tools of GitHub")).toBeVisible(),
+    );
+  },
+};
+
+// ---------------------------------------------------------------------------
+// connection status, test connection, tools and try it (#951)
+
+const CONTACT_AT = "2026-09-13T09:00:00Z";
+const ERROR_AT = "2026-09-13T11:00:00Z";
+const reachableRow = (over: Partial<McpServerRow> = {}) =>
+  oneServer({
+    last_contact_at: CONTACT_AT,
+    last_protocol_version: "2025-03-26",
+    last_server_name: "github-mcp",
+    ...over,
+  });
+
+const TOOL_LIST: McpServerToolsResponse = {
+  status: "discovered",
+  error: null,
+  discovered_at: "2026-09-12T08:30:00Z",
+  tools: [
+    {
+      name: "search_code",
+      description: "Search code across repositories.",
+      input_schema: {
+        type: "object",
+        required: ["query"],
+        properties: { query: { type: "string" }, limit: { type: "integer" } },
+      },
+      stale: false,
+    },
+    { name: "create_issue", description: null, input_schema: { type: "object" }, stale: true },
+  ],
+};
+
+const CALL_OK: McpToolCallResult = {
+  outcome: "success",
+  ok: true,
+  latency_ms: 84,
+  request: { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "search_code" } },
+  response: { jsonrpc: "2.0", id: 1, result: { content: [{ type: "text", text: "3 matches" }] } },
+  message: null,
+};
+const TEST_OK: McpConnectionTest = {
+  status: "reachable",
+  reachable: true,
+  handshake_completed: true,
+  protocol_version: "2025-03-26",
+  server_name: "github-mcp",
+  server_version: "1.4.2",
+  latency_ms: 42,
+  message: null,
+  checked_at: "2026-09-13T12:00:00Z",
+};
+
+interface ProbeApi {
+  rows?: () => McpServerRow[];
+  test?: () => Response | Promise<Response>;
+  tools?: () => Response | Promise<Response>;
+  call?: () => Response | Promise<Response>;
+}
+const probeApi = (api: ProbeApi = {}) =>
+  recording(
+    routed({
+      servers: async (input, init) => {
+        const url = urlOf(input);
+        const post = init?.method === "POST";
+        if (post && url.endsWith("/test")) return api.test?.() ?? json(TEST_OK);
+        if (post && url.endsWith("/tools/call")) return api.call?.() ?? json(CALL_OK);
+        if (url.endsWith("/tools")) return api.tools?.() ?? json(TOOL_LIST);
+        return json(api.rows?.() ?? [reachableRow()]);
+      },
+    }),
+  );
+const probeStory = (api: ProbeApi = {}) => {
+  const stub = probeApi(api);
+  return {
+    stub,
+    render: () => (
+      <Harness fetchStub={stub.stub}>
+        <Toasts>
+          <McpCatalog />
+        </Toasts>
+      </Harness>
+    ),
+  };
+};
+const health = async (canvas: ReturnType<typeof within>, name = "GitHub") =>
+  within(await canvas.findByRole("group", { name: `Connection status of ${name}` }));
+
+export const ConnectionNotChecked: Story = {
+  render: () => withRows([oneServer({})]),
+  play: async ({ canvasElement }) => {
+    const status = await health(within(canvasElement));
+    await expect(status.getByText("Not checked yet")).toBeVisible();
+    await expect(status.getByText("No handshake has been attempted yet.")).toBeVisible();
+  },
+};
+
+export const ConnectionReachable: Story = {
+  render: () => withRows([reachableRow()]),
+  play: async ({ canvasElement }) => {
+    const status = await health(within(canvasElement));
+    await expect(status.getByText("Reachable")).toBeVisible();
+    await expect(
+      status.getByText(/Last contact .*Protocol 2025-03-26 · Server github-mcp/),
+    ).toBeVisible();
+    await expect(status.queryByText(/Last failure/)).not.toBeInTheDocument();
+  },
+};
+
+// each failure reads as its own words, so none of them is told by colour alone
+const FAILURES = [
+  ["unreachable", "Unreachable"],
+  ["handshake_failed", "Handshake failed"],
+  ["auth_rejected", "Auth rejected"],
+  ["egress_denied", "Blocked by egress policy"],
+] as const;
+export const ConnectionFailureStates: Story = {
+  render: () =>
+    withRows(
+      FAILURES.map(([kind], index) =>
+        oneServer({
+          id: `server-${kind}`,
+          name: `Server ${index + 1}`,
+          slug: `server-${index + 1}`,
+          last_error_kind: kind,
+          last_error_at: ERROR_AT,
+        }),
+      ),
+    ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    for (const [index, [, label]] of FAILURES.entries()) {
+      const status = await health(canvas, `Server ${index + 1}`);
+      await expect(status.getByText(label)).toBeVisible();
+      await expect(status.getByText(/^Failed /)).toBeVisible();
+      await expect(status.queryByText("Reachable")).not.toBeInTheDocument();
+    }
+  },
+};
+
+// the control plane keeps the last failure after a later success: the server is
+// reachable now, and the card still says what went wrong before
+export const ConnectionRecoveredKeepsTheLastFailure: Story = {
+  render: () =>
+    withRows([
+      reachableRow({
+        last_contact_at: ERROR_AT,
+        last_error_kind: "auth_rejected",
+        last_error_at: CONTACT_AT,
+      }),
+    ]),
+  play: async ({ canvasElement }) => {
+    const status = await health(within(canvasElement));
+    await expect(status.getByText("Reachable")).toBeVisible();
+    await expect(status.getByText(/^Last failure: Auth rejected, /)).toBeVisible();
+  },
+};
+
+const testing = probeStory({
+  rows: (() => {
+    let calls = 0;
+    return () => {
+      calls += 1;
+      // the list is read again after the test, and by then the handshake is on record
+      return [calls < 2 ? oneServer({}) : reachableRow({ last_contact_at: TEST_OK.checked_at })];
+    };
+  })(),
+});
+export const TestConnection: Story = {
+  render: testing.render,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const status = await health(canvas);
+    await expect(status.getByText("Not checked yet")).toBeVisible();
+    await userEvent.click(
+      canvas.getByRole("button", { name: "Test the connection of server GitHub" }),
+    );
+    await testing.stub.expectSent("POST", "/mcp-servers/server-github/test");
+    const result = within(await canvas.findByRole("status", { name: "Connection test of GitHub" }));
+    await expect(result.getByText("Reachable", { selector: "span" })).toBeVisible();
+    await expect(result.getByText("2025-03-26")).toBeVisible();
+    await expect(result.getByText("github-mcp")).toBeVisible();
+    await expect(result.getByText("1.4.2")).toBeVisible();
+    await expect(result.getByText("42 ms")).toBeVisible();
+    await expect(result.getByText("Completed")).toBeVisible();
+    // the list was read again, so the badge moved off "Not checked yet"
+    await waitFor(() => expect(status.queryByText("Not checked yet")).not.toBeInTheDocument());
+  },
+};
+
+const TEST_FAILURES: [string, McpConnectionTest][] = [
+  [
+    "Needs a session",
+    {
+      ...TEST_OK,
+      status: "needs_session",
+      reachable: false,
+      handshake_completed: false,
+      protocol_version: null,
+      server_name: null,
+      server_version: null,
+    },
+  ],
+  [
+    "Credential unavailable",
+    {
+      ...TEST_OK,
+      status: "credential_unavailable",
+      reachable: false,
+      handshake_completed: false,
+      message: "sealed credential could not be opened",
+    },
+  ],
+];
+const needsSession = probeStory({ test: () => json(TEST_FAILURES[0][1]) });
+export const TestConnectionNeedsASession: Story = {
+  render: needsSession.render,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(
+      await canvas.findByRole("button", { name: "Test the connection of server GitHub" }),
+    );
+    const result = within(await canvas.findByRole("status", { name: "Connection test of GitHub" }));
+    await expect(result.getByText("Needs a session")).toBeVisible();
+    await expect(result.getByText(/Connect first, then try again/)).toBeVisible();
+    await expect(result.getByText("Not completed")).toBeVisible();
+  },
+};
+const noCredential = probeStory({ test: () => json(TEST_FAILURES[1][1]) });
+export const TestConnectionCredentialUnavailable: Story = {
+  render: noCredential.render,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(
+      await canvas.findByRole("button", { name: "Test the connection of server GitHub" }),
+    );
+    const result = within(await canvas.findByRole("status", { name: "Connection test of GitHub" }));
+    await expect(result.getByText("Credential unavailable")).toBeVisible();
+    await expect(result.getByText("sealed credential could not be opened")).toBeVisible();
+  },
+};
+
+// the request itself failing is not a status: it is announced like any other save
+const testFails = probeStory({
+  test: () => json({ error: { message: "control plane busy" } }, 503),
+});
+export const TestConnectionRequestFails: Story = {
+  render: testFails.render,
+  play: async ({ canvasElement }) => {
+    await userEvent.click(
+      await within(canvasElement).findByRole("button", {
+        name: "Test the connection of server GitHub",
+      }),
+    );
+    await waitFor(() =>
+      expect(
+        within(document.body).getByText("Could not test the connection of GitHub"),
+      ).toBeVisible(),
+    );
+  },
+};
+
+const pendingTest = probeStory({ test: () => new Promise<Response>(() => {}) });
+export const TestConnectionPending: Story = {
+  render: pendingTest.render,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(
+      await canvas.findByRole("button", { name: "Test the connection of server GitHub" }),
+    );
+    await waitFor(() =>
+      expect(
+        canvas.getByRole("button", { name: "Test the connection of server GitHub" }),
+      ).toBeDisabled(),
+    );
+    await expect(canvas.getByText("Testing…")).toBeVisible();
+  },
+};
+
+const openTools = async (canvasElement: HTMLElement, name = "GitHub") => {
+  await userEvent.click(
+    await within(canvasElement).findByRole("button", {
+      name: `Browse the tools of server ${name} and try them`,
+    }),
+  );
+  return within(await within(document.body).findByRole("dialog"));
+};
+
+export const ToolsLoaded: Story = {
+  render: probeStory().render,
+  play: async ({ canvasElement }) => {
+    const sheet = await openTools(canvasElement);
+    const list = within(await sheet.findByRole("list", { name: "Tools" }));
+    await expect(list.getByText("search_code")).toBeVisible();
+    await expect(list.getByText("Search code across repositories.")).toBeVisible();
+    // the manifest kept a tool the last discovery no longer returned, and says so in words
+    await expect(list.getAllByText("Not returned by the last discovery")).toHaveLength(1);
+    await expect(list.getByText("No description.")).toBeVisible();
+    await userEvent.click(list.getAllByText("Input schema")[0]);
+    await expect(
+      await sheet.findByRole("region", { name: /Input schema of search_code/ }),
+    ).toBeVisible();
+  },
+};
+
+export const ToolsLoading: Story = {
+  render: probeStory({ tools: () => new Promise<Response>(() => {}) }).render,
+  play: async ({ canvasElement }) => {
+    const sheet = await openTools(canvasElement);
+    await waitFor(() => expect(sheet.getAllByLabelText("Loading…").length).toBeGreaterThan(0));
+    await expect(sheet.queryByText(/declares no tools/)).not.toBeInTheDocument();
+  },
+};
+
+export const ToolsDeclaresNone: Story = {
+  render: probeStory({ tools: () => json({ ...TOOL_LIST, tools: [] }) }).render,
+  play: async ({ canvasElement }) => {
+    const sheet = await openTools(canvasElement);
+    await expect(await sheet.findByText("GitHub declares no tools")).toBeVisible();
+    await expect(sheet.queryByText("Tools not discovered yet")).not.toBeInTheDocument();
+  },
+};
+
+export const ToolsNotDiscoveredYet: Story = {
+  render: probeStory({
+    tools: () => json({ status: "pending", error: null, discovered_at: null, tools: [] }),
+  }).render,
+  play: async ({ canvasElement }) => {
+    const sheet = await openTools(canvasElement);
+    await expect(await sheet.findByText("Tools not discovered yet")).toBeVisible();
+    await expect(sheet.queryByText(/declares no tools/)).not.toBeInTheDocument();
+  },
+};
+
+export const ToolsReadFails: Story = {
+  render: probeStory({
+    tools: () => json({ error: { message: "registry offline" } }, 503),
+  }).render,
+  play: async ({ canvasElement }) => {
+    const sheet = await openTools(canvasElement);
+    await waitFor(() =>
+      expect(
+        sheet
+          .getAllByRole("alert")
+          .some((a) => /tools of the MCP server/i.test(a.textContent ?? "")),
+      ).toBe(true),
+    );
+    await expect(sheet.getByRole("button", { name: /try again/i })).toBeVisible();
+  },
+};
+
+const pickTool = async (sheet: ReturnType<typeof within>, tool: string) => {
+  await userEvent.click(await sheet.findByRole("combobox", { name: "Tool" }));
+  await userEvent.click(await within(document.body).findByRole("option", { name: tool }));
+};
+
+const tryOk = probeStory();
+export const TryItSucceeds: Story = {
+  render: tryOk.render,
+  play: async ({ canvasElement }) => {
+    const sheet = await openTools(canvasElement);
+    await pickTool(sheet, "search_code");
+    // picking a tool seeds the arguments with its required properties
+    const args = sheet.getByRole("textbox", { name: "Arguments (JSON object)" });
+    await expect(JSON.parse((args as HTMLTextAreaElement).value)).toEqual({ query: "" });
+    await userEvent.clear(args);
+    await userEvent.click(args);
+    await userEvent.paste('{"query":"retry"}');
+    await userEvent.click(
+      sheet.getByRole("button", { name: "Run the selected tool on server GitHub" }),
+    );
+    expect(
+      await tryOk.stub.expectSentBody("POST", "/mcp-servers/server-github/tools/call"),
+    ).toEqual({ tool: "search_code", arguments: { query: "retry" } });
+    const outcome = within(await sheet.findByRole("status", { name: "Result" }));
+    await expect(outcome.getByText("Succeeded")).toBeVisible();
+    await expect(outcome.getByText(/84 ms/)).toBeVisible();
+    await expect(sheet.getByRole("region", { name: /^Request/ })).toHaveTextContent("tools/call");
+    await expect(sheet.getByRole("region", { name: /^Response/ })).toHaveTextContent("3 matches");
+  },
+};
+
+// the server answered and the tool failed: not a connection problem, so it must
+// not read like one
+const TOOL_ERRORED: McpToolCallResult = {
+  ...CALL_OK,
+  outcome: "tool_errored",
+  ok: false,
+  message: "rate limit exceeded",
+  response: { jsonrpc: "2.0", id: 1, result: { isError: true, content: [] } },
+};
+const toolErrored = probeStory({ call: () => json(TOOL_ERRORED) });
+export const TryItToolErrored: Story = {
+  render: toolErrored.render,
+  play: async ({ canvasElement }) => {
+    const sheet = await openTools(canvasElement);
+    await pickTool(sheet, "search_code");
+    await userEvent.click(
+      sheet.getByRole("button", { name: "Run the selected tool on server GitHub" }),
+    );
+    const outcome = within(await sheet.findByRole("status", { name: "Result" }));
+    await expect(outcome.getByText("Tool reported an error")).toBeVisible();
+    await expect(outcome.getByText(/The connection itself is fine/)).toBeVisible();
+    await expect(outcome.getByText("rate limit exceeded")).toBeVisible();
+    await expect(outcome.queryByText("Unreachable")).not.toBeInTheDocument();
+    await expect(outcome.queryByText("Succeeded")).not.toBeInTheDocument();
+    await expect(sheet.getByRole("region", { name: /^Response/ })).toHaveTextContent("isError");
+  },
+};
+
+const unreachableCall = probeStory({
+  call: () =>
+    json({
+      ...CALL_OK,
+      outcome: "unreachable",
+      ok: false,
+      response: null,
+      message: "connection refused",
+    }),
+});
+export const TryItUnreachable: Story = {
+  render: unreachableCall.render,
+  play: async ({ canvasElement }) => {
+    const sheet = await openTools(canvasElement);
+    await pickTool(sheet, "search_code");
+    await userEvent.click(
+      sheet.getByRole("button", { name: "Run the selected tool on server GitHub" }),
+    );
+    const outcome = within(await sheet.findByRole("status", { name: "Result" }));
+    await expect(outcome.getByText("Unreachable")).toBeVisible();
+    await expect(outcome.getByText("connection refused")).toBeVisible();
+    await expect(sheet.getByText("No response was recorded.")).toBeVisible();
+  },
+};
+
+const bigResponse = probeStory({
+  call: () =>
+    json({
+      ...CALL_OK,
+      response: { truncated: true, size_bytes: 2097152, preview: '{"jsonrpc":"2.0"' },
+    }),
+});
+export const TryItTruncatedResponse: Story = {
+  render: bigResponse.render,
+  play: async ({ canvasElement }) => {
+    const sheet = await openTools(canvasElement);
+    await pickTool(sheet, "search_code");
+    await userEvent.click(
+      sheet.getByRole("button", { name: "Run the selected tool on server GitHub" }),
+    );
+    await expect(await sheet.findByText(/too large to keep in full.*2,097,152 B/)).toBeVisible();
+  },
+};
+
+// arguments that are not a JSON object never leave the dashboard
+const invalidArgs = probeStory();
+export const TryItBlocksInvalidArguments: Story = {
+  render: invalidArgs.render,
+  play: async ({ canvasElement }) => {
+    const sheet = await openTools(canvasElement);
+    await pickTool(sheet, "search_code");
+    const run = sheet.getByRole("button", { name: "Run the selected tool on server GitHub" });
+    const args = sheet.getByRole("textbox", { name: "Arguments (JSON object)" });
+    await userEvent.clear(args);
+    await userEvent.click(args);
+    await userEvent.paste('{"query":');
+    await expect(await sheet.findByText(/^Not valid JSON: /)).toBeVisible();
+    await expect(run).toBeDisabled();
+    await userEvent.clear(args);
+    await userEvent.paste("[1, 2]");
+    await expect(await sheet.findByText(/must be a JSON object/)).toBeVisible();
+    await expect(run).toBeDisabled();
+    invalidArgs.stub.expectNotSent("POST", "/tools/call");
+    // a blank field is no arguments, and runs
+    await userEvent.clear(args);
+    await waitFor(() => expect(run).toBeEnabled());
+    await expect(sheet.queryByText(/must be a JSON object/)).not.toBeInTheDocument();
+  },
+};
+
+export const TryItNeedsAToolFirst: Story = {
+  render: probeStory().render,
+  play: async ({ canvasElement }) => {
+    const sheet = await openTools(canvasElement);
+    await sheet.findByRole("combobox", { name: "Tool" });
+    await expect(
+      sheet.getByRole("button", { name: "Run the selected tool on server GitHub" }),
+    ).toBeDisabled();
+  },
+};
+
+// a tool outside the manifest is a 400 from the control plane
+const refusedCall = probeStory({
+  call: () =>
+    json({ error: { code: "invalid_field", message: "tool is not in the manifest" } }, 400),
+});
+export const TryItRefusedByTheApi: Story = {
+  render: refusedCall.render,
+  play: async ({ canvasElement }) => {
+    const sheet = await openTools(canvasElement);
+    await pickTool(sheet, "search_code");
+    await userEvent.click(
+      sheet.getByRole("button", { name: "Run the selected tool on server GitHub" }),
+    );
+    const alert = await sheet.findByRole("alert");
+    await expect(alert).toHaveTextContent("Could not run the tool");
+    await expect(alert).toHaveTextContent(/manifest|not valid|invalid/i);
+    await expect(sheet.queryByRole("status", { name: "Result" })).not.toBeInTheDocument();
+  },
+};
+
+const pendingCall = probeStory({ call: () => new Promise<Response>(() => {}) });
+export const TryItPending: Story = {
+  render: pendingCall.render,
+  play: async ({ canvasElement }) => {
+    const sheet = await openTools(canvasElement);
+    await pickTool(sheet, "search_code");
+    await userEvent.click(
+      sheet.getByRole("button", { name: "Run the selected tool on server GitHub" }),
+    );
+    await waitFor(() => expect(sheet.getByText("Running…")).toBeVisible());
+    await expect(
+      sheet.getByRole("button", { name: "Run the selected tool on server GitHub" }),
+    ).toBeDisabled();
+  },
+};
+
+// a viewer reads the card and the tools, and can neither test nor run anything
+export const ProbeGatedForViewer: Story = {
+  render: () => (
+    <GatedHarness role="viewer" fetchStub={probeApi().stub}>
+      <McpCatalog />
+    </GatedHarness>
+  ),
+  play: async ({ canvasElement }) => {
+    await expectRefused(canvasElement, "Test the connection of server GitHub");
+    const sheet = await openTools(canvasElement);
+    await sheet.findByRole("list", { name: "Tools" });
+    await pickTool(sheet, "search_code");
+    await expectRefused(document.body, "Run the selected tool on server GitHub");
+  },
+};
+
+export const ViewLogsLinksToTheServersCalls: Story = {
+  render: probeStory().render,
+  play: async ({ canvasElement }) => {
+    const link = await within(canvasElement).findByRole("link", {
+      name: "View the MCP call logs of server GitHub",
+    });
+    await expect(link).toHaveAttribute("href", "/mcp-logs?server=github");
+  },
+};

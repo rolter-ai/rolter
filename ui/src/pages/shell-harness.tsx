@@ -78,10 +78,10 @@ const VERSION = {
  * lets a story prove the wire's English never reaches the badge.
  */
 export const EXPERIMENTAL_SUBSYSTEM: SubsystemStability = {
-  id: "plugins",
+  id: "skills_repository",
   stability: "experimental",
-  note: "plugin manifests are stored but the gateway does not load them yet",
-  nav_keys: ["plugins"],
+  note: "skills resolve only through the control-plane API; the gateway serves none yet",
+  nav_keys: ["skills-repo"],
 };
 
 /** The shell's chain with `/api/v1/stability` answering with `subsystems`. */

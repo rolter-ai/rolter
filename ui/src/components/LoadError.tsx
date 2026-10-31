@@ -19,6 +19,7 @@ const ICONS: Record<LoadErrorKind, typeof KeyRound> = {
   unauthenticated: KeyRound,
   forbidden: ShieldX,
   openMode: ShieldAlert,
+  adminToken: KeyRound,
   noStore: DatabaseZap,
   unreachable: PlugZap,
   queryTimeout: TimerOff,
@@ -102,6 +103,14 @@ export function LoadError({
             <Button size="sm" variant="outline" onClick={onRetry}>
               <RefreshCw aria-hidden className="mr-1.5 h-3.5 w-3.5" />
               {t("errors.load.retry")}
+            </Button>
+          )}
+          {/* the sign-in screen is where the token is entered, so this goes
+              there too, under its own name: "sign in again" is what produced
+              the loop (#1909) */}
+          {kind === "adminToken" && auth && (
+            <Button size="sm" variant="outline" onClick={auth.signOut}>
+              {t("errors.load.adminTokenAction")}
             </Button>
           )}
           {needsSignIn(kind) && auth && (

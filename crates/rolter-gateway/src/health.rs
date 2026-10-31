@@ -21,6 +21,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::health_events::HealthSource;
+use crate::target_mask::TargetMask;
 use rolter_core::probe::{probe_expectation, probe_request, ProbeExpectation, ANTHROPIC_VERSION};
 use rolter_core::{HealthConfig, ProviderKind};
 use rolter_proxy::TranslationPlan;
@@ -28,7 +29,7 @@ use rolter_proxy::TranslationPlan;
 /// A fully-resolved probe request for one provider: either a free liveness GET
 /// or an opt-in minimal completion POST (`also_track_via_llm_call`, ROL-199).
 /// Owns every value so the spawned sweep task needs no borrow of the config.
-enum ProbePlan {
+pub(crate) enum ProbePlan {
     /// free, non-inference liveness GET
     Free {
         url: String,
@@ -43,7 +44,7 @@ enum ProbePlan {
 }
 
 impl ProbePlan {
-    fn build(self, client: &reqwest::Client) -> reqwest::RequestBuilder {
+    pub(crate) fn build(self, client: &reqwest::Client) -> reqwest::RequestBuilder {
         match self {
             ProbePlan::Free { url, headers } => {
                 let mut req = client.get(&url);
@@ -116,7 +117,7 @@ fn build_probe_plan(
 }
 
 /// The free liveness probe for `provider`, authenticated when it has a key.
-fn free_probe_plan(
+pub(crate) fn free_probe_plan(
     provider: &rolter_core::ProviderConfig,
     configured_path: &str,
 ) -> (ProbePlan, HealthSource) {
@@ -378,6 +379,27 @@ impl Health {
             .unwrap_or(true)
     }
 
+    /// Which of the given providers (target `i` is the `i`-th) are currently
+    /// unhealthy, answered with one lock acquisition rather than one per
+    /// target (#1942). Unknown providers and a disabled registry read healthy,
+    /// as [`Health::is_healthy`] does.
+    pub fn unhealthy_mask<'a>(&self, providers: impl IntoIterator<Item = &'a str>) -> TargetMask {
+        let mut mask = TargetMask::new();
+        let Some(inner) = &self.inner else {
+            return mask;
+        };
+        let map = inner.lock();
+        if map.is_empty() {
+            return mask;
+        }
+        for (idx, provider) in providers.into_iter().enumerate() {
+            if map.get(provider).is_some_and(|state| !state.healthy) {
+                mask.insert(idx);
+            }
+        }
+        mask
+    }
+
     /// Force-set a provider's health, resetting its counters. Used by tests and
     /// as an escape hatch; the prober itself goes through [`Health::observe`].
     pub fn set(&self, provider: &str, healthy: bool) {
@@ -604,7 +626,7 @@ const MAX_CATALOGUE_BYTES: usize = 1 << 20;
 /// Reads chunk by chunk against [`MAX_CATALOGUE_BYTES`] instead of buffering
 /// the whole body, so an upstream that answers a probe with something enormous
 /// costs the gateway a bounded amount of memory.
-async fn read_catalogue(mut resp: reqwest::Response) -> Option<Vec<String>> {
+pub(crate) async fn read_catalogue(mut resp: reqwest::Response) -> Option<Vec<String>> {
     let mut body: Vec<u8> = Vec::new();
     while let Ok(Some(chunk)) = resp.chunk().await {
         if body.len() + chunk.len() > MAX_CATALOGUE_BYTES {
@@ -804,7 +826,7 @@ mod tests {
 
         let (url, _) = probe_request(
             ProviderKind::Bedrock,
-            "https://bedrock-runtime.us-east-1.amazonaws.com/v1",
+            "https://bedrock-runtime.us-east-1.amazonaws.com/openai/v1",
             "/",
         );
         assert_eq!(
@@ -1258,6 +1280,13 @@ mod tests {
         let body = json_body(&body);
         assert_eq!(body["input"], "ping");
         assert!(body.get("messages").is_none());
+
+        // infinity's routes sit at the server root unless `--url-prefix` moves them
+        let (url, _, body) = llm_call_plan(ProviderKind::Infinity, "http://infinity:7997");
+        assert_eq!(url, "http://infinity:7997/embeddings");
+        let body = json_body(&body);
+        assert_eq!(body["input"], "ping");
+        assert_eq!(body["model"], "probe-model");
     }
 
     /// a decision server cannot complete either; it is asked one yes/no question
@@ -1378,5 +1407,19 @@ mod tests {
         // the free probe's 404 is a healthy observation with no error at all
         let free = event(HealthSource::Probe, 404);
         assert!(free.error_kind.is_none());
+    }
+
+    #[test]
+    fn the_unhealthy_mask_agrees_with_asking_per_provider() {
+        let h = Health::new();
+        let providers = ["a", "b", "c", "d"];
+        assert!(h.unhealthy_mask(providers).is_empty());
+        h.set("b", false);
+        h.set("d", true);
+        let mask = h.unhealthy_mask(providers);
+        for (idx, provider) in providers.iter().enumerate() {
+            assert_eq!(mask.contains(idx), !h.is_healthy(provider), "{provider}");
+        }
+        assert!(Health::default().unhealthy_mask(providers).is_empty());
     }
 }

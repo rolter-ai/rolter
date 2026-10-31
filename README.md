@@ -133,6 +133,8 @@ rolter stands on the shoulders of great open-source projects and research. See o
 
 ## Documentation
 
+The user documentation is published at [rolter-ai-rolter.docs7.io](https://rolter-ai-rolter.docs7.io/) and the contributor docs at [rolter-ai.github.io/rolter](https://rolter-ai.github.io/rolter/); both build from this repository.
+
 - [Quickstart](docs/user-docs/quickstart.mdx) and [Installation](docs/user-docs/installation.mdx) — install methods and the unified `rolter` CLI (`gateway` / `control` / `easy-up`)
 - [Configuration](docs/user-docs/configuration), [Deployment](docs/user-docs/deployment), and [Observability](docs/user-docs/observability) guides
 - [Air-gapped install & operation](docs/user-docs/deployment/air-gapped.mdx) — running fully offline behind an internal mirror

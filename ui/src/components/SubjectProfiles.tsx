@@ -177,7 +177,7 @@ export function AssignSubjectProfileSheet({
   const assign = useMutation({
     mutationFn: () => createAccessProfileAssignment(profileId, subject),
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["access-profile", profileId] });
+      void queryClient.invalidateQueries({ queryKey: ["access-profiles"] });
       void queryClient.invalidateQueries({ queryKey: ASSIGNMENTS_KEY(orgId) });
       toast.push({
         tone: "success",
@@ -204,9 +204,9 @@ export function AssignSubjectProfileSheet({
       saveLabel={t("pages.accessProfiles.assign.save")}
       canSave={profileId !== ""}
       saving={assign.isPending}
-      onSave={() => assign.mutate()}
+      onSubmit={() => assign.mutate()}
     >
-      <Field label={t("subjectProfiles.field")} hint={t("subjectProfiles.fieldHint")}>
+      <Field label={t("subjectProfiles.field")} hint={t("subjectProfiles.fieldHint")} required>
         <Combobox
           options={options}
           value={profileId}
@@ -243,7 +243,7 @@ export function UnassignSubjectProfileDialog({
   const unassign = useMutation({
     mutationFn: (item: UnassignTarget) => deleteAccessProfileAssignment(item.assignment.id),
     onSuccess: (_void, done) => {
-      void queryClient.invalidateQueries({ queryKey: ["access-profile", done.profile.id] });
+      void queryClient.invalidateQueries({ queryKey: ["access-profiles"] });
       void queryClient.invalidateQueries({ queryKey: ASSIGNMENTS_KEY() });
       toast.push({
         tone: "success",

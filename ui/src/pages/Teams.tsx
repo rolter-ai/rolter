@@ -1,4 +1,4 @@
-import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Building, ChevronRight, Plus } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
@@ -28,7 +28,7 @@ import { errorText } from "@/lib/error-copy";
 import {
   createTeam,
   deleteTeam,
-  fetchBudgets,
+  fetchOrgBudgets,
   fetchMemberships,
   fetchTeams,
   fetchUsers,
@@ -86,12 +86,17 @@ export default function Teams() {
     const user = users.data?.find((u) => u.id === id);
     return user ? user.display_name || user.email : id;
   };
-  const budgetQueries = useQueries({
-    queries: (teams.data ?? []).map((team) => ({
-      queryKey: ["budgets", "team", team.id],
-      queryFn: () => fetchBudgets("team", team.id),
-      retry: false,
-    })),
+  // one read of the org's budgets however many teams there are (#1996); the rows
+  // are the ones the per-team read would have answered, grouped by team below
+  const orgBudgets = useQuery({
+    queryKey: ["budgets", "org", scope.orgId],
+    queryFn: () => fetchOrgBudgets(scope.orgId as string),
+    enabled: !!scope.orgId,
+    retry: false,
+  });
+  const budgetsOf = (teamId: string) => ({
+    isError: orgBudgets.isError,
+    data: orgBudgets.data?.filter((b) => b.scope_type === "team" && b.scope_id === teamId),
   });
 
   const [addOpen, setAddOpen] = React.useState(false);
@@ -196,8 +201,8 @@ export default function Teams() {
         />
       )}
       <div className="grid gap-3.5 [grid-template-columns:repeat(auto-fill,minmax(min(320px,100%),1fr))]">
-        {(teams.data ?? []).map((team, i) => {
-          const budgets = budgetQueries[i];
+        {(teams.data ?? []).map((team) => {
+          const budgets = budgetsOf(team.id);
           const projects = projectsOf(team.id);
           const people = memberships.data
             ? teamPeople(
@@ -214,7 +219,7 @@ export default function Teams() {
               key={team.id}
               role="group"
               aria-label={team.name}
-              className="flex flex-col gap-3.5 rounded-[10px] border border-[color:var(--border-default)] bg-card p-4"
+              className="flex flex-col gap-3.5 rounded-lg border border-[color:var(--border-default)] bg-card p-4"
             >
               <div className="flex items-center gap-2.5">
                 <IconFrame>
@@ -407,9 +412,9 @@ export default function Teams() {
         saveLabel={t("common.create")}
         canSave={!!name.trim()}
         saving={create.isPending}
-        onSave={() => create.mutate()}
+        onSubmit={() => create.mutate()}
       >
-        <Field label={t("pages.teams.teamName")}>
+        <Field label={t("pages.teams.teamName")} required>
           <Input
             value={name}
             onChange={(e) => setName(e.target.value)}

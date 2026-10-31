@@ -16,7 +16,7 @@
 use std::sync::Arc;
 
 use chrono::Utc;
-use rolter_core::{BudgetConfig, BudgetScope, UnpricedPolicy};
+use rolter_core::{BudgetConfig, BudgetPeriod, BudgetScope, UnpricedPolicy};
 use rust_decimal::Decimal;
 
 use crate::metrics::{Metrics, RedisConsumer};
@@ -33,6 +33,9 @@ pub struct ScopeIds {
     /// governance dimensions the key is attributed to; empty when unattributed
     pub business_unit: String,
     pub customer: String,
+    /// the person who minted the key; empty for a key nobody minted (a
+    /// config-file or admin-minted key), which no user cap matches (#1830)
+    pub user: String,
 }
 
 impl ScopeIds {
@@ -44,16 +47,37 @@ impl ScopeIds {
             BudgetScope::Key => &self.key,
             BudgetScope::BusinessUnit => &self.business_unit,
             BudgetScope::Customer => &self.customer,
+            BudgetScope::User => &self.user,
+            // matched by `matches` without an id
+            BudgetScope::Unknown => "",
         }
+    }
+
+    /// Whether a cap on `scope` and `id`, narrowed to `within`, covers this
+    /// request. A narrowed user cap counts only the keys its person minted in
+    /// that org or project, so the same person's keys elsewhere are not
+    /// charged to it and not stopped by it.
+    pub(crate) fn matches(
+        &self,
+        scope: BudgetScope,
+        id: &str,
+        within: Option<&rolter_core::ScopeWithin>,
+    ) -> bool {
+        let inside = within.is_none_or(|place| place.contains(&self.org, &self.project));
+        // a scope from a newer release (#3347): the cap cannot be matched to
+        // the requests it was meant for, so it counts every request, which can
+        // only make it bind sooner than configured
+        if scope == BudgetScope::Unknown {
+            return inside;
+        }
+        let mine = self.id_for(scope);
+        !mine.is_empty() && mine == id && inside
     }
 
     /// The budgets in `all` that apply to this request's scope chain.
     fn applicable<'a>(&self, all: &'a [BudgetConfig]) -> Vec<&'a BudgetConfig> {
         all.iter()
-            .filter(|b| {
-                let id = self.id_for(b.scope);
-                !id.is_empty() && id == b.id
-            })
+            .filter(|b| self.matches(b.scope, &b.id, b.within.as_ref()))
             .collect()
     }
 }
@@ -106,6 +130,15 @@ impl BudgetEnforcer {
         let applicable = scope.applicable(budgets);
         if applicable.is_empty() {
             return None;
+        }
+        // a period from a newer release (#3347): with no window to read a
+        // counter for, the budget refuses rather than lets the request pass,
+        // and does so before Redis is asked, so an outage cannot open it
+        if let Some(budget) = applicable
+            .iter()
+            .find(|b| b.period == BudgetPeriod::Unknown)
+        {
+            return Some((*budget).clone());
         }
         let Some(mut conn) = redis.get().await else {
             // unchecked: the request goes on as if within budget (#1772)
@@ -163,7 +196,11 @@ impl BudgetEnforcer {
             return;
         };
         let now = Utc::now();
-        for budget in applicable {
+        // a budget of an unknown period refuses at admission and keeps no counter
+        for budget in applicable
+            .into_iter()
+            .filter(|b| b.period != BudgetPeriod::Unknown)
+        {
             let key = spend_key(budget, now);
             // INCRBYFLOAT creates the key at `cost` when absent
             let incr: redis::RedisResult<f64> = redis::cmd("INCRBYFLOAT")
@@ -250,7 +287,8 @@ pub fn decide_unpriced(
             }
             UnpricedDecision::Serve
         }
-        UnpricedPolicy::Block => UnpricedDecision::Refuse,
+        // a policy from a newer release refuses, as `block` does (#3347)
+        UnpricedPolicy::Block | UnpricedPolicy::Unknown => UnpricedDecision::Refuse,
     }
 }
 
@@ -312,7 +350,6 @@ impl SpendRecorder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rolter_core::BudgetPeriod;
 
     /// A decimal literal for tests. `rust_decimal`'s `dec!` macro would read
     /// slightly better, but its `macros` feature pulls `rust_decimal_macros`,
@@ -329,6 +366,7 @@ mod tests {
             limit_usd: d("10.0"),
             period: BudgetPeriod::Monthly,
             unpriced_policy: None,
+            within: None,
         }
     }
 
@@ -348,6 +386,7 @@ mod tests {
             key: "vk-1".to_string(),
             business_unit: "bu-1".to_string(),
             customer: String::new(),
+            user: String::new(),
         };
         let all = vec![
             budget(BudgetScope::Org, "org-1"),         // matches
@@ -360,6 +399,75 @@ mod tests {
         ];
         let got = scope.applicable(&all);
         assert_eq!(got.len(), 4);
+    }
+
+    #[test]
+    fn a_user_cap_matches_the_minter_and_only_inside_its_narrowing() {
+        use rolter_core::ScopeWithin;
+        let scope = ScopeIds {
+            org: "org-1".into(),
+            project: "proj-1".into(),
+            user: "u-1".into(),
+            ..Default::default()
+        };
+        let m = |id: &str, within: Option<ScopeWithin>| {
+            scope.matches(BudgetScope::User, id, within.as_ref())
+        };
+        assert!(m("u-1", None));
+        assert!(!m("u-2", None));
+        assert!(m("u-1", Some(ScopeWithin::Org("org-1".into()))));
+        assert!(!m("u-1", Some(ScopeWithin::Org("org-2".into()))));
+        assert!(m("u-1", Some(ScopeWithin::Project("proj-1".into()))));
+        assert!(!m("u-1", Some(ScopeWithin::Project("proj-2".into()))));
+        // a key nobody minted has no user, so no user cap reaches it
+        assert!(!ScopeIds::default().matches(BudgetScope::User, "", None));
+    }
+
+    #[test]
+    fn a_cap_on_a_scope_this_build_does_not_know_counts_every_request() {
+        // a newer release's scope (#3347): the cap cannot be matched to the
+        // requests it was meant for, so it binds them all rather than none
+        let scope = ScopeIds {
+            org: "org-1".into(),
+            ..Default::default()
+        };
+        assert!(scope.matches(BudgetScope::Unknown, "anything", None));
+        assert!(ScopeIds::default().matches(BudgetScope::Unknown, "anything", None));
+        // a narrowing it does carry still narrows it
+        let elsewhere = rolter_core::ScopeWithin::Org("org-2".into());
+        assert!(!scope.matches(BudgetScope::Unknown, "anything", Some(&elsewhere)));
+        assert_eq!(BudgetScope::Unknown.key_label(), "unknown");
+    }
+
+    #[tokio::test]
+    async fn a_budget_of_a_period_this_build_does_not_know_refuses_without_redis() {
+        // nothing listens on this port: the refusal must not wait on Redis, so
+        // an outage cannot open a budget the gateway cannot read (#3347)
+        let enforcer = BudgetEnforcer::new("redis://127.0.0.1:1");
+        let scope = ScopeIds {
+            org: "org-1".to_string(),
+            ..Default::default()
+        };
+        let mut unknown = budget(BudgetScope::Org, "org-1");
+        unknown.period = BudgetPeriod::Unknown;
+        let budgets = vec![budget(BudgetScope::Org, "org-1"), unknown];
+        let refused = enforcer.exceeded(&budgets, &scope).await;
+        assert_eq!(refused.map(|b| b.period), Some(BudgetPeriod::Unknown));
+        // a request it does not cover is untouched by it
+        let other = ScopeIds {
+            org: "org-2".to_string(),
+            ..Default::default()
+        };
+        assert!(enforcer.exceeded(&budgets, &other).await.is_none());
+    }
+
+    #[test]
+    fn an_unpriced_policy_this_build_does_not_know_refuses() {
+        let log = UnpricedWarnLog::default();
+        assert_eq!(
+            decide_unpriced(UnpricedPolicy::Unknown, "gpt-4o", &log),
+            UnpricedDecision::Refuse
+        );
     }
 
     #[tokio::test]

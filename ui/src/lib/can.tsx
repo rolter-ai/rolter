@@ -98,7 +98,10 @@ export function requirementFor(
   const view = matrix?.resources.find((r) => r.resource === resource);
   const entry = view?.actions.find((a) => a.action === action);
   if (!entry) return null;
+  // a row only a deployment role reaches is still a superadmin's: nobody holds it at a scope.
+  // one that also takes a scoped role (#3362) names that role
   if (entry.superadmin_only) return "superadmin";
+  if (entry.deployment_roles?.length && entry.minimum_role === null) return "superadmin";
   return entry.minimum_role;
 }
 
@@ -157,6 +160,12 @@ export function CapabilityProvider({ children }: { children: React.ReactNode }) 
 
 /** The chain a row is gated at, when that is not the chain the page is scoped to. */
 export interface RowScope {
+  /**
+   * the row's own org, where a screen lists rows of more than the one org the
+   * switcher holds (a model of another org in the Model Catalog, #3520);
+   * omitted, the page's org
+   */
+  orgId?: string | null;
   /** the row's own project, or `null` for a row above one */
   projectId: string | null;
   /** the team that owns `projectId`, or the team itself for a team row; the guard walks org + team + project */
@@ -168,7 +177,7 @@ export interface RowScope {
  *
  * `provider` and `provider_group` are project rows that may also be org-wide,
  * so the page's answer — asked at whatever scope the switcher holds — says
- * "yes" to a project admin on a row `crud.rs` checks at the org. The page-level
+ * "yes" to a project admin on a row `crud/` checks at the org. The page-level
  * gate cannot tell the two rows apart; this can. An org-wide row (`projectId`
  * null) is asked at the org alone, where a project membership reaches nothing,
  * a team row (#2529) at org + team, and a project row at its own org + team +
@@ -191,14 +200,14 @@ export function RowCapabilityScope({
   const parent = useCapabilities();
   const scope = useScope();
   const chain = {
-    orgId: scope.orgId,
+    orgId: at?.orgId || scope.orgId,
     teamId: at?.teamId ?? undefined,
     projectId: at?.projectId ?? undefined,
   };
   const effective = useQuery({
     queryKey: ["rbac", "effective", chain.orgId, chain.teamId, chain.projectId],
     queryFn: () => fetchEffective(chain),
-    enabled: !!at && !!parent && !scope.isLoading && !!scope.orgId,
+    enabled: !!at && !!parent && !scope.isLoading && !!chain.orgId,
     staleTime: 60_000,
     retry: false,
   });
@@ -208,10 +217,10 @@ export function RowCapabilityScope({
         ? {
             effective: effective.data ?? null,
             matrix: parent.matrix,
-            resolved: !!scope.orgId && !effective.isPending,
+            resolved: !!chain.orgId && !effective.isPending,
           }
         : parent,
-    [parent, at, effective.data, effective.isPending, scope.orgId],
+    [parent, at, effective.data, effective.isPending, chain.orgId],
   );
   return <CapabilityContext.Provider value={value}>{children}</CapabilityContext.Provider>;
 }
@@ -294,13 +303,17 @@ export function useIsSuperadmin(): Permission {
 /**
  * The gate a deployment-scoped settings screen puts in front of itself.
  *
- * `blocked` is only ever true on an explicit "not a superadmin", so a screen
- * whose gate could not be answered still loads and still gets its 403 the old
- * way. `error` is the value to hand `LoadError`, which classifies it as
- * `forbidden` exactly as a real refusal would be.
+ * It asks for the screen's own `resource:read`, so a superadmin passes and so
+ * does the deployment role (operator, security auditor, #1834) that the
+ * capability table gives that read; everyone else is blocked. `blocked` is only
+ * ever true on an explicit "no", so a screen whose gate could not be answered
+ * still loads and still gets its 403 the old way. `error` is the value to hand
+ * `LoadError`, which classifies it as `forbidden` exactly as a real refusal
+ * would be.
  */
-export function useSuperadminGate(): { blocked: boolean; error: unknown } {
-  return { blocked: useIsSuperadmin() === false, error: FORBIDDEN };
+export function useDeploymentGate(gate: Capability): { blocked: boolean; error: unknown } {
+  const [resource, action] = splitCapability(gate);
+  return { blocked: useCan()(resource, action) === false, error: FORBIDDEN };
 }
 
 /**

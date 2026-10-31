@@ -10,7 +10,7 @@ import { PanelSkeleton } from "@/components/LoadingState";
 import { Badge } from "@/components/ui/badge";
 import { FieldError } from "@/components/ui/field-error";
 import { Input } from "@/components/ui/input";
-import { SaveBar } from "@/components/ui/save-bar";
+import { SettingsSaveBar } from "@/components/SettingsSaveBar";
 import { SettingsPanel } from "@/components/ui/settings-panel";
 import { Switch } from "@/components/ui/switch";
 import {
@@ -23,7 +23,8 @@ import {
 } from "@/lib/api";
 import { errorText } from "@/lib/error-copy";
 import { useToast } from "@/lib/toast";
-import { translateErrors, useFieldErrors } from "@/lib/use-field-errors";
+import { translateErrors } from "@/lib/use-field-errors";
+import { useSettingsForm } from "@/lib/use-settings-form";
 import { useScreenReady } from "@/lib/ux-react";
 
 interface FormState {
@@ -139,7 +140,6 @@ function AdaptiveSettingsScreen() {
   // `policy` is the query the user is actually waiting on for this screen
   useScreenReady(!policy.isLoading);
 
-  const [form, setForm] = React.useState<FormState | null>(null);
   const base = React.useId();
   const ids: Record<FieldKey, string> = {
     latencyWeight: `${base}-latency`,
@@ -148,18 +148,20 @@ function AdaptiveSettingsScreen() {
     explorationRatio: `${base}-ratio`,
     minSamples: `${base}-samples`,
   };
-  React.useEffect(() => {
-    if (policy.data && form === null) {
-      setForm(fromDto(policy.data));
-    }
-  }, [policy.data, form]);
-
-  const fields = useFieldErrors<FieldKey>({
-    order: FIELD_ORDER,
-    wire: WIRE_FIELDS,
-    idOf: (key) => ids[key],
-    local: form ? translateErrors(validate(form), t, LIMITS) : {},
+  const source = React.useMemo(
+    () => (policy.data ? fromDto(policy.data) : undefined),
+    [policy.data],
+  );
+  const sf = useSettingsForm<FormState, FieldKey>({
+    source,
+    fieldErrors: (draft) => ({
+      order: FIELD_ORDER,
+      wire: WIRE_FIELDS,
+      idOf: (key) => ids[key],
+      local: draft ? translateErrors(validate(draft), t, LIMITS) : {},
+    }),
   });
+  const { draft: form, fields } = sf;
 
   const save = useMutation({
     mutationFn: (f: FormState) =>
@@ -176,8 +178,7 @@ function AdaptiveSettingsScreen() {
       // the cached write alone left every other reader of this key on the
       // value it already had; the refetch is what makes the save stick (#1197)
       void queryClient.invalidateQueries({ queryKey: ["adaptive-routing-policy"] });
-      setForm(fromDto(dto));
-      fields.clear();
+      sf.commit(fromDto(dto));
       toast.push({
         tone: "success",
         title: t("toast.saved"),
@@ -215,21 +216,17 @@ function AdaptiveSettingsScreen() {
   }
   if (!form) return null;
 
-  const set = (patch: Partial<FormState>) => {
-    setForm((f) => (f ? { ...f, ...patch } : f));
-  };
   // an edit answers the server's complaint about that field
-  const edit = (key: FieldKey, value: string) => {
-    set({ [key]: value });
-    fields.edit(key);
-  };
+  const { set, changed } = sf;
+  const edit = (key: FieldKey, value: string) => set({ [key]: value });
   const affected = policy.data?.affected_routes ?? [];
   const total = WEIGHTS.reduce((a, [key]) => a + (Number(form[key]) || 0), 0);
 
   return (
-    <SettingsBody>
+    <SettingsBody onSubmit={() => fields.submit(() => save.mutate(form))}>
       <SettingsPanel
         title={t("pages.adaptiveSettings.title")}
+        unsaved={changed.includes("enabled")}
         description={
           <Trans
             i18nKey="pages.adaptiveSettings.killSwitch"
@@ -352,10 +349,10 @@ function AdaptiveSettingsScreen() {
         </div>
       </SettingsPanel>
 
-      <SaveBar
-        invalid={fields.invalid.length}
+      <SettingsSaveBar
+        form={sf}
         pending={save.isPending}
-        onSave={() => fields.submit(() => save.mutate(form))}
+        updatedAt={policy.data?.updated_at}
         leading={
           // a save has no visible effect here, so the way to the live view sits
           // beside it; the dashboard links back
@@ -374,4 +371,8 @@ function AdaptiveSettingsScreen() {
 // deployment-scoped settings: superadmin-only in the capability table, so a
 // lesser caller sees the refusal instead of a screen that loads and then 403s
 // (#1183)
-export default superadminOnly(AdaptiveSettingsScreen, "errors.resources.adaptiveSettings");
+export default superadminOnly(
+  AdaptiveSettingsScreen,
+  "errors.resources.adaptiveSettings",
+  "adaptive_routing_policy:read",
+);

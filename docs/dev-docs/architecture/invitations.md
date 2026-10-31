@@ -14,9 +14,14 @@ someone else holding their credential — usually in a chat log.
 
 1. `POST /api/v1/orgs/{org_id}/invitations` (admin at the target scope) returns
    the invitation, the token, and a ready-made `accept_url`. **The token is
-   shown exactly once**; only its peppered SHA-256 digest is stored, the same
-   treatment sessions and virtual keys get, so a database dump alone yields no
-   usable link.
+   shown exactly once**; what sign-in reads is its peppered SHA-256 digest, the
+   same treatment sessions and virtual keys get. With a mail relay and a KEK the
+   token is also kept sealed with the KEK (`token_ciphertext`, see the resend
+   below), so a dump alone yields no usable link but a dump with the KEK does,
+   for as long as the invitation is live. That copy is not tied to the pepper:
+   rotating `ROLTER_SESSION_PEPPER` stops the digest matching, so the link no
+   longer signs anyone in, yet a resend still opens the sealed token and mails a
+   link that is dead. Revoke and re-invite after a pepper change.
 2. `GET /api/v1/invitations/accept/{token}` — unauthenticated preview returning
    the org name, the invited email, the role, the scope it applies at
    (`scope_type` of `org`, `team` or `project`, plus the team or project's
@@ -187,11 +192,64 @@ each time. A deployment can run invitations only, SSO only, or both at once.
 | ----------------------- | ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `ROLTER_PUBLIC_URL`     | env   | the `accept_url` is built from it; set it correctly behind a proxy or the link you hand out points at localhost. Read once at startup, so a change needs a restart |
 | `ROLTER_SESSION_PEPPER` | env   | peppers the stored token digest, same as session tokens                                                                                                            |
+| `ROLTER_SMTP_URL`       | env   | the mail relay (`smtp://` or `smtps://`, credentials in the URL). Optional; unset means invitations are not emailed                                                |
+| `ROLTER_SMTP_FROM`      | env   | the sender mailbox. Required with `ROLTER_SMTP_URL`; without it mail stays off and the control plane logs why                                                      |
 
-rolter does not send the email itself: it returns the link and lets the operator
-deliver it however their organization already delivers things. That keeps the
-control plane free of an SMTP dependency, which matters for
-[air-gapped](../deployment/air-gapped.md) deployments.
+## Email delivery
+
+With `ROLTER_SMTP_URL` set, `create_invitation` also sends the link to the
+invitee (#1828, `crates/rolter-control/src/mail.rs`). The link is **still
+returned** to the admin, so the email is a convenience over the fallback and not
+a replacement for it: a relay that is down, or a typo in the address, never
+fails an invitation.
+
+- The outcome is kept on the row: `mail_status` is `not_configured` (no
+  transport when it was created, and every invitation that predates
+  migration `0105`), `sent` or `failed`, with `mail_attempted_at` and, for a
+  failure, a `mail_error` written to be safe to show an admin ("the mail server
+  rejected the message"). The relay's own reply is never stored: it often names
+  the recipient.
+- Each delivery is audited as `invitation.mail_sent` or `invitation.mail_failed`
+  on the invitation. Neither the address nor the link is in the audit detail or
+  in any log line, and neither is the SMTP URL, which can carry a password.
+- `POST /api/v1/invitations/{id}/resend` (#3304) mails the same link again. Only
+  a digest of the token is kept for sign-in, so with a relay and a KEK
+  `create_invitation` also stores the token sealed (`token_ciphertext` and
+  `token_nonce`, migration `0155`, listed in `SEALED_COLUMNS`); a resend opens
+  it, keeps the expiry and records the outcome on the row. Accepting, revoking
+  or replacing an invitation clears the sealed copy, and so does expiry: the
+  background `expiry_sweep` (every five minutes) calls
+  `InvitationRepo::sweep_expired_sealed_tokens` for each invitation past
+  `expires_at`, since an expired link opens nothing and the copy would otherwise
+  live as long as the row (#3397). `sealed_token` refuses an expired row itself,
+  so one waiting for the sweep is inert. One without it (created
+  before `0155`, without a relay, or without a KEK) answers `409` and has to be
+  revoked and sent again. It is guarded as creating the invitation is, at the
+  invitation's own scope, and audits `invitation.resend` followed by the usual
+  `invitation.mail_sent` or `invitation.mail_failed`.
+- `POST /api/v1/orgs/{org_id}/invitations/mail-check` and the `--connect`
+  mode of `rolter check` run `Mailer::check`: connect, TLS and authentication
+  against the relay, no message. A failure names its stage (`connect`, `tls`,
+  `auth`, `relay`) with a fixed sentence; the relay's reply, its address and the
+  credential never leave the process. Every run dials the relay, so `CallGap`
+  (`call_gap.rs`, held in `ControlState::mail_check_gap`) lets a caller (the
+  `caller_key` the CSV export counts against) run one every five seconds (and anyone one every two, the relay being one shared resource) and
+  answers `ApiError::TooManyAttempts` (`429` with `Retry-After`, #3394) in
+  between. It is process-local; the integration suite's app shortens the gap.
+- The send is awaited, bounded by a 15 second timeout, so the response says what
+  happened. `Mailer` (`mail.rs`) is the seam the integration suite installs to
+  record messages and to fail on demand.
+- The relay address is checked against the egress policy at startup
+  (`EgressPolicy::url_deny_reason`), and certificates are verified through the
+  platform trust store like the upstream client, on the same aws-lc-rs rustls
+  provider as everything else. A configuration that does not work is logged once
+  and turns mail off, not the control plane.
+- The message is plain text: who it is from, the role, the link and when it
+  expires. The organization name has its control characters removed before it
+  reaches the subject.
+
+Without a transport the behaviour is what it always was, and the dashboard says
+so next to the row. An air-gapped deployment configures nothing.
 
 ## Related
 

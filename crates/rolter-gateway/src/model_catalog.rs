@@ -1,5 +1,5 @@
-//! What each provider says it serves, cached from the health sweep's catalogue
-//! probe so `GET /v1/models` can list the models a provider actually offers
+//! What each provider says it serves, cached from the provider's own model
+//! catalogue so `GET /v1/models` can list the models a provider actually offers
 //! under `provider-slug/model` — not only the ones a configured route target
 //! happens to name (#1647).
 //!
@@ -9,16 +9,19 @@
 //! addressing, which made a whole fleet invisible to any client that builds its
 //! model picker from `/v1/models`.
 //!
-//! The source is the probe the prober already sends: for every provider kind
-//! whose liveness endpoint is a model catalogue
-//! ([`rolter_core::probe::ProbeExpectation::Catalogue`]) the body is parsed
-//! instead of discarded. That adds no upstream request and no configuration —
-//! but it does mean the catalogue is only populated while active health checks
-//! are enabled, which the API docs state.
+//! Two writers fill the cache, and they agree because both read the same free
+//! probe URL ([`rolter_core::probe::probe_request`]): the health sweep, which
+//! already fetches the catalogue every interval while active health checks are
+//! on, and [`spawn_refresher`], an independent and slow loop that runs whether
+//! or not they are (#1729). The refresher is what lets a deployment that never
+//! enabled `[health]` list a complete fleet.
 
+// spec-ref: openai-models
 use parking_lot::Mutex;
+use rolter_core::probe::{probe_expectation, ProbeExpectation};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 /// Most models kept per provider.
 ///
@@ -92,6 +95,115 @@ impl ModelCatalog {
             inner.lock().retain(|name, _| live.contains(name.as_str()));
         }
     }
+}
+
+/// Longest a single catalogue fetch may take, headers and body together.
+const REFRESH_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// How often the refresher looks for providers that are due, bounded by the
+/// configured interval. A provider with no catalogue yet is due immediately, so
+/// a provider added by a reload is listed within one tick instead of one
+/// interval.
+const REFRESH_TICK: Duration = Duration::from_secs(30);
+
+/// Spawn the catalogue refresher. It is always spawned and reads
+/// `health.catalogue_interval_secs` off the live snapshot each tick, so a
+/// hot-reload can retune or switch it off (`0`) without a restart.
+pub fn spawn_refresher(state: crate::state::AppState) {
+    tokio::spawn(run_refresher(state));
+}
+
+async fn run_refresher(state: crate::state::AppState) {
+    let mut last_attempt: HashMap<String, Instant> = HashMap::new();
+    loop {
+        let (interval, concurrency) = {
+            let snap = state.snapshot.load();
+            (
+                snap.health.catalogue_interval_secs,
+                snap.health.probe_concurrency.max(1),
+            )
+        };
+        let tick = if interval == 0 {
+            REFRESH_TICK
+        } else {
+            REFRESH_TICK.min(Duration::from_secs(interval))
+        };
+        if interval > 0 {
+            refresh_due(
+                &state,
+                Duration::from_secs(interval),
+                concurrency,
+                &mut last_attempt,
+            )
+            .await;
+        }
+        tokio::time::sleep(tick).await;
+    }
+}
+
+/// Refresh every provider whose catalogue is missing or older than `interval`,
+/// bounded to `concurrency` fetches in flight. A failed fetch keeps the
+/// previous catalogue: an upstream that blips should not empty the listing.
+pub(crate) async fn refresh_due(
+    state: &crate::state::AppState,
+    interval: Duration,
+    concurrency: usize,
+    last_attempt: &mut HashMap<String, Instant>,
+) {
+    let due: Vec<(String, crate::health::ProbePlan, reqwest::Client)> = {
+        let snap = state.snapshot.load();
+        // a provider a reload removed must stop showing up in /v1/models
+        let live: HashSet<&str> = snap.providers.keys().map(String::as_str).collect();
+        state.model_catalog.retain(&live);
+        last_attempt.retain(|name, _| live.contains(name.as_str()));
+        snap.providers
+            .values()
+            .filter(|p| {
+                // the catalogue is the free probe's body, so it is only read
+                // for kinds whose default probe URL is a model list
+                probe_expectation(p.kind, "/") == ProbeExpectation::Catalogue
+                    && last_attempt
+                        .get(&p.name)
+                        .is_none_or(|at| at.elapsed() >= interval)
+            })
+            .filter_map(|p| {
+                // the default path, not `health.path`: an operator's override
+                // points the liveness check somewhere that is not a catalogue
+                let (plan, _) = crate::health::free_probe_plan(p, "/");
+                match state.forwarder.client_for(p) {
+                    Ok(client) => Some((p.name.clone(), plan, client)),
+                    Err(error) => {
+                        tracing::warn!(provider = %p.name, %error, "cannot build catalogue TLS client");
+                        None
+                    }
+                }
+            })
+            .collect()
+    };
+    let now = Instant::now();
+    let limiter = Arc::new(tokio::sync::Semaphore::new(concurrency));
+    let mut fetches = tokio::task::JoinSet::new();
+    for (name, plan, client) in due {
+        last_attempt.insert(name.clone(), now);
+        let limiter = limiter.clone();
+        let catalog = state.model_catalog.clone();
+        fetches.spawn(async move {
+            let Ok(_permit) = limiter.acquire_owned().await else {
+                return;
+            };
+            let fetch = async {
+                let resp = plan.build(&client).send().await.ok()?;
+                if !resp.status().is_success() {
+                    return None;
+                }
+                crate::health::read_catalogue(resp).await
+            };
+            if let Ok(Some(models)) = tokio::time::timeout(REFRESH_TIMEOUT, fetch).await {
+                catalog.record(&name, models);
+            }
+        });
+    }
+    while fetches.join_next().await.is_some() {}
 }
 
 #[cfg(test)]
