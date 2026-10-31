@@ -191,7 +191,7 @@ pub(crate) fn generate_virtual_key(pepper: &str) -> (String, String, String) {
     rand::rng().fill_bytes(&mut bytes);
     let key = format!("sk-rolter-{}", hex_encode(&bytes));
     let hash = rolter_auth::hash_key(pepper, &key);
-    let prefix = key.chars().take(12).collect::<String>();
+    let prefix = key.chars().take(18).collect::<String>();
     (key, hash, prefix)
 }
 
@@ -564,9 +564,9 @@ mod virtual_key_tests {
             .chars()
             .all(|c| c.is_ascii_hexdigit()));
 
-        // Check prefix
-        assert_eq!(prefix, key.chars().take(12).collect::<String>());
-        assert_eq!(prefix.len(), 12);
+        // Check prefix: the fixed marker plus eight random characters
+        assert_eq!(prefix, key.chars().take(18).collect::<String>());
+        assert_eq!(prefix.len(), 18);
 
         // Check hash consistency
         assert_eq!(hash, rolter_auth::hash_key(pepper, &key));
