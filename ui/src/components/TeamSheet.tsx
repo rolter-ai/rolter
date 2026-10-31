@@ -299,7 +299,7 @@ export function TeamSheet({
               gate="team:delete"
               control="team-delete"
               variant="outline"
-              className="text-[color:var(--status-error-text)]"
+              className="text-[color:var(--status-danger-text)]"
               onClick={onDelete}
             >
               <Trash2 className="h-4 w-4" aria-hidden />
