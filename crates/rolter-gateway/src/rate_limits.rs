@@ -523,21 +523,54 @@ mod tests {
         assert_eq!(bucket_key(&l, "req", 12345), "rolter:rl:key:vk-9:req:12345");
     }
 
+    /// The startup warning for a redis url that fails to parse goes through
+    /// the redactor, so a password in the url never reaches the log
     #[test]
-    fn invalid_redis_url_error_message_is_redacted() {
-        let secret = format!("pw-{}", uuid::Uuid::new_v4());
-        let raw_err_msg = format!(
-            "failed to connect to redis://user:{secret}@127.0.0.1:6379/0: connection refused"
-        );
-        let redacted = rolter_core::redact::redact_urls_in_text(&raw_err_msg);
+    fn an_invalid_redis_url_warning_keeps_the_password_out() {
+        use std::sync::Arc;
+        use tracing_subscriber::layer::SubscriberExt;
+
+        #[derive(Clone, Default)]
+        struct Captured(Arc<parking_lot::Mutex<Vec<String>>>);
+        impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Captured {
+            fn on_event(
+                &self,
+                event: &tracing::Event<'_>,
+                _: tracing_subscriber::layer::Context<'_, S>,
+            ) {
+                struct Fields(String);
+                impl tracing::field::Visit for Fields {
+                    fn record_debug(
+                        &mut self,
+                        field: &tracing::field::Field,
+                        value: &dyn std::fmt::Debug,
+                    ) {
+                        self.0.push_str(&format!("{}={value:?} ", field.name()));
+                    }
+                }
+                let mut fields = Fields(String::new());
+                event.record(&mut fields);
+                self.0.lock().push(fields.0);
+            }
+        }
+
+        // built at run time so no credential-shaped literal sits in the source
+        let secret = format!("pw{}", uuid::Uuid::new_v4().simple());
+        let captured = Captured::default();
+        let subscriber = tracing_subscriber::registry().with(captured.clone());
+        let limiter = tracing::subscriber::with_default(subscriber, || {
+            // a non-numeric port fails the parse, after the userinfo
+            RateLimiter::new(&format!("redis://user:{secret}@redis:notaport/0"))
+        });
         assert!(
-            !redacted.contains(&secret),
-            "secret password must be redacted from error message"
+            limiter.redis.is_none(),
+            "an unparsable url disables the limiter"
         );
-        assert!(
-            redacted.contains("redis://***@127.0.0.1:6379/0"),
-            "redacted message must mask credentials"
-        );
+        let seen = captured.0.lock().join("\n");
+        assert!(seen.contains("rate limiting disabled"), "{seen}");
+        // the message names neither the secret nor the line, so a failure
+        // cannot itself print the credential
+        assert!(!seen.contains(&secret), "a test credential reached the log");
     }
 
     #[tokio::test]
