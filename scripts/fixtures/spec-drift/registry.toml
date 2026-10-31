@@ -1,0 +1,108 @@
+schema_version = 1
+
+[[spec]]
+id = "pinned-spec"
+category = "telemetry"
+authority = "Example"
+title = "Pinned specification"
+url = "https://example.test/pinned"
+related = ["https://github.com/example/pinned-spec"]
+contract = "semver"
+version = "1.0.0"
+pinned = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+reviewed_at = "2026-01-01"
+conformance = "partial"
+gateway_endpoints = ["POST /v1/pinned"]
+modules = ["crates/example/src/pinned.rs"]
+tests = ["crates/example/src/pinned.rs::works"]
+
+[[spec]]
+id = "dated-spec"
+category = "ai-api"
+authority = "Example"
+title = "Dated specification"
+url = "https://example.test/dated"
+related = ["https://example.test/versioning"]
+contract = "dated"
+version = "2026-01-01"
+reviewed_at = "2026-01-01"
+conformance = "partial"
+modules = ["crates/example/src/dated.rs"]
+tests = ["crates/example/src/dated.rs::works"]
+
+[[spec]]
+id = "changelog-spec"
+category = "ai-api"
+authority = "Example"
+title = "Changelog specification"
+url = "https://example.test/changelog-source"
+related = ["https://example.test/changelog"]
+contract = "major-only"
+version = "v1"
+reviewed_at = "2026-01-01"
+conformance = "partial"
+modules = ["crates/example/src/changelog.rs"]
+tests = ["crates/example/src/changelog.rs::works"]
+
+[[spec]]
+id = "rfc-spec"
+category = "wire-format"
+authority = "IETF"
+title = "RFC specification"
+url = "https://www.rfc-editor.org/rfc/rfc6455"
+contract = "rfc"
+version = "RFC 6455"
+reviewed_at = "2026-01-01"
+conformance = "partial"
+modules = ["crates/example/src/rfc.rs"]
+tests = ["crates/example/src/rfc.rs::works"]
+
+[[spec]]
+id = "forwarded-spec"
+category = "transport"
+authority = "Example"
+title = "Forwarded protocol version"
+url = "https://example.test/versioning"
+contract = "dated"
+version = "forwarded"
+reviewed_at = "2026-01-01"
+conformance = "transport-only"
+modules = ["crates/example/src/forwarded.rs"]
+tests = ["crates/example/src/forwarded.rs::works"]
+
+[[spec]]
+id = "current-rfc-spec"
+category = "wire-format"
+authority = "IETF"
+title = "RFC without update headers"
+url = "https://www.rfc-editor.org/rfc/rfc0000"
+contract = "rfc"
+version = "RFC 0000"
+reviewed_at = "2026-01-01"
+conformance = "partial"
+modules = ["crates/example/src/current_rfc.rs"]
+tests = ["crates/example/src/current_rfc.rs::works"]
+
+[[spec]]
+id = "living-spec"
+category = "ai-api"
+authority = "Example"
+title = "Living specification"
+url = "https://example.test/living"
+contract = "living"
+reviewed_at = "2026-01-01"
+conformance = "partial"
+modules = ["crates/example/src/living.rs"]
+tests = ["crates/example/src/living.rs::works"]
+
+[[spec]]
+id = "unavailable-spec"
+category = "ai-api"
+authority = "Example"
+title = "Unavailable specification"
+url = "https://example.test/unavailable"
+contract = "living"
+reviewed_at = "2026-01-01"
+conformance = "partial"
+modules = ["crates/example/src/unavailable.rs"]
+tests = ["crates/example/src/unavailable.rs::works"]
