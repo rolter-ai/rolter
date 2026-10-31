@@ -242,7 +242,7 @@ pub async fn list_models(State(state): State<AppState>, headers: HeaderMap) -> R
     // the same key allow-list
     let key_org = vk.as_ref().map_or("", |vk| vk.org_id.as_str());
     let key_project = vk.as_ref().map_or("", |vk| vk.project_id.as_str());
-    // a provider or group is admitted on its org plus its optional project
+    // a provider is admitted on its org plus its optional project
     // scope: one scoped to another project is neither addressable nor listed
     // (#1919)
     let admitted_scoped = |tenancy: Option<&rolter_core::Tenancy>| {
@@ -331,7 +331,7 @@ pub async fn list_models(State(state): State<AppState>, headers: HeaderMap) -> R
         let resolved = snap
             .groups_by_slug
             .resolve_admitted(key_org, slug, |own| {
-                admitted_scoped(own.config.tenancy.as_ref())
+                own.in_tenancy_of(vk.as_ref(), &snap.providers)
             })
             .is_some_and(|(_, own)| std::ptr::eq(own, entry));
         if !resolved {
@@ -7057,6 +7057,58 @@ mod tests {
             .record("openai-edge", vec!["o3-mini".to_string()]);
         let ids = models_in_response(list_models(State(state), HeaderMap::new()).await).await;
         assert!(ids.contains(&"edge/o3-mini".to_string()), "{ids:?}");
+    }
+
+    #[tokio::test]
+    async fn a_group_listing_resolves_to_the_same_group_as_a_request() {
+        let mut config = GatewayConfig::default();
+        let pepper = config.server.resolve_key_pepper();
+        config.db_virtual_keys.push(VirtualKeyRecord {
+            key_hash: rolter_auth::hash_key(&pepper, "sk-project-b"),
+            org_id: "org-a".to_string(),
+            project_id: "proj-a2".to_string(),
+            ..Default::default()
+        });
+        for (name, tenancy) in [
+            ("org-edge", owned_by("org-a", Some("proj-a1"))),
+            ("global-edge", None),
+        ] {
+            config.providers.push(rolter_core::ProviderConfig {
+                name: name.to_string(),
+                slug: Some(name.to_string()),
+                tenancy,
+                ..Default::default()
+            });
+        }
+        for (name, provider, model, tenancy) in [
+            ("org pool", "org-edge", "org-only", owned_by("org-a", None)),
+            ("global pool", "global-edge", "global-only", None),
+        ] {
+            config
+                .provider_groups
+                .push(rolter_core::ProviderGroupConfig {
+                    name: name.to_string(),
+                    slug: Some("pool".to_string()),
+                    members: vec![rolter_core::GroupMember {
+                        provider: provider.to_string(),
+                        model: Some(model.to_string()),
+                        weight: 1,
+                    }],
+                    tenancy,
+                    ..Default::default()
+                });
+        }
+        let state = AppState::new(&config);
+        let key = key_in("org-a", "proj-a2");
+        let snapshot = state.snapshot.load();
+        let resolved = snapshot
+            .resolve_for("pool/global-only", Some(&key))
+            .expect("the global group answers the request");
+        assert_eq!(resolved.route.targets[0].provider, "global-edge");
+
+        let ids = models_in_response(list_models(State(state), bearer("sk-project-b")).await).await;
+        assert!(ids.contains(&"pool/global-only".to_string()), "{ids:?}");
+        assert!(!ids.contains(&"pool/org-only".to_string()), "{ids:?}");
     }
 
     #[tokio::test]

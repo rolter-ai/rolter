@@ -46,6 +46,8 @@ pub struct GuardrailProviderInput<'a> {
     pub max_retries: i32,
     pub failure_mode: &'a str,
     pub max_body_bytes: i32,
+    pub max_scored_bytes: Option<i32>,
+    pub on_truncated: &'a str,
     pub auth_kind: &'a str,
     pub auth_env: Option<&'a str>,
 }
@@ -88,8 +90,8 @@ fn policy_select(filter: &str) -> String {
 const GUARDRAIL_RULE_COLUMNS: &str = "id, name, enabled, source_type, builtin, pattern, stage, \
     action, replacement, include_system, position, created_at, updated_at";
 pub(crate) const GUARDRAIL_PROVIDER_COLUMNS: &str = "id, name, enabled, kind, url, model_path, \
-    model_sha256, stage, timeout_ms, max_retries, failure_mode, max_body_bytes, auth_kind, \
-    auth_env, created_at, updated_at";
+    model_sha256, stage, timeout_ms, max_retries, failure_mode, max_body_bytes, max_scored_bytes, \
+    on_truncated, auth_kind, auth_env, created_at, updated_at";
 
 impl GuardrailRepo<'_> {
     pub async fn list_rules(&self) -> Result<Vec<GuardrailRule>> {
@@ -200,8 +202,9 @@ impl GuardrailRepo<'_> {
         // touches another
         sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "insert into guardrail_providers (name, enabled, url, stage, timeout_ms, max_retries, \
-             failure_mode, max_body_bytes, auth_kind, auth_env, kind, model_path, model_sha256) \
-             values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) \
+             failure_mode, max_body_bytes, max_scored_bytes, on_truncated, auth_kind, auth_env, \
+             kind, model_path, model_sha256) \
+             values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) \
              returning {GUARDRAIL_PROVIDER_COLUMNS}"
         )))
         .bind(provider.name)
@@ -212,6 +215,8 @@ impl GuardrailRepo<'_> {
         .bind(provider.max_retries)
         .bind(provider.failure_mode)
         .bind(provider.max_body_bytes)
+        .bind(provider.max_scored_bytes)
+        .bind(provider.on_truncated)
         .bind(provider.auth_kind)
         .bind(provider.auth_env)
         .bind(provider.kind)
@@ -231,8 +236,8 @@ impl GuardrailRepo<'_> {
             sqlx::query_as(sqlx::AssertSqlSafe(format!(
                 "update guardrail_providers set name=$2, enabled=$3, url=$4, stage=$5, \
                  timeout_ms=$6, max_retries=$7, failure_mode=$8, max_body_bytes=$9, \
-                 auth_kind=$10, auth_env=$11, kind=$12, model_path=$13, model_sha256=$14, \
-                 updated_at=now() where id=$1 \
+                 max_scored_bytes=$10, on_truncated=$11, auth_kind=$12, auth_env=$13, kind=$14, \
+                 model_path=$15, model_sha256=$16, updated_at=now() where id=$1 \
                  returning {GUARDRAIL_PROVIDER_COLUMNS}"
             )))
             .bind(id)
@@ -244,6 +249,8 @@ impl GuardrailRepo<'_> {
             .bind(provider.max_retries)
             .bind(provider.failure_mode)
             .bind(provider.max_body_bytes)
+            .bind(provider.max_scored_bytes)
+            .bind(provider.on_truncated)
             .bind(provider.auth_kind)
             .bind(provider.auth_env)
             .bind(provider.kind)

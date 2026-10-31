@@ -72,6 +72,10 @@
 
 **Learning:** `mcp_columns` in `crates/rolter-control/src/mcp_logs.rs` previously logged raw ClickHouse error strings (`error = %err`) using `tracing::warn!`. When a query fails, error strings (such as those from `reqwest` or ClickHouse exceptions) can contain userinfo or query parameters from the `CLICKHOUSE_URL`.
 **Prevention:** Always wrap error strings logged during store or HTTP query failures in `rolter_core::redact::redact_urls_in_text(&format!("{err:#}"))` to ensure sensitive credentials in URLs are masked in server log streams.
+## 2026-10-25 - Redact Sensitive URL Credentials in MCP OAuth Discovery Errors
+
+**Learning:** MCP OAuth discovery in `crates/rolter-control/src/mcp_oauth_discovery.rs` constructed `DiscoveryError::Refused` and `tracing::debug!` messages using raw unredacted URLs and reqwest error strings. When discovery failed against URLs containing sensitive query parameters or userinfo credentials, those secrets could be exposed in API error messages and debug logs.
+**Prevention:** Always sanitize URLs and HTTP client error strings using `rolter_core::redact::redact_urls_in_text` before embedding them into `DiscoveryError::Refused` variants or `tracing` logs.
 ## 2026-10-25 - Consistent 409 Conflict Errors for Config-Owned Provider Groups
 
 **Learning:** `require_group_not_config_owned` and `require_group_row_not_config_owned` in `crates/rolter-control/src/crud/provider_groups.rs` previously returned `ApiError::Core(Error::Config(...))` which rendered as HTTP 400 Bad Request, whereas mutating other config-owned resources (providers, routes, models) returned HTTP 409 Conflict.

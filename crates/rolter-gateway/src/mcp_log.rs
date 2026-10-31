@@ -451,9 +451,10 @@ impl PendingCall {
     /// Record a call that never produced a response: a refusal before
     /// forwarding, or an upstream that could not be reached.
     pub(crate) fn fail(self, status: &'static str) {
+        let notification = self.notification();
         self.finish(Outcome {
             status,
-            notification: false,
+            notification,
             refined: "",
             error: None,
             payload: None,
@@ -465,9 +466,10 @@ impl PendingCall {
     /// the dashboard can offer the step-up for exactly those.
     pub(crate) fn fail_insufficient_scope(mut self, scopes: Vec<String>) {
         self.event.error_scopes = scopes;
+        let notification = self.notification();
         self.finish(Outcome {
             status: "auth_denied",
-            notification: false,
+            notification,
             refined: "",
             error: Some(INSUFFICIENT_SCOPE_ERROR),
             payload: None,
@@ -627,9 +629,10 @@ fn by_http_status(http_status: u16, delivered: bool, notification: bool) -> Outc
 
 /// What an awaited call amounts to, from the reply found for it, if any.
 /// `legacy_sse` is a call to a server on the legacy `sse` transport, which
-/// answers a `POST` `202 Accepted` and sends the reply on the stream the client
-/// holds open (#3529): a `202` without a reply in its body is `accepted`, while
-/// one whose body does carry a reply is judged by it like any other.
+/// answers a `POST` with a successful status and sends the reply on the stream
+/// the client holds open (#3529): a `2xx` without a reply in its body is
+/// `accepted`, while one whose body does carry a reply is judged by it like any
+/// other.
 fn outcome(
     reply: Option<Value>,
     overflow: bool,
@@ -666,7 +669,7 @@ fn outcome(
     }
     // the relay does not correlate the stream's replies with the calls posted
     // (#3529), so all the row can say is that the server took the call
-    if legacy_sse && http_status == 202 && !overflow && !stream_failed {
+    if legacy_sse && (200..=299).contains(&http_status) && !overflow && !stream_failed {
         return Outcome {
             refined: "accepted",
             ..by_http_status(http_status, true, false)

@@ -383,6 +383,41 @@ pub struct GroupEntry {
     pub balancer: Arc<dyn LoadBalancer>,
 }
 
+impl GroupEntry {
+    /// The project whose keys alone may use this group, narrowed by a scoped
+    /// member when the group itself is org-wide.
+    fn project_scope(&self, providers: &HashMap<String, ProviderConfig>) -> Option<String> {
+        self.config
+            .tenancy
+            .as_ref()
+            .and_then(|tenancy| tenancy.project_id.clone())
+            .or_else(|| {
+                self.config
+                    .members
+                    .iter()
+                    .find_map(|member| providers.get(&member.provider).and_then(provider_scope))
+            })
+    }
+
+    /// Whether this group resolves for the caller, including member narrowing.
+    pub fn in_tenancy_of(
+        &self,
+        key: Option<&KeyMeta>,
+        providers: &HashMap<String, ProviderConfig>,
+    ) -> bool {
+        let key_org = key.map_or("", |key| key.org_id.as_str());
+        if !rolter_core::Tenancy::admits(self.config.tenancy.as_ref(), key_org) {
+            return false;
+        }
+        if let (Some(key), Some(scope)) = (key, self.project_scope(providers).as_deref()) {
+            if !key.org_id.is_empty() && key.project_id != scope {
+                return false;
+            }
+        }
+        true
+    }
+}
+
 /// What a route target, variant target or group member that names no provider
 /// it may use is rewritten to: a prefix no runtime id starts with, since
 /// [`index_providers`] serves no provider whose name starts with a NUL.
@@ -1194,16 +1229,7 @@ impl Snapshot {
             // a group's scope is its own; failing that, a scoped member still
             // narrows it, so an org-wide group a row edit left holding one
             // cannot hand that provider to another project
-            let scope = group
-                .tenancy
-                .as_ref()
-                .and_then(|t| t.project_id.clone())
-                .or_else(|| {
-                    group
-                        .members
-                        .iter()
-                        .find_map(|m| self.providers.get(&m.provider).and_then(provider_scope))
-                });
+            let scope = entry.project_scope(&self.providers);
             let shared = self.groups_by_slug.is_shared(slug);
             // the group's own balancer, so the rotation advances across
             // requests instead of restarting on each one (#1655)

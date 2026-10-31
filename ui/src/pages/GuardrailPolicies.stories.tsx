@@ -38,6 +38,8 @@ const provider = (id: string, name: string): GuardrailProviderRow => ({
   max_retries: 0,
   failure_mode: "fail_closed",
   max_body_bytes: 65536,
+  max_scored_bytes: null,
+  on_truncated: "score",
   auth_kind: "none",
   auth_env: null,
   created_at: "2026-08-02T00:00:00Z",

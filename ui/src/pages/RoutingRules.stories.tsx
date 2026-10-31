@@ -1475,6 +1475,47 @@ export const ShowsTheObservedShareBesideTheConfiguredSplit: Story = {
   },
 };
 
+const zonedVariantTraffic = observing([variantTraffic("stable", 880, 8, 420)]);
+
+/** #3559: a calendar-day window is read again over the new chart zone's midnights. */
+export const ChangingTheChartZoneReadsVariantTrafficAgain: Story = {
+  render: () => (
+    <Harness fetchStub={zonedVariantTraffic.stub} role="admin">
+      <Toasted>
+        <RoutingRules />
+      </Toasted>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const { setChartTimeZone } = await import("@/lib/i18n/format");
+    try {
+      const dialog = await openRouteSheet(canvasElement);
+      await pickOption(
+        await dialog.findByRole("combobox", { name: "Time window" }),
+        "Month to date",
+      );
+      const reads = () =>
+        zonedVariantTraffic.calls
+          .filter((c) => c.url.includes("/analytics/by-variant"))
+          .map((c) => new URL(c.url, "http://x").searchParams.get("since"));
+      await waitFor(() => expect(reads().length).toBeGreaterThan(1));
+      const before = reads().length;
+
+      setChartTimeZone("Pacific/Kiritimati");
+      const offset = 14 * 3_600_000;
+      const there = new Date(Date.now() + offset);
+      const midnight = new Date(
+        Date.UTC(there.getUTCFullYear(), there.getUTCMonth(), 1) - offset,
+      ).toISOString();
+      await waitFor(() => expect(reads().length).toBeGreaterThan(before));
+      await expect(reads()[reads().length - 1]).toBe(midnight);
+      await expect(reads()[0]).not.toBe(midnight);
+    } finally {
+      setChartTimeZone(null);
+    }
+  },
+};
+
 /**
  * The log records the variant that answered, so a variant others fail over to
  * reads high in Observed (#3409). The first-attempt column counts the requests

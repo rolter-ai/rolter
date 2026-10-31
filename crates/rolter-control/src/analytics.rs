@@ -1306,8 +1306,8 @@ async fn by_attribution(
 /// `(rule, action)` with the number of requests it acted on.
 ///
 /// `action` is `blocked`, `redacted` or `annotated` for a rule (named in
-/// `rule`), and `provider_blocked` or `provider_transformed` for a guardrail provider,
-/// with its name in `rule` (empty on rows written before #3038). A request counts once per entry
+/// `rule`), and `provider_blocked`, `provider_transformed` or `semantic_truncated` for a guardrail
+/// provider, with its name in `rule` (empty on rows written before #3038). A request counts once per entry
 /// however many times the rule matched in it, scaled by the sampling weight
 /// like every other count here. Rows older than
 /// `clickhouse/018_guardrail_events.sql` carry no events, and a table without
@@ -1511,7 +1511,7 @@ pub struct InvocationsQuery {
     pub(crate) usage_unknown: Option<bool>,
     /// one guardrail event to filter to, as the `guardrails` rollup names it
     /// (`blocked:<rule>`, `redacted:<rule>`, `annotated:<rule>`,
-    /// `provider_blocked`, `provider_transformed`); empty/omitted applies no
+    /// `provider_blocked`, `provider_transformed`, `semantic_truncated`); empty/omitted applies no
     /// filter (#2158)
     pub(crate) guardrail: Option<String>,
     /// one plugin event to filter to, as the `plugins` rollup names it

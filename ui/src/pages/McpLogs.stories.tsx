@@ -96,6 +96,22 @@ export const Loaded: Story = {
   },
 };
 
+const statusFiltered = recording(loaded);
+
+export const FiltersCallsNoReplyWasAwaitedFor: Story = {
+  render: () => (
+    <Harness fetchStub={statusFiltered.stub}>
+      <McpLogs />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const filter = await canvas.findByRole("combobox", { name: "Filter by status" });
+    await pickOption(filter, "Not awaited");
+    await waitFor(() => expect(lastLogsQuery(statusFiltered).get("status")).toBe("not_awaited"));
+  },
+};
+
 // how a call ended reads in the dashboard's language; the transport is the
 // protocol's own identifier and stays as stored
 export const StatusesInRussian: Story = {
@@ -932,6 +948,43 @@ export const PickingAWindowWritesTheAddress: Story = {
     // back on the default, the parameter leaves the address
     await pickOption(canvas.getByRole("combobox", { name: "Time window" }), "Last 24 hours");
     await waitFor(() => expect(canvas.getByTestId("where")).toHaveTextContent(/^\?server=github$/));
+  },
+};
+
+const zonedPaging = recording(
+  scoped(async (input) => {
+    const url = new URL(String(input), "http://localhost");
+    if (url.pathname.endsWith("/mcp/logs/summary")) return json({ data: [SUMMARY] });
+    const cursor = url.searchParams.get("cursor");
+    return json({
+      data: Array.from({ length: 50 }, (_, i) =>
+        call({ event_id: `${cursor ?? "first"}-${i}`, tool: `tool_${i}` }),
+      ),
+      next_cursor: cursor ? null : "old-zone-cursor",
+    });
+  }),
+);
+
+/** #3559: a cursor from the old chart zone is never sent with the new zone's window. */
+export const ChangingTheChartZoneResetsTheCursor: Story = {
+  render: () => (
+    <Harness fetchStub={zonedPaging.stub} route="/mcp-logs?window=mtd">
+      <McpLogs />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const { setChartTimeZone } = await import("@/lib/i18n/format");
+    try {
+      const canvas = within(canvasElement);
+      await userEvent.click(await canvas.findByRole("button", { name: en.pages.mcpLogs.next }));
+      await waitFor(() => expect(lastLogsQuery(zonedPaging).get("cursor")).toBe("old-zone-cursor"));
+
+      setChartTimeZone("Pacific/Kiritimati");
+      await waitFor(() => expect(lastLogsQuery(zonedPaging).has("cursor")).toBe(false));
+      await expect(canvas.getByRole("button", { name: en.pages.mcpLogs.prev })).toBeDisabled();
+    } finally {
+      setChartTimeZone(null);
+    }
   },
 };
 

@@ -143,9 +143,29 @@ pub struct ScopeRefs {
     /// a portable name, so a per-org export (#3440) can tell whose a cap is
     #[cfg(feature = "postgres")]
     owners: std::collections::HashMap<(rolter_core::BudgetScope, String), String>,
+    /// id-free comments for portable-file omissions found while loading refs
+    omissions: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
 }
 
 impl ScopeRefs {
+    #[cfg(feature = "postgres")]
+    fn record_omission(&self, comment: String) {
+        self.omissions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(comment);
+    }
+
+    fn omission_comments(&self) -> Vec<String> {
+        let mut comments = self
+            .omissions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        comments.sort();
+        comments
+    }
+
     /// Record that `scope` entity `id` is called `reference` in a portable file.
     /// A name containing `/` is not recorded: the reference is a `/`-joined
     /// path, so it could not be told apart from a deeper one.
@@ -289,6 +309,9 @@ fn render_document(
     render_mcp_gateway_tool_groups(&mut out, config);
     render_prompt_templates(&mut out, config);
     render_logging(&mut out, config, omit_capture);
+    for comment in refs.omission_comments() {
+        out.push_str(&format!("\n# not exported: {comment}\n"));
+    }
     out
 }
 
@@ -1244,6 +1267,15 @@ async fn load_mcp_gateway_tool_groups(
                     _ => None,
                 };
                 if named.is_none() {
+                    let subject = match kind.as_str() {
+                        "team" => "team",
+                        "project" => "project",
+                        "virtual_key" => "virtual key",
+                        _ => "subject",
+                    };
+                    refs.record_omission(format!(
+                        "MCP tool group {subject} assignment, no portable subject name"
+                    ));
                     // the file would name nothing an import can find, so the
                     // operator hears that the assignment does not travel
                     tracing::warn!(
@@ -3895,6 +3927,18 @@ model = "gpt-4o"
             assert!(!allow, "a refused file loosened the org's MCP settings");
         }
 
+        #[test]
+        fn omission_comments_are_sorted_without_losing_duplicates() {
+            let refs = super::super::ScopeRefs::default();
+            refs.record_omission("z assignment".into());
+            refs.record_omission("a assignment".into());
+            refs.record_omission("z assignment".into());
+            assert_eq!(
+                refs.omission_comments(),
+                ["a assignment", "z assignment", "z assignment"]
+            );
+        }
+
         /// An assignment whose team has no portable name (`A/B`) is not in the
         /// file, and a re-import of that file into the same deployment keeps
         /// it rather than handing the team the organization-wide set (#3514).
@@ -3928,6 +3972,12 @@ model = "gpt-4o"
                 .await
                 .unwrap();
             assert!(!first.contains("A/B"), "{first}");
+            assert!(
+                first.contains(
+                    "# not exported: MCP tool group team assignment, no portable subject name"
+                ),
+                "{first}"
+            );
             let file = dir.join("org-a.toml");
             std::fs::write(&file, &first).unwrap();
 

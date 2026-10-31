@@ -1,0 +1,13 @@
+#!/bin/bash
+set -euo pipefail
+printf '%s\n' "$*" >>"${FAKE_GH_LOG}"
+if [ "$1 $2" = "issue list" ]; then
+	cat "${FAKE_GH_ISSUES}"
+elif [ "$1 $2" = "issue create" ]; then
+	printf '{"number":42,"url":"https://example.test/issues/42"}\n'
+elif [ "$1 $2" = "issue comment" ] || [ "$1 $2" = "issue reopen" ]; then
+	:
+else
+	printf 'unexpected fake gh invocation: %s\n' "$*" >&2
+	exit 2
+fi
