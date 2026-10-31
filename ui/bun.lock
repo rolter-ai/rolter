@@ -8,7 +8,7 @@
         "@fontsource-variable/geist": "^5.3.0",
         "@fontsource-variable/geist-mono": "^5.3.0",
         "@opentelemetry/api": "^1.9.1",
-        "@opentelemetry/context-zone": "^2.12.0",
+        "@opentelemetry/context-zone": "^3.0.0",
         "@opentelemetry/exporter-trace-otlp-http": "^0.223.0",
         "@opentelemetry/instrumentation": "^0.223.0",
         "@opentelemetry/instrumentation-document-load": "^0.68.0",
@@ -183,9 +183,9 @@
 
     "@opentelemetry/api-logs": ["@opentelemetry/api-logs@0.223.0", "", { "dependencies": { "@opentelemetry/api": "^1.3.0" } }, "sha512-Oepm6etVPFCn0VWB1t833iOTgz1eYBDUPxcrOR/XvwzD1+Ag9VzSPSrrKAFNJ/haatj+8CXbG47pZXvdNQKDJw=="],
 
-    "@opentelemetry/context-zone": ["@opentelemetry/context-zone@2.12.0", "", { "dependencies": { "@opentelemetry/context-zone-peer-dep": "2.12.0", "zone.js": "^0.11.0 || ^0.12.0 || ^0.13.0 || ^0.14.0 || ^0.15.0 || ^0.16.0" } }, "sha512-0sl/9ApZBusUcEg9iYo1svqy+1qnRO1N5SUd5VSvKCKlTMSjjA+yWDcEGVu/j5mqjyBtV7cgj5XI5MYoW92X7g=="],
+    "@opentelemetry/context-zone": ["@opentelemetry/context-zone@3.0.0", "", { "dependencies": { "@opentelemetry/context-zone-peer-dep": "3.0.0", "zone.js": "^0.11.0 || ^0.12.0 || ^0.13.0 || ^0.14.0 || ^0.15.0 || ^0.16.0" } }, "sha512-vicuEb1zJ2LxJMLfZQj38/s0sqWj1VXSkG9yp4WPL3GNRaFihbOa7fDDqnQngYE6CJj8ANQ1rzwD3evZmLWo/g=="],
 
-    "@opentelemetry/context-zone-peer-dep": ["@opentelemetry/context-zone-peer-dep@2.12.0", "", { "peerDependencies": { "@opentelemetry/api": ">=1.0.0 <1.10.0", "zone.js": "^0.10.2 || ^0.11.0 || ^0.12.0 || ^0.13.0 || ^0.14.0 || ^0.15.0 || ^0.16.0" } }, "sha512-hu+N5/4WCkIARuzQgAfbn/A89UeUF555/RivBylrwgX01Xz5kL30NypBHEe2Ffi7cgnVxAz9+KklzUs60YT7PQ=="],
+    "@opentelemetry/context-zone-peer-dep": ["@opentelemetry/context-zone-peer-dep@3.0.0", "", { "peerDependencies": { "@opentelemetry/api": ">=1.0.0 <1.11.0", "zone.js": "^0.10.2 || ^0.11.0 || ^0.12.0 || ^0.13.0 || ^0.14.0 || ^0.15.0 || ^0.16.0" } }, "sha512-TeDXoovlcSuMs39D4MMN0TFvjO3IeCtgq4FuyFgm6ZUXGvhhlvC+KUqhs29q+d35dbSlbzQiGyTPVx7p+ZdxEg=="],
 
     "@opentelemetry/core": ["@opentelemetry/core@2.12.0", "", { "dependencies": { "@opentelemetry/semantic-conventions": "^1.29.0" }, "peerDependencies": { "@opentelemetry/api": ">=1.0.0 <1.10.0" } }, "sha512-1HsSAuvT4/my0QrXWsyXFdWjKaPeCHsismKZgEEIb8NK13LP6DrMRlsUbvD/0F9mDWK3xDom9AMv3IscxgOnOQ=="],
 
