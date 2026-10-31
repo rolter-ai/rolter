@@ -78,6 +78,7 @@
 **Learning:** `PromptRepository.tsx` and `SkillsRepository.tsx` hand-rolled icon delete buttons with `GatedButton` or `Button` and raw `Trash2`, missing standard design system traits like hover border states (`hover:border-[color:var(--status-danger)]`).
 **Action:** Always use the shared `DeleteIconButton` primitive for icon delete buttons across repository headers and editor row items.
 
+
 ## 2026-10-21 - Playground DeleteIconButton Primitive
 
 **Learning:** Hand-rolled icon delete controls (`<Button size="icon" variant="ghost">` or `<button>`) for column, attachment, and list-row removals miss standard design system hover border states (`hover:border-[color:var(--status-danger)]` / `hover:text-[color:var(--status-danger-text)]`) and focus indicators.
