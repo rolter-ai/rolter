@@ -23,6 +23,8 @@ const ROW: GuardrailProviderRow = {
   max_retries: 1,
   failure_mode: "fail_closed",
   max_body_bytes: 65536,
+  max_scored_bytes: null,
+  on_truncated: "score",
   auth_kind: "bearer",
   auth_env: "ROLTER_GUARDRAIL_TOKEN",
   created_at: "2026-08-02T00:00:00Z",

@@ -35,6 +35,10 @@ export interface GuardrailProviderRow {
   max_retries: number;
   failure_mode: "fail_open" | "fail_closed";
   max_body_bytes: number;
+  /** total bytes a local classifier may score; null uses eight body windows */
+  max_scored_bytes: number | null;
+  /** whether text beyond the local scoring budget is scored or refused */
+  on_truncated: "score" | "fail_closed";
   auth_kind: "none" | "bearer" | "shared_secret";
   auth_env: string | null;
   created_at: string;

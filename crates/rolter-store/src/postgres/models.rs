@@ -1107,6 +1107,10 @@ pub struct GuardrailProvider {
     pub max_retries: i32,
     pub failure_mode: String,
     pub max_body_bytes: i32,
+    /// total bytes a local provider may score, across overlapping body windows
+    pub max_scored_bytes: Option<i32>,
+    /// `score` or `fail_closed` for text past `max_scored_bytes`
+    pub on_truncated: String,
     pub auth_kind: String,
     pub auth_env: Option<String>,
     pub created_at: DateTime<Utc>,

@@ -26,10 +26,11 @@ export const RULE_ACTIONS = [
   "annotated",
 ] as const satisfies GuardrailAction[];
 
-/** the two a guardrail provider can */
+/** the outcomes a guardrail provider can record, including a local scoring cut */
 export const PROVIDER_ACTIONS = [
   "provider_blocked",
   "provider_transformed",
+  "semantic_truncated",
 ] as const satisfies GuardrailAction[];
 
 export type OutcomesQuery = UseQueryResult<GuardrailOutcomes>;
