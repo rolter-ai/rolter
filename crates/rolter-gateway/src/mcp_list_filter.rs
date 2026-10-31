@@ -15,7 +15,7 @@
 //!
 //! That covers the three places a reply can come from: the JSON or SSE body of
 //! the `POST` that asked, and the `GET` stream of a legacy `sse` server, which
-//! answers the `POST` with `202` and delivers the reply on the stream (or a
+//! answers the `POST` with a 2xx and delivers the reply on the stream (or a
 //! replayed streamable-HTTP stream). Pagination needs nothing special: each page
 //! is its own reply and is filtered on its own, with its `nextCursor` left alone
 //! (a page can end up holding fewer tools than the server's page size, or none,

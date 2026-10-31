@@ -34,7 +34,9 @@ describe("MCP log vocabulary", () => {
   for (const locale of readdirSync(LOCALES).filter((file) => file.endsWith(".json"))) {
     it(`${locale} words every status, outcome and not-awaited explanation`, () => {
       const copy = JSON.parse(readFileSync(join(LOCALES, locale), "utf8")).pages.mcpLogs as Copy;
-      expect(Object.keys(copy.statuses).sort()).toEqual([...statuses, ...outcomes].sort());
+      expect(Object.keys(copy.statuses).sort()).toEqual(
+        [...statuses, ...outcomes, "not_awaited"].sort(),
+      );
       expect(Object.keys(copy.notAwaited).sort()).toEqual(["notification", ...outcomes].sort());
       expect(Object.keys(copy.notAwaitedDetail).sort()).toEqual(
         ["notification", "notificationFailed", ...outcomes].sort(),

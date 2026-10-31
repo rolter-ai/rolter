@@ -66,6 +66,28 @@ fn every_cited_module_and_test_exists() {
     );
 }
 
+#[test]
+fn legacy_sse_acceptance_claim_covers_empty_2xx_replies() {
+    let registry = registry();
+    let spec = registry
+        .specs
+        .iter()
+        .find(|spec| spec.id == "mcp-transport")
+        .expect("the MCP transport record exists");
+    assert!(
+        spec.omissions
+            .iter()
+            .any(|line| line.contains("answers 2xx with no reply")),
+        "the published claim names only the old 202 case: {:?}",
+        spec.omissions
+    );
+    assert!(
+        spec.tests.iter().any(|test| test
+            .ends_with("a_legacy_sse_empty_2xx_is_accepted_with_its_reply_on_the_stream")),
+        "the record does not cite the empty-2xx regression test"
+    );
+}
+
 /// Every `.rs` file under `crates/*/src` and `crates/*/tests`.
 fn workspace_sources() -> Vec<PathBuf> {
     fn walk(dir: &Path, out: &mut Vec<PathBuf>) {

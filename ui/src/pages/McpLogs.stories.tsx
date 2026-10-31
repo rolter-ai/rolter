@@ -96,6 +96,22 @@ export const Loaded: Story = {
   },
 };
 
+const statusFiltered = recording(loaded);
+
+export const FiltersCallsNoReplyWasAwaitedFor: Story = {
+  render: () => (
+    <Harness fetchStub={statusFiltered.stub}>
+      <McpLogs />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const filter = await canvas.findByRole("combobox", { name: "Filter by status" });
+    await pickOption(filter, "Not awaited");
+    await waitFor(() => expect(lastLogsQuery(statusFiltered).get("status")).toBe("not_awaited"));
+  },
+};
+
 // how a call ended reads in the dashboard's language; the transport is the
 // protocol's own identifier and stays as stored
 export const StatusesInRussian: Story = {
