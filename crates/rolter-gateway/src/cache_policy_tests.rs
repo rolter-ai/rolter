@@ -164,8 +164,7 @@ impl Harness {
             strategy: BalancingStrategy::RoundRobin,
             targets: vec![Target {
                 provider: "up".to_string(),
-                model: None,
-                weight: 1,
+                ..Default::default()
             }],
             params: Default::default(),
             param_policy: Default::default(),
@@ -416,4 +415,101 @@ async fn pii_restoration_on_a_cacheable_miss_matches_the_uncached_path() {
         assert_eq!(reply.status, 200);
         assert_eq!(reply.content(), "mail dave@corp.com now", "cache={cache}");
     }
+}
+
+/// A hit discloses what translation did to the request that produced the
+/// answer, as the miss did (#3326): the adjustments are stored with the entry.
+#[tokio::test]
+async fn a_cache_hit_on_a_translated_route_carries_the_param_adjustments() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    async fn anthropic(
+        State(calls): State<Arc<AtomicUsize>>,
+        Json(body): Json<Value>,
+    ) -> Json<Value> {
+        calls.fetch_add(1, Ordering::SeqCst);
+        assert!(body.get("presence_penalty").is_none(), "{body}");
+        Json(json!({
+            "id": "msg_1", "type": "message", "role": "assistant", "model": "claude",
+            "content": [{"type": "text", "text": "pong"}],
+            "stop_reason": "end_turn", "usage": {"input_tokens": 2, "output_tokens": 1}
+        }))
+    }
+    let upstream = serve(
+        Router::new()
+            .route("/v1/messages", post(anthropic))
+            .with_state(calls.clone()),
+    )
+    .await;
+    let mut config = GatewayConfig::default();
+    config.cache.enabled = true;
+    config.providers.push(ProviderConfig {
+        name: "anthropic".to_string(),
+        kind: ProviderKind::Anthropic,
+        api_base: format!("http://{upstream}"),
+        ..Default::default()
+    });
+    config.routes.push(ModelRoute {
+        model: "claude".to_string(),
+        strategy: BalancingStrategy::RoundRobin,
+        targets: vec![Target {
+            provider: "anthropic".to_string(),
+            ..Default::default()
+        }],
+        params: Default::default(),
+        param_policy: Default::default(),
+        advanced: Default::default(),
+        cache: Some(RouteCache {
+            enabled: true,
+            ttl_secs: Some(600),
+            per_key: false,
+            semantic: None,
+        }),
+        variants: Default::default(),
+        tenancy: None,
+    });
+    let mut state = AppState::with_logging(&config, None);
+    state.response_cache = ResponseCache::in_memory();
+    let gateway = serve(crate::build_router(
+        state,
+        &config.server.metrics_path,
+        config.server.max_body_bytes,
+    ))
+    .await;
+    let client = reqwest::Client::new();
+    let mut seen = Vec::new();
+    for _ in 0..2 {
+        let response = client
+            .post(format!("http://{gateway}/v1/chat/completions"))
+            .json(&json!({
+                "model": "claude", "max_tokens": 8, "presence_penalty": 0.5,
+                "messages": [{"role": "user", "content": "ping"}]
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        let header = |name: &str| {
+            response
+                .headers()
+                .get(name)
+                .map(|v| v.to_str().unwrap().to_string())
+        };
+        seen.push((
+            header("x-rolter-cache"),
+            header(rolter_proxy::PARAM_ADJUSTMENTS_HEADER),
+        ));
+    }
+    let adjusted = Some("presence_penalty=dropped".to_string());
+    assert_eq!(
+        seen,
+        [
+            (Some("MISS".to_string()), adjusted.clone()),
+            (Some("HIT".to_string()), adjusted),
+        ]
+    );
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "the second was served from cache"
+    );
 }

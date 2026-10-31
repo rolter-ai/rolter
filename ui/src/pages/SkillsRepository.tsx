@@ -51,6 +51,7 @@ import { Combobox } from "@/components/ui/combobox";
 import { EmptyState } from "@/components/ui/empty-state";
 import { LoadError } from "@/components/LoadError";
 import { LoadingRegion } from "@/components/LoadingState";
+import { Field } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { Segmented } from "@/components/ui/segmented";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -968,14 +969,12 @@ function AccessFields({
     });
   return (
     <div className="space-y-3">
-      <label className="block text-xs font-medium">
-        {t("pages.skillsRepo.fieldName")}
+      <Field label={t("pages.skillsRepo.fieldName")} required>
         <Input
-          className="mt-1"
           value={value.name}
           onChange={(event) => onChange({ ...value, name: event.target.value })}
         />
-      </label>
+      </Field>
       {includeSlug && (
         <label className="block text-xs font-medium">
           {t("pages.skillsRepo.fieldSlug")}{" "}
@@ -1070,41 +1069,46 @@ function CreateSkillDialog({
       });
   }, [open]);
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog
+      open={open}
+      onOpenChange={onOpenChange}
+      onSubmit={() =>
+        onSubmit({
+          name: value.name.trim(),
+          ...(value.slug?.trim() ? { slug: value.slug.trim() } : {}),
+          ...(value.description.trim() ? { description: value.description.trim() } : {}),
+          allowed_team_ids: value.allowed_team_ids,
+          minimum_role: value.minimum_role,
+        })
+      }
+      canSubmit={!!value.name.trim()}
+      busy={pending}
+    >
       <DialogHeader>
         <DialogTitle>{t("pages.skillsRepo.createTitle")}</DialogTitle>
         <DialogDescription>{t("pages.skillsRepo.createDescription")}</DialogDescription>
       </DialogHeader>
-      <form
-        className="contents"
-        onSubmit={(event) => {
-          event.preventDefault();
-          onSubmit({
-            name: value.name.trim(),
-            ...(value.slug?.trim() ? { slug: value.slug.trim() } : {}),
-            ...(value.description.trim() ? { description: value.description.trim() } : {}),
-            allowed_team_ids: value.allowed_team_ids,
-            minimum_role: value.minimum_role,
-          });
-        }}
-      >
-        <DialogBody>
-          <AccessFields value={value} teams={teams} includeSlug onChange={setValue} />
-          {error && (
-            <p role="alert" className="mt-3 text-xs text-[color:var(--status-danger-text)]">
-              {errorText(error, t)}
-            </p>
-          )}
-        </DialogBody>
-        <DialogFooter>
-          <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
-            {t("pages.skillsRepo.cancel")}
-          </Button>
-          <Button type="submit" disabled={pending || !value.name.trim()}>
-            {pending ? t("pages.skillsRepo.creating") : t("pages.skillsRepo.createSkill")}
-          </Button>
-        </DialogFooter>
-      </form>
+      <DialogBody>
+        <AccessFields value={value} teams={teams} includeSlug onChange={setValue} />
+        {error && (
+          <p role="alert" className="mt-3 text-xs text-[color:var(--status-danger-text)]">
+            {errorText(error, t)}
+          </p>
+        )}
+      </DialogBody>
+      <DialogFooter>
+        <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
+          {t("pages.skillsRepo.cancel")}
+        </Button>
+        <Button
+          type="submit"
+          disabled={pending}
+          aria-disabled={!value.name.trim() || undefined}
+          className="aria-disabled:opacity-50"
+        >
+          {pending ? t("pages.skillsRepo.creating") : t("pages.skillsRepo.createSkill")}
+        </Button>
+      </DialogFooter>
     </Dialog>
   );
 }
@@ -1141,40 +1145,45 @@ function SkillSettingsDialog({
     if (open) setValue(fromSkill());
   }, [fromSkill, open]);
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog
+      open={open}
+      onOpenChange={onOpenChange}
+      onSubmit={() =>
+        onSubmit({
+          name: value.name.trim(),
+          description: value.description.trim(),
+          minimum_role: value.minimum_role,
+          allowed_team_ids: value.allowed_team_ids,
+        })
+      }
+      canSubmit={!!value.name.trim()}
+      busy={pending}
+    >
       <DialogHeader>
         <DialogTitle>{t("pages.skillsRepo.settingsTitle")}</DialogTitle>
         <DialogDescription>{t("pages.skillsRepo.settingsDescription")}</DialogDescription>
       </DialogHeader>
-      <form
-        className="contents"
-        onSubmit={(event) => {
-          event.preventDefault();
-          onSubmit({
-            name: value.name.trim(),
-            description: value.description.trim(),
-            minimum_role: value.minimum_role,
-            allowed_team_ids: value.allowed_team_ids,
-          });
-        }}
-      >
-        <DialogBody>
-          <AccessFields value={value} teams={teams} onChange={setValue} />
-          {error && (
-            <p role="alert" className="mt-3 text-xs text-[color:var(--status-danger-text)]">
-              {errorText(error, t)}
-            </p>
-          )}
-        </DialogBody>
-        <DialogFooter>
-          <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
-            {t("pages.skillsRepo.cancel")}
-          </Button>
-          <Button type="submit" disabled={pending || !value.name.trim()}>
-            {pending ? t("pages.skillsRepo.saving") : t("pages.skillsRepo.saveSettings")}
-          </Button>
-        </DialogFooter>
-      </form>
+      <DialogBody>
+        <AccessFields value={value} teams={teams} onChange={setValue} />
+        {error && (
+          <p role="alert" className="mt-3 text-xs text-[color:var(--status-danger-text)]">
+            {errorText(error, t)}
+          </p>
+        )}
+      </DialogBody>
+      <DialogFooter>
+        <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
+          {t("pages.skillsRepo.cancel")}
+        </Button>
+        <Button
+          type="submit"
+          disabled={pending}
+          aria-disabled={!value.name.trim() || undefined}
+          className="aria-disabled:opacity-50"
+        >
+          {pending ? t("pages.skillsRepo.saving") : t("pages.skillsRepo.saveSettings")}
+        </Button>
+      </DialogFooter>
     </Dialog>
   );
 }

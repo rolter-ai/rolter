@@ -56,7 +56,7 @@ Upstream timeouts and the retry budget are deployment-wide and are configured un
 
 ## API
 
-Both endpoints are **superadmin only**, and every update is audited.
+Both endpoints are **superadmin only**: no [deployment role](/security/rbac#deployment-roles) reaches them. Every update is audited.
 
 ```bash
 curl -H "Authorization: Bearer $ROLTER_ADMIN_TOKEN" \

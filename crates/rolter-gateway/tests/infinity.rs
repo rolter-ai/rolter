@@ -265,7 +265,7 @@ fn route(model: &str, upstream_model: &str, advanced: AdvancedModelConfig) -> Mo
         targets: vec![Target {
             provider: "infinity-local".into(),
             model: Some(upstream_model.into()),
-            weight: 1,
+            ..Default::default()
         }],
         params: Default::default(),
         param_policy: Default::default(),

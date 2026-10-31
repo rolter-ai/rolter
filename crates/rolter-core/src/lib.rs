@@ -18,10 +18,12 @@ pub mod config_lint;
 pub mod config_migrate;
 pub mod currency;
 pub mod error;
+pub mod failover;
 pub mod guardrail_webhook;
 pub mod guardrails;
 pub mod mcp_challenge;
 pub mod mcp_log;
+pub mod namespace;
 pub mod node_identity;
 pub mod payload_redaction;
 pub mod pii_sanitizer;
@@ -29,10 +31,13 @@ pub mod plugin_dispatch;
 pub mod probe;
 pub mod prompt_templates;
 pub mod redact;
+pub mod request_outcome;
 pub mod secret_env;
+pub mod semantic_guards;
 #[cfg(feature = "shutdown")]
 pub mod shutdown;
 pub mod slug;
+pub mod snapshot_format;
 pub mod spec_registry;
 pub mod stability;
 pub mod telemetry;
@@ -48,17 +53,20 @@ pub use config::{
     BalancingStrategy, BilledUnits, BreakerConfig, BudgetConfig, BudgetPeriod, BudgetScope,
     CacheConfig, ClientConfig, CompatibilityConfig, CooldownConfig, EgressPolicy,
     FeatureFlagsConfig, GatewayConfig, GroupMember, HealthConfig, KvEventsConfig, LmCacheConfig,
-    LoggingConfig, McpAuthKind, McpOAuthSessionConfig, McpOrgSettingsConfig, McpServerConfig,
-    McpToolGroupConfig, McpToolRefConfig, MetricsScrapeConfig, ModelDefaultsConfig, ModelLimits,
-    ModelPriceConfig, ModelRoute, ModelVisibility, OverrideMode, ParamPolicy, PayloadCaptureConfig,
-    ProviderConfig, ProviderGroupConfig, ProviderKind, QueueConfig, RateLimitConfig,
-    RealtimeConfig, ResponsesConfig, RetryConfig, RoleProfile, RouteCache, ScopeWithin,
-    SecurityPolicyConfig, SemanticCacheConfig, ServerConfig, Target, Tenancy, TimeoutConfig,
-    TlsConfig, UnpricedPolicy, UsageRecordingConfig, Variant, VirtualKeyConfig, VirtualKeyRecord,
-    MAX_EXPLORATION_RATIO, MAX_ROUTE_RETRIES, MAX_ROUTE_THROUGHPUT, MCP_TRANSPORTS,
-    PUBLIC_EXAMPLE_KEY, RESERVED_PATHS, RESERVED_ROUTE_HEADERS,
+    LoggingConfig, McpAuthKind, McpGatewayKeyRefConfig, McpGatewaySettingsConfig,
+    McpGatewayToolGroupConfig, McpGatewayToolRefConfig, McpManifestEnforcementConfig,
+    McpOAuthSessionConfig, McpOrgSettingsConfig, McpServerConfig, McpToolGroupConfig,
+    McpToolGroupSubjectConfig, McpToolRefConfig, MetricsScrapeConfig, ModelDefaultsConfig,
+    ModelLimits, ModelPriceConfig, ModelRoute, ModelVisibility, OverrideMode, ParamPolicy,
+    PayloadCaptureConfig, PreviousKeySecret, ProviderConfig, ProviderGroupConfig, ProviderKind,
+    QueueConfig, RateLimitConfig, RealtimeConfig, ResponsesConfig, RetryConfig, RoleProfile,
+    RouteCache, ScopeWithin, SecurityPolicyConfig, SemanticCacheConfig, ServerConfig, Target,
+    Tenancy, TimeoutConfig, TlsConfig, UnpricedPolicy, UsageRecordingConfig, Variant,
+    VirtualKeyConfig, VirtualKeyRecord, MAX_EXPLORATION_RATIO, MAX_ROUTE_RETRIES,
+    MAX_ROUTE_THROUGHPUT, MCP_TRANSPORTS, PUBLIC_EXAMPLE_KEY, RESERVED_PATHS,
+    RESERVED_ROUTE_HEADERS,
 };
-pub use config::{OmittedEntry, OmittedKind, SnapshotReport};
+pub use config::{OmittedEntry, OmittedKind, SnapshotReport, UnknownValues};
 pub use config_lint::{unknown_keys, UnknownKey};
 pub use config_migrate::{
     migrate as migrate_config, plan as plan_config_migration, Change as ConfigChange,
@@ -68,8 +76,8 @@ pub use config_migrate::{
 pub use currency::{CurrencyConfig, CurrencyConverter, StaticRates, DEFAULT_BASE_CURRENCY};
 pub use error::{Error, Result};
 pub use guardrail_webhook::{
-    FailureMode, GuardrailWebhookConfig, WebhookAuth, WebhookDecision, WebhookRequest,
-    WebhookStage, WebhookTenant,
+    FailureMode, GuardProviderKind, GuardrailWebhookConfig, OnTruncated, WebhookAuth,
+    WebhookDecision, WebhookRequest, WebhookStage, WebhookTenant,
 };
 pub use guardrails::{
     dry_run_policy, dry_run_rule, BuiltinRule, CompiledGuardrails, DryRun, DryRunOutcome,
@@ -94,6 +102,10 @@ pub use prompt_templates::{
     RenderedMessage, TemplateReport, TemplateVariable, TEMPLATE_VARS_FIELD,
 };
 pub use secret_env::{credential_from_env, is_control_plane_secret, is_secret_unless_allowed};
+pub use semantic_guards::{
+    CompiledPolicy, CompiledSemanticGuards, GuardrailPolicy, PolicyRequest, PolicyScope,
+    ScoredDecision, SemanticGuardsConfig, StreamingStrategy, ViolationAction,
+};
 pub use stability::{
     stability_of, stability_of_nav_key, subsystem, Stability, SubsystemStability, SUBSYSTEMS,
 };

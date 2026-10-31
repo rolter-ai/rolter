@@ -1,0 +1,1787 @@
+{
+  "format": 1,
+  "paths": {
+    "adaptive_routing": [
+      "object"
+    ],
+    "adaptive_routing.cost_weight": [
+      "number"
+    ],
+    "adaptive_routing.enabled": [
+      "boolean"
+    ],
+    "adaptive_routing.exploration_ratio": [
+      "number"
+    ],
+    "adaptive_routing.latency_weight": [
+      "number"
+    ],
+    "adaptive_routing.load_weight": [
+      "number"
+    ],
+    "adaptive_routing.min_samples": [
+      "number"
+    ],
+    "breaker": [
+      "object"
+    ],
+    "breaker.enabled": [
+      "boolean"
+    ],
+    "breaker.failure_threshold": [
+      "number"
+    ],
+    "breaker.open_secs": [
+      "number"
+    ],
+    "budgets": [
+      "array"
+    ],
+    "budgets[]": [
+      "object"
+    ],
+    "budgets[].id": [
+      "string"
+    ],
+    "budgets[].limit_usd": [
+      "number"
+    ],
+    "budgets[].period": [
+      "string"
+    ],
+    "budgets[].scope": [
+      "string"
+    ],
+    "budgets[].unpriced_policy": [
+      "string"
+    ],
+    "budgets[].within": [
+      "object"
+    ],
+    "budgets[].within.org": [
+      "string"
+    ],
+    "cache": [
+      "object"
+    ],
+    "cache.default_ttl_secs": [
+      "number"
+    ],
+    "cache.enabled": [
+      "boolean"
+    ],
+    "cache.max_entry_bytes": [
+      "number"
+    ],
+    "cache.namespace": [
+      "string"
+    ],
+    "client": [
+      "object"
+    ],
+    "client.forwarded_headers": [
+      "array"
+    ],
+    "client.forwarded_headers[]": [
+      "string"
+    ],
+    "client.injected_headers": [
+      "object"
+    ],
+    "client.injected_headers.x-gateway": [
+      "string"
+    ],
+    "client.public_base_url": [
+      "string"
+    ],
+    "client.request_id_header": [
+      "string"
+    ],
+    "compatibility": [
+      "object"
+    ],
+    "compatibility.anthropic_version": [
+      "string"
+    ],
+    "compatibility.default_max_tokens": [
+      "number"
+    ],
+    "cooldown": [
+      "object"
+    ],
+    "cooldown.base_secs": [
+      "number"
+    ],
+    "cooldown.max_secs": [
+      "number"
+    ],
+    "currency": [
+      "object"
+    ],
+    "currency.base": [
+      "string"
+    ],
+    "currency.rates": [
+      "object"
+    ],
+    "currency.rates.EUR": [
+      "number"
+    ],
+    "db_virtual_keys": [
+      "array"
+    ],
+    "db_virtual_keys[]": [
+      "object"
+    ],
+    "db_virtual_keys[].access_policy": [
+      "object"
+    ],
+    "db_virtual_keys[].access_policy.allowed_models": [
+      "array"
+    ],
+    "db_virtual_keys[].access_policy.allowed_models[]": [
+      "string"
+    ],
+    "db_virtual_keys[].access_policy.allowed_routes": [
+      "array"
+    ],
+    "db_virtual_keys[].access_policy.allowed_routes[]": [
+      "string"
+    ],
+    "db_virtual_keys[].access_policy.denied_models": [
+      "array"
+    ],
+    "db_virtual_keys[].access_policy.denied_models[]": [
+      "string"
+    ],
+    "db_virtual_keys[].access_policy.denied_routes": [
+      "array"
+    ],
+    "db_virtual_keys[].access_policy.denied_routes[]": [
+      "string"
+    ],
+    "db_virtual_keys[].business_unit_id": [
+      "string"
+    ],
+    "db_virtual_keys[].cache": [
+      "boolean"
+    ],
+    "db_virtual_keys[].customer_id": [
+      "string"
+    ],
+    "db_virtual_keys[].disabled": [
+      "boolean"
+    ],
+    "db_virtual_keys[].expires_at": [
+      "string"
+    ],
+    "db_virtual_keys[].id": [
+      "string"
+    ],
+    "db_virtual_keys[].key_hash": [
+      "string"
+    ],
+    "db_virtual_keys[].models": [
+      "array"
+    ],
+    "db_virtual_keys[].models[]": [
+      "string"
+    ],
+    "db_virtual_keys[].org_id": [
+      "string"
+    ],
+    "db_virtual_keys[].previous": [
+      "object"
+    ],
+    "db_virtual_keys[].previous.key_hash": [
+      "string"
+    ],
+    "db_virtual_keys[].previous.valid_until": [
+      "string"
+    ],
+    "db_virtual_keys[].project_id": [
+      "string"
+    ],
+    "db_virtual_keys[].providers": [
+      "array"
+    ],
+    "db_virtual_keys[].providers[]": [
+      "string"
+    ],
+    "db_virtual_keys[].team_id": [
+      "string"
+    ],
+    "db_virtual_keys[].user_id": [
+      "string"
+    ],
+    "egress": [
+      "object"
+    ],
+    "egress.allow_hosts": [
+      "array"
+    ],
+    "egress.allow_hosts[]": [
+      "string"
+    ],
+    "egress.block_link_local": [
+      "boolean"
+    ],
+    "egress.block_loopback": [
+      "boolean"
+    ],
+    "egress.block_private": [
+      "boolean"
+    ],
+    "feature_flags": [
+      "object"
+    ],
+    "feature_flags.active_health_checks": [
+      "boolean"
+    ],
+    "feature_flags.cache_aware_routing": [
+      "boolean"
+    ],
+    "feature_flags.circuit_breaker": [
+      "boolean"
+    ],
+    "feature_flags.complexity_routing": [
+      "boolean"
+    ],
+    "feature_flags.guardrails": [
+      "boolean"
+    ],
+    "feature_flags.response_cache": [
+      "boolean"
+    ],
+    "guardrail_webhook": [
+      "object"
+    ],
+    "guardrail_webhook.enabled": [
+      "boolean"
+    ],
+    "guardrail_webhook.failure_mode": [
+      "string"
+    ],
+    "guardrail_webhook.max_body_bytes": [
+      "number"
+    ],
+    "guardrail_webhook.max_retries": [
+      "number"
+    ],
+    "guardrail_webhook.stage": [
+      "string"
+    ],
+    "guardrail_webhook.timeout_ms": [
+      "number"
+    ],
+    "guardrail_webhook.url": [
+      "string"
+    ],
+    "guardrails": [
+      "object"
+    ],
+    "guardrails.enabled": [
+      "boolean"
+    ],
+    "guardrails.streaming_post_call": [
+      "string"
+    ],
+    "health": [
+      "object"
+    ],
+    "health.catalogue_interval_secs": [
+      "number"
+    ],
+    "health.consecutive_failure_threshold": [
+      "number"
+    ],
+    "health.enabled": [
+      "boolean"
+    ],
+    "health.interval_secs": [
+      "number"
+    ],
+    "health.path": [
+      "string"
+    ],
+    "health.probe_concurrency": [
+      "number"
+    ],
+    "health.recovery_success_threshold": [
+      "number"
+    ],
+    "health.status_page_interval_secs": [
+      "number"
+    ],
+    "health.timeout_secs": [
+      "number"
+    ],
+    "logging": [
+      "object"
+    ],
+    "logging.batch_max": [
+      "number"
+    ],
+    "logging.clickhouse_url": [
+      "string"
+    ],
+    "logging.flush_ms": [
+      "number"
+    ],
+    "logging.payload_capture": [
+      "object"
+    ],
+    "logging.payload_capture.enabled": [
+      "boolean"
+    ],
+    "logging.payload_capture.max_bytes": [
+      "number"
+    ],
+    "logging.payload_capture.models": [
+      "array"
+    ],
+    "logging.payload_capture.models[]": [
+      "string"
+    ],
+    "logging.payload_capture.redact_detectors": [
+      "array"
+    ],
+    "logging.payload_capture.redact_detectors[]": [
+      "string"
+    ],
+    "logging.payload_capture.redact_fields": [
+      "array"
+    ],
+    "logging.payload_capture.redact_fields[]": [
+      "string"
+    ],
+    "logging.payload_capture.redact_patterns": [
+      "array"
+    ],
+    "logging.payload_capture.redact_patterns[]": [
+      "object"
+    ],
+    "logging.payload_capture.redact_patterns[].name": [
+      "string"
+    ],
+    "logging.payload_capture.redact_patterns[].pattern": [
+      "string"
+    ],
+    "logging.payload_capture.virtual_key_ids": [
+      "array"
+    ],
+    "logging.payload_capture.virtual_key_ids[]": [
+      "string"
+    ],
+    "logging.queue_capacity": [
+      "number"
+    ],
+    "logging.sample_rate": [
+      "number"
+    ],
+    "logging.ui_events": [
+      "boolean"
+    ],
+    "mcp_gateway_settings": [
+      "array"
+    ],
+    "mcp_gateway_settings[]": [
+      "object"
+    ],
+    "mcp_gateway_settings[].allow_unlisted_tools": [
+      "boolean"
+    ],
+    "mcp_gateway_settings[].connect_timeout_ms": [
+      "number"
+    ],
+    "mcp_gateway_settings[].default_failure_mode": [
+      "string"
+    ],
+    "mcp_gateway_settings[].default_transport": [
+      "string"
+    ],
+    "mcp_gateway_settings[].max_retries": [
+      "number"
+    ],
+    "mcp_gateway_settings[].org": [
+      "string"
+    ],
+    "mcp_gateway_settings[].request_timeout_ms": [
+      "number"
+    ],
+    "mcp_gateway_tool_groups": [
+      "array"
+    ],
+    "mcp_gateway_tool_groups[]": [
+      "object"
+    ],
+    "mcp_gateway_tool_groups[].description": [
+      "string"
+    ],
+    "mcp_gateway_tool_groups[].enabled": [
+      "boolean"
+    ],
+    "mcp_gateway_tool_groups[].keys": [
+      "array"
+    ],
+    "mcp_gateway_tool_groups[].keys[]": [
+      "object"
+    ],
+    "mcp_gateway_tool_groups[].keys[].name": [
+      "string"
+    ],
+    "mcp_gateway_tool_groups[].keys[].prefix": [
+      "string"
+    ],
+    "mcp_gateway_tool_groups[].keys[].project": [
+      "string"
+    ],
+    "mcp_gateway_tool_groups[].name": [
+      "string"
+    ],
+    "mcp_gateway_tool_groups[].org": [
+      "string"
+    ],
+    "mcp_gateway_tool_groups[].projects": [
+      "array"
+    ],
+    "mcp_gateway_tool_groups[].projects[]": [
+      "string"
+    ],
+    "mcp_gateway_tool_groups[].slug": [
+      "string"
+    ],
+    "mcp_gateway_tool_groups[].teams": [
+      "array"
+    ],
+    "mcp_gateway_tool_groups[].teams[]": [
+      "string"
+    ],
+    "mcp_gateway_tool_groups[].tools": [
+      "array"
+    ],
+    "mcp_gateway_tool_groups[].tools[]": [
+      "object"
+    ],
+    "mcp_gateway_tool_groups[].tools[].server": [
+      "string"
+    ],
+    "mcp_gateway_tool_groups[].tools[].tool": [
+      "string"
+    ],
+    "mcp_manifest_enforcement": [
+      "array"
+    ],
+    "mcp_manifest_enforcement[]": [
+      "object"
+    ],
+    "mcp_manifest_enforcement[].enforce": [
+      "boolean"
+    ],
+    "mcp_manifest_enforcement[].org": [
+      "string"
+    ],
+    "mcp_oauth_sessions": [
+      "array"
+    ],
+    "mcp_oauth_sessions[]": [
+      "object"
+    ],
+    "mcp_oauth_sessions[].access_token": [
+      "string"
+    ],
+    "mcp_oauth_sessions[].expires_at": [
+      "string"
+    ],
+    "mcp_oauth_sessions[].id": [
+      "string"
+    ],
+    "mcp_oauth_sessions[].scopes": [
+      "array"
+    ],
+    "mcp_oauth_sessions[].scopes[]": [
+      "string"
+    ],
+    "mcp_oauth_sessions[].server_id": [
+      "string"
+    ],
+    "mcp_oauth_sessions[].user_id": [
+      "string"
+    ],
+    "mcp_servers": [
+      "array"
+    ],
+    "mcp_servers[]": [
+      "object"
+    ],
+    "mcp_servers[].auth_header_name": [
+      "string"
+    ],
+    "mcp_servers[].auth_kind": [
+      "string"
+    ],
+    "mcp_servers[].connect_timeout_ms": [
+      "number"
+    ],
+    "mcp_servers[].enforce_manifest_by_default": [
+      "boolean"
+    ],
+    "mcp_servers[].id": [
+      "string"
+    ],
+    "mcp_servers[].max_retries": [
+      "number"
+    ],
+    "mcp_servers[].org_id": [
+      "string"
+    ],
+    "mcp_servers[].request_timeout_ms": [
+      "number"
+    ],
+    "mcp_servers[].required_scopes": [
+      "array"
+    ],
+    "mcp_servers[].required_scopes[]": [
+      "string"
+    ],
+    "mcp_servers[].slug": [
+      "string"
+    ],
+    "mcp_servers[].tools": [
+      "array"
+    ],
+    "mcp_servers[].tools[]": [
+      "string"
+    ],
+    "mcp_servers[].transport": [
+      "string"
+    ],
+    "mcp_servers[].url": [
+      "string"
+    ],
+    "mcp_settings": [
+      "array"
+    ],
+    "mcp_settings[]": [
+      "object"
+    ],
+    "mcp_settings[].allow_unlisted_tools": [
+      "boolean"
+    ],
+    "mcp_settings[].connect_timeout_ms": [
+      "number"
+    ],
+    "mcp_settings[].fail_open": [
+      "boolean"
+    ],
+    "mcp_settings[].max_retries": [
+      "number"
+    ],
+    "mcp_settings[].org_id": [
+      "string"
+    ],
+    "mcp_settings[].request_timeout_ms": [
+      "number"
+    ],
+    "mcp_tool_groups": [
+      "array"
+    ],
+    "mcp_tool_groups[]": [
+      "object"
+    ],
+    "mcp_tool_groups[].assignments": [
+      "array"
+    ],
+    "mcp_tool_groups[].assignments[]": [
+      "object"
+    ],
+    "mcp_tool_groups[].assignments[].id": [
+      "string"
+    ],
+    "mcp_tool_groups[].assignments[].kind": [
+      "string"
+    ],
+    "mcp_tool_groups[].disabled": [
+      "boolean"
+    ],
+    "mcp_tool_groups[].id": [
+      "string"
+    ],
+    "mcp_tool_groups[].org_id": [
+      "string"
+    ],
+    "mcp_tool_groups[].slug": [
+      "string"
+    ],
+    "mcp_tool_groups[].tools": [
+      "array"
+    ],
+    "mcp_tool_groups[].tools[]": [
+      "object"
+    ],
+    "mcp_tool_groups[].tools[].server_id": [
+      "string"
+    ],
+    "mcp_tool_groups[].tools[].tool": [
+      "string"
+    ],
+    "metrics_scrape": [
+      "object"
+    ],
+    "metrics_scrape.enabled": [
+      "boolean"
+    ],
+    "metrics_scrape.interval_secs": [
+      "number"
+    ],
+    "metrics_scrape.path": [
+      "string"
+    ],
+    "metrics_scrape.timeout_secs": [
+      "number"
+    ],
+    "model_defaults": [
+      "object"
+    ],
+    "model_defaults.default_model": [
+      "string"
+    ],
+    "model_defaults.enabled": [
+      "boolean"
+    ],
+    "model_defaults.max_tokens": [
+      "number"
+    ],
+    "model_defaults.temperature": [
+      "number"
+    ],
+    "model_defaults.top_p": [
+      "number"
+    ],
+    "model_prices": [
+      "array"
+    ],
+    "model_prices[]": [
+      "object"
+    ],
+    "model_prices[].audio_input_per_minute": [
+      "number"
+    ],
+    "model_prices[].audio_input_per_mtok": [
+      "number"
+    ],
+    "model_prices[].audio_output_per_mtok": [
+      "number"
+    ],
+    "model_prices[].cache_write_1h_per_mtok": [
+      "number"
+    ],
+    "model_prices[].cache_write_per_mtok": [
+      "number"
+    ],
+    "model_prices[].cached_audio_input_per_mtok": [
+      "number"
+    ],
+    "model_prices[].cached_input_per_mtok": [
+      "number"
+    ],
+    "model_prices[].currency": [
+      "string"
+    ],
+    "model_prices[].image_per_unit": [
+      "number"
+    ],
+    "model_prices[].input_per_mtok": [
+      "number"
+    ],
+    "model_prices[].model": [
+      "string"
+    ],
+    "model_prices[].output_per_mtok": [
+      "number"
+    ],
+    "model_prices[].speech_per_mchar": [
+      "number"
+    ],
+    "models": [
+      "object"
+    ],
+    "models.default": [
+      "array"
+    ],
+    "models.default[]": [
+      "object"
+    ],
+    "models.default[].advanced": [
+      "object"
+    ],
+    "models.default[].advanced.capabilities": [
+      "array"
+    ],
+    "models.default[].advanced.capabilities[]": [
+      "string"
+    ],
+    "models.default[].advanced.context_length": [
+      "number"
+    ],
+    "models.default[].advanced.description": [
+      "string"
+    ],
+    "models.default[].advanced.guardrails": [
+      "object"
+    ],
+    "models.default[].advanced.headers": [
+      "object"
+    ],
+    "models.default[].advanced.headers.x-route": [
+      "string"
+    ],
+    "models.default[].advanced.limits": [
+      "object"
+    ],
+    "models.default[].advanced.limits.concurrency": [
+      "number"
+    ],
+    "models.default[].advanced.limits.output_tokens": [
+      "number"
+    ],
+    "models.default[].advanced.limits.retries": [
+      "number"
+    ],
+    "models.default[].advanced.limits.rpm": [
+      "number"
+    ],
+    "models.default[].advanced.limits.timeout_secs": [
+      "number"
+    ],
+    "models.default[].advanced.limits.tpm": [
+      "number"
+    ],
+    "models.default[].advanced.locked_headers": [
+      "array"
+    ],
+    "models.default[].advanced.locked_headers[]": [
+      "string"
+    ],
+    "models.default[].advanced.model_type": [
+      "string"
+    ],
+    "models.default[].advanced.visibility": [
+      "object"
+    ],
+    "models.default[].advanced.visibility.allowed_key_ids": [
+      "array"
+    ],
+    "models.default[].advanced.visibility.allowed_key_ids[]": [
+      "string"
+    ],
+    "models.default[].advanced.visibility.allowed_team_ids": [
+      "array"
+    ],
+    "models.default[].advanced.visibility.allowed_team_ids[]": [
+      "string"
+    ],
+    "models.default[].advanced.visibility.allowed_user_ids": [
+      "array"
+    ],
+    "models.default[].advanced.visibility.allowed_user_ids[]": [
+      "string"
+    ],
+    "models.default[].cache": [
+      "object"
+    ],
+    "models.default[].cache.enabled": [
+      "boolean"
+    ],
+    "models.default[].cache.per_key": [
+      "boolean"
+    ],
+    "models.default[].cache.semantic": [
+      "object"
+    ],
+    "models.default[].cache.semantic.max_candidates": [
+      "number"
+    ],
+    "models.default[].cache.semantic.model": [
+      "string"
+    ],
+    "models.default[].cache.semantic.provider": [
+      "string"
+    ],
+    "models.default[].cache.semantic.threshold": [
+      "number"
+    ],
+    "models.default[].cache.ttl_secs": [
+      "number"
+    ],
+    "models.default[].model": [
+      "string"
+    ],
+    "models.default[].param_policy": [
+      "object"
+    ],
+    "models.default[].param_policy.allow": [
+      "array"
+    ],
+    "models.default[].param_policy.allow[]": [
+      "string"
+    ],
+    "models.default[].param_policy.deny": [
+      "array"
+    ],
+    "models.default[].param_policy.deny[]": [
+      "string"
+    ],
+    "models.default[].param_policy.mode": [
+      "string"
+    ],
+    "models.default[].params": [
+      "object"
+    ],
+    "models.default[].params.temperature": [
+      "number"
+    ],
+    "models.default[].strategy": [
+      "string"
+    ],
+    "models.default[].targets": [
+      "array"
+    ],
+    "models.default[].targets[]": [
+      "object"
+    ],
+    "models.default[].targets[].model": [
+      "string"
+    ],
+    "models.default[].targets[].provider": [
+      "string"
+    ],
+    "models.default[].targets[].weight": [
+      "number"
+    ],
+    "models.default[].tenancy": [
+      "object"
+    ],
+    "models.default[].tenancy.org_id": [
+      "string"
+    ],
+    "models.default[].tenancy.project_id": [
+      "string"
+    ],
+    "models.default[].variants": [
+      "array"
+    ],
+    "models.default[].variants[]": [
+      "object"
+    ],
+    "models.default[].variants[].name": [
+      "string"
+    ],
+    "models.default[].variants[].params": [
+      "object"
+    ],
+    "models.default[].variants[].params.top_p": [
+      "number"
+    ],
+    "models.default[].variants[].targets": [
+      "array"
+    ],
+    "models.default[].variants[].targets[]": [
+      "object"
+    ],
+    "models.default[].variants[].targets[].model": [
+      "string"
+    ],
+    "models.default[].variants[].targets[].provider": [
+      "string"
+    ],
+    "models.default[].variants[].targets[].weight": [
+      "number"
+    ],
+    "models.default[].variants[].weight": [
+      "number"
+    ],
+    "models.readonly": [
+      "array"
+    ],
+    "models.readonly[]": [
+      "object"
+    ],
+    "models.readonly[].advanced": [
+      "object"
+    ],
+    "models.readonly[].advanced.capabilities": [
+      "array"
+    ],
+    "models.readonly[].advanced.capabilities[]": [
+      "string"
+    ],
+    "models.readonly[].advanced.context_length": [
+      "number"
+    ],
+    "models.readonly[].advanced.description": [
+      "string"
+    ],
+    "models.readonly[].advanced.guardrails": [
+      "object"
+    ],
+    "models.readonly[].advanced.headers": [
+      "object"
+    ],
+    "models.readonly[].advanced.headers.x-route": [
+      "string"
+    ],
+    "models.readonly[].advanced.limits": [
+      "object"
+    ],
+    "models.readonly[].advanced.limits.concurrency": [
+      "number"
+    ],
+    "models.readonly[].advanced.limits.output_tokens": [
+      "number"
+    ],
+    "models.readonly[].advanced.limits.retries": [
+      "number"
+    ],
+    "models.readonly[].advanced.limits.rpm": [
+      "number"
+    ],
+    "models.readonly[].advanced.limits.timeout_secs": [
+      "number"
+    ],
+    "models.readonly[].advanced.limits.tpm": [
+      "number"
+    ],
+    "models.readonly[].advanced.locked_headers": [
+      "array"
+    ],
+    "models.readonly[].advanced.locked_headers[]": [
+      "string"
+    ],
+    "models.readonly[].advanced.model_type": [
+      "string"
+    ],
+    "models.readonly[].advanced.visibility": [
+      "object"
+    ],
+    "models.readonly[].advanced.visibility.allowed_key_ids": [
+      "array"
+    ],
+    "models.readonly[].advanced.visibility.allowed_key_ids[]": [
+      "string"
+    ],
+    "models.readonly[].advanced.visibility.allowed_team_ids": [
+      "array"
+    ],
+    "models.readonly[].advanced.visibility.allowed_team_ids[]": [
+      "string"
+    ],
+    "models.readonly[].advanced.visibility.allowed_user_ids": [
+      "array"
+    ],
+    "models.readonly[].advanced.visibility.allowed_user_ids[]": [
+      "string"
+    ],
+    "models.readonly[].cache": [
+      "object"
+    ],
+    "models.readonly[].cache.enabled": [
+      "boolean"
+    ],
+    "models.readonly[].cache.per_key": [
+      "boolean"
+    ],
+    "models.readonly[].cache.semantic": [
+      "object"
+    ],
+    "models.readonly[].cache.semantic.max_candidates": [
+      "number"
+    ],
+    "models.readonly[].cache.semantic.model": [
+      "string"
+    ],
+    "models.readonly[].cache.semantic.provider": [
+      "string"
+    ],
+    "models.readonly[].cache.semantic.threshold": [
+      "number"
+    ],
+    "models.readonly[].cache.ttl_secs": [
+      "number"
+    ],
+    "models.readonly[].model": [
+      "string"
+    ],
+    "models.readonly[].param_policy": [
+      "object"
+    ],
+    "models.readonly[].param_policy.allow": [
+      "array"
+    ],
+    "models.readonly[].param_policy.allow[]": [
+      "string"
+    ],
+    "models.readonly[].param_policy.deny": [
+      "array"
+    ],
+    "models.readonly[].param_policy.deny[]": [
+      "string"
+    ],
+    "models.readonly[].param_policy.mode": [
+      "string"
+    ],
+    "models.readonly[].params": [
+      "object"
+    ],
+    "models.readonly[].params.temperature": [
+      "number"
+    ],
+    "models.readonly[].strategy": [
+      "string"
+    ],
+    "models.readonly[].targets": [
+      "array"
+    ],
+    "models.readonly[].targets[]": [
+      "object"
+    ],
+    "models.readonly[].targets[].model": [
+      "string"
+    ],
+    "models.readonly[].targets[].provider": [
+      "string"
+    ],
+    "models.readonly[].targets[].weight": [
+      "number"
+    ],
+    "models.readonly[].tenancy": [
+      "object"
+    ],
+    "models.readonly[].tenancy.org_id": [
+      "string"
+    ],
+    "models.readonly[].tenancy.project_id": [
+      "string"
+    ],
+    "models.readonly[].variants": [
+      "array"
+    ],
+    "models.readonly[].variants[]": [
+      "object"
+    ],
+    "models.readonly[].variants[].name": [
+      "string"
+    ],
+    "models.readonly[].variants[].params": [
+      "object"
+    ],
+    "models.readonly[].variants[].params.top_p": [
+      "number"
+    ],
+    "models.readonly[].variants[].targets": [
+      "array"
+    ],
+    "models.readonly[].variants[].targets[]": [
+      "object"
+    ],
+    "models.readonly[].variants[].targets[].model": [
+      "string"
+    ],
+    "models.readonly[].variants[].targets[].provider": [
+      "string"
+    ],
+    "models.readonly[].variants[].targets[].takes_over": [
+      "array"
+    ],
+    "models.readonly[].variants[].targets[].takes_over[]": [
+      "string"
+    ],
+    "models.readonly[].variants[].targets[].weight": [
+      "number"
+    ],
+    "models.readonly[].variants[].weight": [
+      "number"
+    ],
+    "pii_sanitizer": [
+      "object"
+    ],
+    "pii_sanitizer.direction": [
+      "string"
+    ],
+    "pii_sanitizer.enabled": [
+      "boolean"
+    ],
+    "pii_sanitizer.entities": [
+      "array"
+    ],
+    "pii_sanitizer.entities[]": [
+      "string"
+    ],
+    "pii_sanitizer.failure_mode": [
+      "string"
+    ],
+    "pii_sanitizer.max_body_bytes": [
+      "number"
+    ],
+    "pii_sanitizer.max_retries": [
+      "number"
+    ],
+    "pii_sanitizer.restoration": [
+      "string"
+    ],
+    "pii_sanitizer.restore_stream_url": [
+      "string"
+    ],
+    "pii_sanitizer.restore_url": [
+      "string"
+    ],
+    "pii_sanitizer.streaming": [
+      "string"
+    ],
+    "pii_sanitizer.timeout_ms": [
+      "number"
+    ],
+    "pii_sanitizer.url": [
+      "string"
+    ],
+    "plugins": [
+      "object"
+    ],
+    "plugins.instances": [
+      "array"
+    ],
+    "plugins.instances[]": [
+      "object"
+    ],
+    "plugins.instances[].endpoint": [
+      "string"
+    ],
+    "plugins.instances[].failure_mode": [
+      "string"
+    ],
+    "plugins.instances[].org_id": [
+      "string"
+    ],
+    "plugins.instances[].position": [
+      "number"
+    ],
+    "plugins.instances[].project_id": [
+      "string"
+    ],
+    "plugins.instances[].slug": [
+      "string"
+    ],
+    "plugins.instances[].stage": [
+      "string"
+    ],
+    "prompt_templates": [
+      "object"
+    ],
+    "prompt_templates.enabled": [
+      "boolean"
+    ],
+    "provider_groups": [
+      "array"
+    ],
+    "provider_groups[]": [
+      "object"
+    ],
+    "provider_groups[].members": [
+      "array"
+    ],
+    "provider_groups[].members[]": [
+      "object"
+    ],
+    "provider_groups[].members[].model": [
+      "string"
+    ],
+    "provider_groups[].members[].provider": [
+      "string"
+    ],
+    "provider_groups[].members[].weight": [
+      "number"
+    ],
+    "provider_groups[].name": [
+      "string"
+    ],
+    "provider_groups[].project_scoped": [
+      "boolean"
+    ],
+    "provider_groups[].slug": [
+      "string"
+    ],
+    "provider_groups[].strategy": [
+      "string"
+    ],
+    "provider_groups[].tenancy": [
+      "object"
+    ],
+    "provider_groups[].tenancy.org_id": [
+      "string"
+    ],
+    "providers": [
+      "array"
+    ],
+    "providers[]": [
+      "object"
+    ],
+    "providers[].allow_custom_api_base": [
+      "boolean"
+    ],
+    "providers[].also_track_via_llm_call": [
+      "boolean"
+    ],
+    "providers[].api_base": [
+      "string"
+    ],
+    "providers[].api_keys": [
+      "array"
+    ],
+    "providers[].api_keys[]": [
+      "object"
+    ],
+    "providers[].api_keys[].env": [
+      "string"
+    ],
+    "providers[].api_keys[].weight": [
+      "number"
+    ],
+    "providers[].ca_bundles": [
+      "array"
+    ],
+    "providers[].ca_bundles[]": [
+      "string"
+    ],
+    "providers[].egress_proxies": [
+      "array"
+    ],
+    "providers[].egress_proxies[]": [
+      "string"
+    ],
+    "providers[].kind": [
+      "string"
+    ],
+    "providers[].kv_events": [
+      "object"
+    ],
+    "providers[].kv_events.endpoint": [
+      "string"
+    ],
+    "providers[].kv_events.max_blocks": [
+      "number"
+    ],
+    "providers[].kv_events.stale_secs": [
+      "number"
+    ],
+    "providers[].kv_events.topic": [
+      "string"
+    ],
+    "providers[].llm_probe_model": [
+      "string"
+    ],
+    "providers[].lmcache": [
+      "object"
+    ],
+    "providers[].lmcache.endpoint": [
+      "string"
+    ],
+    "providers[].lmcache.refresh_secs": [
+      "number"
+    ],
+    "providers[].lmcache.stale_secs": [
+      "number"
+    ],
+    "providers[].model_role_profiles": [
+      "object"
+    ],
+    "providers[].model_role_profiles.some-model": [
+      "string"
+    ],
+    "providers[].name": [
+      "string"
+    ],
+    "providers[].role_profile": [
+      "string"
+    ],
+    "providers[].slug": [
+      "string"
+    ],
+    "providers[].status_page_url": [
+      "string"
+    ],
+    "providers[].tenancy": [
+      "object"
+    ],
+    "providers[].tenancy.org_id": [
+      "string"
+    ],
+    "providers[].tenancy.project_id": [
+      "string"
+    ],
+    "queue": [
+      "object"
+    ],
+    "queue.backpressure": [
+      "string"
+    ],
+    "queue.block_timeout_ms": [
+      "number"
+    ],
+    "queue.capacity": [
+      "number"
+    ],
+    "queue.enabled": [
+      "boolean"
+    ],
+    "queue.workers": [
+      "number"
+    ],
+    "rate_limits": [
+      "array"
+    ],
+    "rate_limits[]": [
+      "object"
+    ],
+    "rate_limits[].id": [
+      "string"
+    ],
+    "rate_limits[].rpm": [
+      "number"
+    ],
+    "rate_limits[].scope": [
+      "string"
+    ],
+    "rate_limits[].tpm": [
+      "number"
+    ],
+    "rate_limits[].within": [
+      "object"
+    ],
+    "rate_limits[].within.project": [
+      "string"
+    ],
+    "realtime": [
+      "object"
+    ],
+    "realtime.idle_timeout_secs": [
+      "number"
+    ],
+    "realtime.max_connections": [
+      "number"
+    ],
+    "realtime.max_session_secs": [
+      "number"
+    ],
+    "realtime.usage_flush_secs": [
+      "number"
+    ],
+    "responses": [
+      "object"
+    ],
+    "responses.registry_max_entries": [
+      "number"
+    ],
+    "responses.registry_ttl_secs": [
+      "number"
+    ],
+    "retry": [
+      "object"
+    ],
+    "retry.base_backoff_ms": [
+      "number"
+    ],
+    "retry.max_backoff_ms": [
+      "number"
+    ],
+    "retry.max_retries": [
+      "number"
+    ],
+    "routes": [
+      "array"
+    ],
+    "routes[]": [
+      "object"
+    ],
+    "routes[].advanced": [
+      "object"
+    ],
+    "routes[].advanced.capabilities": [
+      "array"
+    ],
+    "routes[].advanced.capabilities[]": [
+      "string"
+    ],
+    "routes[].advanced.context_length": [
+      "number"
+    ],
+    "routes[].advanced.description": [
+      "string"
+    ],
+    "routes[].advanced.guardrails": [
+      "object"
+    ],
+    "routes[].advanced.headers": [
+      "object"
+    ],
+    "routes[].advanced.headers.x-route": [
+      "string"
+    ],
+    "routes[].advanced.limits": [
+      "object"
+    ],
+    "routes[].advanced.limits.concurrency": [
+      "number"
+    ],
+    "routes[].advanced.limits.output_tokens": [
+      "number"
+    ],
+    "routes[].advanced.limits.retries": [
+      "number"
+    ],
+    "routes[].advanced.limits.rpm": [
+      "number"
+    ],
+    "routes[].advanced.limits.timeout_secs": [
+      "number"
+    ],
+    "routes[].advanced.limits.tpm": [
+      "number"
+    ],
+    "routes[].advanced.locked_headers": [
+      "array"
+    ],
+    "routes[].advanced.locked_headers[]": [
+      "string"
+    ],
+    "routes[].advanced.model_type": [
+      "string"
+    ],
+    "routes[].advanced.visibility": [
+      "object"
+    ],
+    "routes[].advanced.visibility.allowed_key_ids": [
+      "array"
+    ],
+    "routes[].advanced.visibility.allowed_key_ids[]": [
+      "string"
+    ],
+    "routes[].advanced.visibility.allowed_team_ids": [
+      "array"
+    ],
+    "routes[].advanced.visibility.allowed_team_ids[]": [
+      "string"
+    ],
+    "routes[].advanced.visibility.allowed_user_ids": [
+      "array"
+    ],
+    "routes[].advanced.visibility.allowed_user_ids[]": [
+      "string"
+    ],
+    "routes[].cache": [
+      "object"
+    ],
+    "routes[].cache.enabled": [
+      "boolean"
+    ],
+    "routes[].cache.per_key": [
+      "boolean"
+    ],
+    "routes[].cache.semantic": [
+      "object"
+    ],
+    "routes[].cache.semantic.max_candidates": [
+      "number"
+    ],
+    "routes[].cache.semantic.model": [
+      "string"
+    ],
+    "routes[].cache.semantic.provider": [
+      "string"
+    ],
+    "routes[].cache.semantic.threshold": [
+      "number"
+    ],
+    "routes[].cache.ttl_secs": [
+      "number"
+    ],
+    "routes[].model": [
+      "string"
+    ],
+    "routes[].param_policy": [
+      "object"
+    ],
+    "routes[].param_policy.allow": [
+      "array"
+    ],
+    "routes[].param_policy.allow[]": [
+      "string"
+    ],
+    "routes[].param_policy.deny": [
+      "array"
+    ],
+    "routes[].param_policy.deny[]": [
+      "string"
+    ],
+    "routes[].param_policy.mode": [
+      "string"
+    ],
+    "routes[].params": [
+      "object"
+    ],
+    "routes[].params.temperature": [
+      "number"
+    ],
+    "routes[].strategy": [
+      "string"
+    ],
+    "routes[].targets": [
+      "array"
+    ],
+    "routes[].targets[]": [
+      "object"
+    ],
+    "routes[].targets[].model": [
+      "string"
+    ],
+    "routes[].targets[].provider": [
+      "string"
+    ],
+    "routes[].targets[].takes_over": [
+      "array"
+    ],
+    "routes[].targets[].takes_over[]": [
+      "string"
+    ],
+    "routes[].targets[].weight": [
+      "number"
+    ],
+    "routes[].tenancy": [
+      "object"
+    ],
+    "routes[].tenancy.org_id": [
+      "string"
+    ],
+    "routes[].tenancy.project_id": [
+      "string"
+    ],
+    "routes[].variants": [
+      "array"
+    ],
+    "routes[].variants[]": [
+      "object"
+    ],
+    "routes[].variants[].name": [
+      "string"
+    ],
+    "routes[].variants[].params": [
+      "object"
+    ],
+    "routes[].variants[].params.top_p": [
+      "number"
+    ],
+    "routes[].variants[].targets": [
+      "array"
+    ],
+    "routes[].variants[].targets[]": [
+      "object"
+    ],
+    "routes[].variants[].targets[].model": [
+      "string"
+    ],
+    "routes[].variants[].targets[].provider": [
+      "string"
+    ],
+    "routes[].variants[].targets[].weight": [
+      "number"
+    ],
+    "routes[].variants[].weight": [
+      "number"
+    ],
+    "schema_version": [
+      "number"
+    ],
+    "security": [
+      "object"
+    ],
+    "security.auth_bypass_routes": [
+      "array"
+    ],
+    "security.auth_bypass_routes[]": [
+      "string"
+    ],
+    "security.required_headers": [
+      "object"
+    ],
+    "security.required_headers.x-mesh-id": [
+      "string"
+    ],
+    "semantic_guards": [
+      "object"
+    ],
+    "semantic_guards.local_concurrency": [
+      "number"
+    ],
+    "semantic_guards.policies": [
+      "array"
+    ],
+    "semantic_guards.policies[]": [
+      "object"
+    ],
+    "semantic_guards.policies[].enabled": [
+      "boolean"
+    ],
+    "semantic_guards.policies[].name": [
+      "string"
+    ],
+    "semantic_guards.policies[].on_violation": [
+      "string"
+    ],
+    "semantic_guards.policies[].providers": [
+      "array"
+    ],
+    "semantic_guards.policies[].providers[]": [
+      "string"
+    ],
+    "semantic_guards.policies[].scope": [
+      "string"
+    ],
+    "semantic_guards.policies[].scope_id": [
+      "string"
+    ],
+    "semantic_guards.policies[].streaming": [
+      "string"
+    ],
+    "semantic_guards.policies[].thresholds": [
+      "object"
+    ],
+    "semantic_guards.policies[].thresholds.*": [
+      "number"
+    ],
+    "semantic_guards.providers": [
+      "array"
+    ],
+    "semantic_guards.providers[]": [
+      "object"
+    ],
+    "semantic_guards.providers[].enabled": [
+      "boolean"
+    ],
+    "semantic_guards.providers[].failure_mode": [
+      "string"
+    ],
+    "semantic_guards.providers[].kind": [
+      "string"
+    ],
+    "semantic_guards.providers[].max_body_bytes": [
+      "number"
+    ],
+    "semantic_guards.providers[].max_retries": [
+      "number"
+    ],
+    "semantic_guards.providers[].max_scored_bytes": [
+      "number"
+    ],
+    "semantic_guards.providers[].model_path": [
+      "string"
+    ],
+    "semantic_guards.providers[].model_sha256": [
+      "string"
+    ],
+    "semantic_guards.providers[].name": [
+      "string"
+    ],
+    "semantic_guards.providers[].on_truncated": [
+      "string"
+    ],
+    "semantic_guards.providers[].stage": [
+      "string"
+    ],
+    "semantic_guards.providers[].timeout_ms": [
+      "number"
+    ],
+    "semantic_guards.providers[].url": [
+      "string"
+    ],
+    "server": [
+      "object"
+    ],
+    "server.host": [
+      "string"
+    ],
+    "server.max_body_bytes": [
+      "number"
+    ],
+    "server.metrics_path": [
+      "string"
+    ],
+    "server.port": [
+      "number"
+    ],
+    "server.require_auth": [
+      "boolean"
+    ],
+    "timeouts": [
+      "object"
+    ],
+    "timeouts.connect_secs": [
+      "number"
+    ],
+    "timeouts.request_secs": [
+      "number"
+    ],
+    "tls": [
+      "object"
+    ],
+    "tls.ca_bundles": [
+      "array"
+    ],
+    "tls.ca_bundles[]": [
+      "string"
+    ],
+    "unpriced_policy": [
+      "string"
+    ],
+    "usage_recording": [
+      "object"
+    ],
+    "usage_recording.queue_capacity": [
+      "number"
+    ],
+    "usage_recording.workers": [
+      "number"
+    ],
+    "virtual_keys": [
+      "array"
+    ],
+    "virtual_keys[]": [
+      "object"
+    ],
+    "virtual_keys[].cache": [
+      "boolean"
+    ],
+    "virtual_keys[].disabled": [
+      "boolean"
+    ],
+    "virtual_keys[].expires_at": [
+      "string"
+    ],
+    "virtual_keys[].key": [
+      "string"
+    ],
+    "virtual_keys[].models": [
+      "array"
+    ],
+    "virtual_keys[].models[]": [
+      "string"
+    ],
+    "virtual_keys[].name": [
+      "string"
+    ],
+    "virtual_keys[].providers": [
+      "array"
+    ],
+    "virtual_keys[].providers[]": [
+      "string"
+    ]
+  }
+}

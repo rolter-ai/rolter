@@ -77,6 +77,11 @@ fn validate_policy(body: &UpdateRuntimePolicy) -> ApiResult<()> {
     if !(0..=120_000).contains(&body.queue_block_ms) {
         return Err(invalid("queue_block_ms must be between 0 and 120000"));
     }
+    // a spelling this build does not know decodes as `Unknown` (#3347); on
+    // input it is a mistake, not a value from a newer release
+    if body.queue_backpressure == BackpressurePolicy::Unknown {
+        return Err(invalid("queue_backpressure must be drop, block or error"));
+    }
     if body.queue_backpressure == BackpressurePolicy::Block && body.queue_block_ms == 0 {
         return Err(invalid(
             "queue_block_ms must be greater than zero when queue_backpressure is block",
@@ -105,7 +110,8 @@ async fn update_runtime_policy(
             queue_backpressure: match body.queue_backpressure {
                 BackpressurePolicy::Drop => "drop",
                 BackpressurePolicy::Block => "block",
-                BackpressurePolicy::Error => "error",
+                // `validate_policy` refused `Unknown` above
+                BackpressurePolicy::Error | BackpressurePolicy::Unknown => "error",
             },
             queue_block_ms: body.queue_block_ms,
         })

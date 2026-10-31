@@ -13,3 +13,7 @@ PostgreSQL, Redis, and ClickHouse are external by design. Supply provider creden
 The control plane, the gateways and both preflight containers read that one file (`/etc/rolter/rolter.toml`). The control plane used to read the image's baked example instead, whose public `sk-rolter-dev` key it then served to every gateway through the snapshot (#2408). Keep `[[virtual_keys]]` out of the file: `rolter check`, which preflight runs, fails on that key.
 
 The gateway defaults to two replicas. The control plane defaults to one replica; scale it only after validating the database migration and UI-hosting behavior for your deployment. Configure TLS at the ingress or service-mesh boundary.
+
+## Image tags per component
+
+Both Deployments run `image.tag`, or the chart's `appVersion` when that is empty. `control.image.tag` and `gateway.image.tag` override it for one component alone (#3352), and each Deployment's preflight init container runs its own component's image. That lets an upgrade follow ADR-0038's order, the control plane first and the gateways after it, and lets the gateways be held on an older release or rolled back without the control plane. A gateway may lag behind its control plane but never lead it. `helm template` coverage is the `image-tags` case of `scripts/check-helm-chart.sh`; the operator procedure is in `docs/user-docs/deployment/upgrading.mdx` ("Two steps with the Helm chart").

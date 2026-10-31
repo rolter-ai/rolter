@@ -851,6 +851,24 @@
       ]
     },
     {
+      "resource": "mcp_tool_group_assignment",
+      "scope": "org",
+      "actions": [
+        {
+          "action": "read",
+          "minimum_role": "viewer",
+          "superadmin_only": false,
+          "authenticated_only": false
+        },
+        {
+          "action": "update",
+          "minimum_role": "admin",
+          "superadmin_only": false,
+          "authenticated_only": false
+        }
+      ]
+    },
+    {
       "resource": "mcp_settings",
       "scope": "org",
       "actions": [
@@ -1493,6 +1511,39 @@
       ]
     },
     {
+      "resource": "guardrail_policy",
+      "scope": "deployment",
+      "actions": [
+        {
+          "action": "read",
+          "minimum_role": null,
+          "superadmin_only": false,
+          "deployment_roles": [
+            "security_auditor"
+          ],
+          "authenticated_only": false
+        },
+        {
+          "action": "create",
+          "minimum_role": null,
+          "superadmin_only": true,
+          "authenticated_only": false
+        },
+        {
+          "action": "update",
+          "minimum_role": null,
+          "superadmin_only": true,
+          "authenticated_only": false
+        },
+        {
+          "action": "delete",
+          "minimum_role": null,
+          "superadmin_only": true,
+          "authenticated_only": false
+        }
+      ]
+    },
+    {
       "resource": "adaptive_routing_telemetry",
       "scope": "deployment",
       "actions": [
@@ -1641,11 +1692,11 @@
     },
     {
       "resource": "alert_channel",
-      "scope": "deployment",
+      "scope": "org",
       "actions": [
         {
           "action": "read",
-          "minimum_role": null,
+          "minimum_role": "admin",
           "superadmin_only": false,
           "deployment_roles": [
             "operator"
@@ -1654,7 +1705,7 @@
         },
         {
           "action": "create",
-          "minimum_role": null,
+          "minimum_role": "admin",
           "superadmin_only": false,
           "deployment_roles": [
             "operator"
@@ -1663,7 +1714,7 @@
         },
         {
           "action": "update",
-          "minimum_role": null,
+          "minimum_role": "admin",
           "superadmin_only": false,
           "deployment_roles": [
             "operator"
@@ -1672,7 +1723,7 @@
         },
         {
           "action": "delete",
-          "minimum_role": null,
+          "minimum_role": "admin",
           "superadmin_only": false,
           "deployment_roles": [
             "operator"
@@ -1683,11 +1734,11 @@
     },
     {
       "resource": "alert_rule",
-      "scope": "deployment",
+      "scope": "project",
       "actions": [
         {
           "action": "read",
-          "minimum_role": null,
+          "minimum_role": "admin",
           "superadmin_only": false,
           "deployment_roles": [
             "operator"
@@ -1696,7 +1747,7 @@
         },
         {
           "action": "create",
-          "minimum_role": null,
+          "minimum_role": "admin",
           "superadmin_only": false,
           "deployment_roles": [
             "operator"
@@ -1705,7 +1756,7 @@
         },
         {
           "action": "update",
-          "minimum_role": null,
+          "minimum_role": "admin",
           "superadmin_only": false,
           "deployment_roles": [
             "operator"
@@ -1714,7 +1765,7 @@
         },
         {
           "action": "delete",
-          "minimum_role": null,
+          "minimum_role": "admin",
           "superadmin_only": false,
           "deployment_roles": [
             "operator"
@@ -1725,11 +1776,11 @@
     },
     {
       "resource": "alert_history",
-      "scope": "deployment",
+      "scope": "project",
       "actions": [
         {
           "action": "read",
-          "minimum_role": null,
+          "minimum_role": "admin",
           "superadmin_only": false,
           "deployment_roles": [
             "operator"
@@ -1738,7 +1789,7 @@
         },
         {
           "action": "create",
-          "minimum_role": null,
+          "minimum_role": "admin",
           "superadmin_only": false,
           "deployment_roles": [
             "operator"

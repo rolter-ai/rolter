@@ -3,11 +3,12 @@
 use crate::support::*;
 use serde_json::{json, Value};
 
-/// One org can neither point its routes and groups at another org's providers
-/// nor take a name the gateway holds in a deployment-wide namespace, and the
-/// snapshot stays servable through every refused attempt (#1844, #1845).
+/// One org cannot point its routes and groups at another org's providers, but
+/// may reuse every name another org has (#1844, #1857): the snapshot serves
+/// both orgs' rows, and a gateway that predates per-org namespaces is served
+/// neither org's colliding rows rather than a snapshot it would refuse.
 #[tokio::test]
-async fn tenancy_guards_refuse_cross_org_references_and_shared_names() {
+async fn tenancy_guards_refuse_cross_org_references_but_not_shared_names() {
     skip_without_db!();
     let (app, _db) = fresh_app().await;
     let addr = serve(app).await;
@@ -36,17 +37,17 @@ async fn tenancy_guards_refuse_cross_org_references_and_shared_names() {
                 json!({"name": "core"}),
             )
             .await;
-            let team_id = team["id"].as_str().unwrap();
+            let team_id = team["id"].as_str().unwrap().to_string();
             let (_, project) = post(
                 format!("{base}/api/v1/teams/{team_id}/projects"),
                 json!({"name": "app"}),
             )
             .await;
-            (org_id, project["id"].as_str().unwrap().to_string())
+            (org_id, project["id"].as_str().unwrap().to_string(), team_id)
         }
     };
-    let (org_a, project_a) = tenant("tenant-a").await;
-    let (org_b, project_b) = tenant("tenant-b").await;
+    let (org_a, project_a, team_a) = tenant("tenant-a").await;
+    let (org_b, project_b, _) = tenant("tenant-b").await;
     let provider = |org: String, name: &'static str| {
         post(
             format!("{base}/api/v1/orgs/{org}/providers"),
@@ -80,23 +81,57 @@ async fn tenancy_guards_refuse_cross_org_references_and_shared_names() {
     .await;
     assert_eq!(status, 200);
 
-    // names the gateway holds across every org answer 409, without saying where
-    let (status, body) = provider(org_b.clone(), "edge-a").await;
-    assert_eq!(status, 409, "{body}");
-    assert!(!body.to_string().contains("tenant-a"), "{body}");
-    let (status, body) = post(
-        format!("{base}/api/v1/orgs/{org_b}/providers"),
-        json!({"name": "edge-b", "slug": "edge-a", "kind": "openai_compatible",
-               "api_base": "http://127.0.0.1:9"}),
-    )
-    .await;
-    assert_eq!(status, 409, "provider slug: {body}");
-    let (status, body) = post(
+    // names are per org: another org reuses each of them (#1857)
+    let (status, same_name) = provider(org_b.clone(), "edge-a").await;
+    assert_eq!(status, 200, "provider name: {same_name}");
+    let (status, route_b_same) = post(
         format!("{base}/api/v1/projects/{project_b}/routes"),
         json!({"model": "gpt-4o", "strategy": "round_robin"}),
     )
     .await;
-    assert_eq!(status, 409, "route name: {body}");
+    assert_eq!(status, 200, "route name: {route_b_same}");
+    let (status, body) = post(
+        format!(
+            "{base}/api/v1/routes/{}/targets",
+            route_b_same["id"].as_str().unwrap()
+        ),
+        json!({"provider_id": same_name["id"], "weight": 1}),
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+    // within one org a name is still held once, across its projects, and the
+    // refusal speaks of the org alone
+    let (_, project_a2) = post(
+        format!("{base}/api/v1/teams/{team_a}/projects"),
+        json!({"name": "app-two"}),
+    )
+    .await;
+    let (status, body) = post(
+        format!(
+            "{base}/api/v1/projects/{}/routes",
+            project_a2["id"].as_str().unwrap()
+        ),
+        json!({"model": "gpt-4o", "strategy": "round_robin"}),
+    )
+    .await;
+    assert_eq!(
+        status, 409,
+        "route name in another project of the org: {body}"
+    );
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("in this organization"),
+        "{body}"
+    );
+    let (status, body) = post(
+        format!("{base}/api/v1/orgs/{org_a}/providers"),
+        json!({"name": "edge-a2", "slug": "edge-a", "kind": "openai_compatible",
+               "api_base": "http://127.0.0.1:9"}),
+    )
+    .await;
+    assert_eq!(status, 409, "provider slug in the org: {body}");
 
     // another org's provider is refused as a target and as a member, as if unknown
     let (status, provider_b) = provider(org_b.clone(), "edge-b").await;
@@ -129,11 +164,19 @@ async fn tenancy_guards_refuse_cross_org_references_and_shared_names() {
                "members": [{"provider_id": provider_b["id"]}]}),
     )
     .await;
-    assert_eq!(status, 409, "group slug: {body}");
+    assert_eq!(status, 200, "group slug another org uses: {body}");
+    let (status, body) = post(
+        format!("{base}/api/v1/orgs/{org_a}/provider-groups"),
+        json!({"name": "pool-a again", "slug": "pool-a", "strategy": "round_robin",
+               "members": [{"provider_id": provider_a}]}),
+    )
+    .await;
+    assert_eq!(status, 409, "group slug in the org: {body}");
 
-    // the fleet still converges, and every row names the org that owns it
+    // the fleet still converges and serves both orgs' rows, each naming the
+    // org that owns it
     let snapshot: Value = client
-        .get(format!("{base}/internal/snapshot"))
+        .get(format!("{base}/internal/snapshot?formats=1"))
         .send()
         .await
         .unwrap()
@@ -142,14 +185,99 @@ async fn tenancy_guards_refuse_cross_org_references_and_shared_names() {
         .unwrap();
     let config = &snapshot["config"];
     assert!(config.is_object(), "snapshot refused: {snapshot}");
+    let owners = |kind: &str, field: &str, name: &str| -> Vec<String> {
+        let mut owners: Vec<String> = config[kind]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|row| row[field] == name)
+            .map(|row| row["tenancy"]["org_id"].as_str().unwrap().to_string())
+            .collect();
+        owners.sort();
+        owners
+    };
+    let mut both = vec![org_a.clone(), org_b.clone()];
+    both.sort();
+    assert_eq!(owners("routes", "model", "gpt-4o"), both, "{config}");
+    assert_eq!(owners("providers", "name", "edge-a"), both, "{config}");
+    assert_eq!(
+        owners("provider_groups", "slug", "pool-a"),
+        both,
+        "{config}"
+    );
     let route = config["routes"]
         .as_array()
         .unwrap()
         .iter()
-        .find(|r| r["model"] == "gpt-4o")
+        .find(|r| r["model"] == "gpt-4o" && r["tenancy"]["org_id"] == org_a.as_str())
         .unwrap();
-    assert_eq!(route["tenancy"]["org_id"], org_a.as_str());
     assert_eq!(route["tenancy"]["project_id"], project_a.as_str());
+    // a gateway that states no formats predates per-org namespaces and would
+    // refuse a repeated name: it is served neither org's colliding rows, and
+    // told so, rather than a snapshot it would refuse (ADR-0040)
+    let legacy: Value = client
+        .get(format!("{base}/internal/snapshot"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(legacy["config"].is_object(), "snapshot refused: {legacy}");
+    for (kind, field, name) in [
+        ("routes", "model", "gpt-4o"),
+        ("providers", "name", "edge-a"),
+        ("provider_groups", "slug", "pool-a"),
+    ] {
+        assert!(
+            legacy["config"][kind]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|row| row[field] != name),
+            "{kind} {name} served to a legacy gateway: {legacy}"
+        );
+    }
+    assert!(
+        legacy["problems"].as_array().unwrap().iter().any(|p| p
+            .as_str()
+            .unwrap_or_default()
+            .contains("predates per-org namespaces")),
+        "{legacy}"
+    );
+    // a row no other org shares is still served to it
+    assert!(legacy["config"]["providers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|p| p["name"] == "edge-b"));
+
+    // deleting a model two orgs share names the org, and removes its rows only
+    let delete = |query: String| {
+        let client = client.clone();
+        let url = format!("{base}/api/v1/models/gpt-4o{query}");
+        async move { client.delete(&url).send().await.unwrap().status().as_u16() }
+    };
+    assert_eq!(delete(String::new()).await, 400, "an ambiguous delete");
+    assert_eq!(delete(format!("?org_id={org_b}")).await, 204);
+    let served: Value = client
+        .get(format!("{base}/internal/snapshot?formats=1"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let left: Vec<&str> = served["config"]["routes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|r| r["model"] == "gpt-4o")
+        .filter_map(|r| r["tenancy"]["org_id"].as_str())
+        .collect();
+    assert_eq!(left, [org_a.as_str()], "{served}");
+    // with one org left holding the name, the org may be left out again
+    assert_eq!(delete(String::new()).await, 204);
     let edge_b = config["providers"]
         .as_array()
         .unwrap()
@@ -171,6 +299,141 @@ async fn tenancy_guards_refuse_cross_org_references_and_shared_names() {
         !public.to_string().contains(&org_a),
         "public config names an org"
     );
+}
+
+/// #3467: the organization-wide key list holds exactly the keys the per-project
+/// list would show the caller, project by project: one request replaces a read
+/// per project, and it widens nothing.
+#[tokio::test]
+async fn the_org_wide_key_list_holds_only_the_keys_the_caller_may_read() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("keylist".to_string()))
+        .await
+        .unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    let id_of = |sql: &'static str, parent: Option<uuid::Uuid>, name: &'static str| {
+        let pool = pool.clone();
+        async move {
+            let query = sqlx::query_scalar::<_, uuid::Uuid>(sql);
+            let query = match parent {
+                Some(parent) => query.bind(parent),
+                None => query,
+            };
+            query.bind(name).fetch_one(&pool).await.unwrap()
+        }
+    };
+    let org_sql = "insert into orgs (name, slug) values ($1, $1) returning id";
+    let team_sql = "insert into teams (org_id, name) values ($1, $2) returning id";
+    let project_sql = "insert into projects (team_id, name) values ($1, $2) returning id";
+    let acme = id_of(org_sql, None, "acme").await;
+    let globex = id_of(org_sql, None, "globex").await;
+    let core = id_of(team_sql, Some(acme), "core").await;
+    let research = id_of(team_sql, Some(acme), "research").await;
+    let payments = id_of(team_sql, Some(globex), "payments").await;
+    let app_project = id_of(project_sql, Some(core), "app").await;
+    let batch = id_of(project_sql, Some(core), "batch").await;
+    let evals = id_of(project_sql, Some(research), "evals").await;
+    let checkout = id_of(project_sql, Some(payments), "checkout").await;
+    let mut keys = std::collections::HashMap::new();
+    for (project, name) in [
+        (app_project, "app-key"),
+        (batch, "batch-key"),
+        (evals, "evals-key"),
+        (checkout, "checkout-key"),
+    ] {
+        let id: uuid::Uuid = sqlx::query_scalar(
+            "insert into virtual_keys (project_id, key_hash, key_prefix, name) \
+             values ($1, $2, $3, $4) returning id",
+        )
+        .bind(project)
+        .bind(format!("hash-{name}"))
+        .bind(&name[..3])
+        .bind(name)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        keys.insert(name, id.to_string());
+    }
+
+    let lead = seed_user(&pool, "lead@acme.test", false).await;
+    seed_membership(&pool, lead, None, Some(core), None, "admin").await;
+    let member = seed_user(&pool, "pm@acme.test", false).await;
+    seed_membership(&pool, member, None, None, Some(app_project), "member").await;
+    let org_admin = seed_user(&pool, "admin@acme.test", false).await;
+    seed_membership(&pool, org_admin, Some(acme), None, None, "admin").await;
+    let outsider = seed_user(&pool, "ops@globex.test", false).await;
+    seed_membership(&pool, outsider, None, None, Some(checkout), "member").await;
+    let lead_session = seed_session(&pool, lead, "keylist_lead").await;
+    let pm = seed_session(&pool, member, "keylist_pm").await;
+    let org_session = seed_session(&pool, org_admin, "keylist_org").await;
+    let ops = seed_session(&pool, outsider, "keylist_ops").await;
+
+    let list = |org: uuid::Uuid, token: String| {
+        let client = client.clone();
+        let base = base.clone();
+        async move {
+            let resp = client
+                .get(format!("{base}/api/v1/orgs/{org}/virtual-keys"))
+                .bearer_auth(token)
+                .send()
+                .await
+                .unwrap();
+            let status = resp.status().as_u16();
+            let body = resp.json::<Value>().await.unwrap_or(Value::Null);
+            let mut names: Vec<String> = body
+                .as_array()
+                .map(|rows| {
+                    rows.iter()
+                        .map(|row| row["name"].as_str().unwrap().to_string())
+                        .collect()
+                })
+                .unwrap_or_default();
+            names.sort();
+            (status, names, body)
+        }
+    };
+
+    // an org admin: every key of the organization, none of another's
+    let (status, names, body) = list(acme, org_session).await;
+    assert_eq!(status, 200);
+    assert_eq!(names, ["app-key", "batch-key", "evals-key"]);
+    // each row names its project, and the secret's digest of a retired key
+    // is never part of it
+    let app_row = body
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["name"] == "app-key")
+        .unwrap();
+    assert_eq!(app_row["project_id"], app_project.to_string());
+    assert_eq!(app_row["id"], keys["app-key"]);
+    // and no digest of any secret is part of a listing
+    for field in ["key_hash", "previous_key_hash", "previous_key_prefix"] {
+        assert!(app_row.get(field).is_none(), "{field} leaked: {app_row}");
+    }
+    assert_eq!(app_row["key_prefix"], "app");
+
+    // a team admin: the keys of their own team's projects, not the sibling team's
+    let (status, names, _) = list(acme, lead_session).await;
+    assert_eq!(
+        (status, names),
+        (200, vec!["app-key".into(), "batch-key".into()])
+    );
+    // a project member: their own project's key only
+    let (status, names, _) = list(acme, pm.clone()).await;
+    assert_eq!((status, names), (200, vec!["app-key".to_string()]));
+
+    // no role in the organization: refused, and an organization that is not
+    // theirs reads the same as one that does not exist for them
+    assert_eq!(list(acme, ops.clone()).await.0, 403);
+    assert_eq!(list(globex, pm).await.0, 403);
+    let (status, names, _) = list(globex, ops).await;
+    assert_eq!((status, names), (200, vec!["checkout-key".to_string()]));
 }
 
 /// Listings answer a caller whose role sits below the org with what that

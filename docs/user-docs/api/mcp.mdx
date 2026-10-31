@@ -46,12 +46,18 @@ If the MCP server refuses a call because the user's token lacks a scope
 OAuth, rolter answers `403` with the code `mcp_insufficient_scope`, the scopes
 the server asked for in `error.required_scopes`, and a standard
 `WWW-Authenticate` challenge naming them. The call is recorded in the MCP log as
-`auth_denied`. Nothing is widened automatically: the key's owner has to consent
+`auth_denied` with the error `insufficient scope`, which tells it from the other
+`auth_denied` causes (no session, an expired one, a scope the server requires and
+the session lacks), and the scopes the server asked for in `error_scopes` (the
+detail of `GET /api/v1/mcp/logs/{event_id}` returns them; the column needs
+`clickhouse/042_mcp_log_error_scopes.sql`). Nothing is widened automatically: the key's owner has to consent
 again, by calling `POST /api/v1/mcp-servers/{id}/oauth/authorize` with
 `step_up_scopes` set to those scopes. The new consent keeps what they already
 granted and adds the scopes, then the next call works. Until then every such
 call fails the same way. A server with a static credential has no consent to
 repeat, so its `403` is passed through unchanged.
+
+In the dashboard, the server's card on **MCP → MCP Catalog** names the scopes the server declares that your connection lacks, with a **Reconnect with more access** button that sends that `step_up_scopes` request. The detail of an `auth_denied` call in **MCP Logs** offers the same to the key's owner. The log records the scopes the upstream asked for, and the action adds those; a row written before the ClickHouse migration `042` records none, and then it offers the scopes the server declares that the connection lacks, or, when the connection already holds everything the server declares, the owner names the scope to add.
 
 ### Which scopes a consent asks for
 
@@ -95,6 +101,47 @@ slug and the request id the response carries (in `x-request-id` unless the
 deployment configures another header), and the MCP tool-call log records it as
 a `timeout` or `transport_error`.
 
+### How a call's outcome is recorded
+
+The MCP tool-call log reads a call's outcome from the JSON-RPC reply to it: a
+`result` is a `success` (an `error` when it says `isError`), and an `error` is
+an `error`. Some calls have no reply for the proxy to read:
+
+- **A call to a legacy `sse` server.** Such a server answers the `POST` with
+  `202 Accepted` and sends the reply later on the event stream the client holds
+  open. The proxy does not match the stream's replies to the calls posted, so a
+  call answered that way is recorded as **accepted, reply on the stream**
+  (`outcome: accepted`). A `202` whose body does carry the call's reply, such as
+  a JSON-RPC error, is judged by that reply. A `streamable_http` server owes the
+  reply in its answer, so there a bare `202` is a `transport_error`.
+
+- **A body forwarded unread.** A server no tool group or manifest governs is
+  sent every request body as it came. A body with a `Content-Encoding`, or one
+  that is not valid JSON, is forwarded without being read, so the calls in it
+  are **not itemised**: the request is one row with no tool, recorded as
+  **body not read, calls not itemised** (`outcome: unread`) once the server
+  answers `2xx`, or as the failure the server's HTTP response reports. Such a
+  body is counted in `rolter_mcp_unread_bodies_total{reason}`: `encoded` always,
+  and `unparseable` only while the MCP log is on, since only then does the proxy
+  read an ungoverned body (one that mentions `tools/call`). Send such calls uncompressed, or govern the
+  server with a tool group, to have them itemised.
+- **A notification.** A `tools/call` sent without an `id` awaits no reply. Its
+  row has the status the server's HTTP response gave and `notification: 1`, and
+  reads **notification, no reply awaited**.
+
+`GET /api/v1/mcp/logs` and the event detail return both `notification` and
+`outcome`. A notification the server accepted (`2xx`), an `accepted` call and
+an `unread` row do not say whether a tool succeeded, so
+`GET /api/v1/mcp/logs/summary` counts them apart in `not_awaited` and leaves
+them out of `successes`, `failures`, `success_rate` and `failure_rate`: the
+rates are over `calls - not_awaited`, and `null` for a window with no awaited
+call. A notification the server refused or failed was not delivered, so it
+counts as a failure like any other call. The average and p95 latency are over
+every call. `outcome` needs
+`clickhouse/051_mcp_log_outcome.sql` and `notification` needs
+`047_mcp_log_notification.sql`; until they are applied such calls are plain
+`success` rows and count as awaited.
+
 ### Accepted values
 
 A registered server's `transport`, and an organization's
@@ -136,6 +183,12 @@ with `tools/list` in the background after you install it, after you set its
 credential, and after a user completes OAuth consent; **Discover now** on the
 card (or `POST /api/v1/mcp-servers/{id}/discover`) asks again. The list a
 catalog entry ships with is only the fallback until the server has answered.
+Discovery, the connection status check and **Try it** follow the server's
+transport: a `streamable_http` server is asked over `POST`, and a legacy `sse`
+server over its own handshake (open the event stream, wait for the `endpoint`
+event, `POST` there and read the replies off the stream). The endpoint the server
+names must be on the address you registered; one on another host fails the
+handshake.
 
 A server that is down never blocks the install: the card says when it was last
 discovered, or that it has not been discovered yet and why. A tool the server
@@ -149,12 +202,41 @@ and the proxy enforces them. A server that at least one enabled group names
 serves only the tools those groups list: a `tools/call` for any other tool is
 refused with `403` and the code `mcp_tool_denied` before anything is forwarded,
 and the refusal is recorded in the MCP log as an `auth_denied` row naming the
-tool. A server no group names is not narrowed by groups. The groups an
-organization enables apply to every caller in it; there is no per-key or
-per-project assignment yet. Batches are refused as a whole when any call in
+tool. A server no group names is not narrowed by groups. By default the groups an
+organization enables apply to every caller in it. A group can also be assigned to
+teams, projects or single virtual keys (**Configure** on the group, or
+`PUT /api/v1/mcp/tool-groups/{id}/assignments` with
+`{"assignments":[{"kind":"team","id":"…"}]}`, where `kind` is `team`,
+`project` or `virtual_key`; `GET /api/v1/orgs/{org_id}/mcp/tool-group-assignments`
+lists them; the dialog offers every key of the organization, grouped by project, and deleting a team, project or key removes its assignments). An assignment only ever narrows: a caller whose key, project or team
+is named by the assignments of any enabled group is held to the union of the
+groups assigned to those three, so on a server the organization's groups govern
+it may call only what its own groups list there, and nothing when none of them
+names the server. A caller none of the assignments name keeps the
+organization-wide set, exactly as before, so a deployment that never assigns a
+group behaves as it did. A group you disable keeps its assignments: the keys,
+projects and teams assigned to it stay narrowed and get none of its tools on the
+servers it names, even when it is the only group that names one. They do not fall
+back to the organization's groups or to the whole server; everyone else is
+unaffected. Deleting a group removes its
+assignments with it, and a team, project or key that was assigned only to that
+group returns to the organization-wide set. A new group can be created with its
+`assignments` in the same request. The dashboard's group dialog edits team, project and single
+virtual-key assignments; deleting a team, project or key removes its assignments. Batches are refused as a whole when any call in
 them is refused, and while a group governs a server a request body that cannot
 be read as JSON-RPC is refused with `400` (`mcp_request_unreadable`) rather than
-forwarded unchecked. Disabling or deleting a group lifts its restriction on the
+forwarded unchecked. A request body with a `Content-Encoding` other than
+`identity` (`gzip`, `br`, `deflate`) is refused with `415` (`mcp_request_unreadable`)
+the same way: the proxy does not decompress
+requests, so it could not apply the rules to it. Send the body uncompressed. A body that repeats a key in a message or in its `params`
+(two `name` entries, or `name` and `NAME`, since some servers match keys without
+regard to case) is refused with `403` `mcp_tool_denied`, and is logged like any other refused call, because parsers disagree about which copy wins and the
+tool judged could then differ from the tool that runs. A `tools/list` reply through the proxy is narrowed by the same rules, so a client
+is shown only the tools it may call, whatever id the request carried. That covers
+the reply to the `POST` that asked and the event stream a legacy `sse` server
+sends its replies on; a paginated listing is filtered page by page and a page can
+come back shorter than the server's page size. Disabling or
+deleting a group lifts its restriction on the
 next snapshot.
 
 MCP Settings holds organization defaults, and the proxy applies them on every
@@ -170,14 +252,27 @@ request once they are saved:
   `allow_unlisted_tools` off, a server that declares tools (discovered or
   typed) serves only those, and a call naming a tool outside the manifest is
   refused with `403` `mcp_tool_denied`. An organization that never saved its
-  settings allows unlisted tools, as every organization did before manifests
-  were enforced, so an upgrade does not start refusing calls. A server that
-  declares no tools has nothing to check against.
-- **Failure policy.** `default_failure_mode` decides what happens to a request
-  the proxy cannot read as JSON-RPC, and so cannot check against the rules
-  above: `fail_closed` (the default) refuses it with `400`, `fail_open` forwards
-  it. An upstream that does not answer is always a `502`; a gateway cannot fail
-  open on a server that is down.
+  settings allows unlisted tools if it existed before manifests were
+  enforced, so an upgrade does not start refusing calls; an organization created
+  since then enforces manifests until it saves settings with `allow_unlisted_tools`
+  on, which `GET /api/v1/orgs/{org_id}/mcp/settings` reports before anything is
+  saved. A server that declares no tools has nothing to check against.
+- **Failure policy.** The proxy forwards only a request body it has checked. A
+  body that tool groups or a manifest govern and that is not valid JSON is
+  refused with `400` `mcp_request_unreadable`: UTF-16 or UTF-32, `NaN` or
+  `Infinity`, trailing commas, comments, nesting deeper than the parser allows,
+  or anything else a strict JSON parser rejects. A leading UTF-8 byte-order mark
+  is the one exception: it is removed, the body is checked, and the server
+  receives the body without it. A request that declares a `Content-Encoding` is
+  refused with `415`. An upstream that does not answer is always a `502`; a
+  gateway cannot fail open on a server that is down.
+- **`default_failure_mode` is deprecated.** It used to let a body the proxy
+  could not read through unchecked (`fail_open`). A server with a more lenient
+  JSON parser could then run a call to a refused tool, so the gateway ignores
+  the setting: every body is checked. The API and the config file
+  still accept and return the field, so existing clients and files keep
+  working, and a later major release removes it. The `failure_mode` of
+  guardrail providers and plugins is a different setting and is unchanged.
 - **Transport.** A server row always names its transport, so the organization's
   `default_transport` is what a server registered without one gets, at
   registration.

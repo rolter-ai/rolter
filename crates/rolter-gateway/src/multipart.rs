@@ -32,12 +32,35 @@ pub fn boundary(content_type: &str) -> Option<String> {
 /// Extract the value of a named text field from a multipart body. Returns
 /// `None` when the field is absent, has a `filename` (i.e. is a file part, not
 /// a text field), or the body is malformed. Values are decoded as UTF-8.
+/// The handler reads its fields together through [`text_fields`].
+#[cfg(test)]
 pub fn text_field(body: &[u8], boundary: &str, name: &str) -> Option<String> {
+    let [value] = text_fields(body, boundary, [name]);
+    value
+}
+
+/// [`text_field`] for several names in one pass over the body, which stops as
+/// soon as every name is found. A field that is usually absent (`stream`)
+/// costs a scan of the whole upload, file part included, so the handler asks
+/// for all of its fields at once rather than paying that once per field
+/// (#3432). The first part of each name wins.
+pub fn text_fields<const N: usize>(
+    body: &[u8],
+    boundary: &str,
+    names: [&str; N],
+) -> [Option<String>; N] {
+    let mut found: [Option<String>; N] = std::array::from_fn(|_| None);
+    // a part was matched, even one whose value is not UTF-8 and reads `None`
+    let mut seen = [false; N];
     let delim = format!("--{boundary}");
     let delim = delim.as_bytes();
     let mut pos = 0usize;
+    let mut missing = N;
 
-    while let Some(start) = find(&body[pos..], delim).map(|i| pos + i) {
+    while missing > 0 {
+        let Some(start) = find(&body[pos..], delim).map(|i| pos + i) else {
+            break;
+        };
         // step past the delimiter and its trailing CRLF (or `--` at the end)
         let mut cursor = start + delim.len();
         if body[cursor..].starts_with(b"--") {
@@ -59,19 +82,24 @@ pub fn text_field(body: &[u8], boundary: &str, name: &str) -> Option<String> {
             None => break,
         };
 
-        if header_matches_field(headers, name) {
-            // strip the CRLF that separates the value from the next delimiter
-            let mut end = value_end;
-            if body[..end].ends_with(b"\r\n") {
-                end -= 2;
+        for ((slot, seen), name) in found.iter_mut().zip(&mut seen).zip(names) {
+            if !*seen && header_matches_field(headers, name) {
+                *seen = true;
+                // strip the CRLF that separates the value from the next delimiter
+                let mut end = value_end;
+                if body[..end].ends_with(b"\r\n") {
+                    end -= 2;
+                }
+                *slot = std::str::from_utf8(&body[value_start..end])
+                    .ok()
+                    .map(str::to_string);
+                missing -= 1;
+                break;
             }
-            return std::str::from_utf8(&body[value_start..end])
-                .ok()
-                .map(str::to_string);
         }
         pos = value_end;
     }
-    None
+    found
 }
 
 /// True when the part headers declare `name="<name>"` and carry no `filename`
@@ -131,6 +159,22 @@ mod tests {
         assert_eq!(text_field(body.as_bytes(), b, "file"), None);
         assert_eq!(text_field(body.as_bytes(), b, "missing"), None);
     }
+    #[test]
+    fn extracts_several_fields_in_one_pass() {
+        let b = "BOUND";
+        let body = format!(
+            "--{b}\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\nwhisper-1\r\n\
+             --{b}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"a.mp3\"\r\n\
+             Content-Type: audio/mpeg\r\n\r\n\x00binary\r\n\
+             --{b}\r\nContent-Disposition: form-data; name=\"stream\"\r\n\r\ntrue\r\n--{b}--\r\n"
+        );
+        let [model, format, stream] =
+            text_fields(body.as_bytes(), b, ["model", "response_format", "stream"]);
+        assert_eq!(model.as_deref(), Some("whisper-1"));
+        assert_eq!(format, None);
+        assert_eq!(stream.as_deref(), Some("true"));
+    }
+
     #[test]
     fn extracts_edge_cases_and_malformed() {
         let b = "BOUND";

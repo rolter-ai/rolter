@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient, type UseQueryResult } from "@tan
 import { CircleDollarSign, Download, Plus } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
+import { useSearchParams } from "react-router";
 
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { ImportPricesDialog } from "@/components/ImportPricesDialog";
@@ -32,6 +33,7 @@ import {
   useSort,
 } from "@/components/screen";
 import { Button } from "@/components/ui/button";
+import { useCan, useCapabilities } from "@/lib/can";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Combobox, type ComboboxOption } from "@/components/ui/combobox";
 import { Field } from "@/components/ui/field";
@@ -137,6 +139,44 @@ export default function Pricing() {
   const [seedModel, setSeedModel] = React.useState("");
   const [importOpen, setImportOpen] = React.useState(false);
   const [search, setSearch] = React.useState("");
+
+  // a link from another screen names the model it is about, as `?model=` (the
+  // Savings advisor's "unknown price" does, #3422). A model with a price row
+  // narrows the list to it; one with none opens the price form already named
+  // for it, for a role that can write prices, and for one that cannot, the list
+  // narrowed to nothing says that no price is set. The link is read once the
+  // list and the caller's capabilities are known, then taken out of the
+  // address, so closing the form or clearing the search does not bring it back
+  const [params, setParams] = useSearchParams();
+  const linkedModel = (params.get("model") ?? "").trim();
+  const can = useCan();
+  const capabilities = useCapabilities();
+  const capabilitiesKnown = !capabilities || capabilities.resolved;
+  const linkHandled = React.useRef("");
+  React.useEffect(() => {
+    if (!linkedModel) {
+      linkHandled.current = "";
+      return;
+    }
+    if (linkHandled.current === linkedModel || !prices.isSuccess || !capabilitiesKnown) return;
+    linkHandled.current = linkedModel;
+    const priced = prices.data.some((p) => p.model === linkedModel);
+    if (!priced && can("model_price", "update") !== false) {
+      setEditTarget(null);
+      setSeedModel(linkedModel);
+      setEditOpen(true);
+    } else {
+      setSearch(linkedModel);
+    }
+    setParams(
+      (prev) => {
+        const next = new URLSearchParams(prev);
+        next.delete("model");
+        return next;
+      },
+      { replace: true },
+    );
+  }, [linkedModel, prices.isSuccess, prices.data, capabilitiesKnown, can, setParams]);
   const { sort, cycle, apply } = useSort<PriceSortColumn>();
   const fmt = useFormat();
   const [deleteTarget, setDeleteTarget] = React.useState<ModelPriceRow | null>(null);
@@ -413,8 +453,15 @@ function UnpricedModels({
     retry: false,
   });
   const pricedModels = new Set((priced.data ?? []).map((p) => p.model));
-  const rows = (traffic.data ?? [])
-    .map((r) => ({ model: r.model, requests: Number(r.unpriced_requests) }))
+  // a price is per model name, while the read answers one row per
+  // organization's model (#3486), so two organizations' unpriced `gpt-4o` is
+  // one model to price
+  const unpriced = new Map<string, number>();
+  for (const r of traffic.data ?? []) {
+    unpriced.set(r.model, (unpriced.get(r.model) ?? 0) + Number(r.unpriced_requests));
+  }
+  const rows = [...unpriced]
+    .map(([model, requests]) => ({ model, requests }))
     .filter((r) => r.model && r.requests > 0 && !pricedModels.has(r.model))
     .sort((a, b) => b.requests - a.requests);
 
@@ -768,7 +815,13 @@ function UpsertPriceDialog({
       }}
     >
       <div className="space-y-3">
-        <Field label={t("pages.pricing.modelName")} error={shown("model")}>
+        <Field
+          label={t("pages.pricing.modelName")}
+          info={t("pages.pricing.modelNameInfo")}
+          error={shown("model")}
+          // a priced model is fixed once it exists, so only a new price asks for one
+          markRequired={!existing}
+        >
           <Combobox
             allowCustom
             options={modelOptions}
@@ -782,6 +835,7 @@ function UpsertPriceDialog({
           label={t("pages.pricing.inputPrice")}
           hint={t("pages.pricing.priceUnit", { currency })}
           error={shown("input")}
+          markRequired
         >
           <Input
             type="number"
@@ -795,6 +849,7 @@ function UpsertPriceDialog({
           label={t("pages.pricing.outputPrice")}
           hint={t("pages.pricing.priceUnit", { currency })}
           error={shown("output")}
+          markRequired
         >
           <Input
             type="number"

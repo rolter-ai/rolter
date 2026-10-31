@@ -25,6 +25,13 @@ describe("readinessFrom", () => {
     expect(readinessFrom(503, "draining")).toBe("draining");
   });
 
+  it("reads the answers of a gateway that has no config yet (#3348, #3350)", () => {
+    expect(readinessFrom(503, "awaiting_snapshot")).toBe("awaitingSnapshot");
+    expect(readinessFrom(503, "snapshot_format_unsupported")).toBe("snapshotFormatUnsupported");
+    // a body that only looks like a key of the table is still unknown
+    expect(readinessFrom(503, "toString")).toBeNull();
+  });
+
   it("reads the /gw proxy's own 502 as an unreachable gateway", () => {
     const body = JSON.stringify({ error: { message: "gateway unreachable: connection refused" } });
     expect(readinessFrom(502, body)).toBe("unreachable");
@@ -118,12 +125,14 @@ describe("gatewayHealthFrom", () => {
       live: false,
       answeredAt: null,
       fleet: null,
+      refusal: null,
     });
     expect(gatewayHealthFrom(query({ isError: true, errorUpdatedAt: T0 }))).toEqual({
       health: "unknown",
       live: false,
       answeredAt: null,
       fleet: null,
+      refusal: null,
     });
   });
 
@@ -134,9 +143,20 @@ describe("gatewayHealthFrom", () => {
       live: true,
       answeredAt: T0,
       fleet: null,
+      refusal: null,
     });
     expect(gatewayHealthFrom(query({ ...at, data: "draining" })).health).toBe("degraded");
     expect(gatewayHealthFrom(query({ ...at, data: "unreachable" })).health).toBe("down");
+  });
+
+  it("reads a gateway with no config as down, and says why", () => {
+    const at = { dataUpdatedAt: T0 };
+    for (const data of ["awaitingSnapshot", "snapshotFormatUnsupported"] as const) {
+      const view = gatewayHealthFrom(query({ ...at, data }));
+      expect(view.health).toBe("down");
+      expect(view.refusal).toBe(data);
+    }
+    expect(gatewayHealthFrom(query({ ...at, data: "unreachable" })).refusal).toBeNull();
   });
 
   it("holds a known answer through one failed check, without calling it live", () => {
@@ -148,7 +168,13 @@ describe("gatewayHealthFrom", () => {
         errorUpdatedAt: T0 + GATEWAY_HEALTH_POLL_MS,
       }),
     );
-    expect(view).toEqual({ health: "healthy", live: false, answeredAt: T0, fleet: null });
+    expect(view).toEqual({
+      health: "healthy",
+      live: false,
+      answeredAt: T0,
+      fleet: null,
+      refusal: null,
+    });
   });
 
   it("admits it does not know once the answer is older than the grace window", () => {
@@ -160,7 +186,13 @@ describe("gatewayHealthFrom", () => {
         errorUpdatedAt: T0 + GATEWAY_HEALTH_STALE_MS,
       }),
     );
-    expect(view).toEqual({ health: "unknown", live: false, answeredAt: T0, fleet: null });
+    expect(view).toEqual({
+      health: "unknown",
+      live: false,
+      answeredAt: T0,
+      fleet: null,
+      refusal: null,
+    });
   });
 
   it("gives up on the second failed poll, not the third", () => {
@@ -188,6 +220,7 @@ describe("gatewayHealthFrom", () => {
       live: true,
       answeredAt: T0 + 60_000,
       fleet: null,
+      refusal: null,
     });
   });
 });
@@ -215,6 +248,7 @@ describe("gatewayHealthFrom on a fleet answer", () => {
       live: true,
       answeredAt: T0,
       fleet,
+      refusal: null,
     });
     const held = gatewayHealthFrom(
       query({
@@ -234,7 +268,13 @@ describe("gatewayHealthFrom on a fleet answer", () => {
         errorUpdatedAt: T0 + GATEWAY_HEALTH_STALE_MS,
       }),
     );
-    expect(lost).toEqual({ health: "unknown", live: false, answeredAt: T0, fleet: null });
+    expect(lost).toEqual({
+      health: "unknown",
+      live: false,
+      answeredAt: T0,
+      fleet: null,
+      refusal: null,
+    });
   });
 });
 

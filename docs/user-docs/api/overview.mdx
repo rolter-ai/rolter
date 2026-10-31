@@ -37,15 +37,15 @@ When no virtual keys are configured in `rolter.toml` the gateway runs open, whic
 
 ## Endpoints
 
-| Method | Path                   | Description                                                   |
-| ------ | ---------------------- | ------------------------------------------------------------- |
-| `POST` | `/v1/chat/completions` | OpenAI Chat Completions; streaming via `"stream": true` (SSE) |
-| `POST` | `/v1/completions`      | OpenAI legacy text completions                                |
-| `POST` | `/v1/messages`         | Anthropic Messages API; streaming supported                   |
-| `GET`  | `/v1/models`           | List configured model route names your key can access         |
-| `GET`  | `/healthz`             | Liveness check — returns `200 OK` when the gateway is running |
-| `GET`  | `/readyz`              | Readiness check — `503` while the instance is draining        |
-| `GET`  | `/metrics`             | Prometheus metrics in exposition format                       |
+| Method | Path                   | Description                                                                |
+| ------ | ---------------------- | -------------------------------------------------------------------------- |
+| `POST` | `/v1/chat/completions` | OpenAI Chat Completions; streaming via `"stream": true` (SSE)              |
+| `POST` | `/v1/completions`      | OpenAI legacy text completions                                             |
+| `POST` | `/v1/messages`         | Anthropic Messages API; streaming supported                                |
+| `GET`  | `/v1/models`           | List configured model route names your key can access                      |
+| `GET`  | `/healthz`             | Liveness check — returns `200 OK` when the gateway is running              |
+| `GET`  | `/readyz`              | Readiness check — `503` while draining or before the first config snapshot |
+| `GET`  | `/metrics`             | Prometheus metrics in exposition format                                    |
 
 ## Routing via the `model` field
 
@@ -122,14 +122,15 @@ x-rolter-param-adjustments: top_k=dropped, tool_choice=translated
 | Disposition  | Meaning                                                                                                                                                 |
 | ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `dropped`    | The upstream has no equivalent, so the parameter was not sent. `top_k` to Gemini, `presence_penalty` to Anthropic.                                      |
-| `clamped`    | The value was sent, limited to the range the upstream accepts.                                                                                          |
+| `clamped`    | The value was sent, limited to the range the upstream accepts: a `temperature` above 1 sent to Anthropic, which accepts 0 to 1, is sent as 1.           |
 | `translated` | The parameter was sent as an approximation that loses part of its meaning: a `tool_choice` forcing one function, sent to Gemini as "call any function". |
 
 - **Names, never values.** The header carries parameter names from Rolter's fixed list of dialect parameters and the disposition, nothing you sent. A field Rolter does not recognise is not echoed.
 - **Absent when nothing changed.** Its presence is the signal. A parameter that is only renamed on the way (`max_completion_tokens` to Anthropic's `max_tokens`, `stop` to `stop_sequences`) keeps its meaning and is not listed, and neither are `model`, `stream` and `stream_options`, which Rolter carries itself.
 - **Streams too.** It is decided before the request is sent upstream, so a streamed response carries it in its headers like any other.
-- **Recorded.** The same entries are kept on the request's log row, in the `param_adjustments` column of `request_logs` as `<disposition>:<parameter>` (`dropped:top_k`), once `clickhouse/022_param_adjustments.sql` is applied (see [Upgrading](/deployment/upgrading)).
-- **Informational.** The header's name and its `<parameter>=<disposition>` shape are stable. The parameters it can name and the dispositions it uses may grow in any release, so treat an unknown disposition as "not forwarded as sent" rather than failing on it. A response served from Rolter's cache does not carry it.
+- **Cache hits too.** A response served from Rolter's [response cache](/concepts/response-cache) carries the header of the request that produced the cached answer, so a hit discloses what its miss did. An entry cached by a Rolter older than this carries none until it expires.
+- **Recorded.** The same entries are kept on the request's log row, in the `param_adjustments` column of `request_logs` as `<disposition>:<parameter>` (`dropped:top_k`), once `clickhouse/022_param_adjustments.sql` is applied (see [Upgrading](/deployment/upgrading)). The **LLM Logs** drawer lists them under **Parameters not sent as given**, and the **Compatibility** screen and [`GET /api/v1/analytics/param-adjustments`](/api/dashboard-analytics#parameter-adjustments) roll them up per route and provider, with the share of its traffic each one touched.
+- **Informational.** The header's name and its `<parameter>=<disposition>` shape are stable. The parameters it can name and the dispositions it uses may grow in any release, so treat an unknown disposition as "not forwarded as sent" rather than failing on it.
 
 ## Error responses
 

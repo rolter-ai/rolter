@@ -60,10 +60,24 @@ export interface ComboboxProps {
    */
   commitOnBlur?: boolean;
   /**
+   * with `allowCustom`, report what is typed as the value on every keystroke,
+   * not when focus leaves. For a field whose text is the value as it is typed,
+   * including the empty text: `commitOnBlur` keeps typed text on blur but not an
+   * erased field, so clearing it and moving on would commit nothing (#3244).
+   * Clearing the text clears the value.
+   */
+  commitOnInput?: boolean;
+  /**
    * said in place of "No matches" when the popup has no option to list at all,
    * for a list that is still loading or that the source had nothing for
    */
   emptyText?: string;
+  /**
+   * what is typed into the field, on every keystroke, for a list that is only
+   * part of what exists and asks its source for the rest (#3385). Filtering
+   * the options on screen stays the combobox's own
+   */
+  onQueryChange?: (query: string) => void;
   /** focus came into the control */
   onFocus?: () => void;
   /** focus left the control entirely, not for one of its own parts */
@@ -84,6 +98,13 @@ export interface ComboboxProps {
   "aria-label"?: string;
   "aria-describedby"?: string;
   "aria-invalid"?: boolean | "true" | "false";
+  /**
+   * The field must be filled in. Set on the text input, so `Field required`
+   * (which clones it on) and a form's refused submit see an empty combobox the
+   * way they see an empty `Input`.
+   */
+  required?: boolean;
+  "aria-required"?: boolean | "true" | "false";
 }
 
 function fold(text: string): string {
@@ -253,12 +274,16 @@ export const Combobox = React.forwardRef<HTMLInputElement, ComboboxProps>(functi
     listClassName,
     allowCustom,
     commitOnBlur = false,
+    commitOnInput = false,
     emptyText,
     onFocus,
     onBlur,
+    onQueryChange,
     "aria-label": ariaLabel,
     "aria-describedby": describedBy,
     "aria-invalid": invalid,
+    required,
+    "aria-required": ariaRequired,
   },
   ref,
 ) {
@@ -577,12 +602,20 @@ export const Combobox = React.forwardRef<HTMLInputElement, ComboboxProps>(functi
         aria-label={ariaLabel}
         aria-describedby={describedBy}
         aria-invalid={invalid}
+        required={required}
+        aria-required={ariaRequired}
         aria-expanded={open}
         aria-controls={listId}
         aria-autocomplete="list"
         aria-activedescendant={open && filtered[active] ? optionId(active) : undefined}
         onChange={(event) => {
           setQuery(event.target.value);
+          onQueryChange?.(event.target.value);
+          if (commitOnInput && allowCustom) {
+            const typed = event.target.value.trim();
+            const next = options.find((o) => fold(o.value) === fold(typed))?.value ?? typed;
+            if (next !== value) onChange(next);
+          }
           if (!open) show();
         }}
         onKeyDown={onKeyDown}

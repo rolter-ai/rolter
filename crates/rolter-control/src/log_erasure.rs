@@ -2,8 +2,9 @@
 //!
 //! Retention is a clock; this is a command. `POST /api/v1/log-erasures` names a
 //! subject — a virtual key, a user, an organization, or a single request — and
-//! deletes what ClickHouse holds about it: the `request_logs` rows and the raw
-//! bodies in `request_payloads`. Nothing else derives from those rows (there is
+//! deletes what ClickHouse holds about it: the `request_logs` rows, the raw
+//! bodies in `request_payloads` and the MCP tool calls in `mcp_tool_call_logs`
+//! (#3278). Nothing else derives from those rows (there is
 //! no rollup or materialized view over them), so deleting them is deleting
 //! everything the control plane can reconstitute them from.
 //!
@@ -25,7 +26,9 @@ use serde_json::{json, Value};
 use uuid::Uuid;
 
 use rolter_store::postgres::models::LogErasure;
-use rolter_store::postgres::repo::{AuditLogRepo, LogErasureRepo, NewLogErasure};
+use rolter_store::postgres::repo::{
+    AuditLogRepo, LogErasureRepo, NewLogErasure, SUBJECT_LOOKUP_LIMIT,
+};
 
 use crate::analytics::{client_or_503, query_failed, ClickHouseClient};
 use crate::crud::{invalid_field, pool, ApiError, ApiResult, SafeJson};
@@ -39,12 +42,55 @@ pub(crate) fn router() -> Router<ControlState> {
             "/api/v1/log-erasures",
             get(list_erasures).post(create_erasure),
         )
+        .route("/api/v1/log-erasures/subjects", get(find_subjects))
         .route("/api/v1/log-erasures/{id}", get(get_erasure))
+}
+
+#[derive(Deserialize)]
+struct SubjectQuery {
+    /// `virtual_key`, `user` or `org`
+    kind: String,
+    /// part of a name or email; empty lists the first few
+    #[serde(default)]
+    q: String,
+    /// one subject by id, to name an id someone pasted
+    id: Option<Uuid>,
+}
+
+/// `GET /api/v1/log-erasures/subjects`: the named virtual keys, users or
+/// organizations the erasure form offers, found by part of a name or email
+/// (#3385). An id typed by hand is a mistake waiting to erase another tenant's
+/// logs, and an id says nothing of whose data it is; this puts a name beside
+/// it. Gated as the erasure itself is, so it reads nothing a caller who could
+/// not erase could use.
+async fn find_subjects(
+    principal: Principal,
+    State(state): State<ControlState>,
+    crate::crud::Query(query): crate::crud::Query<SubjectQuery>,
+) -> ApiResult<Json<Value>> {
+    authorize_superadmin(&principal, superadmin_cap!("log_erasure", Create))?;
+    if !matches!(query.kind.as_str(), "virtual_key" | "user" | "org") {
+        return Err(invalid_field(
+            "kind",
+            "kind must be one of virtual_key|user|org",
+        ));
+    }
+    let mut subjects = LogErasureRepo(pool(&state))
+        .find_subjects(&query.kind, query.q.trim(), query.id)
+        .await?;
+    // the store reads one past the cap, which is how a cut list is told apart
+    let truncated = subjects.len() as i64 > SUBJECT_LOOKUP_LIMIT;
+    subjects.truncate(SUBJECT_LOOKUP_LIMIT as usize);
+    Ok(Json(json!({ "data": subjects, "truncated": truncated })))
 }
 
 /// The most payload rows from before the `virtual_key_id` column that one
 /// request will chase through their log rows.
 const LEGACY_PAYLOAD_LIMIT: u32 = 10_000;
+
+/// How far from a request's instant its MCP tool-call row may be stamped, in
+/// seconds, for a `request` scope that names `ts`.
+const MCP_TS_WINDOW_SECONDS: u32 = 300;
 
 /// How long a `pending` erasure may go without ClickHouse listing any of its
 /// mutations before it is reported `unverified`: the server was replaced or
@@ -92,6 +138,10 @@ fn yes() -> bool {
 struct Predicates {
     logs: String,
     payloads: String,
+    /// the same subject in `mcp_tool_call_logs`, which carries `org_id`,
+    /// `virtual_key_id`, `user_id` and `request_id` itself. Its `user_id` is the
+    /// key's owner, so a user scope also matches the keys that user created
+    mcp: String,
     /// the payload column that is empty on rows written before it existed, and
     /// so cannot be matched by `payloads`; `None` for a request scope
     legacy_column: Option<&'static str>,
@@ -124,15 +174,28 @@ fn predicates(scope: &ScopeBody, user_keys: &[Uuid]) -> Predicates {
             let p = format!("virtual_key_id = {}", quoted(&id.to_string()));
             Predicates {
                 logs: p.clone(),
-                payloads: p,
+                payloads: p.clone(),
+                mcp: p,
                 legacy_column: Some("virtual_key_id"),
             }
         }
-        ScopeBody::User { .. } => {
+        ScopeBody::User { id } if user_keys.is_empty() => {
+            // no key to find request rows by: only the MCP log, whose rows carry
+            // the owner's own id, has anything of this user's (#3278). `1 = 0`
+            // keeps the request statements valid while matching nothing
+            Predicates {
+                logs: "1 = 0".to_string(),
+                payloads: "1 = 0".to_string(),
+                mcp: format!("user_id = {}", quoted(&id.to_string())),
+                legacy_column: None,
+            }
+        }
+        ScopeBody::User { id } => {
             let p = format!("virtual_key_id in ({})", key_list(user_keys));
             Predicates {
                 logs: p.clone(),
-                payloads: p,
+                payloads: p.clone(),
+                mcp: format!("user_id = {} or {p}", quoted(&id.to_string())),
                 legacy_column: Some("virtual_key_id"),
             }
         }
@@ -140,7 +203,8 @@ fn predicates(scope: &ScopeBody, user_keys: &[Uuid]) -> Predicates {
             let p = format!("org_id = {}", quoted(&id.to_string()));
             Predicates {
                 logs: p.clone(),
-                payloads: p,
+                payloads: p.clone(),
+                mcp: p,
                 legacy_column: Some("org_id"),
             }
         }
@@ -154,19 +218,58 @@ fn predicates(scope: &ScopeBody, user_keys: &[Uuid]) -> Predicates {
                 quoted(request_id),
                 quoted(&org_id.to_string())
             );
+            let mut mcp = p.clone();
             if let Some(ts) = ts {
-                p.push_str(&format!(
-                    " and ts = toDateTime64({}, 3, 'UTC')",
-                    quoted(&ts.format("%Y-%m-%d %H:%M:%S%.3f").to_string())
+                let instant = quoted(&ts.format("%Y-%m-%d %H:%M:%S%.3f").to_string());
+                p.push_str(&format!(" and ts = toDateTime64({instant}, 3, 'UTC')"));
+                // the MCP row is stamped when the call was made, not with the
+                // instant of the request-log row the caller read `ts` from, so
+                // it is matched inside a window around it
+                mcp.push_str(&format!(
+                    " and ts between toDateTime64({instant}, 3, 'UTC') - interval {MCP_TS_WINDOW_SECONDS} second \
+                     and toDateTime64({instant}, 3, 'UTC') + interval {MCP_TS_WINDOW_SECONDS} second"
                 ));
             }
             Predicates {
                 logs: p.clone(),
                 payloads: p,
+                mcp,
                 legacy_column: None,
             }
         }
     }
+}
+
+/// Which stores an erasure searched and which it skipped, as the list stored on
+/// the record: `{store, searched, code?, reason?}` (#3436). Request logs are found by
+/// virtual key, so a user who holds none leaves them unsearched while their MCP
+/// tool calls, which carry `user_id`, are still erased; a payloads-only erasure
+/// keeps the log rows. Saying so is what stops the record reading as complete
+/// over every store.
+fn coverage(scope: &ScopeBody, user_keys: &[Uuid], include_logs: bool) -> Value {
+    let keyless = matches!(scope, ScopeBody::User { .. }) && user_keys.is_empty();
+    let found = |store: &str| json!({"store": store, "searched": true});
+    // `code` is the stable name a client translates; `reason` is the English
+    // sentence for one that does not know the code
+    let skipped = |store: &str, code: &str, reason: &str| json!({"store": store, "searched": false, "code": code, "reason": reason});
+    const NO_KEYS: &str = "the user holds no virtual keys, and request logs are found by key";
+    let logs = if keyless {
+        skipped("request_logs", "no_key", NO_KEYS)
+    } else if include_logs {
+        found("request_logs")
+    } else {
+        skipped(
+            "request_logs",
+            "bodies_only",
+            "only captured payloads were asked for; the log rows are kept",
+        )
+    };
+    let payloads = if keyless {
+        skipped("request_payloads", "no_key", NO_KEYS)
+    } else {
+        found("request_payloads")
+    };
+    json!([logs, payloads, found("mcp_tool_call_logs")])
 }
 
 /// The statements that carry out one erasure. `marker` is the erasure's id: it
@@ -200,6 +303,18 @@ fn statements(
         out.push(format!(
             "alter table request_logs delete where ({}) and {marker} != ''",
             predicates.logs
+        ));
+        out.push(format!(
+            "alter table mcp_tool_call_logs delete where ({}) and {marker} != ''",
+            predicates.mcp
+        ));
+    } else {
+        // the captured arguments and result sit in the same row as the call's
+        // metadata, so keeping the metadata means blanking those two columns
+        out.push(format!(
+            "alter table mcp_tool_call_logs update arguments = '', result = '' \
+             where ({}) and {marker} != ''",
+            predicates.mcp
         ));
     }
     out
@@ -289,17 +404,7 @@ async fn create_erasure(
     };
     let repo = LogErasureRepo(pool(&state));
     let user_keys = match &body.scope {
-        ScopeBody::User { id } => {
-            let keys = repo.key_ids_created_by(*id).await?;
-            if keys.is_empty() {
-                return Err(invalid_field(
-                    "scope_id",
-                    "this user created no virtual key that still exists, so their rows cannot \
-                     be found; erase by organization or by key id instead",
-                ));
-            }
-            keys
-        }
+        ScopeBody::User { id } => repo.key_ids_created_by(*id).await?,
         _ => Vec::new(),
     };
     let predicates = predicates(&body.scope, &user_keys);
@@ -314,6 +419,7 @@ async fn create_erasure(
         include_logs: body.include_logs,
         reason: body.reason.trim(),
         requested_by: principal.account_id(),
+        stores: coverage(&body.scope, &user_keys, body.include_logs),
     })
     .await?;
 
@@ -340,6 +446,7 @@ async fn create_erasure(
                 "include_logs": body.include_logs,
                 "reason": record.reason,
                 "statements": record.statements,
+                "stores": record.stores,
                 "outcome": record.status,
             })),
         )
@@ -475,7 +582,7 @@ async fn audit_completion(state: &ControlState, record: &LogErasure) {
 fn progress_sql(marker: Uuid) -> String {
     format!(
         "select is_done, latest_fail_reason from system.mutations \
-         where database = currentDatabase() and table in ('request_logs', 'request_payloads') \
+         where database = currentDatabase() and table in ('request_logs', 'request_payloads', 'mcp_tool_call_logs') \
            and position(command, {}) > 0 format JSON",
         quoted(&marker.to_string())
     )
@@ -541,9 +648,10 @@ mod tests {
         let scope = ScopeBody::VirtualKey { id: uuid(7) };
         let p = predicates(&scope, &[]);
         let sql = statements(&p, uuid(9), true, &[]);
-        assert_eq!(sql.len(), 2);
+        assert_eq!(sql.len(), 3);
         assert!(sql[0].starts_with("alter table request_payloads delete where"));
         assert!(sql[1].starts_with("alter table request_logs delete where"));
+        assert!(sql[2].starts_with("alter table mcp_tool_call_logs delete where"));
         for statement in &sql {
             assert!(statement.contains(&format!("'{}'", uuid(7))));
             assert!(statement.contains(&format!("and '{}' != ''", uuid(9))));
@@ -554,15 +662,68 @@ mod tests {
     fn payloads_only_leaves_the_log_rows_alone() {
         let p = predicates(&ScopeBody::Org { id: uuid(1) }, &[]);
         let sql = statements(&p, uuid(2), false, &[]);
-        assert_eq!(sql.len(), 1);
+        assert_eq!(sql.len(), 2);
         assert!(sql[0].contains("request_payloads"));
+        assert!(!sql
+            .iter()
+            .any(|s| s.starts_with("alter table request_logs")));
+    }
+
+    #[test]
+    fn payloads_only_blanks_the_mcp_bodies_and_keeps_their_rows() {
+        let p = predicates(&ScopeBody::Org { id: uuid(1) }, &[]);
+        let sql = statements(&p, uuid(2), false, &[]);
+        assert_eq!(
+            sql[1],
+            format!(
+                "alter table mcp_tool_call_logs update arguments = '', result = '' \
+                 where (org_id = '{}') and '{}' != ''",
+                uuid(1),
+                uuid(2)
+            )
+        );
+    }
+
+    #[test]
+    fn each_scope_reaches_the_mcp_rows_through_the_columns_that_table_carries() {
+        assert_eq!(
+            predicates(&ScopeBody::VirtualKey { id: uuid(7) }, &[]).mcp,
+            format!("virtual_key_id = '{}'", uuid(7))
+        );
+        assert_eq!(
+            predicates(&ScopeBody::Org { id: uuid(7) }, &[]).mcp,
+            format!("org_id = '{}'", uuid(7))
+        );
+        // a key's owner is the MCP row's user_id, which may not be its creator
+        assert_eq!(
+            predicates(&ScopeBody::User { id: uuid(5) }, &[uuid(1)]).mcp,
+            format!(
+                "user_id = '{}' or virtual_key_id in ('{}')",
+                uuid(5),
+                uuid(1)
+            )
+        );
+        let request = predicates(
+            &ScopeBody::Request {
+                request_id: "r".into(),
+                org_id: uuid(3),
+                ts: None,
+            },
+            &[],
+        );
+        assert_eq!(request.mcp, request.logs);
+    }
+
+    #[test]
+    fn the_mcp_mutation_is_found_again_by_its_marker() {
+        assert!(progress_sql(uuid(4)).contains("'mcp_tool_call_logs'"));
     }
 
     #[test]
     fn rows_older_than_the_payload_column_are_deleted_by_log_id() {
         let p = predicates(&ScopeBody::VirtualKey { id: uuid(1) }, &[]);
         let sql = statements(&p, uuid(2), true, &["a'b".to_string()]);
-        assert_eq!(sql.len(), 3);
+        assert_eq!(sql.len(), 4);
         assert!(sql[0].contains("log_id in ('a\\'b')"));
         assert!(legacy_lookup_sql(&p, "virtual_key_id").contains("virtual_key_id = ''"));
     }
@@ -605,9 +766,54 @@ mod tests {
             org_id: uuid(3),
             ts: Some(ts),
         };
-        assert!(predicates(&scope, &[])
+        let p = predicates(&scope, &[]);
+        assert!(p
             .logs
             .ends_with("ts = toDateTime64('2026-10-27 12:30:45.123', 3, 'UTC')"));
+        // the MCP row has its own timestamp, so it is matched in a window
+        assert!(!p.mcp.contains("and ts = "));
+        assert!(p.mcp.contains(
+            "ts between toDateTime64('2026-10-27 12:30:45.123', 3, 'UTC') - interval 300 second"
+        ));
+    }
+
+    #[test]
+    fn the_record_says_which_stores_a_keyless_user_erasure_skipped() {
+        let user = ScopeBody::User { id: uuid(5) };
+        let stores = coverage(&user, &[], true);
+        assert_eq!(stores[0]["store"], "request_logs");
+        assert_eq!(stores[0]["searched"], false);
+        assert!(stores[0]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("no virtual keys"));
+        assert_eq!(stores[0]["code"], "no_key");
+        assert_eq!(stores[1]["searched"], false);
+        assert_eq!(
+            stores[2],
+            json!({"store": "mcp_tool_call_logs", "searched": true})
+        );
+        // with a key, every store is searched
+        let stores = coverage(&user, &[uuid(1)], true);
+        assert!(stores
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|s| s["searched"] == true));
+        // payloads only keeps the log rows, and says why
+        let stores = coverage(&user, &[uuid(1)], false);
+        assert_eq!(stores[0]["searched"], false);
+        assert!(stores[0]["reason"].as_str().unwrap().contains("payloads"));
+        assert_eq!(stores[0]["code"], "bodies_only");
+        assert_eq!(stores[1]["searched"], true);
+    }
+
+    #[test]
+    fn a_user_with_no_keys_still_reaches_their_mcp_rows() {
+        let p = predicates(&ScopeBody::User { id: uuid(5) }, &[]);
+        assert_eq!(p.mcp, format!("user_id = '{}'", uuid(5)));
+        // valid SQL that matches nothing, and no lookup of older payload rows
+        assert_eq!((p.logs.as_str(), p.legacy_column), ("1 = 0", None));
     }
 
     #[test]

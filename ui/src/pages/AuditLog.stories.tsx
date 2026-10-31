@@ -6,6 +6,7 @@ import { expect, userEvent, waitFor, within } from "storybook/test";
 import AuditLog from "./AuditLog";
 import {
   Harness,
+  captureFollowedLinks,
   expectEmptyState,
   expectToast,
   expectGateAnswered,
@@ -19,9 +20,13 @@ import {
   pickOption,
   recording,
   routes,
+  savedText,
   scoped,
+  STORY_DOWNLOAD_URL,
+  stubSavePicker,
   Toasted,
   withCapabilities,
+  withExportTickets,
   type FetchStub,
 } from "./story-harness";
 import type { AuditLogEntry, UserRow } from "@/lib/api";
@@ -326,6 +331,42 @@ export const FilterToASsoProviderChange: Story = {
     const row = await canvas.findByText("sso_provider/5a5a5a5a");
     await expect(row.closest("a")).toHaveAttribute("href", "/sso");
     await expect(canvas.queryByText("provider.create")).toBeNull();
+  },
+};
+
+// the rows for scoped API tokens (#3289) and LDAP directories (#3261) link to
+// the screens that own them
+export const ApiTokenAndLdapRowsLinkToTheirScreens: Story = {
+  render: () => (
+    <Screen
+      fetchStub={scoped(async (input) =>
+        String(input).includes("/audit-log")
+          ? json(
+              page([
+                entry({
+                  id: "t-1",
+                  action: "api_token.create",
+                  target_type: "api_token",
+                  target_id: "7a7a7a7a-0000-0000-0000-000000000000",
+                }),
+                entry({
+                  id: "t-2",
+                  action: "ldap_directory.update",
+                  target_type: "ldap_directory",
+                  target_id: "8b8b8b8b-0000-0000-0000-000000000000",
+                }),
+              ]),
+            )
+          : json([]),
+      )}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const token = await canvas.findByText("api_token/7a7a7a7a");
+    await expect(token.closest("a")).toHaveAttribute("href", "/api-tokens");
+    const directory = await canvas.findByText("ldap_directory/8b8b8b8b");
+    await expect(directory.closest("a")).toHaveAttribute("href", "/ldap");
   },
 };
 
@@ -738,7 +779,7 @@ export const DetailOpensUnderItsRow: Story = {
   },
 };
 
-// -------------------------- export (#2130)
+// -------------------------- export (#2130, #3051, #3545)
 
 async function captureDownload(names: string[], run: () => Promise<void>): Promise<void> {
   const original = HTMLAnchorElement.prototype.click;
@@ -752,16 +793,46 @@ async function captureDownload(names: string[], run: () => Promise<void>): Promi
   }
 }
 
+/** the screen with its toasts, on `stub` */
+function Exporting({ stub }: { stub: FetchStub }) {
+  return (
+    <MemoryRouter>
+      <Harness fetchStub={stub}>
+        <Toasted>
+          <AuditLog />
+        </Toasted>
+      </Harness>
+    </MemoryRouter>
+  );
+}
+
+/** pick the action filter and the 7-day window the export stories send */
+async function filterTheLog(canvasElement: HTMLElement) {
+  const canvas = within(canvasElement);
+  await canvas.findByText("provider.create");
+  await userEvent.type(
+    canvas.getByRole("combobox", { name: "Filter by action" }),
+    "sso_provider.up",
+  );
+  await userEvent.click(
+    await within(document.body).findByRole("option", { name: "sso_provider.update" }),
+  );
+  await userEvent.click(canvas.getByRole("radio", { name: "Last 7d" }));
+}
+
 /**
- * a control plane that predates the export endpoint: it answers 404 there, so
- * the export has to follow the cursor itself, with the filters on both pages
+ * a control plane that predates the export endpoint: it answers 404 there, and
+ * for the download ticket, so the export has to follow the cursor itself, with
+ * the filters on both pages
  */
+const notMounted = () =>
+  json({ error: { code: "no_such_endpoint", message: "no such endpoint" } }, 404);
 const exportPages = () =>
   recording(
     scoped(async (input) => {
       const url = new URL(String(input), "http://localhost");
-      if (url.pathname.endsWith("/audit-log/export")) {
-        return json({ error: { code: "no_such_endpoint", message: "no such endpoint" } }, 404);
+      if (url.pathname.endsWith("/audit-log/export") || url.pathname.includes("/exports/")) {
+        return notMounted();
       }
       if (url.pathname.endsWith("/audit-log")) {
         return json(
@@ -783,27 +854,24 @@ const exporting = exportPages();
 // the fallback for an older control plane: the action filter rides on every
 // page request, the cursor is followed, and the name carries the org and window
 export const ExportFallsBackToPagesOnAnOlderControlPlane: Story = {
-  render: () => <Screen fetchStub={exporting.stub} />,
+  render: () => <Exporting stub={exporting.stub} />,
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await canvas.findByText("provider.create");
-    await userEvent.type(
-      canvas.getByRole("combobox", { name: "Filter by action" }),
-      "sso_provider.up",
-    );
-    await userEvent.click(
-      await within(document.body).findByRole("option", { name: "sso_provider.update" }),
-    );
-    await userEvent.click(canvas.getByRole("radio", { name: "Last 7d" }));
+    await filterTheLog(canvasElement);
 
     const names: string[] = [];
-    await captureDownload(names, async () => {
-      await userEvent.click(canvas.getByRole("button", { name: "Export CSV" }));
-      await waitFor(() => expect(names).toHaveLength(1));
-    });
+    await stubSavePicker().within(
+      () =>
+        captureDownload(names, async () => {
+          await userEvent.click(canvas.getByRole("button", { name: "Export CSV" }));
+          await waitFor(() => expect(names).toHaveLength(1));
+        }),
+      false,
+    );
     await expect(names[0]).toMatch(
       /^audit-log-rolter-\d{4}-\d{2}-\d{2}_to_\d{4}-\d{2}-\d{2}\.csv$/,
     );
+    await expectToast(canvasElement, /Exported 2 entries/, "success");
 
     const exportCalls = exporting.calls.filter(
       (c) => c.url.includes("/audit-log") && c.url.includes("limit=500"),
@@ -815,6 +883,90 @@ export const ExportFallsBackToPagesOnAnOlderControlPlane: Story = {
       await expect(call.url).not.toContain("include_total");
     }
     await expect(exportCalls[1].url).toContain("cursor=c-2");
+  },
+};
+
+/** the screen's own reads, with the download tickets answered in front of them */
+const ticketed = (reads: Record<string, unknown>[]) =>
+  recording(
+    withExportTickets(
+      scoped(async (input) => {
+        const url = new URL(String(input), "http://localhost");
+        return url.pathname.endsWith("/audit-log") ? json(page([entry()])) : json([]);
+      }),
+      reads,
+    ),
+  );
+
+const throughTicket = ticketed([
+  { state: "pending" },
+  { state: "streaming", rows: 1000 },
+  { state: "complete", rows: 1200 },
+]);
+
+/**
+ * #3545: in a browser with no save dialog (Firefox, Safari, plain http) the
+ * file goes to the browser's download manager through a single-use ticket, so
+ * the tab never holds the log. The ticket names the org's export with the
+ * filters on screen and no paging, the page follows its link once, and reads
+ * its status for the rows written until the file is complete.
+ */
+export const ExportsTheFilteredLogThroughTheBrowser: Story = {
+  render: () => <Exporting stub={throughTicket.stub} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await filterTheLog(canvasElement);
+
+    const links: string[] = [];
+    await stubSavePicker().within(
+      () =>
+        captureFollowedLinks(links, async () => {
+          await userEvent.click(canvas.getByRole("button", { name: "Export JSON" }));
+          await expect(await canvas.findByText(/^[\d,]+ rows written$/)).toHaveAttribute(
+            "role",
+            "status",
+          );
+          await expectToast(canvasElement, /Export downloaded/, "success");
+        }),
+      false,
+    );
+    await expect(links).toEqual([STORY_DOWNLOAD_URL]);
+    const minted = await throughTicket.expectSentBody<{ path: string; query: string }>(
+      "POST",
+      "/api/v1/analytics/exports/tickets",
+    );
+    await expect(minted.path).toBe("/api/v1/orgs/org-1/audit-log/export");
+    const query = new URLSearchParams(minted.query);
+    await expect(query.get("format")).toBe("json");
+    await expect(query.get("action")).toBe("sso_provider.update");
+    await expect(query.get("from")).not.toBeNull();
+    await expect(query.has("limit")).toBe(false);
+    // the page reads neither the export nor the link itself, so nothing of the
+    // file passes through the tab
+    await expect(throughTicket.calls.some((c) => c.url.includes("/audit-log/export"))).toBe(false);
+    await expect(throughTicket.calls.some((c) => c.url.includes("/exports/download/"))).toBe(false);
+  },
+};
+
+const refusedTicket = ticketed([{ state: "refused", status: 403 }]);
+
+/**
+ * The capability is checked again when the browser follows the link: a reader
+ * who lost the role meanwhile is refused, which only the status tells the page.
+ */
+export const ARefusedAuditDownloadNamesItsStatus: Story = {
+  render: () => <Exporting stub={refusedTicket.stub} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByText("provider.create");
+    await stubSavePicker().within(
+      () =>
+        captureFollowedLinks([], async () => {
+          await userEvent.click(canvas.getByRole("button", { name: "Export CSV" }));
+          await expectToast(canvasElement, /refused the download \(HTTP 403\)/, "error");
+        }),
+      false,
+    );
   },
 };
 
@@ -834,12 +986,80 @@ const streamed = recording(
   }),
 );
 
-// past the browser's 10,000-row cap the file comes from the control plane: the
-// filters ride on one export request and its own file name is kept
-export const ExportsTheFilteredLog: Story = {
+// where the browser has a save dialog the body streams into the picked file as
+// it arrives (#3434, #3545): the filters ride on one export request, the
+// dialog offers the dashboard's name for it, and no ticket is minted
+export const ExportsTheFilteredLogToAPickedFile: Story = {
+  render: () => <Exporting stub={streamed.stub} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await filterTheLog(canvasElement);
+
+    const picker = stubSavePicker();
+    await picker.within(async () => {
+      await userEvent.click(canvas.getByRole("button", { name: "Export CSV" }));
+      await expectToast(canvasElement, /Audit log saved to the file you chose/, "success");
+    });
+    await expect(picker.files).toHaveLength(1);
+    await expect(picker.files[0].suggestedName).toMatch(
+      /^audit-log-rolter-\d{4}-\d{2}-\d{2}_to_\d{4}-\d{2}-\d{2}\.csv$/,
+    );
+    await expect(savedText(picker.files[0])).toBe("at,actor_email\r\n");
+    await expect(picker.files[0].closed).toBe(true);
+
+    const exportCalls = streamed.calls.filter((c) => c.url.includes("/audit-log/export"));
+    await expect(exportCalls).toHaveLength(1);
+    await expect(exportCalls[0].url).toContain("format=csv");
+    await expect(exportCalls[0].url).toContain("action=sso_provider.update");
+    await expect(exportCalls[0].url).toContain("from=");
+    await expect(exportCalls[0].url).not.toContain("limit=");
+    streamed.expectNotSent("POST", "/exports/tickets");
+  },
+};
+
+/** an export streamed as JSON, for the save dialog's offered type */
+const streamedJson = recording(
+  scoped(async (input) => {
+    const url = new URL(String(input), "http://localhost");
+    if (url.pathname.endsWith("/audit-log/export")) {
+      return new Response("[\n]\n", { headers: { "content-type": "application/json" } });
+    }
+    return url.pathname.endsWith("/audit-log") ? json(page([entry()])) : json([]);
+  }),
+);
+
+// Export JSON asks the dialog for a JSON file, not the CSV every other export
+// offers, and suggests the `.json` name
+export const ExportJsonOffersAJsonFile: Story = {
+  render: () => <Exporting stub={streamedJson.stub} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByText("provider.create");
+    const picker = stubSavePicker();
+    await picker.within(async () => {
+      await userEvent.click(canvas.getByRole("button", { name: "Export JSON" }));
+      await expectToast(canvasElement, /Audit log saved to the file you chose/, "success");
+    });
+    await expect(picker.files[0].types).toEqual([
+      { description: "JSON", accept: { "application/json": [".json"] } },
+    ]);
+    await expect(picker.files[0].suggestedName).toMatch(/\.json$/);
+    await expect(savedText(picker.files[0])).toBe("[\n]\n");
+  },
+};
+
+const wideTicket = recording(
+  withExportTickets(wideStub({ urls: [] }), [{ state: "complete", rows: 2 }]),
+);
+
+/**
+ * A superadmin on the whole deployment exports the deployment's log: the
+ * ticket names `/api/v1/audit-log/export`, not any org's.
+ */
+export const ExportsTheDeploymentLogThroughTheBrowser: Story = {
   render: () => (
     <MemoryRouter>
-      <Harness fetchStub={streamed.stub}>
+      <Harness fetchStub={wideTicket.stub} role="superadmin">
         <Toasted>
           <AuditLog />
         </Toasted>
@@ -848,30 +1068,69 @@ export const ExportsTheFilteredLog: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getByText("provider.create")).toBeVisible());
+    const scope = await canvas.findByRole("radiogroup", { name: "Audit log scope" });
+    await userEvent.click(within(scope).getByRole("radio", { name: "Whole deployment" }));
+    await waitFor(() => expect(canvas.getByText("auth.login_failed")).toBeVisible());
+    const links: string[] = [];
+    await stubSavePicker().within(
+      () =>
+        captureFollowedLinks(links, async () => {
+          await userEvent.click(canvas.getByRole("button", { name: "Export CSV" }));
+          await expectToast(canvasElement, /Export downloaded/, "success");
+        }),
+      false,
+    );
+    await expect(links).toEqual([STORY_DOWNLOAD_URL]);
+    const minted = await wideTicket.expectSentBody<{ path: string; query: string }>(
+      "POST",
+      "/api/v1/analytics/exports/tickets",
+    );
+    await expect(minted.path).toBe("/api/v1/audit-log/export");
+    await expect(new URLSearchParams(minted.query).get("format")).toBe("csv");
+  },
+};
+
+/**
+ * A rolling upgrade: the control plane has download tickets but not yet the
+ * audit log's, so its mint refuses the path with a `400` naming the ones it
+ * takes. The page reads the log a page at a time instead of failing.
+ */
+const halfUpgraded = recording(
+  scoped(async (input) => {
+    const url = new URL(String(input), "http://localhost");
+    if (url.pathname === "/api/v1/analytics/exports/tickets") {
+      return json(
+        {
+          error: {
+            message:
+              "path must be one of /api/v1/analytics/by-attribution/export, /api/v1/analytics/timeseries/export or /api/v1/analytics/invocations/export",
+          },
+        },
+        400,
+      );
+    }
+    return url.pathname.endsWith("/audit-log") ? json(page([entry()])) : json([]);
+  }),
+);
+
+export const ExportFallsBackToPagesWhenTheMintDoesNotKnowTheAuditLog: Story = {
+  render: () => <Exporting stub={halfUpgraded.stub} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
     await canvas.findByText("provider.create");
-    await userEvent.type(
-      canvas.getByRole("combobox", { name: "Filter by action" }),
-      "sso_provider.up",
-    );
-    await userEvent.click(
-      await within(document.body).findByRole("option", { name: "sso_provider.update" }),
-    );
-    await userEvent.click(canvas.getByRole("radio", { name: "Last 7d" }));
-
     const names: string[] = [];
-    await captureDownload(names, async () => {
-      await userEvent.click(canvas.getByRole("button", { name: "Export CSV" }));
-      await waitFor(() => expect(names).toHaveLength(1));
-    });
-    await expect(names[0]).toBe("audit-log-rolter-all_to_2026-10-13.csv");
-    await expectToast(canvasElement, /Export downloaded/, "success");
-
-    const exportCalls = streamed.calls.filter((c) => c.url.includes("/audit-log/export"));
-    await expect(exportCalls).toHaveLength(1);
-    await expect(exportCalls[0].url).toContain("format=csv");
-    await expect(exportCalls[0].url).toContain("action=sso_provider.update");
-    await expect(exportCalls[0].url).toContain("from=");
-    await expect(exportCalls[0].url).not.toContain("limit=");
+    await stubSavePicker().within(
+      () =>
+        captureDownload(names, async () => {
+          await userEvent.click(canvas.getByRole("button", { name: "Export CSV" }));
+          await waitFor(() => expect(names).toHaveLength(1));
+        }),
+      false,
+    );
+    await expect(names[0]).toMatch(/^audit-log-rolter-.*\.csv$/);
+    await expectToast(canvasElement, /Exported 1 entry/, "success");
+    await halfUpgraded.expectSent("GET", "limit=500");
   },
 };
 
@@ -886,23 +1145,16 @@ const exportFails = recording(
 );
 
 export const ExportFails: Story = {
-  render: () => (
-    <MemoryRouter>
-      <Harness fetchStub={exportFails.stub}>
-        <Toasted>
-          <AuditLog />
-        </Toasted>
-      </Harness>
-    </MemoryRouter>
-  ),
+  render: () => <Exporting stub={exportFails.stub} />,
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await canvas.findByText("provider.create");
-    const names: string[] = [];
-    await captureDownload(names, async () => {
+    const picker = stubSavePicker();
+    await picker.within(async () => {
       await userEvent.click(canvas.getByRole("button", { name: "Export JSON" }));
       await expectToast(canvasElement, /Could not export the audit log export/, "error");
     });
-    await expect(names).toHaveLength(0);
+    // the file the dialog made is not left behind half-written
+    await expect(picker.files[0].aborted).toBe(true);
   },
 };

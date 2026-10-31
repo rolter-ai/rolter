@@ -88,6 +88,174 @@ async fn config_export_serves_importable_toml_without_credentials() {
     assert_eq!(parsed.providers.len(), 1);
     assert_eq!(parsed.providers[0].name, "openai");
     assert!(parsed.providers[0].api_key.is_none());
+
+    // the options narrow the document, and a slug nobody has is a 400 (#3440)
+    let scoped = client
+        .get(format!(
+            "{base}/api/v1/config/export?org=acme&without_person_caps=true"
+        ))
+        .bearer_auth(admin_token())
+        .send()
+        .await
+        .unwrap();
+    assert!(scoped.status().is_success(), "{}", scoped.status());
+    let scoped = scoped.text().await.unwrap();
+    assert!(scoped.contains("name = \"openai\""), "{scoped}");
+    let unknown = client
+        .get(format!("{base}/api/v1/config/export?org=nobody"))
+        .bearer_auth(admin_token())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(unknown.status(), 400);
+}
+
+/// Two organizations that share a provider name cannot be exported as one
+/// file (#3440). The refusal carries a stable code, so the dashboard can tell
+/// the person to pick an organization in its own words (#3480), and
+/// `?org=<slug>` exports each.
+#[tokio::test]
+async fn an_unscoped_export_of_organizations_sharing_names_answers_a_code() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app = rolter_control::test_app_with_admin_token(pool, Some(admin_token().to_string()))
+        .await
+        .unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    for slug in ["acme", "globex"] {
+        let org: Value = client
+            .post(format!("{base}/api/v1/orgs"))
+            .bearer_auth(admin_token())
+            .json(&json!({"name": slug, "slug": slug}))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let org_id = org["id"].as_str().expect("org id");
+        let created = client
+            .post(format!("{base}/api/v1/orgs/{org_id}/providers"))
+            .bearer_auth(admin_token())
+            .json(&json!({
+                "name": "openai",
+                "kind": "openai",
+                "api_base": "https://api.openai.com",
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert!(created.status().is_success(), "{}", created.status());
+    }
+
+    let refused = client
+        .get(format!("{base}/api/v1/config/export"))
+        .bearer_auth(admin_token())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(refused.status(), 400);
+    let body: Value = refused.json().await.unwrap();
+    assert_eq!(body["error"]["code"], "config_export_needs_org", "{body}");
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("provider 'openai'") && m.contains("--org")),
+        "{body}"
+    );
+
+    for slug in ["acme", "globex"] {
+        let one = client
+            .get(format!("{base}/api/v1/config/export?org={slug}"))
+            .bearer_auth(admin_token())
+            .send()
+            .await
+            .unwrap();
+        assert!(one.status().is_success(), "{slug}: {}", one.status());
+    }
+    // a bad slug is still a plain 400 with no code to branch on
+    let unknown = client
+        .get(format!("{base}/api/v1/config/export?org=nobody"))
+        .bearer_auth(admin_token())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(unknown.status(), 400);
+    let body: Value = unknown.json().await.unwrap();
+    assert!(body["error"]["code"].is_null(), "{body}");
+}
+
+/// An org's provider that the bootstrap file repeats as a global row (#3516):
+/// the unscoped export answers `config_export_needs_org`, as for two orgs
+/// sharing a name, and `?org=` writes the org's own row.
+#[tokio::test]
+async fn an_unscoped_export_of_an_org_shadowing_a_bootstrap_row_answers_a_code() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let mut file = rolter_core::GatewayConfig::default();
+    file.providers.push(rolter_core::ProviderConfig {
+        name: "openai".to_string(),
+        kind: rolter_core::ProviderKind::Openai,
+        api_base: "https://file.example.com".to_string(),
+        api_key_env: Some("OPENAI_API_KEY".to_string()),
+        ..Default::default()
+    });
+    let app = rolter_control::test_app_with_file_config(
+        pool.clone(),
+        Some(admin_token().to_string()),
+        file,
+    )
+    .await
+    .unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+    let org: Value = client
+        .post(format!("{base}/api/v1/orgs"))
+        .bearer_auth(admin_token())
+        .json(&json!({"name": "acme", "slug": "acme"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let org_id = org["id"].as_str().expect("org id");
+    // written around the API, as the write-time guard refuses the name
+    sqlx::query(
+        "insert into providers (org_id, name, slug, kind, api_base) \
+         values ($1::uuid, 'openai', 'openai', 'openai', 'https://org.example.com')",
+    )
+    .bind(org_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let refused = client
+        .get(format!("{base}/api/v1/config/export"))
+        .bearer_auth(admin_token())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(refused.status(), 400);
+    let body: Value = refused.json().await.unwrap();
+    assert_eq!(body["error"]["code"], "config_export_needs_org", "{body}");
+
+    let one = client
+        .get(format!("{base}/api/v1/config/export?org=acme"))
+        .bearer_auth(admin_token())
+        .send()
+        .await
+        .unwrap();
+    assert!(one.status().is_success(), "{}", one.status());
+    let document = one.text().await.unwrap();
+    assert!(document.contains("https://org.example.com"), "{document}");
+    assert!(!document.contains("https://file.example.com"), "{document}");
 }
 
 /// `GET /api/v1/version` is the dashboard's one source for the update hint
@@ -1352,6 +1520,60 @@ async fn adaptive_routing_telemetry_round_trips_from_the_data_plane() {
     let nodes = view["routes"][0]["nodes"].as_array().unwrap();
     assert_eq!(nodes.len(), 1);
     assert_eq!(nodes[0]["node_id"], "gw-2");
+
+    // two orgs' `gpt-4o` are two routes (#3458): a report naming each with its
+    // org stores both, and the next report that drops one org's route drops
+    // that row alone
+    let same_name = |orgs: &[&str]| {
+        json!({"routes": orgs.iter().map(|org| json!({
+            "org_id": org, "model": "gpt-4o", "engaged": *org == "org-a", "observed": 1
+        })).collect::<Vec<_>>()})
+    };
+    for body in [same_name(&["org-a", "org-b"]), same_name(&["org-b"])] {
+        let accepted = client
+            .post(format!("{base}/internal/adaptive-telemetry"))
+            .bearer_auth(admin_token())
+            .header("x-rolter-node-id", "gw-3")
+            .json(&body)
+            .send()
+            .await
+            .unwrap();
+        assert!(accepted.status().is_success());
+        let view: Value = client
+            .get(format!("{base}/api/v1/adaptive-routing-telemetry"))
+            .bearer_auth(admin_token())
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let mut routes: Vec<(String, String)> = view["routes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|r| r["nodes"][0]["node_id"] == "gw-3")
+            .map(|r| {
+                (
+                    r["org_id"].as_str().unwrap().to_string(),
+                    r["model"].as_str().unwrap().to_string(),
+                )
+            })
+            .collect();
+        routes.sort();
+        let expected: Vec<(String, String)> = body["routes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| {
+                (
+                    r["org_id"].as_str().unwrap().to_string(),
+                    "gpt-4o".to_string(),
+                )
+            })
+            .collect();
+        assert_eq!(routes, expected, "{view}");
+    }
 
     // a sample older than the freshness window is not current state
     sqlx::query(
@@ -2892,4 +3114,318 @@ async fn the_models_and_config_reads_show_only_the_callers_organizations() {
             assert!(!text.contains(other), "{other} leaked: {text}");
         }
     }
+}
+
+/// #3476: two organizations each serve a `gpt-4o`, and a label on one org's
+/// model stays on it. `?org_id=` lists what applies to that org's models, its
+/// own label before the deployment-wide one of the same key, and a member of
+/// one org never reads the other's labels.
+#[tokio::test]
+async fn model_labels_name_the_organization_whose_model_they_are_on() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let admin = "model-labels-admin";
+    let app = rolter_control::test_app_with_admin_token(pool.clone(), Some(admin.to_string()))
+        .await
+        .unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    // two orgs, each with a project serving `gpt-4o`
+    let mut orgs = Vec::new();
+    for slug in ["acme", "globex"] {
+        let org: uuid::Uuid =
+            sqlx::query_scalar("insert into orgs (name, slug) values ($1, $1) returning id")
+                .bind(slug)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        let team: uuid::Uuid =
+            sqlx::query_scalar("insert into teams (org_id, name) values ($1, 'core') returning id")
+                .bind(org)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        let project: uuid::Uuid = sqlx::query_scalar(
+            "insert into projects (team_id, name) values ($1, 'default') returning id",
+        )
+        .bind(team)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        sqlx::query("insert into routes (project_id, model, strategy) values ($1, 'gpt-4o', 'power_of_two')")
+            .bind(project)
+            .execute(&pool)
+            .await
+            .unwrap();
+        orgs.push(org);
+    }
+    let (acme, globex) = (orgs[0], orgs[1]);
+
+    let create = |body: Value| {
+        let client = client.clone();
+        let url = format!("{base}/api/v1/model-labels");
+        async move {
+            client
+                .post(url)
+                .bearer_auth(admin)
+                .json(&body)
+                .send()
+                .await
+                .unwrap()
+        }
+    };
+    let deployment = create(json!({"model": "gpt-4o", "key": "tier", "value": "standard"})).await;
+    assert_eq!(deployment.status(), 201);
+    let deployment: Value = deployment.json().await.unwrap();
+    assert!(deployment["org_id"].is_null(), "{deployment}");
+    for (org, value) in [(acme, "gold"), (globex, "bronze")] {
+        let own =
+            create(json!({"model": "gpt-4o", "org_id": org, "key": "tier", "value": value})).await;
+        assert_eq!(own.status(), 201, "a label on {org}'s gpt-4o");
+        let own: Value = own.json().await.unwrap();
+        assert_eq!(own["org_id"], org.to_string());
+    }
+    // each org's label is in that org's own audit log, the deployment's in none
+    let audited: Vec<Option<uuid::Uuid>> = sqlx::query_scalar(
+        "select org_id from audit_log where action = 'model_label.create' order by org_id nulls first",
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    let mut expected = vec![Some(acme), Some(globex)];
+    expected.sort();
+    expected.insert(0, None);
+    assert_eq!(audited, expected);
+    // the same key twice for one org is the 409 it always was
+    let again = create(json!({"model": "gpt-4o", "org_id": acme, "key": "tier"})).await;
+    assert_eq!(again.status(), 409);
+    // and an org's label is on a model that org serves
+    let unserved = create(json!({"model": "claude", "org_id": acme, "key": "tier"})).await;
+    assert_eq!(unserved.status(), 404);
+
+    let list = |token: String, query: String| {
+        let client = client.clone();
+        let url = format!("{base}/api/v1/model-labels{query}");
+        async move {
+            let response = client.get(url).bearer_auth(token).send().await.unwrap();
+            assert_eq!(response.status(), 200);
+            let rows: Value = response.json().await.unwrap();
+            let mut pairs: Vec<(String, String)> = rows
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|row| {
+                    (
+                        row["org_id"].as_str().unwrap_or("").to_string(),
+                        row["value"].as_str().unwrap_or("").to_string(),
+                    )
+                })
+                .collect();
+            pairs.sort();
+            pairs
+        }
+    };
+    let sorted = |mut pairs: Vec<(String, String)>| {
+        pairs.sort();
+        pairs
+    };
+
+    // what applies to each org: its own tier, never the other's
+    assert_eq!(
+        list(admin.to_string(), format!("?org_id={acme}")).await,
+        vec![(acme.to_string(), "gold".to_string())]
+    );
+    assert_eq!(
+        list(
+            admin.to_string(),
+            format!("?org_id={globex}&subject_id=gpt-4o")
+        )
+        .await,
+        vec![(globex.to_string(), "bronze".to_string())]
+    );
+    // the whole catalog, to a deployment admin, holds all three
+    assert_eq!(
+        list(admin.to_string(), String::new()).await,
+        sorted(vec![
+            (String::new(), "standard".to_string()),
+            (acme.to_string(), "gold".to_string()),
+            (globex.to_string(), "bronze".to_string()),
+        ])
+    );
+
+    // a member of acme reads the deployment's label and acme's, not globex's
+    let member = seed_user(&pool, "label-member@acme.test", false).await;
+    seed_membership(&pool, member, Some(acme), None, None, "viewer").await;
+    let member = seed_session(&pool, member, "model_labels_member").await;
+    assert_eq!(
+        list(member.clone(), String::new()).await,
+        sorted(vec![
+            (String::new(), "standard".to_string()),
+            (acme.to_string(), "gold".to_string()),
+        ])
+    );
+    assert!(
+        list(member.clone(), format!("?org_id={globex}"))
+            .await
+            .is_empty(),
+        "another org's labels stay hidden even when asked for by id"
+    );
+    // without an override of its own, an org reads the deployment's label
+    sqlx::query("delete from labels where org_id = $1")
+        .bind(acme)
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        list(member, format!("?org_id={acme}")).await,
+        vec![(String::new(), "standard".to_string())]
+    );
+}
+
+/// #3520: a label on an organization's own model is that organization's act,
+/// so its admin writes it under the org's `label` capability. The same admin
+/// cannot label another org's model, and a deployment-wide label stays a
+/// superadmin's.
+#[tokio::test]
+async fn an_org_admin_labels_its_own_orgs_models_and_nothing_else() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let superadmin = "model-labels-superadmin";
+    let app = rolter_control::test_app_with_admin_token(pool.clone(), Some(superadmin.to_string()))
+        .await
+        .unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    let mut orgs = Vec::new();
+    for slug in ["acme", "globex"] {
+        let org: uuid::Uuid =
+            sqlx::query_scalar("insert into orgs (name, slug) values ($1, $1) returning id")
+                .bind(slug)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        let team: uuid::Uuid =
+            sqlx::query_scalar("insert into teams (org_id, name) values ($1, 'core') returning id")
+                .bind(org)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        let project: uuid::Uuid = sqlx::query_scalar(
+            "insert into projects (team_id, name) values ($1, 'default') returning id",
+        )
+        .bind(team)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        sqlx::query("insert into routes (project_id, model, strategy) values ($1, 'gpt-4o', 'power_of_two')")
+            .bind(project)
+            .execute(&pool)
+            .await
+            .unwrap();
+        orgs.push(org);
+    }
+    let (acme, globex) = (orgs[0], orgs[1]);
+    let org_admin = seed_user(&pool, "label-admin@acme.test", false).await;
+    seed_membership(&pool, org_admin, Some(acme), None, None, "admin").await;
+    let org_admin = seed_session(&pool, org_admin, "model_labels_org_admin").await;
+
+    let send = |method: reqwest::Method, path: String, token: String, body: Option<Value>| {
+        let client = client.clone();
+        let url = format!("{base}{path}");
+        async move {
+            let request = client.request(method, url).bearer_auth(token);
+            match body {
+                Some(body) => request.json(&body),
+                None => request,
+            }
+            .send()
+            .await
+            .unwrap()
+        }
+    };
+    let create = |token: String, body: Value| {
+        send(
+            reqwest::Method::POST,
+            "/api/v1/model-labels".to_string(),
+            token,
+            Some(body),
+        )
+    };
+
+    // the org admin labels acme's gpt-4o
+    let own = create(
+        org_admin.clone(),
+        json!({"model": "gpt-4o", "org_id": acme, "key": "tier", "value": "gold"}),
+    )
+    .await;
+    assert_eq!(own.status(), 201);
+    let own: Value = own.json().await.unwrap();
+    assert_eq!(own["org_id"], acme.to_string());
+    // but not globex's, and not the deployment's
+    let other = create(
+        org_admin.clone(),
+        json!({"model": "gpt-4o", "org_id": globex, "key": "tier"}),
+    )
+    .await;
+    assert_eq!(other.status(), 403);
+    let deployment = create(org_admin.clone(), json!({"model": "gpt-4o", "key": "tier"})).await;
+    assert_eq!(deployment.status(), 403);
+
+    // the same split holds for the labels a superadmin wrote
+    let theirs: Value = create(
+        superadmin.to_string(),
+        json!({"model": "gpt-4o", "org_id": globex, "key": "tier"}),
+    )
+    .await
+    .json()
+    .await
+    .unwrap();
+    let wide: Value = create(
+        superadmin.to_string(),
+        json!({"model": "gpt-4o", "key": "tier", "value": "standard"}),
+    )
+    .await
+    .json()
+    .await
+    .unwrap();
+    for label in [&theirs, &wide] {
+        let path = format!("/api/v1/model-labels/{}", label["id"].as_str().unwrap());
+        let update = send(
+            reqwest::Method::PUT,
+            path.clone(),
+            org_admin.clone(),
+            Some(json!({"value": "mine"})),
+        )
+        .await;
+        assert_eq!(update.status(), 403, "{label}");
+        let delete = send(reqwest::Method::DELETE, path, org_admin.clone(), None).await;
+        assert_eq!(delete.status(), 403, "{label}");
+    }
+
+    // and the org's own label is the admin's to change and remove
+    let path = format!("/api/v1/model-labels/{}", own["id"].as_str().unwrap());
+    let update = send(
+        reqwest::Method::PUT,
+        path.clone(),
+        org_admin.clone(),
+        Some(json!({"value": "platinum"})),
+    )
+    .await;
+    assert_eq!(update.status(), 200);
+    let update: Value = update.json().await.unwrap();
+    assert_eq!(update["value"], "platinum");
+    let delete = send(reqwest::Method::DELETE, path, org_admin.clone(), None).await;
+    assert_eq!(delete.status(), 204);
+    let left: i64 = sqlx::query_scalar("select count(*) from labels where org_id = $1")
+        .bind(acme)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(left, 0);
 }

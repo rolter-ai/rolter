@@ -20,7 +20,7 @@ Each target has an independent circuit breaker that moves through three states:
   </Card>
 
   <Card title="Half-Open" icon="circle-half-stroke">
-    The open window expired. The next request is used as a probe. A successful response closes the breaker; another failure immediately re-opens it for another `open_secs`.
+    The open window expired. The next request is used as a probe, and it is the only one: other requests skip the target until the probe's result arrives. A successful response closes the breaker; another failure immediately re-opens it for another `open_secs`. A probe that never answers (the caller disconnected) gives up its slot after the longest of `open_secs`, 30 seconds and the upstream request timeout (`[timeouts]`), and the next request probes instead; a probe that never reached the target, such as one a full provider queue turned away, gives it up at once. One exception: when every target of a route is skipped (a route with a single target, for example), Rolter still fails open and sends requests to the probing target rather than refusing them, so the one-probe rule protects a target only while it has siblings to take the traffic. See the fail-open guarantee below.
   </Card>
 </CardGroup>
 
@@ -36,6 +36,8 @@ Half-Open ──(failure)──► Open
 A "transient failure" for counting purposes is the same set of conditions that trigger retries and cooldowns: HTTP 429, any 5xx response, or a connection error.
 
 **Fail-open guarantee:** when every target in a route has a tripped breaker, Rolter does not reject the request. It fails open and still forwards, giving you a live error from the upstream rather than a guaranteed gateway error.
+
+This holds for a half-open target too. When every target of a route is parked, open, or half-open with a probe in flight, the request is still forwarded. **A single-target route therefore gets no stampede protection from the half-open probe limit**: while its only target is probing, every concurrent request reaches it as well. The same is true of a route whose every target is probing at once. This is deliberate: refusing those requests would make a single-target route answer `503` while its upstream recovers, and its open state already sends it traffic the same way. To shield a recovering upstream, give the route a second target to take the traffic, or cap the request rate in front of it.
 
 ## Configuration
 

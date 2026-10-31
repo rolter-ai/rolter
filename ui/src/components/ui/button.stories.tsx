@@ -48,9 +48,9 @@ export const Variants: Story = {
 };
 
 /**
- * The brand button is the folk-red fill with white text (#1993). It was typed
- * out at six call sites as `bg-brand-folk text-white hover:bg-brand-press`; the
- * colours here are read back from the rendered button, so a drift from the
+ * The brand button is the folk-red fill with white text (#1993). Screens
+ * ask for it with `variant="brand"` and never spell the classes; the colours
+ * here are read back from the rendered button, so a drift from the
  * tokens fails. The press colour is a `:hover` rule a story cannot switch on
  * (a synthetic pointer sets no `:hover`), so it is asserted as the class.
  */

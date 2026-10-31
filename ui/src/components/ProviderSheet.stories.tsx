@@ -108,6 +108,14 @@ const KINDS = [
     request_path: CHAT,
     auth_header: "authorization",
   },
+  {
+    kind: "rinna",
+    base_includes_v1: true,
+    request: "chat",
+    request_path: CHAT,
+    auth_header: "authorization",
+    unverified: true,
+  },
 ];
 
 function stub(test: () => Promise<Response>): FetchStub {
@@ -1224,5 +1232,35 @@ export const PinnedKindOptOutInRussian: Story = {
     await expect(
       await screen().findByRole("switch", { name: ru.providerSheet.customBase.title }),
     ).toBeInTheDocument();
+  },
+};
+
+// --- #3428: a kind with no located API reference says so ---------------------
+
+export const UnverifiedKindSaysSo: Story = {
+  render: () => (
+    <Harness
+      provider={{ ...PROVIDER, id: "prov-rinna", name: "rinna-edge", kind: "rinna" }}
+      fetchStub={stub(async () => json({}))}
+    />
+  ),
+  play: async () => {
+    const canvas = screen();
+    await expect(
+      await canvas.findByText(/no public API reference for this provider/),
+    ).toBeVisible();
+    // the picker marks it too, from the same list
+    await userEvent.click(await canvas.findByRole("combobox", { name: "Kind" }));
+    const option = await canvas.findByRole("option", { name: /rinna/i });
+    await expect(within(option).getByText(/Unverified/)).toBeVisible();
+  },
+};
+
+export const VerifiedKindCarriesNoUnverifiedNote: Story = {
+  render: () => <Harness fetchStub={stub(async () => json({}))} />,
+  play: async () => {
+    const canvas = screen();
+    await canvas.findByLabelText("API base");
+    await waitFor(() => expect(canvas.queryByText(/no public API reference/)).toBeNull());
   },
 };

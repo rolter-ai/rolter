@@ -152,8 +152,8 @@ The team stack layers `docker/docker-compose.team.yml` over the same file. It cl
 
     ```bash
     docker compose -f docker/docker-compose.yml -f docker/docker-compose.team.yml \
-      --env-file .env exec control rolter seed \
-      --admin-email you@example.com --admin-password '<a long password>'
+      --env-file .env exec -T control rolter seed \
+      --admin-email you@example.com --admin-password-stdin < password.txt
     ```
 
     Postgres is also published on `127.0.0.1`, so the same command works from a host that has the `rolter` CLI (`pip install rolter`) with `ROLTER_DATABASE_URL="postgres://rolter:<ROLTER_PG_PASSWORD>@127.0.0.1:5432/rolter"` set.

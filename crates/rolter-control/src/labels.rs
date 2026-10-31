@@ -6,6 +6,18 @@
 //! pricing catalog and not to any org. Both refuse to write anything but a
 //! `custom` label — an auto label is an observation, and the only way to
 //! change one is for the subsystem that made it to observe again.
+//!
+//! A model label may name the organization whose model it is (`org_id`,
+//! #3476): since #1857 two organizations may each serve a `gpt-4o`, and a
+//! label on one must not show on the other. One without is deployment-wide,
+//! which is every label on a model from the gateway's config file. Reading
+//! `?org_id=` lists what applies to that organization's models: its own
+//! labels, and the deployment-wide ones it has not set a label of the same key
+//! over. A caller sees an organization's model labels only where they reach
+//! that organization, the rule `GET /api/v1/models` applies to the models.
+//! Writing one that names an organization is that organization's act, under
+//! its `label` capability; a deployment-wide one stays superadmin-only
+//! (`model_label`, #3520).
 
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
@@ -14,7 +26,7 @@ use axum::{Json, Router};
 use serde::Deserialize;
 use uuid::Uuid;
 
-use rolter_core::Error;
+use rolter_core::{Error, Tenancy};
 use rolter_store::postgres::models::Label;
 use rolter_store::postgres::repo::{CustomLabelInput, LabelFilter, LabelRepo};
 
@@ -22,7 +34,8 @@ use crate::crud::{
     log_audit, name_taken, pool, publish_config_change, ApiError, ApiResult, SafeJson,
 };
 use crate::rbac::{authorize, Principal, ScopeChain};
-use crate::rbac_matrix::cap;
+use crate::rbac_matrix::{cap, Requirement};
+use crate::tenant_view::TenantView;
 use crate::ControlState;
 
 pub(crate) fn router() -> Router<ControlState> {
@@ -54,6 +67,9 @@ struct LabelQuery {
     key: Option<String>,
     value: Option<String>,
     source: Option<String>,
+    /// model labels only: what applies to this organization's models, its own
+    /// labels before the deployment-wide ones (#3476)
+    org_id: Option<Uuid>,
 }
 
 impl LabelQuery {
@@ -93,6 +109,9 @@ struct CreateOrgLabel {
 struct CreateModelLabel {
     /// the model's name, which is how the pricing catalog addresses it
     model: String,
+    /// the organization whose model this is (#3476), which must have a route
+    /// of that name; omitted for a deployment-wide label
+    org_id: Option<Uuid>,
     key: String,
     value: Option<String>,
 }
@@ -211,6 +230,7 @@ async fn create_org_label(
         .create_custom(CustomLabelInput {
             subject_type: &body.subject_type,
             subject_id: &body.subject_id.to_string(),
+            org_id: None,
             key: &body.key,
             value: body.value.as_deref(),
         })
@@ -330,7 +350,25 @@ async fn list_model_labels(
         subject_type: Some("model"),
         ..query.as_filter()
     };
-    Ok(Json(LabelRepo(pool(&state)).list(filter).await?))
+    let repo = LabelRepo(pool(&state));
+    let rows = match query.org_id {
+        Some(org_id) => repo.list_models_for_org(org_id, filter).await?,
+        None => repo.list(filter).await?,
+    };
+    // a deployment-wide label names no tenant; an organization's names its
+    // model, which only a caller reaching that organization may read
+    let mut view = TenantView::load(&state, Some(&principal)).await?;
+    let mut visible = Vec::with_capacity(rows.len());
+    for row in rows {
+        let owner = row.org_id.map(|org| Tenancy {
+            org_id: org.to_string(),
+            project_id: None,
+        });
+        if view.sees(&state, owner.as_ref()).await {
+            visible.push(row);
+        }
+    }
+    Ok(Json(visible))
 }
 
 async fn create_model_label(
@@ -338,10 +376,11 @@ async fn create_model_label(
     State(state): State<ControlState>,
     SafeJson(body): SafeJson<CreateModelLabel>,
 ) -> ApiResult<(StatusCode, Json<Label>)> {
-    authorize(
+    authorize_model_label(
         &state,
         &principal,
-        ScopeChain::default(),
+        body.org_id,
+        cap!("label", Create),
         cap!("model_label", Create),
     )
     .await?;
@@ -350,33 +389,64 @@ async fn create_model_label(
     }
     validate_key(&body.key)?;
     validate_value(body.value.as_deref())?;
-    let row = LabelRepo(pool(&state))
+    let repo = LabelRepo(pool(&state));
+    // an organization's label is on a model that organization serves, or it
+    // would sit unseen until someone created a route of that name
+    if let Some(org_id) = body.org_id {
+        if !repo.org_has_model(org_id, &body.model).await? {
+            return Err(ApiError::Core(Error::NotFound(format!(
+                "model {} in org {org_id}",
+                body.model
+            ))));
+        }
+    }
+    let row = repo
         .create_custom(CustomLabelInput {
             subject_type: "model",
             subject_id: &body.model,
+            org_id: body.org_id,
             key: &body.key,
             value: body.value.as_deref(),
         })
         .await?;
     if let Some(ref row) = row {
         publish_config_change(&state).await?;
+        // an organization's label is in its own audit log (#3476)
         log_audit(
             &state,
             &principal,
-            None,
+            row.org_id,
             "model_label.create",
             "label",
             row.id,
-            serde_json::json!({"model": row.subject_id, "key": row.key}),
+            serde_json::json!({"model": row.subject_id, "org_id": row.org_id, "key": row.key}),
         )
         .await;
     }
     created(row, &body.key)
 }
 
+/// Authorize a write to a model label (#3520). A label that names an
+/// organization touches only that organization's model, so it takes `org`,
+/// the org-scoped `label` capability its provider and route labels use, at
+/// that organization. A deployment-wide label takes `deployment`, the
+/// superadmin-only `model_label`.
+async fn authorize_model_label(
+    state: &ControlState,
+    principal: &Principal,
+    org_id: Option<Uuid>,
+    org: Requirement,
+    deployment: Requirement,
+) -> ApiResult<()> {
+    match org_id {
+        Some(org_id) => authorize(state, principal, ScopeChain::org(org_id), org).await,
+        None => authorize(state, principal, ScopeChain::default(), deployment).await,
+    }
+}
+
 /// Confirm the label is a model's before a model-scoped handler edits it: the
-/// two surfaces share a table, and superadmin authority over the catalog is
-/// not authority over an org's providers.
+/// two surfaces share a table, and authority over a model's labels is not
+/// authority over an org's providers.
 async fn model_label(state: &ControlState, id: Uuid) -> ApiResult<Label> {
     let label = LabelRepo(pool(state)).get(id).await?;
     if label.subject_type != "model" {
@@ -391,15 +461,17 @@ async fn update_model_label(
     Path(id): Path<Uuid>,
     SafeJson(body): SafeJson<UpdateLabel>,
 ) -> ApiResult<Json<Label>> {
-    authorize(
+    // the label's own org decides the check, so it is read first
+    let label = model_label(&state, id).await?;
+    authorize_model_label(
         &state,
         &principal,
-        ScopeChain::default(),
+        label.org_id,
+        cap!("label", Update),
         cap!("model_label", Update),
     )
     .await?;
     validate_value(body.value.as_deref())?;
-    model_label(&state, id).await?;
     let row = LabelRepo(pool(&state))
         .update_custom(id, body.value.as_deref())
         .await?;
@@ -407,7 +479,7 @@ async fn update_model_label(
     log_audit(
         &state,
         &principal,
-        None,
+        row.org_id,
         "model_label.update",
         "label",
         id,
@@ -422,20 +494,21 @@ async fn delete_model_label(
     State(state): State<ControlState>,
     Path(id): Path<Uuid>,
 ) -> ApiResult<StatusCode> {
-    authorize(
+    let label = model_label(&state, id).await?;
+    authorize_model_label(
         &state,
         &principal,
-        ScopeChain::default(),
+        label.org_id,
+        cap!("label", Delete),
         cap!("model_label", Delete),
     )
     .await?;
-    model_label(&state, id).await?;
     LabelRepo(pool(&state)).delete_custom(id).await?;
     publish_config_change(&state).await?;
     log_audit(
         &state,
         &principal,
-        None,
+        label.org_id,
         "model_label.delete",
         "label",
         id,

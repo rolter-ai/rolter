@@ -4,6 +4,7 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::routing::{delete, get};
 use axum::{Json, Router};
+use serde::Deserialize;
 use serde::Serialize;
 
 use rolter_store::postgres::repo::RouteRepo;
@@ -80,7 +81,9 @@ async fn list_models(
             route_targets: r.targets.clone(),
             org_id: r.tenancy.as_ref().map(|t| t.org_id.clone()),
             project_id: r.tenancy.as_ref().and_then(|t| t.project_id.clone()),
-            source: if state.config_owned.models.contains(&r.model) {
+            // an org's route that shares a name with a file route is the
+            // org's, stored and editable (#3516)
+            source: if state.config_owned.owns_model(r.tenancy.as_ref(), &r.model) {
                 "config"
             } else {
                 "db"
@@ -90,18 +93,51 @@ async fn list_models(
     Ok(Json(models))
 }
 
-/// Delete a DB-defined model (all routes with that public name). Config
-/// models are rejected with `409` since the file owns them.
+/// Which org's model a delete removes.
+#[derive(Deserialize)]
+struct DeleteModelQuery {
+    /// the org whose routes of that name go; required once two or more orgs
+    /// have a route of that name (#1857)
+    org_id: Option<uuid::Uuid>,
+}
+
+/// Delete a DB-defined model: the routes with that public name in one org,
+/// across its projects. Config models are rejected with `409` since the file
+/// owns them. Names are per org (#1857), so `org_id` says whose; it may be
+/// left out only while a single org has the name, and a delete that would
+/// otherwise reach several orgs is refused with `400 invalid_query`.
 // deleting a public model name removes routes across potentially many projects,
-// so it cannot be scoped to a single org/team/project and is superadmin-only
+// so it cannot be scoped to a single team/project and is superadmin-only
 async fn delete_model(
     principal: Principal,
     State(state): State<ControlState>,
     Path(model): Path<String>,
+    super::Query(query): super::Query<DeleteModelQuery>,
 ) -> ApiResult<StatusCode> {
     authorize_superadmin(&principal, superadmin_cap!("model", Delete))?;
-    require_not_config_owned(&state.config_owned.models, &model, "model")?;
-    RouteRepo(pool(&state)).delete_by_model(&model).await?;
+    let routes = RouteRepo(pool(&state));
+    let holders = routes.orgs_holding_model(&model).await?;
+    // only the file's own row is the file's: an org's stored route that shares
+    // the name with a file route is the org's to delete (#3516)
+    match query.org_id {
+        Some(org) => super::require_row_not_config_owned(
+            &state.config_owned.model_rows,
+            org,
+            &model,
+            "model",
+        )?,
+        None if holders == 0 => {
+            require_not_config_owned(&state.config_owned.models, &model, "model")?
+        }
+        None => {}
+    }
+    if query.org_id.is_none() && holders > 1 {
+        return Err(super::ApiError::InvalidQuery(format!(
+            "more than one organization has a model named '{model}'; name the one to delete \
+             with org_id"
+        )));
+    }
+    routes.delete_by_model(&model, query.org_id).await?;
     publish_config_change(&state).await?;
     Ok(StatusCode::NO_CONTENT)
 }

@@ -8,13 +8,13 @@ description: "Delete one virtual key's, user's or organization's request logs an
 
 Use it for two requests: an erasure request ("delete everything you hold about this employee"), and the operational one, an engineer who pasted a secret into a prompt and needs that request's captured body gone before its TTL.
 
-Erasure is **superadmin only**, needs the control plane to have a ClickHouse URL, and is irreversible.
+Erasure is **superadmin only** (no [deployment role](/security/rbac#deployment-roles) reaches it), needs the control plane to have a ClickHouse URL, and is irreversible.
 
 ---
 
 ## What gets deleted
 
-Rolter keeps two things per request in ClickHouse: the metadata row in `request_logs` (model, tokens, cost, status, the virtual key and its organization) and, when [payload capture](/observability/log-settings#payload-capture) is on, the raw bodies in `request_payloads`. Nothing else is derived from them. There is no rollup or materialized view over either table, and the dashboard's analytics are queries over `request_logs`, so deleting the rows removes the figures that were built from them too.
+Rolter keeps up to three things per request in ClickHouse: the metadata row in `request_logs` (model, tokens, cost, status, the virtual key and its organization) and, when [payload capture](/observability/log-settings#payload-capture) is on, the raw bodies in `request_payloads` and, for a call made through the MCP gateway, a row in `mcp_tool_call_logs` (the tool, its status and, when capture is on, the redacted arguments and result). Nothing else is derived from them. There is no rollup or materialized view over either table, and the dashboard's analytics are queries over `request_logs`, so deleting the rows removes the figures that were built from them too.
 
 | Scope         | Rows deleted                                                                               |
 | ------------- | ------------------------------------------------------------------------------------------ |
@@ -25,11 +25,15 @@ Rolter keeps two things per request in ClickHouse: the metadata row in `request_
 
 Request logs name a virtual key, never a person, so a `user` scope is resolved through the keys the user created. A key that has since been deleted leaves no record to resolve; erase by organization or by key id for those. A request id is whatever the caller sent and is not unique, so a `request` scope requires the organization, and `ts` (the row's own timestamp, as the LLM Logs list shows it) when a client reuses one id.
 
-Set `include_logs` to `false` to delete the captured bodies only and keep the metadata. That is the usual answer to a secret pasted into a prompt.
+The MCP tool-call log carries its own scope columns, so the same scopes reach it without a lookup: a `virtual_key` scope matches the row's `virtual_key_id`, an `org` scope its `org_id`, and a `request` scope its `request_id` within the organization. The MCP row is stamped when the call was made, not with the instant of the request-log row `ts` names, so a `request` scope that gives `ts` matches the MCP rows inside five minutes either side of it. The row's `user_id` is the key's owner, which is not always the person who created the key, so a `user` scope deletes the rows whose `user_id` is that user as well as the rows of every key they created. A user who created no key that still exists is therefore not refused: only their MCP rows are found.
+
+Every record says which stores it searched. `stores` lists `request_logs`, `request_payloads` and `mcp_tool_call_logs`, each with `searched` and, when it was skipped, a stable `code` (`no_key`, `bodies_only`) and an English `reason`: for a user who holds no keys the request logs and payloads read `searched: false` with "the user holds no virtual keys, and request logs are found by key", and a request with `include_logs: false` skips the log rows because they are kept. The same list is in the audit entry, and the Log erasure screen prints a "Not searched" note under the status, so a `completed` record is never read as complete over a store it did not look in. A record from before this was kept has an empty list, which means it does not say.
+
+Set `include_logs` to `false` to delete the captured bodies only and keep the metadata. That is the usual answer to a secret pasted into a prompt. For MCP rows it blanks `arguments` and `result` and keeps the call's tool, status and timing.
 
 Payload rows written before ClickHouse migration `020_request_payloads_key.sql` carry no key. Rolter finds the ones belonging to a key or user through their log rows and deletes them too, up to 10,000 per request; apply the migration so new rows carry the key themselves.
 
-Erasure does not touch the [audit log](/security/rbac), MCP tool-call logs, or the response cache. A cached response expires with its own TTL.
+Erasure does not touch the [audit log](/security/rbac) or the response cache. A cached response expires with its own TTL. It reaches ClickHouse only: a copy you exported or backed up, and what an MCP server or LLM provider recorded on its side, are outside it. An MCP log row written without a virtual key id or an owner (none is, from the gateway) cannot be matched by a `virtual_key` or `user` scope; erase by organization instead. Rolter needs the `mcp_tool_call_logs` table (ClickHouse migration `007_mcp_tool_call_logs.sql`) to submit an erasure.
 
 ---
 
@@ -48,9 +52,17 @@ Until a record says `completed`, treat the data as still present. A deployment w
 
 ---
 
+## In the dashboard
+
+**Observability › Log erasure** (superadmin) erases a virtual key, user or organization: pick the subject by name, give the reason, and confirm. The picker lists virtual keys (with the organization, team and project each lives in, since two projects may each have a `prod`), users by email and organizations, and filters as you type; the confirmation names the subject beside its id, so a wrong id is not erased on trust. An id the list does not show can be pasted instead: it is looked up and named when Rolter knows it, and flagged when it does not. **Delete the log rows too** is on by default; turn it off to delete the captured bodies only. The recent erasures are listed below with their status, and a pending one keeps refreshing until ClickHouse reports it done. It reads **Erased** only for `completed`.
+
+For a single request, **LLM Logs** has **Erase captured payload** in the detail of a row. It deletes that request's captured bodies and keeps its metadata, asks for the reason first, and shows the status of the record under the button. A row that records no organization cannot be addressed this way; erase by virtual key instead.
+
 ## The procedure
 
-1. Find the subject's id: the virtual key id from **Virtual Keys**, the user id from **Members**, the organization id, or the `request_id` and `ts` of a row in **LLM Logs**.
+The steps are the same in the dashboard and through the API; the examples below use the API.
+
+1. Find the subject's id: through `GET /api/v1/log-erasures/subjects?kind=virtual_key|user|org&q=<part of a name or email>` (superadmin; add `id=<uuid>` to name an id you already hold), or the virtual key id from **Virtual Keys**, the user id from **Members**, the organization id, or the `request_id` and `ts` of a row in **LLM Logs**.
 2. Submit the erasure with a reason. The reason is stored and audited, so write the ticket or request reference, not the content.
 3. Poll the record until it reads `completed`, and keep its id as the proof.
 

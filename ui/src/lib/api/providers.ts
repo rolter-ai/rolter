@@ -33,6 +33,12 @@ export interface ProviderKindInfo {
    * a kind with no pin (#1133)
    */
   pinned_api_base?: string | null;
+  /**
+   * the specification registry records no located API reference for the kind,
+   * so whether it speaks an OpenAI-compatible API at a stable base is
+   * unverified (#3428); absent from an older control plane
+   */
+  unverified?: boolean;
 }
 
 export function fetchProviderKinds(): Promise<ProviderKindInfo[]> {

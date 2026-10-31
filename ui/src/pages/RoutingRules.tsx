@@ -16,6 +16,7 @@ import { LoadError } from "@/components/LoadError";
 import { CardGridSkeleton, LoadingRegion } from "@/components/LoadingState";
 import { PageBody, StatusDot, Toolbar } from "@/components/screen";
 import { BreakerBadge } from "@/components/BreakerBadge";
+import { FallbackBadge } from "@/components/TakesOverField";
 import { healthPresentation } from "@/components/target-health";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -37,10 +38,13 @@ import {
   type ClusterNodeRow,
   type RouteRow,
   type RouteTargetRow,
+  type RouteVariantRow,
 } from "@/lib/api";
 import { errorText } from "@/lib/error-copy";
+import { isRestricted } from "@/lib/failure-classes";
 import { useFormat } from "@/lib/i18n/format";
 import { HEALTH_SLA, targetHealth, type TargetHealth } from "@/lib/route-targets";
+import { trafficSplit } from "@/lib/route-variants";
 import { shareBarColor } from "@/lib/share-bars";
 import { useScope } from "@/lib/scope";
 import { StrategyBadge } from "@/components/StrategyBadge";
@@ -63,7 +67,10 @@ interface RouteTraffic {
 /**
  * the rollup keys on the public model name and is read with the route's
  * project filter (#3101), so two projects that define a route with one model
- * name each see their own figure; a route nothing called has no row
+ * name each see their own figure; a route nothing called has no row. the name
+ * alone is a safe key here even though two organizations may share it
+ * (#1857): a project belongs to one organization, so the filtered read holds
+ * no other organization's rows (#3460)
  */
 function trafficFor(rows: AnalyticsByModelRow[], model: string): RouteTraffic {
   const row = rows.find((r) => r.model === model);
@@ -105,7 +112,9 @@ export default function RoutingRules() {
     // routes the project has (#3031). the key sits under ["routes", project],
     // which every route mutation already invalidates
     queryKey: ["routes", scope.projectId, "targets"],
-    queryFn: () => fetchRoutes(scope.projectId as string, ["targets"]),
+    // the variants ride along too (#3343): a route that has them routes through
+    // them, and its own targets are not used
+    queryFn: () => fetchRoutes(scope.projectId as string, ["targets", "variants"]),
     enabled: !!scope.projectId,
   });
 
@@ -179,6 +188,10 @@ export default function RoutingRules() {
 
   const providerName = (id: string) =>
     providers.data?.find((p) => p.id === id)?.name ?? id.slice(0, 8);
+  // a stored target names its provider by id, so its organization is known
+  // exactly; another organization's provider of the same name has health of
+  // its own (#3460)
+  const providerOrg = (id: string) => providers.data?.find((p) => p.id === id)?.org_id;
 
   // a target's health is looked up by provider name, which the rollups key on,
   // so it waits for the provider list as well as for the rollup: a row judged
@@ -192,6 +205,7 @@ export default function RoutingRules() {
             providerName(tg.provider_id),
             tg.upstream_model || route.model,
             timeline.data,
+            providerOrg(tg.provider_id),
           )
       : undefined;
 
@@ -358,21 +372,37 @@ export default function RoutingRules() {
                   </span>
                 )}
               </div>
-              <RouteTargets
-                route={r}
-                state={targets}
-                providerName={providerName}
-                healthFor={healthFor}
-                breakers={breakers.data}
-              />
+              {r.variants && r.variants.length > 0 ? (
+                <RouteVariants
+                  route={r}
+                  variants={r.variants}
+                  unusedTargets={targets.kind === "loaded" ? targets.targets.length : 0}
+                  providerName={providerName}
+                />
+              ) : (
+                <RouteTargets
+                  route={r}
+                  state={targets}
+                  providerName={providerName}
+                  healthFor={healthFor}
+                  breakers={breakers.data}
+                  orgId={scope.orgId}
+                />
+              )}
               <RouteTrafficLine traffic={traffic} model={r.model} />
               <div className="flex flex-wrap items-center gap-2 border-t border-[color:var(--border-subtle)] pt-3">
                 {/* the count needs an answer too: a pending or failed read is
                     not a route with no targets */}
-                {targets.kind === "loaded" && (
+                {r.variants && r.variants.length > 0 ? (
                   <span className="text-xs text-[color:var(--text-subtle)]">
-                    {t("pages.routing.targetCount", { count: targets.targets.length })}
+                    {t("pages.routing.variantCount", { count: r.variants.length })}
                   </span>
+                ) : (
+                  targets.kind === "loaded" && (
+                    <span className="text-xs text-[color:var(--text-subtle)]">
+                      {t("pages.routing.targetCount", { count: targets.targets.length })}
+                    </span>
+                  )
                 )}
                 {/* the Playground opens on this route's model. a disabled route
                     is not served, so a request to it would only fail */}
@@ -591,6 +621,7 @@ function RouteTargets({
   providerName,
   healthFor,
   breakers,
+  orgId,
 }: {
   route: RouteRow;
   state: TargetsState;
@@ -599,6 +630,11 @@ function RouteTargets({
   healthFor?: (target: RouteTargetRow, route: RouteRow) => TargetHealth | null;
   /** the gateways' live breakers, matched on the route's model and the target's position */
   breakers?: Pick<BreakerStateDto, "targets">;
+  /**
+   * the organization the route belongs to: another organization's route of
+   * the same name has breakers of its own (#3460)
+   */
+  orgId?: string;
 }) {
   const { t } = useTranslation();
   const fmt = useFormat();
@@ -616,7 +652,10 @@ function RouteTargets({
       <EmptyState inline uxTarget="route-targets" description={t("pages.routing.noTargets")} />
     );
   }
-  const totalWeight = targets.reduce((a, tg) => a + tg.weight, 0) || 1;
+  // a fallback takes no ordinary traffic, so it neither has a share nor
+  // dilutes the others' (#3319)
+  const totalWeight =
+    targets.filter((tg) => !isRestricted(tg.takes_over)).reduce((a, tg) => a + tg.weight, 0) || 1;
   return (
     <div className="flex flex-col gap-2.5">
       {!weighted && targets.length > 1 && (
@@ -633,6 +672,7 @@ function RouteTargets({
         className="flex flex-col gap-2.5"
       >
         {targets.map((tg, i) => {
+          const fallback = isRestricted(tg.takes_over);
           const share = tg.weight / totalWeight;
           return (
             <li key={tg.id} className="flex flex-col gap-[5px]">
@@ -644,15 +684,24 @@ function RouteTargets({
                 <span className="min-w-0 truncate text-muted-foreground">
                   {tg.upstream_model || route.model}
                 </span>
-                {weighted && (
-                  <span className="ml-auto text-[color:var(--text-secondary)]">
-                    {fmt.percent(share, 0)}
+                {fallback ? (
+                  <span className="ml-auto">
+                    <FallbackBadge takesOver={tg.takes_over ?? []} />
                   </span>
+                ) : (
+                  weighted && (
+                    <span className="ml-auto text-[color:var(--text-secondary)]">
+                      {fmt.percent(share, 0)}
+                    </span>
+                  )
                 )}
               </div>
               {healthFor && <TargetHealthLine health={healthFor(tg, route)} />}
-              <BreakerBadge breaker={breakerFor(breakers, route.model, i)} className="self-start" />
-              {weighted && (
+              <BreakerBadge
+                breaker={breakerFor(breakers, route.model, i, orgId)}
+                className="self-start"
+              />
+              {weighted && !fallback && (
                 <div
                   data-testid="target-share"
                   className="h-[5px] overflow-hidden rounded-full bg-[color:var(--surface-subtle)]"
@@ -674,6 +723,81 @@ function RouteTargets({
           );
         })}
       </ul>
+    </div>
+  );
+}
+
+/**
+ * A route that routes through weighted variants (#3343, #391).
+ *
+ * The gateway samples one variant by weight and tries the others in the order
+ * they are declared when it fails, and while a route has variants its own
+ * target list is not used. So the card lists the variants in that fallback
+ * order with the share each one's weight gives it (computed the way the
+ * gateway samples, `trafficSplit`), each with the targets it tries, and says
+ * once how many of the route's own targets are being set aside rather than
+ * drawing a split the gateway does not make. A route with variants and no
+ * targets of its own never reads as having none.
+ */
+function RouteVariants({
+  route,
+  variants,
+  unusedTargets,
+  providerName,
+}: {
+  route: RouteRow;
+  variants: RouteVariantRow[];
+  /** how many of the route's own targets the variants set aside */
+  unusedTargets: number;
+  providerName: (id: string) => string;
+}) {
+  const { t } = useTranslation();
+  const fmt = useFormat();
+  const ordered = [...variants].sort((a, b) => a.position - b.position);
+  const shares = trafficSplit(ordered.map((v) => v.weight));
+  return (
+    <div className="flex flex-col gap-2.5">
+      {unusedTargets > 0 && (
+        <p className="text-xs leading-snug text-muted-foreground">
+          {t("pages.routing.targetsUnused", { count: unusedTargets })}
+        </p>
+      )}
+      <ol
+        aria-label={t("pages.routing.variantsLabel", { model: route.model })}
+        className="flex flex-col gap-2.5"
+      >
+        {ordered.map((v, i) => (
+          <li key={v.id} className="flex flex-col gap-[5px]">
+            <div className="flex items-center gap-2 font-mono text-xs">
+              <span className="min-w-0 truncate text-[color:var(--text-secondary)]">{v.name}</span>
+              <span className="ml-auto text-[color:var(--text-secondary)]">
+                {fmt.percent(shares[i] ?? 0, 0)}
+              </span>
+            </div>
+            <div
+              data-testid="variant-share"
+              className="h-[5px] overflow-hidden rounded-full bg-[color:var(--surface-subtle)]"
+            >
+              <div
+                className="h-full rounded-full"
+                style={{
+                  // a CSS length, never a localized percentage
+                  width: `${Math.round((shares[i] ?? 0) * 100)}%`,
+                  background: shareBarColor(i),
+                }}
+              />
+            </div>
+            <p className="truncate font-mono text-2xs text-[color:var(--text-subtle)]">
+              {[...v.targets]
+                .sort((a, b) => a.position - b.position)
+                .map(
+                  (tg) => `${providerName(tg.provider_id)} → ${tg.upstream_model || route.model}`,
+                )
+                .join(", ")}
+            </p>
+          </li>
+        ))}
+      </ol>
     </div>
   );
 }

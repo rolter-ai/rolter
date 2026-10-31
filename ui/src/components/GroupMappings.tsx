@@ -45,6 +45,7 @@ const STARTING_ROLE = "viewer";
 const GATES = {
   scim: { create: "scim_group_mapping:create", delete: "scim_group_mapping:delete" },
   sso: { create: "sso_group_mapping:create", delete: "sso_group_mapping:delete" },
+  ldap: { create: "ldap_group_mapping:create", delete: "ldap_group_mapping:delete" },
 } as const satisfies Record<string, Record<string, Capability>>;
 
 /** what the list shows of a mapping: both APIs answer with these and more */
@@ -92,7 +93,7 @@ function grantReasons({ role, target }: Pick<Draft, "role" | "target">): GrantRe
 
 export interface GroupMappingsProps {
   /**
-   * SCIM or SSO: picks the capability each control is gated on and the name the
+   * SCIM, SSO or LDAP: picks the capability each control is gated on and the name the
    * confirmations report under. The control slugs are the same for both, since
    * a refused click also records the capability, which says which one it was.
    */
@@ -267,6 +268,7 @@ export function GroupMappings({
       <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-start">
         <Field
           label={t("groupMappings.groupLabel")}
+          info={t("groupMappings.groupInfo")}
           className="sm:max-w-[22rem] sm:flex-[1_1_14rem]"
         >
           <Input
@@ -276,7 +278,11 @@ export function GroupMappings({
             placeholder={t("groupMappings.groupPlaceholder")}
           />
         </Field>
-        <Field label={t("groupMappings.scopeLabel")} className="sm:w-[196px]">
+        <Field
+          label={t("groupMappings.scopeLabel")}
+          info={t("groupMappings.scopeInfo")}
+          className="sm:w-[196px]"
+        >
           <OrgScopePicker
             orgId={orgId}
             value={target}
@@ -285,7 +291,11 @@ export function GroupMappings({
             className="w-full"
           />
         </Field>
-        <Field label={t("groupMappings.roleLabel")} className="sm:w-40">
+        <Field
+          label={t("groupMappings.roleLabel")}
+          info={t("groupMappings.roleInfo")}
+          className="sm:w-40"
+        >
           <Combobox
             size="sm"
             className="w-full"

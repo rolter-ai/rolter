@@ -15,6 +15,7 @@ import { ScreenHeader } from "@/components/ScreenHeader";
 import {
   Harness,
   LOADING_LABEL,
+  expectAnalyticsUnavailable,
   expectGateAnswered,
   expectLoadError,
   expectNoFalseEmpty,
@@ -32,10 +33,14 @@ import {
   type FetchStub,
   type Recorder,
   type StoryRole,
+  AddressProbe,
+  addressOf,
+  ORG,
 } from "./story-harness";
 import { formattersFor } from "@/lib/i18n/format";
 import en from "@/lib/i18n/locales/en.json";
 import ru from "@/lib/i18n/locales/ru.json";
+import type { UptimeRow } from "@/lib/api";
 import { atMobile, atTablet, expectNoHorizontalOverflow } from "@/lib/story-viewport";
 import { resolveColorToken } from "@/lib/story-tokens";
 import { UxScreenProvider } from "@/lib/ux-react";
@@ -49,6 +54,24 @@ const SPEND_CHART = en.pages.dashboard.spendChartAria.replace(
 );
 
 /** a summary read of the window before the one on screen: it is the one with an `until` (#2010) */
+/** a provider-grain row of the health rollup: `uptime` of 1 is a provider that never failed */
+const uptimeRow = (provider: string, uptime: number, breached = false): UptimeRow => ({
+  provider,
+  target_id: provider,
+  grain: "provider",
+  sources: ["probe"],
+  events: 1000,
+  ok: Math.round(uptime * 1000),
+  errors: Math.round((1 - uptime) * 1000),
+  timeouts: 0,
+  uptime,
+  failure_rate: 1 - uptime,
+  error_budget_burn: breached ? 4 : 0.1,
+  sla_breached: breached ? 1 : 0,
+  last_event: "2026-08-06T10:00:00Z",
+});
+const UPTIME: UptimeRow[] = [uptimeRow("openai-prod", 0.9995), uptimeRow("anthropic-prod", 0.9991)];
+
 const isPreviousWindow = (input: RequestInfo | URL) => {
   const url = new URL(String(input), "http://localhost");
   return url.pathname === "/api/v1/analytics/summary" && url.searchParams.has("until");
@@ -66,6 +89,7 @@ const loadedWith = (summary: typeof SUMMARY, previous?: typeof SUMMARY): FetchSt
     ["/api/v1/analytics/by-model", () => ({ data: BY_MODEL })],
     ["/api/v1/analytics/invocations", () => ({ data: RECENT })],
     ["/api/v1/cluster/summary", () => CLUSTER_SUMMARY],
+    ["/api/v1/health/uptime", () => ({ data: UPTIME })],
     ["/api/v1/currency", () => ({ base: "USD", codes: ["USD"], rates: {} })],
   ]);
   return scoped(async (input, init) =>
@@ -257,6 +281,144 @@ export const TheCacheHitRateIsComparedWithThePreviousWindow: Story = {
 };
 
 /**
+ * #3356: the prompt-cache read share is the provider's prompt cache, apart from
+ * the response-cache tile beside it: 360k of the 900k prompt tokens is 40%, the
+ * line under it counts them, and it is compared with the window before.
+ */
+export const ThePromptCacheReadShareIsTheShareOfPromptTokensServedFromTheProvidersCache: Story = {
+  render: () => render(loadedWith(SUMMARY, { ...SUMMARY, cache_read_tokens: 180_000 })),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const share = await waitFor(() => {
+      const found = canvas.getByTestId("dashboard-prompt-cache");
+      expect(found).toHaveTextContent(`${fmt.number(40, { minimumFractionDigits: 1 })}%`);
+      return found;
+    });
+    await expect(share).toHaveTextContent("360K of 900K prompt tokens");
+    // it doubled against the window before, and more of the prompt cached is good news
+    await expect(share).toHaveTextContent(vsPrevious("+100%"));
+    // and it is not the response-cache tile: that one still counts requests
+    await expect(tile(canvas, en.pages.dashboard.statCacheHit)).toHaveTextContent("25.0%");
+  },
+};
+
+/**
+ * A window in which no provider reported a cached token is not a 0.0% hit rate:
+ * a provider that does not report it looks the same as one that never hits, so
+ * the tile reads "—" and says why.
+ */
+export const NoProviderReportingCachedTokensReadsUnmeasured: Story = {
+  render: () => render(loadedWith({ ...SUMMARY, cache_read_tokens: 0 })),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const share = await waitFor(() => {
+      const found = canvas.getByTestId("dashboard-prompt-cache");
+      expect(found).toHaveTextContent(en.pages.dashboard.promptCacheNone);
+      return found;
+    });
+    await expect(share).toHaveTextContent(en.pages.dashboard.notMeasured);
+    await expect(share).not.toHaveTextContent("%");
+  },
+};
+
+/**
+ * #3410: a fleet that mixes providers which state their cache reads with ones
+ * that do not. The share is over the prompt tokens of the requests that
+ * reported it, 360k of 600k is 60%, and the line says how many requests it
+ * could not measure.
+ */
+export const ThePromptCacheReadShareLeavesOutProvidersThatDoNotReportIt: Story = {
+  render: () =>
+    render(
+      loadedWith({
+        ...SUMMARY,
+        cache_reported_prompt_tokens: 600_000,
+        cache_unmeasured_requests: 12,
+      } as typeof SUMMARY),
+    ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const share = await waitFor(() => {
+      const found = canvas.getByTestId("dashboard-prompt-cache");
+      expect(found).toHaveTextContent(`${fmt.number(60, { minimumFractionDigits: 1 })}%`);
+      return found;
+    });
+    await expect(share).toHaveTextContent("360K of 600K prompt tokens");
+    await expect(share).toHaveTextContent("12 requests could not be measured");
+  },
+};
+
+/**
+ * #3410: providers that state their cache reads and never hit are a measured
+ * 0.0%, not the "—" a window with no report at all reads.
+ */
+export const ReportingProvidersThatNeverHitReadZero: Story = {
+  render: () =>
+    render(
+      loadedWith({
+        ...SUMMARY,
+        cache_read_tokens: 0,
+        cache_reported_prompt_tokens: 900_000,
+        cache_unmeasured_requests: 0,
+      } as typeof SUMMARY),
+    ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const share = await waitFor(() => {
+      const found = canvas.getByTestId("dashboard-prompt-cache");
+      expect(found).toHaveTextContent(`${fmt.number(0, { minimumFractionDigits: 1 })}%`);
+      return found;
+    });
+    await expect(share).toHaveTextContent("0 of 900K prompt tokens");
+    await expect(share).not.toHaveTextContent(en.pages.dashboard.promptCacheNone);
+    await expect(share).not.toHaveTextContent(en.pages.dashboard.notMeasured);
+  },
+};
+
+/** An older control plane sends no `cache_read_tokens`, and the tile says it is not measured. */
+export const AnOlderControlPlaneLeavesThePromptCacheShareUnmeasured: Story = {
+  render: () => {
+    const { cache_read_tokens: _read, ...older } = SUMMARY;
+    return render(loadedWith(older as typeof SUMMARY));
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findAllByText(fmt.number(132));
+    const share = canvas.getByTestId("dashboard-prompt-cache");
+    await expect(share).toHaveTextContent(en.pages.dashboard.notMeasured);
+    await expect(share).not.toHaveTextContent(en.pages.dashboard.promptCacheNone);
+  },
+};
+
+/** A window with no requests gives the tile the reason every other tile gives. */
+export const ANoTrafficWindowGivesThePromptCacheTileItsReason: Story = {
+  render: () => render(loadedWith(QUIET_SUMMARY)),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const share = await waitFor(() => {
+      const found = canvas.getByTestId("dashboard-prompt-cache");
+      expect(found).toHaveTextContent(en.pages.dashboard.noRequestsInWindow);
+      return found;
+    });
+    await expect(share).toHaveTextContent(en.pages.dashboard.notMeasured);
+  },
+};
+
+export const ThePromptCacheTileInRussian: Story = {
+  globals: { locale: "ru" },
+  render: () => render(loaded),
+  play: async ({ canvasElement }) => {
+    const share = await waitFor(() => {
+      const found = within(canvasElement).getByTestId("dashboard-prompt-cache");
+      expect(found).toHaveTextContent(ru.pages.dashboard.statPromptCache);
+      return found;
+    });
+    await expect(share).toHaveTextContent("40,0");
+    await expect(share).toHaveTextContent("токенов промпта");
+  },
+};
+
+/**
  * A control plane older than #1978 sends neither a p95 nor a cache-hit count.
  * The tiles say they are not measured rather than showing the mean as a p95 or a
  * rate of zero.
@@ -275,6 +437,116 @@ export const AnOlderControlPlaneLeavesP95AndCacheHitsUnmeasured: Story = {
       await expect(figure).not.toHaveTextContent(/%|\bms\b/);
     }
     await expect(canvas.queryByText(fmt.number(215))).toBeNull();
+  },
+};
+
+/** the same stub with the health read answered by `answer` */
+const withHealth = (answer: () => Response | Promise<Response>): FetchStub =>
+  scoped(async (input, init) =>
+    pathOf(input) === "/api/v1/health/uptime" ? answer() : loaded(input, init),
+  );
+
+/**
+ * #3344: one tile says how many providers meet the SLA of those that reported,
+ * names the worst, and links to Health; the read is the rollup the Health screen
+ * shares, not one per provider.
+ */
+export const TheProviderTileCountsTheProvidersMeetingTheirSla: Story = {
+  render: () =>
+    render(
+      withHealth(() =>
+        json({
+          data: [
+            uptimeRow("openai-prod", 0.9995),
+            uptimeRow("azure-west", 0.96, true),
+            uptimeRow("bedrock-east", 0.9, true),
+          ],
+        }),
+      ),
+    ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const providers = await canvas.findByTestId("dashboard-providers");
+    await waitFor(() => expect(providers).toHaveTextContent(`${fmt.number(1)}of 3 up`));
+    // the worst provider is named with its uptime, and the others counted
+    await expect(providers).toHaveTextContent("Below the SLA: bedrock-east 90.00%");
+    await expect(providers).toHaveTextContent("and 1 more");
+    await expect(within(providers).getByRole("link", { name: "Providers" })).toHaveAttribute(
+      "href",
+      "/circuit-breaker",
+    );
+    // part of the fleet is down: amber, and not the red of "nothing is up"
+    await expect(getComputedStyle(within(providers).getByText(/Below the SLA/)).color).toBe(
+      resolveColorToken("--status-warning-text"),
+    );
+  },
+};
+
+export const EveryProviderWithinItsSlaReadsGood: Story = {
+  render: () => render(loaded),
+  play: async ({ canvasElement }) => {
+    const providers = await within(canvasElement).findByTestId("dashboard-providers");
+    await waitFor(() => expect(providers).toHaveTextContent("2of 2 up"));
+    await expect(providers).toHaveTextContent("Lowest uptime: anthropic-prod 99.91%");
+    await expect(getComputedStyle(within(providers).getByText(/Lowest uptime/)).color).toBe(
+      resolveColorToken("--status-success-text"),
+    );
+  },
+};
+
+export const NoProviderHasReportedHealthYet: Story = {
+  render: () => render(withHealth(() => json({ data: [] }))),
+  play: async ({ canvasElement }) => {
+    const providers = await within(canvasElement).findByTestId("dashboard-providers");
+    await expect(providers).toHaveTextContent(en.pages.dashboard.providers.none);
+    await expect(providers).toHaveTextContent(en.pages.dashboard.notMeasured);
+    // nothing reported is not an outage: no figure, and no red
+    await expect(providers).not.toHaveTextContent("of 0");
+  },
+};
+
+export const TheProviderTileIsASkeletonWhileTheRollupLoads: Story = {
+  render: () => render(withHealth(() => new Promise<Response>(() => {}))),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    // the rest of the strip is up: the slow read holds back one tile only
+    await expect(await canvas.findAllByText(fmt.number(132))).not.toHaveLength(0);
+    await expect(canvas.queryByTestId("dashboard-providers")).toBeNull();
+    await expect(
+      within(canvas.getByTestId("dashboard-figures")).getAllByLabelText(LOADING_LABEL),
+    ).not.toHaveLength(0);
+  },
+};
+
+export const AFailedProviderReadIsTheTilesOwnError: Story = {
+  render: () => render(withHealth(() => json({ error: { message: "boom" } }, 500))),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expectLoadError(canvasElement, /provider health/i);
+    // the other figures are not taken down with it
+    await expect(await canvas.findAllByText(fmt.number(132))).not.toHaveLength(0);
+    await expectNoFalseEmpty(canvasElement, /No provider has reported health yet/);
+  },
+};
+
+export const ProviderHealthNeedsClickHouse: Story = {
+  render: () => render(withHealth(() => json({ error: { message: "no clickhouse_url" } }, 503))),
+  play: async ({ canvasElement }) => {
+    await expectAnalyticsUnavailable(
+      canvasElement,
+      en.pages.dashboard.providers.noAnalytics.title,
+      "no clickhouse_url",
+    );
+  },
+};
+
+export const TheProviderTileInRussian: Story = {
+  globals: { locale: "ru" },
+  render: () => render(loaded),
+  play: async ({ canvasElement }) => {
+    const providers = await within(canvasElement).findByTestId("dashboard-providers");
+    await waitFor(() => expect(providers).toHaveTextContent("из 2 работают"));
+    await expect(providers).toHaveTextContent("Наименьшая доступность");
   },
 };
 
@@ -395,6 +667,7 @@ export const Loading: Story = {
 // the story sat on the "cannot reach the control plane" screen with no `play`
 // to notice
 const QUIET = Object.fromEntries(Object.keys(SUMMARY).map((k) => [k, 0]));
+const QUIET_SUMMARY = QUIET as typeof SUMMARY;
 
 const quiet: FetchStub = routes([
   ["/api/v1/analytics/summary", () => ({ data: [QUIET] })],
@@ -512,7 +785,7 @@ export const Mobile: Story = {
     await expect(scale).toBeLessThan(1.05);
     const axis = [...svg.querySelectorAll("text")];
     for (const text of axis) {
-      await expect(parseFloat(getComputedStyle(text).fontSize) * scale).toBeGreaterThanOrEqual(10);
+      await expect(parseFloat(getComputedStyle(text).fontSize) * scale).toBeGreaterThanOrEqual(11);
     }
     // and the labels are thinned to what fits, so none runs into the next
     const boxes = axis
@@ -1090,7 +1363,7 @@ const partial = recording(except([ENDPOINTS[1]], refused, () => !spendDown));
 
 /**
  * One failing read takes down one card. The spend chart's endpoint answers
- * 500; the figures, the donut, the bars and the recent rows stay up instead of
+ * 500; the figures, the by-model table and the recent rows stay up instead of
  * giving way to a whole-screen alert (#1976). The card's own alert names what
  * it could not read, carries its own retry, and says nothing about an empty
  * window. The retry asks for the spend series and nothing else.
@@ -1275,7 +1548,7 @@ const cardDown = recording(except([ENDPOINTS[1]], refused));
 /**
  * The no-polling rule belongs to the read, not to the screen: the spend chart
  * failed holding nothing, so it stops asking and keeps its alert, while the
- * figures, the donut, the bars and the rows go on refreshing around it.
+ * figures, the by-model table and the rows go on refreshing around it.
  */
 export const AFailedCardHoldsItsAlertWhileTheOthersKeepPolling: Story = {
   render: () => render(cardDown.stub, undefined, FAST_POLL_MS),
@@ -1440,6 +1713,56 @@ export const EachModelRowCarriesRequestsP95AndSpend: Story = {
     await expect(row).toHaveTextContent(fmt.currency(30.1, "USD"));
     // the mean is not on the card
     await expect(card).not.toHaveTextContent(/avg|mean/i);
+  },
+};
+
+/** a second organization a superadmin reads beside the harness's own */
+const OTHER_ORG = { ...ORG, id: "org-2", name: "Umbrella", slug: "umbrella" };
+
+/**
+ * #3486: two organizations may each have a route named `gpt-4o` (#1857), and
+ * the by-model read answers them as two rows. The card keeps them apart, each
+ * with its own requests, latency and spend, and names the owner of a name that
+ * is shared; a model only one organization serves carries no pill.
+ */
+export const TwoOrganizationsSameNamedModelsAreTwoRows: Story = {
+  render: () =>
+    render(async (input, init) => {
+      if (pathOf(input) === "/api/v1/orgs") return json([ORG, OTHER_ORG]);
+      return withByModel([
+        { ...BY_MODEL[0], org_id: ORG.id, requests: 84, p95_latency_ms: 820, cost_usd: 30.1 },
+        {
+          ...BY_MODEL[0],
+          org_id: OTHER_ORG.id,
+          requests: 61,
+          p95_latency_ms: 1240,
+          cost_usd: 7.25,
+        },
+        { ...BY_MODEL[1], org_id: ORG.id },
+      ])(input, init);
+    }, "superadmin"),
+  play: async ({ canvasElement }) => {
+    const card = within(canvasElement).getByTestId("dashboard-by-model");
+    const owner = (name: string) => en.common.ownerOrg.replace("{{name}}", name);
+    const d = en.pages.dashboard;
+    // two rows of one name, never one row of the two summed
+    await waitFor(() => expect(within(card).getAllByText("gpt-4o")).toHaveLength(2));
+    await expect(card).not.toHaveTextContent(fmt.number(84 + 61));
+    const rowOf = async (org: string) =>
+      (await within(card).findByText(owner(org))).closest("tr") as HTMLElement;
+    const ours = await rowOf(ORG.name);
+    await expect(ours).toHaveTextContent("gpt-4o");
+    await expect(ours).toHaveTextContent(fmt.number(84));
+    await expect(ours).toHaveTextContent(`${fmt.number(820)} ${d.colMs}`);
+    await expect(ours).toHaveTextContent(fmt.currency(30.1, "USD"));
+    const theirs = await rowOf(OTHER_ORG.name);
+    await expect(theirs).toHaveTextContent("gpt-4o");
+    await expect(theirs).toHaveTextContent(fmt.number(61));
+    await expect(theirs).toHaveTextContent(`${fmt.number(1240)} ${d.colMs}`);
+    await expect(theirs).toHaveTextContent(fmt.currency(7.25, "USD"));
+    // a name only one organization has needs nobody to tell it apart
+    const sonnet = within(card).getByText("claude-sonnet-4").closest("tr") as HTMLElement;
+    await expect(sonnet).not.toHaveTextContent(owner(ORG.name));
   },
 };
 
@@ -1956,13 +2279,6 @@ const filterable = (
     }),
   );
 
-function AddressProbe() {
-  const { search } = useLocation();
-  return <span data-testid="address" data-search={search} hidden />;
-}
-const addressOf = (canvasElement: HTMLElement) =>
-  new URLSearchParams(within(canvasElement).getByTestId("address").dataset.search ?? "");
-
 const renderAt = (recorder: Recorder, address = "/", role?: StoryRole) => (
   <MemoryRouter initialEntries={[address]}>
     <Harness fetchStub={recorder.stub} role={role}>
@@ -2049,6 +2365,89 @@ export const FiltersComeBackFromTheAddress: Story = {
     await expect(
       await canvas.findByRole("checkbox", { name: /Platform Engineering/ }),
     ).toBeChecked();
+  },
+};
+
+const ranged = filterable();
+
+/**
+ * A custom range comes back from the address (#3407): every read is sent the
+ * start of its first day and the start of the day after its last, in the
+ * viewer's calendar, and the arrows compare it with the same number of days
+ * straight before it. The picker shows the range, not a stale name.
+ */
+export const ACustomRangeComesBackFromTheAddress: Story = {
+  render: () => renderAt(ranged, "/?window=custom&since=2026-10-01&until=2026-10-07"),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findAllByText(fmt.number(132));
+    const first = new Date(2026, 9, 1).toISOString();
+    const after = new Date(2026, 9, 8).toISOString();
+    const before = new Date(2026, 8, 24).toISOString();
+    await waitFor(() => {
+      for (const path of READS.slice(0, 3)) {
+        const reads = ranged.calls
+          .map((c) => new URL(c.url, "http://localhost"))
+          .filter((u) => u.pathname === path);
+        expect(reads.some((u) => u.searchParams.get("since") === first)).toBe(true);
+        expect(
+          reads.some(
+            (u) => u.searchParams.get("since") === first && u.searchParams.get("until") === after,
+          ),
+        ).toBe(true);
+      }
+      // the previous period: seven days ending where the range begins
+      const summaries = ranged.calls
+        .map((c) => new URL(c.url, "http://localhost"))
+        .filter((u) => u.pathname === "/api/v1/analytics/summary");
+      expect(
+        summaries.some(
+          (u) => u.searchParams.get("since") === before && u.searchParams.get("until") === first,
+        ),
+      ).toBe(true);
+    });
+    await expect(canvas.getByRole("combobox", { name: "Time window" })).toHaveValue(
+      "Custom range…",
+    );
+    await expect(canvas.getByLabelText("From")).toHaveValue("2026-10-01");
+    await expect(canvas.getByLabelText("To")).toHaveValue("2026-10-07");
+    // seven days drawn an hour at a time would be 168 points: the chart is cut by the day
+    await waitFor(() =>
+      expect(lastRead(ranged, "/api/v1/analytics/timeseries").get("bucket")).toBe("day"),
+    );
+  },
+};
+
+const rangedPick = filterable();
+
+/**
+ * Choosing Custom range… and typing the days writes all three parameters to
+ * the address; going back to a named window takes the days out again.
+ */
+export const PickingACustomRangeWritesItToTheAddress: Story = {
+  render: () => renderAt(rangedPick),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findAllByText(fmt.number(132));
+    await userEvent.click(canvas.getByRole("combobox", { name: "Time window" }));
+    await userEvent.click(await canvas.findByRole("option", { name: "Custom range…" }));
+    const from = await canvas.findByLabelText("From");
+    await userEvent.clear(from);
+    await userEvent.type(from, "2026-09-01");
+    const to = canvas.getByLabelText("To");
+    await userEvent.clear(to);
+    await userEvent.type(to, "2026-09-03");
+    await waitFor(() => {
+      const address = addressOf(canvasElement);
+      expect(address.get("window")).toBe("custom");
+      expect(address.get("since")).toBe("2026-09-01");
+      expect(address.get("until")).toBe("2026-09-03");
+    });
+    await userEvent.click(canvas.getByRole("combobox", { name: "Time window" }));
+    await userEvent.click(await canvas.findByRole("option", { name: "Last 7 days" }));
+    await waitFor(() => expect(addressOf(canvasElement).get("window")).toBe("7d"));
+    await expect(addressOf(canvasElement).has("since")).toBe(false);
+    await expect(addressOf(canvasElement).has("until")).toBe(false);
   },
 };
 

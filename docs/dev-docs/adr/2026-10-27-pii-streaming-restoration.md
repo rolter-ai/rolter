@@ -319,8 +319,8 @@ by its `seq`; a delta whose text is JSON source (tool-call arguments,
 written JSON-escaped. The contract is specified in
 `docs/user-docs/security/pii-sanitizer.mdx` and the gateway side is described in
 `docs/dev-docs/architecture/security.md`. The reference shim for Presidio is not
-part of it; it is tracked in #3339, and the TTFT and inter-token bench in
-#3340.
+part of it. It ships as `examples/presidio-restore-shim/` (#3339, decided
+below), and the TTFT and inter-token bench is tracked in #3340.
 
 1. **Keep option 5 as the default.** `streaming = "reject"` stays the default
    and `passthrough` stays available. Nothing changes for an existing
@@ -349,7 +349,8 @@ part of it; it is tracked in #3339, and the TTFT and inter-token bench in
   whether the caller sees names or placeholders. The failure mode is the safe
   one, and `rolter_pii_restore_errors_total` is the signal.
 - rolter has to specify, document and test a second sanitizer endpoint, and an
-  operator on Presidio needs a shim. Whether rolter ships that shim is open.
+  operator on Presidio needs a shim. rolter ships one as a reference
+  (see the decision below), not as a supported product.
 - The gateway gains an SSE text-field decoder and re-framer for each streaming
   dialect. `rolter-proxy`'s `SseConverter` already parses the upstream
   dialects it translates, so much of this is reuse rather than new parsing.
@@ -366,3 +367,23 @@ handling; the `streaming = "restore"` config value through `rolter-core`,
 `rolter.example.toml`, `config-file.mdx` and the snapshot; the reference shim
 decision; and the dev and user docs replacing the "streaming is refused"
 sections.
+
+## Reference shim (#3339)
+
+rolter ships the Presidio shim as a reference service rather than leaving it to
+a copy-paste block in the docs: `examples/presidio-restore-shim/`, a small
+Starlette service with its own tests. It wraps Presidio's `DeanonymizeEngine`
+with the per-channel holdback (a trie over the exchange's own placeholders),
+escapes restored values on `"format": "json"` channels and discards an
+exchange's state when it ends or is reset. It is code to read and adapt, not an
+image or a supported release: the mapping store behind it is an interface
+(`MappingStore`) because it has to be the store the operator's sanitize service
+already writes to, which rolter cannot know. Its test drives it over a socket
+with the gateway's own NDJSON exchange, one line out and one reply in, so a
+shim that buffered would hang the test. The shim never logs a text delta, a
+restored value or a mapping.
+
+It is plain Starlette rather than FastAPI because the endpoint has no request
+or response model to validate and has to read the request body while it writes
+the reply, which a response class that listens for the client's disconnect
+cannot do (it takes body messages from the same receive channel).

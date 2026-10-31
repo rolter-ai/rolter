@@ -206,15 +206,12 @@ priorities live on the issues.
 | #3261 | LDAP is configured through the API only; no Governance screen                                                                         | A1-c                          |
 | #1827 | no SAML single sign-on                                                                                                                | A1-b (SAML-only IdPs)         |
 | #1828 | invitations are links an admin passes on by hand                                                                                      | A1-a, T2                      |
-| #1829 | alert rules are superadmin-only and deployment-wide                                                                                   | A5, T5, F4                    |
 | #337  | no warning before a budget blocks                                                                                                     | A5, T4, F4                    |
 | #1830 | no budget per person across their keys                                                                                                | T4, F3, E9                    |
 | #1833 | project members cannot see the health of their own routes' providers                                                                  | E5, T5                        |
 | #1835 | payload redaction matches key names, not secrets inside text; no preview                                                              | S3                            |
 | #1085 | one subject's logs and captured payloads cannot be erased on request                                                                  | S3.6                          |
 | #1836 | scoped API tokens have no dashboard screen yet (API only)                                                                             | P4, D6                        |
-| #1837 | shared project keys cannot be rotated in place                                                                                        | P3                            |
-| #1838 | no CSV export of spend or logs                                                                                                        | F5                            |
 | #1817 | the dogfood fleet's adaptive route never engages                                                                                      | A3-d (adaptive), D2           |
 | #1818 | `rolter-seed --import` is silent about sections it skips                                                                              | A3-d                          |
 | #1819 | compose ClickHouse fails where `nofile` cannot reach 262144                                                                           | A0-b on constrained hosts     |

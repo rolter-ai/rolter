@@ -25,6 +25,15 @@ export interface FieldProps extends React.HTMLAttributes<HTMLDivElement> {
    * `SubmitForm` refused a submit, an inline message until it is (#1205)
    */
   required?: boolean;
+  /**
+   * The control is mandatory and the screen's own validation says so by name
+   * (`useFieldErrors`): the marker beside the label and `aria-required`, so a
+   * screen reader announces it before the first refused save, but not the
+   * native `required` attribute, which would make an empty control `:invalid`
+   * from the first paint and add a second, generic message beside the screen's
+   * own (#3451). Ignored when `required` is set.
+   */
+  markRequired?: boolean;
 }
 
 interface ControlProps {
@@ -52,10 +61,12 @@ export function Field({
   hint,
   info,
   required,
+  markRequired,
   className,
   children,
   ...props
 }: FieldProps) {
+  const announced = required || markRequired;
   // almost no caller passes `htmlFor`, which left every label in the dashboard
   // pointing at nothing: a screen reader announced the control as unlabelled,
   // and `getByLabelText` could not find it either. Generate the id here and put
@@ -99,8 +110,8 @@ export function Field({
   if (error && control && control.props["aria-invalid"] === undefined) {
     described["aria-invalid"] = true;
   }
-  if (required && control) {
-    if (control.props.required === undefined) described.required = true;
+  if (announced && control) {
+    if (required && control.props.required === undefined) described.required = true;
     if (control.props["aria-required"] === undefined) described["aria-required"] = true;
   }
   const labelled =
@@ -116,11 +127,11 @@ export function Field({
   // the required attribute on a control the field did not clone (several
   // children): set on the first labelable one, and taken off again on the way out
   React.useLayoutEffect(() => {
-    if (!required || control) return;
+    if (!announced || control) return;
     const node = root.current?.querySelector<HTMLElement>(LABELABLE);
     if (!node || node.tagName === "BUTTON") return;
     const added: string[] = [];
-    for (const attribute of ["required", "aria-required"]) {
+    for (const attribute of required ? ["required", "aria-required"] : ["aria-required"]) {
       if (!node.hasAttribute(attribute)) {
         node.setAttribute(attribute, attribute === "required" ? "" : "true");
         added.push(attribute);
@@ -129,7 +140,7 @@ export function Field({
     return () => {
       for (const attribute of added) node.removeAttribute(attribute);
     };
-  }, [required, control, children]);
+  }, [announced, required, control, children]);
 
   // once a submit was refused, a required control that is still empty says why
   // under itself, and clears the moment it is filled in
@@ -202,7 +213,7 @@ export function Field({
           <label htmlFor={controlId} className="text-sm font-medium leading-none">
             {label}
           </label>
-          {required && (
+          {announced && (
             <span aria-hidden className="text-xs text-[color:var(--status-danger-text)]">
               *
             </span>

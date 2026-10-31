@@ -24,7 +24,7 @@ import {
   type Recorder,
   type StoryRole,
 } from "./story-harness";
-import type { GuardrailProviderInput, GuardrailProviderRow } from "@/lib/api";
+import type { GuardrailPolicyRow, GuardrailProviderInput, GuardrailProviderRow } from "@/lib/api";
 import ru from "@/lib/i18n/locales/ru.json";
 import en from "@/lib/i18n/locales/en.json";
 import { expectFieldHint } from "@/lib/story-hints";
@@ -36,7 +36,10 @@ const PROVIDERS: GuardrailProviderRow[] = [
     id: "provider-primary",
     name: "Production LLM Guard",
     enabled: true,
+    kind: "webhook",
     url: "https://guardrails.internal/v1/evaluate",
+    model_path: null,
+    model_sha256: null,
     stage: "pre_call",
     timeout_ms: 1800,
     max_retries: 1,
@@ -51,7 +54,10 @@ const PROVIDERS: GuardrailProviderRow[] = [
     id: "provider-fallback",
     name: "Staging evaluator",
     enabled: false,
+    kind: "webhook",
     url: "https://guardrails.staging.internal/evaluate",
+    model_path: null,
+    model_sha256: null,
     stage: "pre_call",
     timeout_ms: 2500,
     max_retries: 0,
@@ -64,46 +70,15 @@ const PROVIDERS: GuardrailProviderRow[] = [
   },
 ];
 
-/** the effective webhook the postgres store builds from `PROVIDERS[0]` */
-const PRIMARY_WEBHOOK = {
-  enabled: true,
-  url: "https://guardrails.internal/v1/evaluate",
-  stage: "pre_call",
-  timeout_ms: 1800,
-  max_retries: 1,
-  failure_mode: "fail_closed",
-  max_body_bytes: 65536,
-  auth: { bearer: { token_env: "ROLTER_GUARDRAIL_TOKEN" } },
-};
-
-/** `[guardrail_webhook]` off in the file and no registry row enabled */
-const NO_WEBHOOK = {
-  enabled: false,
-  url: "",
-  stage: "pre_call",
-  timeout_ms: 2000,
-  max_retries: 0,
-  failure_mode: "fail_open",
-  max_body_bytes: 65536,
-};
-
-/** an enabled `[guardrail_webhook]` in the config file, which wins over the registry */
-const FILE_WEBHOOK = {
-  enabled: true,
-  url: "https://policy.corp.internal/evaluate",
-  stage: "pre_call",
-  timeout_ms: 1500,
-  max_retries: 0,
-  failure_mode: "fail_closed",
-  max_body_bytes: 32768,
-};
-
 /** a provider saved at the post-call stage, which the gateway does not run */
 const OUTPUT_EVALUATOR: GuardrailProviderRow = {
   id: "provider-output",
   name: "Output evaluator",
   enabled: true,
+  kind: "webhook",
   url: "https://guardrails.internal/v1/output",
+  model_path: null,
+  model_sha256: null,
   stage: "post_call",
   timeout_ms: 2000,
   max_retries: 0,
@@ -115,44 +90,109 @@ const OUTPUT_EVALUATOR: GuardrailProviderRow = {
   updated_at: "2026-08-03T00:00:00Z",
 };
 
-/**
- * Activating the post-call row paused the pre-call one that was enforcing,
- * which is how #2162 was found.
- */
-const POST_CALL_TOOK_OVER = [{ ...PROVIDERS[0], enabled: false }, PROVIDERS[1], OUTPUT_EVALUATOR];
-const POST_CALL_WEBHOOK = {
-  enabled: true,
-  url: OUTPUT_EVALUATOR.url,
-  stage: "post_call",
-  timeout_ms: 2000,
-  max_retries: 0,
-  failure_mode: "fail_closed",
-  max_body_bytes: 65536,
-};
-
-const configWith = (webhook: unknown) => ({
-  providers: [],
-  routes: [],
-  virtual_keys: [],
-  guardrail_webhook: webhook,
+/** a provider the gateways run, as `semantic.providers` lists it */
+const running = (row: GuardrailProviderRow) => ({
+  name: row.name,
+  url: row.url,
+  stage: row.stage,
+  failure_mode: row.failure_mode,
+  timeout_ms: row.timeout_ms,
+  source: "registry",
+  provider_id: row.id,
 });
 
+/** a provider the config file defines, which no registry row stands behind */
+const FILE_PROVIDER = {
+  name: "Policy file guard",
+  url: "https://policy.corp.internal/evaluate",
+  stage: "pre_call",
+  failure_mode: "fail_closed",
+  timeout_ms: 1500,
+  source: "file",
+  provider_id: null,
+};
+
+/** a policy as the registry stores it: `route-strict` pins the primary provider to one route */
+const ROUTE_POLICY: GuardrailPolicyRow = {
+  id: "policy-route",
+  name: "route-strict",
+  enabled: true,
+  scope_kind: "route",
+  scope_id: "gpt-4o",
+  provider_ids: ["provider-primary"],
+  thresholds: { violence: 0.8 },
+  on_violation: "block",
+  streaming: "reject",
+  description: null,
+  created_at: "2026-09-01T00:00:00Z",
+  updated_at: "2026-09-01T00:00:00Z",
+};
+
 /**
- * Answer the two reads the screen makes: the registry, and the effective config
- * the banner takes the webhook from (#2162). `write` answers every request that
- * is not a GET.
+ * The `semantic` object of the effective endpoint for `rows`: every enabled
+ * row runs, plus `extra` from the config file, and a provider no policy lists
+ * is unattached. `policies` are the registry policies in force.
+ */
+function semanticFor(
+  rows: GuardrailProviderRow[],
+  extra: object[] = [],
+  policies: GuardrailPolicyRow[] = [],
+) {
+  const enabled = rows.filter((row) => row.enabled);
+  const listed = new Set(policies.flatMap((policy) => policy.provider_ids));
+  return {
+    providers: [...extra, ...enabled.map(running)],
+    policies: policies.map((policy) => ({
+      name: policy.name,
+      enabled: policy.enabled,
+      scope: policy.scope_kind,
+      scope_id: policy.scope_id,
+      providers: policy.provider_ids.map((id) => rows.find((row) => row.id === id)?.name ?? id),
+      thresholds: policy.thresholds,
+      on_violation: policy.on_violation,
+      streaming: policy.streaming,
+      source: "registry",
+      policy_id: policy.id,
+    })),
+    unattached: enabled.filter((row) => !listed.has(row.id)).map((row) => row.name),
+  };
+}
+
+/** nothing is enabled in the registry or the file */
+const NO_PROVIDERS = { providers: [], policies: [], unattached: [] };
+
+/**
+ * Answer the three reads the screen makes: the registry, the effective
+ * document the banner takes the running providers from (#459), and the
+ * policies the confirmations name scopes from. `semantic` defaults to what the
+ * rows imply, so a list that changes under a story changes its banner too.
+ * `write` answers every request that is not a GET.
  */
 function registry(
   providers: GuardrailProviderRow[] | (() => GuardrailProviderRow[]),
-  webhook: object | (() => object) = PRIMARY_WEBHOOK,
+  semantic?: object | (() => object),
   write?: FetchStub,
+  policies: GuardrailPolicyRow[] = [],
 ): FetchStub {
+  const rows = () => (typeof providers === "function" ? providers() : providers);
   return async (input, init) => {
-    if (String(input).includes("/api/v1/config")) {
-      return json(configWith(typeof webhook === "function" ? webhook() : webhook));
-    }
+    const path = new URL(String(input), "http://localhost").pathname;
     if (write && init?.method && init.method !== "GET") return write(input, init);
-    return json(typeof providers === "function" ? providers() : providers);
+    if (path === "/api/v1/guardrails/effective") {
+      const doc = typeof semantic === "function" ? semantic() : semantic;
+      return json({
+        source: "none",
+        semantic:
+          doc ??
+          semanticFor(
+            rows(),
+            [],
+            policies.filter((policy) => policy.enabled),
+          ),
+      });
+    }
+    if (path === "/api/v1/guardrails/policies") return json(policies);
+    return json(rows());
   };
 }
 
@@ -170,7 +210,7 @@ const card = (canvasElement: HTMLElement, name: string) => {
   return within(heading.closest("article") as HTMLElement);
 };
 
-const GREEN = /owns external enforcement/;
+const GREEN = /Running:/;
 
 /**
  * The screen under the shared fetch-stub harness, with a role to render as.
@@ -234,10 +274,12 @@ export const Loaded: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     const banner = await canvas.findByRole("region", {
-      name: "Production LLM Guard owns external enforcement",
+      name: "Running: Production LLM Guard",
     });
     await expect(
-      within(banner).getByText("Requests stop when the service cannot decide."),
+      within(banner).getByText(
+        "Production LLM Guard: requests stop when the service cannot decide.",
+      ),
     ).toBeVisible();
     await expect(card(canvasElement, "Production LLM Guard").getByText("enforced")).toBeVisible();
     await expect(card(canvasElement, "Staging evaluator").getByText("paused")).toBeVisible();
@@ -299,7 +341,7 @@ export const Loading: Story = {
   play: async ({ canvasElement }) => expectSkeleton(canvasElement),
 };
 export const Empty: Story = {
-  render: () => <Harness fetchStub={registry([], NO_WEBHOOK)} />,
+  render: () => <Harness fetchStub={registry([], NO_PROVIDERS)} />,
   play: async ({ canvasElement }) => {
     await expectEmptyState(canvasElement, /No guardrail providers/, /Register first provider/);
     // nothing is on in the file either, and the empty state already says so
@@ -377,9 +419,7 @@ const activationFor = async (name: string) =>
 let registers: Recorder;
 export const RegistersProvider: Story = {
   render: () => {
-    registers = recording(
-      registry(PROVIDERS, PRIMARY_WEBHOOK, async () => json(POLICY_SERVICE, 201)),
-    );
+    registers = recording(registry(PROVIDERS, undefined, async () => json(POLICY_SERVICE, 201)));
     return <Harness fetchStub={registers.stub} />;
   },
   play: async ({ canvasElement }) => {
@@ -435,7 +475,7 @@ export const RegisterRejectedByTheServer: Story = {
   render: () => (
     <Harness
       toasted
-      fetchStub={registry(PROVIDERS, PRIMARY_WEBHOOK, async () =>
+      fetchStub={registry(PROVIDERS, undefined, async () =>
         json({ error: { message: "the evaluator did not answer its health probe" } }, 502),
       )}
     />
@@ -468,7 +508,7 @@ let providerDeleted = false;
 const deletes = recording(
   registry(
     () => (providerDeleted ? PROVIDERS.filter((row) => row.id !== "provider-primary") : PROVIDERS),
-    () => (providerDeleted ? NO_WEBHOOK : PRIMARY_WEBHOOK),
+    undefined,
     async () => {
       providerDeleted = true;
       return json({}, 204);
@@ -578,129 +618,101 @@ export const RefusedToAViewer: Story = {
 // plane would, and asserts the screen reports the webhook rather than the switch
 
 /**
- * Activating a post-call provider paused the pre-call one that was working.
- * The gateway does not run the post-call stage, so nothing is checked and the
- * banner must not be green.
+ * A post-call provider runs on the response body now (#459), so it is
+ * enforced like any other and runs alongside the pre-call one.
  */
-export const PostCallProviderIsNotEnforcing: Story = {
-  render: () => <Harness fetchStub={registry(POST_CALL_TOOK_OVER, POST_CALL_WEBHOOK)} />,
+export const PostCallProviderRunsAlongside: Story = {
+  render: () => <Harness fetchStub={registry([PROVIDERS[0], OUTPUT_EVALUATOR])} />,
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     const banner = await canvas.findByRole("region", {
-      name: "Output evaluator is not enforcing",
+      name: "Running: Production LLM Guard, Output evaluator",
     });
-    await expect(within(banner).getByText(/a stage the gateway does not run yet/)).toBeVisible();
-    await expect(canvas.queryByText(GREEN)).toBeNull();
-
-    const output = card(canvasElement, "Output evaluator");
-    await expect(output.getByText("not enforcing")).toBeVisible();
-    await expect(output.queryByText("enforced")).toBeNull();
-    await expect(output.getByText(/so it checks nothing/)).toBeVisible();
-    await expect(card(canvasElement, "Production LLM Guard").getByText("paused")).toBeVisible();
-  },
-};
-
-/**
- * An enabled webhook in the config file stays authoritative, and the registry
- * row that is switched on is ignored. The banner names the file's webhook by
- * its endpoint, and the row says it is overridden rather than enforced.
- */
-export const ConfigFileWebhookOwnsEnforcement: Story = {
-  render: () => <Harness fetchStub={registry(PROVIDERS, FILE_WEBHOOK)} />,
-  play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement);
-    const banner = await canvas.findByRole("region", {
-      name: "The config-file webhook owns external enforcement",
-    });
-    await expect(within(banner).getByText(FILE_WEBHOOK.url)).toBeVisible();
     await expect(
       within(banner).getByText(
-        "Production LLM Guard is active here but ignored while the config-file webhook is enabled.",
+        "Production LLM Guard, Output evaluator: requests stop when the service cannot decide.",
       ),
     ).toBeVisible();
-    await expect(canvas.queryByText("Production LLM Guard owns external enforcement")).toBeNull();
-
-    const primary = card(canvasElement, "Production LLM Guard");
-    await expect(primary.getByText("overridden by config file")).toBeVisible();
-    await expect(primary.queryByText("enforced")).toBeNull();
+    await expect(
+      within(banner).getByText(
+        "Not listed by any policy, so they check every request no policy covers: Production LLM Guard, Output evaluator.",
+      ),
+    ).toBeVisible();
+    await expect(card(canvasElement, "Output evaluator").getByText("enforced")).toBeVisible();
+    await expect(card(canvasElement, "Production LLM Guard").getByText("enforced")).toBeVisible();
+    await expect(card(canvasElement, "Output evaluator").queryByText(/checks nothing/)).toBeNull();
   },
 };
-
 /**
- * A config-file webhook that is a copy of the enabled row, field for field,
- * cannot be told from the row by comparing them. The control plane says the
- * file supplies it (#2249), so the row reads as overridden, and pausing the row
- * would not stop enforcement.
+ * Providers the config file defines run beside the registry's, and the banner
+ * names them, with a note that says where they come from.
  */
-export const ConfigFileWebhookThatCopiesTheEnabledRow: Story = {
+export const ConfigFileProvidersRunBesideTheRegistry: Story = {
   render: () => (
     <Harness
-      fetchStub={async (input, init) =>
-        String(input).includes("/api/v1/guardrails/effective")
-          ? json({ source: "file", provider_id: null, overrides: PROVIDERS[0].id })
-          : registry(PROVIDERS, PRIMARY_WEBHOOK)(input, init)
-      }
+      fetchStub={registry(PROVIDERS, {
+        ...semanticFor(PROVIDERS),
+        providers: [FILE_PROVIDER, running(PROVIDERS[0])],
+      })}
     />
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await canvas.findByRole("region", {
-      name: "The config-file webhook owns external enforcement",
-    });
-    const primary = card(canvasElement, "Production LLM Guard");
-    await expect(primary.getByText("overridden by config file")).toBeVisible();
-    await expect(primary.queryByText("enforced")).toBeNull();
-  },
-};
-
-/**
- * A deployment that configures its webhook only in the file has no registry
- * rows at all, and the webhook is still in force.
- */
-export const ConfigFileWebhookWithAnEmptyRegistry: Story = {
-  render: () => <Harness fetchStub={registry([], FILE_WEBHOOK)} />,
-  play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement);
     const banner = await canvas.findByRole("region", {
-      name: "The config-file webhook owns external enforcement",
+      name: "Running: Policy file guard, Production LLM Guard",
     });
     await expect(
       within(banner).getByText(
-        "Registry providers are ignored while the config-file webhook is enabled.",
+        "Defined in the config file: Policy file guard. A file provider wins a name shared with a registry row.",
       ),
     ).toBeVisible();
-    await expectEmptyState(canvasElement, /No guardrail providers/, /Register first provider/);
+    await expect(card(canvasElement, "Production LLM Guard").getByText("enforced")).toBeVisible();
   },
 };
-
+/** A file provider wins a name it shares with a registry row, and that row says so. */
+export const ConfigFileProviderWinsANameCollision: Story = {
+  render: () => {
+    const shadowed = { ...PROVIDERS[0], name: FILE_PROVIDER.name };
+    return (
+      <Harness
+        fetchStub={registry([shadowed, PROVIDERS[1]], {
+          providers: [FILE_PROVIDER],
+          policies: [],
+          unattached: [FILE_PROVIDER.name],
+        })}
+      />
+    );
+  },
+  play: async ({ canvasElement }) => {
+    await within(canvasElement).findByRole("region", { name: "Running: Policy file guard" });
+    const row = card(canvasElement, "Policy file guard");
+    await expect(row.getByText("overridden by config file")).toBeVisible();
+    await expect(row.queryByText("enforced")).toBeNull();
+  },
+};
 /**
- * The worst pairing: a post-call webhook in the file overrides a working
- * pre-call registry row, so nothing enforces, and the banner says both halves.
+ * A deployment that configures its providers only in the file has no registry
+ * rows at all, and they are still running.
  */
-export const ConfigFilePostCallWebhookOverridesAWorkingProvider: Story = {
+export const ConfigFileProvidersWithAnEmptyRegistry: Story = {
   render: () => (
-    <Harness fetchStub={registry(PROVIDERS, { ...FILE_WEBHOOK, stage: "post_call" })} />
+    <Harness
+      fetchStub={registry([], { providers: [FILE_PROVIDER], policies: [], unattached: [] })}
+    />
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    const banner = await canvas.findByRole("region", {
-      name: "The config-file webhook is not enforcing",
-    });
-    await expect(within(banner).getByText(/Production LLM Guard is active here/)).toBeVisible();
-    await expect(canvas.queryByText(GREEN)).toBeNull();
-    await expect(
-      card(canvasElement, "Production LLM Guard").getByText("overridden by config file"),
-    ).toBeVisible();
+    await canvas.findByRole("region", { name: "Running: Policy file guard" });
+    await expectEmptyState(canvasElement, /No guardrail providers/, /Register first provider/);
   },
 };
-
 /** Nothing is switched on anywhere, which is a state worth saying out loud. */
 export const NothingIsEnforcing: Story = {
   render: () => (
     <Harness
       fetchStub={registry(
         PROVIDERS.map((row) => ({ ...row, enabled: false })),
-        NO_WEBHOOK,
+        NO_PROVIDERS,
       )}
     />
   ),
@@ -719,14 +731,14 @@ export const NothingIsEnforcing: Story = {
  * a retry that reaches the config turns it green.
  */
 let configRequests = 0;
-const configFailsOnce: FetchStub = async (input) => {
-  if (String(input).includes("/api/v1/config")) {
+const configFailsOnce: FetchStub = async (input, init) => {
+  if (String(input).includes("/api/v1/guardrails/effective")) {
     configRequests += 1;
     return configRequests === 1
       ? json({ error: { message: "config store unavailable" } }, 503)
-      : json(configWith(PRIMARY_WEBHOOK));
+      : registry(PROVIDERS)(input, init);
   }
-  return json(PROVIDERS);
+  return registry(PROVIDERS)(input, init);
 };
 
 export const EnforcementUnknownWithoutTheConfig: Story = {
@@ -746,18 +758,13 @@ export const EnforcementUnknownWithoutTheConfig: Story = {
 
     await userEvent.click(within(banner).getByRole("button", { name: "Try again" }));
     await expect(
-      await canvas.findByRole("region", {
-        name: "Production LLM Guard owns external enforcement",
-      }),
+      await canvas.findByRole("region", { name: "Running: Production LLM Guard" }),
     ).toBeVisible();
   },
 };
 
-/**
- * A new provider cannot pick the stage the gateway does not run: the option
- * is there, marked as not enforced yet, and refuses the click.
- */
-export const BeforeResponseIsNotOffered: Story = {
+/** Both stages can be picked: the gateway checks the response body too (#459). */
+export const BeforeResponseIsOffered: Story = {
   render: () => <Harness fetchStub={registry(PROVIDERS)} />,
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
@@ -766,61 +773,31 @@ export const BeforeResponseIsNotOffered: Story = {
     const stage = dialog.getByRole("combobox", { name: "Stage" });
     await userEvent.click(stage);
     const post = await dialog.findByRole("option", { name: /Before response/ });
-    await expect(post).toHaveAttribute("aria-disabled", "true");
-    await expect(post).toHaveTextContent("Not enforced yet");
+    await expect(post).not.toHaveAttribute("aria-disabled", "true");
     await userEvent.click(post);
-    await userEvent.keyboard("{Escape}");
-    await expect(stage).toHaveValue("Before upstream");
-    await expect(dialog.queryByText(/does not run the Before response stage/)).toBeNull();
-  },
-};
-
-/**
- * A row saved at the post-call stage before the option was disabled still
- * opens with it, and the dialog says what that means, tied to the control.
- */
-export const EditingAPostCallProviderWarns: Story = {
-  render: () => <Harness fetchStub={registry(POST_CALL_TOOK_OVER, POST_CALL_WEBHOOK)} />,
-  play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement);
-    await userEvent.click(
-      await canvas.findByRole("button", { name: "Edit provider Output evaluator" }),
-    );
-    const dialog = within(await within(document.body).findByRole("dialog"));
-    const stage = dialog.getByRole("combobox", { name: "Stage" });
     await expect(stage).toHaveValue("Before response");
-    await expect(stage).toHaveAccessibleDescription(
-      /does not run the Before response stage yet, so this provider checks nothing/,
-    );
-
-    // moving it to the stage the gateway runs clears the warning
-    await userEvent.click(stage);
-    await userEvent.click(await dialog.findByRole("option", { name: /Before upstream/ }));
-    await expect(stage).toHaveValue("Before upstream");
-    await expect(dialog.queryByText(/does not run the Before response stage/)).toBeNull();
   },
 };
-
-// #2163: switching a provider on hands it every request, and a fail-closed one
-// pointed at a host that does not answer refuses them all. The save that does
-// it goes through a confirmation naming what it replaces and what a failure
-// then does to traffic
+// #2163: switching a provider on puts it in front of requests, and a
+// fail-closed one pointed at a host that does not answer refuses them. The save
+// that does it goes through a confirmation naming the traffic it will see and
+// what a failure then does to it. Enabling never pauses another provider (#459)
 
 /**
- * The switch names the provider it would pause, and the save asks before it
+ * The switch names the providers it runs beside, and the save asks before it
  * sends anything. A cancel returns to the form as it was; a confirm registers
  * the provider switched on, holds both buttons while the request is out, and
  * closes both dialogs once it lands.
  */
 let replacing: Recorder;
 let landRegistration: () => void = () => {};
-export const ActivationNamesTheProviderItReplaces: Story = {
+export const ActivationJoinsTheActiveProviders: Story = {
   beforeEach: recordUxEvents,
   render: () => {
     replacing = recording(
       registry(
         PROVIDERS,
-        PRIMARY_WEBHOOK,
+        undefined,
         () =>
           new Promise<Response>((resolve) => {
             landRegistration = () => resolve(json({ ...POLICY_SERVICE, enabled: true }, 201));
@@ -831,16 +808,23 @@ export const ActivationNamesTheProviderItReplaces: Story = {
   },
   play: async ({ canvasElement }) => {
     const form = await registerPolicyService(canvasElement);
-    const activate = form.getByRole("switch", { name: "Activate provider" });
+    const activate = form.getByRole("switch", { name: "Enable provider" });
     await expect(activate).toHaveAccessibleDescription(
-      "Takes enforcement over from Production LLM Guard, which is then paused.",
+      "Runs alongside Production LLM Guard. None of them is paused.",
     );
     await userEvent.click(activate);
     await userEvent.click(form.getByRole("button", { name: "Save provider" }));
 
     const confirm = await activationFor("Policy service");
     await expect(
-      confirm.getByText("It takes enforcement over from Production LLM Guard, which is paused."),
+      confirm.getByText(
+        "It is added to the active providers (Production LLM Guard). None of them is paused.",
+      ),
+    ).toBeVisible();
+    await expect(
+      confirm.getByText(
+        'No policy lists it, so it will check every request that no policy covers (reported as "default").',
+      ),
     ).toBeVisible();
     await expect(
       confirm.getByText(/It fails closed: when Policy service times out or errors/),
@@ -886,16 +870,16 @@ export const ActivationNamesTheProviderItReplaces: Story = {
 };
 
 /**
- * With nothing active the confirmation says so, and a fail-open provider says
+ * With nothing else running the confirmation says so, and a fail-open provider says
  * what a failure then does: the request goes upstream unchecked.
  */
 let fromNothing: Recorder;
-export const ActivationWithNoProviderActive: Story = {
+export const ActivationWithNoOtherProviderActive: Story = {
   render: () => {
     fromNothing = recording(
       registry(
         PROVIDERS.map((row) => ({ ...row, enabled: false })),
-        NO_WEBHOOK,
+        NO_PROVIDERS,
         async () => json({ ...PROVIDERS[1], enabled: true }),
       ),
     );
@@ -909,15 +893,19 @@ export const ActivationWithNoProviderActive: Story = {
     const form = within(
       await within(document.body).findByRole("dialog", { name: "Edit guardrail provider" }),
     );
-    const activate = form.getByRole("switch", { name: "Activate provider" });
+    const activate = form.getByRole("switch", { name: "Enable provider" });
     await expect(activate).toHaveAccessibleDescription(
-      "No provider is active now, so this one would be the only one.",
+      "No other provider is active now, so this one would be the only one.",
     );
     await userEvent.click(activate);
     await userEvent.click(form.getByRole("button", { name: "Save provider" }));
 
     const confirm = await activationFor("Staging evaluator");
-    await expect(confirm.getByText("No provider is active now, so none is paused.")).toBeVisible();
+    await expect(
+      confirm.getByText(
+        "No other provider is active now. This one is added and nothing is paused.",
+      ),
+    ).toBeVisible();
     await expect(
       confirm.getByText(
         /It fails open: when Staging evaluator times out or errors, the request goes upstream unchecked/,
@@ -942,7 +930,7 @@ export const ActivationWithNoProviderActive: Story = {
 let editsActive: Recorder;
 export const SavingTheActiveProviderDoesNotAsk: Story = {
   render: () => {
-    editsActive = recording(registry(PROVIDERS, PRIMARY_WEBHOOK, async () => json(PROVIDERS[0])));
+    editsActive = recording(registry(PROVIDERS, undefined, async () => json(PROVIDERS[0])));
     return <Harness fetchStub={editsActive.stub} />;
   },
   play: async ({ canvasElement }) => {
@@ -953,10 +941,8 @@ export const SavingTheActiveProviderDoesNotAsk: Story = {
     const form = within(
       await within(document.body).findByRole("dialog", { name: "Edit guardrail provider" }),
     );
-    await expect(
-      form.getByRole("switch", { name: "Activate provider" }),
-    ).toHaveAccessibleDescription(
-      "This provider is active. Turning it off pauses it, and no other provider takes its place.",
+    await expect(form.getByRole("switch", { name: "Enable provider" })).toHaveAccessibleDescription(
+      "This provider is enabled. Turning it off pauses only this one; the other active providers keep running.",
     );
     const timeout = form.getByLabelText("Timeout (ms)");
     await userEvent.clear(timeout);
@@ -974,30 +960,108 @@ export const SavingTheActiveProviderDoesNotAsk: Story = {
 };
 
 /**
- * An enabled config-file webhook wins over the registry, so the confirmation
- * says the new provider is ignored until that webhook is turned off.
+ * A config-file provider of the same name is running and wins the name, so the
+ * confirmation says the new one is ignored until the name is free.
  */
-export const ActivationUnderAConfigFileWebhook: Story = {
-  render: () => <Harness fetchStub={registry(PROVIDERS, FILE_WEBHOOK)} />,
+export const ActivationUnderAFileProviderOfTheSameName: Story = {
+  render: () => (
+    <Harness
+      fetchStub={registry(PROVIDERS, {
+        ...semanticFor(PROVIDERS),
+        providers: [{ ...FILE_PROVIDER, name: "Policy service" }, running(PROVIDERS[0])],
+      })}
+    />
+  ),
   play: async ({ canvasElement }) => {
     const form = await registerPolicyService(canvasElement);
-    await userEvent.click(form.getByRole("switch", { name: "Activate provider" }));
+    await userEvent.click(form.getByRole("switch", { name: "Enable provider" }));
     await userEvent.click(form.getByRole("button", { name: "Save provider" }));
 
     const confirm = await activationFor("Policy service");
     await expect(
       confirm.getByText(
-        "The config-file webhook stays in force while it is enabled, so Policy service is ignored until that webhook is turned off.",
+        "A provider named Policy service from the config file is already running and wins the name, so this one is ignored until that name is free.",
       ),
     ).toBeVisible();
   },
 };
 
 /**
- * A provider saved at the post-call stage checks nothing, so activating one
- * says that instead of a failure policy that never applies.
+ * Policies that list the provider decide what it sees: the confirmation names
+ * the scopes of the enabled ones instead of claiming every request.
  */
-export const ActivatingAPostCallProviderSaysItChecksNothing: Story = {
+export const ActivationNamesTheScopesOfTheListingPolicies: Story = {
+  render: () => (
+    <Harness
+      fetchStub={registry(PROVIDERS, undefined, undefined, [
+        ROUTE_POLICY,
+        {
+          ...ROUTE_POLICY,
+          id: "policy-project",
+          name: "project-strict",
+          scope_kind: "project",
+          scope_id: "proj-1",
+          provider_ids: ["provider-fallback"],
+        },
+      ])}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(
+      await canvas.findByRole("button", { name: "Edit provider Staging evaluator" }),
+    );
+    const form = within(
+      await within(document.body).findByRole("dialog", { name: "Edit guardrail provider" }),
+    );
+    await userEvent.click(form.getByRole("switch", { name: "Enable provider" }));
+    await userEvent.click(form.getByRole("button", { name: "Save provider" }));
+    const confirm = await activationFor("Staging evaluator");
+    await expect(
+      confirm.getByText(
+        "Policies list it, so it will check only the requests they apply to: Project proj-1.",
+      ),
+    ).toBeVisible();
+    await expect(confirm.queryByText(/every request that no policy covers/)).toBeNull();
+  },
+};
+
+/**
+ * A provider only paused policies list is not unattached: pausing a policy never
+ * widens its providers to all traffic, so it checks nothing until one is enabled.
+ */
+export const ActivationOfAProviderOnlyPausedPoliciesListChecksNothing: Story = {
+  render: () => (
+    <Harness
+      fetchStub={registry(PROVIDERS, undefined, undefined, [
+        { ...ROUTE_POLICY, enabled: false, provider_ids: ["provider-fallback"] },
+      ])}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(
+      await canvas.findByRole("button", { name: "Edit provider Staging evaluator" }),
+    );
+    const form = within(
+      await within(document.body).findByRole("dialog", { name: "Edit guardrail provider" }),
+    );
+    await userEvent.click(form.getByRole("switch", { name: "Enable provider" }));
+    await userEvent.click(form.getByRole("button", { name: "Save provider" }));
+    const confirm = await activationFor("Staging evaluator");
+    await expect(
+      confirm.getByText(
+        "Policies list it, but all of them are paused, so it checks no request until one is enabled.",
+      ),
+    ).toBeVisible();
+  },
+};
+
+/**
+ * A post-call provider checks the response body, so enabling one says that and
+ * how a streamed response is handled instead of the request-time failure line.
+ */
+export const ActivatingAPostCallProviderChecksTheResponse: Story = {
   render: () => (
     <Harness fetchStub={registry([PROVIDERS[0], { ...OUTPUT_EVALUATOR, enabled: false }])} />
   ),
@@ -1009,23 +1073,23 @@ export const ActivatingAPostCallProviderSaysItChecksNothing: Story = {
     const form = within(
       await within(document.body).findByRole("dialog", { name: "Edit guardrail provider" }),
     );
-    await userEvent.click(form.getByRole("switch", { name: "Activate provider" }));
+    await userEvent.click(form.getByRole("switch", { name: "Enable provider" }));
     await userEvent.click(form.getByRole("button", { name: "Save provider" }));
 
     const confirm = await activationFor("Output evaluator");
     await expect(
-      confirm.getByText("It takes enforcement over from Production LLM Guard, which is paused."),
+      confirm.getByText(
+        "It is added to the active providers (Production LLM Guard). None of them is paused.",
+      ),
     ).toBeVisible();
-    await expect(
-      confirm.getByText(/so no request is sent to it and its failure policy never applies/),
-    ).toBeVisible();
+    await expect(confirm.getByText(/It checks the response body/)).toBeVisible();
     await expect(confirm.queryByText(/fails closed/)).toBeNull();
   },
 };
 
 /**
- * The registry did not load, so the screen cannot know which provider is
- * active. The switch and the confirmation say so rather than claim none is.
+ * The registry did not load, so the screen cannot know which providers are
+ * running. The switch and the confirmation say so rather than claim none is.
  */
 export const ActivationWhileTheRegistryIsUnreadable: Story = {
   render: () => (
@@ -1034,20 +1098,16 @@ export const ActivationWhileTheRegistryIsUnreadable: Story = {
   play: async ({ canvasElement }) => {
     await expectLoadError(canvasElement, /failed to return guardrail providers/);
     const form = await registerPolicyService(canvasElement);
-    const activate = form.getByRole("switch", { name: "Activate provider" });
+    const activate = form.getByRole("switch", { name: "Enable provider" });
     await expect(activate).toHaveAccessibleDescription(
-      "Takes enforcement ownership from the currently active provider.",
+      "Adds this provider to the active ones; no other provider is paused.",
     );
     await userEvent.click(activate);
     await userEvent.click(form.getByRole("button", { name: "Save provider" }));
 
     const confirm = await activationFor("Policy service");
-    await expect(
-      confirm.getByText(
-        "The provider list did not load, so this screen cannot say which provider it replaces.",
-      ),
-    ).toBeVisible();
-    await expect(confirm.queryByText(/No provider is active now/)).toBeNull();
+    await expect(confirm.getByText(/did not say which providers are running/)).toBeVisible();
+    await expect(confirm.queryByText(/No other provider is active now/)).toBeNull();
   },
 };
 
@@ -1066,7 +1126,7 @@ async function pauseProductionGuard(canvasElement: HTMLElement) {
   const form = within(
     await within(document.body).findByRole("dialog", { name: "Edit guardrail provider" }),
   );
-  await userEvent.click(form.getByRole("switch", { name: "Activate provider" }));
+  await userEvent.click(form.getByRole("switch", { name: "Enable provider" }));
   await userEvent.click(form.getByRole("button", { name: "Save provider" }));
   return form;
 }
@@ -1076,7 +1136,7 @@ const pauseFor = async (name: string) =>
   within(await within(document.body).findByRole("dialog", { name: `Pause ${name}?` }));
 
 const NOTHING_CHECKS =
-  "No other provider takes its place, so no external guardrail checks requests afterwards. Every request goes upstream without one.";
+  "No other provider is active, so no external guardrail checks requests afterwards. Every request goes upstream without one.";
 
 /**
  * Saving the active provider switched off names it and says nothing checks
@@ -1094,7 +1154,7 @@ export const PausingTheActiveProviderAsksFirst: Story = {
     pauses = recording(
       registry(
         () => (providerPaused ? PROVIDERS.map((row) => ({ ...row, enabled: false })) : PROVIDERS),
-        () => (providerPaused ? NO_WEBHOOK : PRIMARY_WEBHOOK),
+        undefined,
         () =>
           new Promise<Response>((resolve) => {
             landPause = () => {
@@ -1122,7 +1182,7 @@ export const PausingTheActiveProviderAsksFirst: Story = {
       ).toBeNull(),
     );
     pauses.expectNotSent("PUT", "/guardrails/providers/provider-primary");
-    await expect(form.getByRole("switch", { name: "Activate provider" })).not.toBeChecked();
+    await expect(form.getByRole("switch", { name: "Enable provider" })).not.toBeChecked();
     await expect((await expectUxEvent("form_abandon", "guardrail-provider-pause")).outcome).toBe(
       "cancelled",
     );
@@ -1149,31 +1209,34 @@ export const PausingTheActiveProviderAsksFirst: Story = {
 };
 
 /**
- * Under an enabled config-file webhook the active row is already overridden,
- * so the confirmation says that webhook stays in force rather than that
- * nothing checks requests.
+ * Pausing one of several running providers says the others keep running, and
+ * names the policies that lose it.
  */
-let pausesUnderFile: Recorder;
-export const PausingUnderAConfigFileWebhook: Story = {
+let pausesOne: Recorder;
+export const PausingKeepsTheOtherProvidersRunning: Story = {
   render: () => {
-    pausesUnderFile = recording(
-      registry(PROVIDERS, FILE_WEBHOOK, async () => json({ ...PROVIDERS[0], enabled: false })),
+    const both = [PROVIDERS[0], { ...PROVIDERS[1], enabled: true }];
+    pausesOne = recording(
+      registry(both, undefined, async () => json({ ...PROVIDERS[0], enabled: false }), [
+        ROUTE_POLICY,
+      ]),
     );
-    return <Harness fetchStub={pausesUnderFile.stub} />;
+    return <Harness fetchStub={pausesOne.stub} />;
   },
   play: async ({ canvasElement }) => {
     await pauseProductionGuard(canvasElement);
 
     const confirm = await pauseFor("Production LLM Guard");
     await expect(
-      confirm.getByText(
-        "The config-file webhook stays in force while it is enabled. It already overrides Production LLM Guard, so pausing it changes nothing for requests.",
-      ),
+      confirm.getByText("The other active providers keep running: Staging evaluator."),
+    ).toBeVisible();
+    await expect(
+      confirm.getByText("These policies lose it and stop consulting it: route-strict."),
     ).toBeVisible();
     await expect(confirm.queryByText(NOTHING_CHECKS)).toBeNull();
 
     await userEvent.click(confirm.getByRole("button", { name: "Save and pause" }));
-    const body = await pausesUnderFile.expectSentBody<GuardrailProviderInput>(
+    const body = await pausesOne.expectSentBody<GuardrailProviderInput>(
       "PUT",
       "/guardrails/providers/provider-primary",
     );
@@ -1183,17 +1246,17 @@ export const PausingUnderAConfigFileWebhook: Story = {
 };
 
 /**
- * The effective config did not load, so the screen cannot tell whether a
- * config-file webhook checks requests once the row is paused. It says so
- * rather than claim nothing does.
+ * The effective document did not load, so the screen cannot tell whether another
+ * provider still checks requests once the row is paused. It says so rather than
+ * claim nothing does.
  */
 export const PausingWhileEnforcementIsUnknown: Story = {
   render: () => (
     <Harness
-      fetchStub={async (input) =>
-        String(input).includes("/api/v1/config")
+      fetchStub={async (input, init) =>
+        String(input).includes("/api/v1/guardrails/effective")
           ? json({ error: { message: "config store unavailable" } }, 503)
-          : json(PROVIDERS)
+          : registry(PROVIDERS)(input, init)
       }
     />
   ),
@@ -1205,7 +1268,7 @@ export const PausingWhileEnforcementIsUnknown: Story = {
 
     const confirm = await pauseFor("Production LLM Guard");
     await expect(
-      confirm.getByText(/cannot say whether a config-file webhook checks requests afterwards/),
+      confirm.getByText(/cannot say whether any still checks requests afterwards/),
     ).toBeVisible();
     await expect(confirm.queryByText(NOTHING_CHECKS)).toBeNull();
   },
@@ -1344,7 +1407,7 @@ async function openProviderTrial(canvasElement: HTMLElement) {
 }
 
 const providerTrials = recording(
-  registry(PROVIDERS, PRIMARY_WEBHOOK, async (input) =>
+  registry(PROVIDERS, undefined, async (input) =>
     isProviderTrial(input)
       ? json({
           ok: true,
@@ -1400,7 +1463,7 @@ export const SaysWhenTheCredentialIsNotSetOnTheControlPlane: Story = {
     const sent: Record<string, unknown>[] = [];
     return (
       <Harness
-        fetchStub={registry(PROVIDERS, PRIMARY_WEBHOOK, async (input, init) => {
+        fetchStub={registry(PROVIDERS, undefined, async (input, init) => {
           if (!isProviderTrial(input)) return json(POLICY_SERVICE, 201);
           const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
           sent.push(body);
@@ -1451,7 +1514,7 @@ export const SaysWhenTheCredentialIsNotSetOnTheControlPlane: Story = {
 export const ShowsATimeoutWithItsLiveEffect: Story = {
   render: () => (
     <Harness
-      fetchStub={registry(PROVIDERS, PRIMARY_WEBHOOK, async (input) =>
+      fetchStub={registry(PROVIDERS, undefined, async (input) =>
         isProviderTrial(input)
           ? json({
               ok: false,
@@ -1472,5 +1535,107 @@ export const ShowsATimeoutWithItsLiveEffect: Story = {
     // the draft's failure policy starts as fail closed
     await expect(within(result).getByText(/rejects the request \(fail closed\)/)).toBeVisible();
     await expect(within(result).getByText("1800 ms round trip")).toBeVisible();
+  },
+};
+
+const LOCAL_SHA = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+/** an in-process classifier: no URL, no credential, no retries */
+const LOCAL_CLASSIFIER: GuardrailProviderRow = {
+  ...PROVIDERS[1],
+  id: "provider-local",
+  name: "Local toxicity model",
+  kind: "local",
+  url: "",
+  model_path: "/etc/rolter/models/toxicity.json",
+  model_sha256: LOCAL_SHA,
+  failure_mode: "fail_closed",
+  max_retries: 0,
+};
+
+/** a local row shows its kind and model path where a webhook shows its URL */
+export const ListsALocalClassifier: Story = {
+  render: () => <Harness fetchStub={registry([...PROVIDERS, LOCAL_CLASSIFIER])} />,
+  play: async ({ canvasElement }) => {
+    await within(canvasElement).findByRole("heading", { name: "Local toxicity model" });
+    const local = card(canvasElement, "Local toxicity model");
+    await expect(local.getByText("/etc/rolter/models/toxicity.json")).toBeVisible();
+    await expect(local.getByText("Local classifier")).toBeVisible();
+    await expect(local.getByText("2,500 ms timeout · 32 KiB cap")).toBeVisible();
+    await expect(card(canvasElement, "Production LLM Guard").getByText("Webhook")).toBeVisible();
+  },
+};
+
+/**
+ * Picking the local kind swaps the URL and credential rows for the model's
+ * path and digest, hides the webhook trial, and saves the shape the server
+ * expects: an empty URL, no credential and no retries.
+ */
+let savesLocal: Recorder;
+export const RegistersALocalClassifier: Story = {
+  render: () => {
+    savesLocal = recording(registry([], undefined, async () => json(LOCAL_CLASSIFIER, 201)));
+    return <Harness fetchStub={savesLocal.stub} />;
+  },
+  play: async ({ canvasElement }) => {
+    await userEvent.click(
+      await within(canvasElement).findByRole("button", { name: /register first provider/i }),
+    );
+    const dialog = within(await within(document.body).findByRole("dialog"));
+    await userEvent.type(dialog.getByLabelText("Provider name"), "Local toxicity model");
+    await userEvent.click(dialog.getByRole("radio", { name: "Local classifier" }));
+    await expect(dialog.queryByLabelText("Evaluation URL")).toBeNull();
+    await expect(dialog.queryByLabelText("Authentication")).toBeNull();
+    await expect(dialog.queryByText("Send a test envelope")).toBeNull();
+    await waitFor(() =>
+      expect(dialog.getByText(/cannot be tested from the control plane/)).toBeVisible(),
+    );
+
+    const save = dialog.getByRole("button", { name: "Save provider" });
+    await expect(save).toHaveAttribute("aria-disabled", "true");
+    const path = dialog.getByLabelText("Model path");
+    const sha = dialog.getByLabelText("Model SHA-256");
+    await userEvent.click(path);
+    await userEvent.tab();
+    await expect(path).toHaveAttribute("aria-invalid", "true");
+    await userEvent.type(path, "/etc/rolter/models/toxicity.json");
+    await userEvent.type(sha, "abc123");
+    await userEvent.tab();
+    await expect(sha).toHaveAttribute("aria-invalid", "true");
+    await expect(save).toHaveAttribute("aria-disabled", "true");
+    await userEvent.clear(sha);
+    await userEvent.type(sha, LOCAL_SHA);
+    await expect(sha).not.toHaveAttribute("aria-invalid", "true");
+    await userEvent.click(save);
+    await expect(
+      await savesLocal.expectSentBody<GuardrailProviderInput>("POST", "/guardrails/providers"),
+    ).toMatchObject({
+      kind: "local",
+      url: "",
+      auth_kind: "none",
+      auth_env: null,
+      max_retries: 0,
+      model_path: "/etc/rolter/models/toxicity.json",
+      model_sha256: LOCAL_SHA,
+    });
+    await expectSheetClosed();
+  },
+};
+
+/** editing a local row keeps its kind and shows its model */
+export const EditsALocalClassifier: Story = {
+  render: () => <Harness fetchStub={registry([LOCAL_CLASSIFIER])} />,
+  play: async ({ canvasElement }) => {
+    await userEvent.click(
+      await within(canvasElement).findByRole("button", {
+        name: "Edit provider Local toxicity model",
+      }),
+    );
+    const dialog = within(await within(document.body).findByRole("dialog"));
+    await expect(await dialog.findByRole("radio", { name: "Local classifier" })).toBeChecked();
+    await expect(dialog.getByLabelText("Model path")).toHaveValue(
+      "/etc/rolter/models/toxicity.json",
+    );
+    await expect(dialog.getByLabelText("Model SHA-256")).toHaveValue(LOCAL_SHA);
   },
 };

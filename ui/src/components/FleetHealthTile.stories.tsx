@@ -137,6 +137,20 @@ export const FailedSummaryFallsBackToTheProbe: Story = {
   },
 };
 
+/**
+ * A probed gateway with no config refuses every key: the tile is red like an
+ * unreachable one, and says why in its own words (#3350).
+ */
+export const SnapshotFormatUnsupported: Story = {
+  render: () => <TileStory gateway="snapshotFormatUnsupported" />,
+  play: async ({ canvasElement }) => {
+    await waitFor(() =>
+      expect(tile(canvasElement)).toHaveTextContent(D.fleet.probe.snapshotFormatUnsupported),
+    );
+    await expect(tile(canvasElement)).not.toHaveTextContent(D.fleet.probe.down);
+  },
+};
+
 /** Neither the summary nor the probe could be read: the tile says it does not know. */
 export const Unknown: Story = {
   render: () => <TileStory gateway="unrecognised" />,

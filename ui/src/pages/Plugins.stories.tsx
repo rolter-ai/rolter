@@ -24,6 +24,8 @@ import {
   type StoryRole,
 } from "./story-harness";
 import type { PluginInstanceRow } from "@/lib/api";
+import en from "@/lib/i18n/locales/en.json";
+import { expectFieldHints } from "@/lib/story-hints";
 
 const PLUGINS: PluginInstanceRow[] = [
   {
@@ -373,6 +375,13 @@ export const MarksEveryInvalidField: Story = {
     await userEvent.type(endpoint, "plugins.internal/hook");
     await expect(name).not.toHaveAttribute("aria-invalid");
     await expect(within(dialog).queryByRole("alert")).toBeNull();
+    // mandatory fields are announced up front, without flagging the pristine form (#3451)
+    for (const field of [name, endpoint]) {
+      await expect(field).toHaveAttribute("aria-required", "true");
+      await expect(field).not.toHaveAttribute("required");
+    }
+    await expect(within(dialog).getByLabelText("Description")).not.toBeRequired();
+    await expect(within(dialog).getAllByText("*")).toHaveLength(2);
     await userEvent.click(within(dialog).getByRole("button", { name: "Install plugin" }));
     await waitFor(() => expect(name).toHaveAttribute("aria-invalid", "true"));
     await expect(name).toHaveAccessibleDescription("Name is required.");
@@ -780,5 +789,27 @@ export const CallCountsFailed: Story = {
     await expect(
       redact.getByRole("button", { name: "Configure plugin PII redaction" }),
     ).toBeEnabled();
+  },
+};
+
+/**
+ * Scope, stage, endpoint and failure policy explain themselves in an (i)
+ * (#3285): who the plugin covers, when it runs, what it is sent and what a
+ * failure does to a request.
+ */
+export const ExplainsEachFieldInAHint: Story = {
+  render: () => <Harness fetchStub={withPlugins(PLUGINS)} />,
+  play: async ({ canvasElement }) => {
+    await userEvent.click(
+      await within(canvasElement).findByRole("button", { name: /install plugin/i }),
+    );
+    const dialog = await within(document.body).findByRole("dialog");
+    const p = en.pages.plugins;
+    await expectFieldHints(dialog, en.common.aboutField, [
+      [p.fieldScope, p.fieldScopeInfo],
+      [p.fieldStage, p.fieldStageInfo],
+      [p.fieldEndpoint, p.fieldEndpointInfo],
+      [p.fieldFailure, p.fieldFailureInfo],
+    ]);
   },
 };

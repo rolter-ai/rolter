@@ -40,8 +40,12 @@ describe("trafficSplit", () => {
     expect(trafficSplit([9, 1])).toEqual([0.9, 0.1]);
   });
 
-  it("counts a zero weight as 1, the way the gateway samples it", () => {
-    expect(trafficSplit([3, 0])).toEqual([0.75, 0.25]);
+  it("gives a zero weight no first attempts while another weight is positive", () => {
+    expect(trafficSplit([3, 0])).toEqual([1, 0]);
+  });
+
+  it("splits a set of only zero weights uniformly, the way the gateway samples it", () => {
+    expect(trafficSplit([0, 0])).toEqual([0.5, 0.5]);
   });
 
   it("has no split without variants", () => {
@@ -62,9 +66,14 @@ describe("validateVariants", () => {
     expect(result.tooMany).toBe(false);
   });
 
-  it("refuses a variant weight of 0 (sampled as 1, #3341), negative or not whole", () => {
-    const zero = { ...newVariant("a", "p"), weight: "0" };
-    expect(validateVariants([zero]).byVariant.get(zero.key)?.weight).toBe("weight");
+  it("accepts a variant weight of 0, and a set of only zeroes (#3427)", () => {
+    const a = { ...newVariant("a", "p"), weight: "0" };
+    const b = { ...newVariant("b", "p"), weight: "0" };
+    expect(validateVariants([a]).count).toBe(0);
+    expect(validateVariants([a, b]).count).toBe(0);
+  });
+
+  it("refuses a negative or fractional variant weight", () => {
     const negative = { ...newVariant("c", "p"), weight: "-1" };
     expect(validateVariants([negative]).byVariant.get(negative.key)?.weight).toBe("weight");
     const fraction = { ...newVariant("d", "p"), weight: "1.5" };
@@ -108,9 +117,27 @@ describe("round trip", () => {
         name: "stable",
         weight: 9,
         params: { temperature: 0.7 },
-        targets: [{ provider_id: "prov-1", upstream_model: null, weight: 2 }],
+        targets: [{ provider_id: "prov-1", upstream_model: null, weight: 2, takes_over: [] }],
       },
     ]);
+  });
+
+  it("keeps a target's fallback classes (#3373)", () => {
+    const stored = row("burst", 1);
+    stored.targets[0].takes_over = ["throttled", "refusal:violence"];
+    const [variant] = variantsToApi(variantsFromRows([stored]));
+    expect(variant.targets[0].takes_over).toEqual(["throttled", "refusal:violence"]);
+  });
+});
+
+describe("refusals", () => {
+  it("maps a refused fallback set onto its target", () => {
+    const drafts = variantsFromRows([row("stable", 9)]);
+    expect(variantRefusalOf("variants[0].targets[0].takes_over", drafts)).toEqual({
+      variantKey: drafts[0].key,
+      targetKey: drafts[0].targets[0].key,
+      field: "takesOver",
+    });
   });
 });
 

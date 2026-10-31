@@ -7,17 +7,20 @@ import { Link, useLocation } from "react-router";
 import { AnalyticsUnavailable } from "@/components/AnalyticsUnavailable";
 import { PageBody } from "@/components/screen";
 import { FleetHealthTile } from "@/components/FleetHealthTile";
+import { ProviderHealthTile } from "@/components/ProviderHealthTile";
 import { GettingStarted } from "@/components/GettingStarted";
 import { IncompleteSpendNotice } from "@/components/IncompleteSpendNotice";
 import { SampledLogNotice } from "@/components/SampledLogNotice";
 import { WithheldSpendNotice } from "@/components/WithheldSpendNotice";
 import { LoadError } from "@/components/LoadError";
+import { OwnerOrgPill, sharedNames } from "@/components/OwnerOrgPill";
 import { RowFilterPicker, useAddressRowFilters } from "@/components/RowFilters";
 import { SavedViews } from "@/components/SavedViews";
 import { HttpStatusBadge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Combobox } from "@/components/ui/combobox";
+import { TimeWindowPicker } from "@/components/TimeWindowPicker";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { BarTrack } from "@/components/ui/bar-chart";
 import { LineChart } from "@/components/ui/line-chart";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ListSkeleton, LoadingRegion } from "@/components/LoadingState";
@@ -31,6 +34,7 @@ import {
   fetchInvocations,
   type AnalyticsByModelRow,
   type AnalyticsRowFilters,
+  type AnalyticsSummary,
   type InvocationRow,
   type SavedViewFilters,
 } from "@/lib/api";
@@ -41,12 +45,14 @@ import { modelColor, rankedByRequests } from "@/lib/model-colors";
 import { isAwaiting } from "@/lib/read-state";
 import {
   DEFAULT_TIME_WINDOW,
-  readTimeWindow,
-  useAddressWindow,
-  useTimeWindowOptions,
+  chartBucket,
+  useAddressSelection,
+  useWindowLabel,
   previousWindowBounds,
   windowBounds,
-  type TimeWindow,
+  windowFilters,
+  type WindowSelection,
+  useWindowQueryKey,
 } from "@/lib/time-window";
 import { compare, toneOfChange, type Comparison } from "@/lib/compare";
 import { cn } from "@/lib/utils";
@@ -60,15 +66,15 @@ const num = (v: number | string | undefined): number => Number(v ?? 0);
 // request leaves rather than once when the module loads, so a tab left open
 // reads the window as it is now and not as it was when it was opened (#1975).
 // the name is what the query keys carry
-const readWindow = (name: TimeWindow, filters: AnalyticsRowFilters) => ({
+const readWindow = (name: WindowSelection, filters: AnalyticsRowFilters) => ({
   ...windowBounds(name),
-  bucket: "hour",
+  bucket: chartBucket(name),
   ...filters,
 });
 // the same figures over the window before, for each tile's arrow (#2010)
-const readPrevious = (name: TimeWindow, filters: AnalyticsRowFilters) => ({
+const readPrevious = (name: WindowSelection, filters: AnalyticsRowFilters) => ({
   ...previousWindowBounds(name),
-  bucket: "hour",
+  bucket: chartBucket(name),
   ...filters,
 });
 // "recent" is the latest requests, whatever window the figures are read over
@@ -95,13 +101,22 @@ const pollEvery =
 // categorical colour sequence, so no two rows share a colour
 const MODELS_SHOWN = 8;
 
-// six tiles read as three across and two down; the shared strip is four across
-const FIGURES_GRID = cn(STAT_GRID, "xl:grid-cols-3");
+// one organization's model (#3486): two organizations may each have a route of
+// one name (#1857), and the read answers them as two rows, so every per-model
+// map is keyed on both. a NUL cannot occur in either part
+const modelKey = (m: AnalyticsByModelRow) => `${m.org_id ?? ""}\u0000${m.model}`;
 
 // the models in the order the card colours them by (#1994): the read arrives
 // by cost, and the card ranks it by requests
 function byRequests(models: AnalyticsByModelRow[]) {
-  return rankedByRequests(models.map((m) => ({ model: m.model, requests: num(m.requests) })));
+  return rankedByRequests(
+    models.map((m) => ({
+      key: modelKey(m),
+      orgId: m.org_id ?? "",
+      model: m.model,
+      requests: num(m.requests),
+    })),
+  );
 }
 
 // the recent requests sit in a card that already has the frame, so the table
@@ -220,9 +235,10 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
   const currency = useCurrencyCode();
   const money = (n: number) => fmt.currency(n, currency);
   const overviewPoll = pollEvery(pollMs ?? OVERVIEW_POLL_MS);
-  const [timeWindow, setWindow] = useAddressWindow();
-  const windowOptions = useTimeWindowOptions();
-  const windowLabel = windowOptions.find((o) => o.value === timeWindow)?.label ?? timeWindow;
+  const [timeWindow, setWindow] = useAddressSelection();
+  // the window's days are the chart zone's, so a zone change reads it again (#3519)
+  const windowKey = useWindowQueryKey(timeWindow);
+  const windowLabel = useWindowLabel()(timeWindow);
   // the figures cover the rows the caller's roles reach, not the org picked in
   // the scope switcher, so the scope line says that and not the switcher's pick
   const auth = useOptionalAuth();
@@ -236,9 +252,9 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
   const filtered = rowFilters.count > 0;
   // what a saved view keeps: the window and the row filters. the buckets are
   // fixed at an hour here
-  const savedFilters: SavedViewFilters = { window: timeWindow, ...rowFilters.saved };
+  const savedFilters: SavedViewFilters = { ...windowFilters(timeWindow), ...rowFilters.saved };
   const summary = useQuery({
-    queryKey: ["analytics", "summary", timeWindow, filterKey],
+    queryKey: ["analytics", "summary", ...windowKey, filterKey],
     queryFn: () => fetchAnalyticsSummary(readWindow(timeWindow, rowFilters.query)),
     refetchInterval: overviewPoll,
     retry: false,
@@ -248,7 +264,7 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
   // no card, no loading state and no error of its own, and while it is out or
   // has failed a tile simply draws no arrow (#2010)
   const previous = useQuery({
-    queryKey: ["analytics", "summary", "previous", timeWindow, filterKey],
+    queryKey: ["analytics", "summary", "previous", ...windowKey, filterKey],
     queryFn: () => fetchAnalyticsSummary(readPrevious(timeWindow, rowFilters.query)),
     refetchInterval: overviewPoll,
     retry: false,
@@ -258,13 +274,13 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
   // `summary` is the query the user is actually waiting on for this screen
   useScreenReady(!summary.isLoading);
   const series = useQuery({
-    queryKey: ["analytics", "timeseries", timeWindow, filterKey],
+    queryKey: ["analytics", "timeseries", ...windowKey, filterKey],
     queryFn: () => fetchAnalyticsTimeseries(readWindow(timeWindow, rowFilters.query)),
     refetchInterval: overviewPoll,
     retry: false,
   });
   const byModel = useQuery({
-    queryKey: ["analytics", "by-model", timeWindow, filterKey],
+    queryKey: ["analytics", "by-model", ...windowKey, filterKey],
     queryFn: () => fetchAnalyticsByModel(readWindow(timeWindow, rowFilters.query)),
     refetchInterval: overviewPoll,
     retry: false,
@@ -371,12 +387,11 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
   return (
     <PageBody className="gap-[18px]">
       <div className="flex flex-wrap items-center gap-2">
-        <Combobox
+        <TimeWindowPicker
           aria-label={t("common.timeWindow.label")}
           className="w-48"
-          options={windowOptions}
           value={timeWindow}
-          onChange={(next) => setWindow(readTimeWindow(next))}
+          onChange={setWindow}
         />
         <SavedViews surface="dashboard" current={savedFilters} onApply={rowFilters.apply} />
         <Button
@@ -418,13 +433,14 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
       )}
       {!served && gettingStarted}
       <div data-testid="dashboard-figures">
-        <div className={FIGURES_GRID}>
+        <div className={STAT_GRID}>
           {/* the fleet first: mid-incident, whether the gateways are up is the
               first thing asked, and it is not a figure of the window. it sits
               outside the summary's read, so a summary that is slow or failing
               (the heaviest read on the screen) does not take it away; the other
               five tiles, or their skeleton or alert, fill the rest of the grid */}
           <FleetHealthTile />
+          <ProviderHealthTile pollMs={pollMs} />
           <CardRead
             read={summary}
             resource={t("errors.resources.dashboardFigures")}
@@ -434,7 +450,7 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
             // tiles it stands in for
             skeleton={
               <LoadingRegion className="contents">
-                {Array.from({ length: 5 }, (_, i) => (
+                {Array.from({ length: 6 }, (_, i) => (
                   <Skeleton key={i} height={96} radius={10} />
                 ))}
               </LoadingRegion>
@@ -475,7 +491,60 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
                 before && before.cache_hit_requests != null
                   ? (num(before.cache_hit_requests) / prevRequests) * 100
                   : undefined;
+              // the provider's prompt cache, apart from rolter's response cache: the
+              // signal cache-aware balancing exists to improve (#3356). The share is
+              // over the prompt tokens of the requests whose provider stated its cache
+              // reads (#3410), so a provider that does not report them neither dilutes
+              // it nor hides a real 0%. An older control plane sends no such count, and
+              // there a window in which no provider reported a cached token reads as
+              // unmeasured, since a provider that does not report it looks the same as
+              // one that never hits
+              const promptTokens = num(s?.prompt_tokens);
+              const cacheRead = s?.cache_read_tokens != null ? num(s.cache_read_tokens) : undefined;
+              const cacheShareOf = (summary: AnalyticsSummary) => {
+                const read = num(summary.cache_read_tokens);
+                if (summary.cache_reported_prompt_tokens != null) {
+                  const reported = num(summary.cache_reported_prompt_tokens);
+                  return {
+                    read,
+                    prompt: reported,
+                    share: reported > 0 ? read / reported : undefined,
+                  };
+                }
+                const prompt = num(summary.prompt_tokens);
+                return {
+                  read,
+                  prompt,
+                  share:
+                    summary.cache_read_tokens != null && read > 0 && prompt > 0
+                      ? read / prompt
+                      : undefined,
+                };
+              };
+              const cacheShare = s ? cacheShareOf(s) : undefined;
+              const readShare =
+                cacheShare?.share !== undefined ? cacheShare.share * 100 : undefined;
+              const prevShare = before ? cacheShareOf(before).share : undefined;
+              const prevReadShare = prevShare !== undefined ? prevShare * 100 : undefined;
+              const cacheUnmeasured =
+                s?.cache_unmeasured_requests != null ? num(s.cache_unmeasured_requests) : 0;
+              // the read and prompt tokens the share is over, and the requests it left out
+              const cacheDetail = () => {
+                const detail = t("pages.dashboard.promptCacheTokens", {
+                  read: fmt.compact(cacheShare?.read ?? 0),
+                  prompt: fmt.compact(cacheShare?.prompt ?? 0),
+                });
+                return cacheUnmeasured > 0
+                  ? t("pages.dashboard.withChange", {
+                      detail,
+                      change: t("pages.dashboard.promptCacheUnmeasured", {
+                        count: cacheUnmeasured,
+                      }),
+                    })
+                  : detail;
+              };
               const changes = {
+                readShare: compare(readShare, prevReadShare),
                 requests: compare(requests, was(before?.requests)),
                 spend: compare(num(s?.cost_usd), was(before?.cost_usd)),
                 latency: compare(
@@ -574,6 +643,31 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
                     }
                   />
                   <StatCard
+                    data-testid="dashboard-prompt-cache"
+                    label={t("pages.dashboard.statPromptCache")}
+                    value={readShare !== undefined ? percent(readShare) : unmeasured}
+                    unit={readShare !== undefined ? "%" : undefined}
+                    // more of the prompt served from the cache is what cache-aware routing is for
+                    trend={changes.readShare?.trend}
+                    tone={
+                      changes.readShare ? toneOfChange(changes.readShare.trend, "good") : undefined
+                    }
+                    delta={
+                      promptTokens === 0
+                        ? why
+                        : cacheRead === undefined
+                          ? undefined
+                          : readShare === undefined
+                            ? t("pages.dashboard.promptCacheNone")
+                            : changes.readShare
+                              ? t("pages.dashboard.withChange", {
+                                  detail: cacheDetail(),
+                                  change: said(changes.readShare),
+                                })
+                              : cacheDetail()
+                    }
+                  />
+                  <StatCard
                     label={t("pages.dashboard.statRequests")}
                     value={fmt.number(requests)}
                     trend={changes.requests?.trend}
@@ -636,7 +730,14 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
             >
               {(points) => {
                 const spendPoints = points.map((p) => num(p.cost_usd));
-                const spendLabels = points.map((p) => fmt.timeShort(p.bucket) || p.bucket);
+                // an hourly bucket is named by its clock, a daily one (a long
+                // custom range) by its date, which the clock cannot tell apart
+                const daily = chartBucket(timeWindow) === "day";
+                const spendLabels = points.map((p) =>
+                  daily
+                    ? fmt.calendarDay(String(p.bucket).slice(0, 10))
+                    : fmt.timeShort(p.bucket) || p.bucket,
+                );
                 // buckets exist but every one of them is zero: the window had
                 // traffic that was never priced, which is not the same as spend
                 // that happened to be zero
@@ -697,15 +798,20 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
               {(models) => {
                 const ranked = byRequests(models);
                 const barMax = Math.max(1, ...ranked.map((m) => m.requests));
-                const p95Of = new Map(models.map((m) => [m.model, m.p95_latency_ms]));
-                const costOf = new Map(models.map((m) => [m.model, m.cost_usd]));
+                const p95Of = new Map(models.map((m) => [modelKey(m), m.p95_latency_ms]));
+                const costOf = new Map(models.map((m) => [modelKey(m), m.cost_usd]));
+                // a name two organizations share is told apart by its owner
+                const shared = sharedNames(ranked.map((m) => ({ name: m.model, orgId: m.orgId })));
                 const rows = ranked.slice(0, MODELS_SHOWN).map((m, i) => ({
+                  key: m.key,
                   model: m.model,
+                  orgId: m.orgId,
+                  shared: shared.has(m.model),
                   color: modelColor(i),
                   requests: m.requests,
                   pct: (m.requests / barMax) * 100,
-                  p95: p95Of.get(m.model),
-                  cost: costOf.get(m.model),
+                  p95: p95Of.get(m.key),
+                  cost: costOf.get(m.key),
                 }));
                 const hidden = ranked.length - rows.length;
                 return rows.length === 0 ? (
@@ -715,7 +821,7 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
                 ) : (
                   <>
                     <Table
-                      rowKey="model"
+                      rowKey="key"
                       className={MODEL_TABLE}
                       columns={[
                         {
@@ -732,6 +838,7 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
                               <span className="truncate" title={v as string}>
                                 {v as string}
                               </span>
+                              {row.shared ? <OwnerOrgPill orgId={row.orgId as string} /> : null}
                             </span>
                           ),
                         },
@@ -744,18 +851,11 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
                             <span className="inline-flex items-center justify-end gap-2">
                               {/* the bar is the share of the busiest model; the
                                   number beside it is what a reader takes in */}
-                              <span
-                                aria-hidden
-                                className="hidden h-2 w-16 overflow-hidden rounded-[2px] bg-[color:var(--surface-subtle)] sm:block"
-                              >
-                                <span
-                                  className="block h-full rounded-[2px]"
-                                  style={{
-                                    width: `${row.pct as number}%`,
-                                    background: row.color as string,
-                                  }}
-                                />
-                              </span>
+                              <BarTrack
+                                share={(row.pct as number) / 100}
+                                color={row.color as string}
+                                className="hidden h-2 w-16 sm:block"
+                              />
                               <span>{fmtK(v as number)}</span>
                             </span>
                           ),

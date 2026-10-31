@@ -170,7 +170,7 @@ async fn consult_one(
             metrics.plugin_errors_total.fetch_add(1, Relaxed);
             let decision = match plugin.failure_mode {
                 FailureMode::FailOpen => WebhookDecision::Allow,
-                FailureMode::FailClosed => WebhookDecision::Block {
+                FailureMode::FailClosed | FailureMode::Unknown => WebhookDecision::Block {
                     reason: Some(format!("plugin '{}' is unavailable", plugin.slug)),
                 },
             };

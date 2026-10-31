@@ -184,6 +184,7 @@ fn all_binary_cli_env_vars_are_documented_in_reference() {
     vars.insert("CLICKHOUSE_URL".to_string());
     vars.insert("OPENROUTER_HTTP_REFERER".to_string());
     vars.insert("OPENROUTER_X_TITLE".to_string());
+    vars.insert("OPENROUTER_API_KEY".to_string());
     vars.insert("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT".to_string());
     vars.insert("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT".to_string());
     vars.insert("OTEL_EXPORTER_OTLP_LOGS_ENDPOINT".to_string());

@@ -205,6 +205,9 @@ describe("each capability decided at its own scope", () => {
             authority === "security_auditor"
           )
             continue;
+          // a row that also takes a deployment role is decided here by its scoped half:
+          // `allowedAt` holds no deployment role
+          const floor = authority.split("|")[0] as keyof typeof rank;
           const scope = scopeOf(c, action);
           const guard: ScopeChain =
             scope === "org"
@@ -213,13 +216,37 @@ describe("each capability decided at its own scope", () => {
                 ? { orgId: "o", teamId: "t", projectId: null }
                 : CHAIN;
           const role = resolveRole(ms, guard);
-          const decided = role !== null && rank[role] >= rank[authority];
+          const decided = role !== null && rank[role] >= rank[floor];
           expect([`${c.resource}:${action}`, has(allowed, `${c.resource}:${action}`)]).toEqual([
             `${c.resource}:${action}`,
             decided,
           ]);
         }
       }
+    }
+  });
+});
+
+describe("a row a scoped role or a deployment role reaches (#3362)", () => {
+  const alerting = ["alert_channel", "alert_rule", "alert_history"].flatMap((resource) =>
+    ACTIONS.filter((action) => CAPABILITIES.find((c) => c.resource === resource)?.[action]).map(
+      (action) => `${resource}:${action}`,
+    ),
+  );
+
+  it("is published as both authorities and decided by either", () => {
+    expect(alerting.length).toBeGreaterThan(0);
+    const row = CAPABILITIES.find((c) => c.resource === "alert_rule");
+    expect(row?.update).toBe("admin|operator");
+    // an operator holds no membership, and still runs every rule
+    const operator = effectiveFor(null, false, "operator").allowed;
+    for (const pair of alerting) expect(has(operator, pair)).toBe(true);
+    // an admin at the scope runs its own, and an auditor or a viewer none
+    const admin = effectiveFor("admin").allowed;
+    for (const pair of alerting) expect(has(admin, pair)).toBe(true);
+    for (const pair of alerting) {
+      expect(has(effectiveFor("viewer").allowed, pair)).toBe(false);
+      expect(has(effectiveFor(null, false, "security_auditor").allowed, pair)).toBe(false);
     }
   });
 });

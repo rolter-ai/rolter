@@ -293,6 +293,37 @@ export const ProfilesFailedToLoad: Story = {
   },
 };
 
+const blockedAssign = teamProfiles();
+
+/** Assigning with no profile picked names the picker instead of doing nothing (#3242). */
+export const AssignWithoutAPickNamesTheField: Story = {
+  render: () => (
+    <Harness fetchStub={blockedAssign.stub} role="admin">
+      <Toasted>
+        <Teams />
+      </Toasted>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByText("Research");
+    await expectAllowed(canvasElement, "Assign an access profile to Research");
+    await userEvent.click(
+      canvas.getByRole("button", { name: "Assign an access profile to Research" }),
+    );
+
+    const form = within(sheet());
+    const picker = await form.findByRole("combobox", { name: "Access profile" });
+    await expect(picker).toBeRequired();
+    await expect(form.queryByText("Required")).toBeNull();
+    await userEvent.click(form.getByRole("button", { name: "Assign profile" }));
+    await waitFor(async () => expect(await form.findByText("Required")).toBeVisible());
+    await waitFor(() => expect(picker).toHaveFocus());
+    await expect(await form.findByRole("status")).toHaveTextContent("1 field needs attention");
+    blockedAssign.expectNotSent("POST", "/access-profiles/p-2/assignments");
+  },
+};
+
 const teamAssign = teamProfiles();
 export const AssignsAProfileToATeam: Story = {
   render: () => (
@@ -698,6 +729,10 @@ export const RenamesATeam: Story = {
     await userEvent.click(await canvas.findByRole("button", { name: "Open Platform" }));
     const panel = within(sheet());
     const field = panel.getByLabelText("Team name");
+    // announced as mandatory without flagging the untouched name (#3451)
+    await expect(field).toHaveAttribute("aria-required", "true");
+    await expect(field).not.toHaveAttribute("required");
+    await expect(field).toBeValid();
     // nothing to send until the name differs
     // story-wait-allow: disabled by the unchanged name from its first paint, not by the gate
     await expect(panel.getByRole("button", { name: "Rename" })).toBeDisabled();

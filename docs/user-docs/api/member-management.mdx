@@ -59,6 +59,41 @@ failure, `mail_error`, a short reason that is safe to show. Creating an
 invitation always returns the link, whatever the status says. See
 [Emailing invitations](/security/rbac#emailing-invitations).
 
+## Send an invitation again
+
+`POST /api/v1/invitations/{id}/resend` emails a pending invitation's link again.
+It is the same link, so the earlier message still works, and the expiry does not
+move. The request has no body and the response is the invitation, with
+`mail_status`, `mail_attempted_at` and `mail_error` updated. It needs the same
+role as sending the invitation, and is audited as `invitation.resend` followed
+by `invitation.mail_sent` or `invitation.mail_failed`. A resend is refused with `429` and a `Retry-After` header while the invitation's last mail attempt, the first send included, is under a minute old.
+
+```bash
+curl -X POST "$ROLTER_URL/api/v1/invitations/$INVITATION_ID/resend" \
+  -H "Authorization: Bearer $ROLTER_SESSION_TOKEN"
+```
+
+It answers `409` when the invitation was accepted, revoked or has expired, when
+the control plane has no mail relay, and for an invitation whose link was not
+kept: one created before resending existed, with no relay, or on a control plane
+without `ROLTER_KEK`. Revoke that one and invite the address again.
+
+## Check the mail relay
+
+`POST /api/v1/orgs/{org_id}/invitations/mail-check` connects to the relay,
+negotiates TLS and authenticates, without sending anything. It needs the role
+that sends invitations in the organization.
+
+```json
+{ "ok": false, "stage": "auth", "reason": "the mail server refused the credential in the relay url" }
+```
+
+A caller can run the check once every five seconds, and the relay as a whole once every two (the relay is shared, so another admin's check counts); a faster call is answered `429` with a `Retry-After` header and runs nothing. `stage` is `connect` (unreachable or no answer in time), `tls`, `auth` or
+`relay` (it answered, but not as a mail server does). The reason never contains
+the relay's address, its reply or the credential. A control plane without
+`ROLTER_SMTP_URL` answers `409`. `rolter check --connect` runs the same check
+from the command line.
+
 ## Reset a member's password
 
 `POST /api/v1/orgs/{org_id}/users/{id}/password-reset` issues a one-time link

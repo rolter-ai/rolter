@@ -31,7 +31,20 @@ import snapshot from "@/lib/rbac-capabilities.json";
  * is reached by that role and by a superadmin, and by no scoped role.
  */
 export type Authority =
-  "viewer" | "member" | "admin" | "superadmin" | "authenticated" | DeploymentRole;
+  | "viewer"
+  | "member"
+  | "admin"
+  | "superadmin"
+  | "authenticated"
+  | DeploymentRole
+  | ScopedOrDeployment;
+
+/**
+ * A scoped role at the row's scope, or a deployment role at any (#3362), spelled
+ * `<role>|<deployment role>`: the alerting rows, which a scoped admin owns for
+ * their slice and an operator runs whole.
+ */
+export type ScopedOrDeployment = `${Role}|${DeploymentRole}`;
 
 /** One row of the table: an authority per action, `null` where there is no such action. */
 export interface CapabilityRow {
@@ -55,6 +68,9 @@ export const ACTIONS: RbacAction[] = ["read", "create", "update", "delete"];
 function authorityOf(view: RbacActionView): Authority {
   if (view.superadmin_only) return "superadmin";
   if (view.authenticated_only) return "authenticated";
+  if (view.minimum_role !== null && view.deployment_roles?.length) {
+    return `${view.minimum_role}|${view.deployment_roles[0]}`;
+  }
   // `readMatrix` refuses a copy naming more than one deployment role for an action
   if (view.deployment_roles?.length) return view.deployment_roles[0];
   // `resource_view` sets exactly one of the three, and `readMatrix` in
@@ -203,7 +219,13 @@ function permits(
   if (authority === "operator" || authority === "security_auditor") {
     return superadmin || deploymentRole === authority;
   }
-  return superadmin || (role !== null && RANK[role] >= RANK[authority]);
+  if (authority.includes("|")) {
+    const [scoped, deployment] = authority.split("|") as [Role, DeploymentRole];
+    return (
+      superadmin || deploymentRole === deployment || (role !== null && RANK[role] >= RANK[scoped])
+    );
+  }
+  return superadmin || (role !== null && RANK[role] >= RANK[authority as Role]);
 }
 
 /** The scope an action is decided at: its own when the row declares one, else the row's. */

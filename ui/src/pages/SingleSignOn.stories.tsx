@@ -33,15 +33,10 @@ import {
   type FetchStub,
   type Recorder,
 } from "./story-harness";
-import type {
-  MembershipRow,
-  OrgAuthPolicy,
-  PublicUrl,
-  SsoGroupMappingRow,
-  SsoProviderRow,
-} from "@/lib/api";
+import type { OrgAuthPolicy, PublicUrl, SsoGroupMappingRow, SsoProviderRow } from "@/lib/api";
 import en from "@/lib/i18n/locales/en.json";
 import ru from "@/lib/i18n/locales/ru.json";
+import { expectFieldHints } from "@/lib/story-hints";
 import { atMobile, expectNoHorizontalOverflow } from "@/lib/story-viewport";
 import { UxScreenProvider } from "@/lib/ux-react";
 
@@ -154,6 +149,7 @@ function api({
   providers = () => PROVIDERS as unknown,
   policy = () => POLICY as unknown,
   memberships = () => [] as unknown,
+  mfaStatus = () => json([]),
   publicUrl = () => json(PUBLIC_URL),
   status = 200,
   putPolicy,
@@ -163,6 +159,9 @@ function api({
   /** answers the org's membership rows, one per grant, which the second-factor
    * confirmation counts */
   memberships?: () => unknown;
+  /** answers `GET /api/v1/orgs/{id}/mfa-status`, the enrolment roster the
+   * second-factor confirmation counts (#3264) */
+  mfaStatus?: () => Response;
   /** answers `GET /api/v1/public-url`, which every signed-in caller may read,
    * so it keeps its own status rather than following `status` */
   publicUrl?: () => Response;
@@ -176,6 +175,7 @@ function api({
     const url = String(input);
     const method = (init?.method ?? "GET").toUpperCase();
     if (url.includes("/api/v1/public-url")) return publicUrl();
+    if (url.includes("/mfa-status")) return mfaStatus();
     if (url.includes("/memberships")) return json(memberships(), status);
     if (url.includes("/group-mappings")) {
       if (method === "POST") return json(MAPPINGS["sso-1"][0], 201);
@@ -847,6 +847,41 @@ export const CreatesAProvider: Story = {
       // omitted optionals are left out entirely, so the server applies its own
       // defaults rather than being handed an empty string
     });
+  },
+};
+
+/**
+ * A refused submit names each mandatory field (#3242): the sheet's Save used to
+ * go quietly dead until all four were typed. Enter then submits once they are.
+ */
+const blockedCreate = recording(api({ providers: () => [provider()] }));
+export const BlockedSubmitNamesTheMandatoryFields: Story = {
+  render: () => (
+    <Harness fetchStub={blockedCreate.stub}>
+      <SingleSignOn />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await clickWhenEnabled(canvasElement, /Add provider/);
+    const panel = within(sheet());
+    for (const label of ["Name", "Slug", "Issuer URL", "Client ID"]) {
+      await expect(panel.getByLabelText(label)).toBeRequired();
+    }
+    await expect(panel.queryByText("Required")).toBeNull();
+
+    await userEvent.click(panel.getByRole("button", { name: "Add provider" }));
+    await waitFor(() => expect(panel.getAllByText("Required")).toHaveLength(4));
+    await waitFor(() => expect(panel.getByLabelText("Name")).toHaveFocus());
+    await expect(await panel.findByRole("status")).toHaveTextContent("4 fields need attention");
+    blockedCreate.expectNotSent("POST", `/api/v1/orgs/${ORG.id}/sso-providers`);
+
+    await userEvent.type(panel.getByLabelText("Name"), "Acme Okta");
+    await userEvent.type(panel.getByLabelText("Slug"), "okta");
+    await userEvent.type(panel.getByLabelText("Issuer URL"), "https://acme.okta.com");
+    await userEvent.type(panel.getByLabelText("Client ID"), "0oa1b2c3d4{Enter}");
+    await expect(
+      await blockedCreate.expectSentBody("POST", `/api/v1/orgs/${ORG.id}/sso-providers`),
+    ).toMatchObject({ name: "Acme Okta", slug: "okta", client_id: "0oa1b2c3d4" });
   },
 };
 
@@ -1888,39 +1923,48 @@ export const MfaConfirmHasNoLinkWithoutADocsHost: Story = {
   },
 };
 
-/** One grant of `role` to `user`, at the org or at a team inside it. */
-const grant = (
-  id: string,
-  user: string,
-  role: string,
-  at: Pick<MembershipRow, "org_id" | "team_id">,
-): MembershipRow => ({
-  id,
-  user_id: user,
-  org_id: null,
-  team_id: null,
-  project_id: null,
-  role,
-  created_at: NOW,
-  ...at,
-});
-
-// the org's memberships are one row per grant anywhere in its tree: ada holds
-// a role on the org and another on a team, grace holds one. three rows, two people
-const GRANTS: MembershipRow[] = [
-  grant("m-1", "user-ada", "admin", { org_id: ORG.id }),
-  grant("m-2", "user-ada", "member", { team_id: TEAM.id }),
-  grant("m-3", "user-grace", "member", { org_id: ORG.id }),
+// the enrolment roster has one row per active member however many grants they
+// hold: ada is a superadmin with a factor, root a superadmin without one, bob
+// and eve ordinary members, only eve with a factor
+const ROSTER = [
+  {
+    user_id: "u-ada",
+    email: "ada@acme.example",
+    is_superadmin: true,
+    enabled: true,
+    recovery_codes_remaining: 8,
+  },
+  {
+    user_id: "u-root",
+    email: "root@acme.example",
+    is_superadmin: true,
+    enabled: false,
+    recovery_codes_remaining: 0,
+  },
+  {
+    user_id: "u-bob",
+    email: "bob@acme.example",
+    is_superadmin: false,
+    enabled: false,
+    recovery_codes_remaining: 0,
+  },
+  {
+    user_id: "u-eve",
+    email: "eve@acme.example",
+    is_superadmin: false,
+    enabled: true,
+    recovery_codes_remaining: 10,
+  },
 ];
 
 /**
- * "This organization has N members" counts people, not grants. A person with a
- * role on the org and another on a team is two rows and one member, and the
- * number sits in the dialog an admin reads before requiring a second factor.
+ * The confirmation says how many of the members the policy binds have no
+ * second factor (#3264), not the member total: with "Required for everyone"
+ * that is every roster row.
  */
-export const TheSecondFactorConfirmationCountsEachPersonOnce: Story = {
+export const TheSecondFactorConfirmationCountsWhoHasNoFactor: Story = {
   render: () => (
-    <Harness fetchStub={api({ providers: () => [provider()], memberships: () => GRANTS })}>
+    <Harness fetchStub={api({ providers: () => [provider()], mfaStatus: () => json(ROSTER) })}>
       <SingleSignOn />
     </Harness>
   ),
@@ -1930,9 +1974,53 @@ export const TheSecondFactorConfirmationCountsEachPersonOnce: Story = {
     await userEvent.click(canvas.getByRole("button", { name: "Save policy" }));
 
     const dialog = await confirmation();
-    // the count is its own request, so it settles after the dialog is up
-    await waitFor(() => expect(dialog).toHaveTextContent("This organization has 2 members."));
-    await expect(dialog).not.toHaveTextContent("3 members");
+    // the roster is its own request, so it settles after the dialog is up
+    await waitFor(() => expect(dialog).toHaveTextContent("2 of 4 members have no second factor."));
+  },
+};
+
+/** `required_superadmin` binds superadmin accounts only, so only those rows count. */
+export const TheSuperadminPolicyCountsOnlySuperadmins: Story = {
+  render: () => (
+    <Harness fetchStub={api({ providers: () => [provider()], mfaStatus: () => json(ROSTER) })}>
+      <SingleSignOn />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await pickOption(await canvas.findByLabelText("Second factor"), "Required for superadmins");
+    await userEvent.click(canvas.getByRole("button", { name: "Save policy" }));
+
+    const dialog = await confirmation();
+    await waitFor(() =>
+      expect(dialog).toHaveTextContent("1 of 2 superadmins have no second factor."),
+    );
+    await expect(dialog).not.toHaveTextContent("of 4");
+  },
+};
+
+/** A caller who cannot read the roster still gets the warning, without a number. */
+export const TheConfirmationStandsWithoutTheRoster: Story = {
+  render: () => (
+    <Harness
+      fetchStub={api({
+        providers: () => [provider()],
+        mfaStatus: () => json({ error: { message: "requires the admin role" } }, 403),
+      })}
+    >
+      <SingleSignOn />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await pickOption(await canvas.findByLabelText("Second factor"), "Required for everyone");
+    await userEvent.click(canvas.getByRole("button", { name: "Save policy" }));
+
+    const dialog = await confirmation();
+    await expect(dialog).toHaveTextContent(
+      "Members who have not set up an authenticator app are asked to set one up",
+    );
+    await expect(dialog).not.toHaveTextContent("no second factor");
   },
 };
 
@@ -2763,5 +2851,23 @@ export const AddRowFitsAPhoneInRussian: Story = {
     await pickOption(role, ru.shell.roles.admin);
     await waitFor(() => expect(role).toHaveValue(ru.shell.roles.admin));
     await expect(role.scrollWidth).toBeLessThanOrEqual(role.clientWidth);
+  },
+};
+
+/** The group, scope and role of a mapping explain themselves in an (i) (#3285). */
+export const GroupMappingFieldsAreExplainedInAHint: Story = {
+  render: () => (
+    <Harness fetchStub={api({ providers: () => [provider()] })}>
+      <SingleSignOn />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await within(canvasElement).findByLabelText("IdP group");
+    const g = en.groupMappings;
+    await expectFieldHints(canvasElement, en.common.aboutField, [
+      [g.groupLabel, g.groupInfo],
+      [g.scopeLabel, g.scopeInfo],
+      [g.roleLabel, g.roleInfo],
+    ]);
   },
 };

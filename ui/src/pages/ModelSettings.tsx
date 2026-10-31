@@ -318,6 +318,9 @@ function ModelSettingsScreen() {
             className="sm:min-w-[320px]"
             options={modelOptions}
             allowCustom
+            // typed text is the value as it is typed, so clearing and retyping
+            // a name is one edit; a clear alone is not committed on blur (#3244)
+            commitOnInput
             clearable
             placeholder={t("pages.modelSettings.model.placeholder")}
             value={form.defaultModel}

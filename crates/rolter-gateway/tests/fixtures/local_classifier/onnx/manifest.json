@@ -1,0 +1,14 @@
+{
+  "format": "onnx/1",
+  "model": {
+    "path": "model.onnx",
+    "sha256": "62c7226891692de552c97248cc8d9d977e9cd63ea2a95c632ff9e9c041d65dee"
+  },
+  "tokenizer": {
+    "path": "tokenizer.json",
+    "sha256": "02edceb3f64770a0be24f7ae23f52fdad216ffac3095ad7d4b23be141efe1d69"
+  },
+  "labels": [null, "prompt_injection"],
+  "activation": "softmax",
+  "max_tokens": 16
+}

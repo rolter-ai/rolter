@@ -42,7 +42,7 @@ use serde_json::{json, Value};
 
 use crate::analytics::{
     client_or_503, query_failed, row_filter_params, window_params, with_access, WindowQuery, COST,
-    REQUESTS, ROW_FILTERS, UNPRICED, WHERE_WINDOW,
+    ERROR_STATUS, REQUESTS, ROW_FILTERS, UNPRICED, WHERE_WINDOW,
 };
 use crate::analytics_access::{AnalyticsAccess, SavingsAccess, ROW_VISIBLE};
 use crate::request_log_columns::Columns;
@@ -73,13 +73,29 @@ const LIMITS: &[&str] = &[
      whether that model answers as well, so it is a shortlist to test, never a recommendation \
      to switch.",
     "Only models already configured in the same route's pool are considered.",
-    "The request log does not record whether a request carried tools, images, audio, several \
-     turns or a structured-output schema, so substitutability is judged on the outcome, the \
-     token counts and the size thresholds alone.",
     "A request or a candidate whose price is unknown is excluded and counted, never priced at \
      zero.",
     "Counts and costs are scaled by the request log's sampling weight, so under sampling they \
      are estimates.",
+];
+
+/// What the report adds to its `limits` while the request log cannot say what
+/// a request asked for: the table lacks `clickhouse/031_request_shape.sql`, so
+/// no row carries the shape flags the `uses_tools`, `image_input`,
+/// `audio_input`, `structured_output` and `multi_turn` exclusions read (#3317).
+const NO_SHAPE_LIMIT: &str = "The request log does not record whether a request carried tools, \
+     images, audio, several turns or a structured-output schema (clickhouse/031_request_shape.sql \
+     is not applied), so substitutability is judged on the outcome, the token counts and the size \
+     thresholds alone.";
+
+/// The request-shape columns `clickhouse/031_request_shape.sql` adds, each a
+/// reason a request is not substitutable when set (#3317).
+const SHAPE_COLUMNS: [&str; 5] = [
+    "has_tools",
+    "has_image_input",
+    "has_audio_input",
+    "has_response_schema",
+    "turns",
 ];
 
 /// Query string of `GET /api/v1/analytics/savings`.
@@ -180,6 +196,38 @@ impl SavingsQuery {
 /// The org filter, which the dashboard's row filters do not carry.
 const ORG_FILTER: &str = "({org:String} = '' or org_id = {org:String})";
 
+/// Every reason the advisor can file a request under when it leaves it out of
+/// the re-pricing (#3423), in the order the dashboard lists them: the ones
+/// [`reason_expr`] gives a request in the query, then the two [`analyse`] adds
+/// once it has the route's pool.
+///
+/// The dashboard words each one (`pages.savings.reasons.<reason>` in every
+/// catalog) and has no way to learn a new one from the report, so this list is
+/// published as `savings-reasons.json` at the crate root and a dashboard test
+/// fails while a catalog lacks one of them. A test below keeps the list equal
+/// to what `reason_expr` and `analyse` can emit, so a reason added to either
+/// without it fails here, in the rust suite, before it reaches the screen.
+/// `eligible` is not one: it is a request that is re-priced, not left out.
+/// Read by the tests that publish and check the list, so it exists only for them.
+#[cfg(test)]
+pub(crate) const EXCLUSION_REASONS: &[&str] = &[
+    "unpriced",
+    "failed",
+    "cache_hit",
+    "usage_unknown",
+    "uses_tools",
+    "image_input",
+    "audio_input",
+    "structured_output",
+    "multi_turn",
+    "not_a_model_call",
+    "no_token_usage",
+    "prompt_too_large",
+    "output_too_large",
+    "route_not_configured",
+    "no_cheaper_candidate",
+];
+
 /// Why a request is or is not counted as substitutable, first match wins. The
 /// order puts the money question first: an unpriced row is unpriced whatever
 /// else is true of it.
@@ -187,14 +235,29 @@ const ORG_FILTER: &str = "({org:String} = '' or org_id = {org:String})";
 /// The token columns are qualified because [`groups_sql`] also selects their
 /// sums under the same names, and ClickHouse resolves a bare name to a select
 /// alias before a column: unqualified, the grouping key would hold aggregates.
+///
+/// The shape reasons (#3317) come after the outcome and before the sizes: a
+/// request that needed tools, an image, audio, a schema or a conversation
+/// needs a model that does those, whatever its token counts. A table without
+/// the shape columns reads them as `0`, so no request is excluded for them.
 fn reason_expr(columns: &Columns) -> String {
     let lifecycle = columns.expr("lifecycle_operation");
+    let has_tools = columns.expr("has_tools");
+    let has_image_input = columns.expr("has_image_input");
+    let has_audio_input = columns.expr("has_audio_input");
+    let has_response_schema = columns.expr("has_response_schema");
+    let turns = columns.expr("turns");
     format!(
         "multiIf(unpriced = 1, 'unpriced', \
-                 status >= 400, 'failed', \
+                 {ERROR_STATUS}, 'failed', \
                  cache_hit = 1, 'cache_hit', \
                  usage_unknown = 1, 'usage_unknown', \
                  {lifecycle} != '', 'not_a_model_call', \
+                 {has_tools} = 1, 'uses_tools', \
+                 {has_image_input} = 1, 'image_input', \
+                 {has_audio_input} = 1, 'audio_input', \
+                 {has_response_schema} = 1, 'structured_output', \
+                 {turns} > 1, 'multi_turn', \
                  request_logs.prompt_tokens = 0, 'no_token_usage', \
                  request_logs.prompt_tokens > {{max_prompt_tokens:UInt32}}, 'prompt_too_large', \
                  request_logs.completion_tokens > {{max_completion_tokens:UInt32}}, 'output_too_large', \
@@ -284,7 +347,69 @@ async fn report(access: &AnalyticsAccess, state: &ControlState, q: &SavingsQuery
         Err(err) => return query_failed("savings query failed", &err),
     };
     let groups: Vec<Group> = groups.iter().map(Group::from_row).collect();
-    Json(analyse(&groups, &callers, &config, thresholds)).into_response()
+    let mut report = analyse(&groups, &callers, &config, thresholds);
+    name_callers(state, &mut report).await;
+    if !SHAPE_COLUMNS.iter().all(|column| columns.has(column)) {
+        if let Some(limits) = report["limits"].as_array_mut() {
+            limits.push(json!(NO_SHAPE_LIMIT));
+        }
+    }
+    Json(report).into_response()
+}
+
+/// Give each `by_caller` row the name of its virtual key as `key_name` (#3499),
+/// from one store read over every key the rows hold, whichever project each is
+/// in. The dashboard names a caller from the lists its pickers load, which hold
+/// one project's keys, so a key of any other project read as an id.
+///
+/// The rows are already the caller's own traffic, so a name is only ever that
+/// of a key whose requests the caller can read. It is the name the key was
+/// given and never its prefix, which a role that reads the report but not the
+/// keys has no business seeing. A key with no name, one that is gone, an id
+/// that is not a uuid, a deployment without a store, or a store that cannot
+/// answer leaves `key_name` `null`, and the report is still served.
+#[cfg(feature = "postgres")]
+async fn name_callers(state: &ControlState, report: &mut Value) {
+    let Some(rows) = report["spend"]["by_caller"].as_array_mut() else {
+        return;
+    };
+    let ids: Vec<uuid::Uuid> = rows
+        .iter()
+        .filter_map(|row| row["virtual_key_id"].as_str()?.parse().ok())
+        .collect();
+    let names = match state.pool.as_ref() {
+        Some(pool) if !ids.is_empty() => {
+            match rolter_store::postgres::repo::VirtualKeyRepo(pool)
+                .given_names(&ids)
+                .await
+            {
+                Ok(names) => names,
+                Err(err) => {
+                    tracing::warn!(%err, "savings advisor could not name its callers' keys");
+                    Default::default()
+                }
+            }
+        }
+        _ => Default::default(),
+    };
+    for row in rows {
+        let name = row["virtual_key_id"]
+            .as_str()
+            .and_then(|id| id.parse::<uuid::Uuid>().ok())
+            .and_then(|id| names.get(&id).cloned());
+        row["key_name"] = json!(name);
+    }
+}
+
+/// Without a store there are no key names to read, so every `key_name` is
+/// `null`.
+#[cfg(not(feature = "postgres"))]
+async fn name_callers(_state: &ControlState, report: &mut Value) {
+    if let Some(rows) = report["spend"]["by_caller"].as_array_mut() {
+        for row in rows {
+            row["key_name"] = Value::Null;
+        }
+    }
 }
 
 /// Token totals over a set of requests, already scaled by the sampling weight
@@ -765,6 +890,132 @@ mod tests {
             .any(|l| l.contains("does not evaluate") && l.contains("never a recommendation")));
     }
 
+    /// The quoted words of `text`, each between a pair of single quotes.
+    fn quoted(text: &str) -> Vec<&str> {
+        text.split('\'').skip(1).step_by(2).collect()
+    }
+
+    /// #3423: the published list is exactly what the advisor can emit.
+    #[test]
+    fn the_published_reasons_are_every_reason_the_report_can_name() {
+        // the query's: every word `reason_expr` can return, whatever the table has
+        let mut emitted: BTreeSet<&str> = BTreeSet::new();
+        let sql = reason_expr(&Columns::default());
+        let sql_reasons: Vec<&str> = quoted(&sql)
+            .into_iter()
+            .filter(|word| !word.is_empty() && *word != "eligible")
+            .collect();
+        assert!(sql_reasons.len() > 5, "{sql}");
+        emitted.extend(sql_reasons);
+        // `analyse`'s own: the reasons it adds, read off its source so that a
+        // new `excluded.entry("...".into())` cannot be forgotten
+        let source = include_str!("savings.rs");
+        let code = &source[..source
+            .find("#[cfg(test)]\nmod tests")
+            .expect("a test module")];
+        for part in code.split(".entry(\"").skip(1) {
+            let word = part.split('"').next().unwrap_or_default();
+            emitted.insert(word);
+        }
+        let published: BTreeSet<&str> = EXCLUSION_REASONS.iter().copied().collect();
+        assert_eq!(
+            published.len(),
+            EXCLUSION_REASONS.len(),
+            "a reason is listed twice"
+        );
+        assert_eq!(
+            published, emitted,
+            "EXCLUSION_REASONS (and savings-reasons.json, `just gen-savings-reasons`) \
+             must list every reason reason_expr and analyse can emit, and no other"
+        );
+    }
+
+    /// `savings-reasons.json` at the crate root: the published list, checked in
+    /// so the dashboard's catalog test can read it without a running control plane
+    const REASONS_ARTIFACT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/savings-reasons.json");
+
+    /// set to rewrite the artifact instead of comparing against it; `ROLTER_TEST_`
+    /// marks it test-only, like the capability matrix's
+    const UPDATE_REASONS: &str = "ROLTER_TEST_UPDATE_SAVINGS_REASONS";
+
+    #[test]
+    fn the_checked_in_reasons_are_the_published_list() {
+        let mut rendered = serde_json::to_string_pretty(&json!({
+            "$comment": "written by the rolter-control test suite from EXCLUSION_REASONS in \
+                         src/savings.rs (`just gen-savings-reasons`) - do not edit by hand",
+            "reasons": EXCLUSION_REASONS,
+        }))
+        .expect("the list serializes");
+        rendered.push('\n');
+        if std::env::var_os(UPDATE_REASONS).is_some() {
+            std::fs::write(REASONS_ARTIFACT, &rendered).expect("write savings-reasons.json");
+            return;
+        }
+        let checked_in = std::fs::read_to_string(REASONS_ARTIFACT).unwrap_or_default();
+        assert!(
+            checked_in == rendered,
+            "crates/rolter-control/savings-reasons.json is out of date with EXCLUSION_REASONS; \
+             run `just gen-savings-reasons` and commit it"
+        );
+    }
+
+    /// #3317: a request that needed tools, an image, audio, a schema or a
+    /// conversation is excluded under its own reason, ahead of the sizes, and
+    /// a table without the shape columns excludes nothing for them.
+    #[test]
+    fn the_request_shape_excludes_under_its_own_reasons() {
+        let sql = reason_expr(&Columns::default());
+        for (predicate, reason) in [
+            ("has_tools = 1, 'uses_tools'", "uses_tools"),
+            ("has_image_input = 1, 'image_input'", "image_input"),
+            ("has_audio_input = 1, 'audio_input'", "audio_input"),
+            (
+                "has_response_schema = 1, 'structured_output'",
+                "structured_output",
+            ),
+            ("turns > 1, 'multi_turn'", "multi_turn"),
+        ] {
+            assert!(sql.contains(predicate), "{reason}: {sql}");
+            assert!(
+                sql.find(predicate) < sql.find("'prompt_too_large'"),
+                "{reason} must be judged before the sizes"
+            );
+        }
+        let old = reason_expr(&Columns::lacking(&SHAPE_COLUMNS));
+        assert!(!old.contains("has_tools"), "{old}");
+        assert!(old.contains("toUInt8(0) = 1, 'uses_tools'"), "{old}");
+        assert!(old.contains("toUInt16(0) > 1, 'multi_turn'"), "{old}");
+    }
+
+    /// #3419: a request that never got a status (0) is failed, by the one
+    /// definition of an error the dashboard uses, and is judged ahead of the rest.
+    #[test]
+    fn a_failed_request_is_the_dashboards_error_including_status_zero() {
+        let sql = reason_expr(&Columns::default());
+        assert!(sql.contains(&format!("{ERROR_STATUS}, 'failed'")), "{sql}");
+        assert!(!sql.contains("status >= 400, 'failed'"), "{sql}");
+        assert!(sql.find("'failed'") < sql.find("'cache_hit'"), "{sql}");
+    }
+
+    #[test]
+    fn a_shape_reason_is_counted_as_excluded() {
+        let report = analyse(
+            &[
+                eligible("chat", "large"),
+                excluded("chat", "uses_tools", 7.0, 0.5),
+                excluded("chat", "multi_turn", 3.0, 0.25),
+            ],
+            &[],
+            &config(),
+            Thresholds::default(),
+        );
+        assert_eq!(report["excluded"]["requests"]["uses_tools"], 7.0);
+        assert_eq!(report["excluded"]["requests"]["multi_turn"], 3.0);
+        // the report no longer says the shape is unrecorded unless it is
+        let limits = report["limits"].as_array().expect("limits are listed");
+        assert!(!limits.contains(&json!(NO_SHAPE_LIMIT)));
+    }
+
     #[test]
     fn an_empty_window_is_an_empty_report_not_an_error() {
         let report = analyse(&[], &[], &config(), Thresholds::default());
@@ -1020,6 +1271,105 @@ mod tests {
 
     fn query() -> SavingsQuery {
         serde_json::from_value(json!({})).expect("an empty query")
+    }
+
+    #[tokio::test]
+    async fn without_a_store_every_caller_key_name_is_null() {
+        let state = crate::tests::state_with_token(None);
+        let mut report = json!({"spend": {"by_caller": [
+            {"project_id": "p", "virtual_key_id": "8d7c2a1e-0000-4000-8000-000000000001"},
+        ]}});
+        name_callers(&state, &mut report).await;
+        assert!(
+            report["spend"]["by_caller"][0]["key_name"].is_null(),
+            "{report}"
+        );
+    }
+
+    /// #3499: the callers of two projects are named from one read, whichever
+    /// project each key is in; a key that is gone, or an id that is not a
+    /// key's, stays `null`.
+    #[cfg(feature = "postgres")]
+    #[tokio::test]
+    async fn every_callers_key_is_named_whichever_project_it_is_in() {
+        use rolter_store::postgres::test_schema::TestSchema;
+        let Some(url) = rolter_store::postgres::test_database::url().await else {
+            eprintln!("skipping: ROLTER_TEST_DATABASE_URL not set");
+            return;
+        };
+        let db = TestSchema::migrated(&url).await;
+        let pool = db.pool().clone();
+        let org: uuid::Uuid = sqlx::query_scalar(
+            "insert into orgs (name, slug) values ('acme', 'acme') returning id",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let team: uuid::Uuid =
+            sqlx::query_scalar("insert into teams (org_id, name) values ($1, 'core') returning id")
+                .bind(org)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        let mut keys = Vec::new();
+        for (project, key, prefix) in [("alpha", "ci-deploy", "pfx-a"), ("beta", "batch", "pfx-b")]
+        {
+            let project: uuid::Uuid = sqlx::query_scalar(
+                "insert into projects (team_id, name) values ($1, $2) returning id",
+            )
+            .bind(team)
+            .bind(project)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            let id: uuid::Uuid = sqlx::query_scalar(
+                "insert into virtual_keys (project_id, key_hash, key_prefix, name) \
+                 values ($1, $2, $3, $4) returning id",
+            )
+            .bind(project)
+            .bind(format!("hash-{key}"))
+            .bind(prefix)
+            .bind(key)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            keys.push((project, id));
+        }
+        // a key with no name: its prefix is never handed out in its place
+        let unnamed: uuid::Uuid = sqlx::query_scalar(
+            "insert into virtual_keys (project_id, key_hash, key_prefix) \
+             values ($1, 'hash-unnamed', 'pfx-secret') returning id",
+        )
+        .bind(keys[1].0)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let state = crate::test_state(pool, None, None);
+        let gone = uuid::Uuid::new_v4();
+        let mut report = json!({"spend": {"by_caller": [
+            {"project_id": keys[0].0.to_string(), "virtual_key_id": keys[0].1.to_string()},
+            {"project_id": keys[1].0.to_string(), "virtual_key_id": keys[1].1.to_string()},
+            {"project_id": keys[1].0.to_string(), "virtual_key_id": gone.to_string()},
+            {"project_id": "", "virtual_key_id": "from-the-config-file"},
+            {"project_id": keys[1].0.to_string(), "virtual_key_id": unnamed.to_string()},
+        ]}});
+        name_callers(&state, &mut report).await;
+        let names: Vec<Value> = report["spend"]["by_caller"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| row["key_name"].clone())
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                json!("ci-deploy"),
+                json!("batch"),
+                Value::Null,
+                Value::Null,
+                Value::Null
+            ]
+        );
     }
 
     #[tokio::test]

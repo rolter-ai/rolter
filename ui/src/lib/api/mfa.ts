@@ -80,3 +80,23 @@ export function disableMfa(code: string): Promise<void> {
 }
 
 // --- invitations (crates/rolter-control/src/invitations.rs, #712) ---
+
+// --- org enrolment roster (crates/rolter-control/src/mfa.rs, #1590) ---
+
+/**
+ * One active member of an org, as `GET /api/v1/orgs/{id}/mfa-status` lists
+ * them (`org_auth_policy:read`). A person is one row however many grants they
+ * hold. `recovery_codes_remaining` is a count, never a code.
+ */
+export interface OrgMemberMfa {
+  user_id: string;
+  email: string;
+  is_superadmin: boolean;
+  /** an armed (confirmed) factor; a half-finished enrolment is not one */
+  enabled: boolean;
+  recovery_codes_remaining: number;
+}
+
+export function fetchOrgMfaStatus(orgId: string): Promise<OrgMemberMfa[]> {
+  return getJson<OrgMemberMfa[]>(`/api/v1/orgs/${orgId}/mfa-status`);
+}

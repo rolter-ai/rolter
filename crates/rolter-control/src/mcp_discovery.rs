@@ -188,7 +188,8 @@ pub(crate) async fn discover(
         Err(code) => return Ok(repo.record_tool_discovery_failure(server_id, code).await?),
     };
     let listed = async {
-        let mut client = McpClient::connect(&state.egress, &server.url, auth).await?;
+        let mut client =
+            McpClient::connect(&state.egress, &server.url, auth, &server.transport).await?;
         // the handshake completing is contact whether or not the list follows
         record_reached(&repo, server_id, &client).await;
         client.list_tools().await

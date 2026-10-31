@@ -23,6 +23,22 @@ function target(over: Partial<BreakerTargetDto>): BreakerTargetDto {
 }
 
 describe("breakerFor", () => {
+  // two organizations may each have a route of one name (#3458, #3460)
+  test("matches the route's organization when the report names one", () => {
+    const shared = {
+      targets: [
+        target({ org_id: "org-a", state: "open" }),
+        target({ org_id: "org-b", state: "half_open" }),
+      ],
+    };
+    expect(breakerFor(shared, "gpt-4o", 0, "org-a")?.state).toBe("open");
+    expect(breakerFor(shared, "gpt-4o", 0, "org-b")?.state).toBe("half_open");
+    expect(breakerFor(shared, "gpt-4o", 0, "")).toBeUndefined();
+    expect(breakerFor(shared, "gpt-4o", 0, "org-c")).toBeUndefined();
+    // a report with no org_id, from an older control plane, matches the name
+    expect(breakerFor({ targets: [target({})] }, "gpt-4o", 0, "org-a")?.state).toBe("open");
+  });
+
   const state = { targets: [target({}), target({ target_index: 1, state: "half_open" })] };
 
   test("matches on the model and the target's position", () => {

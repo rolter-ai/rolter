@@ -1,5 +1,11 @@
 # Optional CPU-backed upstreams for engine compatibility tests (ROL-238).
 # They are separate from docker-compose.yml so normal development stays light.
+# sglang stays deliberately pinned at v0.5.21 (#2910): the v0.5.22 xeon cpu
+# kernels target AVX-512/BF16 and AMX, absent on the rtx host's Ryzen 5900X.
+# a source-context fetch failed, and the retry was stopped once that hardware
+# mismatch was established; no v0.5.22 runtime validation is claimed. this pin
+# does not make v0.5.21 portable to that CPU either. validate the next bump on
+# compatible Xeon hardware before changing the three version pins (#3414).
 name: rolter-engines
 
 # lightweight vLLM API simulator: the default suite engine. Multi-arch,

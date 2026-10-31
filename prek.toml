@@ -339,7 +339,7 @@ id = "helm-render"
 name = "helm chart renders strictly"
 entry = "bash scripts/check-helm-chart.sh"
 language = "system"
-files = "^(charts/|scripts/(check-helm-chart\\.sh|check-rendered-manifests\\.py|check-chart-update-check\\.py)$)"
+files = "^(charts/|scripts/(check-helm-chart\\.sh|check-rendered-manifests\\.py|check-chart-update-check\\.py|check-chart-image-tags\\.py)$)"
 pass_filenames = false
 
 [[repos.hooks]]

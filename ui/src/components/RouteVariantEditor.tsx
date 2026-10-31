@@ -11,6 +11,7 @@ import { FieldLabel } from "@/components/ui/field-label";
 import { Input } from "@/components/ui/input";
 import { ProviderLogo } from "@/components/ui/provider-logo";
 import { SurfacePanel } from "@/components/ui/surface-panel";
+import { TakesOverField } from "@/components/TakesOverField";
 import type { ProviderRow } from "@/lib/api";
 import { useFormat } from "@/lib/i18n/format";
 import { shareBarColor } from "@/lib/share-bars";
@@ -38,11 +39,18 @@ export interface RouteVariantEditorProps {
   /** the route's strategy, which also picks the leading target inside a variant */
   strategy: string;
   validation: VariantValidation;
+  /**
+   * every variant target is a fallback, so the route could never dial
+   * anything: a route with variants dials only them (#3487)
+   */
+  onlyFallbacks?: boolean;
   /** show the validation, once a save was attempted */
   showErrors: boolean;
   /** a field the control plane refused, said at its line whatever `showErrors` is */
   refusal: VariantRefusal | null;
   onChange: (next: DraftVariant[]) => void;
+  /** what the saved variants actually served, shown under the split preview (#3342) */
+  observed?: React.ReactNode;
   /**
    * what stands in for the list while there are no variants; the caller owns
    * it, since it owns the read the empty state is paired with
@@ -58,8 +66,8 @@ export interface RouteVariantEditorProps {
  * and the order of a variant's targets is the order they are tried, so both
  * lists move a line up or down rather than sorting. The preview above the list
  * is the split the gateway applies to first attempts, computed the way it
- * samples: a weight of 0, which the sheet refuses but an import can store,
- * counts as 1 (#3341).
+ * samples: a weight of 0 takes no first attempts while another variant has a
+ * positive weight (#3341), and a set of only zeroes is shared equally.
  */
 export function RouteVariantEditor({
   variants,
@@ -67,9 +75,11 @@ export function RouteVariantEditor({
   publicName,
   strategy,
   validation,
+  onlyFallbacks = false,
   showErrors,
   refusal,
   onChange,
+  observed,
   empty,
 }: RouteVariantEditorProps) {
   const { t } = useTranslation();
@@ -89,7 +99,9 @@ export function RouteVariantEditor({
       ? (refusal.message ?? t("routeSheet.variants.errors.refused"))
       : showErrors && validation.tooMany
         ? t("routeSheet.variants.errors.tooMany", { max: MAX_VARIANTS })
-        : "";
+        : showErrors && onlyFallbacks
+          ? t("fallbackTargets.errors.variantsAllRestricted")
+          : "";
   const full = variants.length >= MAX_VARIANTS;
   const weightsIgnored = !usesWeights(strategy) && variants.some((v) => v.targets.length > 1);
 
@@ -107,8 +119,9 @@ export function RouteVariantEditor({
           disabled={providers.length === 0 || full}
           title={full ? t("routeSheet.variants.full", { max: MAX_VARIANTS }) : undefined}
           aria-describedby={describedBy(setError && setErrId)}
-          // a refusal of the whole set has no field of its own to take focus
-          data-error-anchor={refusal?.field === "variants" || undefined}
+          // an error about the whole set, refused or found here, has no field
+          // of its own to take focus (#3510)
+          data-error-anchor={!!setError || undefined}
           onClick={add}
         >
           <Plus className="h-3.5 w-3.5" />
@@ -139,6 +152,7 @@ export function RouteVariantEditor({
             {t("routeSheet.variants.overridesTargets")}
           </p>
           <SplitPreview variants={variants} />
+          {observed}
           {weightsIgnored && (
             <p className="text-xs leading-snug text-muted-foreground">
               <Trans
@@ -177,7 +191,7 @@ export function RouteVariantEditor({
 /**
  * The share of first attempts each variant gets: one stacked bar, and the
  * figures under it. Nothing is drawn while a weight is not a whole number yet;
- * a 0 is drawn the way the gateway samples it, as a 1.
+ * a 0 is drawn the way the gateway applies it (`trafficSplit`).
  */
 function SplitPreview({ variants }: { variants: DraftVariant[] }) {
   const { t } = useTranslation();
@@ -225,7 +239,7 @@ function SplitPreview({ variants }: { variants: DraftVariant[] }) {
       </ul>
       {zeroes && (
         <p className="text-xs leading-snug text-muted-foreground">
-          {t("routeSheet.variants.zeroWeight")}
+          {t("routeSheet.variants.zeroWeightNote")}
         </p>
       )}
     </div>
@@ -316,7 +330,7 @@ function VariantCard({
           <Input
             aria-label={t("routeSheet.variants.weightAria", { n })}
             type="number"
-            min={1}
+            min={0}
             step={1}
             className="font-mono"
             value={variant.weight}
@@ -456,6 +470,16 @@ function VariantCard({
                   onClick={() =>
                     onChange({ targets: variant.targets.filter((_, idx) => idx !== j) })
                   }
+                />
+                <TakesOverField
+                  groupLabel={t("fallbackTargets.variantGroupAria", { n, m })}
+                  value={tg.takesOver}
+                  error={
+                    refusal?.field === "takesOver" && refusal.targetKey === tg.key
+                      ? t("fallbackTargets.errors.refused")
+                      : undefined
+                  }
+                  onChange={(takesOver) => updateTarget(j, { takesOver })}
                 />
               </li>
             );

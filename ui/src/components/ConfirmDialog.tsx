@@ -10,6 +10,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { describeCodedError } from "@/lib/error-copy";
 import { cn } from "@/lib/utils";
 import { useFormTelemetry } from "@/lib/ux-react";
 
@@ -54,7 +55,11 @@ export interface ConfirmDialogProps {
    * it is pressed — the discard prompt closes a sheet and is done.
    */
   pending?: boolean;
-  /** the mutation's thrown value, rendered verbatim when the confirm failed */
+  /**
+   * the mutation's thrown value. A known error code is shown in the dashboard's
+   * language, with the server's detail under it where that adds information
+   * (#3484); anything else is rendered verbatim
+   */
   error?: unknown;
   onConfirm: () => void;
   /**
@@ -99,6 +104,7 @@ export function ConfirmDialog({
   // or a decision.
   const ux = useFormTelemetry(name, open);
 
+  const failure = error === undefined || error === null ? null : describeCodedError(error, t);
   const hasChildren = React.Children.toArray(children).length > 0;
   const busy = pending ?? false;
   const runsRequest = pending !== undefined;
@@ -158,7 +164,8 @@ export function ConfirmDialog({
         <DialogDescription>{description}</DialogDescription>
       </DialogHeader>
       {children}
-      {/* the control plane's own message, never a gloss on it — see
+      {/* a known code in the dashboard's language, anything else the control
+          plane's own message, never a gloss on it — see
           docs/dev-docs/development/error-states.md */}
       {error !== undefined && error !== null && (
         <p
@@ -170,7 +177,10 @@ export function ConfirmDialog({
             hasChildren && "mt-2.5",
           )}
         >
-          {error instanceof Error ? error.message : String(error)}
+          {failure ? failure.message : error instanceof Error ? error.message : String(error)}
+          {failure?.detail && (
+            <span className="mt-0.5 block text-muted-foreground">{failure.detail}</span>
+          )}
         </p>
       )}
       {/* ui-primitives-allow: this is the one confirmation every other screen is sent to */}

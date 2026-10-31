@@ -145,11 +145,17 @@ POST /v1/chat/completions
 ├─ auth
 ├─ route.select          strategy, candidates, route
 ├─ guardrails.pre        redacted, webhook
+├─ guardrails.local     provider, truncated (one per local classifier call, either stage)
 ├─ cache.lookup          hit, kind (exact | semantic)
 └─ upstream.request      attempt, gen_ai.system, gen_ai.request.model, status
    ├─ queue.wait         provider
    └─ translate.request
 ```
+
+Every attempt the gateway makes gets its own `upstream.request` span, a retry
+or a failover included: on a route's targets and on its weighted variants, for
+a JSON request and for an audio upload alike. The span names the model of the
+target that attempt dialled, and the provider call is its child.
 
 `queue.wait` measures only the time the request spent waiting for a provider
 worker — not the wait plus the upstream call — so queue pressure is
@@ -258,6 +264,19 @@ docker compose -f docker/docker-compose.yml \
 Both wire `OTEL_EXPORTER_OTLP_ENDPOINT` into the gateway and control plane for
 you, so bringing one up is the only step. They are mutually exclusive — each
 publishes OTLP on 4317/4318.
+
+With the SigNoz overlay, the first startup waits for the schema migrator
+before the collector and SigNoz query service start. This can take a few minutes
+on a fresh volume; the collector does not need to crash and restart to wait for
+its databases and tables.
+
+This local overlay does not run SigNoz's `signozspanmapper` or `signozllmpricing`
+processors. Rolter sends canonical `gen_ai.*` attributes, and its request logs
+remain the source of costs computed from your configured prices. SigNoz views
+that need collector-generated `signoz.gen_ai.usage.*.cost` attributes will not
+have them. The overlay also omits the `histogramQuantile` executable function:
+the bundled dogfood boards use SQL quantiles, and startup downloads no function
+binary. Other SigNoz views that require that function are unsupported here.
 
 <Note>
   With no `OTEL_*` environment set, tracing is off and costs nothing: no

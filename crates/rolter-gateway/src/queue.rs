@@ -415,10 +415,13 @@ async fn enqueue<T>(
             mpsc::error::TrySendError::Full(_) => QueueError::Dropped,
             mpsc::error::TrySendError::Closed(_) => QueueError::Closed,
         }),
-        BackpressurePolicy::Error => sender.try_send(item).map_err(|err| match err {
-            mpsc::error::TrySendError::Full(_) => QueueError::Full,
-            mpsc::error::TrySendError::Closed(_) => QueueError::Closed,
-        }),
+        // a policy from a newer release sheds, as `error` does (#3347)
+        BackpressurePolicy::Error | BackpressurePolicy::Unknown => {
+            sender.try_send(item).map_err(|err| match err {
+                mpsc::error::TrySendError::Full(_) => QueueError::Full,
+                mpsc::error::TrySendError::Closed(_) => QueueError::Closed,
+            })
+        }
         BackpressurePolicy::Block => match tokio::time::timeout(
             Duration::from_millis(config.block_timeout_ms),
             sender.send(item),

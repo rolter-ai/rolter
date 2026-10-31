@@ -353,6 +353,28 @@ pub fn build_with_stats(
                     .with(Box::new(scorer::LeastLoadScorer::new(n)), 1.0),
             ),
         },
+        // a strategy from a newer release (#3347). The snapshot sanitizer
+        // omits such a route before it gets here; should one arrive anyway, it
+        // refuses rather than being balanced by a guess
+        BalancingStrategy::Unknown => Box::new(Refusing),
+    }
+}
+
+/// The balancer of a strategy this build does not know: it never picks a
+/// target, so the route refuses every request (#3347).
+pub struct Refusing;
+
+impl LoadBalancer for Refusing {
+    fn name(&self) -> &'static str {
+        "unknown"
+    }
+
+    fn pick(&self, _ctx: &RouteContext, _loads: &[u64]) -> Option<usize> {
+        None
+    }
+
+    fn reads_prompt(&self) -> bool {
+        false
     }
 }
 

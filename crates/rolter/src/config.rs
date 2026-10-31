@@ -46,6 +46,14 @@ struct ExportArgs {
     /// write to this file instead of stdout
     #[arg(long, short)]
     output: Option<PathBuf>,
+    /// export only this organization's rows, by slug. Needed when two
+    /// organizations share a route or provider name, which one file cannot carry
+    #[arg(long, value_name = "SLUG")]
+    org: Option<String>,
+    /// leave caps on a person out: they name an account by its email, which a
+    /// committed rolter.toml may not carry. They are counted in a trailing comment
+    #[arg(long)]
+    without_person_caps: bool,
 }
 
 pub async fn run(args: ConfigArgs) -> anyhow::Result<()> {
@@ -54,8 +62,14 @@ pub async fn run(args: ConfigArgs) -> anyhow::Result<()> {
             let pool = rolter_store::postgres::connect(&export.database_url).await?;
             let store = PostgresConfigStore::new(pool.clone());
             let config = store.load().await;
+            let options = rolter_control::config_export::ExportOptions {
+                org: export.org,
+                without_person_caps: export.without_person_caps,
+            };
             let document = match &config {
-                Ok(config) => rolter_control::config_export::export_document(&pool, config).await,
+                Ok(config) => {
+                    rolter_control::config_export::export_document(&pool, config, &options).await
+                }
                 Err(_) => Ok(String::new()),
             };
             pool.close().await;

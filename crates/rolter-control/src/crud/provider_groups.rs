@@ -13,7 +13,8 @@ use rolter_store::postgres::repo::{ProviderGroupRepo, ProviderRepo};
 
 use super::{
     explicit_null, invalid_field, log_audit, name_taken, pool, publish_config_change,
-    require_non_empty, resolve_new_slug, resolve_slug_change, ApiError, ApiResult, SafeJson,
+    require_non_empty, require_not_config_owned, require_row_not_config_owned, resolve_new_slug,
+    resolve_slug_change, ApiError, ApiResult, SafeJson,
 };
 use crate::rbac::{authorize, Principal, ScopeChain};
 use crate::rbac_matrix::cap;
@@ -66,36 +67,50 @@ fn default_member_weight() -> i32 {
     1
 }
 
-/// The 409 for a name the gateway holds in one namespace across every org.
+/// The 409 for a name a readonly row of the bootstrap file holds, which
+/// every org's rows are kept off.
 ///
-/// It says only that the name is taken, never where: an org may not learn
-/// what another one calls its routes or providers from the refusal (#1845).
+/// It says only that the name is taken, never where (#1845).
 pub(super) fn taken_in_deployment(what: &str, name: &str) -> ApiError {
     name_taken(format!(
         "{what} '{name}' is already in use in this deployment; choose another"
     ))
 }
 
-/// Refuse a provider or group slug that already answers an address.
+/// The 409 for a name the caller's own org already holds. Names are per org
+/// (#1857, ADR-0040), so another org's row of the same name is no conflict,
+/// and the refusal never concerns one.
+pub(super) fn taken_in_org(what: &str, name: &str) -> ApiError {
+    name_taken(format!(
+        "{what} '{name}' is already in use in this organization; choose another"
+    ))
+}
+
+/// Refuse a provider or group slug that already answers an address in
+/// `org_id`.
 ///
-/// Providers and provider groups share one slug namespace at the gateway
-/// (`provider-slug/model`, `group-slug/model`), across every org and the
-/// bootstrap file, and a second holder silently takes the address from the
-/// first: a group whose slug a provider holds is dropped from routing
-/// entirely. `except` is the row being renamed, so it does not collide with
+/// Providers and provider groups share one slug namespace per org at the
+/// gateway (`provider-slug/model`, `group-slug/model`), and a second holder
+/// silently takes the address from the first: a group whose slug a provider
+/// of its org holds is dropped from routing entirely. Another org may hold the
+/// same slug (#1857). A readonly row of the bootstrap file keeps its slug from
+/// every org. `except` is the row being renamed, so it does not collide with
 /// itself.
 pub(super) async fn require_address_slug_free(
     state: &ControlState,
     what: &str,
     slug: &str,
+    org_id: Uuid,
     except: Option<Uuid>,
 ) -> ApiResult<()> {
-    if state.config_owned.holds_slug(slug)
-        || ProviderRepo(pool(state))
-            .address_slug_in_use(slug, except)
-            .await?
-    {
+    if state.config_owned.holds_slug(slug) {
         return Err(taken_in_deployment(what, slug));
+    }
+    if ProviderRepo(pool(state))
+        .address_slug_in_use(slug, Some(org_id), except)
+        .await?
+    {
+        return Err(taken_in_org(what, slug));
     }
     Ok(())
 }
@@ -144,12 +159,18 @@ pub(super) fn validate_strategy(strategy: &str) -> ApiResult<()> {
 
 /// Reject a mutation against a readonly (config-owned) group slug (ADR-0022).
 fn require_group_not_config_owned(state: &ControlState, slug: &str) -> ApiResult<()> {
-    if state.config_owned.groups.contains(slug) {
-        return Err(ApiError::Core(Error::Config(format!(
-            "provider group '{slug}' is config-owned and cannot be modified via the API"
-        ))));
-    }
-    Ok(())
+    require_not_config_owned(&state.config_owned.groups, slug, "provider group")
+}
+
+/// [`require_group_not_config_owned`] for a stored group of `org`: refused only
+/// when the file owns that very row, so an org's group that shares a slug with
+/// a global file group stays its own (#3516).
+fn require_group_row_not_config_owned(
+    state: &ControlState,
+    org: Uuid,
+    slug: &str,
+) -> ApiResult<()> {
+    require_row_not_config_owned(&state.config_owned.group_rows, org, slug, "provider group")
 }
 
 async fn view_of(state: &ControlState, group: ProviderGroup) -> ApiResult<ProviderGroupView> {
@@ -216,7 +237,7 @@ async fn create_provider_group(
     // a readonly config group with this slug shadows any DB row — refuse early
     require_group_not_config_owned(&state, &slug)?;
     let repo = ProviderGroupRepo(pool(&state));
-    require_address_slug_free(&state, "provider group slug", &slug, None).await?;
+    require_address_slug_free(&state, "provider group slug", &slug, org_id, None).await?;
     let member_providers: Vec<Uuid> = body.members.iter().map(|m| m.provider_id).collect();
     require_providers_in_org(&state, org_id, &member_providers).await?;
     require_providers_usable_from(&state, &member_providers, body.project_id, "this group").await?;
@@ -275,7 +296,7 @@ async fn update_provider_group(
         _ => ScopeChain::org(existing.org_id),
     };
     authorize(&state, &principal, chain, cap!("provider_group", Update)).await?;
-    require_group_not_config_owned(&state, &existing.slug)?;
+    require_group_row_not_config_owned(&state, existing.org_id, &existing.slug)?;
     if let Some(Some(project_id)) = body.project_id {
         require_scope_project(&state, existing.org_id, project_id).await?;
     }
@@ -288,7 +309,14 @@ async fn update_provider_group(
     let slug_change =
         resolve_slug_change(body.slug.as_deref(), &existing.slug, body.allow_slug_change)?;
     if let Some(slug) = slug_change.as_deref() {
-        require_address_slug_free(&state, "provider group slug", slug, Some(id)).await?;
+        require_address_slug_free(
+            &state,
+            "provider group slug",
+            slug,
+            existing.org_id,
+            Some(id),
+        )
+        .await?;
     }
     if let Some(members) = &body.members {
         let member_providers: Vec<Uuid> = members.iter().map(|m| m.provider_id).collect();
@@ -347,7 +375,7 @@ async fn delete_provider_group(
         None => ScopeChain::org(existing.org_id),
     };
     authorize(&state, &principal, chain, cap!("provider_group", Delete)).await?;
-    require_group_not_config_owned(&state, &existing.slug)?;
+    require_group_row_not_config_owned(&state, existing.org_id, &existing.slug)?;
     repo.delete(id).await?;
     publish_config_change(&state).await?;
     log_audit(

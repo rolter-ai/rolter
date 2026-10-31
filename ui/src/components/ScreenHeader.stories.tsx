@@ -181,6 +181,51 @@ export const Unreachable: Story = {
 };
 
 /**
+ * A gateway that cannot read the control plane's snapshot format answers
+ * `503 snapshot_format_unsupported` (ADR-0038). It has no config and refuses
+ * every key, so the pill is red, and its words send the operator to the upgrade
+ * order rather than to the network as "unreachable" would (#3350).
+ */
+export const SnapshotFormatUnsupported: Story = {
+  render: (args) => <HeaderStory {...args} gateway="snapshotFormatUnsupported" />,
+  play: async ({ canvasElement }) => {
+    const pill = await expectPill(
+      canvasElement,
+      GATEWAY.snapshotFormatUnsupported,
+      {
+        dot: "bg-[color:var(--status-danger)]",
+        label: "text-[color:var(--status-danger-text)]",
+      },
+      false,
+    );
+    await expect(pill.getAttribute("title")).toContain(GATEWAY.detail.snapshotFormatUnsupported);
+    await expect(pill.getAttribute("title")).toContain("/deployment/upgrading#upgrade-order");
+    await expect(pill).not.toHaveTextContent(GATEWAY.down);
+  },
+};
+
+/**
+ * A gateway managed by a control plane that has not applied its first config
+ * snapshot answers `503 awaiting_snapshot` (#3348): red too, and worded as a
+ * gateway waiting for its config.
+ */
+export const AwaitingSnapshot: Story = {
+  render: (args) => <HeaderStory {...args} gateway="awaitingSnapshot" />,
+  play: async ({ canvasElement }) => {
+    const pill = await expectPill(
+      canvasElement,
+      GATEWAY.awaitingSnapshot,
+      {
+        dot: "bg-[color:var(--status-danger)]",
+        label: "text-[color:var(--status-danger-text)]",
+      },
+      false,
+    );
+    await expect(pill.getAttribute("title")).toContain(GATEWAY.detail.awaitingSnapshot);
+  },
+};
+
+/**
  * A `502` page from something in front of the control plane says nothing
  * about the gateway, so the pill says it does not know rather than calling the
  * gateway unreachable and sending the operator to the wrong process.

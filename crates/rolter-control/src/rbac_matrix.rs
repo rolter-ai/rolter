@@ -104,6 +104,15 @@ pub(crate) enum Authority {
     /// these deployment roles (#1834), may touch. Like [`Authority::Superadmin`]
     /// no scoped role and no custom role reaches it
     Deployment(&'static [DeploymentRole]),
+    /// a scoped role at the row's scope, **or** one of these deployment roles
+    /// (#3362). For a row delegated to the people who own a slice of the
+    /// deployment (alerting, #1829) that a deployment role still runs whole,
+    /// whichever org owns it: the role reaches every scope without a
+    /// membership, and the scoped role reaches its own. A superadmin passes as
+    /// ever; a custom role grants the pair as it does for [`Authority::Role`];
+    /// an API token holds no deployment role, so it falls back to the scoped
+    /// half
+    RoleOrDeployment(Role, &'static [DeploymentRole]),
     /// any authenticated caller, with no membership anywhere. Reserved for
     /// global read-only catalogs that carry no tenant's data: there is no
     /// deployment-scoped membership to hold, so naming a role here would
@@ -180,6 +189,11 @@ const ADMIN: Option<Authority> = Some(Authority::Role(Role::Admin));
 const SUPER: Option<Authority> = Some(Authority::Superadmin);
 /// a superadmin or an operator (#1834)
 const OPERATOR: Option<Authority> = Some(Authority::Deployment(&[DeploymentRole::Operator]));
+/// an admin at the row's scope, or a deployment operator at any (#3362)
+const ADMIN_OR_OPERATOR: Option<Authority> = Some(Authority::RoleOrDeployment(
+    Role::Admin,
+    &[DeploymentRole::Operator],
+));
 /// a superadmin or a security auditor (#1834), for a read
 const AUDITOR: Option<Authority> = Some(Authority::Deployment(&[DeploymentRole::SecurityAuditor]));
 /// any authenticated caller; see [`Authority::Authenticated`]
@@ -286,7 +300,8 @@ const CAPABILITIES: &[Capability] = &[
         action_scopes: NONE,
     },
     Capability {
-        // a label on a provider, provider group or route. its own capability
+        // a label on a provider, provider group or route, or on a model of the
+        // org's own (a model label with `org_id`, #3520). its own capability
         // rather than the subject's, so an operator role can be allowed to
         // annotate a provider without being allowed to re-point it
         resource: "label",
@@ -298,9 +313,11 @@ const CAPABILITIES: &[Capability] = &[
         action_scopes: NONE,
     },
     Capability {
-        // a label on a model. models live in the deployment-wide pricing
-        // catalog and not in any one org, so labelling one is a
-        // deployment-wide act and mirrors `model_price` exactly
+        // a deployment-wide label on a model. models live in the
+        // deployment-wide pricing catalog and not in any one org, so a label
+        // that names no org is a deployment-wide act and mirrors
+        // `model_price` exactly. one that names an org is written under that
+        // org's `label` instead (#3520)
         resource: "model_label",
         scope: "deployment",
         read: ANYONE,
@@ -606,6 +623,17 @@ const CAPABILITIES: &[Capability] = &[
         delete: ADMIN,
         action_scopes: NONE,
     },
+    // which keys, projects and teams a tool group narrows (#3295). It decides
+    // what a caller may call, so it is changed with the same role as the group
+    Capability {
+        resource: "mcp_tool_group_assignment",
+        scope: "org",
+        read: VIEWER,
+        create: NA,
+        update: ADMIN,
+        delete: NA,
+        action_scopes: NONE,
+    },
     Capability {
         resource: "mcp_settings",
         scope: "org",
@@ -900,6 +928,18 @@ const CAPABILITIES: &[Capability] = &[
         action_scopes: NONE,
     },
     Capability {
+        // a policy can be scoped to one org, project, route or key, but it is
+        // still the deployment's enforcement: only a superadmin sets it, and the
+        // security auditor reads it with the other guardrail settings
+        resource: "guardrail_policy",
+        scope: "deployment",
+        read: AUDITOR,
+        create: SUPER,
+        update: SUPER,
+        delete: SUPER,
+        action_scopes: NONE,
+    },
+    Capability {
         // read-only: the data plane writes it over the internal channel, and
         // no operator role edits a measurement
         resource: "adaptive_routing_telemetry",
@@ -977,31 +1017,40 @@ const CAPABILITIES: &[Capability] = &[
         delete: OPERATOR,
         action_scopes: NONE,
     },
+    // alerting is delegated to the people who own a slice of spend or
+    // reliability (#1829). A channel belongs to one org, so an org admin owns
+    // it; a rule is scoped to an org, team, project, key, business unit or
+    // customer and is an admin's of that scope. A deployment operator runs every
+    // channel and rule, whichever org owns it (#3362), so the rows are an admin
+    // at the scope or an operator. A deployment-wide channel or rule (no owning
+    // org) stays with the superadmin and the operator: the handlers refuse it
+    // for anyone else, since no membership could satisfy it
     Capability {
         resource: "alert_channel",
-        scope: "deployment",
-        read: OPERATOR,
-        create: OPERATOR,
-        update: OPERATOR,
-        delete: OPERATOR,
+        scope: "org",
+        read: ADMIN_OR_OPERATOR,
+        create: ADMIN_OR_OPERATOR,
+        update: ADMIN_OR_OPERATOR,
+        delete: ADMIN_OR_OPERATOR,
         action_scopes: NONE,
     },
     Capability {
         resource: "alert_rule",
-        scope: "deployment",
-        read: OPERATOR,
-        create: OPERATOR,
-        update: OPERATOR,
-        delete: OPERATOR,
+        scope: "project",
+        read: ADMIN_OR_OPERATOR,
+        create: ADMIN_OR_OPERATOR,
+        update: ADMIN_OR_OPERATOR,
+        delete: ADMIN_OR_OPERATOR,
         action_scopes: NONE,
     },
     // notification history is append-only; "create" is asking the deployment to
-    // evaluate a rule now, which can emit one
+    // evaluate a rule now, which can emit one. Both are decided at the rule's
+    // own scope
     Capability {
         resource: "alert_history",
-        scope: "deployment",
-        read: OPERATOR,
-        create: OPERATOR,
+        scope: "project",
+        read: ADMIN_OR_OPERATOR,
+        create: ADMIN_OR_OPERATOR,
         update: NA,
         delete: NA,
         action_scopes: NONE,
@@ -1097,6 +1146,8 @@ const MULTI_SCOPE: &[&str] = &[
     "provider_group",
     "budget",
     "rate_limit",
+    "alert_rule",
+    "alert_history",
     "membership",
     "invitation",
     "api_token",
@@ -1191,8 +1242,9 @@ struct ActionView {
     minimum_role: Option<Role>,
     superadmin_only: bool,
     /// the deployment roles that also reach this action (#1834), besides a
-    /// superadmin; empty for every action that takes a scoped role or a
-    /// superadmin alone
+    /// superadmin; empty for every action that takes a scoped role alone or a
+    /// superadmin alone. An action that takes a scoped role *or* a deployment
+    /// role (#3362) carries both this and `minimum_role`
     #[serde(skip_serializing_if = "Vec::is_empty")]
     deployment_roles: Vec<DeploymentRole>,
     /// no membership required: any authenticated caller may perform it
@@ -1369,14 +1421,16 @@ fn resource_view(cap: &Capability) -> ResourceView {
                 cap.authority(action).map(|authority| ActionView {
                     action,
                     minimum_role: match authority {
-                        Authority::Role(role) => Some(role),
+                        Authority::Role(role) | Authority::RoleOrDeployment(role, _) => Some(role),
                         Authority::Superadmin
                         | Authority::Deployment(_)
                         | Authority::Authenticated => None,
                     },
                     superadmin_only: authority == Authority::Superadmin,
                     deployment_roles: match authority {
-                        Authority::Deployment(roles) => roles.to_vec(),
+                        Authority::Deployment(roles) | Authority::RoleOrDeployment(_, roles) => {
+                            roles.to_vec()
+                        }
                         _ => Vec::new(),
                     },
                     authenticated_only: authority == Authority::Authenticated,
@@ -1592,6 +1646,20 @@ fn allowed_for(
                 }
                 // reaching this code path means the caller is authenticated
                 Authority::Authenticated => true,
+                Authority::RoleOrDeployment(required, roles) => {
+                    superadmin
+                        || deployment_role.is_some_and(|held| roles.contains(&held))
+                        || user_authorized(memberships, at, required)
+                        || custom_grants_allow(
+                            grants,
+                            at,
+                            Requirement {
+                                resource: cap.resource,
+                                action,
+                                authority,
+                            },
+                        )
+                }
                 Authority::Role(required) => {
                     superadmin
                         || user_authorized(memberships, at, required)
@@ -1717,7 +1785,10 @@ mod tests {
         for cap in CAPABILITIES.iter().filter(|cap| cap.scope == "deployment") {
             for action in Action::ALL {
                 assert!(
-                    !matches!(cap.authority(action), Some(Authority::Role(_))),
+                    !matches!(
+                        cap.authority(action),
+                        Some(Authority::Role(_) | Authority::RoleOrDeployment(..))
+                    ),
                     "{}:{} is deployment-scoped but takes a role",
                     cap.resource,
                     action_key(action)
@@ -1731,7 +1802,9 @@ mod tests {
         let mut named = Vec::new();
         for cap in CAPABILITIES {
             for action in Action::ALL {
-                if let Some(Authority::Deployment(roles)) = cap.authority(action) {
+                if let Some(Authority::Deployment(roles) | Authority::RoleOrDeployment(_, roles)) =
+                    cap.authority(action)
+                {
                     if roles.contains(&role) {
                         named.push(format!("{}:{}", cap.resource, action_key(action)));
                     }
@@ -1772,8 +1845,6 @@ mod tests {
             "cluster_node:update",
             "runtime_policy:update",
             "feature_flags:update",
-            "alert_channel:create",
-            "alert_rule:update",
             "connector:update",
         ] {
             assert!(
@@ -1781,6 +1852,24 @@ mod tests {
                 "operator lacks {pair}"
             );
         }
+        // alerting is delegated to scoped admins (#1829) and an operator still
+        // runs every rule and channel, which the table publishes as an admin at
+        // the scope or an operator (#3362)
+        for pair in [
+            "alert_channel:create",
+            "alert_channel:read",
+            "alert_rule:update",
+            "alert_rule:delete",
+            "alert_history:read",
+            "alert_history:create",
+        ] {
+            assert!(
+                operator.contains(&pair.to_string()),
+                "operator lacks {pair}"
+            );
+        }
+        // and the auditor, who reads policy and never alerting, does not
+        assert!(!auditor.iter().any(|pair| pair.starts_with("alert_")));
         // the auditor reads and never writes
         assert!(
             auditor.iter().all(|pair| pair.ends_with(":read")),
@@ -2064,7 +2153,9 @@ mod tests {
                                 },
                                 _ => c,
                             };
-                            let Authority::Role(required) = authority else {
+                            let (Authority::Role(required)
+                            | Authority::RoleOrDeployment(required, _)) = authority
+                            else {
                                 continue;
                             };
                             let requirement = Requirement {
@@ -2254,10 +2345,12 @@ mod tests {
         ("api_tokens.rs", include_str!("api_tokens.rs")),
         ("analytics.rs", include_str!("analytics.rs")),
         ("analytics_access.rs", include_str!("analytics_access.rs")),
+        ("analytics_export.rs", include_str!("analytics_export.rs")),
         ("audit_export.rs", include_str!("audit_export.rs")),
         ("auth.rs", include_str!("auth.rs")),
         ("auth_policy.rs", include_str!("auth_policy.rs")),
         ("breaker_state.rs", include_str!("breaker_state.rs")),
+        ("call_gap.rs", include_str!("call_gap.rs")),
         ("cluster.rs", include_str!("cluster.rs")),
         ("client_settings.rs", include_str!("client_settings.rs")),
         ("collector_config.rs", include_str!("collector_config.rs")),
@@ -2267,6 +2360,7 @@ mod tests {
         ),
         ("config_export.rs", include_str!("config_export.rs")),
         ("connectors.rs", include_str!("connectors.rs")),
+        ("conn_close.rs", include_str!("conn_close.rs")),
         ("cors.rs", include_str!("cors.rs")),
         ("deprecation.rs", include_str!("deprecation.rs")),
         ("crud/mod.rs", include_str!("crud/mod.rs")),
@@ -2295,6 +2389,11 @@ mod tests {
         ("egress_client.rs", include_str!("egress_client.rs")),
         ("feature_flags.rs", include_str!("feature_flags.rs")),
         ("expiry_sweep.rs", include_str!("expiry_sweep.rs")),
+        ("export_tickets.rs", include_str!("export_tickets.rs")),
+        (
+            "guardrail_policies.rs",
+            include_str!("guardrail_policies.rs"),
+        ),
         ("guardrail_trial.rs", include_str!("guardrail_trial.rs")),
         ("guardrails.rs", include_str!("guardrails.rs")),
         ("labels.rs", include_str!("labels.rs")),
@@ -2346,6 +2445,10 @@ mod tests {
         ("session_guard.rs", include_str!("session_guard.rs")),
         ("security.rs", include_str!("security.rs")),
         ("seed.rs", include_str!("seed.rs")),
+        (
+            "snapshot_negotiation.rs",
+            include_str!("snapshot_negotiation.rs"),
+        ),
         ("sso.rs", include_str!("sso.rs")),
         ("stability.rs", include_str!("stability.rs")),
         ("telemetry.rs", include_str!("telemetry.rs")),

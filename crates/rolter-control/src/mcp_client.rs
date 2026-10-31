@@ -7,6 +7,13 @@
 //! `notifications/initialized` and `tools/list`, with either a JSON or an SSE
 //! reply.
 //!
+//! A server registered with transport `sse` speaks the older HTTP+SSE
+//! transport instead (#3299): the client opens a `GET` stream, waits for an
+//! `endpoint` event naming where to `POST`, and then reads every reply off that
+//! stream, because the `POST`s themselves only answer `202`. The endpoint has to
+//! sit on the origin the server was registered with, so a hostile stream cannot
+//! point the control plane at an address the egress policy never saw.
+//!
 //! Every connection is made through [`crate::egress_client::builder`], so the
 //! URL is held to the same connect-time egress policy as any other
 //! operator-supplied address, and no redirect is followed. Failures are
@@ -19,6 +26,8 @@ use std::time::Duration;
 use rolter_core::EgressPolicy;
 use serde::Serialize;
 use serde_json::{json, Value};
+use tokio::sync::mpsc;
+use tokio::task::JoinHandle;
 
 /// The protocol revision offered in `initialize`. A server answers with the one
 /// it will speak, which is recorded as negotiated.
@@ -124,11 +133,26 @@ pub(crate) struct Exchange {
     pub response: Value,
 }
 
+/// The open event stream of a legacy HTTP+SSE server and where to `POST`.
+struct Legacy {
+    endpoint: String,
+    /// `(event name, data)` of each event the stream carried after `endpoint`
+    events: mpsc::Receiver<(String, String)>,
+    reader: JoinHandle<()>,
+}
+
+impl Drop for Legacy {
+    fn drop(&mut self) {
+        self.reader.abort();
+    }
+}
+
 /// A connected, initialized session with one server.
 pub(crate) struct McpClient {
     http: reqwest::Client,
     url: String,
     auth: ClientAuth,
+    legacy: Option<Legacy>,
     session_id: Option<String>,
     protocol_version: String,
     next_id: u64,
@@ -137,11 +161,14 @@ pub(crate) struct McpClient {
 
 impl McpClient {
     /// Check the address against the egress policy, connect, and run the
-    /// `initialize` handshake.
+    /// `initialize` handshake. `transport` is the server's registered transport:
+    /// `sse` opens the legacy event stream first, anything else is streamable
+    /// HTTP.
     pub(crate) async fn connect(
         egress: &Arc<EgressPolicy>,
         url: &str,
         auth: ClientAuth,
+        transport: &str,
     ) -> Result<Self, Failure> {
         egress.check_url(url, "MCP server URL").map_err(|_| {
             Failure::new(
@@ -151,7 +178,6 @@ impl McpClient {
         })?;
         let http = crate::egress_client::builder(egress)
             .connect_timeout(CONNECT_TIMEOUT)
-            .timeout(REQUEST_TIMEOUT)
             .build()
             .map_err(|_| {
                 Failure::new(
@@ -163,11 +189,15 @@ impl McpClient {
             http,
             url: url.to_string(),
             auth,
+            legacy: None,
             session_id: None,
             protocol_version: PROTOCOL_VERSION.to_string(),
             next_id: 1,
             handshake: Handshake::default(),
         };
+        if transport == "sse" {
+            client.open_legacy_stream().await?;
+        }
         let result = client
             .request(
                 "initialize",
@@ -280,11 +310,167 @@ impl McpClient {
         })
     }
 
+    /// Open the legacy event stream and wait for the `endpoint` event.
+    async fn open_legacy_stream(&mut self) -> Result<(), Failure> {
+        let base = reqwest::Url::parse(&self.url).map_err(|_| {
+            Failure::new(
+                FailureKind::HandshakeFailed,
+                "the server address is invalid",
+            )
+        })?;
+        let request = self
+            .http
+            .get(&self.url)
+            .header("accept", "text/event-stream");
+        let mut response = tokio::time::timeout(REQUEST_TIMEOUT, self.authorize(request).send())
+            .await
+            .map_err(|_| {
+                Failure::new(
+                    FailureKind::Unreachable,
+                    "the server did not answer in time",
+                )
+            })?
+            .map_err(|error| send_failure(&error))?;
+        check_status(response.status())?;
+        let is_stream = response
+            .headers()
+            .get("content-type")
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| value.starts_with("text/event-stream"));
+        if !is_stream {
+            return Err(Failure::new(
+                FailureKind::HandshakeFailed,
+                "the server did not open an event stream",
+            ));
+        }
+        let (tx, mut events) = mpsc::channel::<(String, String)>(64);
+        let reader = tokio::spawn(async move {
+            let mut buffer: Vec<u8> = Vec::new();
+            while let Ok(Some(chunk)) = response.chunk().await {
+                buffer.extend_from_slice(&chunk);
+                if buffer.len() > MAX_REPLY_BYTES {
+                    return;
+                }
+                while let Some(event) = take_event(&mut buffer) {
+                    if tx.send(event).await.is_err() {
+                        return;
+                    }
+                }
+            }
+        });
+        let mut legacy = Legacy {
+            endpoint: String::new(),
+            events: mpsc::channel(1).1,
+            reader,
+        };
+        let endpoint = tokio::time::timeout(REQUEST_TIMEOUT, async {
+            while let Some((name, data)) = events.recv().await {
+                if name == "endpoint" {
+                    return Some(data);
+                }
+            }
+            None
+        })
+        .await
+        .map_err(|_| {
+            Failure::new(
+                FailureKind::HandshakeFailed,
+                "the server sent no endpoint event",
+            )
+        })?
+        .ok_or_else(|| {
+            Failure::new(
+                FailureKind::HandshakeFailed,
+                "the event stream closed before an endpoint event",
+            )
+        })?;
+        let resolved = base
+            .join(endpoint.trim())
+            .ok()
+            .filter(|resolved| resolved.origin() == base.origin())
+            .ok_or_else(|| {
+                Failure::new(
+                    FailureKind::HandshakeFailed,
+                    "the server's endpoint event names an address that is not on its own origin",
+                )
+            })?;
+        legacy.endpoint = resolved.into();
+        legacy.events = events;
+        self.legacy = Some(legacy);
+        Ok(())
+    }
+
+    fn authorize(&self, request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        match &self.auth {
+            ClientAuth::None => request,
+            ClientAuth::Bearer(token) => request.bearer_auth(token),
+            ClientAuth::Header { name, value } => request.header(name, value),
+        }
+    }
+
+    /// One message over the legacy transport: `POST` it to the endpoint, then
+    /// read its reply off the event stream.
+    async fn post_legacy(&mut self, body: &Value) -> Result<Option<Value>, Failure> {
+        let Some(endpoint) = self.legacy.as_ref().map(|legacy| legacy.endpoint.clone()) else {
+            return Err(Failure::new(
+                FailureKind::HandshakeFailed,
+                "the event stream is not open",
+            ));
+        };
+        let request = self
+            .http
+            .post(&endpoint)
+            .timeout(REQUEST_TIMEOUT)
+            .header("content-type", "application/json")
+            .body(body.to_string());
+        let response = self
+            .authorize(request)
+            .send()
+            .await
+            .map_err(|error| send_failure(&error))?;
+        check_status(response.status())?;
+        if body.get("id").is_none() {
+            return Ok(None);
+        }
+        let id = body.get("id").cloned().unwrap_or(Value::Null);
+        let Some(legacy) = self.legacy.as_mut() else {
+            return Ok(None);
+        };
+        let wait = async {
+            while let Some((name, data)) = legacy.events.recv().await {
+                if name != "message" {
+                    continue;
+                }
+                if let Ok(message) = serde_json::from_str::<Value>(&data) {
+                    if message.get("id") == Some(&id) {
+                        return Some(message);
+                    }
+                }
+            }
+            None
+        };
+        match tokio::time::timeout(REQUEST_TIMEOUT, wait).await {
+            Ok(Some(reply)) => Ok(Some(reply)),
+            Ok(None) => Err(Failure::new(
+                FailureKind::Unreachable,
+                "the event stream closed before the reply arrived",
+            )),
+            Err(_) => Err(Failure::new(
+                FailureKind::Unreachable,
+                "the server did not answer in time",
+            )),
+        }
+    }
+
     async fn post(&mut self, body: &Value) -> Result<Option<Value>, Failure> {
+        if self.legacy.is_some() {
+            return self.post_legacy(body).await;
+        }
         let wants_reply = body.get("id").is_some();
         let mut request = self
             .http
             .post(&self.url)
+            .timeout(REQUEST_TIMEOUT)
             .header("content-type", "application/json")
             .header("accept", "application/json, text/event-stream")
             .header("mcp-protocol-version", &self.protocol_version)
@@ -292,43 +478,12 @@ impl McpClient {
         if let Some(session) = &self.session_id {
             request = request.header("mcp-session-id", session);
         }
-        request = match &self.auth {
-            ClientAuth::None => request,
-            ClientAuth::Bearer(token) => request.bearer_auth(token),
-            ClientAuth::Header { name, value } => request.header(name, value),
-        };
-        let mut response = request.send().await.map_err(|error| {
-            // the error text quotes the url, which can carry a token; only the
-            // class is kept
-            if refused_by_egress_policy(&error) {
-                return Failure::new(
-                    FailureKind::EgressDenied,
-                    "the server address is refused by the egress policy",
-                );
-            }
-            let message = if error.is_timeout() {
-                "the server did not answer in time"
-            } else {
-                "the server could not be reached"
-            };
-            Failure::new(FailureKind::Unreachable, message)
-        })?;
-        let status = response.status();
-        if matches!(status.as_u16(), 401 | 403) {
-            return Err(Failure::new(
-                FailureKind::AuthRejected,
-                format!(
-                    "the server rejected the credential with HTTP {}",
-                    status.as_u16()
-                ),
-            ));
-        }
-        if !status.is_success() {
-            return Err(Failure::new(
-                FailureKind::HandshakeFailed,
-                format!("the server answered HTTP {}", status.as_u16()),
-            ));
-        }
+        let mut response = self
+            .authorize(request)
+            .send()
+            .await
+            .map_err(|error| send_failure(&error))?;
+        check_status(response.status())?;
         if let Some(session) = response
             .headers()
             .get("mcp-session-id")
@@ -381,6 +536,68 @@ impl McpClient {
             )
         })
     }
+}
+
+/// Classify a failed send. The error text quotes the url, which can carry a
+/// token, so only the class is kept.
+fn send_failure(error: &reqwest::Error) -> Failure {
+    if refused_by_egress_policy(error) {
+        return Failure::new(
+            FailureKind::EgressDenied,
+            "the server address is refused by the egress policy",
+        );
+    }
+    let message = if error.is_timeout() {
+        "the server did not answer in time"
+    } else {
+        "the server could not be reached"
+    };
+    Failure::new(FailureKind::Unreachable, message)
+}
+
+fn check_status(status: reqwest::StatusCode) -> Result<(), Failure> {
+    if matches!(status.as_u16(), 401 | 403) {
+        return Err(Failure::new(
+            FailureKind::AuthRejected,
+            format!(
+                "the server rejected the credential with HTTP {}",
+                status.as_u16()
+            ),
+        ));
+    }
+    if !status.is_success() {
+        return Err(Failure::new(
+            FailureKind::HandshakeFailed,
+            format!("the server answered HTTP {}", status.as_u16()),
+        ));
+    }
+    Ok(())
+}
+
+/// The first complete SSE event in `buffer` as `(event name, data)`, removed
+/// from it. The name defaults to `message`.
+fn take_event(buffer: &mut Vec<u8>) -> Option<(String, String)> {
+    let end = [&b"\n\n"[..], &b"\r\n\r\n"[..]]
+        .iter()
+        .filter_map(|terminator| {
+            buffer
+                .windows(terminator.len())
+                .position(|window| window == *terminator)
+                .map(|at| at + terminator.len())
+        })
+        .min()?;
+    let raw: Vec<u8> = buffer.drain(..end).collect();
+    let text = String::from_utf8_lossy(&raw);
+    let mut name = String::from("message");
+    let mut data = Vec::new();
+    for line in text.lines() {
+        if let Some(value) = line.strip_prefix("event:") {
+            name = value.trim().to_string();
+        } else if let Some(value) = line.strip_prefix("data:") {
+            data.push(value.strip_prefix(' ').unwrap_or(value).to_string());
+        }
+    }
+    Some((name, data.join("\n")))
 }
 
 /// Whether the connect-time resolver refused the address, which it reports as
@@ -539,9 +756,14 @@ mod tests {
         };
         let seen = server.seen.clone();
         let url = serve(server).await;
-        let mut client = McpClient::connect(&policy(), &url, ClientAuth::Bearer("tok".into()))
-            .await
-            .unwrap();
+        let mut client = McpClient::connect(
+            &policy(),
+            &url,
+            ClientAuth::Bearer("tok".into()),
+            "streamable_http",
+        )
+        .await
+        .unwrap();
         assert_eq!(client.handshake.protocol_version, "2025-03-26");
         assert_eq!(client.handshake.server_name.as_deref(), Some("mock"));
         let tools = client.list_tools().await.unwrap();
@@ -570,7 +792,7 @@ mod tests {
             ..Default::default()
         })
         .await;
-        let mut client = McpClient::connect(&policy(), &url, ClientAuth::None)
+        let mut client = McpClient::connect(&policy(), &url, ClientAuth::None, "streamable_http")
             .await
             .unwrap();
         let tools = client.list_tools().await.unwrap();
@@ -584,7 +806,7 @@ mod tests {
             ..Default::default()
         })
         .await;
-        let failure = McpClient::connect(&policy(), &url, ClientAuth::None)
+        let failure = McpClient::connect(&policy(), &url, ClientAuth::None, "streamable_http")
             .await
             .err()
             .unwrap();
@@ -598,7 +820,7 @@ mod tests {
             ..Default::default()
         })
         .await;
-        let failure = McpClient::connect(&policy(), &url, ClientAuth::None)
+        let failure = McpClient::connect(&policy(), &url, ClientAuth::None, "streamable_http")
             .await
             .err()
             .unwrap();
@@ -615,6 +837,7 @@ mod tests {
             &policy(),
             &format!("http://u:secret-token@{closed}/mcp?key=secret-token"),
             ClientAuth::None,
+            "streamable_http",
         )
         .await
         .err()
@@ -627,10 +850,15 @@ mod tests {
     async fn the_egress_policy_refuses_before_any_connection() {
         let listener = crate::egress_client::testing::Counter::start().await;
         let denied = crate::egress_client::testing::deny_loopback();
-        let failure = McpClient::connect(&denied, &listener.url("/mcp"), ClientAuth::None)
-            .await
-            .err()
-            .unwrap();
+        let failure = McpClient::connect(
+            &denied,
+            &listener.url("/mcp"),
+            ClientAuth::None,
+            "streamable_http",
+        )
+        .await
+        .err()
+        .unwrap();
         assert_eq!(failure.kind, FailureKind::EgressDenied);
         assert_eq!(listener.accepted(), 0);
     }
@@ -642,13 +870,141 @@ mod tests {
             ..Default::default()
         })
         .await;
-        let mut client = McpClient::connect(&policy(), &url, ClientAuth::None)
+        let mut client = McpClient::connect(&policy(), &url, ClientAuth::None, "streamable_http")
             .await
             .unwrap();
         let exchange = client.call_tool("a", json!({"x": 1})).await.unwrap();
         assert_eq!(exchange.request["params"]["name"], "a");
         assert_eq!(exchange.request["params"]["arguments"]["x"], 1);
         assert_eq!(exchange.response["result"]["content"][0]["text"], "ok");
+    }
+
+    /// A stub of the legacy HTTP+SSE transport: `GET /sse` opens the stream and
+    /// names `/messages`, `POST /messages` answers `202` and the reply goes out
+    /// on the stream.
+    #[derive(Clone)]
+    struct Legacy {
+        replies: Arc<Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<String>>>>,
+        send: tokio::sync::mpsc::UnboundedSender<String>,
+        seen: Arc<Mutex<Vec<Seen>>>,
+        endpoint: String,
+        tools: Vec<Value>,
+    }
+
+    async fn legacy_stream(State(legacy): State<Legacy>) -> axum::response::Response {
+        let Some(receiver) = legacy.replies.lock().take() else {
+            return StatusCode::CONFLICT.into_response();
+        };
+        let first = format!("event: endpoint\ndata: {}\n\n", legacy.endpoint);
+        let events = futures_util::stream::unfold(Some((receiver, Some(first))), |state| async {
+            let (mut receiver, first) = state?;
+            if let Some(first) = first {
+                return Some((Ok::<_, std::io::Error>(first), Some((receiver, None))));
+            }
+            let reply = receiver.recv().await?;
+            Some((
+                Ok(format!("event: message\ndata: {reply}\n\n")),
+                Some((receiver, None)),
+            ))
+        });
+        (
+            [(header::CONTENT_TYPE, "text/event-stream")],
+            axum::body::Body::from_stream(events),
+        )
+            .into_response()
+    }
+
+    async fn legacy_post(
+        State(legacy): State<Legacy>,
+        headers: HeaderMap,
+        body: String,
+    ) -> StatusCode {
+        let message: Value = serde_json::from_str(&body).unwrap();
+        let method = message["method"].as_str().unwrap().to_string();
+        let auth = headers
+            .get(header::AUTHORIZATION)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string);
+        legacy.seen.lock().push((method.clone(), auth));
+        let result = match method.as_str() {
+            "initialize" => json!({
+                "protocolVersion": "2024-11-05",
+                "serverInfo": {"name": "legacy", "version": "0.1"},
+            }),
+            "tools/list" => json!({"tools": legacy.tools}),
+            _ => return StatusCode::ACCEPTED,
+        };
+        let reply = json!({"jsonrpc": "2.0", "id": message["id"], "result": result});
+        let _ = legacy.send.send(reply.to_string());
+        StatusCode::ACCEPTED
+    }
+
+    async fn serve_legacy(endpoint: &str, tools: Vec<Value>) -> (String, Arc<Mutex<Vec<Seen>>>) {
+        let (send, receiver) = tokio::sync::mpsc::unbounded_channel();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let legacy = Legacy {
+            replies: Arc::new(Mutex::new(Some(receiver))),
+            send,
+            seen: seen.clone(),
+            endpoint: endpoint.to_string(),
+            tools,
+        };
+        let app = Router::new()
+            .route("/sse", axum::routing::get(legacy_stream))
+            .route("/messages", post(legacy_post))
+            .with_state(legacy);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        (format!("http://{addr}/sse"), seen)
+    }
+
+    #[tokio::test]
+    async fn a_legacy_sse_server_is_discovered_over_its_event_stream() {
+        let (url, seen) = serve_legacy("/messages?session=abc", vec![tool("a"), tool("b")]).await;
+        let mut client =
+            McpClient::connect(&policy(), &url, ClientAuth::Bearer("tok".into()), "sse")
+                .await
+                .unwrap();
+        assert_eq!(client.handshake.protocol_version, "2024-11-05");
+        assert_eq!(client.handshake.server_name.as_deref(), Some("legacy"));
+        let tools = client.list_tools().await.unwrap();
+        assert_eq!(
+            tools.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(),
+            ["a", "b"]
+        );
+        let methods: Vec<_> = seen.lock().iter().map(|(m, _)| m.clone()).collect();
+        assert_eq!(
+            methods,
+            ["initialize", "notifications/initialized", "tools/list"]
+        );
+        assert!(seen
+            .lock()
+            .iter()
+            .all(|(_, auth)| auth.as_deref() == Some("Bearer tok")));
+    }
+
+    #[tokio::test]
+    async fn the_same_server_asked_the_streamable_way_fails_its_handshake() {
+        let (url, _) = serve_legacy("/messages", vec![]).await;
+        // the legacy stub has no POST on the registered address
+        let failure = McpClient::connect(&policy(), &url, ClientAuth::None, "streamable_http")
+            .await
+            .err()
+            .unwrap();
+        assert_eq!(failure.kind, FailureKind::HandshakeFailed);
+    }
+
+    #[tokio::test]
+    async fn an_endpoint_on_another_origin_is_refused() {
+        let (url, seen) = serve_legacy("http://127.0.0.1:9/messages", vec![]).await;
+        let failure = McpClient::connect(&policy(), &url, ClientAuth::None, "sse")
+            .await
+            .err()
+            .unwrap();
+        assert_eq!(failure.kind, FailureKind::HandshakeFailed);
+        assert!(failure.message.contains("own origin"));
+        assert!(seen.lock().is_empty(), "nothing was sent to it");
     }
 
     #[test]

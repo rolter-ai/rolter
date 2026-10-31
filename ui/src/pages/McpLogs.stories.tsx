@@ -13,6 +13,7 @@ import {
   Harness,
   json,
   openOptions,
+  pickOption,
   pending,
   recording,
   routes,
@@ -133,7 +134,9 @@ export const FormatsFiguresAndOffersTheIds: Story = {
     const canvas = within(canvasElement);
     await canvas.findByText("12,345");
     await expect(canvas.getByText("1,234")).toBeInTheDocument();
-    await expect(canvas.getByText(en.pages.mcpLogs.window)).toBeInTheDocument();
+    await expect(canvas.getByRole("combobox", { name: "Time window" })).toHaveValue(
+      "Last 24 hours",
+    );
     await userEvent.click(
       await canvas.findByRole("button", { name: /Open call details for search_issues/ }),
     );
@@ -836,5 +839,262 @@ export const ServerFilterInRussian: Story = {
     await expect(
       canvas.getByRole("combobox", { name: ru.pages.mcpLogs.toolFilterAria }),
     ).toBeVisible();
+  },
+};
+
+/** the whole days a bound reaches back from now, so a story does not depend on the clock to the second */
+const daysBack = (url: string) => {
+  const since = new URL(url, "http://x").searchParams.get("since");
+  return since ? Math.round((Date.now() - Date.parse(since)) / 86_400_000) : null;
+};
+
+const windowed = recording(loaded);
+
+/**
+ * #3300: the window is a name the address carries. A link to `?window=7d`
+ * reads both the tiles and the list over seven days, and the picker says so.
+ */
+export const TheWindowComesFromTheAddress: Story = {
+  render: () => (
+    <Harness fetchStub={windowed.stub} route="/mcp-logs?window=7d">
+      <McpLogs />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByRole("combobox", { name: "Time window" })).toHaveValue(
+      "Last 7 days",
+    );
+    await waitFor(() => {
+      const summary = windowed.calls.find((c) => c.url.includes("/mcp/logs/summary"));
+      const list = windowed.calls.find((c) => c.url.includes("/mcp/logs?"));
+      expect(summary && daysBack(summary.url)).toBe(7);
+      expect(list && daysBack(list.url)).toBe(7);
+    });
+  },
+};
+
+const ranged = recording(loaded);
+
+/**
+ * A custom range of days comes from the address and reads the tiles and the
+ * list over those days (#3407): the start of the first day up to the start of
+ * the day after the last, and the picker shows the two days.
+ */
+export const ACustomRangeComesFromTheAddress: Story = {
+  render: () => (
+    <Harness
+      fetchStub={ranged.stub}
+      route="/mcp-logs?window=custom&since=2026-10-01&until=2026-10-07"
+    >
+      <McpLogs />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByRole("combobox", { name: "Time window" })).toHaveValue(
+      "Custom range…",
+    );
+    await expect(canvas.getByLabelText("From")).toHaveValue("2026-10-01");
+    await expect(canvas.getByLabelText("To")).toHaveValue("2026-10-07");
+    await waitFor(() => {
+      for (const path of ["/mcp/logs/summary", "/mcp/logs?"]) {
+        const call = ranged.calls.find((c) => c.url.includes(path));
+        const q = new URL(call?.url ?? "", "http://x").searchParams;
+        expect(q.get("since")).toBe(new Date(2026, 9, 1).toISOString());
+        expect(q.get("until")).toBe(new Date(2026, 9, 8).toISOString());
+      }
+    });
+  },
+};
+
+const picking = recording(loaded);
+
+/** #3300: picking another window writes the address and reads it again, from the first page. */
+export const PickingAWindowWritesTheAddress: Story = {
+  render: () => (
+    <Harness fetchStub={picking.stub} route="/mcp-logs?server=github">
+      <McpLogs />
+      <Where />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await pickOption(await canvas.findByRole("combobox", { name: "Time window" }), "Last 30 days");
+    await waitFor(() =>
+      expect(canvas.getByTestId("where")).toHaveTextContent("server=github&window=30d"),
+    );
+    await waitFor(() =>
+      expect(
+        picking.calls.some((c) => c.url.includes("/mcp/logs?") && daysBack(c.url) === 30),
+      ).toBe(true),
+    );
+    // back on the default, the parameter leaves the address
+    await pickOption(canvas.getByRole("combobox", { name: "Time window" }), "Last 24 hours");
+    await waitFor(() => expect(canvas.getByTestId("where")).toHaveTextContent(/^\?server=github$/));
+  },
+};
+
+// a notification awaits no reply, and a legacy `sse` server answers a call
+// `202` and sends the reply on its stream (#3529)
+const NOTIFICATION: Partial<McpLogRow> = {
+  event_id: "evt-note",
+  tool: "notify_build",
+  status: "success",
+  notification: 1,
+};
+const ACCEPTED: Partial<McpLogRow> = {
+  event_id: "evt-accepted",
+  tool: "list_repos",
+  transport: "sse",
+  status: "success",
+  outcome: "accepted",
+};
+
+const notAwaited = routes([
+  [
+    "/mcp/logs/summary",
+    () => ({
+      data: [{ ...SUMMARY, not_awaited: 5, successes: 120, failures: 3, failure_rate: 0.0244 }],
+    }),
+  ],
+  [
+    "/mcp/logs/evt-accepted",
+    () => ({ ...call(ACCEPTED), notification: 0, arguments: null, result: null }),
+  ],
+  ["/mcp/logs", () => ({ data: [call(), call(NOTIFICATION), call(ACCEPTED)], next_cursor: null })],
+]);
+
+/**
+ * A call no reply was awaited for says so in its row and its detail, and the
+ * summary counts it apart from the failure rate rather than as a success
+ * (#3526, #3529).
+ */
+export const CallsNoReplyWasAwaitedForAreMarkedAndCountedApart: Story = {
+  render: () => (
+    <Harness fetchStub={notAwaited}>
+      <McpLogs />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const copy = en.pages.mcpLogs;
+    await canvas.findByText(copy.notAwaited.notification);
+    await expect(canvas.getByText(copy.notAwaited.accepted)).toBeInTheDocument();
+    // the accepted call reads as accepted, not as the success stored beside it
+    await expect(canvas.getByText(copy.statuses.accepted)).toBeInTheDocument();
+    await expect(canvas.getByText("5 not awaited, left out of the rates")).toBeInTheDocument();
+    await expect(canvas.getByText("2.4% of awaited calls")).toBeInTheDocument();
+    await expectListTable(canvasElement, "MCP Logs");
+    await userEvent.click(
+      await canvas.findByRole("button", { name: /Open call details for list_repos/ }),
+    );
+    const drawer = within(await canvas.findByRole("complementary", { name: "MCP call details" }));
+    await expect(await drawer.findByText(copy.notAwaitedDetail.accepted)).toBeInTheDocument();
+  },
+};
+
+/** The same marks in the dashboard's language. */
+export const CallsNoReplyWasAwaitedForInRussian: Story = {
+  globals: { locale: "ru" },
+  render: () => (
+    <Harness fetchStub={notAwaited}>
+      <McpLogs />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const copy = ru.pages.mcpLogs;
+    await canvas.findByText(copy.notAwaited.notification);
+    await expect(canvas.getByText(copy.notAwaited.accepted)).toBeInTheDocument();
+    await expect(canvas.getByText(copy.statuses.accepted)).toBeInTheDocument();
+  },
+};
+
+/**
+ * A body forwarded unread to an ungoverned server is one row with no tool: it
+ * says its calls are not itemised, in the row and in the detail (#3528).
+ */
+export const ABodyForwardedUnreadIsOneRowWithNoTool: Story = {
+  render: () => (
+    <Harness
+      fetchStub={routes([
+        ["/mcp/logs/summary", () => ({ data: [{ ...SUMMARY, not_awaited: 1 }] })],
+        [
+          "/mcp/logs/evt-unread",
+          () => ({
+            ...call({ event_id: "evt-unread", tool: "", outcome: "unread" }),
+            arguments: null,
+            result: null,
+          }),
+        ],
+        [
+          "/mcp/logs",
+          () => ({
+            data: [call({ event_id: "evt-unread", tool: "", outcome: "unread" })],
+            next_cursor: null,
+          }),
+        ],
+      ])}
+    >
+      <McpLogs />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const copy = en.pages.mcpLogs;
+    await canvas.findByText(copy.notAwaited.unread);
+    await expect(canvas.getByText(copy.statuses.unread)).toBeInTheDocument();
+    await expect(canvas.getByText(copy.noTool)).toBeInTheDocument();
+    await expect(canvas.getByText("1 not awaited, left out of the rates")).toBeInTheDocument();
+    await userEvent.click(
+      await canvas.findByRole("button", { name: /Open call details for not itemised/ }),
+    );
+    const drawer = within(await canvas.findByRole("complementary", { name: "MCP call details" }));
+    await expect(await drawer.findByText(copy.notAwaitedDetail.unread)).toBeInTheDocument();
+  },
+};
+
+/**
+ * A notification the server refused was not delivered: its detail says the
+ * summary counts it as a failure, not that it is left out.
+ */
+export const AFailedNotificationCountsAsAFailure: Story = {
+  render: () => (
+    <Harness
+      fetchStub={routes([
+        ["/mcp/logs/summary", () => ({ data: [SUMMARY] })],
+        [
+          "/mcp/logs/evt-note",
+          () => ({
+            ...call({ ...NOTIFICATION, status: "transport_error" }),
+            arguments: null,
+            result: null,
+          }),
+        ],
+        [
+          "/mcp/logs",
+          () => ({
+            data: [call({ ...NOTIFICATION, status: "transport_error" })],
+            next_cursor: null,
+          }),
+        ],
+      ])}
+    >
+      <McpLogs />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const copy = en.pages.mcpLogs;
+    await canvas.findByText(copy.notAwaited.notification);
+    await userEvent.click(
+      await canvas.findByRole("button", { name: /Open call details for notify_build/ }),
+    );
+    const drawer = within(await canvas.findByRole("complementary", { name: "MCP call details" }));
+    await expect(
+      await drawer.findByText(copy.notAwaitedDetail.notificationFailed),
+    ).toBeInTheDocument();
+    await expect(drawer.queryByText(copy.notAwaitedDetail.notification)).toBeNull();
   },
 };

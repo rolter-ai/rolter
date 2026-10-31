@@ -107,7 +107,7 @@ fn secret(minted: &Value) -> String {
 }
 
 /// A token resolves to its one role at its own scope and nowhere else, and
-/// can never reach a deployment capability, the token endpoints or the logs.
+/// can never reach a deployment capability or the token endpoints.
 #[tokio::test]
 async fn a_token_holds_one_role_at_its_own_scope_and_nothing_above_it() {
     skip_without_db!();
@@ -149,7 +149,7 @@ async fn a_token_holds_one_role_at_its_own_scope_and_nothing_above_it() {
     let (_, above) = effective(true, "").await;
     assert!(above["role"].is_null(), "the org above is not its scope");
 
-    // deployment-wide capabilities, request logs and token management are
+    // deployment-wide capabilities and token management are
     // refused whatever the role
     for path in [
         "/api/v1/feature-flags",

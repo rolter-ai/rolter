@@ -58,6 +58,32 @@ export function revokeInvitation(id: string): Promise<Invitation> {
   return sendJson<Invitation>("DELETE", `/api/v1/invitations/${id}`);
 }
 
+/**
+ * Email a pending invitation's link again (#3304). It is the same link, so the
+ * earlier message still works. The answer is the invitation with its mail
+ * outcome updated; `409` is an invitation that is no longer pending, has no
+ * kept link, or a control plane with no relay.
+ */
+export function resendInvitation(id: string): Promise<Invitation> {
+  return sendJson<Invitation>("POST", `/api/v1/invitations/${id}/resend`);
+}
+
+/**
+ * What a relay check answers (#3304): `ok`, or the `stage` that failed and a
+ * `reason` that names no address or credential. `409` is a control plane with
+ * no mail relay, and `429` a check run again within a few seconds (#3394).
+ */
+export interface MailRelayCheck {
+  ok: boolean;
+  stage?: "connect" | "tls" | "auth" | "relay";
+  reason?: string;
+}
+
+/** connect to the relay, negotiate TLS and authenticate, sending nothing */
+export function checkMailRelay(orgId: string): Promise<MailRelayCheck> {
+  return sendJson<MailRelayCheck>("POST", `/api/v1/orgs/${orgId}/invitations/mail-check`);
+}
+
 export interface InvitationPreview {
   org_name: string;
   email: string;

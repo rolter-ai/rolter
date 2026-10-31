@@ -32,9 +32,13 @@ import {
   expectToast,
   uxEvents,
   type Recorder,
+  AddressProbe,
+  addressOf,
 } from "./story-harness";
 import type { CurrencySettings, ModelPriceRow, PriceCatalogue } from "@/lib/api";
 import ru from "@/lib/i18n/locales/ru.json";
+import en from "@/lib/i18n/locales/en.json";
+import { expectFieldHints } from "@/lib/story-hints";
 import { UxScreenProvider } from "@/lib/ux-react";
 
 const price = (
@@ -101,7 +105,8 @@ const NARROWED: CurrencySettings = {
 };
 
 /** a by-model rollup row; the traffic a price is picked from, and what is unpriced */
-const traffic = (model: string, unpriced = 0) => ({
+const traffic = (model: string, unpriced = 0, org_id = "") => ({
+  org_id,
   model,
   requests: 40,
   unpriced_requests: unpriced,
@@ -283,6 +288,38 @@ export const ListsModelsWithUnpricedTraffic: Story = {
       expect(form.getByRole("combobox", { name: "Model name" })).toHaveValue("qwen-max"),
     );
     await expect(form.getByLabelText("Input price per Mtok")).toHaveValue(null);
+  },
+};
+
+/**
+ * #3486: the traffic read answers one row per organization's model. A price is
+ * per name, so two organizations' unpriced `gpt-4o` is one model to price, with
+ * their requests added up.
+ */
+export const TwoOrganizationsUnpricedModelIsOneRow: Story = {
+  render: () => (
+    <Harness
+      fetchStub={withCurrency(
+        CONFIGURED,
+        [],
+        [
+          traffic("gpt-4o", 30, "org-1"),
+          traffic("gpt-4o", 12, "org-2"),
+          traffic("qwen-max", 5, "org-1"),
+        ],
+      )}
+    >
+      <Pricing />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const list = within(await canvas.findByRole("table", { name: "Models with unpriced traffic" }));
+    await expect(list.getAllByText("gpt-4o")).toHaveLength(1);
+    await expect(list.getByText("42")).toBeInTheDocument();
+    await expect(
+      canvas.getByRole("heading", { name: "2 models have traffic and no price" }),
+    ).toBeVisible();
   },
 };
 
@@ -504,6 +541,103 @@ export const AddsAPrice: Story = {
   },
 };
 
+/**
+ * The Savings advisor flags a model with no known price and sends the operator
+ * here with `?model=` (#3422). A model with no price row opens the price form
+ * already named for it, for a role that can write prices; the link is then
+ * taken out of the address so closing the form does not bring it back.
+ */
+export const AnUnpricedModelLinkOpensThePriceFormNamedForIt: Story = {
+  render: () => (
+    <Harness
+      role="superadmin"
+      route="/pricing-overrides?model=mystery-1"
+      fetchStub={withCurrency(CONFIGURED)}
+    >
+      <Pricing />
+      <AddressProbe />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const form = within(await within(document.body).findByRole("dialog"));
+    await expect(await form.findByLabelText("Model name")).toHaveValue("mystery-1");
+    // a new price: no rate is filled in for it
+    await expect(form.getByLabelText("Input price per Mtok")).toHaveValue(null);
+    await waitFor(() => expect(addressOf(canvasElement).has("model")).toBe(false));
+  },
+};
+
+/**
+ * A model that already has a price row narrows the list to it, and opens
+ * nothing: the row's own Edit is one click away.
+ */
+export const APricedModelLinkNarrowsTheListToItsRow: Story = {
+  render: () => (
+    <Harness
+      role="superadmin"
+      route="/pricing-overrides?model=gpt-4o"
+      fetchStub={withCurrency(CONFIGURED)}
+    >
+      <Pricing />
+      <AddressProbe />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    // the link is read once the list has loaded, a step after the first paint
+    await waitFor(() => expect(canvas.getByRole("searchbox")).toHaveValue("gpt-4o"));
+    await waitFor(() => expect(modelOrder(canvasElement)).toEqual(["gpt-4o"]));
+    await expect(canvas.queryByText("mistral-large")).toBeNull();
+    await expect(document.querySelector('[role="dialog"]')).toBeNull();
+    await expectAllowed(canvasElement, /Edit the price for gpt-4o/i);
+    await waitFor(() => expect(addressOf(canvasElement).has("model")).toBe(false));
+  },
+};
+
+/**
+ * A role that cannot write prices follows the same link to the read-only list:
+ * a priced model narrows it to its row, whose Edit is refused and names the
+ * role it needs, and a model with no price opens no form at all.
+ */
+export const ALinkForARoleWithoutPriceEditingShowsTheReadOnlyRow: Story = {
+  render: () => (
+    <Harness
+      role="admin"
+      route="/pricing-overrides?model=gpt-4o"
+      fetchStub={withCurrency(CONFIGURED)}
+    >
+      <Pricing />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(modelOrder(canvasElement)).toEqual(["gpt-4o"]));
+    await expect(canvas.getByRole("searchbox")).toHaveValue("gpt-4o");
+    await expectRefused(canvasElement, /Edit the price for gpt-4o/i, NEEDS_SUPERADMIN);
+    await expect(document.querySelector('[role="dialog"]')).toBeNull();
+  },
+};
+
+export const AnUnpricedModelLinkOpensNoFormForARoleWithoutPriceEditing: Story = {
+  render: () => (
+    <Harness
+      role="admin"
+      route="/pricing-overrides?model=mystery-1"
+      fetchStub={withCurrency(CONFIGURED)}
+    >
+      <Pricing />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    // no price to read and none to write: the list says nothing matched
+    await expect(await canvas.findByText(en.pages.pricing.noMatchTitle)).toBeVisible();
+    await expect(canvas.getByRole("searchbox")).toHaveValue("mystery-1");
+    await expect(document.querySelector('[role="dialog"]')).toBeNull();
+    await expectRefused(canvasElement, /add price/i, NEEDS_SUPERADMIN);
+  },
+};
+
 /** saving the untouched form is refused at each field, and sends nothing */
 let emptySubmit: Recorder;
 export const EmptySubmitIsRefused: Story = {
@@ -522,6 +656,15 @@ export const EmptySubmitIsRefused: Story = {
     await expect(form.getByLabelText("Model name")).toBeValid();
     await expect(form.getByLabelText("Input price per Mtok")).toBeValid();
     await expect(form.queryByText("Choose a model to price.")).toBeNull();
+    // the mandatory ones are announced up front without the native `required`,
+    // which would flag the pristine form (#3451)
+    for (const name of ["Model name", "Input price per Mtok", "Output price per Mtok"]) {
+      const field = form.getByLabelText(name);
+      await expect(field).toHaveAttribute("aria-required", "true");
+      await expect(field).not.toHaveAttribute("required");
+    }
+    await expect(form.getByLabelText("Cached input price per Mtok (optional)")).not.toBeRequired();
+    await expect(form.getAllByText("*")).toHaveLength(3);
     await userEvent.click(form.getByRole("button", { name: "Save" }));
 
     await expect(form.getByLabelText("Model name")).toBeInvalid();
@@ -633,6 +776,12 @@ export const SetsTheCacheWriteRate: Story = {
     const form = within(sheet());
     const write = await form.findByLabelText("5 minute cache-write price per Mtok (optional)");
     await expect(write).toHaveValue(null);
+    // the model is fixed and prefilled while editing, so only the prices are marked
+    await expect(form.getByLabelText("Model name")).not.toHaveAttribute("aria-required");
+    await expect(form.getByLabelText("Input price per Mtok")).toHaveAttribute(
+      "aria-required",
+      "true",
+    );
     await userEvent.type(write, "3.75");
     await userEvent.click(form.getByRole("button", { name: "Save" }));
 
@@ -1685,5 +1834,19 @@ export const ImportIsOpenToASuperadmin: Story = {
   ),
   play: async ({ canvasElement }) => {
     await expectAllowed(canvasElement, /import from catalogue/i);
+  },
+};
+
+/** The model name explains itself in an (i) (#3285). */
+export const ExplainsTheModelNameInAHint: Story = {
+  render: () => (
+    <Harness fetchStub={withCurrency(CONFIGURED)}>
+      <Pricing />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await clickWhenEnabled(canvasElement, /add price/i);
+    const p = en.pages.pricing;
+    await expectFieldHints(sheet(), en.common.aboutField, [[p.modelName, p.modelNameInfo]]);
   },
 };

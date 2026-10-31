@@ -41,6 +41,10 @@ The readiness endpoint answers a different question: can _this_ instance serve t
   <Tab title="Gateway">
     Returns `200 OK` normally, and `503 Service Unavailable` with the body `draining` once the instance has been drained from the dashboard's cluster screen. A drained gateway therefore leaves the Service and finishes its in-flight requests instead of being killed mid-request.
 
+    It also returns `503` with the body `snapshot_format_unsupported` while it has never received a configuration snapshot and the control plane serves no snapshot format it reads. This keeps a gateway that was upgraded ahead of its control plane out of the Service until the control plane catches up. A gateway that already holds a snapshot stays ready on its last config instead. See [Upgrading](/deployment/upgrading#upgrade-order).
+
+    A gateway started with `--snapshot-url` answers `503` with the body `awaiting_snapshot` until it applies its first snapshot from the control plane, whatever the reason none has arrived yet. Until then it serves only its own config file and refuses every key, so it stays out of the Service. A gateway whose config file carries virtual keys, or sets `server.require_auth = false`, can serve before that and is ready. Once it has applied a snapshot it stays ready when a later poll fails. When both answers apply, `snapshot_format_unsupported` is the one returned, since it says why no snapshot arrived.
+
     ```bash
     curl -i http://localhost:4000/readyz
     # → 200 OK

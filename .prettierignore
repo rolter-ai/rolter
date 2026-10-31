@@ -20,6 +20,16 @@ CLAUDE.md
 # a short array such as `chain_at`'s would fail cargo test
 crates/rolter-control/rbac-matrix.json
 
+# written by the rolter-control test suite with serde_json, which owns its
+# formatting: the test compares it byte for byte with the rendering of
+# EXCLUSION_REASONS (#3423), like rbac-matrix.json above
+crates/rolter-control/savings-reasons.json
+
+# rewritten by rolter-core's snapshot shape guard with serde_json whenever
+# ROLTER_TEST_UPDATE_SNAPSHOT_SHAPE is set (ADR-0038); a regeneration that had
+# to be followed by a prettier run would fail the docs gate every time
+crates/rolter-core/tests/fixtures/snapshot_shape.json
+
 # helm chart templates are go templates that happen to end in .yaml, and the
 # yaml parser cannot read `{{- if ... }}` at all
 charts/rolter/templates/
@@ -34,3 +44,8 @@ charts/rolter/templates/
 # scripts/refresh-price-catalogue.ts as one compact line per run so a refresh
 # diffs as a whole snapshot, and the file is data nothing reads for style
 crates/rolter-control/catalogue/
+
+# rewritten by examples/rolter-linear-trainer with json.dumps whenever
+# ROLTER_TEST_REGENERATE_GOLDEN is set (#3455); a regeneration that had to be
+# followed by a prettier run would fail the docs gate every time
+crates/rolter-gateway/tests/fixtures/local_classifier/golden_features.json

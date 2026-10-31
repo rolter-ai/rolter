@@ -32,14 +32,14 @@ authenticated caller. An anonymous request is refused with `401`.
 }
 ```
 
-| Field              | Meaning                                                                                           |
-| ------------------ | ------------------------------------------------------------------------------------------------- |
-| `inventory`        | `false` when the control plane has no database, so there is no inventory to count; see below      |
-| `gateways.live`    | gateways that polled the control plane in the last minute                                         |
-| `gateways.stale`   | gateways that stopped polling within the last 15 minutes: crashed or partitioned, not scaled away |
-| `gateways.lagging` | live gateways that have not applied `config_version` yet. A subset of `live`                      |
-| `config_version`   | the control plane's current config version                                                        |
-| `checked_at`       | when the counts were taken                                                                        |
+| Field              | Meaning                                                                                                                                                                                         |
+| ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `inventory`        | `false` when the control plane has no database, so there is no inventory to count; see below                                                                                                    |
+| `gateways.live`    | gateways that polled the control plane in the last minute                                                                                                                                       |
+| `gateways.stale`   | gateways that stopped polling within the last 15 minutes: crashed or partitioned, not scaled away                                                                                               |
+| `gateways.lagging` | live gateways that have not applied `config_version` yet, or that the control plane last served an older snapshot format, which may leave out what that format cannot carry. A subset of `live` |
+| `config_version`   | the control plane's current config version                                                                                                                                                      |
+| `checked_at`       | when the counts were taken                                                                                                                                                                      |
 
 ### What is counted
 

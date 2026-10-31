@@ -145,9 +145,12 @@ out (#2084), on the Single Sign-On screen:
   on (the control plane refuses both off). It warns and never blocks, since one
   flip undoes it. The providers come from the list the screen already read, so a
   caller refused that list gets no confirmation.
-- **The second-factor confirmation** counts people with `distinctPeople`: the
-  memberships endpoint returns one row per grant, so a person holding a role on
-  the org and another on a team is one member.
+- **The second-factor confirmation** says how many of the members the policy
+  binds have no armed factor, from `GET /api/v1/orgs/{id}/mfa-status` (#3264):
+  that roster has one row per active member however many grants they hold, and
+  `mfaGap` counts `required_all` over every row and `required_superadmin` over
+  the `is_superadmin` rows only. A caller refused the roster gets the plain
+  warning with no number.
 
 A save that needs more than one of these asks them in turn, password sign-in
 first, then single sign-on, then the second factor, and sends one request after

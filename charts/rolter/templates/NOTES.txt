@@ -2,7 +2,7 @@ Gateway endpoint:
   kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "rolter.fullname" . }}-gateway 4000:{{ .Values.gateway.service.port }}
 
 First administrator (once the control pod is ready; it already has the database URL):
-  kubectl -n {{ .Release.Namespace }} exec deploy/{{ include "rolter.fullname" . }}-control -- rolter seed --admin-email you@example.com --admin-password '<a long password>'
+  kubectl -n {{ .Release.Namespace }} exec -i deploy/{{ include "rolter.fullname" . }}-control -- rolter seed --admin-email you@example.com --admin-password-stdin < password.txt
 
 Control UI endpoint:
   kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "rolter.fullname" . }}-control 4001:{{ .Values.control.service.port }}

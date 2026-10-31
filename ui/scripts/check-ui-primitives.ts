@@ -118,6 +118,7 @@ export type RuleId =
   | "shadowed-primitive"
   | "hand-rolled-switch-row"
   | "bare-animation"
+  | "untyped-button"
   | "duplicated-shape";
 
 export interface Violation {
@@ -193,6 +194,11 @@ const ADVICE: Record<RuleId, string> = {
     "`prefers-reduced-motion`, which PRODUCT.md promises it does not (#2006). " +
     "Write `motion-safe:animate-spin` / `motion-safe:animate-pulse`: the icon or " +
     "dot stays on screen as a static indicator.",
+  "untyped-button":
+    "a native `<button>` with no `type` is a submit button, so one placed inside " +
+    "an editor sheet's `<form>` submits it (#1205 found four). Write " +
+    '`type="button"` (or `type="submit"` where it should submit), or use ' +
+    '`Button` from `@/components/ui/button`, which defaults to `type="button"`.',
   "duplicated-shape":
     "the same element and the same design-system classes, hand-written in three " +
     "or more files — a primitive that was never extracted, which is how #1658 " +
@@ -392,6 +398,23 @@ export function checkSource(
       });
     } else {
       violations.push({ file, line: index + 1, rule: "bare-animation", found: hit[0] });
+    }
+  });
+  // like the animation rule, a primitive's own file is not exempt: the
+  // sidebar and filter panel are where the untyped buttons were found
+  maskedLines.forEach((line, index) => {
+    if (!/<button(?:[\s/>]|$)/.test(line)) return;
+    const from = maskedLines.slice(0, index).join("\n").length + (index > 0 ? 1 : 0);
+    const start = from + line.indexOf("<button");
+    const tag = masked.slice(start, endOfTag(masked, start));
+    // a props spread may carry the type, so it is given the benefit of the doubt
+    // `data-type=` and `aria-type=` are not the attribute
+    if (/(?<![\w-])type\s*=(?!=)/.test(tag) || /\{\s*\.\.\./.test(tag)) return;
+    const reason = waiverAbove(lines, index);
+    if (reason !== null) {
+      waivers.push({ file, line: index + 1, rule: reason ? "untyped-button" : "unknown", reason });
+    } else {
+      violations.push({ file, line: index + 1, rule: "untyped-button", found: "<button>" });
     }
   });
   if (file.startsWith(PRIMITIVES_DIR)) return { violations, waivers };

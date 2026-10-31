@@ -75,8 +75,7 @@ fn config_for(model: &str, providers: Vec<(&str, SocketAddr)>) -> GatewayConfig 
         .iter()
         .map(|(name, _)| Target {
             provider: name.to_string(),
-            model: None,
-            weight: 1,
+            ..Default::default()
         })
         .collect();
     for (name, addr) in providers {
@@ -128,20 +127,13 @@ async fn mcp_proxy_binds_virtual_key_owner_to_server_scopes_and_bearer() {
     let upstream = serve(Router::new().route("/{*path}", any(mcp_upstream))).await;
     let mut config = GatewayConfig::default();
     config.db_virtual_keys.push(VirtualKeyRecord {
-        access_policy: None,
         key_hash: rolter_auth::hash_key(&config.server.resolve_key_pepper(), "sk-user-owned"),
         id: "key-1".to_string(),
         org_id: "org-1".to_string(),
         team_id: "team-1".to_string(),
         project_id: "project-1".to_string(),
         user_id: "user-1".to_string(),
-        models: Vec::new(),
-        providers: Vec::new(),
-        disabled: false,
-        expires_at: None,
-        cache: None,
-        business_unit_id: String::new(),
-        customer_id: String::new(),
+        ..Default::default()
     });
     config.mcp_servers.push(McpServerConfig {
         id: "server-1".to_string(),
@@ -270,20 +262,13 @@ async fn mcp_logging_config(
     config.logging.flush_ms = flush_ms;
     config.logging.payload_capture.enabled = true;
     config.db_virtual_keys.push(VirtualKeyRecord {
-        access_policy: None,
         key_hash: rolter_auth::hash_key(&config.server.resolve_key_pepper(), "sk-mcp-log"),
         id: "key-1".to_string(),
         org_id: "org-1".to_string(),
         team_id: "team-1".to_string(),
         project_id: "project-1".to_string(),
         user_id: "user-1".to_string(),
-        models: Vec::new(),
-        providers: Vec::new(),
-        disabled: false,
-        expires_at: None,
-        cache: None,
-        business_unit_id: String::new(),
-        customer_id: String::new(),
+        ..Default::default()
     });
     config.mcp_servers.push(McpServerConfig {
         id: "server-1".to_string(),
@@ -356,6 +341,154 @@ async fn mcp_proxy_records_a_tool_call_with_key_and_session_owner_attribution() 
     assert!(arguments.contains("rust"), "{arguments}");
     assert!(arguments.contains("[REDACTED]") && !arguments.contains(mcp_token()));
     assert_eq!(row["result"], r#"{"content":[]}"#);
+}
+
+/// A body a Go decoder reads as a `tools/call` is recorded, not only forwarded
+/// (#3399): the log reads its keys the way the tool policy does.
+#[tokio::test]
+async fn mcp_proxy_records_an_allowed_call_written_with_other_key_cases() {
+    let (config, seen) = mcp_logging_config(
+        json!({"jsonrpc": "2.0", "result": {"content": []}}),
+        false,
+        20,
+    )
+    .await;
+    let gateway = serve_gateway(&config).await;
+    let response = reqwest::Client::new()
+        .post(format!("http://{gateway}/mcp/docs"))
+        .header("x-api-key", "sk-mcp-log")
+        .header("content-type", "application/json")
+        .body(r#"{"jsonrpc":"2.0","id":9,"Method":"tools/call","Params":{"Name":"search","Arguments":{"q":"rust"}}}"#)
+        .send()
+        .await
+        .unwrap();
+    assert!(response.status().is_success());
+    let rows = wait_for_mcp_rows(&seen, 1).await;
+    assert_eq!(rows[0]["tool"], "search", "{rows:?}");
+    assert_eq!(rows[0]["status"], "success");
+}
+
+/// An MCP upstream that answers each `tools/call` of a request by its own id: a
+/// batch gets an array of replies, a request with no id gets `202` and nothing.
+async fn mcp_echo_upstream() -> String {
+    let app = Router::new().route(
+        "/{*path}",
+        any(|body: String| async move {
+            let reply = |call: &Value| {
+                json!({"jsonrpc": "2.0", "id": call["id"], "result": {"content": []}})
+            };
+            match serde_json::from_str::<Value>(&body).unwrap_or_default() {
+                Value::Array(calls) => {
+                    Json(calls.iter().map(reply).collect::<Vec<_>>()).into_response()
+                }
+                call if call.get("id").is_none() => axum::http::StatusCode::ACCEPTED.into_response(),
+                call => Json(reply(&call)).into_response(),
+            }
+        }),
+    );
+    format!("http://{}/rpc", serve(app).await)
+}
+
+async fn mcp_post(gateway: SocketAddr, body: Value) -> reqwest::Response {
+    reqwest::Client::new()
+        .post(format!("http://{gateway}/mcp/docs"))
+        .header("x-api-key", "sk-mcp-log")
+        .json(&body)
+        .send()
+        .await
+        .unwrap()
+}
+
+/// #3466: each allowed call of a batch is a row of its own, and a notification
+/// is the only row that carries `notification`.
+#[tokio::test]
+async fn mcp_proxy_records_batch_calls_and_notifications_over_http() {
+    let (mut config, seen) = mcp_logging_config(json!({}), false, 20).await;
+    config.mcp_servers[0].url = mcp_echo_upstream().await;
+    let gateway = serve_gateway(&config).await;
+    let call = |id: u64, tool: &str| json!({"jsonrpc": "2.0", "id": id, "method": "tools/call", "params": {"name": tool}});
+
+    let response = mcp_post(gateway, json!([call(1, "search"), call(2, "fetch")])).await;
+    assert!(response.status().is_success());
+    let _ = response.bytes().await;
+    let rows = wait_for_mcp_rows(&seen, 2).await;
+    let mut tools: Vec<&str> = rows.iter().map(|r| r["tool"].as_str().unwrap()).collect();
+    tools.sort();
+    assert_eq!(tools, ["fetch", "search"]);
+    assert!(rows
+        .iter()
+        .all(|row| row["status"] == "success" && row.get("notification").is_none()));
+
+    let response = mcp_post(
+        gateway,
+        json!({"jsonrpc": "2.0", "method": "tools/call", "params": {"name": "ping"}}),
+    )
+    .await;
+    assert_eq!(response.status(), axum::http::StatusCode::ACCEPTED);
+    let rows = wait_for_mcp_rows(&seen, 3).await;
+    let note = rows.iter().find(|row| row["tool"] == "ping").unwrap();
+    assert_eq!(note["status"], "success");
+    assert_eq!(note["notification"], 1);
+    assert_eq!(
+        rows.iter()
+            .filter(|r| r.get("notification").is_some())
+            .count(),
+        1
+    );
+}
+
+/// #3475: a compressed body to a governed server is refused over real HTTP,
+/// whether `Content-Encoding` is one header line or a second one appended, and
+/// whatever the organization's failure mode says.
+#[tokio::test]
+async fn mcp_proxy_refuses_a_content_encoded_body_to_a_governed_server() {
+    let (mut config, _seen) = mcp_logging_config(json!({}), false, 20).await;
+    config.mcp_servers[0].url = mcp_echo_upstream().await;
+    config
+        .mcp_tool_groups
+        .push(rolter_core::McpToolGroupConfig {
+            id: "group-1".to_string(),
+            org_id: "org-1".to_string(),
+            slug: "readers".to_string(),
+            tools: vec![rolter_core::McpToolRefConfig {
+                server_id: "server-1".to_string(),
+                tool: "search".to_string(),
+            }],
+            ..Default::default()
+        });
+    config.mcp_settings = vec![rolter_core::McpOrgSettingsConfig {
+        org_id: "org-1".into(),
+        connect_timeout_ms: 5000,
+        request_timeout_ms: 30000,
+        max_retries: 0,
+        fail_open: true,
+        allow_unlisted_tools: true,
+    }];
+    let gateway = serve_gateway(&config).await;
+    let body = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"search"}}"#;
+    let send = |encodings: &[&str]| {
+        let mut request = reqwest::Client::new()
+            .post(format!("http://{gateway}/mcp/docs"))
+            .header("x-api-key", "sk-mcp-log")
+            .header("content-type", "application/json")
+            .body(body);
+        for encoding in encodings {
+            request = request.header("content-encoding", *encoding);
+        }
+        request.send()
+    };
+    for encodings in [&["gzip"][..], &["identity", "gzip"], &["br"]] {
+        let response = send(encodings).await.unwrap();
+        assert_eq!(
+            response.status(),
+            axum::http::StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            "{encodings:?}"
+        );
+        let refused: Value = response.json().await.unwrap();
+        assert_eq!(refused["error"]["code"], "mcp_request_unreadable");
+    }
+    assert!(send(&["identity"]).await.unwrap().status().is_success());
+    assert!(send(&[]).await.unwrap().status().is_success());
 }
 
 #[tokio::test]
@@ -444,20 +577,13 @@ async fn mcp_proxy_presents_a_stored_static_credential_without_an_oauth_session(
     let upstream = serve(Router::new().route("/{*path}", any(echo))).await;
     let mut config = GatewayConfig::default();
     config.db_virtual_keys.push(VirtualKeyRecord {
-        access_policy: None,
         key_hash: rolter_auth::hash_key(&config.server.resolve_key_pepper(), "sk-user-owned"),
         id: "key-1".to_string(),
         org_id: "org-1".to_string(),
         team_id: "team-1".to_string(),
         project_id: "project-1".to_string(),
         user_id: "user-1".to_string(),
-        models: Vec::new(),
-        providers: Vec::new(),
-        disabled: false,
-        expires_at: None,
-        cache: None,
-        business_unit_id: String::new(),
-        customer_id: String::new(),
+        ..Default::default()
     });
     config.mcp_servers.push(McpServerConfig {
         id: "server-bearer".to_string(),
@@ -523,20 +649,13 @@ async fn mcp_proxy_presents_a_stored_static_credential_without_an_oauth_session(
 async fn mcp_proxy_refuses_a_credentialled_server_whose_secret_did_not_arrive() {
     let mut config = GatewayConfig::default();
     config.db_virtual_keys.push(VirtualKeyRecord {
-        access_policy: None,
         key_hash: rolter_auth::hash_key(&config.server.resolve_key_pepper(), "sk-user-owned"),
         id: "key-1".to_string(),
         org_id: "org-1".to_string(),
         team_id: "team-1".to_string(),
         project_id: "project-1".to_string(),
         user_id: "user-1".to_string(),
-        models: Vec::new(),
-        providers: Vec::new(),
-        disabled: false,
-        expires_at: None,
-        cache: None,
-        business_unit_id: String::new(),
-        customer_id: String::new(),
+        ..Default::default()
     });
     config.mcp_servers.push(McpServerConfig {
         id: "server-1".to_string(),
@@ -574,20 +693,13 @@ async fn mcp_proxy_applies_the_per_server_request_timeout() {
     let upstream = serve(Router::new().route("/{*path}", any(slow))).await;
     let mut config = GatewayConfig::default();
     config.db_virtual_keys.push(VirtualKeyRecord {
-        access_policy: None,
         key_hash: rolter_auth::hash_key(&config.server.resolve_key_pepper(), "sk-user-owned"),
         id: "key-1".to_string(),
         org_id: "org-1".to_string(),
         team_id: "team-1".to_string(),
         project_id: "project-1".to_string(),
         user_id: "user-1".to_string(),
-        models: Vec::new(),
-        providers: Vec::new(),
-        disabled: false,
-        expires_at: None,
-        cache: None,
-        business_unit_id: String::new(),
-        customer_id: String::new(),
+        ..Default::default()
     });
     config.mcp_servers.push(McpServerConfig {
         id: "server-1".to_string(),
@@ -745,7 +857,7 @@ async fn models_endpoint_lists_route_ids_and_provider_slug_model_ids() {
         targets: vec![Target {
             provider: "vLLM SPB".to_string(),
             model: Some("qwen3".to_string()),
-            weight: 1,
+            ..Default::default()
         }],
         params: Default::default(),
         param_policy: Default::default(),
@@ -804,7 +916,7 @@ async fn a_key_neither_lists_nor_calls_another_orgs_routes_or_providers() {
         targets: vec![Target {
             provider: provider.to_string(),
             model: Some("m".to_string()),
-            weight: 1,
+            ..Default::default()
         }],
         params: Default::default(),
         param_policy: Default::default(),
@@ -939,7 +1051,7 @@ async fn a_project_scoped_provider_is_reached_only_from_its_own_project() {
             .map(|provider| Target {
                 provider: provider.to_string(),
                 model: Some("m".to_string()),
-                weight: 1,
+                ..Default::default()
             })
             .collect(),
         params: Default::default(),
@@ -1109,7 +1221,7 @@ async fn another_orgs_route_shadows_no_address_or_builtin_on_any_path() {
             targets: vec![Target {
                 provider: "their-upstream".to_string(),
                 model: Some("m".to_string()),
-                weight: 1,
+                ..Default::default()
             }],
             params: Default::default(),
             param_policy: Default::default(),
@@ -1266,7 +1378,7 @@ async fn models_endpoint_lists_the_whole_probed_provider_catalogue() {
         targets: vec![Target {
             provider: "openai-edge".to_string(),
             model: Some("gpt-4o".to_string()),
-            weight: 1,
+            ..Default::default()
         }],
         params: Default::default(),
         param_policy: Default::default(),
@@ -1350,7 +1462,7 @@ async fn models_endpoint_serves_route_catalog_metadata_but_not_the_description()
         targets: vec![Target {
             provider: "openai-edge".to_string(),
             model: Some("gpt-4o".to_string()),
-            weight: 1,
+            ..Default::default()
         }],
         params: Default::default(),
         param_policy: Default::default(),
@@ -2052,6 +2164,131 @@ async fn native_responses_lifecycle_is_tenant_scoped_and_pinned() {
     assert_eq!(after_delete.status(), 404);
 }
 
+/// #3461: a stored response keeps its provider as `(org, name)`, not as the
+/// runtime id that served it. When a second org creates a provider of the same
+/// name, the first org's runtime id changes from `openai` to `openai@org-a`
+/// (ADR-0040), and a response created before that must still be retrieved and
+/// deleted on the provider that holds it.
+#[tokio::test]
+async fn a_stored_response_survives_its_provider_name_becoming_shared() {
+    async fn create(State(provider): State<String>) -> impl IntoResponse {
+        Json(json!({"id": format!("resp_{provider}"), "object": "response"}))
+    }
+    async fn retrieve(State(provider): State<String>, Path(id): Path<String>) -> impl IntoResponse {
+        Json(json!({"id": id, "object": "response", "provider": provider}))
+    }
+    async fn delete_response(
+        State(provider): State<String>,
+        Path(id): Path<String>,
+    ) -> impl IntoResponse {
+        Json(json!({"id": id, "deleted": true, "provider": provider}))
+    }
+    async fn upstream(provider: &str) -> SocketAddr {
+        serve(
+            Router::new()
+                .route("/v1/responses", post(create))
+                .route("/v1/responses/{id}", get(retrieve).delete(delete_response))
+                .with_state(provider.to_string()),
+        )
+        .await
+    }
+    let tenancy = |org: &str| {
+        Some(rolter_core::Tenancy {
+            org_id: org.to_string(),
+            project_id: None,
+        })
+    };
+    let org_config = |config: &mut GatewayConfig, org: &str, addr: SocketAddr| {
+        let mut one = config_for("native-model", vec![("openai", addr)]);
+        one.providers[0].kind = ProviderKind::Openai;
+        one.providers[0].tenancy = tenancy(org);
+        one.routes[0].tenancy = tenancy(org);
+        config.providers.append(&mut one.providers);
+        config.routes.append(&mut one.routes);
+        let key = format!("sk-{org}");
+        config.db_virtual_keys.push(VirtualKeyRecord {
+            key_hash: rolter_auth::hash_key(&config.server.resolve_key_pepper(), &key),
+            id: format!("key-{org}"),
+            org_id: org.to_string(),
+            providers: vec!["openai".to_string()],
+            ..Default::default()
+        });
+    };
+    let upstream_a = upstream("a").await;
+    let upstream_b = upstream("b").await;
+    let mut config = GatewayConfig::default();
+    org_config(&mut config, "org-a", upstream_a);
+    let state = rolter_gateway::AppState::with_logging(&config, None);
+    let gw = serve(rolter_gateway::build_router(
+        state.clone(),
+        "/metrics",
+        32 * 1024 * 1024,
+    ))
+    .await;
+    let client = reqwest::Client::new();
+    let created: Value = client
+        .post(format!("http://{gw}/v1/responses"))
+        .bearer_auth("sk-org-a")
+        .json(&json!({"model": "native-model", "input": "hello"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(created["id"], "resp_a", "{created}");
+
+    // org-b takes the name: org-a's provider is `openai@org-a` from now on
+    org_config(&mut config, "org-b", upstream_b);
+    state.reload(&config, 1);
+
+    let retrieved = client
+        .get(format!("http://{gw}/v1/responses/resp_a"))
+        .bearer_auth("sk-org-a")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(retrieved.status(), 200);
+    assert_eq!(
+        retrieved
+            .headers()
+            .get("x-rolter-provider")
+            .and_then(|v| v.to_str().ok()),
+        Some("openai"),
+        "the header carries the display name"
+    );
+    let retrieved: Value = retrieved.json().await.unwrap();
+    assert_eq!(retrieved["provider"], "a", "org-a's own provider holds it");
+    // org-b's key cannot reach org-a's response
+    let foreign = client
+        .get(format!("http://{gw}/v1/responses/resp_a"))
+        .bearer_auth("sk-org-b")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(foreign.status(), 404);
+    let deleted: Value = client
+        .delete(format!("http://{gw}/v1/responses/resp_a"))
+        .bearer_auth("sk-org-a")
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        (&deleted["deleted"], &deleted["provider"]),
+        (&json!(true), &json!("a"))
+    );
+    let gone = client
+        .get(format!("http://{gw}/v1/responses/resp_a"))
+        .bearer_auth("sk-org-a")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(gone.status(), 404);
+}
+
 #[tokio::test]
 async fn response_lifecycle_operations_require_auth_without_leaking_key_scope() {
     let config = GatewayConfig {
@@ -2526,6 +2763,37 @@ async fn param_adjustments_name_what_an_anthropic_upstream_drops() {
     }
 }
 
+/// OpenAI accepts a `temperature` up to 2 and Anthropic up to 1: the gateway
+/// clamps rather than forward a value the upstream would refuse (#3324).
+#[tokio::test]
+async fn a_chat_temperature_above_one_is_clamped_for_an_anthropic_upstream() {
+    let upstream = serve(Router::new().route(
+        "/v1/messages",
+        post(|Json(body): Json<Value>| async move {
+            assert_eq!(body["temperature"], 1.0, "anthropic refuses above 1");
+            anthropic_strict(Json(body)).await
+        }),
+    ))
+    .await;
+    let mut config = config_for("to-anthropic", vec![("anthropic", upstream)]);
+    config.providers[0].kind = ProviderKind::Anthropic;
+    let gw = serve_gateway(&config).await;
+    let response = reqwest::Client::new()
+        .post(format!("http://{gw}/v1/chat/completions"))
+        .json(&json!({
+            "model":"to-anthropic","max_tokens":16,"temperature":1.3,
+            "messages":[{"role":"user","content":"ping"}]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    assert_eq!(
+        param_adjustments(&response).as_deref(),
+        Some("temperature=clamped")
+    );
+}
+
 #[tokio::test]
 async fn param_adjustments_name_what_a_gemini_upstream_drops_for_an_anthropic_client() {
     let upstream = serve(Router::new().fallback(post(gemini_strict))).await;
@@ -2590,8 +2858,17 @@ async fn param_adjustments_name_a_forced_function_an_interactions_upstream_canno
 }
 
 #[tokio::test]
-async fn param_adjustments_name_what_an_openai_upstream_cannot_carry_for_an_anthropic_client() {
-    let upstream = serve(Router::new().route("/v1/chat/completions", post(mock_openai))).await;
+async fn an_anthropic_serial_tool_choice_reaches_an_openai_upstream_as_parallel_tool_calls() {
+    // carried rather than reported since #3325: chat has the same switch as a
+    // top-level flag
+    let upstream = serve(Router::new().route(
+        "/v1/chat/completions",
+        post(|body: Json<Value>| async move {
+            assert_eq!(body["parallel_tool_calls"], false, "{}", body.0);
+            mock_openai(body).await
+        }),
+    ))
+    .await;
     let gw = serve_gateway(&config_for("to-openai", vec![("openai", upstream)])).await;
     let client = reqwest::Client::new();
 
@@ -2608,11 +2885,7 @@ async fn param_adjustments_name_what_an_openai_upstream_cannot_carry_for_an_anth
             .await
             .unwrap();
         assert_eq!(response.status(), 200, "stream={stream}");
-        assert_eq!(
-            param_adjustments(&response).as_deref(),
-            Some("tool_choice=translated"),
-            "stream={stream}"
-        );
+        assert_eq!(param_adjustments(&response), None, "stream={stream}");
     }
 }
 
@@ -2731,6 +3004,115 @@ async fn param_adjustments_are_recorded_on_the_request_log() {
     assert!(row("untouched").get("param_adjustments").is_none());
 }
 
+/// #3462: two orgs each have a `router` route with a complexity tier onto a
+/// `capable` route split into variants. Every per-route series (latency,
+/// variant split, complexity decision) is labelled by the route's runtime
+/// namespace, `name@org` once the name is shared, so each org's numbers are
+/// a series of their own rather than one merged with the other org's.
+#[tokio::test]
+async fn two_orgs_same_named_routes_report_their_own_metric_series() {
+    async fn openai_response() -> Json<Value> {
+        Json(json!({"choices":[{"message":{"role":"assistant","content":"pong"}}]}))
+    }
+    let upstream = serve(Router::new().route("/v1/chat/completions", post(openai_response))).await;
+    let mut config = GatewayConfig::default();
+    for org in ["org-a", "org-b"] {
+        let tenancy = Some(rolter_core::Tenancy {
+            org_id: org.to_string(),
+            project_id: None,
+        });
+        let mut one = config_for("router", vec![("up", upstream)]);
+        one.providers[0].tenancy = tenancy.clone();
+        one.routes[0].tenancy = tenancy.clone();
+        one.routes[0].params.insert(
+            "_rolter_complexity".to_string(),
+            json!({"tiers": [{"name": "complex", "route": "capable"}]}),
+        );
+        let mut capable = one.routes[0].clone();
+        capable.model = "capable".to_string();
+        capable.params.clear();
+        capable.variants = vec![rolter_core::Variant {
+            name: "control".to_string(),
+            weight: 1,
+            targets: std::mem::take(&mut capable.targets),
+            params: Default::default(),
+        }];
+        one.routes.push(capable);
+        config.providers.append(&mut one.providers);
+        config.routes.append(&mut one.routes);
+        config.db_virtual_keys.push(VirtualKeyRecord {
+            key_hash: rolter_auth::hash_key(
+                &config.server.resolve_key_pepper(),
+                &format!("sk-{org}"),
+            ),
+            id: format!("key-{org}"),
+            org_id: org.to_string(),
+            ..Default::default()
+        });
+    }
+    let state = rolter_gateway::AppState::with_logging(&config, None);
+    let gw = serve(rolter_gateway::build_router(
+        state.clone(),
+        "/metrics",
+        32 * 1024 * 1024,
+    ))
+    .await;
+    let client = reqwest::Client::new();
+    // org-a sends twice, org-b once, so a merged series would read three
+    for org in ["org-a", "org-a", "org-b"] {
+        let resp = client
+            .post(format!("http://{gw}/v1/chat/completions"))
+            .bearer_auth(format!("sk-{org}"))
+            .json(&json!({"model": "router", "messages": [{"role": "user", "content": "hi"}]}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        resp.bytes().await.unwrap();
+    }
+    let expected = |org: &str, n: u32| {
+        [
+            format!("rolter_request_latency_ms_count{{model=\"router@{org}\"}} {n}"),
+            format!(
+                "rolter_variant_requests_total{{model=\"router@{org}\",variant=\"control\"}} {n}"
+            ),
+            format!(
+                "rolter_complexity_route_requests_total{{model=\"router@{org}\",tier=\"complex\",\
+                 route=\"capable@{org}\",outcome=\"selected\"}} {n}"
+            ),
+        ]
+    };
+    let mut body = String::new();
+    // the row that feeds the histograms is written as the answer finishes
+    for _ in 0..50 {
+        body = client
+            .get(format!("http://{gw}/metrics"))
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+        if expected("org-b", 1)
+            .iter()
+            .all(|line| body.contains(line.as_str()))
+        {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    for line in expected("org-a", 2)
+        .iter()
+        .chain(expected("org-b", 1).iter())
+    {
+        assert!(body.contains(line.as_str()), "missing {line} in:\n{body}");
+    }
+    assert!(
+        !body.contains("model=\"router\""),
+        "no bare series merges the two orgs:\n{body}"
+    );
+}
+
 #[tokio::test]
 async fn complexity_policy_selects_routes_for_openai_and_anthropic_requests() {
     async fn openai_response() -> Json<Value> {
@@ -2766,8 +3148,7 @@ async fn complexity_policy_selects_routes_for_openai_and_anthropic_requests() {
             strategy: BalancingStrategy::RoundRobin,
             targets: vec![Target {
                 provider: provider.to_string(),
-                model: None,
-                weight: 1,
+                ..Default::default()
             }],
             params: Default::default(),
             param_policy: Default::default(),
@@ -3120,6 +3501,77 @@ async fn realtime_websocket_fails_over_during_connection_establishment() {
         captured_rx.recv().await.unwrap().uri,
         "/v1/realtime?model=realtime-alias"
     );
+}
+
+/// An upstream that answers every realtime handshake with `status`.
+async fn serve_realtime_refusal(status: u16) -> SocketAddr {
+    serve(Router::new().route(
+        "/v1/realtime",
+        get(move || async move {
+            axum::http::StatusCode::from_u16(status)
+                .unwrap()
+                .into_response()
+        }),
+    ))
+    .await
+}
+
+/// #3322: a throttled primary hands the session to the fallback that takes
+/// throttling over, on a classic pool and on a variant alike; an answer the
+/// fallback does not take over never reaches it.
+#[tokio::test]
+async fn realtime_websocket_reaches_a_restricted_fallback_only_for_its_failure() {
+    for variants in [false, true] {
+        for (primary_status, reaches_burst) in [(429, true), (503, false), (401, false)] {
+            let primary = serve_realtime_refusal(primary_status).await;
+            let (burst, mut captured_rx) = serve_realtime_echo().await;
+            let mut config = config_for(
+                "realtime-burst",
+                vec![("primary", primary), ("burst", burst)],
+            );
+            let throttled = vec!["throttled".parse().unwrap()];
+            let route = &mut config.routes[0];
+            route.targets[1].takes_over = throttled;
+            if variants {
+                route.variants = vec![rolter_core::Variant {
+                    name: "only".into(),
+                    weight: 1,
+                    targets: std::mem::take(&mut route.targets),
+                    params: Default::default(),
+                }];
+            }
+            let gw = serve_gateway(&config).await;
+            let dial = tokio_tungstenite::connect_async(realtime_client_request(
+                gw,
+                "realtime-burst",
+                None,
+                None,
+            ))
+            .await;
+            let case = format!("variants={variants} primary={primary_status}");
+            if reaches_burst {
+                let (mut socket, _) = dial.unwrap_or_else(|e| panic!("{case}: {e}"));
+                socket
+                    .send(WebSocketMessage::Text("ping".into()))
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    socket.next().await.unwrap().unwrap().into_text().unwrap(),
+                    "ping",
+                    "{case}"
+                );
+                socket.close(None).await.unwrap();
+                assert!(captured_rx.recv().await.is_some(), "{case}");
+            } else {
+                let error = dial.err().unwrap_or_else(|| panic!("{case}: connected"));
+                assert_eq!(websocket_handshake_status(error), 502, "{case}");
+                assert!(
+                    captured_rx.try_recv().is_err(),
+                    "{case}: the restricted fallback was dialled"
+                );
+            }
+        }
+    }
 }
 
 #[tokio::test]
@@ -3555,8 +4007,7 @@ async fn variant_routing_fails_over_to_next_variant() {
         weight,
         targets: vec![Target {
             provider: provider.to_string(),
-            model: None,
-            weight: 1,
+            ..Default::default()
         }],
         params: Default::default(),
     };
@@ -5922,15 +6373,9 @@ fn scoped_key(
         org_id: "org-1".to_string(),
         team_id: team_id.to_string(),
         project_id: "project-1".to_string(),
-        user_id: String::new(),
-        models: Vec::new(),
         providers,
-        disabled: false,
-        expires_at: None,
-        cache: None,
-        business_unit_id: String::new(),
-        customer_id: String::new(),
         access_policy: policy,
+        ..Default::default()
     }
 }
 
@@ -6290,8 +6735,7 @@ async fn response_lifecycle_rechecks_route_authorization_after_revocation() {
     });
     provider_narrowed.routes[0].targets.push(Target {
         provider: "other".to_string(),
-        model: None,
-        weight: 1,
+        ..Default::default()
     });
     provider_narrowed.db_virtual_keys[0].providers = vec!["other".to_string()];
 
@@ -6524,5 +6968,150 @@ mod template_vars_leak {
         let seen = seen.lock();
         assert_eq!(seen.len(), 1);
         assert!(seen[0].get("rolter_template_vars").is_none(), "{}", seen[0]);
+    }
+}
+
+/// ADR-0038: a gateway that has never applied a snapshot and is refused one
+/// for its format answers `/readyz` with `503 snapshot_format_unsupported`, so
+/// a rollout whose new gateways lead the control plane holds. Once it holds a
+/// snapshot it stays ready on a refusal, and keeps serving its last config.
+#[tokio::test]
+async fn readyz_holds_a_gateway_refused_its_snapshot_format_only_before_a_first_snapshot() {
+    let state = rolter_gateway::AppState::with_logging(&GatewayConfig::default(), None);
+    let gw = serve(rolter_gateway::build_router(
+        state.clone(),
+        "/metrics",
+        32 * 1024 * 1024,
+    ))
+    .await;
+    let readyz = || async {
+        let response = reqwest::get(format!("http://{gw}/readyz")).await.unwrap();
+        (
+            response.status().as_u16(),
+            response.text().await.unwrap_or_default(),
+        )
+    };
+    let metric = |text: &str, name: &str| {
+        text.lines()
+            .find(|line| line.split_whitespace().next() == Some(name))
+            .and_then(|line| line.split_whitespace().nth(1))
+            .map(str::to_string)
+    };
+    let metrics = || async {
+        reqwest::get(format!("http://{gw}/metrics"))
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap()
+    };
+
+    assert_eq!(readyz().await, (200, "ok".to_string()));
+    let text = metrics().await;
+    assert_eq!(
+        metric(&text, "rolter_snapshot_format").as_deref(),
+        Some("0")
+    );
+    assert_eq!(
+        metric(&text, "rolter_snapshot_format_refused").as_deref(),
+        Some("0")
+    );
+
+    // refused before any snapshot: out of the Service
+    assert!(state.refuse_snapshot_format());
+    assert_eq!(
+        readyz().await,
+        (503, "snapshot_format_unsupported".to_string())
+    );
+    assert_eq!(
+        metric(&metrics().await, "rolter_snapshot_format_refused").as_deref(),
+        Some("1")
+    );
+
+    // served once, then refused again: ready on the config it holds
+    state.reload(&GatewayConfig::default(), 3);
+    state.record_snapshot_format(1);
+    assert!(state.refuse_snapshot_format());
+    assert_eq!(readyz().await, (200, "ok".to_string()));
+    let text = metrics().await;
+    assert_eq!(
+        metric(&text, "rolter_snapshot_format").as_deref(),
+        Some("1")
+    );
+    assert_eq!(
+        metric(&text, "rolter_snapshot_format_refused").as_deref(),
+        Some("1")
+    );
+}
+
+/// #3348: a gateway started with `--snapshot-url` is not ready until it applies
+/// its first snapshot, since its bootstrap file holds no key and a managed
+/// gateway refuses every request on an empty key set. A refused format is the
+/// more specific answer. Once a snapshot is applied it stays ready.
+#[tokio::test]
+async fn readyz_holds_a_managed_gateway_until_its_first_snapshot() {
+    let mut state = rolter_gateway::AppState::with_logging(&GatewayConfig::default(), None);
+    state.managed_auth = true;
+    let gw = serve(rolter_gateway::build_router(
+        state.clone(),
+        "/metrics",
+        32 * 1024 * 1024,
+    ))
+    .await;
+    let readyz = || async {
+        let response = reqwest::get(format!("http://{gw}/readyz")).await.unwrap();
+        (
+            response.status().as_u16(),
+            response.text().await.unwrap_or_default(),
+        )
+    };
+
+    assert_eq!(readyz().await, (503, "awaiting_snapshot".to_string()));
+    // a format refusal says more about why no snapshot arrived
+    assert!(state.refuse_snapshot_format());
+    assert_eq!(
+        readyz().await,
+        (503, "snapshot_format_unsupported".to_string())
+    );
+    state.clear_snapshot_format_refusal();
+    assert_eq!(readyz().await, (503, "awaiting_snapshot".to_string()));
+
+    // applied once: ready, and a snapshot that empties the key set later does
+    // not take it back out, since it keeps serving what it was given
+    state.reload(&GatewayConfig::default(), 3);
+    state.record_snapshot_format(1);
+    assert_eq!(readyz().await, (200, "ok".to_string()));
+}
+
+/// #3348: a managed gateway whose bootstrap file carries a virtual key, or
+/// opens auth on purpose, can serve before its first snapshot, so it is ready.
+#[tokio::test]
+async fn readyz_counts_a_managed_gateway_with_bootstrap_keys_as_ready() {
+    let keyed = GatewayConfig {
+        virtual_keys: vec![VirtualKeyConfig {
+            key: "vk-bootstrap".to_string(),
+            name: None,
+            models: vec![],
+            providers: vec![],
+            disabled: false,
+            expires_at: None,
+            cache: None,
+        }],
+        ..GatewayConfig::default()
+    };
+    let mut open = GatewayConfig::default();
+    open.server.require_auth = Some(false);
+    for config in [keyed, open] {
+        let mut state = rolter_gateway::AppState::with_logging(&config, None);
+        state.managed_auth = true;
+        let gw = serve(rolter_gateway::build_router(
+            state,
+            "/metrics",
+            32 * 1024 * 1024,
+        ))
+        .await;
+        let response = reqwest::get(format!("http://{gw}/readyz")).await.unwrap();
+        assert_eq!(response.status().as_u16(), 200);
+        assert_eq!(response.text().await.unwrap(), "ok");
     }
 }

@@ -31,7 +31,16 @@ impl LifecycleCapabilities {
 
 #[derive(Debug, Clone)]
 pub struct ResponseRoute {
+    /// the provider that holds the response: its display name, owned by
+    /// `provider_org`, or its runtime id when `provider_org` is `None`
     pub provider: String,
+    /// the org that owns `provider`, empty for a global one. A response keeps
+    /// the provider's stable identity, `(org, name)`, rather than its runtime
+    /// id, because the runtime id changes from `openai` to `openai@<org>` as
+    /// soon as a second org takes the name (ADR-0040), and a lifecycle call
+    /// for a response stored before that must still reach it (#3461). `None`
+    /// is an entry that recorded the runtime id, resolved as it always was
+    pub provider_org: Option<String>,
     pub target: String,
     /// the model id the caller named when creating the response
     pub model: String,
@@ -51,6 +60,7 @@ pub struct ResponseRoute {
 pub struct RouteTemplate {
     pub tenant: String,
     pub provider: String,
+    pub provider_org: Option<String>,
     pub target: String,
     pub model: String,
     pub route: String,
@@ -66,6 +76,30 @@ impl RouteTemplate {
     pub fn with_route(mut self, route: String) -> Self {
         self.route = route;
         self
+    }
+
+    /// Record the provider by its stable identity, its display `name` and
+    /// owning `org` (empty for a global provider), in place of the runtime id
+    /// the template was made with (#3461).
+    pub fn with_provider_identity(mut self, name: String, org: String) -> Self {
+        self.provider = name;
+        self.provider_org = Some(org);
+        self
+    }
+}
+
+impl ResponseRoute {
+    /// The runtime id of the provider holding the response in `snap`, the
+    /// key of [`Snapshot::providers`](crate::state::Snapshot::providers).
+    /// `None` when that provider is gone from the snapshot.
+    pub fn provider_id<'a>(&'a self, snap: &'a crate::state::Snapshot) -> Option<&'a str> {
+        match &self.provider_org {
+            Some(org) => snap.provider_id(org, &self.provider),
+            None => snap
+                .providers
+                .contains_key(&self.provider)
+                .then_some(self.provider.as_str()),
+        }
     }
 }
 
@@ -115,6 +149,7 @@ impl ResponseRegistry {
         Some(RouteTemplate {
             tenant,
             provider,
+            provider_org: None,
             target,
             // the served route defaults to the named model; the request path
             // overrides it with `with_route` once it knows which route served
@@ -181,6 +216,7 @@ impl ResponseRegistry {
             },
             ResponseRoute {
                 provider: template.provider,
+                provider_org: template.provider_org,
                 target: template.target,
                 model: template.model,
                 route: template.route,
@@ -294,6 +330,56 @@ mod tests {
         let tier = registry.get("a", "resp_tier").unwrap();
         assert_eq!(tier.route, "tier-route");
         assert_eq!(tier.model, "gpt-4o");
+    }
+
+    /// #3461: a route recorded with the provider's `(org, name)` finds its
+    /// provider again after a second org shares the name and the runtime id
+    /// becomes `openai@org-a`; one recorded with the runtime id, as entries
+    /// did before, resolves exactly as it did, so it finds the bare id while
+    /// it exists and nothing once it is gone.
+    #[test]
+    fn a_stored_identity_resolves_across_a_name_becoming_shared() {
+        let provider = |org: &str| rolter_core::ProviderConfig {
+            name: "openai".to_string(),
+            kind: rolter_core::ProviderKind::Openai,
+            api_base: "https://api.openai.com/v1".to_string(),
+            tenancy: Some(rolter_core::Tenancy {
+                org_id: org.to_string(),
+                project_id: None,
+            }),
+            ..Default::default()
+        };
+        let snapshot = |orgs: &[&str]| {
+            let config = rolter_core::GatewayConfig {
+                providers: orgs.iter().map(|org| provider(org)).collect(),
+                ..Default::default()
+            };
+            crate::state::Snapshot::build(&config, &crate::load::LoadTracker::default())
+        };
+        let registry = registry(60, 10);
+        registry.record_body(
+            template(&registry, "a")
+                .with_provider_identity("openai".to_string(), "org-a".to_string()),
+            false,
+            br#"{"id":"resp_stable"}"#,
+        );
+        registry.record_body(template(&registry, "a"), false, br#"{"id":"resp_legacy"}"#);
+        let stable = registry.get("a", "resp_stable").unwrap();
+        let legacy = registry.get("a", "resp_legacy").unwrap();
+        assert_eq!(stable.provider_org.as_deref(), Some("org-a"));
+        assert_eq!(legacy.provider_org, None);
+
+        let unshared = snapshot(&["org-a"]);
+        assert_eq!(stable.provider_id(&unshared), Some("openai"));
+        assert_eq!(legacy.provider_id(&unshared), Some("openai"));
+
+        let shared = snapshot(&["org-a", "org-b"]);
+        assert_eq!(stable.provider_id(&shared), Some("openai@org-a"));
+        assert_eq!(legacy.provider_id(&shared), None);
+        // another org's identity never resolves to org-a's provider
+        let mut foreign = stable.clone();
+        foreign.provider_org = Some("org-c".to_string());
+        assert_eq!(foreign.provider_id(&shared), None);
     }
 
     #[test]

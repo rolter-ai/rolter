@@ -24,6 +24,7 @@ mod adaptive_telemetry;
 mod alerting;
 mod analytics;
 mod analytics_access;
+mod analytics_export;
 #[cfg(feature = "postgres")]
 mod api_tokens;
 #[cfg(feature = "postgres")]
@@ -32,6 +33,7 @@ mod auth;
 mod auth_policy;
 #[cfg(feature = "postgres")]
 mod breaker_state;
+mod call_gap;
 #[cfg(feature = "postgres")]
 mod client_settings;
 #[cfg(feature = "postgres")]
@@ -40,6 +42,7 @@ mod cluster;
 mod collector_config;
 #[cfg(feature = "postgres")]
 mod compatibility_policy;
+mod conn_close;
 #[cfg(feature = "postgres")]
 mod egress_client;
 // the renderer is pure and compiles without a store so its determinism and
@@ -56,8 +59,11 @@ mod crud;
 pub mod deprecation;
 #[cfg(feature = "postgres")]
 mod expiry_sweep;
+mod export_tickets;
 #[cfg(feature = "postgres")]
 mod feature_flags;
+#[cfg(feature = "postgres")]
+mod guardrail_policies;
 #[cfg(feature = "postgres")]
 mod guardrail_trial;
 #[cfg(feature = "postgres")]
@@ -142,6 +148,7 @@ mod security;
 #[cfg(feature = "postgres")]
 pub mod seed;
 mod session_guard;
+mod snapshot_negotiation;
 #[cfg(feature = "postgres")]
 mod sso;
 #[cfg(feature = "postgres")]
@@ -322,6 +329,26 @@ pub struct Args {
         default_value_t = false
     )]
     pub login_trust_forwarded_for: bool,
+    /// most rows one request log CSV export may carry before its body ends in
+    /// an error instead of passing for a complete file; `0` for no bound (#3360)
+    #[arg(long, env = "ROLTER_EXPORT_MAX_ROWS", default_value_t = 1_000_000)]
+    pub export_max_rows: u64,
+    /// longest wall-clock time one request log CSV export may run, in seconds,
+    /// before its body ends in an error; `0` for no bound (#3360)
+    #[arg(long, env = "ROLTER_EXPORT_MAX_SECS", default_value_t = 600)]
+    pub export_max_secs: u64,
+    /// request log CSV exports one control-plane process serves at once; a
+    /// further one is answered `429` with `Retry-After`. `0` for no bound
+    #[arg(long, env = "ROLTER_EXPORT_MAX_CONCURRENT", default_value_t = 4)]
+    pub export_max_concurrent: u32,
+    /// of those, the most one caller (an account or an API token) may hold at
+    /// once. `0` for no bound
+    #[arg(
+        long,
+        env = "ROLTER_EXPORT_MAX_CONCURRENT_PER_CALLER",
+        default_value_t = 1
+    )]
+    pub export_max_concurrent_per_caller: u32,
     /// clickhouse http url; when set, the dashboard usage/cost analytics
     /// endpoints (`/api/v1/analytics/*`) query the `request_logs` table
     #[arg(long, env = "CLICKHOUSE_URL", hide_env_values = true)]
@@ -417,6 +444,10 @@ impl Default for Args {
             login_max_lock_secs: 900,
             login_max_delay_ms: 2000,
             login_trust_forwarded_for: false,
+            export_max_rows: 1_000_000,
+            export_max_secs: 600,
+            export_max_concurrent: 4,
+            export_max_concurrent_per_caller: 1,
             clickhouse_url: None,
             admin_token: None,
             internal_token: None,
@@ -445,9 +476,18 @@ struct ConfigOwned {
     /// dashboard row that takes one, so they decide where an effective rule
     /// comes from (`GET /api/v1/guardrails/effective`)
     guardrail_rules: std::collections::HashSet<String>,
-    /// whether the file's `[guardrail_webhook]` is on, which keeps the
-    /// registry's provider out of the effective config
-    guardrail_webhook: bool,
+    /// names of the `[[semantic_guards.providers]]` and `.policies` the file
+    /// declares, which win over a registry row of the same name (#459)
+    semantic_providers: std::collections::HashSet<String>,
+    semantic_policies: std::collections::HashSet<String>,
+    /// the file's providers, routes and groups as `(org, name)`, a group by
+    /// its slug and a row with no tenancy under the global org. A stored row
+    /// is the file's only when its own org and name are here: an org's row
+    /// that shares a name with a global file row is the org's (#3516). The
+    /// bare-name sets above stay the write-time guard of ADR-0040 section 6
+    provider_rows: std::collections::HashSet<(String, String)>,
+    model_rows: std::collections::HashSet<(String, String)>,
+    group_rows: std::collections::HashSet<(String, String)>,
 }
 
 impl ConfigOwned {
@@ -473,7 +513,18 @@ impl ConfigOwned {
                 .iter()
                 .map(|rule| rule.name.clone())
                 .collect(),
-            guardrail_webhook: config.guardrail_webhook.enabled,
+            semantic_providers: config
+                .semantic_guards
+                .providers
+                .iter()
+                .map(|provider| provider.name.trim().to_string())
+                .collect(),
+            semantic_policies: config
+                .semantic_guards
+                .policies
+                .iter()
+                .map(|policy| policy.name.trim().to_string())
+                .collect(),
             groups: config
                 .provider_groups
                 .iter()
@@ -483,7 +534,41 @@ impl ConfigOwned {
                         .unwrap_or_else(|| rolter_core::slug::slugify(&g.name))
                 })
                 .collect(),
+            provider_rows: config
+                .providers
+                .iter()
+                .map(|p| Self::row(p.tenancy.as_ref(), &p.name))
+                .collect(),
+            model_rows: config
+                .routes
+                .iter()
+                .map(|r| Self::row(r.tenancy.as_ref(), &r.model))
+                .collect(),
+            group_rows: config
+                .provider_groups
+                .iter()
+                .map(|g| {
+                    let slug = g
+                        .slug
+                        .clone()
+                        .unwrap_or_else(|| rolter_core::slug::slugify(&g.name));
+                    Self::row(g.tenancy.as_ref(), &slug)
+                })
+                .collect(),
         }
+    }
+
+    fn row(tenancy: Option<&rolter_core::Tenancy>, name: &str) -> (String, String) {
+        (
+            rolter_core::namespace::org_of(tenancy).to_string(),
+            name.to_string(),
+        )
+    }
+
+    /// Whether the route `model` owned by `tenancy` is the file's own row
+    #[cfg(feature = "postgres")]
+    fn owns_model(&self, tenancy: Option<&rolter_core::Tenancy>, model: &str) -> bool {
+        self.model_rows.contains(&Self::row(tenancy, model))
     }
 
     /// Whether a readonly provider or provider group answers `slug`. The
@@ -600,6 +685,16 @@ struct ControlState {
     /// OTLP histograms for snapshot generation and API latency (#845). Inert,
     /// and free, on every deployment without an OTLP endpoint
     metrics: rolter_core::telemetry::ControlHistograms,
+    /// the bounds on a request log CSV export and the count of those running
+    /// (#3360). Process-local on purpose: it protects this process's
+    /// connections and ClickHouse queries, so replicas each hold their own
+    export_gate: Arc<analytics_export::ExportGate>,
+    /// single-use download tickets for the analytics exports (#3504): the
+    /// lifetime, and the in-memory store used when there is no database
+    export_tickets: Arc<export_tickets::Tickets>,
+    /// the least time between two SMTP relay checks by one caller (#3394)
+    #[cfg_attr(not(feature = "postgres"), allow(dead_code))]
+    mail_check_gap: Arc<call_gap::CallGap>,
     /// failed-login counters guarding the password endpoints (#1079). Shared
     /// across replicas through redis when one is configured, process-local
     /// otherwise; a default value counts nothing
@@ -809,6 +904,15 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         )
     };
 
+    let export_gate = Arc::new(analytics_export::ExportGate::new(
+        analytics_export::ExportLimits::new(
+            args.export_max_rows,
+            args.export_max_secs,
+            args.export_max_concurrent,
+            args.export_max_concurrent_per_caller,
+        ),
+    ));
+
     let gateway_url = Arc::new(args.gateway_url.trim_end_matches('/').to_string());
     tracing::info!(gateway_url = %gateway_url, "proxying /gw/* to the gateway");
     // one bounded request to github at boot and every few hours, so the
@@ -832,6 +936,9 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         public_url: public_url_from_env(),
         cors: Arc::default(),
         metrics: metrics.clone(),
+        export_gate: export_gate.clone(),
+        export_tickets: Arc::default(),
+        mail_check_gap: Arc::default(),
         login_throttle: login_throttle.clone(),
         trust_forwarded_for: args.login_trust_forwarded_for,
         update_check: update_check.clone(),
@@ -856,6 +963,9 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         public_url: public_url_from_env(),
         cors: Arc::default(),
         metrics: metrics.clone(),
+        export_gate: export_gate.clone(),
+        export_tickets: Arc::default(),
+        mail_check_gap: Arc::default(),
         login_throttle: login_throttle.clone(),
         trust_forwarded_for: args.login_trust_forwarded_for,
         update_check: update_check.clone(),
@@ -923,11 +1033,12 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     );
 
     tracing::info!(%addr, ui_dir = %args.ui_dir.display(), "rolter-control listening");
-    let listener = tokio::net::TcpListener::bind(addr).await?;
+    // a stalled export closes its own connection at its deadline (#3477)
+    let listener = conn_close::CloseableListener(tokio::net::TcpListener::bind(addr).await?);
 
     // connect info carries the socket peer address into the request, which is
     // the only client identity the failed-login throttle can trust (#1079)
-    let app = app.into_make_service_with_connect_info::<SocketAddr>();
+    let app = conn_close::MakeCloseable(app);
 
     let shutdown = shutdown_channel();
     let Some(internal_addr) = args.internal_addr else {
@@ -1093,7 +1204,8 @@ fn api_not_found(path: &str) -> Response {
     (
         StatusCode::NOT_FOUND,
         Json(json!({"error": {
-            "message": format!("no such endpoint: {path}"),
+            // a mistyped download URL must not hand its secret back (#3504)
+            "message": format!("no such endpoint: {}", export_tickets::redact_path(path)),
             // stable code so the dashboard can tell "this route is not mounted
             // on this control plane" (a store-less deployment) from any other 404
             "code": "no_such_endpoint",
@@ -1311,6 +1423,7 @@ fn build_app_with(state: ControlState, mount_internal: bool) -> Router {
             .merge(mcp_oauth_flow::router())
             .merge(feature_flags::router())
             .merge(guardrails::router())
+            .merge(guardrail_policies::router())
             .merge(guardrail_trial::router())
             .merge(labels::router())
             .merge(logging_settings::router())
@@ -1591,6 +1704,12 @@ pub async fn test_app_with_mailer(
         Some("https://rolter.example.com".to_string()),
     );
     state.mailer = Some(mailer);
+    // a short gap between relay checks, so a test can run two without waiting
+    // the production five seconds (#3394)
+    state.mail_check_gap = Arc::new(call_gap::CallGap::new(
+        std::time::Duration::from_millis(400),
+        std::time::Duration::from_millis(50),
+    ));
     Ok(build_app_with(state, true))
 }
 
@@ -1626,6 +1745,9 @@ fn test_state(
         metrics: Default::default(),
         // real, with production defaults: the wiring is part of what these
         // tests cover, and no test signs in wrongly five times by accident
+        export_gate: Default::default(),
+        export_tickets: Default::default(),
+        mail_check_gap: Default::default(),
         login_throttle: login_throttle::LoginThrottle::new(Default::default(), String::new(), None),
         trust_forwarded_for: false,
         // never on the network from a test; the endpoint's disabled shape is
@@ -1773,11 +1895,12 @@ async fn build_store(
 /// default project no longer has is seeded again, so deleting a default only
 /// lasts until the next restart unless the file drops it too.
 ///
-/// A route name is held once across the deployment, the same rule the API and
-/// `rolter-seed --import` enforce (#1845): a default whose name another org's
-/// route or a readonly route already has, or that is the `slug/…` address of
-/// another org's or a readonly provider or group, is skipped with a warning,
-/// since a duplicate name would stop the snapshot from building for every org.
+/// A route name is held once per org, the same rule the API and
+/// `rolter-seed --import` enforce (#1857): a default whose name another
+/// project of the default org or a readonly route already has, or that is the
+/// `slug/…` address of another org's or a readonly provider or group, is
+/// skipped with a warning. Another org's route of the same name is no reason
+/// to skip it (ADR-0040).
 /// The builtin `fake-llm` is the operator's to replace, so a default of that
 /// name is seeded as before.
 #[cfg(feature = "postgres")]
@@ -1817,14 +1940,14 @@ async fn seed_default_models(pool: &sqlx::PgPool, config: &GatewayConfig) -> any
         }
         if readonly.models.contains(&route.model)
             || readonly.holds_address_of(&route.model)
-            || routes.model_in_use(&route.model).await?
+            || routes.model_in_use(&route.model, Some(org_id)).await?
             || routes
                 .name_takes_address_outside_org(&route.model, Some(org_id))
                 .await?
         {
             tracing::warn!(
                 model = %route.model,
-                "models.default not seeded: the name is already in use elsewhere in this deployment"
+                "models.default not seeded: the name is already in use in the default organization or by a readonly row"
             );
             continue;
         }
@@ -1843,6 +1966,9 @@ async fn seed_default_models(pool: &sqlx::PgPool, config: &GatewayConfig) -> any
             rolter_core::BalancingStrategy::Adaptive => "adaptive",
             rolter_core::BalancingStrategy::LoraAware => "lora_aware",
             rolter_core::BalancingStrategy::PredictedLatency => "predicted_latency",
+            // parsing a file refuses an unknown strategy (#3347); the column's
+            // check constraint would refuse it if it got here
+            rolter_core::BalancingStrategy::Unknown => "unknown",
         };
         let created = routes.create(project_id, &route.model, strategy).await?;
         let params = serde_json::to_value(&route.params)?;
@@ -1856,6 +1982,11 @@ async fn seed_default_models(pool: &sqlx::PgPool, config: &GatewayConfig) -> any
                         provider.id,
                         target.model.as_deref(),
                         target.weight as i32,
+                        &target
+                            .takes_over
+                            .iter()
+                            .map(|c| c.to_string())
+                            .collect::<Vec<_>>(),
                     )
                     .await?;
             } else {
@@ -1943,6 +2074,9 @@ fn provider_kind_str(kind: &rolter_core::ProviderKind) -> &'static str {
         Falcon => "falcon",
         SystemOne => "system_one",
         Infinity => "infinity",
+        // parsing a file refuses an unknown kind (#3347); the column's check
+        // constraint would refuse it if it got here
+        Unknown => "unknown",
     }
 }
 
@@ -1952,10 +2086,10 @@ fn provider_kind_str(kind: &rolter_core::ProviderKind) -> &'static str {
 /// and one the default org deleted is seeded again on the next restart.
 /// Seeded providers are DB-owned and editable — not config-owned.
 ///
-/// A default whose name another provider holds, or whose slug a provider or
-/// provider group anywhere in the deployment (readonly rows included) already
+/// A default whose name another provider of the default org holds, or whose
+/// slug a provider or provider group of that org or a readonly row already
 /// answers, is skipped with a warning rather than written as a duplicate: the
-/// same deployment-wide rule the API enforces (#1845).
+/// same per-org rule the API enforces (#1857).
 #[cfg(feature = "postgres")]
 async fn seed_default_providers(pool: &sqlx::PgPool, config: &GatewayConfig) -> anyhow::Result<()> {
     if config.provider_defaults.is_empty() {
@@ -1984,13 +2118,13 @@ async fn seed_default_providers(pool: &sqlx::PgPool, config: &GatewayConfig) -> 
         }
         if readonly.providers.contains(&provider.name)
             || readonly.holds_slug(&slug)
-            || repo.name_in_use(&provider.name).await?
-            || repo.address_slug_in_use(&slug, None).await?
+            || repo.name_in_use(&provider.name, Some(org_id)).await?
+            || repo.address_slug_in_use(&slug, Some(org_id), None).await?
         {
             tracing::warn!(
                 provider = %provider.name,
                 %slug,
-                "providers.default not seeded: the name or slug is already in use elsewhere in this deployment"
+                "providers.default not seeded: the name or slug is already in use in the default organization or by a readonly row"
             );
             continue;
         }
@@ -2082,13 +2216,13 @@ async fn seed_default_provider_groups(
         }
         if readonly.holds_slug(&slug)
             || rolter_store::postgres::repo::ProviderRepo(pool)
-                .address_slug_in_use(&slug, None)
+                .address_slug_in_use(&slug, Some(org_id), None)
                 .await?
         {
             tracing::warn!(
                 group = %group.name,
                 %slug,
-                "provider_groups.default not seeded: the slug is already in use elsewhere in this deployment"
+                "provider_groups.default not seeded: the slug is already in use in the default organization or by a readonly row"
             );
             continue;
         }
@@ -2148,6 +2282,9 @@ fn balancing_strategy_str(strategy: rolter_core::BalancingStrategy) -> &'static 
         Adaptive => "adaptive",
         LoraAware => "lora_aware",
         PredictedLatency => "predicted_latency",
+        // parsing a file refuses an unknown strategy (#3347); the column's
+        // check constraint would refuse it if it got here
+        Unknown => "unknown",
     }
 }
 
@@ -2308,6 +2445,10 @@ struct ProviderKindInfo {
     /// the `api_base` a hosted kind is pinned to unless the provider sets
     /// `allow_custom_api_base`, or `null` for a kind with no pin (#1133)
     pinned_api_base: Option<&'static str>,
+    /// whether the specification registry records no located API reference for
+    /// the kind, so that it speaks an OpenAI-compatible API at a stable base is
+    /// unverified (#3428)
+    unverified: bool,
 }
 
 /// The per-kind facts the dashboard states instead of guessing: the `api_base`
@@ -2331,6 +2472,7 @@ async fn get_provider_kinds(_: session_guard::AnySession) -> Json<Vec<ProviderKi
                 request_path: kind.primary_upstream_path(),
                 auth_header: kind.auth_header("").0,
                 pinned_api_base: kind.pinned_api_base(),
+                unverified: rolter_core::spec_registry::is_unverified(*kind),
             })
             .collect(),
     )
@@ -2476,6 +2618,56 @@ fn snapshot_problems(
     (problems, omitted)
 }
 
+/// Sample `rolter_config_problems{kind}` for `version`, once per version (#3542).
+///
+/// The counts are those of every line `GET /api/v1/config/problems` lists for
+/// the whole deployment, classified by where the line comes from rather than
+/// by its wording: the sanitizer's records and lines and the structural
+/// problems for `config` as the store loaded it, before any format's
+/// down-step, and the store's own records, which say whether a line is a
+/// misread row or a bootstrap shadow. With no `config` (the store refused to
+/// load) only the store's records count, as only they are listed.
+///
+/// It runs beside the snapshot rather than in it, so no gateway waits on the
+/// store's second read. A sample that cannot read the store's records gives
+/// its claim back, so the next build of the same version tries again.
+fn sample_config_problems(state: &ControlState, version: i64, config: Option<&GatewayConfig>) {
+    if !state.metrics.config_problems().claim(version) {
+        return;
+    }
+    let config = config.cloned();
+    let state = state.clone();
+    tokio::spawn(async move {
+        use rolter_core::telemetry::{ConfigProblemCounts, ConfigProblemKind};
+        let gauge = state.metrics.config_problems();
+        let mut counts = ConfigProblemCounts::default();
+        if let Some(mut config) = config {
+            let report = sanitize_snapshot(&state, &mut config);
+            counts.add(ConfigProblemKind::Omitted, report.omitted.len());
+            // every omitted record has its line among the problems
+            counts.add(
+                ConfigProblemKind::Sanitized,
+                report.problems.len().saturating_sub(report.omitted.len()),
+            );
+            if let Err(fatal) = config.validate_snapshot() {
+                counts.add(ConfigProblemKind::Invalid, fatal.len());
+            }
+        }
+        match state.store.load_problem_records().await {
+            Ok(records) => {
+                for record in records {
+                    counts.add(record.kind, 1);
+                }
+                gauge.record(version, counts);
+            }
+            Err(error) => {
+                tracing::warn!(%error, "could not sample the config problems");
+                gauge.release(version);
+            }
+        }
+    });
+}
+
 /// The lines of `all` that `seen` also has, with multiplicity and in the order
 /// of `all`: two tenants' identical lines leave one for a caller who sees one.
 #[cfg(feature = "postgres")]
@@ -2583,6 +2775,11 @@ struct SnapshotQuery {
     /// the gateway's last-seen config version; if it's already current, the
     /// control plane replies `304 Not Modified` with no body
     version: Option<i64>,
+    /// the snapshot formats the gateway reads, as `2` or `1-2` (ADR-0038).
+    /// Absent from every gateway that predates negotiation, which reads format
+    /// 1 only. Kept as the raw string so a malformed value answers
+    /// `400 invalid_query` with the grammar rather than axum's rejection
+    formats: Option<String>,
 }
 
 /// Attach the polling node's operator-requested state, so a drain reaches it on
@@ -2607,12 +2804,30 @@ fn with_node_state(response: Response, _desired_state: &Option<String>) -> Respo
 }
 
 /// Runtime snapshot endpoint gateways poll to pick up config changes without
-/// a restart. Returns `{"version": N, "config": GatewayConfig}`, or `304` if
-/// the caller's `version` is already current.
+/// a restart. Returns `{"format": F, "version": N, "config": GatewayConfig}`,
+/// `304` if the caller's `version` is already current, or `406` when it reads
+/// no snapshot format this control plane serves (ADR-0038).
 async fn get_snapshot(
     State(state): State<ControlState>,
     headers: axum::http::HeaderMap,
     Query(query): Query<SnapshotQuery>,
+) -> Response {
+    get_snapshot_with(
+        state,
+        headers,
+        query,
+        snapshot_negotiation::SnapshotFormats::PRODUCTION,
+    )
+    .await
+}
+
+/// [`get_snapshot`] serving `formats` rather than this build's own, so tests
+/// can stand in for a control plane that serves a second format.
+async fn get_snapshot_with(
+    state: ControlState,
+    headers: axum::http::HeaderMap,
+    query: SnapshotQuery,
+    formats: snapshot_negotiation::SnapshotFormats,
 ) -> Response {
     use tracing::Instrument as _;
 
@@ -2635,7 +2850,7 @@ async fn get_snapshot(
     // `.instrument`, not a held guard: a span that is created but never entered
     // does not parent the spans created inside it, so `snapshot.sanitize` came
     // out as a sibling of `snapshot.build` rather than a child of it
-    let built = build_snapshot(state, headers, query)
+    let built = build_snapshot(state, headers, query, formats)
         .instrument(span.clone())
         .await;
 
@@ -2653,8 +2868,8 @@ async fn get_snapshot(
 /// One snapshot build, with the numbers the span and histograms need.
 struct BuiltSnapshot {
     response: Response,
-    /// Bounded (`ok` / `not_modified` / `error`), so it is safe as a metric
-    /// attribute — unlike `version`, which is unbounded and stays on the span.
+    /// Bounded (`ok` / `not_modified` / `error` / `refused`), so it is safe as
+    /// a metric attribute — unlike `version`, which is unbounded and stays on the span.
     outcome: &'static str,
     version: i64,
     /// Serialized payload size. `0` for a 304, which transfers no body.
@@ -2670,20 +2885,79 @@ impl BuiltSnapshot {
             bytes: 0,
         }
     }
+
+    /// A poll the format negotiation turned away: a `formats` that does not
+    /// parse, or one this control plane cannot serve (ADR-0038).
+    fn refused(response: Response, version: i64) -> Self {
+        Self {
+            response,
+            outcome: "refused",
+            version,
+            bytes: 0,
+        }
+    }
 }
 
 async fn build_snapshot(
     state: ControlState,
     headers: axum::http::HeaderMap,
     query: SnapshotQuery,
+    formats: snapshot_negotiation::SnapshotFormats,
 ) -> BuiltSnapshot {
+    use rolter_core::snapshot_format::{self as format, NegotiationError};
+
+    // the format comes before the `304` and before the store is read, so a
+    // gateway that cannot be served learns it on its next poll even when
+    // nothing changed, at no database cost (ADR-0038 section 3)
+    let negotiated = format::negotiate(query.formats.as_deref(), formats.served);
     // a node that identifies itself is recorded in the cluster inventory; the
-    // poll it already makes is the heartbeat, so there is no second channel
+    // poll it already makes is the heartbeat, so there is no second channel.
+    // It records the formats the node reads and the one it is served (#3351)
     #[cfg(feature = "postgres")]
-    let desired_state = cluster::record_heartbeat(&state, &headers, query.version).await;
+    let desired_state = {
+        let (stated, served) = match &negotiated {
+            Ok((served, requested)) => (Some(*requested), Some(*served)),
+            Err(NegotiationError::Invalid(_)) => (None, None),
+            Err(NegotiationError::Unsupported(refusal)) => (Some(refusal.requested), None),
+        };
+        cluster::record_heartbeat(&state, &headers, query.version, stated, served).await
+    };
     #[cfg(not(feature = "postgres"))]
     let desired_state: Option<String> = None;
-    let _ = &headers;
+    let (served_format, requested) = match negotiated {
+        Ok(negotiated) => negotiated,
+        Err(NegotiationError::Invalid(invalid)) => {
+            return BuiltSnapshot::refused(
+                with_node_state(
+                    snapshot_negotiation::invalid(invalid.to_string()),
+                    &desired_state,
+                ),
+                0,
+            );
+        }
+        Err(NegotiationError::Unsupported(refusal)) => {
+            snapshot_negotiation::log_refusal(
+                &headers,
+                snapshot_negotiation::UNSUPPORTED,
+                refusal.served,
+                refusal.requested,
+                &refusal.to_string(),
+            );
+            return BuiltSnapshot::refused(
+                with_node_state(snapshot_negotiation::unsupported(&refusal), &desired_state),
+                0,
+            );
+        }
+    };
+    // a deprecated format says so on every answer it is served with, the 304
+    // that confirms one included, so a long-idle gateway learns it too
+    let finish = |response: Response| {
+        snapshot_negotiation::with_deprecation(
+            with_node_state(response, &desired_state),
+            formats.deprecations,
+            served_format,
+        )
+    };
     let version = match state.store.current_version().await {
         Ok(v) => v,
         Err(err) => {
@@ -2700,21 +2974,68 @@ async fn build_snapshot(
     };
     if query.version.is_some_and(|requested| requested >= version) {
         return BuiltSnapshot {
-            response: with_node_state(StatusCode::NOT_MODIFIED.into_response(), &desired_state),
+            // every format is built from the same config_version, so one
+            // counter serves them all
+            response: finish(StatusCode::NOT_MODIFIED.into_response()),
             outcome: "not_modified",
             version,
             bytes: 0,
         };
     }
-    match state.store.load().await {
+    let loaded = state.store.load().await;
+    sample_config_problems(&state, version, loaded.as_ref().ok());
+    match loaded {
         Ok(mut config) => {
+            // an older gateway gets what its format can express: the omitting
+            // half of each down-step runs before the sanitizer, so the cascade
+            // below removes what referenced an omitted entity and says so
+            let down_omitted = match format::down_convert(
+                formats.chain,
+                &mut config,
+                formats.served.max,
+                served_format,
+            ) {
+                Ok(lines) => lines,
+                Err(refusal) => {
+                    #[cfg(feature = "postgres")]
+                    cluster::record_format_refused(&state, &headers).await;
+                    snapshot_negotiation::log_refusal(
+                        &headers,
+                        snapshot_negotiation::INEXPRESSIBLE,
+                        formats.served,
+                        requested,
+                        &refusal.to_string(),
+                    );
+                    return BuiltSnapshot::refused(
+                        with_node_state(
+                            snapshot_negotiation::inexpressible(
+                                &refusal,
+                                formats.served,
+                                requested,
+                            ),
+                            &desired_state,
+                        ),
+                        version,
+                    );
+                }
+            };
             // prune rows that are only unservable by themselves (a route whose
             // targets aren't set up yet) so one half-built entry can't 500 the
             // snapshot and freeze config propagation for every other tenant
             let sanitize = rolter_core::stage_span!("snapshot.sanitize");
             let omitted = {
                 let _entered = sanitize.enter();
-                sanitize_snapshot(&state, &mut config).problems
+                let mut omitted = down_omitted;
+                // a gateway that states no formats predates per-org namespaces
+                // and refuses a repeated name, so every org row whose name
+                // another row shares is left out for it, failing closed
+                // (ADR-0040 section 5). before the sanitizer, so its cascade
+                // prunes what referenced a provider left out
+                if query.formats.is_none() {
+                    omitted.extend(rolter_core::namespace::fold_for_legacy_gateway(&mut config));
+                }
+                omitted.extend(sanitize_snapshot(&state, &mut config).problems);
+                omitted
             };
             if !omitted.is_empty() {
                 tracing::warn!(
@@ -2769,13 +3090,32 @@ async fn build_snapshot(
                 // being served and the dashboard can say "this provider is not
                 // being served, because ...". Omitted when empty: it is on
                 // every poll of every gateway in the fleet
-                if omitted.is_empty() {
-                    serde_json::to_vec(&json!({"version": version, "config": config}))
-                } else {
-                    serde_json::to_vec(
-                        &json!({"version": version, "config": config, "problems": omitted}),
-                    )
-                }
+                //
+                // `format` is what this answer is, so a captured snapshot is
+                // self-describing; a gateway that predates it ignores the field
+                //
+                // the rewriting half of each down-step works on the serialized
+                // config, and crosses no step for a gateway of this format
+                serde_json::to_value(&config).and_then(|mut config| {
+                    format::down_rewrite(
+                        formats.chain,
+                        &mut config,
+                        formats.served.max,
+                        served_format,
+                    );
+                    if omitted.is_empty() {
+                        serde_json::to_vec(
+                            &json!({"format": served_format, "version": version, "config": config}),
+                        )
+                    } else {
+                        serde_json::to_vec(&json!({
+                            "format": served_format,
+                            "version": version,
+                            "config": config,
+                            "problems": omitted,
+                        }))
+                    }
+                })
             };
             let body = match body {
                 Ok(body) => body,
@@ -2798,7 +3138,7 @@ async fn build_snapshot(
                 axum::http::HeaderValue::from_static("application/json"),
             );
             BuiltSnapshot {
-                response: with_node_state(response, &desired_state),
+                response: finish(response),
                 outcome: "ok",
                 version,
                 bytes,
@@ -3058,6 +3398,16 @@ mod tests {
             ("login_lock_secs", args.login_lock_secs.to_string()),
             ("login_max_lock_secs", args.login_max_lock_secs.to_string()),
             ("login_max_delay_ms", args.login_max_delay_ms.to_string()),
+            ("export_max_rows", args.export_max_rows.to_string()),
+            ("export_max_secs", args.export_max_secs.to_string()),
+            (
+                "export_max_concurrent",
+                args.export_max_concurrent.to_string(),
+            ),
+            (
+                "export_max_concurrent_per_caller",
+                args.export_max_concurrent_per_caller.to_string(),
+            ),
             (
                 "login_trust_forwarded_for",
                 args.login_trust_forwarded_for.to_string(),
@@ -3498,6 +3848,9 @@ mod tests {
             public_url: Arc::new(normalize_public_url(None)),
             cors: Arc::default(),
             metrics: Default::default(),
+            export_gate: Default::default(),
+            export_tickets: Default::default(),
+            mail_check_gap: Default::default(),
             login_throttle: Default::default(),
             trust_forwarded_for: false,
             update_check: update_check::UpdateChecker::disabled(),
@@ -3576,6 +3929,18 @@ mod tests {
         assert!(rule("mistral"));
         assert!(rule("openrouter"));
         assert!(rule("azure_openai"));
+
+        // the kinds the specification registry records as unverified (#3428)
+        let mut unverified: Vec<&str> = kinds
+            .iter()
+            .filter(|k| k["unverified"] == true)
+            .filter_map(|k| k["kind"].as_str())
+            .collect();
+        unverified.sort_unstable();
+        assert_eq!(
+            unverified,
+            ["falcon", "krutrim", "mts_ai", "rakuten", "rinna"]
+        );
     }
 
     /// #2811: the sheet previews the address a request goes to, so the
@@ -3991,6 +4356,53 @@ mod tests {
         assert_eq!(body["problems"], json!([]), "{body}");
     }
 
+    /// An org's route that the control plane's config file repeats with no
+    /// org is a warning on the problems endpoint, not a row left out (#3516).
+    #[tokio::test]
+    async fn an_org_route_a_bootstrap_route_shares_a_name_with_is_a_warning() {
+        let route = |tenancy: Option<rolter_core::Tenancy>| rolter_core::ModelRoute {
+            model: "gpt-4o".to_string(),
+            strategy: Default::default(),
+            targets: vec![],
+            params: Default::default(),
+            param_policy: Default::default(),
+            advanced: Default::default(),
+            cache: None,
+            variants: Default::default(),
+            tenancy,
+        };
+        let mut file = GatewayConfig::default();
+        file.routes.push(route(None));
+        let mut db = GatewayConfig::default();
+        db.routes.push(route(Some(rolter_core::Tenancy {
+            org_id: "org-a".to_string(),
+            project_id: None,
+        })));
+        let mut state = state_with_token(None);
+        state.store = Arc::new(rolter_store::MergedConfigStore::new(
+            file,
+            Arc::new(rolter_store::InMemoryConfigStore::new(db)),
+        ));
+        let addr = serve(build_app_with_internal(state)).await;
+        let body: Value = reqwest::Client::new()
+            .get(format!("http://{addr}/api/v1/config/problems"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let lines: Vec<&str> = body["problems"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(Value::as_str)
+            .filter(|line| line.contains("shadows the readonly route"))
+            .collect();
+        assert_eq!(lines.len(), 1, "{body}");
+        assert!(lines[0].starts_with("warning: organization org-a's route 'gpt-4o'"));
+    }
+
     /// A store that refuses to build a config, and can say why (#2943).
     struct RefusingConfigStore {
         explanation: Option<Vec<String>>,
@@ -4178,6 +4590,68 @@ mod tests {
             .await
             .unwrap();
         assert!(body.get("problems").is_none(), "{body}");
+    }
+
+    /// `rolter_config_problems{kind}` follows the config: a problem counts
+    /// from the first snapshot built after it appears, and stops counting
+    /// from the first one built after it is gone (#3542).
+    #[tokio::test]
+    async fn the_config_problem_gauge_moves_with_the_config() {
+        use rolter_core::telemetry::ConfigProblemKind::{self, *};
+
+        let bootstrap: GatewayConfig = serde_json::from_value(json!({
+            "providers": [{"name": "p", "kind": "openai_compatible", "api_base": "https://p.example"}],
+            "routes": [{"model": "chat", "targets": [{"provider": "p"}]}],
+        }))
+        .unwrap();
+        let org = json!({"org_id": "org-a"});
+        let troubled: GatewayConfig = serde_json::from_value(json!({
+            "providers": [
+                {"name": "q", "kind": "openai_compatible", "api_base": "https://q.example",
+                 "tenancy": org},
+                {"name": "broken", "kind": "openai_compatible", "api_base": "not a url",
+                 "tenancy": org},
+            ],
+            // shadows the file's `chat` for org-a (#3516)
+            "routes": [{"model": "chat", "targets": [{"provider": "q"}], "tenancy": org}],
+        }))
+        .unwrap();
+        let inner = Arc::new(rolter_store::InMemoryConfigStore::new(troubled));
+        let mut state = state_with_token(None);
+        state.store = Arc::new(rolter_store::MergedConfigStore::new(
+            bootstrap,
+            inner.clone(),
+        ));
+        let metrics = state.metrics.clone();
+        let addr = serve(build_app_with_internal(state)).await;
+        // the sample runs beside the snapshot, so wait for the one of `version`
+        let sampled = |version: i64| {
+            let metrics = metrics.clone();
+            async move {
+                reqwest::get(format!("http://{addr}/internal/snapshot"))
+                    .await
+                    .unwrap();
+                for _ in 0..200 {
+                    match metrics.config_problems().sampled() {
+                        Some((at, counts)) if at == version => return counts,
+                        _ => tokio::time::sleep(std::time::Duration::from_millis(10)).await,
+                    }
+                }
+                panic!("no sample of version {version}");
+            }
+        };
+        let counts = sampled(1).await;
+        assert_eq!(counts.get(Omitted), 1, "{counts:?}");
+        assert_eq!(counts.get(BootstrapShadow), 1, "{counts:?}");
+        assert_eq!(counts.get(Invalid), 0, "{counts:?}");
+        assert_eq!(counts.get(Misread), 0, "{counts:?}");
+
+        // the broken provider and the shadowing route are gone
+        inner.save(GatewayConfig::default()).await.unwrap();
+        let counts = sampled(2).await;
+        for kind in ConfigProblemKind::ALL {
+            assert_eq!(counts.get(kind), 0, "{} {counts:?}", kind.label());
+        }
     }
 
     #[tokio::test]
@@ -4821,14 +5295,14 @@ mod tests {
         assert!(!owned.holds_address_of("other/qwen3"));
     }
 
-    /// The startup seeders write into the default org and used to look for a
-    /// collision only there, so a default whose name another org already held
-    /// became a second row, and a duplicate route or provider name makes
-    /// `/internal/snapshot` refuse for every org (#1845). They skip every such
-    /// default now, the free ones still land, and the snapshot still builds.
+    /// The startup seeders write into the default org. Names are per org
+    /// (#1857), so a default whose name or slug another org already holds is
+    /// seeded all the same; one the default org itself already answers, or a
+    /// route on another org's `slug/model` address, is skipped. Both orgs' rows
+    /// reach the snapshot, and it still builds.
     #[cfg(feature = "postgres")]
     #[tokio::test]
-    async fn default_seeds_skip_what_another_org_already_holds() {
+    async fn default_seeds_skip_only_what_the_default_org_already_holds() {
         use rolter_core::{GroupMember, ModelRoute, ProviderConfig, ProviderGroupConfig};
         use rolter_store::postgres::{test_database, test_schema::TestSchema};
 
@@ -4921,14 +5395,15 @@ mod tests {
         };
         let mut config = GatewayConfig {
             provider_defaults: vec![
-                // another org's provider name
+                // another org's provider name: seeded
                 provider("openai", None),
-                // another org's group slug, under a free name
+                // another org's group slug, under a free name: seeded
                 provider("fresh", Some("pool")),
                 provider("seeded", None),
             ],
             provider_group_defaults: vec![
-                // another org's provider slug, and another org's group slug
+                // another org's provider slug: seeded; a slug `fresh` now holds
+                // in the default org: skipped
                 group("edge"),
                 group("pool"),
                 group("seeded-pool"),
@@ -4936,7 +5411,8 @@ mod tests {
             ..Default::default()
         };
         config.models.defaults = vec![
-            // another org's route name, and another org's provider address
+            // another org's route name: seeded; another org's provider address:
+            // skipped
             route("gpt-4o"),
             route("edge/gpt-4o"),
             route("mine"),
@@ -4957,24 +5433,28 @@ mod tests {
             }
         };
         assert_eq!(
-            names("select name from providers where org_id = $1", default_org).await,
-            ["seeded"]
-        );
-        assert_eq!(
             names(
-                "select slug from provider_groups where org_id = $1",
+                "select name from providers where org_id = $1 order by name",
                 default_org
             )
             .await,
-            ["seeded-pool"]
+            ["fresh", "openai", "seeded"]
         );
         assert_eq!(
             names(
-                "select model from routes where project_id = $1",
+                "select slug from provider_groups where org_id = $1 order by slug",
+                default_org
+            )
+            .await,
+            ["edge", "seeded-pool"]
+        );
+        assert_eq!(
+            names(
+                "select model from routes where project_id = $1 order by model",
                 default_project
             )
             .await,
-            ["mine"]
+            ["gpt-4o", "mine"]
         );
 
         // a second start changes nothing, and the fleet's snapshot still builds
@@ -4985,11 +5465,12 @@ mod tests {
             .load()
             .await
             .unwrap();
-        for model in ["gpt-4o", "edge/gpt-4o", "mine"] {
+        for (model, held) in [("gpt-4o", 2), ("edge/gpt-4o", 0), ("mine", 1)] {
             let holders = snapshot.routes.iter().filter(|r| r.model == model).count();
-            assert!(holders <= 1, "{model} is held {holders} times");
+            assert_eq!(holders, held, "{model}");
         }
-        assert_eq!(snapshot.providers.len(), 3, "{:?}", snapshot.providers);
+        // two orgs' `openai`, plus `edge`, `fresh` and `seeded`
+        assert_eq!(snapshot.providers.len(), 5, "{:?}", snapshot.providers);
         snapshot.sanitize_for_snapshot();
         if let Err(problems) = snapshot.validate() {
             panic!("the snapshot no longer builds: {problems:?}");
