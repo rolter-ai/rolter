@@ -65,7 +65,7 @@ async fn mcp_columns(ch: &crate::analytics::ClickHouseClient) -> anyhow::Result<
         Err(err) if crate::analytics::is_transport(&err) => return Err(err),
         Err(err) => {
             tracing::warn!(
-                error = %err,
+                error = %rolter_core::redact::redact_urls_in_text(&format!("{err:#}")),
                 "could not read the columns of mcp_tool_call_logs; selecting every optional column"
             );
             McpColumns::ALL
@@ -864,6 +864,75 @@ mod tests {
         assert_eq!(
             parse_keyset_cursor(Some("not-a-cursor"), "event_id"),
             Err("cursor must be timestamp|event_id".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn mcp_columns_probe_error_log_redacts_urls() {
+        use tracing_subscriber::layer::SubscriberExt;
+
+        #[derive(Clone, Default)]
+        struct WarnLogs(Arc<Mutex<Vec<String>>>);
+
+        impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for WarnLogs {
+            fn on_event(
+                &self,
+                event: &tracing::Event<'_>,
+                _: tracing_subscriber::layer::Context<'_, S>,
+            ) {
+                struct Visitor(String);
+                impl tracing::field::Visit for Visitor {
+                    fn record_debug(
+                        &mut self,
+                        field: &tracing::field::Field,
+                        value: &dyn std::fmt::Debug,
+                    ) {
+                        self.0.push_str(&format!("{}={value:?} ", field.name()));
+                    }
+                }
+                if *event.metadata().level() == tracing::Level::WARN {
+                    let mut visitor = Visitor(String::new());
+                    event.record(&mut visitor);
+                    self.0.lock().push(visitor.0);
+                }
+            }
+        }
+
+        use axum::routing::post;
+        let secret = "secret_pass_999";
+        let app = Router::new().fallback(post(move || async move {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!(
+                    "Code: 42. DB::Exception: Error query at http://admin:{secret}@127.0.0.1:8123/"
+                ),
+            )
+                .into_response()
+        }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, app).await });
+
+        let ch = crate::analytics::ClickHouseClient::new(&url);
+
+        let warn_logs = WarnLogs::default();
+        let subscriber = tracing_subscriber::registry().with(warn_logs.clone());
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let probed = mcp_columns(&ch).await.unwrap();
+
+        assert_eq!(probed, McpColumns::ALL);
+        let logs = warn_logs.0.lock().clone();
+        assert_eq!(logs.len(), 1);
+        assert!(
+            !logs[0].contains(secret),
+            "secret leaked in log: {}",
+            logs[0]
+        );
+        assert!(
+            logs[0].contains("http://***@127.0.0.1:8123/"),
+            "url not redacted: {}",
+            logs[0]
         );
     }
 }
