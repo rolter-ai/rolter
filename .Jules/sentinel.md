@@ -68,6 +68,10 @@
 **Learning:** `proxy_ws` in `crates/rolter-control/src/proxy.rs` previously logged raw `tungstenite` error messages with `tracing::warn!(%error, ...)` when WebSocket client requests failed URL parsing. Because `tungstenite` quotes the entire URL in its error message, any sensitive query parameters (like virtual keys or session tokens) were logged unredacted in server log streams.
 **Prevention:** Always run error strings generated from client or upstream URL parsing through `rolter_core::redact::redact_urls_in_text` before logging them with `tracing`.
 
+## 2026-10-24 - Redact Sensitive URL Credentials in Gateway Redis Error Logs
+
+**Learning:** `ReconnectingRedis::new` and operations in `rate_limits.rs`, `budgets.rs`, and `cache.rs` previously logged raw `err` strings directly via `tracing::warn!`. Because Redis error messages can echo the connection URL (which may contain userinfo credentials such as `redis://user:password@host:6379/0`), logging raw error strings without URL redaction can leak Redis credentials into server logs.
+**Prevention:** Always wrap error strings from Redis connection or operation failures with `rolter_core::redact::redact_urls_in_text(&err.to_string())` before passing them to `tracing::warn!`.
 ## 2026-10-25 - Consistent 409 Conflict Errors for Config-Owned Provider Groups
 
 **Learning:** `require_group_not_config_owned` and `require_group_row_not_config_owned` in `crates/rolter-control/src/crud/provider_groups.rs` previously returned `ApiError::Core(Error::Config(...))` which rendered as HTTP 400 Bad Request, whereas mutating other config-owned resources (providers, routes, models) returned HTTP 409 Conflict.
