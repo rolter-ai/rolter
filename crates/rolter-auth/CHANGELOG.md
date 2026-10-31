@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+## [1.0.0](https://github.com/rolter-ai/rolter/compare/rolter-auth-v0.1.0...rolter-auth-v1.0.0) - 2026-10-31
+
+### Documentation
+- consolidate both doc trees under docs/ as user-docs and dev-docs [#1516] ([#1517](https://github.com/rolter-ai/rolter/pull/1517)) by [@ormeilu](https://github.com/ormeilu)
+- record what 1.0.0 guarantees on each api surface ([#1427](https://github.com/rolter-ai/rolter/pull/1427)) by [@ormeilu](https://github.com/ormeilu)
+
+### Features
+- *(core)* external specification source registry, provenance in both openapi documents [#907] ([#3358](https://github.com/rolter-ai/rolter/pull/3358)) by [@ormeilu](https://github.com/ormeilu)
+- *(auth)* totp second factor for local accounts [#1078] ([#1324](https://github.com/rolter-ai/rolter/pull/1324)) by [@ormeilu](https://github.com/ormeilu)
+
+### Refactoring
+- *(auth)* retire the unwired ldap identity provider [#2731] ([#2740](https://github.com/rolter-ai/rolter/pull/2740)) by [@ormeilu](https://github.com/ormeilu)
 ## [0.0.11](https://github.com/rolter-ai/rolter/compare/rolter-auth-v0.0.10...rolter-auth-v0.0.11) - 2026-08-13
 
 ### Features
