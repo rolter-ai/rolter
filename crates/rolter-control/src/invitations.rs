@@ -30,9 +30,11 @@ use chrono::{Duration, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use rolter_store::postgres::crypto::Kek;
 use rolter_store::postgres::models::{Invitation, User};
 use rolter_store::postgres::repo::{
-    InvitationRepo, MembershipRepo, OrgRepo, ProjectRepo, SessionRepo, TeamRepo, UserRepo,
+    InvitationRepo, MembershipRepo, NewInvitation, OrgRepo, ProjectRepo, SessionRepo, TeamRepo,
+    UserRepo,
 };
 
 use crate::auth::{generate_session_token, session_pepper};
@@ -47,6 +49,10 @@ use crate::ControlState;
 /// short enough that a link forwarded on and forgotten stops working
 const INVITE_TTL_HOURS: i64 = 24 * 7;
 
+/// the least time between two mail attempts for one invitation, so a resend
+/// cannot be repeated into a flood (#3304)
+const RESEND_MIN_GAP_SECS: i64 = 60;
+
 /// session handed to a newly created invitee on acceptance, so they land signed
 /// in rather than at a login form they have not used yet
 const SESSION_TTL_HOURS: i64 = 24 * 7;
@@ -58,6 +64,11 @@ pub fn router() -> Router<ControlState> {
             get(list_invitations).post(create_invitation),
         )
         .route("/api/v1/invitations/{id}", axum::routing::delete(revoke))
+        .route("/api/v1/invitations/{id}/resend", post(resend))
+        .route(
+            "/api/v1/orgs/{org_id}/invitations/mail-check",
+            post(check_mail_relay),
+        )
         // unauthenticated by necessity: the invitee has no account yet. the
         // token in the path is the credential
         .route("/api/v1/invitations/accept/{token}", get(preview))
@@ -76,7 +87,9 @@ struct CreateInvitation {
     scope_id: Option<Uuid>,
 }
 
-/// the invitation plus the token, which is shown exactly once
+/// the invitation plus the token, which is shown exactly once. The invitation
+/// row says whether the link was also emailed (`mail_status`, #1828); the link
+/// is here whatever that says
 #[derive(Debug, Serialize)]
 struct CreatedInvitation {
     invitation: Invitation,
@@ -119,6 +132,14 @@ async fn create_invitation(
     authorize(&state, &principal, chain, cap!("invitation", Create)).await?;
 
     let (token, token_hash) = generate_invite_token();
+    // the token is kept sealed so a resend can mail the same link, but only
+    // where there is a relay to resend through and a KEK to seal it with; an
+    // invitation without it is simply not resendable (#3304)
+    let sealed = if state.mailer.is_some() {
+        Kek::from_env().and_then(|kek| kek.encrypt(&token).ok())
+    } else {
+        None
+    };
     // the signed-in account, superadmin or not: a superadmin session is not a
     // `Principal::User`, and an account with no membership is on no org's list,
     // so matching the variant alone left the sender off every invitation a
@@ -127,13 +148,18 @@ async fn create_invitation(
     let (invitation, replaced) = InvitationRepo(pool_ref)
         .create(
             org_id,
-            &email,
-            &body.role,
-            team,
-            project,
-            &token_hash,
-            invited_by,
-            Utc::now() + Duration::hours(INVITE_TTL_HOURS),
+            NewInvitation {
+                email: &email,
+                role: &body.role,
+                team_id: team,
+                project_id: project,
+                token_hash: &token_hash,
+                invited_by,
+                expires_at: Utc::now() + Duration::hours(INVITE_TTL_HOURS),
+                sealed_token: sealed
+                    .as_ref()
+                    .map(|(ciphertext, nonce)| (ciphertext.as_slice(), nonce.as_slice())),
+            },
         )
         .await?;
 
@@ -150,11 +176,216 @@ async fn create_invitation(
     )
     .await;
 
+    let accept_url = accept_url(crate::sso::public_base_url(&state), &token);
+    let invitation = deliver(&state, &principal, invitation, &accept_url).await;
+
     Ok(Json(CreatedInvitation {
-        accept_url: accept_url(crate::sso::public_base_url(&state), &token),
+        accept_url,
         invitation,
         token,
     }))
+}
+
+/// Email the invitee their link, when the deployment has a mail transport
+/// (#1828), and record the outcome on the row.
+///
+/// A failure is a status on the invitation and an audit entry, never an error:
+/// the invitation exists and its link is returned to the admin either way, so a
+/// relay that is down costs the convenience and not the ability to invite.
+/// Without a transport the row stays `not_configured` and nothing is audited,
+/// which is exactly the behaviour before mail existed.
+async fn deliver(
+    state: &ControlState,
+    principal: &Principal,
+    mut invitation: Invitation,
+    accept_url: &str,
+) -> Invitation {
+    let Some(mailer) = state.mailer.as_ref() else {
+        return invitation;
+    };
+    let org_name = match OrgRepo(pool(state)).get(invitation.org_id).await {
+        Ok(org) => org.name,
+        // the name only decorates the message; its absence must not stop it
+        Err(_) => "your organization".to_string(),
+    };
+    let (subject, body) = message(&org_name, &invitation, accept_url);
+    let outcome = mailer.send(&invitation.email, &subject, &body).await;
+    let (status, error) = match &outcome {
+        Ok(()) => ("sent", None),
+        Err(failure) => ("failed", Some(failure.reason.as_str())),
+    };
+    if let Err(err) = InvitationRepo(pool(state))
+        .record_mail(invitation.id, status, error)
+        .await
+    {
+        tracing::warn!(error = %err, invitation_id = %invitation.id, "could not record the invitation mail outcome");
+    }
+    invitation.mail_status = status.to_string();
+    invitation.mail_attempted_at = Some(Utc::now());
+    invitation.mail_error = error.map(str::to_string);
+    // neither the address nor the link: the invitation id names the row, and
+    // the reason is the one an admin sees on it
+    log_audit(
+        state,
+        principal,
+        Some(invitation.org_id),
+        if outcome.is_ok() {
+            "invitation.mail_sent"
+        } else {
+            "invitation.mail_failed"
+        },
+        "invitation",
+        invitation.id,
+        serde_json::json!({ "reason": error }),
+    )
+    .await;
+    invitation
+}
+
+/// Mail a pending invitation's link again (#3304). It is the same link: the
+/// token is read back from its sealed copy, so the invitee's earlier message
+/// still works and the expiry does not move. The outcome is recorded on the row
+/// and audited exactly as the first send is, and `invitation.resend` records
+/// that an admin asked for it.
+async fn resend(
+    principal: Principal,
+    State(state): State<ControlState>,
+    Path(id): Path<Uuid>,
+) -> ApiResult<Json<Invitation>> {
+    let existing = InvitationRepo(pool(&state)).get(id).await?;
+    // the bar for sending an invitation is the bar for sending it again
+    authorize(
+        &state,
+        &principal,
+        invitation_chain(&state, &existing).await?,
+        cap!("invitation", Create),
+    )
+    .await?;
+    if existing.accepted_at.is_some() || existing.revoked_at.is_some() {
+        return Err(ApiError::Conflict(
+            "the invitation is no longer pending".to_string(),
+        ));
+    }
+    if existing.expires_at <= Utc::now() {
+        return Err(ApiError::Conflict(
+            "the invitation has expired; revoke it and invite the address again".to_string(),
+        ));
+    }
+    if state.mailer.is_none() {
+        return Err(ApiError::Conflict(
+            "invitation mail is not configured on this control plane (ROLTER_SMTP_URL)".to_string(),
+        ));
+    }
+    let not_resendable = || {
+        ApiError::Conflict(
+            "this invitation's link was not kept, so it cannot be mailed again; revoke it and \
+             invite the address again"
+                .to_string(),
+        )
+    };
+    let (ciphertext, nonce) = InvitationRepo(pool(&state))
+        .sealed_token(id)
+        .await?
+        .ok_or_else(not_resendable)?;
+    // a KEK that no longer opens the copy is the same dead end for the admin
+    let token = Kek::from_env()
+        .and_then(|kek| kek.decrypt(&ciphertext, &nonce).ok())
+        .ok_or_else(not_resendable)?;
+
+    // a lost email is fixed with one resend, not a loop of them: the relay's
+    // own limits and the invitee's inbox are not ours to spend
+    if let Some(wait) = InvitationRepo(pool(&state))
+        .claim_mail_attempt(id, RESEND_MIN_GAP_SECS)
+        .await?
+    {
+        return Err(ApiError::TooManyAttempts(std::time::Duration::from_secs(
+            wait.max(1) as u64,
+        )));
+    }
+    log_audit(
+        &state,
+        &principal,
+        Some(existing.org_id),
+        "invitation.resend",
+        "invitation",
+        existing.id,
+        serde_json::json!({"role": existing.role}),
+    )
+    .await;
+    let accept_url = accept_url(crate::sso::public_base_url(&state), &token);
+    let invitation = deliver(&state, &principal, existing, &accept_url).await;
+    Ok(Json(invitation))
+}
+
+/// What a relay check answers: whether it passed and, when not, the stage that
+/// failed and a reason that names no address or credential.
+#[derive(Debug, Serialize)]
+struct MailCheck {
+    ok: bool,
+    /// `connect`, `tls`, `auth` or `relay`; absent when the check passed
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stage: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reason: Option<String>,
+}
+
+/// Check the SMTP relay that carries invitations without sending one (#3304):
+/// connect, set up TLS and authenticate, then hang up. Guarded as sending an
+/// invitation at the org is, since it is the relay those invitations use, and
+/// limited to one run per caller every few seconds (`429` with `Retry-After`).
+async fn check_mail_relay(
+    principal: Principal,
+    State(state): State<ControlState>,
+    Path(org_id): Path<Uuid>,
+) -> ApiResult<Json<MailCheck>> {
+    authorize(
+        &state,
+        &principal,
+        ScopeChain::org(org_id),
+        cap!("invitation", Create),
+    )
+    .await?;
+    let Some(mailer) = state.mailer.as_ref() else {
+        return Err(ApiError::Conflict(
+            "invitation mail is not configured on this control plane (ROLTER_SMTP_URL)".to_string(),
+        ));
+    };
+    // every run dials the relay, negotiates TLS and authenticates, so a caller
+    // gets one in a few seconds, not as many as it can send (#3394)
+    state
+        .mail_check_gap
+        .claim(&crate::analytics_export::caller_key(&principal))
+        .map_err(|wait| ApiError::TooManyAttempts(wait.max(std::time::Duration::from_secs(1))))?;
+    Ok(Json(match mailer.check().await {
+        Ok(()) => MailCheck {
+            ok: true,
+            stage: None,
+            reason: None,
+        },
+        Err(failure) => MailCheck {
+            ok: false,
+            stage: Some(failure.stage.as_str()),
+            reason: Some(failure.reason),
+        },
+    }))
+}
+
+/// The subject and plain-text body of an invitation email. The link is the
+/// message; everything around it says who it is from and when it stops working.
+fn message(org_name: &str, invitation: &Invitation, accept_url: &str) -> (String, String) {
+    // an organization name is an admin's text going into a header: control
+    // characters have no business there, and a line break would end the header
+    let org: String = org_name.chars().filter(|c| !c.is_control()).collect();
+    let subject = format!("You have been invited to {org} on Rolter");
+    let body = format!(
+        "You have been invited to join {org} on Rolter as {role}.\n\n\
+         Accept the invitation and choose your password here:\n{accept_url}\n\n\
+         The link works once and expires on {expires}. If you were not expecting \
+         this, you can ignore this message.\n",
+        role = invitation.role,
+        expires = invitation.expires_at.format("%Y-%m-%d %H:%M UTC"),
+    );
+    (subject, body)
 }
 
 async fn list_invitations(

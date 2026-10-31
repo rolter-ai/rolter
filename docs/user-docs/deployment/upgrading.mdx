@@ -6,6 +6,8 @@ description: "How Rolter carries your configuration across a version boundary, h
 
 Upgrading Rolter should be a change of image tag. Your `rolter.toml` is carried forward for you, and skipping releases costs nothing — you do not have to step through intermediate versions to get from an old build to a current one.
 
+There is one upgrade order, and every note on this page follows it: **the control plane first, then the gateways, and a release's new settings only once every gateway runs it.** [Upgrade order](#upgrade-order) explains why.
+
 This page covers the config half of an upgrade. The database half is separate and already automatic: schema migrations are embedded in the binary and applied on start, and they are append-only, so the same rules apply there.
 
 ## Preview an upgrade before you run it
@@ -19,10 +21,14 @@ rolter check --config rolter.toml --migrations
 It reads the file and reports what the new build would do with it. Nothing is written — not by this command, and not by the gateway at boot.
 
 ```
-config schema: version 1 -> 2, 1 migration(s) pending
+config schema: version 1 -> 3, 2 migration(s) pending
   1 -> 2  rewrite the deprecated [[providers]] / [[provider_groups]] arrays as the tiered { readonly, default } tables (ADR-0022)
       providers: the deprecated [[providers]] array becomes [providers] readonly = [...]; 7 entries moved to the readonly tier
+  2 -> 3  rewrite a provider's api_key / api_key_env as an api_keys entry and its egress_proxy as a one-element egress_proxies (#1720)
+      providers.readonly[0].api_key_env: api_key_env becomes a single entry of api_keys; the provider resolves the same credential
 ```
+
+The second step does not retire anything. `api_key`, `api_key_env` and `egress_proxy` keep working in every file, forever, so a config can still be rolled back onto an older build; they are only deprecated, and Rolter logs a warning that names the plural spelling when it loads a file that still uses them.
 
 The listing is exhaustive. Anything not named there is untouched.
 
@@ -30,12 +36,18 @@ The listing is exhaustive. Anything not named there is untouched.
   A pending migration is not a fault. It is reported as a warning so that a CI job running `rolter check --strict` can notice a config drifting behind, but a config that is behind starts normally and serves traffic normally.
 </Note>
 
+## `rolter check` runs the gateway's validation
+
+From this release `rolter check --config` runs the same validation the gateway runs at startup and reports each problem it finds as an error: a route on an unknown provider, a duplicate route, a target with weight `0`, a budget whose limit is not positive, a route whose every target is a [fallback target](/reliability/fallback-targets), and the rest. Before, the gateway only logged these and served everything else, and `rolter check` let the file through.
+
+The Helm chart's preflight init containers and the compose stack's preflight run `rolter check --strict`, so **a config with such a problem now stops the rollout** instead of starting a gateway that answers the affected routes with errors. Run the new binary's `rolter check --config rolter.toml` against your file before you upgrade, and fix what it lists. The `rolter.example.toml` the release ships, and the file `rolter init` writes from it, pass it.
+
 ## What `schema_version` is
 
 A `rolter.toml` may carry a version stamp at the top:
 
 ```toml
-schema_version = 2
+schema_version = 3
 ```
 
 It tells Rolter which spelling of the config the file was written for. You do not have to add it. A file without one is treated as the oldest version, which is correct for every config written before the stamp existed.
@@ -48,13 +60,13 @@ There is no version you have to stop at on the way.
 
 ## Rolling back
 
-Rolling back to an older Rolter is supported, and the config will not be what stops you.
+Rolling back to an older Rolter is supported, and the config will not be what stops you. Roll back in the reverse of the [upgrade order](#upgrade-order): the gateways first, then the control plane.
 
 Rolter's config types never reject a key they do not recognise. An older build reading a newer file ignores what it has not heard of and starts. The same holds for the stamp itself: a build that meets a `schema_version` from the future loads the file unchanged rather than refusing.
 
 ```
 warn   config is newer than this build
-       The file is stamped schema_version 5, and this build understands 2. It loads
+       The file is stamped schema_version 5, and this build understands 3. It loads
        unchanged and keys this build does not know are ignored, so a rollback still
        starts — but settings written for the newer version are silently inactive.
 ```
@@ -69,21 +81,123 @@ That last clause is the part to plan around. A rollback starts, but any setting 
 
 During a rolling upgrade your control plane and your gateways are briefly different builds. Config migration is per-process and happens at load, so each replica carries its own file forward independently and a mixed fleet is not a problem for the config.
 
-The control-plane-to-gateway snapshot is a separate matter and is not yet version-negotiated. Until it is, upgrade the gateways and the control plane from the same release rather than leaving a mixed fleet running longer than a rollout takes.
+The control-plane-to-gateway snapshot is negotiated. Each gateway states the snapshot format it reads every time it polls, and the control plane serves that format or refuses with `406 Not Acceptable`. A mismatched pair is therefore either compatible or refused out loud, never a config the gateway applies in part. Most releases do not change the format at all, and the release notes say when one does.
+
+### Upgrade order
+
+1. **Upgrade the control plane first, then the gateways.** Upgrade every control-plane replica, then every gateway. A gateway may lag behind the control plane, but it may not lead it.
+2. **With the Helm chart, one `helm upgrade` does this**, even though both Deployments move together. When the format changed, a new gateway pod that starts before a new control plane is ready answers `/readyz` with `503 snapshot_format_unsupported`. It stays out of the Service and the rollout waits, while the old pods keep serving. While the rollout waits, capacity drops by at most the Deployment's `maxUnavailable`. `progressDeadlineSeconds` may report the rollout as stalled even though it then completes on its own. To avoid that wait, upgrade in two steps with the chart's per-component tags, as in [Two steps with the Helm chart](#two-steps-with-the-helm-chart).
+3. **Do not turn on what a release introduces until every gateway runs it.** An older gateway leaves out any route, key or provider that uses the new feature, and names it in its log. For a deployment-wide setting, it stops receiving config changes until it is upgraded. A new value of an existing setting, such as a new provider kind, balancing strategy or budget period, is read the safe way instead: the gateway does not dial a provider of a kind it does not know, refuses a route whose strategy it does not know, refuses requests under a budget whose period it does not know, and reads an unknown failure mode as fail-closed. A budget or rate limit on a scope it does not know is the one reading that reaches past its own entity: the gateway cannot tell which requests it was meant for, so it counts **every** request it serves, every tenant's, against that cap, which can refuse traffic well beyond the scope you set. A fallback target's failure class it does not know takes over nothing. It logs a warning for each such value and keeps applying the rest of the config, revoked keys included.
+4. **Skipping releases.** A gateway can skip any number of releases. The control plane can skip releases as long as it still serves the oldest gateway's format. The **Deprecations** section of the release notes lists each format that is going away, and when.
+5. **Rolling back goes in reverse:** first the gateways, then the control plane. Rolling the control plane back across a database migration needs the restore described in [Rolling back](#rolling-back).
+
+### Two steps with the Helm chart
+
+The chart tags the control plane and the gateways apart. `control.image.tag` and `gateway.image.tag` each default to `image.tag`, which defaults to the chart's `appVersion`, so a values file that sets neither renders exactly as before. To follow the upgrade order one Deployment at a time, hold the gateways on the release they run while the control plane moves:
+
+```bash
+# 1. the control plane moves; the gateways stay where they are
+helm upgrade rolter ./charts/rolter --reuse-values \
+  --set image.tag=1.4.0 --set gateway.image.tag=1.3.2
+kubectl rollout status deploy/rolter-rolter-control
+
+# 2. the gateways follow, once every control-plane replica is ready
+helm upgrade rolter ./charts/rolter --reuse-values --set gateway.image.tag=
+kubectl rollout status deploy/rolter-rolter-gateway
+```
+
+Clearing `gateway.image.tag` in the second step puts the gateways back on `image.tag`, so the release is again one version. The same setting holds the gateways on an older release on purpose, or rolls them back without touching the control plane: set `gateway.image.tag` to the release to run. Never set it to a release newer than the control plane's, since a gateway may not lead its control plane. Each Deployment's preflight init container runs its own component's image.
+
+A control plane serves an older format for at least two minor releases and 90 days after a newer one replaces it. A gateway newer than its control plane is not supported. It works when the format did not change between the two builds, and is refused when it did. See [Versioning](/community/versioning#control-plane-and-gateway).
+
+### What a mismatch looks like
+
+On each refused gateway you get one line when the refusal starts, then the usual `config snapshot poll failed` warning on every poll:
+
+```
+ERROR snapshot format refused: the control plane serves formats 2-3 and this gateway
+      reads format 1 (snapshot_format_unsupported). Keeping the config applied at
+      version 41. Upgrade this gateway, or roll the control plane back.
+```
+
+- A gateway that does receive a snapshot but meets a value from a newer release in it (a new provider kind, strategy or budget period) is not refused: it reads that value fail-closed and reports it on `rolter_snapshot_unknown_values{kind}`, which names the kind of value, never the value.
+- The `rolter_snapshot_format_refused` gauge reads `1`, and `rolter_config_reload_failures_total` keeps climbing. `rolter_snapshot_format` is the format of the snapshot the gateway holds. See [Metrics](/observability/metrics).
+- A gateway that never received a snapshot answers `/readyz` with `503 snapshot_format_unsupported`. A gateway that did receive one stays ready and keeps serving its last config. It stops picking up changes, revoked keys included, until the mismatch is fixed.
+- The control plane logs a `warn` that names the node, its build and both format ranges, once per node. On the **Cluster** screen, the node shows as not converged once the config moves past the version it holds.
+
+A gateway built before negotiation existed shows only the line it already writes, `config snapshot poll failed: snapshot endpoint returned 406 Not Acceptable:`, followed by the message and what to do.
+
+A config that the older format cannot express at all is refused with `snapshot_format_inexpressible` instead, and the gateway behaves the same way. This happens only for a deployment-wide setting the older gateways cannot carry. A route, key or provider they cannot carry is left out instead (rule 3 above).
 
 ### Captured payloads from older gateways
 
-Roll the gateways out before the control plane when you upgrade from v0.1.0 or earlier with [payload capture](/observability/log-settings#payload-capture) on.
+This section follows the [upgrade order](#upgrade-order) like the rest: the control plane first, then the gateways, then the ClickHouse files below whenever suits you. It explains what you see in the window between those steps, and how to keep that window short.
 
 ClickHouse migrations under `clickhouse/` add columns that newer gateways write, for example `log_id` on `request_logs` and `request_payloads` (`012_request_log_key.sql`). Gateways insert with `input_format_skip_unknown_fields=1`, so a gateway upgraded before the migration is applied keeps logging and simply drops the new field until it is. Apply the migration to keep the new column filled; until you do, captured bodies join their log rows the old way, by request id and timestamp.
 
-Six columns of `request_logs` are added by files an existing deployment applies by hand, because ClickHouse only runs the files under `clickhouse/` when its data directory is first created: `015_upstream_attempts.sql` (`upstream_status` and `attempts`), `016_lifecycle_operation.sql` (`lifecycle_operation`) `017_cache_write_1h.sql` (`cache_write_1h_tokens`), `018_guardrail_events.sql` (`guardrail_events`, what each guardrail rule did to a request) and `019_plugin_events.sql` (`plugin_events`, what each plugin did). For the bundled compose stack, run a file with `docker compose -f docker/docker-compose.yml exec -T clickhouse clickhouse-client --multiquery < clickhouse/017_cache_write_1h.sql`; every statement is idempotent, so running a file twice is harmless.
+Eight columns of `request_logs` are added by files an existing deployment applies by hand, because ClickHouse only runs the files under `clickhouse/` when its data directory is first created: `015_upstream_attempts.sql` (`upstream_status` and `attempts`), `016_lifecycle_operation.sql` (`lifecycle_operation`) `017_cache_write_1h.sql` (`cache_write_1h_tokens`), `018_guardrail_events.sql` (`guardrail_events`, what each guardrail rule did to a request) `019_plugin_events.sql` (`plugin_events`, what each plugin did) `021_request_log_seq.sql` (`seq`, the gateway's per-process start sequence that orders requests inside one millisecond) and `023_fallback_reason.sql` (`fallback_reason`, the failure that sent a request on to a [fallback target](/reliability/fallback-targets)). For the bundled compose stack, run a file with `docker compose -f docker/docker-compose.yml exec -T clickhouse clickhouse-client --multiquery < clickhouse/017_cache_write_1h.sql`; every statement is idempotent, so running a file twice is harmless.
 
-None of the six has to come before the control plane. **LLM Logs** and `GET /api/v1/analytics/invocations` look at which of them the table has and read a default for each one it lacks, so a control plane newer than the file lists requests as usual: `upstream_status`, `attempts` and `cache_write_1h_tokens` read `0`, `lifecycle_operation` reads an empty string and `guardrail_events` and `plugin_events` read an empty list, exactly what a row written before the column reads once the file is applied. The control plane asks ClickHouse at most once a minute while a column is missing, so applying a file shows on the next page within a minute, without a restart. A control plane from before this behaviour (it arrived with [#2903](https://github.com/rolter-ai/rolter/issues/2903)) names `upstream_status`, `attempts` and `lifecycle_operation` unconditionally and cannot list requests until `015` and `016` are applied, so apply them first if you are moving to one of those builds.
+`030_request_outcome.sql` adds `outcome` the same way: what happened to each request, by name, so a refusal is selected by its reason (see [The outcome of each request](/observability/logs-and-cost#the-outcome-of-each-request)). Until it is applied a gateway drops the field and **LLM Logs** reads every row as **Not recorded**; rows written before it read `unknown` afterwards too.
+
+`031_request_shape.sql` adds five request-shape columns the same way (`has_tools`, `has_image_input`, `has_audio_input`, `has_response_schema`, `turns`): what a request asked the model to do beyond its tokens, which the [savings advisor](/observability/savings-advisor) reads to leave out requests a cheaper model may not serve. Until it is applied a gateway drops the fields and the advisor's report says the shape is not recorded.
+
+`037_request_log_provider_org.sql` adds `provider_org_id` the same way: the organization whose provider served a request, now that two organizations may each name a provider `openai` ([#1857](https://github.com/rolter-ai/rolter/issues/1857)). `provider` keeps the provider's name. Until it is applied a gateway drops the field and nothing else changes; the control plane does not read it yet.
+
+`045_cache_usage_reported.sql` adds `cache_usage_reported` the same way: whether the provider stated its prompt-cache reads on a request, zero included, so the Dashboard's prompt-cache read share leaves out the requests of a provider that does not report them ([#3410](https://github.com/rolter-ai/rolter/issues/3410)). Until it is applied a gateway drops the field and the share stays over every prompt token, as before; rows written before it count as not measured once it is.
+
+`048_first_variant.sql` adds `first_variant` the same way: the weighted variant a request was first dialled to, so the route sheet can show the share of requests each variant was dialled to first beside the share it answered ([#3505](https://github.com/rolter-ai/rolter/issues/3505)). Until it is applied a gateway drops the field and by-variant answers `assigned_requests: null`; rows written before it count for the variant that answered them when they did not fail over.
+
+`050_sampled_variant.sql` adds `sampled_variant` the same way: the variant the route's weights picked for a request before the gateway skipped one whose breaker is open or whose targets are parked, so the route sheet can compare the sampled split with the configured weights ([#3547](https://github.com/rolter-ai/rolter/issues/3547)). Until it is applied a gateway drops the field and by-variant answers `sampled_requests: null`; variant rows written before it count for no variant in that count.
+
+`022_param_adjustments.sql` adds `param_adjustments` the same way: the request parameters a translated request did not forward as sent (see [Adjusted parameters](/api/overview#adjusted-parameters)). Until it is applied a gateway leaves the field out of the rows it writes and loses only those entries; the `x-rolter-param-adjustments` response header does not depend on it.
+
+`042_mcp_log_error_scopes.sql` adds `error_scopes` to `mcp_tool_call_logs`: the OAuth scopes an MCP server asked for when it refused a call with `insufficient_scope`, which the MCP Logs detail uses to offer the step-up for exactly those. Until it is applied a gateway drops the field and the log detail shows no scopes; nothing else changes.
+
+`047_mcp_log_notification.sql` adds `notification` to `mcp_tool_call_logs`: `1` on the row of a `tools/call` sent as a JSON-RPC notification, which no reply answers, so the MCP Logs detail can tell its status (only what the server's HTTP response said) from the outcome of a call that was answered ([#3466](https://github.com/rolter-ai/rolter/issues/3466)). Until it is applied a gateway drops the field and a notification is recorded as an ordinary `success` row; nothing else changes.
+
+`051_mcp_log_outcome.sql` adds `outcome` to `mcp_tool_call_logs`: `accepted` on the row of a call to a legacy `sse` MCP server that answered the `POST` with `202 Accepted` and sent the reply on its event stream, so that call is not counted as a success or a failure ([#3529](https://github.com/rolter-ai/rolter/issues/3529)), and `unread` on the one row of a request body forwarded unread to an ungoverned server ([#3528](https://github.com/rolter-ai/rolter/issues/3528)). Until it is applied a gateway drops the field and such a row is recorded as an ordinary `success` row; nothing else changes.
+
+None of these files has to come before the control plane, for any of the columns they add. **LLM Logs** and `GET /api/v1/analytics/invocations` look at which of them the table has and read a default for each one it lacks, so a control plane newer than the file lists requests as usual: `upstream_status`, `attempts`, `cache_write_1h_tokens`, `seq`, `has_tools`, `has_image_input`, `has_audio_input`, `has_response_schema`, `turns` and `cache_usage_reported` read `0`, `lifecycle_operation`, `fallback_reason`, `first_variant` and `sampled_variant` read an empty string, `outcome` reads `unknown`, and `guardrail_events`, `plugin_events` and `param_adjustments` read an empty list, exactly what a row written before the column reads once the file is applied. The control plane asks ClickHouse at most once a minute while a column is missing, so applying a file shows on the next page within a minute, without a restart. A control plane from before this behaviour (it arrived with [#2903](https://github.com/rolter-ai/rolter/issues/2903)) names `upstream_status`, `attempts` and `lifecycle_operation` unconditionally and cannot list requests until `015` and `016` are applied, so apply them first if you are moving to one of those builds.
 
 Apply the files to keep the data, not to be allowed to upgrade. A gateway that gets there first is safe: it inserts with `input_format_skip_unknown_fields=1` and drops a field the table has no column for, so every request is still logged and priced. Until you apply a file the dropped fields are the ones it adds: the upstream status and attempts of a request, which call on a stored response a row records, and the 1 hour share of a cache write (only for a request that wrote to the 1 hour cache; the row's cost is computed by the gateway and is the same either way). Until `017` is applied, **LLM Logs** shows no **Cache write by lifetime** line in a row's detail, since the share it splits the write by is `0`; once the file is applied it appears for every new request that wrote to the 1 hour cache. See [Cache writes](/observability/logs-and-cost#cache-writes).
 
-The Logs screen attaches a captured body to its log row by the request id and the row's timestamp. Gateways from v0.1.0 and earlier left both timestamps to ClickHouse, which stamped the log row and the payload row separately, so they never match. Once the control plane is upgraded, bodies those gateways captured stop showing in the log drawer, and they stay hidden until `payload_retention_hours` removes them (7 days by default). Nothing is exposed and nothing is lost from the log rows themselves; only the payload panel goes empty for those requests. Upgrading the gateways first keeps the window of new bodies written that way as short as the rollout.
+The Logs screen attaches a captured body to its log row by the request id and the row's timestamp. Gateways from v0.1.0 and earlier left both timestamps to ClickHouse, which stamped the log row and the payload row separately, so they never match. Once the control plane is upgraded, bodies those gateways captured stop showing in the log drawer, and they stay hidden until `payload_retention_hours` removes them (7 days by default). Nothing is exposed and nothing is lost from the log rows themselves; only the payload panel goes empty for those requests.
+
+Rolling the gateways before the control plane is not the way to shorten this: a gateway that leads its control plane is unsupported, and it is refused as soon as the snapshot format moves. Upgrade the control plane, then roll the gateways straight after it. Every body captured in between is one the old gateways write the old way, so a prompt gateway rollout is what keeps that set small.
+
+## Per-organization names
+
+From this release two organizations may each name a route, provider or provider group the same ([#1857](https://github.com/rolter-ai/rolter/issues/1857)). Two things change on upgrade:
+
+- **A bootstrap-file route can no longer use a provider created in the dashboard or the API.** A flat `[[routes]]` or `[[provider_groups]]` entry in the control plane's bootstrap file is deployment-wide, and a provider created through the dashboard or the API belongs to an organization, so serving it would hand that organization's credential to every organization's keys. Such a target or member is left out of the snapshot and named in `GET /api/v1/config/problems`; if it was the route's only target, the model answers `404`. Declare the provider in the file as well, or move the route into the organization with `[[models.default]]` or `rolter-seed --import`.
+- **The response cache starts cold once.** A route that belongs to an organization now keeps its cached answers under that organization, whether or not another organization shares its name, so its existing entries are no longer read after the upgrade and expire on their own TTL. Routes from the gateway's own file keep their keys.
+
+### Duplicate route names within one organization
+
+The database now enforces one route name per organization, across all of its projects ([#3459](https://github.com/rolter-ai/rolter/issues/3459)), and one `slug/model` address per organization across its providers and provider groups. Before, the control plane checked the name and then wrote it, so two creates of the same name in two projects of one organization, sent at the same moment, could both succeed. Such a duplicate already stopped `/internal/snapshot` from serving, so a deployment that has one is one whose gateways stopped receiving configuration changes.
+
+If the database holds such a duplicate, the control plane refuses to start, and its log names each one:
+
+```
+cannot enforce one route name per org: duplicate routes exist (org 3f2c…: route 'gpt-4o' in projects 0b1e…, 9a7d…)
+```
+
+Before upgrading, find them with:
+
+```sql
+select t.org_id, r.model, array_agg(r.project_id || ' ' || r.id order by r.created_at) as routes
+  from routes r
+  join projects p on p.id = r.project_id
+  join teams t on t.id = p.team_id
+ group by t.org_id, r.model
+having count(*) > 1;
+```
+
+For each row, keep the route the organization's keys should reach and rename or delete the others: create the route under a new name in the dashboard or the API and move the keys that need it there, or delete the copy with `DELETE /api/v1/routes/{id}`. Then start the new control plane. Providers and provider groups that already share a slug in one organization are left as they are; only a new or renamed one is refused.
+
+### Circuit-breaker state during a mixed rollout
+
+From this release a gateway reports each route's circuit breakers with the organization that owns the route ([#3458](https://github.com/rolter-ai/rolter/issues/3458)), and the control plane shows a breaker only to the callers who see that organization's route. A gateway from an earlier release reports an organization's route without one, so while it runs, its breakers for organization routes are left out of `GET /api/v1/breaker-state` and the dashboard. Breakers of routes from the gateway's own config file still show. Once every gateway is upgraded the view is complete again, and the rows the older gateways left behind age out of the table within an hour.
 
 ## Model price rates
 
@@ -115,6 +229,10 @@ alter table model_prices validate constraint model_prices_input_per_mtok_rate;
 ```
 
 The four names are `model_prices_input_per_mtok_rate`, `model_prices_output_per_mtok_rate`, `model_prices_cached_input_per_mtok_rate` and `model_prices_cache_write_per_mtok_rate`. Validating is optional: an unvalidated check protects new writes just the same. It only changes what `convalidated` reports.
+
+## Zero weights
+
+A variant or API key weight of `0` used to be sampled as `1`. It now takes no first attempts while another weight in the same set is positive (a zero-weight variant is still tried as a fallback, and a zero-weight key is used when every other key is on a cooldown). If every weight in a set is `0`, the set is sampled equally, as before. Check a `rolter.toml` that uses `weight = 0` as a placeholder: traffic that a zero-weight entry used to take now goes to the others.
 
 ## Route advanced settings
 
@@ -155,7 +273,7 @@ where advanced ?| array['base_url', 'insecure_tls', 'pricing']
 
 A `rolter.toml` that sets any of them under `[routes.advanced]` still loads. `rolter check` and the gateway's startup log report each one as an unknown key.
 
-**Route limits.** `limits.rpm`, `limits.tpm` and `limits.concurrency` are enforced again, this time with a reader ([#2936](https://github.com/rolter-ai/rolter/issues/2936)): a request over a route's cap is refused with `429` and `Retry-After`. Migration `0090_clear_unread_route_limits.sql` removes the three keys from every stored route first, because a value typed into the old form while nothing read it would otherwise start refusing traffic on the day you deploy. A route that should be limited has to be given its cap again after the upgrade, from the model sheet or the routes API. A `rolter.toml` that sets them is read as written, so check a file you carried over from an older release. Enforcement needs a gateway that has the reader, so roll the gateways before you set a cap, or the cap is stored and not applied until they restart on the new version. `rpm` and `tpm` need `redis_url` to be enforced; `concurrency` does not. See [Route limits](/concepts/providers-and-routes#route-limits).
+**Route limits.** `limits.rpm`, `limits.tpm` and `limits.concurrency` are enforced again, this time with a reader ([#2936](https://github.com/rolter-ai/rolter/issues/2936)): a request over a route's cap is refused with `429` and `Retry-After`. Migration `0090_clear_unread_route_limits.sql` removes the three keys from every stored route first, because a value typed into the old form while nothing read it would otherwise start refusing traffic on the day you deploy. A route that should be limited has to be given its cap again after the upgrade, from the model sheet or the routes API. A `rolter.toml` that sets them is read as written, so check a file you carried over from an older release. Enforcement needs a gateway that has the reader, so finish the upgrade, gateways included, before you set a cap ([rule 3](#upgrade-order)): until a gateway restarts on the new version, the cap is stored and not applied. `rpm` and `tpm` need `redis_url` to be enforced; `concurrency` does not. See [Route limits](/concepts/providers-and-routes#route-limits).
 
 ## Security and egress settings
 
@@ -202,9 +320,35 @@ Validating is optional: an unvalidated check protects new writes just the same. 
 
 Rolter now verifies upstream HTTPS against the host's system trust store (`/etc/ssl/certs`, or the bundle `SSL_CERT_FILE` names) instead of a copy of the public roots built into the binary. The published images ship `ca-certificates`, so they need nothing from you. A binary you run on a host or in an image of your own with no CA store fails every upstream handshake until you install `ca-certificates` or point `SSL_CERT_FILE` at a PEM bundle. `ROLTER_CA_BUNDLE` and `[tls].ca_bundles` still add private CAs on top of that store.
 
+## MCP tool manifests and tool groups
+
+Two MCP rules that were stored but not enforced are enforced from this release:
+
+- **Tool groups.** A server that an enabled tool group names serves only the tools those groups list. A call to any other tool is refused with `403` `mcp_tool_denied`. Check your enabled groups before you upgrade.
+- **Declared manifests.** A server that declares tools serves only those once an organization's saved MCP settings refuse unlisted tools. To keep upgrades from refusing calls, an organization that never saved its MCP settings allows unlisted tools, and the upgrade sets **Allow unlisted tools** on for every organization that had saved them. Turn it off on **MCP → MCP Settings** to enforce a server's manifest.
+
+Organizations created from this release on start the other way round: until they save their MCP settings, a server's declared manifest is enforced and a call to a tool it leaves out is refused with `403` `mcp_tool_denied`. They opt out by saving **MCP → MCP Settings** with **Allow unlisted tools** on. Organizations that already exist are not touched, whether or not they ever saved settings, and creating an organization still stores no settings row, so its timeouts and retries keep following the deployment defaults.
+
+## Log erasure and the MCP tool-call log
+
+A [log erasure](/observability/log-erasure) now also deletes (or, for `include_logs: false`, blanks the bodies of) the subject's rows in `mcp_tool_call_logs`. A ClickHouse that was never given `clickhouse/007_mcp_tool_call_logs.sql` has no such table, so the erasure fails at its MCP statement with the usual `failed` record after the request-log statements were already submitted. Apply the migration before the first erasure after upgrading; submitting the erasure again is safe.
+
+## A config path that does not exist
+
+A gateway started with `--config` or `ROLTER_CONFIG` naming a file that does not exist now refuses to start and names the path ([#3511](https://github.com/rolter-ai/rolter/issues/3511)). It used to log `config file not found, starting with empty config` and start anyway, which silently dropped every setting the file held, a `[semantic_guards] model_root` among them. Only the default path, `rolter.toml` in the working directory with neither set, may still be missing; the gateway then starts empty with that warning, as before.
+
+Before you upgrade, check that every gateway's `--config` or `ROLTER_CONFIG` names a file that is there. A gateway fed only by a control plane, which used to point at a missing file on purpose, drops the flag and the variable instead. The published image points `ROLTER_CONFIG` at the bundled `/app/rolter.toml`, and the Helm chart at the file it mounts, so neither needs a change.
+
+The gateway's local classifier [model root](/security/semantic-guard-policies#local-classifier) can now also come from `--semantic-model-root` or `ROLTER_SEMANTIC_MODEL_ROOT`, which take precedence over the file's key in that order, so a gateway with no file can confine its models too.
+
+## Virtual key responses no longer carry `key_hash`
+
+The virtual-key endpoints of the control-plane API no longer return `key_hash` from any endpoint that returns a key (the per-project listing, create, rotate, disable, the cache, provider and attribution settings, and the self-service keys under `/api/v1/me`), the peppered digest of the key's secret ([#3525](https://github.com/rolter-ai/rolter/issues/3525)). The digest of a retired secret was already withheld, and the organization-wide listing never returned either. Nothing in the dashboard read the field. A script that used it to tell keys apart should use `id` or `key_prefix` instead; the gateway still receives the digest through its config snapshot, so authentication is unchanged.
+
 ## A checklist
 
 1. Back up the control-plane database, and confirm you have `ROLTER_KEK` outside it.
 2. Run `rolter check --config rolter.toml --migrations` with the **new** binary and read the plan.
-3. Roll out. Config migrates in memory on start; database migrations apply on the control plane's start.
-4. Confirm the gateway serves traffic and the dashboard lists your providers.
+3. Roll out the control plane, then the gateways ([Upgrade order](#upgrade-order)). Config migrates in memory on start; database migrations apply on the control plane's start.
+4. Confirm the gateways serve traffic and the dashboard lists your providers.
+5. Only now turn on what the release introduces.

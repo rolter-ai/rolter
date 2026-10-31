@@ -2,6 +2,7 @@ import * as React from "react";
 import { useTranslation } from "react-i18next";
 
 import { InfoHint } from "@/components/ui/info-hint";
+import { controlProblem, useSubmitAttempts, type FormControl } from "@/components/ui/submit-form";
 import { cn } from "@/lib/utils";
 
 // label + control + helper/error wrapper. composes around whatever control is
@@ -18,10 +19,27 @@ export interface FieldProps extends React.HTMLAttributes<HTMLDivElement> {
   // optional explanatory note surfaced via an (i) button beside the label:
   // what the field is and what values to use
   info?: React.ReactNode;
+  /**
+   * The control must be filled in: it gets the native `required` attribute and
+   * `aria-required`, a marker beside the label, and, once the enclosing
+   * `SubmitForm` refused a submit, an inline message until it is (#1205)
+   */
+  required?: boolean;
+  /**
+   * The control is mandatory and the screen's own validation says so by name
+   * (`useFieldErrors`): the marker beside the label and `aria-required`, so a
+   * screen reader announces it before the first refused save, but not the
+   * native `required` attribute, which would make an empty control `:invalid`
+   * from the first paint and add a second, generic message beside the screen's
+   * own (#3451). Ignored when `required` is set.
+   */
+  markRequired?: boolean;
 }
 
 interface ControlProps {
   id?: string;
+  required?: boolean;
+  "aria-required"?: boolean;
   "aria-describedby"?: string;
   "aria-invalid"?: boolean | "true" | "false";
 }
@@ -39,13 +57,16 @@ const LABELABLE = 'input, select, textarea, button, [contenteditable="true"]';
 export function Field({
   label,
   htmlFor,
-  error,
+  error: ownError,
   hint,
   info,
+  required,
+  markRequired,
   className,
   children,
   ...props
 }: FieldProps) {
+  const announced = required || markRequired;
   // almost no caller passes `htmlFor`, which left every label in the dashboard
   // pointing at nothing: a screen reader announced the control as unlabelled,
   // and `getByLabelText` could not find it either. Generate the id here and put
@@ -64,6 +85,11 @@ export function Field({
   const [wrapped, setWrapped] = React.useState<string>();
   const wrapper = React.useRef<HTMLDivElement>(null);
   const root = React.useRef<HTMLDivElement>(null);
+  // a required control a refused submit found empty says so under itself; the
+  // caller's own error, when it has one, wins
+  const attempts = useSubmitAttempts();
+  const [blocked, setBlocked] = React.useState<string>();
+  const error = ownError ?? blocked;
   const byHand = !control && !htmlFor;
   // an explicit htmlFor over several children named the control but still left
   // its hint and error undescribed, so an invalid input sounded valid (#1527)
@@ -84,6 +110,10 @@ export function Field({
   if (error && control && control.props["aria-invalid"] === undefined) {
     described["aria-invalid"] = true;
   }
+  if (announced && control) {
+    if (required && control.props.required === undefined) described.required = true;
+    if (control.props["aria-required"] === undefined) described["aria-required"] = true;
+  }
   const labelled =
     control && Object.keys(described).length > 0
       ? React.cloneElement(control, described)
@@ -94,6 +124,48 @@ export function Field({
   // be, the first labelable node among them is the control this field is about.
   // Layout effect rather than effect, so the association exists before paint
   // and before a story's first query.
+  // the required attribute on a control the field did not clone (several
+  // children): set on the first labelable one, and taken off again on the way out
+  React.useLayoutEffect(() => {
+    if (!announced || control) return;
+    const node = root.current?.querySelector<HTMLElement>(LABELABLE);
+    if (!node || node.tagName === "BUTTON") return;
+    const added: string[] = [];
+    for (const attribute of required ? ["required", "aria-required"] : ["aria-required"]) {
+      if (!node.hasAttribute(attribute)) {
+        node.setAttribute(attribute, attribute === "required" ? "" : "true");
+        added.push(attribute);
+      }
+    }
+    return () => {
+      for (const attribute of added) node.removeAttribute(attribute);
+    };
+  }, [announced, required, control, children]);
+
+  // once a submit was refused, a required control that is still empty says why
+  // under itself, and clears the moment it is filled in
+  React.useLayoutEffect(() => {
+    if (!required || attempts === 0) {
+      setBlocked(undefined);
+      return;
+    }
+    const node = root.current?.querySelector<FormControl>(
+      "input:not([type=hidden]), select, textarea",
+    );
+    if (!node) return;
+    const check = () => {
+      const problem = controlProblem(node);
+      setBlocked(problem ? t("common.form.required") : undefined);
+    };
+    check();
+    node.addEventListener("input", check);
+    node.addEventListener("change", check);
+    return () => {
+      node.removeEventListener("input", check);
+      node.removeEventListener("change", check);
+    };
+  }, [required, attempts, t]);
+
   React.useLayoutEffect(() => {
     if (!byHand && !multi) return;
     const node = multi
@@ -141,6 +213,11 @@ export function Field({
           <label htmlFor={controlId} className="text-sm font-medium leading-none">
             {label}
           </label>
+          {announced && (
+            <span aria-hidden className="text-xs text-[color:var(--status-danger-text)]">
+              *
+            </span>
+          )}
           {info && <InfoHint text={info} label={t("common.aboutField", { label })} />}
         </div>
       )}

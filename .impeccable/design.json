@@ -474,7 +474,7 @@
       "refersTo": "badge-success",
       "description": "15% tint off the status fill, label in the matching -text token.",
       "html": "<span class=\"ds-badge ds-badge-ok\"><span class=\"ds-dot\"></span>healthy</span> <span class=\"ds-badge ds-badge-down\"><span class=\"ds-dot\"></span>down</span>",
-      "css": ".ds-badge{font-family: var(--font-sans, 'Geist Variable', ui-sans-serif, system-ui, sans-serif);display:inline-flex;align-items:center;gap:4px;height:20px;padding:0 8px;border-radius:6px;font-size:10px;font-weight:500;line-height:1;white-space:nowrap}.ds-dot{width:6px;height:6px;border-radius:9999px;background:currentColor}.ds-badge-ok{background:rgba(22,163,74,.15);color:var(--status-success-text,#38c163)}.ds-badge-down{background:rgba(229,57,53,.15);color:var(--status-danger-text,#ff6f66)}"
+      "css": ".ds-badge{font-family: var(--font-sans, 'Geist Variable', ui-sans-serif, system-ui, sans-serif);display:inline-flex;align-items:center;gap:4px;height:20px;padding:0 8px;border-radius:6px;font-size:11px;font-weight:500;line-height:1;white-space:nowrap}.ds-dot{width:6px;height:6px;border-radius:9999px;background:currentColor}.ds-badge-ok{background:rgba(22,163,74,.15);color:var(--status-success-text,#38c163)}.ds-badge-down{background:rgba(229,57,53,.15);color:var(--status-danger-text,#ff6f66)}"
     },
     {
       "name": "Card",

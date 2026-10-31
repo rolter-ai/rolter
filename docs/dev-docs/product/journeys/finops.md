@@ -19,13 +19,13 @@ screen and one filter.
 
 ## F1 — see the spend
 
-| #    | step                                      | where                                                                                   | expect                                                                                                                              | status   |
-| ---- | ----------------------------------------- | --------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- | -------- |
-| F1.1 | sign in                                   | login screen                                                                            | the org's Dashboard; every mutating control disabled with the role it needs                                                         | verified |
-| F1.2 | spend over time, by model                 | **Observability → Dashboard**                                                           | totals, a time series, per-model cost and latency — the org's traffic only                                                          | verified |
-| F1.3 | read a request without reading its prompt | **LLM Logs** → a row                                                                    | tokens, cost, status; the bodies say they are hidden for the viewer role                                                            | verified |
-| F1.4 | spend by business unit and customer       | **Governance → Business Units**, **Customers** · `GET /api/v1/analytics/by-attribution` | one row per unit or customer                                                                                                        | verified |
-| F1.5 | what business unit X spent last month     | **Business Units** → window picker → **Last month** (#2107)                             | the whole previous calendar month in the viewer's time zone, dated under the total; kept in `?window=` and carried to **Customers** | works    |
+| #    | step                                      | where                                                                                   | expect                                                                                                                                                                                      | status   |
+| ---- | ----------------------------------------- | --------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------- |
+| F1.1 | sign in                                   | login screen                                                                            | the org's Dashboard; every mutating control disabled with the role it needs                                                                                                                 | verified |
+| F1.2 | spend over time, by model                 | **Observability → Dashboard**                                                           | totals, a time series, per-model cost and latency — the org's traffic only                                                                                                                  | verified |
+| F1.3 | read a request without reading its prompt | **LLM Logs** → a row                                                                    | tokens, cost, status; the bodies say they are hidden for the viewer role                                                                                                                    | verified |
+| F1.4 | spend by business unit and customer       | **Governance → Business Units**, **Customers** · `GET /api/v1/analytics/by-attribution` | one row per unit or customer                                                                                                                                                                | verified |
+| F1.5 | what business unit X spent last month     | **Business Units** → window picker → **Last month** (#2107)                             | the whole previous calendar month in the chart zone (the account's time zone preference, else the browser's, #3500), dated under the total; kept in `?window=` and carried to **Customers** | works    |
 
 ## F2 — make the numbers trustworthy
 
@@ -46,14 +46,14 @@ screen and one filter.
 
 ## F4 — be told
 
-| #    | step                               | where                                       | expect                                         | status      |
-| ---- | ---------------------------------- | ------------------------------------------- | ---------------------------------------------- | ----------- |
-| F4.1 | a warning at 80% of a budget       | —                                           | a notification before the 402                  | gap — #337  |
-| F4.2 | an alert when spend velocity jumps | **Alerting → Alert Rules** `spend_velocity` | refused below superadmin; deployment-wide only | gap — #1829 |
+| #    | step                               | where                                       | expect                                                                      | status           |
+| ---- | ---------------------------------- | ------------------------------------------- | --------------------------------------------------------------------------- | ---------------- |
+| F4.1 | a warning at 80% of a budget       | —                                           | a notification before the 402                                               | gap — #337       |
+| F4.2 | an alert when spend velocity jumps | **Alerting → Alert Rules** `spend_velocity` | a rule scoped to the org, a business unit or a customer, owned by its admin | verified (#1829) |
 
 ## F5 — month-end
 
-| #    | step                                            | where                                                                  | expect                                                        | status      |
-| ---- | ----------------------------------------------- | ---------------------------------------------------------------------- | ------------------------------------------------------------- | ----------- |
-| F5.1 | export spend by unit and customer for the month | —                                                                      | a CSV with the window, the currency and unpriced rows flagged | gap — #1838 |
-| F5.2 | the workaround                                  | page `GET /api/v1/analytics/by-attribution` with a session and convert | the same numbers, by script                                   | partial     |
+| #    | step                                            | where                                                                  | expect                                                        | status           |
+| ---- | ----------------------------------------------- | ---------------------------------------------------------------------- | ------------------------------------------------------------- | ---------------- |
+| F5.1 | export spend by unit and customer for the month | **Cost Attribution → Export CSV**                                      | a CSV with the window, the currency and unpriced rows flagged | verified (#1838) |
+| F5.2 | the workaround                                  | page `GET /api/v1/analytics/by-attribution` with a session and convert | the same numbers, by script                                   | partial          |

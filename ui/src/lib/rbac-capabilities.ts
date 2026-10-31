@@ -1,4 +1,5 @@
 import type {
+  DeploymentRole,
   RbacAction,
   RbacActionView,
   RbacEffective,
@@ -24,8 +25,26 @@ import snapshot from "@/lib/rbac-capabilities.json";
 // Test-and-story fixture only: nothing the dashboard ships imports it, and the
 // real screens read the answers off the wire like any deployment does.
 
-/** The authority an action takes, spelled as the control plane's `Authority` spells it. */
-export type Authority = "viewer" | "member" | "admin" | "superadmin" | "authenticated";
+/**
+ * The authority an action takes, spelled as the control plane's `Authority` spells it.
+ * `operator` and `security_auditor` are the deployment roles (#1834): a row naming one
+ * is reached by that role and by a superadmin, and by no scoped role.
+ */
+export type Authority =
+  | "viewer"
+  | "member"
+  | "admin"
+  | "superadmin"
+  | "authenticated"
+  | DeploymentRole
+  | ScopedOrDeployment;
+
+/**
+ * A scoped role at the row's scope, or a deployment role at any (#3362), spelled
+ * `<role>|<deployment role>`: the alerting rows, which a scoped admin owns for
+ * their slice and an operator runs whole.
+ */
+export type ScopedOrDeployment = `${Role}|${DeploymentRole}`;
 
 /** One row of the table: an authority per action, `null` where there is no such action. */
 export interface CapabilityRow {
@@ -49,6 +68,11 @@ export const ACTIONS: RbacAction[] = ["read", "create", "update", "delete"];
 function authorityOf(view: RbacActionView): Authority {
   if (view.superadmin_only) return "superadmin";
   if (view.authenticated_only) return "authenticated";
+  if (view.minimum_role !== null && view.deployment_roles?.length) {
+    return `${view.minimum_role}|${view.deployment_roles[0]}`;
+  }
+  // `readMatrix` refuses a copy naming more than one deployment role for an action
+  if (view.deployment_roles?.length) return view.deployment_roles[0];
   // `resource_view` sets exactly one of the three, and `readMatrix` in
   // `scripts/rbac-matrix-artifact.ts` refuses a copy that does not; the
   // fallback is the least generous reading, never an open door
@@ -184,10 +208,24 @@ export function resolveRole(memberships: Membership[], chain: ScopeChain): Role 
  * table names. Access-profile grants are not modelled: a story that needs one
  * stubs the endpoint itself.
  */
-function permits(authority: Authority, role: Role | null, superadmin: boolean): boolean {
+function permits(
+  authority: Authority,
+  role: Role | null,
+  superadmin: boolean,
+  deploymentRole: DeploymentRole | null,
+): boolean {
   if (authority === "superadmin") return superadmin;
   if (authority === "authenticated") return true;
-  return superadmin || (role !== null && RANK[role] >= RANK[authority]);
+  if (authority === "operator" || authority === "security_auditor") {
+    return superadmin || deploymentRole === authority;
+  }
+  if (authority.includes("|")) {
+    const [scoped, deployment] = authority.split("|") as [Role, DeploymentRole];
+    return (
+      superadmin || deploymentRole === deployment || (role !== null && RANK[role] >= RANK[scoped])
+    );
+  }
+  return superadmin || (role !== null && RANK[role] >= RANK[authority as Role]);
 }
 
 /** The scope an action is decided at: its own when the row declares one, else the row's. */
@@ -202,7 +240,11 @@ export function scopeOf(capability: CapabilityRow, action: RbacAction): string {
  * the part of the chain its scope names (#2376), a row's own or its action's (#3107), and an action the table
  * does not define for a resource is absent for everyone.
  */
-export function allowedFor(holder: Holder, superadmin = false): string[] {
+export function allowedFor(
+  holder: Holder,
+  superadmin = false,
+  deploymentRole: DeploymentRole | null = null,
+): string[] {
   const { memberships, chain } = callerOf(holder);
   const allowed: string[] = [];
   for (const capability of CAPABILITIES) {
@@ -210,7 +252,7 @@ export function allowedFor(holder: Holder, superadmin = false): string[] {
       const authority = capability[action];
       if (!authority) continue;
       const role = resolveRole(memberships, chainAt(scopeOf(capability, action), chain));
-      if (permits(authority, role, superadmin)) {
+      if (permits(authority, role, superadmin, deploymentRole)) {
         allowed.push(`${capability.resource}:${action}`);
       }
     }
@@ -225,7 +267,12 @@ export function allowedFor(holder: Holder, superadmin = false): string[] {
  * edit into the next one.
  */
 export function matrixFixture(): RbacMatrix {
-  return structuredClone({ roles: ROLES, resources: RESOURCES, custom_roles: [] });
+  return structuredClone({
+    roles: ROLES,
+    deployment_roles: snapshot.deployment_roles as DeploymentRole[],
+    resources: RESOURCES,
+    custom_roles: [],
+  });
 }
 
 /**
@@ -238,12 +285,18 @@ export function matrixFixture(): RbacMatrix {
  * no membership to resolve one from — and their `allowed` list is the whole
  * table rather than empty, because `allowed_for` enumerates it for them too.
  */
-export function effectiveFor(holder: Holder, superadmin = false): RbacEffective {
+export function effectiveFor(
+  holder: Holder,
+  superadmin = false,
+  deploymentRole: DeploymentRole | null = null,
+): RbacEffective {
   const caller = callerOf(superadmin ? null : holder);
+  const held = superadmin ? null : deploymentRole;
   return {
     superadmin,
+    deployment_role: held,
     role: superadmin ? null : resolveRole(caller.memberships, caller.chain),
-    allowed: allowedFor(caller, superadmin),
+    allowed: allowedFor(caller, superadmin, held),
     custom_roles: [],
     model_policy: null,
   };

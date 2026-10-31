@@ -96,9 +96,20 @@ pub struct EasyUpArgs {
     #[cfg(feature = "postgres")]
     #[arg(long)]
     pub admin_email: Option<String>,
+    /// admin password. Visible to every user of the host through `ps` while the
+    /// command runs and kept in shell history: prefer --admin-password-stdin or
+    /// --admin-password-file
     #[cfg(feature = "postgres")]
-    #[arg(long)]
+    #[arg(long, conflicts_with_all = ["admin_password_stdin", "admin_password_file"])]
     pub admin_password: Option<String>,
+    /// read the admin password from standard input (one line)
+    #[cfg(feature = "postgres")]
+    #[arg(long, conflicts_with = "admin_password_file", requires = "admin_email")]
+    pub admin_password_stdin: bool,
+    /// read the admin password from a file (first line)
+    #[cfg(feature = "postgres")]
+    #[arg(long, value_name = "PATH", requires = "admin_email")]
+    pub admin_password_file: Option<PathBuf>,
     /// bootstrap rolter.toml to import providers/routes from on seed; database
     /// mode only (defaults to `--config`)
     #[cfg(feature = "postgres")]
@@ -136,7 +147,7 @@ fn ensure_config(path: &Path) -> anyhow::Result<bool> {
 /// control plane's snapshot endpoint; in file mode it runs from the local toml.
 fn gateway_args(args: &EasyUpArgs, db_mode: bool) -> rolter_gateway::Args {
     rolter_gateway::Args {
-        config: args.config.clone(),
+        config: Some(args.config.clone()),
         host: Some(args.host.clone()),
         port: Some(args.gateway_port),
         snapshot_url: db_mode
@@ -151,6 +162,8 @@ fn gateway_args(args: &EasyUpArgs, db_mode: bool) -> rolter_gateway::Args {
         // snapshot channel never crosses a network boundary and there is
         // nothing to separate it from (see docs/dev-docs/architecture/security.md)
         internal_token: None,
+        // the gateway reads ROLTER_SEMANTIC_MODEL_ROOT itself, below the flag
+        semantic_model_root: None,
     }
 }
 
@@ -209,6 +222,11 @@ fn control_args(args: &EasyUpArgs, database_url: Option<String>) -> rolter_contr
         login_max_lock_secs: env_or_num("ROLTER_LOGIN_MAX_LOCK_SECS", 900),
         login_max_delay_ms: env_or_num("ROLTER_LOGIN_MAX_DELAY_MS", 2000),
         login_trust_forwarded_for: env_flag("ROLTER_LOGIN_TRUST_FORWARDED_FOR"),
+        // and the request log export bounds (#3360)
+        export_max_rows: env_or_num("ROLTER_EXPORT_MAX_ROWS", 1_000_000),
+        export_max_secs: env_or_num("ROLTER_EXPORT_MAX_SECS", 600),
+        export_max_concurrent: env_or_num("ROLTER_EXPORT_MAX_CONCURRENT", 4),
+        export_max_concurrent_per_caller: env_or_num("ROLTER_EXPORT_MAX_CONCURRENT_PER_CALLER", 1),
         ..Default::default()
     }
 }
@@ -301,6 +319,43 @@ fn refuse_unacknowledged_open_mode(args: &EasyUpArgs, db_mode: bool) -> anyhow::
     )
 }
 
+/// Refuse the seed flags without a database (#3478, #3523).
+///
+/// `--admin-*` and `--import` only act in database mode, where easy-up seeds
+/// the admin user and imports providers and routes. Without `--database-url`
+/// they used to be accepted and ignored, so an operator who forgot it started a
+/// deployment with no admin, or without the file's providers and routes, and no
+/// hint why.
+#[cfg(feature = "postgres")]
+fn refuse_seed_flags_without_database(args: &EasyUpArgs) -> anyhow::Result<()> {
+    if args.database_url.is_some() {
+        return Ok(());
+    }
+    const ADMIN: &str = "the admin user is created when easy-up seeds a database";
+    const IMPORT: &str =
+        "the file's providers and routes are imported when easy-up seeds a database";
+    let flag = [
+        ("--admin-email", args.admin_email.is_some(), ADMIN),
+        ("--admin-password", args.admin_password.is_some(), ADMIN),
+        ("--admin-password-stdin", args.admin_password_stdin, ADMIN),
+        (
+            "--admin-password-file",
+            args.admin_password_file.is_some(),
+            ADMIN,
+        ),
+        ("--import", args.import.is_some(), IMPORT),
+    ]
+    .into_iter()
+    .find_map(|(name, set, why)| set.then_some((name, why)));
+    match flag {
+        Some((flag, why)) => anyhow::bail!(
+            "{flag} needs --database-url (or ROLTER_DATABASE_URL): {why}, and without one the \
+             flag would be ignored"
+        ),
+        None => Ok(()),
+    }
+}
+
 /// Run `easy-up` to completion: bootstrap config, optionally migrate+seed the
 /// database, print a startup summary, then supervise the control plane and
 /// gateway together.
@@ -310,6 +365,8 @@ pub async fn run(args: EasyUpArgs) -> anyhow::Result<()> {
     #[cfg(not(feature = "postgres"))]
     let database_url: Option<String> = None;
 
+    #[cfg(feature = "postgres")]
+    refuse_seed_flags_without_database(&args)?;
     refuse_unacknowledged_open_mode(&args, database_url.is_some())?;
     let created = ensure_config(&args.config)?;
     if created {
@@ -321,6 +378,14 @@ pub async fn run(args: EasyUpArgs) -> anyhow::Result<()> {
         use rolter_control::seed::{seed, SeedOptions};
         use rolter_store::postgres::{connect, run_migrations};
 
+        // before any connection, so a missing file or an empty stdin stops the
+        // command before it touches the database
+        let admin_password = rolter_control::seed::read_admin_password(
+            args.admin_password.as_deref(),
+            args.admin_password_stdin,
+            args.admin_password_file.as_deref(),
+            &mut std::io::stdin().lock(),
+        )?;
         tracing::info!("database mode: connecting, migrating and seeding");
         let pool = connect(&url).await?;
         run_migrations(&pool).await?;
@@ -330,7 +395,7 @@ pub async fn run(args: EasyUpArgs) -> anyhow::Result<()> {
                 org: "default".to_string(),
                 org_slug: None,
                 admin_email: args.admin_email.clone(),
-                admin_password: args.admin_password.clone(),
+                admin_password,
                 import: args.import.clone().or_else(|| Some(args.config.clone())),
             },
         )
@@ -733,8 +798,46 @@ models = ["fake-llm"]
             #[cfg(feature = "postgres")]
             admin_password: None,
             #[cfg(feature = "postgres")]
+            admin_password_stdin: false,
+            #[cfg(feature = "postgres")]
+            admin_password_file: None,
+            #[cfg(feature = "postgres")]
             import: None,
         }
+    }
+
+    #[cfg(feature = "postgres")]
+    #[test]
+    fn a_seed_flag_without_a_database_url_is_refused_naming_it() {
+        let ok = |args: &EasyUpArgs| refuse_seed_flags_without_database(args).is_ok();
+        assert!(ok(&args_on("127.0.0.1")));
+
+        let refused = |mut args: EasyUpArgs, flag: &str| {
+            let error = refuse_seed_flags_without_database(&args)
+                .expect_err("a seed flag with no database was accepted")
+                .to_string();
+            assert!(error.contains(flag), "{error}");
+            assert!(error.contains("--database-url"), "{error}");
+            // and the database url is what makes it valid
+            args.database_url = Some("postgres://db/rolter".to_string());
+            assert!(ok(&args));
+        };
+        let mut args = args_on("127.0.0.1");
+        args.admin_email = Some("admin@example.com".to_string());
+        refused(args, "--admin-email");
+        let mut args = args_on("127.0.0.1");
+        args.admin_password = Some("a-password".to_string());
+        refused(args, "--admin-password");
+        let mut args = args_on("127.0.0.1");
+        args.admin_password_stdin = true;
+        refused(args, "--admin-password-stdin");
+        let mut args = args_on("127.0.0.1");
+        args.admin_password_file = Some(PathBuf::from("password.txt"));
+        refused(args, "--admin-password-file");
+        // the import file is seeded too, so it is refused the same way (#3523)
+        let mut args = args_on("127.0.0.1");
+        args.import = Some(PathBuf::from("rolter.toml"));
+        refused(args, "--import");
     }
 
     #[test]
@@ -948,5 +1051,79 @@ models = ["fake-llm"]
         assert_eq!(built.db_acquire_timeout_secs, 30);
         assert_eq!(built.db_idle_timeout_secs, 600);
         assert_eq!(built.db_max_lifetime_secs, 1800);
+    }
+
+    #[cfg(feature = "postgres")]
+    mod admin_password {
+        use super::*;
+        use clap::Parser;
+        use std::io::Cursor;
+
+        fn parse(extra: &[&str]) -> Result<EasyUpArgs, clap::Error> {
+            let mut argv = vec!["rolter"];
+            argv.extend_from_slice(extra);
+            Cli::try_parse_from(argv).map(|cli| cli.easy_up)
+        }
+
+        fn resolve(args: &EasyUpArgs, stdin: &[u8]) -> anyhow::Result<Option<String>> {
+            rolter_control::seed::read_admin_password(
+                args.admin_password.as_deref(),
+                args.admin_password_stdin,
+                args.admin_password_file.as_deref(),
+                &mut Cursor::new(stdin.to_vec()),
+            )
+        }
+
+        #[test]
+        fn the_password_comes_from_the_flag_stdin_or_a_file() {
+            let args =
+                parse(&["--admin-email", "a@example.com", "--admin-password", "flag"]).unwrap();
+            assert_eq!(resolve(&args, b"").unwrap().as_deref(), Some("flag"));
+
+            let args =
+                parse(&["--admin-email", "a@example.com", "--admin-password-stdin"]).unwrap();
+            assert_eq!(
+                resolve(&args, b"from-stdin\r\nrest").unwrap().as_deref(),
+                Some("from-stdin")
+            );
+
+            let path = std::env::temp_dir().join(format!("rolter-up-pw-{}", std::process::id()));
+            std::fs::write(&path, "from-file\n").unwrap();
+            let args = parse(&[
+                "--admin-email",
+                "a@example.com",
+                "--admin-password-file",
+                path.to_str().unwrap(),
+            ])
+            .unwrap();
+            let got = resolve(&args, b"").unwrap();
+            let _ = std::fs::remove_file(&path);
+            assert_eq!(got.as_deref(), Some("from-file"));
+
+            assert_eq!(resolve(&parse(&[]).unwrap(), b"").unwrap(), None);
+        }
+
+        #[test]
+        fn an_empty_source_is_refused_and_the_sources_exclude_one_another() {
+            let args =
+                parse(&["--admin-email", "a@example.com", "--admin-password-stdin"]).unwrap();
+            assert!(resolve(&args, b"\n").is_err());
+
+            let both = [
+                ["--admin-password", "x", "--admin-password-stdin"],
+                ["--admin-password", "x", "--admin-password-file"],
+            ];
+            for extra in both {
+                let mut argv = vec!["--admin-email", "a@example.com"];
+                argv.extend(extra);
+                if extra[2] == "--admin-password-file" {
+                    argv.push("f");
+                }
+                assert!(parse(&argv).is_err(), "{argv:?}");
+            }
+            assert!(parse(&["--admin-password-stdin", "--admin-password-file", "f"]).is_err());
+            // a source other than the flag needs an email to be for
+            assert!(parse(&["--admin-password-stdin"]).is_err());
+        }
     }
 }

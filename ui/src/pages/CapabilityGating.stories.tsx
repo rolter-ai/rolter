@@ -80,7 +80,6 @@ async function expectOffered(canvasElement: HTMLElement, name: RegExp) {
 const KEY: VirtualKeyRow = {
   id: "vk-1",
   project_id: "project-1",
-  key_hash: "hash-1",
   key_prefix: "sk-rolter-backend",
   name: "backend service",
   models: [],
@@ -498,9 +497,8 @@ export const ProviderRowsAsAdmin: Story = {
   },
 };
 
-// alerting has no tenancy scope to be an admin of, so its rows are the
-// superadmin's — an admin never reaches them at all, because the screen refuses
-// itself before it mounts
+// alerting is delegated (#1829): an org admin owns their org's channels, so the
+// screen mounts and offers the row's controls
 export const AlertingRowsAsAdmin: Story = {
   render: () => (
     <Harness fetchStub={oneChannel} role="admin">
@@ -508,10 +506,7 @@ export const AlertingRowsAsAdmin: Story = {
     </Harness>
   ),
   play: async ({ canvasElement }) => {
-    await expectForbidden(canvasElement);
-    await expect(
-      within(canvasElement).queryByRole("button", { name: "Delete channel ops-slack" }),
-    ).toBeNull();
+    await expectRowOffered(canvasElement, "button", "Delete channel ops-slack");
   },
 };
 

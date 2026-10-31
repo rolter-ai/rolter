@@ -59,6 +59,10 @@ pub enum SanitizeDirection {
     Response,
     /// both legs
     Both,
+    /// a direction this build does not know (#3347); read as
+    /// [`SanitizeDirection::Both`]
+    #[serde(other)]
+    Unknown,
 }
 
 impl SanitizeDirection {
@@ -76,23 +80,24 @@ impl SanitizeDirection {
 /// What happens to a **streamed** response when the sanitizer's response leg
 /// is active (response sanitization, restoration, or both).
 ///
-/// The response leg needs the whole body: an entity — or a placeholder — can
-/// straddle any SSE chunk boundary, and neither detection nor reversal is
-/// correct on a fragment. There are only three ways to handle that, and two are
-/// unacceptable:
+/// The buffered response leg needs the whole body: an entity — or a
+/// placeholder — can straddle any SSE chunk boundary, and neither detection
+/// nor reversal is correct on a fragment. Two ways round that are ruled out
+/// for good (ADR `2026-10-27-pii-streaming-restoration`):
 ///
-/// - a sanitize/restore round trip **per chunk** — one network call per token,
-///   which destroys time-to-first-token and the point of streaming;
+/// - a restore round trip **per chunk** — one network call per token, which
+///   caps the stream at one frame per round trip;
 /// - holding the placeholder→plaintext **mapping in the gateway** so chunks can
 ///   be reversed locally — which destroys the property the whole design rests
-///   on, that rolter never holds the mapping;
-/// - refusing, or serving the stream with the response leg not applied.
+///   on, that rolter never holds the mapping.
 ///
-/// So this mirrors [`crate::guardrails::StreamingPostCall`], which faced the
-/// same trade-off for output guardrails and resolved it the same way. The
-/// *request* leg is unaffected either way: a streamed request is still
-/// sanitized before it reaches the provider, which is the case that matters
-/// most.
+/// What remains is refusing, serving the stream with the response leg not
+/// applied, or — for restoration only — piping the stream's text through the
+/// sanitizer's streaming restore endpoint, which holds the mapping and the
+/// placeholder holdback on its own side. This mirrors
+/// [`crate::guardrails::StreamingPostCall`] for the first two. The *request*
+/// leg is unaffected either way: a streamed request is still sanitized before
+/// it reaches the provider, which is the case that matters most.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum StreamingResponse {
@@ -107,6 +112,19 @@ pub enum StreamingResponse {
     /// only provider-generated PII in the response is unchecked, and
     /// placeholders reach the caller unrestored.
     Passthrough,
+    /// restore the stream through `restore_stream_url`: the gateway sends the
+    /// text of each delta to the sanitizer over one full-duplex request per
+    /// stream and forwards what comes back (#911).
+    ///
+    /// Applies to restoration only. A stream whose response leg also
+    /// *sanitizes* (`direction` covers the response) is refused as under
+    /// [`Self::Reject`], because detecting entities in a stream needs context
+    /// the placeholder holdback does not give.
+    Restore,
+    /// a value this build does not know (#3347); read as
+    /// [`StreamingResponse::Reject`]
+    #[serde(other)]
+    Unknown,
 }
 
 /// When the gateway may turn placeholders back into plaintext.
@@ -133,6 +151,10 @@ pub enum RestorationPolicy {
     /// Lets one deployment serve both trusted and untrusted callers: the
     /// default stays redacted and a client opts in per request.
     CallerAuthorized,
+    /// a policy this build does not know (#3347); read as
+    /// [`RestorationPolicy::Never`]
+    #[serde(other)]
+    Unknown,
 }
 
 impl RestorationPolicy {
@@ -144,7 +166,7 @@ impl RestorationPolicy {
     #[must_use]
     pub fn should_restore(self, caller_requested: bool) -> bool {
         match self {
-            Self::Never => false,
+            Self::Never | Self::Unknown => false,
             Self::TrustedDownstream => true,
             Self::CallerAuthorized => caller_requested,
         }
@@ -232,6 +254,11 @@ pub struct PiiSanitizerConfig {
     /// what a streamed response does when the response leg is active
     #[serde(default)]
     pub streaming: StreamingResponse,
+    /// http(s) endpoint that restores a stream over one full-duplex NDJSON
+    /// exchange (see [`RestoreStreamDelta`]). Required only when `streaming`
+    /// is `restore`
+    #[serde(default)]
+    pub restore_stream_url: String,
     #[serde(default = "default_timeout_ms")]
     pub timeout_ms: u64,
     /// additional attempts on a transient failure (connect/timeout/5xx); 0 = none
@@ -267,6 +294,7 @@ impl Default for PiiSanitizerConfig {
             direction: SanitizeDirection::default(),
             restoration: RestorationPolicy::default(),
             streaming: StreamingResponse::default(),
+            restore_stream_url: String::new(),
             timeout_ms: DEFAULT_TIMEOUT_MS,
             max_retries: 0,
             failure_mode: FailureMode::default(),
@@ -308,6 +336,29 @@ impl PiiSanitizerConfig {
                 ));
             }
         }
+        // the same rule as restore_url: asking for a streamed restore with
+        // nowhere to send it, or with nothing that would ever be restored, is
+        // a behaviour the operator would not get
+        if self.streaming == StreamingResponse::Restore {
+            let url = self.restore_stream_url.trim();
+            if url.is_empty() {
+                problems.push(
+                    "pii_sanitizer.restore_stream_url is required when streaming is 'restore'"
+                        .to_string(),
+                );
+            } else if !is_http_url(url) {
+                problems.push(format!(
+                    "pii_sanitizer.restore_stream_url '{url}' must be an http:// or https:// URL"
+                ));
+            }
+            if self.restoration == RestorationPolicy::Never {
+                problems.push(
+                    "pii_sanitizer.streaming = 'restore' needs a restoration policy other than \
+                     'never'"
+                        .to_string(),
+                );
+            }
+        }
         if self.timeout_ms == 0 {
             problems.push("pii_sanitizer.timeout_ms must be greater than zero".to_string());
         }
@@ -334,6 +385,24 @@ impl PiiSanitizerConfig {
     #[must_use]
     pub fn sanitizes_response(&self) -> bool {
         self.enabled && self.direction.covers_response()
+    }
+
+    /// How a streamed response is handled, given whether the caller asked for
+    /// restoration. `None` when nothing happens on the response leg, so the
+    /// stream is served as the upstream sent it.
+    ///
+    /// `restore` only covers restoration: a response leg that also sanitizes
+    /// answers [`StreamingResponse::Reject`], since entity detection over a
+    /// stream is not something the holdback can do.
+    #[must_use]
+    pub fn stream_handling(&self, caller_requested_restore: bool) -> Option<StreamingResponse> {
+        if !self.touches_response(caller_requested_restore) {
+            return None;
+        }
+        Some(match self.streaming {
+            StreamingResponse::Restore if self.sanitizes_response() => StreamingResponse::Reject,
+            other => other,
+        })
     }
 
     /// Whether anything at all happens on the response leg — sanitization,
@@ -458,6 +527,92 @@ pub struct RestoreResponse {
     pub content: serde_json::Value,
     #[serde(default)]
     pub restored: usize,
+}
+
+/// The first line of a streamed restore (`POST restore_stream_url`): who is
+/// asking, and the token to restore with. It is not answered; every line after
+/// it is.
+#[derive(Clone, Serialize)]
+pub struct RestoreStreamOpen<'a> {
+    pub trace_id: &'a str,
+    pub tenant: WebhookTenant,
+    /// the opaque token from the matching [`SanitizeResponse`]
+    pub restoration_token: &'a str,
+}
+
+/// One text delta of a streamed restore.
+///
+/// `channel` names one text field of the stream — a choice's content, a tool
+/// call's arguments, a content block — and the sanitizer keeps a separate
+/// placeholder holdback per channel. `format` is `"json"` when `text` is JSON
+/// source (tool-call arguments, Anthropic's `partial_json`): a value restored
+/// into it is written JSON-string-escaped, as it would sit between quotes.
+#[derive(Clone, Serialize)]
+pub struct RestoreStreamDelta<'a> {
+    pub seq: u64,
+    pub channel: &'a str,
+    pub text: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub format: Option<&'static str>,
+}
+
+/// Opaque on purpose: `text` is the provider's text, which a log line has no
+/// business holding.
+impl std::fmt::Debug for RestoreStreamDelta<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RestoreStreamDelta")
+            .field("seq", &self.seq)
+            .field("channel", &self.channel)
+            .field("format", &self.format)
+            .finish_non_exhaustive()
+    }
+}
+
+/// The most characters a streamed-restore reply may hold back for one channel.
+/// A placeholder is far shorter; a sanitizer that holds more is not running a
+/// placeholder holdback, and the gateway treats the reply as out of contract.
+pub const MAX_STREAM_HELD_CHARS: usize = 1024;
+
+/// The end of one channel: the sanitizer answers with whatever it still
+/// holds for it and forgets it.
+#[derive(Debug, Clone, Serialize)]
+pub struct RestoreStreamClose<'a> {
+    pub seq: u64,
+    pub close: &'a str,
+}
+
+/// The end of the stream: the sanitizer may discard the exchange's state.
+#[derive(Debug, Clone, Serialize)]
+pub struct RestoreStreamEnd {
+    pub seq: u64,
+    pub end: bool,
+}
+
+/// The sanitizer's answer to one line, in the order the lines were sent.
+///
+/// `text` is the restored text to emit for that line and `held` how many input
+/// characters (Unicode scalar values) of that line's channel the sanitizer is
+/// holding back because they could be the start of a placeholder. Held text
+/// comes out later, in the reply to a later line of the same channel or to its
+/// close. `held` never exceeds [`MAX_STREAM_HELD_CHARS`].
+#[derive(Clone, PartialEq, Eq, Deserialize)]
+pub struct RestoreStreamReply {
+    pub seq: u64,
+    #[serde(default)]
+    pub text: String,
+    #[serde(default)]
+    pub held: usize,
+}
+
+/// Opaque on purpose: a reply carries restored plaintext, and nothing on the
+/// request path may print it.
+impl std::fmt::Debug for RestoreStreamReply {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RestoreStreamReply")
+            .field("seq", &self.seq)
+            .field("held", &self.held)
+            .finish_non_exhaustive()
+    }
 }
 
 #[cfg(test)]
@@ -625,6 +780,157 @@ mod tests {
     #[test]
     fn a_streamed_response_is_refused_by_default() {
         assert_eq!(StreamingResponse::default(), StreamingResponse::Reject);
+    }
+
+    fn restoring_stream() -> PiiSanitizerConfig {
+        PiiSanitizerConfig {
+            enabled: true,
+            url: "https://presidio.internal/sanitize".to_string(),
+            restore_url: "https://presidio.internal/restore".to_string(),
+            restore_stream_url: "https://presidio.internal/restore-stream".to_string(),
+            restoration: RestorationPolicy::TrustedDownstream,
+            streaming: StreamingResponse::Restore,
+            ..PiiSanitizerConfig::default()
+        }
+    }
+
+    #[test]
+    fn a_streamed_restore_needs_its_url_and_a_restoration_policy() {
+        assert!(restoring_stream().validate().is_empty());
+
+        let missing = PiiSanitizerConfig {
+            restore_stream_url: " ".to_string(),
+            ..restoring_stream()
+        };
+        assert!(missing
+            .validate()
+            .iter()
+            .any(|p| p.contains("restore_stream_url is required")));
+
+        let bad = PiiSanitizerConfig {
+            restore_stream_url: "ftp://x".to_string(),
+            ..restoring_stream()
+        };
+        assert!(bad
+            .validate()
+            .iter()
+            .any(|p| p.contains("restore_stream_url 'ftp://x'")));
+
+        let never = PiiSanitizerConfig {
+            restoration: RestorationPolicy::Never,
+            ..restoring_stream()
+        };
+        assert!(never.validate().iter().any(|p| p.contains("'never'")));
+
+        // the url is only required by `restore`
+        let reject = PiiSanitizerConfig {
+            restore_stream_url: String::new(),
+            streaming: StreamingResponse::Reject,
+            ..restoring_stream()
+        };
+        assert!(reject.validate().is_empty());
+    }
+
+    /// `restore` covers restoration only: a response leg that also sanitizes
+    /// is refused, whatever the restoration policy.
+    #[test]
+    fn restore_applies_to_restoration_only() {
+        let config = restoring_stream();
+        assert_eq!(
+            config.stream_handling(false),
+            Some(StreamingResponse::Restore)
+        );
+        for direction in [SanitizeDirection::Response, SanitizeDirection::Both] {
+            let config = PiiSanitizerConfig {
+                direction,
+                ..restoring_stream()
+            };
+            assert_eq!(
+                config.stream_handling(false),
+                Some(StreamingResponse::Reject)
+            );
+        }
+        // nothing on the response leg: the stream is served as it is
+        let opt_in = PiiSanitizerConfig {
+            restoration: RestorationPolicy::CallerAuthorized,
+            ..restoring_stream()
+        };
+        assert_eq!(opt_in.stream_handling(false), None);
+        assert_eq!(
+            opt_in.stream_handling(true),
+            Some(StreamingResponse::Restore)
+        );
+        // the other two modes are unchanged
+        let passthrough = PiiSanitizerConfig {
+            direction: SanitizeDirection::Both,
+            streaming: StreamingResponse::Passthrough,
+            ..restoring_stream()
+        };
+        assert_eq!(
+            passthrough.stream_handling(false),
+            Some(StreamingResponse::Passthrough)
+        );
+    }
+
+    #[test]
+    fn the_streaming_modes_read_from_toml_and_survive_a_round_trip() {
+        let config: PiiSanitizerConfig = serde_json::from_value(json!({
+            "enabled": true,
+            "url": "https://s/sanitize",
+            "restore_url": "https://s/restore",
+            "restore_stream_url": "https://s/restore-stream",
+            "restoration": "trusted_downstream",
+            "streaming": "restore"
+        }))
+        .unwrap();
+        assert_eq!(config.streaming, StreamingResponse::Restore);
+        // the snapshot carries the block as serde writes it
+        let again: PiiSanitizerConfig =
+            serde_json::from_value(serde_json::to_value(&config).unwrap()).unwrap();
+        assert_eq!(again.streaming, StreamingResponse::Restore);
+        assert_eq!(again.restore_stream_url, "https://s/restore-stream");
+    }
+
+    /// A reply carries restored plaintext, so its `Debug` must not.
+    #[test]
+    fn a_stream_reply_never_prints_its_text() {
+        let reply: RestoreStreamReply =
+            serde_json::from_value(json!({"seq": 3, "text": "Jan Kowalski", "held": 2})).unwrap();
+        let printed = format!("{reply:?}");
+        assert!(!printed.contains("Kowalski"), "{printed}");
+        assert!(printed.contains("held: 2"), "{printed}");
+    }
+
+    #[test]
+    fn the_stream_lines_serialize_as_documented() {
+        let delta = RestoreStreamDelta {
+            seq: 17,
+            channel: "0/content",
+            text: "_ADDRESS",
+            format: None,
+        };
+        assert_eq!(
+            serde_json::to_value(&delta).unwrap(),
+            json!({"seq": 17, "channel": "0/content", "text": "_ADDRESS"})
+        );
+        assert!(!format!("{delta:?}").contains("_ADDRESS"));
+        let json_delta = RestoreStreamDelta {
+            format: Some("json"),
+            ..delta
+        };
+        assert_eq!(serde_json::to_value(&json_delta).unwrap()["format"], "json");
+        assert_eq!(
+            serde_json::to_value(RestoreStreamClose {
+                seq: 18,
+                close: "0/content"
+            })
+            .unwrap(),
+            json!({"seq": 18, "close": "0/content"})
+        );
+        assert_eq!(
+            serde_json::to_value(RestoreStreamEnd { seq: 19, end: true }).unwrap(),
+            json!({"seq": 19, "end": true})
+        );
     }
 
     /// `touches_response` is what decides whether a stream is affected, and it

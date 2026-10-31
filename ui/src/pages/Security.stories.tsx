@@ -1,6 +1,8 @@
 import type { Meta, StoryObj } from "@storybook/react";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 
+import { Link, useLocation } from "react-router";
+
 import Security from "./Security";
 import {
   Harness,
@@ -270,8 +272,43 @@ export const FreshDeployment: Story = {
       "https://app.example.com\nhttps://console.example.com",
     );
     await expect(canvas.getByLabelText("Required headers")).toHaveValue("");
-    await expect(canvas.getByRole("button", { name: "Save changes" })).toBeDisabled();
+    await expect(canvas.getByRole("button", { name: "Save changes" })).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
     fresh.expectNotSent("PUT", SETTINGS);
+  },
+};
+
+// the shared settings form (#3243): leaving with an unsaved list asks first
+function Elsewhere() {
+  const { pathname } = useLocation();
+  return (
+    <>
+      <Link to="/elsewhere">Go elsewhere</Link>
+      <output data-testid="pathname">{pathname}</output>
+    </>
+  );
+}
+
+export const LeavingWithAnUnsavedListAsksFirst: Story = {
+  render: () => (
+    <Harness fetchStub={securityApi().stub}>
+      <Security />
+      <Elsewhere />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const origins = await canvas.findByLabelText("Allowed origins");
+    await userEvent.type(origins, "{Enter}https://console.example.com");
+    await userEvent.click(canvas.getByRole("link", { name: "Go elsewhere" }));
+    const prompt = within(await within(document.body).findByRole("dialog"));
+    await waitFor(() => expect(prompt.getByText("Discard unsaved changes?")).toBeVisible());
+    await userEvent.click(prompt.getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(within(document.body).queryByRole("dialog")).toBeNull());
+    await expect(canvas.getByTestId("pathname")).toHaveTextContent("/");
+    await expect(origins).toHaveValue("https://app.example.com\nhttps://console.example.com");
   },
 };
 
@@ -293,32 +330,32 @@ export const SaveWaitsForAnEditAndDiscardRestores: Story = {
     const origins = await canvas.findByLabelText("Allowed origins");
     const save = canvas.getByRole("button", { name: "Save changes" });
     const discard = canvas.getByRole("button", { name: "Discard changes" });
-    await expect(save).toBeDisabled();
+    await expect(save).toHaveAttribute("aria-disabled", "true");
     await expect(discard).toBeDisabled();
     await expect(canvas.queryAllByText("Edited")).toHaveLength(0);
 
     // a blank line, or space around an entry, changes nothing that would be sent
     await userEvent.type(origins, "{Enter}{Enter}  ");
-    await expect(save).toBeDisabled();
+    await expect(save).toHaveAttribute("aria-disabled", "true");
     await expect(canvas.queryAllByText("Edited")).toHaveLength(0);
 
     await userEvent.type(origins, "{Enter}https://console.example.com");
-    await expect(save).toBeEnabled();
+    await expect(save).not.toHaveAttribute("aria-disabled");
     await expect(discard).toBeEnabled();
     await expect(canvas.getAllByText("Edited")).toHaveLength(1);
-    await expect(canvas.getByText("1 setting changed, not saved yet.")).toBeVisible();
+    await expect(canvas.getByText(/^1 change not saved yet\./)).toBeVisible();
 
     const names = canvas.getByLabelText("Allowed headers");
     await userEvent.type(names, "{Enter}x-trace");
     await expect(canvas.getAllByText("Edited")).toHaveLength(2);
-    await expect(canvas.getByText("2 settings changed, not saved yet.")).toBeVisible();
+    await expect(canvas.getByText(/^2 changes not saved yet\./)).toBeVisible();
 
     await userEvent.click(discard);
     await expect(origins).toHaveValue("https://app.example.com");
     await expect(names).toHaveValue("x-request-id");
     await expect(canvas.queryAllByText("Edited")).toHaveLength(0);
     await expect(canvas.queryByText(/not saved yet/)).toBeNull();
-    await expect(save).toBeDisabled();
+    await expect(save).toHaveAttribute("aria-disabled", "true");
     await expect(discard).toBeDisabled();
     pristine.expectNotSent("PUT", SETTINGS);
   },
@@ -354,8 +391,13 @@ export const MalformedHeaderStaysAndBlocksSave: Story = {
     await expect(headers).toHaveValue("x-tenant=acme");
     await expect(headers).toBeInvalid();
     await expect(headers).toHaveAccessibleDescription(new RegExp(message.replace(".", "\\.")));
-    await expect(canvas.getByText("Fix 1 entry to save.")).toBeVisible();
-    await expect(canvas.getByRole("button", { name: "Save changes" })).toBeDisabled();
+    await expect(canvas.getByText("1 field needs attention")).toBeVisible();
+    // a form with a field at fault keeps Save pressable: the press says why by
+    // moving focus to the field, and sends nothing
+    const saveButton = canvas.getByRole("button", { name: "Save changes" });
+    await expect(saveButton).toHaveAttribute("aria-disabled", "true");
+    await userEvent.click(saveButton);
+    await waitFor(() => expect(headers).toHaveFocus());
     malformed.expectNotSent("PUT", SETTINGS);
 
     await enter(headers, "x-tenant: globex");
@@ -417,8 +459,11 @@ export const EveryListNamesItsProblems: Story = {
         "Line 1: /v1/models, /v1/ping looks like several entries. Put each on its own line.",
       ),
     ).toBeVisible();
-    await expect(canvas.getByText("Fix 4 entries to save.")).toBeVisible();
-    await expect(canvas.getByRole("button", { name: "Save changes" })).toBeDisabled();
+    await expect(canvas.getByText("4 fields need attention")).toBeVisible();
+    await expect(canvas.getByRole("button", { name: "Save changes" })).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
 
     // a fifth and sixth problem in one list are counted, not listed
     await enter(
@@ -467,7 +512,10 @@ export const ValuesWithCommasRoundTrip: Story = {
       "x-request-id\nX-Stainless-Timeout",
     );
     await expect(canvas.getByLabelText("Auth bypass routes")).toHaveValue("/v1/models\n/v1/ping");
-    await expect(canvas.getByRole("button", { name: "Save changes" })).toBeDisabled();
+    await expect(canvas.getByRole("button", { name: "Save changes" })).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
 
     await userEvent.type(required, "{Enter}x-ids: 1,2,3");
     await userEvent.click(canvas.getByRole("button", { name: "Save changes" }));
@@ -505,8 +553,11 @@ export const StoredProblemIsShownFromTheStart: Story = {
       await canvas.findByText("Line 1: /healthz must be an exact path under /v1/."),
     ).toBeVisible();
     await expect(routes).toBeInvalid();
-    await expect(canvas.getByText("Fix 1 entry to save.")).toBeVisible();
-    await expect(canvas.getByRole("button", { name: "Save changes" })).toBeDisabled();
+    await expect(canvas.getByText("1 field needs attention")).toBeVisible();
+    await expect(canvas.getByRole("button", { name: "Save changes" })).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
   },
 };
 
@@ -593,7 +644,9 @@ export const CancelledLooseningSendsNothing: Story = {
     await expectUxEvent("form_abandon", "security-loosen");
     await expect(routes).toHaveValue("/v1/models\n/v1/ping");
     await expect(canvas.getAllByText("Edited")).toHaveLength(1);
-    await expect(canvas.getByRole("button", { name: "Save changes" })).toBeEnabled();
+    await expect(canvas.getByRole("button", { name: "Save changes" })).not.toHaveAttribute(
+      "aria-disabled",
+    );
   },
 };
 
@@ -683,10 +736,13 @@ export const SavedLineSaysEveryGatewayRunsIt: Story = {
     await enter(origins, "https://console.example.com");
     await userEvent.click(canvas.getByRole("button", { name: "Save changes" }));
     await expect(
-      await canvas.findByText(/^Saved at .+\. All 2 live gateways are running it\.$/),
+      await canvas.findByText(/^Saved at .+\. Applied to all 2 live gateways\.$/),
     ).toBeVisible();
     await pickedUp.expectSent("GET", "/api/v1/cluster/nodes");
-    await expect(canvas.getByRole("button", { name: "Save changes" })).toBeDisabled();
+    await expect(canvas.getByRole("button", { name: "Save changes" })).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
   },
 };
 
@@ -712,7 +768,7 @@ export const SavedLineCountsAGatewayThatLags: Story = {
     await userEvent.click(canvas.getByRole("button", { name: "Save changes" }));
     await expect(
       await canvas.findByText(
-        /^Saved at .+\. 1 of 2 live gateways are running it; the rest pick it up on their next config poll\.$/,
+        /^Saved at .+\. Applied to 1 of 2 live gateways; the rest pick it up on their next config poll\.$/,
       ),
     ).toBeVisible();
   },
@@ -787,9 +843,14 @@ export const ValidationInRussian: Story = {
           .replace("{{entry}}", "ftp://x.example.com"),
       ),
     ).toBeVisible();
-    await expect(canvas.getByText(copy.status.invalid_one.replace("{{count}}", "1"))).toBeVisible();
-    await expect(canvas.getByRole("button", { name: copy.discard })).toBeEnabled();
-    await expect(canvas.getByRole("button", { name: "Сохранить изменения" })).toBeDisabled();
+    await expect(
+      canvas.getByText(ru.common.fieldsNeedAttention_one.replace("{{count}}", "1")),
+    ).toBeVisible();
+    await expect(canvas.getByRole("button", { name: ru.common.settings.discard })).toBeEnabled();
+    await expect(canvas.getByRole("button", { name: "Сохранить изменения" })).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
     russian.expectNotSent("PUT", SETTINGS);
   },
 };
@@ -811,8 +872,110 @@ export const MobileKeepsErrorsAndFooterInView: Story = {
     );
     await userEvent.tab();
     await expect(await canvas.findByText(/needs a name and a value/)).toBeVisible();
-    await expect(canvas.getByText("Fix 1 entry to save.")).toBeVisible();
+    await expect(canvas.getByText("1 field needs attention")).toBeVisible();
     await expect(canvas.getByRole("button", { name: "Discard changes" })).toBeVisible();
     await expectNoHorizontalOverflow();
+  },
+};
+
+const removing = securityApi();
+
+/**
+ * Removing a required header stops the ingress filter it stood for from
+ * applying (#2358), so it asks first like a bypass route does. The dialog lists
+ * the header that went, and nothing is sent until it is confirmed.
+ */
+export const RemovingARequiredHeaderIsConfirmed: Story = {
+  beforeEach: recordUxEvents,
+  render: () => (
+    <Harness fetchStub={removing.stub}>
+      <UxScreenProvider screen="security">
+        <Security />
+      </UxScreenProvider>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await enter(await canvas.findByLabelText("Required headers"), "");
+    await userEvent.click(canvas.getByRole("button", { name: "Save changes" }));
+
+    const dialogElement = await confirmation();
+    await waitFor(() => expect(dialogElement).toBeVisible());
+    const dialog = within(dialogElement);
+    await expect(
+      dialog.getByRole("heading", { name: "Save a change that loosens security?" }),
+    ).toBeInTheDocument();
+    const rows = await dialog.findAllByRole("listitem");
+    await expect(rows).toHaveLength(1);
+    await expect(rows[0]).toHaveTextContent("Required header removed:");
+    await expect(within(rows[0]).getByText("x-tenant")).toBeInTheDocument();
+    await expect(rows[0]).toHaveTextContent("Requests without it are now served");
+    await expect(puts(removing)).toHaveLength(0);
+
+    await confirmDestructive("Save a change that loosens security?", "Save changes");
+    await expect(await removing.expectSentBody("PUT", SETTINGS)).toEqual({
+      ...BASE_BODY,
+      required_headers: {},
+    });
+    await expect(puts(removing)).toHaveLength(1);
+    await expectUxEvent("save_confirmed", "security-loosen");
+  },
+};
+
+const valueChange = securityApi();
+
+/**
+ * A required header whose value changes, or whose name is retyped in another
+ * case, is still required: it goes out at once.
+ */
+export const ChangingARequiredHeadersValueSavesWithoutAsking: Story = {
+  render: () => (
+    <Harness fetchStub={valueChange.stub}>
+      <Toasted>
+        <Security />
+      </Toasted>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await enter(await canvas.findByLabelText("Required headers"), "X-Tenant: globex");
+    await userEvent.click(canvas.getByRole("button", { name: "Save changes" }));
+    await expect(await valueChange.expectSentBody("PUT", SETTINGS)).toEqual({
+      ...BASE_BODY,
+      required_headers: { "X-Tenant": "globex" },
+    });
+    await expect(within(document.body).queryByRole("dialog")).toBeNull();
+  },
+};
+
+const origin = securityApi();
+
+/**
+ * An allowed origin added lets another site's browser code call the control
+ * plane, and still saves at once: it is the routine edit of this screen, and a
+ * dialog on every origin is the click-through the destructive-action rules
+ * warn about (#2358).
+ */
+export const AddingAnAllowedOriginSavesWithoutAsking: Story = {
+  render: () => (
+    <Harness fetchStub={origin.stub}>
+      <Toasted>
+        <Security />
+      </Toasted>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.type(
+      await canvas.findByLabelText("Allowed origins"),
+      "{Enter}https://console.example.com",
+    );
+    await userEvent.click(canvas.getByRole("button", { name: "Save changes" }));
+    await expect(await origin.expectSentBody("PUT", SETTINGS)).toEqual({
+      ...BASE_BODY,
+      allowed_origins: ["https://app.example.com", "https://console.example.com"],
+    });
+    await expect(within(document.body).queryByRole("dialog")).toBeNull();
+    await expect(puts(origin)).toHaveLength(1);
   },
 };

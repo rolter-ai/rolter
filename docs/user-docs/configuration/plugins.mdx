@@ -3,15 +3,6 @@ title: "Plugins"
 description: "Store org- and project-scoped webhook middleware configuration for the Rolter request pipeline."
 ---
 
-<Warning>
-  **Experimental.** Plugins may change shape or be removed in a minor release.
-  The webhook payload Rolter posts to a plugin carries no version of its own, so
-  a change to that payload cannot be made compatibly — an endpoint written
-  against today's fields may need editing when it moves. The stored
-  configuration (slug, scope, order, failure policy, endpoint) is the settled
-  part; the request body is not.
-</Warning>
-
 Open **Plugins** to arrange desired request and response middleware across three stages:
 
 - **Pre-route** — before Rolter selects a route.
@@ -35,6 +26,34 @@ At each stage the gateway sends the request or response body under inspection to
 - `block` — reject the request with an OpenAI-compatible error, ending the chain
 - `annotate` — forward unchanged, annotations are recorded but not applied
 
+### The request body
+
+The gateway POSTs one JSON object to the endpoint. Its fields:
+
+| Field              | Type    | Meaning                                                                                                           |
+| ------------------ | ------- | ----------------------------------------------------------------------------------------------------------------- |
+| `contract_version` | integer | The version of this body, currently `1`. See [Contract version](#contract-version).                               |
+| `plugin`           | string  | The plugin's slug, so one endpoint serving several instances can tell them apart.                                 |
+| `stage`            | string  | `pre_route`, `pre_upstream` or `post_response`.                                                                   |
+| `model`            | string  | The model the caller asked for.                                                                                   |
+| `route`            | string  | The route it resolved to.                                                                                         |
+| `trace_id`         | string  | The request's trace id. The same value is sent in the `X-Rolter-Trace-Id` header.                                 |
+| `tenant`           | object  | Ids only, never secrets: any of `org`, `team`, `project` and `key` that apply to the request.                     |
+| `truncated`        | boolean | Present, as `true`, only when `content` was cut to the dispatcher's size cap and is a string preview of the body. |
+| `content`          | any     | The request or response body under inspection.                                                                    |
+
+### Contract version
+
+`contract_version` names the shape of the body above. Rolter sends exactly one version, the current one, in every call; it does not negotiate and it does not send two shapes at once.
+
+The rule for changing it, which is also the rule your endpoint can rely on:
+
+- **The number stays the same** for an additive change: a new optional field, or a new value of a field whose documentation already says new values may appear. Write your endpoint to ignore fields it does not know, and to treat a field that is absent as absent.
+- **The number goes up** for anything that can break an endpoint written against the old body: removing or renaming a field, changing a field's type, or changing what a field means.
+- A bump is announced in the release notes of the release that makes it, and the previous number stops being sent in that release.
+
+An endpoint that wants to refuse a version it was not written for can answer with a non-`2xx` status; the plugin's [failure policy](#failure-policy) then decides whether the request continues. The decision a plugin returns (`allow`, `transform`, `block`, `annotate`) is not versioned by this number.
+
 ### Streamed responses
 
 A `post_response` plugin judges a whole response body, and a streamed response is never a whole body until it has already reached the caller. What happens to a streamed request (`"stream": true`) depends on the failure mode of the `post_response` plugins that apply to it:
@@ -42,7 +61,7 @@ A `post_response` plugin judges a whole response body, and a streamed response i
 - **Any applicable plugin is fail closed:** the request is refused before it reaches the model, with HTTP `400` and code `plugin_streaming_unsupported` (`param: "stream"`). The message names the plugin. A fail-closed plugin has to approve every response, so a stream it cannot see is never delivered. The same request without `"stream": true` runs the chain as usual.
 - **Every applicable plugin is fail open:** the stream is delivered without running the `post_response` chain. Fail open already means the response is delivered when the plugin cannot give a verdict, which is the only thing a stream allows.
 
-To keep streaming available under a `post_response` plugin, set that plugin to fail open. Refusals are counted in `rolter_plugin_stream_rejections_total`. Output guardrails (`guardrails.streaming_post_call`) and the PII sanitizer (`pii_sanitizer.streaming`) make the same choice for their own response checks.
+To keep streaming available under a `post_response` plugin, set that plugin to fail open. Refusals are counted in `rolter_plugin_stream_rejections_total`. Output guardrails (`guardrails.streaming_post_call`) and the PII sanitizer (`pii_sanitizer.streaming`) make the same choice for their own response checks; the sanitizer can also restore a stream instead.
 
 The dashboard shows which of the two applies before you save. Once **Post-response** is picked in the plugin dialog, a note under the pickers follows the chosen **Failure policy**: with fail closed it says streamed requests in the plugin's scope are refused, with fail open it says streams skip the plugin unchecked. On the **Plugins** screen, every post-response plugin set to fail closed carries a one-line warning on its card that it refuses streamed requests while enabled. A paused plugin applies to no request, streamed or not.
 

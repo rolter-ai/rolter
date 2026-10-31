@@ -89,5 +89,44 @@ fn bench_translate(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_translate);
+/// a plain body carrying parameters every non-openai target drops, so the
+/// adjustment record is filled (#1586); read against `translate_request_plain`
+fn adjusted_body() -> Bytes {
+    Bytes::from(
+        serde_json::to_vec(&json!({
+            "model": "bench-model",
+            "max_tokens": 256,
+            "messages": [{"role": "user", "content": "what is the capital of france?"}],
+            "presence_penalty": 0.5,
+            "frequency_penalty": 0.5,
+            "logprobs": true,
+            "seed": 7
+        }))
+        .unwrap(),
+    )
+}
+
+fn bench_adjusted(c: &mut Criterion) {
+    let compat = rolter_core::CompatibilityConfig::default();
+    let mut group = c.benchmark_group("translate_request_adjusted");
+    let body = adjusted_body();
+    for (label, kind) in [
+        ("to_interactions", ProviderKind::GeminiInteractions),
+        ("to_gemini_generate", ProviderKind::GeminiNative),
+        ("to_anthropic", ProviderKind::Anthropic),
+    ] {
+        let plan = TranslationPlan::resolve("/v1/chat/completions", kind, RoleProfile::Openai);
+        group.bench_function(BenchmarkId::from_parameter(label), |b| {
+            b.iter(|| {
+                black_box(
+                    plan.translate_request_reporting(black_box(body.clone()), &compat)
+                        .unwrap(),
+                )
+            });
+        });
+    }
+    group.finish();
+}
+
+criterion_group!(benches, bench_translate, bench_adjusted);
 criterion_main!(benches);

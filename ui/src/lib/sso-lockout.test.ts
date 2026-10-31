@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 
 import type { SsoProviderRow } from "@/lib/api";
-import { distinctPeople, locksOutMembers, locksOutSsoMembers, secretGap } from "@/lib/sso-lockout";
+import { locksOutMembers, locksOutSsoMembers, secretGap } from "@/lib/sso-lockout";
 
 function provider(id: string, over: Partial<SsoProviderRow> = {}): SsoProviderRow {
   return {
@@ -25,17 +25,6 @@ function provider(id: string, over: Partial<SsoProviderRow> = {}): SsoProviderRo
 
 const PASSWORDS_OFF = { allow_password_login: false };
 const PASSWORDS_ON = { allow_password_login: true };
-
-describe("distinctPeople", () => {
-  it("counts a person holding two grants once", () => {
-    const rows = [{ user_id: "ada" }, { user_id: "ada" }, { user_id: "grace" }];
-    expect(distinctPeople(rows)).toBe(2);
-  });
-
-  it("is zero with no grants", () => {
-    expect(distinctPeople([])).toBe(0);
-  });
-});
 
 describe("locksOutMembers", () => {
   const okta = provider("okta");

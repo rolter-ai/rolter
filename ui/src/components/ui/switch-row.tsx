@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 
 import { InfoHint } from "@/components/ui/info-hint";
 import { Switch } from "@/components/ui/switch";
+import { UnsavedBadge } from "@/components/ui/unsaved-badge";
 import { useGate, type Capability } from "@/lib/can";
 import { useRefusedClick } from "@/lib/ux-react";
 
@@ -31,6 +32,8 @@ interface SwitchRowBaseProps {
   checked: boolean;
   onChange: (v: boolean) => void;
   disabled?: boolean;
+  /** the switch moved and the new value waits for Save, so the row says so (#2214) */
+  unsaved?: boolean;
 }
 
 export function SwitchRow({
@@ -40,6 +43,7 @@ export function SwitchRow({
   checked,
   onChange,
   disabled,
+  unsaved,
   gate,
   control = "switch",
 }: SwitchRowProps) {
@@ -53,6 +57,7 @@ export function SwitchRow({
         <div className="flex items-center gap-1.5">
           <span className="text-sm">{title}</span>
           {info && <InfoHint text={info} label={t("common.aboutField", { label: title })} />}
+          {unsaved && <UnsavedBadge />}
         </div>
         {hint && (
           <p id={hintId} className="text-xs text-muted-foreground">

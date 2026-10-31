@@ -112,6 +112,31 @@ The screen key is not a prop. It travels through `UxScreenProvider`, mounted
 once by the app shell, so a sheet rendered outside one is silent rather than
 mislabelled.
 
+### Shell surfaces report under `shell` (#1895)
+
+Some surfaces render in the shell, outside the provider every screen is mounted under. The scope
+switcher in the rail is the one that matters: its org, team and project deletes are the most
+destructive actions in the dashboard, and left silent they were the ones the stream could not see.
+The decision is that such a surface is **not** silent. It gets the reserved screen key `shell`
+(`SHELL_SCREEN` in `ui/src/lib/ux-react.tsx`) and wraps itself in
+`<UxScreenProvider screen={SHELL_SCREEN}>`:
+
+- `ScopeSwitcher` and `CreateProjectHost` do, so the three `ConfirmDialog` deletes (`org-delete`,
+  `team-delete`, `project-delete`) and the create dialogs (`org-create`, `team-create`,
+  `project-create`) record `form_submit`, `save_confirmed` and the abandons under `shell`.
+- The create dialog names its form after the level it was opened at and keeps that name through the
+  closing edge, when the level is already gone, so an abandon still says which level was asked about.
+- The control plane needs nothing to accept it: `validate_key` in
+  `crates/rolter-control/src/ui_events.rs` takes any bounded key, and
+  `the_reserved_shell_screen_key_is_accepted` pins `shell` so a later rule cannot refuse it by accident.
+  The user docs list it under the `screen` field of [`POST /api/v1/ui-events`](../../user-docs/api/ui-events.mdx).
+- No route may use the id: `screens.test.ts` fails if `SCREENS` ever has a `shell` entry, since the
+  rows would merge with the shell's.
+
+Everything else in the shell stays as it was: `screen_view` and `navigate` come from the route
+effect, and the header gateway pill is still silent (above). Give a new shell surface the key rather
+than a screen of its own, and assert its rows without supplying a screen in the story.
+
 ## A refresh that failed over data still on screen
 
 A list that has loaded and then fails a poll keeps its rows and says so in a
@@ -375,7 +400,7 @@ every row already written rather than migrating it. Adding one means
    in the same order — `the_action_list_is_the_enum8_in_ordinal_order` pins it,
    so a value sorted into the middle is a failing test rather than a silent
    remapping,
-3. the value added to the `UiEvent["action"]` union in `ui/src/lib/api.ts` and
+3. the value added to the `UiEvent["action"]` union in `ui/src/lib/api/ux.ts` and
    a named emitter in `ux.ts`, so a typo at a call site is a type error.
 
 ## Proving the pipeline end to end

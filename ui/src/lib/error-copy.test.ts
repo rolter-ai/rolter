@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 
 import { ApiError } from "@/lib/api";
-import { describeError, errorText, KNOWN_ERROR_CODES } from "@/lib/error-copy";
+import { describeCodedError, describeError, errorText, KNOWN_ERROR_CODES } from "@/lib/error-copy";
 import { GatewayError } from "@/lib/gateway";
 import { flatten } from "@/lib/i18n/parity";
 import en from "@/lib/i18n/locales/en.json";
@@ -132,5 +132,28 @@ describe("errorText", () => {
 
   it("appends the server's words where they are kept as detail", () => {
     expect(errorText(new ApiError("slug is bad", 400), t)).toBe("errors.api.generic slug is bad");
+  });
+});
+
+describe("describeCodedError", () => {
+  it("is null for anything but a coded ApiError the catalog knows", () => {
+    expect(describeCodedError(new Error("plain"), t)).toBeNull();
+    expect(describeCodedError("a string", t)).toBeNull();
+    expect(describeCodedError(new ApiError("no code", 409), t)).toBeNull();
+    expect(describeCodedError(new ApiError("new code", 409, "not_published"), t)).toBeNull();
+  });
+
+  it("translates a known code and leaves the server's words out", () => {
+    expect(describeCodedError(new ApiError("english", 409, "api_token_inactive"), t)).toEqual({
+      message: "errors.api.codes.api_token_inactive",
+    });
+  });
+
+  it("keeps the server's words for the codes whose sentence cannot name the thing", () => {
+    for (const code of ["invalid_field", "invalid_body", "referenced", "scope_mismatch"]) {
+      expect(describeCodedError(new ApiError("names the dependents", 409, code), t)).toMatchObject({
+        detail: "names the dependents",
+      });
+    }
   });
 });

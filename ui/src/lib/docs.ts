@@ -1,20 +1,20 @@
 /**
  * Where the user documentation lives, and how a screen links into it (#1164).
  *
- * Until now no screen could say "read more" and mean it: there is no canonical
- * documentation domain recorded anywhere in the repository (#1360), so a
- * hyperlink would have had to hard-code an invented hostname. #943 hit this
+ * Until now no screen could say "read more" and mean it: a hyperlink would have
+ * had to hard-code a documentation hostname, and the public site's domain is
+ * not something every deployment can reach or should depend on. #943 hit this
  * head-on — `security/which-key` exists as a page, and the provider, key and
  * playground screens could only inline the explanation.
  *
  * The base URL therefore comes from the deployment, in two layers:
  *
  *   1. build time — `VITE_DOCS_BASE_URL`, baked into the bundle. This is what
- *      a distribution build sets once a canonical domain exists.
+ *      a distribution build may set to the public site.
  *   2. run time — `window.__ROLTER_CONFIG__.docsBaseUrl`, injected into the
  *      served HTML by the control plane (`--ui-docs-base-url`). Wins over the
  *      build-time value, because the SPA is built ahead of time and shipped as
- *      static assets: an operator mirroring the Mintlify site internally cannot
+ *      static assets: an operator mirroring the documentation site internally cannot
  *      rebuild it.
  *
  * Neither is required, and the default is neither. An air-gapped deployment

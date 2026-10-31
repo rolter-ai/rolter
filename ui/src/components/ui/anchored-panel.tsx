@@ -25,7 +25,7 @@ const GAP = 6;
 const MARGIN = 8;
 
 export type PanelSide = "right" | "below" | "above";
-export type PanelAlign = "start" | "end";
+export type PanelAlign = "start" | "end" | "center";
 
 export interface Box {
   left: number;
@@ -48,11 +48,12 @@ export interface PlaceOptions {
  * Where the panel's top-left corner goes.
  *
  * `right` stands beside the anchor's container, level with the anchor's top
- * (`start`) or its bottom (`end`), so a menu opened from the card at the foot of
- * the rail grows upward instead of off the screen. `below` and `above` stand
- * against the anchor's edge and line up with its left (`start`) or right (`end`)
- * side. `below` turns `above` when the viewport has no room under the anchor and
- * more over it. Every answer is clamped so the panel stays inside the viewport.
+ * (`start`), its middle (`center`) or its bottom (`end`), so a menu opened from
+ * the card at the foot of the rail grows upward instead of off the screen.
+ * `below` and `above` stand against the anchor's edge and line up with its left
+ * (`start`) or right (`end`) side, or centre on it. `below` turns `above` when
+ * the viewport has no room under the anchor and more over it. Every answer is
+ * clamped so the panel stays inside the viewport.
  */
 export function placePanel({ anchor, edge, panel, viewport, side, align }: PlaceOptions): {
   left: number;
@@ -60,12 +61,18 @@ export function placePanel({ anchor, edge, panel, viewport, side, align }: Place
 } {
   const clamp = (value: number, size: number, available: number) =>
     Math.max(MARGIN, Math.min(value, available - MARGIN - size));
-  const across = (from: number, to: number) => (align === "end" ? to - panel.width : from);
+  const across = (from: number, to: number) =>
+    align === "end" ? to - panel.width : align === "center" ? (from + to - panel.width) / 2 : from;
   let left: number;
   let top: number;
   if (side === "right") {
     left = edge + GAP;
-    top = align === "end" ? anchor.bottom - panel.height : anchor.top;
+    top =
+      align === "end"
+        ? anchor.bottom - panel.height
+        : align === "center"
+          ? (anchor.top + anchor.bottom - panel.height) / 2
+          : anchor.top;
   } else {
     const fitsBelow = anchor.bottom + GAP + panel.height <= viewport.height - MARGIN;
     const fitsAbove = anchor.top - GAP - panel.height >= MARGIN;
@@ -124,7 +131,7 @@ export const AnchoredPanel = React.forwardRef<HTMLDivElement, AnchoredPanelProps
       const panel = ref.current;
       if (!panel) return;
       const box = anchor.getBoundingClientRect();
-      const next = placePanel({
+      const placed = placePanel({
         anchor: box,
         edge: (anchor.closest("nav") ?? anchor).getBoundingClientRect().right,
         panel: { width: panel.offsetWidth, height: panel.offsetHeight },
@@ -132,6 +139,19 @@ export const AnchoredPanel = React.forwardRef<HTMLDivElement, AnchoredPanelProps
         side,
         align,
       });
+      // `fixed` is placed against the window only while no ancestor has a
+      // `transform`; one that does (a sheet or the nav drawer sliding in) is the
+      // containing block instead, and the panel lands wherever that ancestor
+      // happens to be. The panel's own rectangle against the offset it was last
+      // given is where that block's corner is, so the viewport answer is
+      // translated into it. When the ancestor stops moving it is placed again
+      // (the animation listener below), and the corner is the window's
+      const rect = panel.getBoundingClientRect();
+      const corner = {
+        left: rect.left - (parseFloat(panel.style.left) || 0),
+        top: rect.top - (parseFloat(panel.style.top) || 0),
+      };
+      const next = { left: placed.left - corner.left, top: placed.top - corner.top };
       const width = matchWidth ? Math.round(box.width) : 0;
       setPos((p) =>
         p.left === next.left && p.top === next.top && p.width === width ? p : { ...next, width },
@@ -175,15 +195,24 @@ export const AnchoredPanel = React.forwardRef<HTMLDivElement, AnchoredPanelProps
         if (box.bottom < view.top || box.top > view.bottom) close(false);
         else place();
       };
+      // an ancestor's slide-in finishing changes the block `fixed` is placed
+      // against (see `place`), so the panel is placed again against the window
+      const onSettled = (e: Event) => {
+        if (e.target instanceof Element && e.target.contains(anchor)) place();
+      };
       document.addEventListener("mousedown", onDown);
       document.addEventListener("keydown", onKey);
       document.addEventListener("scroll", onScroll, true);
+      document.addEventListener("animationend", onSettled, true);
+      document.addEventListener("transitionend", onSettled, true);
       return () => {
         const at = stack.indexOf(token);
         if (at >= 0) stack.splice(at, 1);
         document.removeEventListener("mousedown", onDown);
         document.removeEventListener("keydown", onKey);
         document.removeEventListener("scroll", onScroll, true);
+        document.removeEventListener("animationend", onSettled, true);
+        document.removeEventListener("transitionend", onSettled, true);
       };
     }, [anchor, place]);
 

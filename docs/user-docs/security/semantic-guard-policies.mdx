@@ -1,0 +1,342 @@
+---
+title: "Semantic guard policies"
+description: "Run several guardrail providers side by side and pick which ones judge a request with policies scoped to the deployment, an organization, a project, a route or a virtual key."
+---
+
+A semantic guard is a guardrail provider that judges content by meaning — "is this a prompt injection", "is this answer toxic", "does it leak the system prompt" — rather than by a pattern. Rolter speaks to it over the vendor-neutral webhook contract described in [Guardrails](/security/guardrails#external-providers): the gateway posts a JSON envelope and the provider answers `allow`, `block`, `transform` or `annotate`, optionally with scored `categories`. A provider can also be a small [local classifier](#local-classifier) the gateway runs itself, with no service behind it.
+
+Several providers can be enabled at once. A **policy** decides which of them judge a request and what their scores mean. Open **Guardrails → Policies** in the dashboard; the screen needs superadmin access.
+
+<Note>
+  Guards decide; sanitizers transform. A semantic guard blocks, flags or rewrites a request or
+  response by what it means. Removing or restoring personal data is the [PII
+  sanitizer](/security/pii-sanitizer)'s job, and masking with patterns is the job of the built-in
+  [inspection rules](/security/guardrails#inspection-rules). Payload capture has its own redaction
+  ([logs and cost](/observability/logs-and-cost)). The three run independently: the built-in rules
+  first, then the semantic policy, then the sanitizer.
+</Note>
+
+## Which policy applies
+
+A policy is scoped to one of:
+
+| Scope        | `scope_id`                                        |
+| ------------ | ------------------------------------------------- |
+| `key`        | a virtual key's id                                |
+| `route`      | a route's public model name, such as `gpt-4o`     |
+| `project`    | a project's id (the project of the calling key)   |
+| `org`        | an organization's id (the org of the calling key) |
+| `deployment` | none: every request                               |
+
+**Exactly one policy applies to a request: the most specific enabled one that matches it, in the order key, route, project, org, deployment.** It replaces the broader policies rather than merging with them, so the policy in force can be read off one row: a project policy that should still run the deployment's prompt-injection check lists that provider too. Only one enabled policy may exist per scope.
+
+A provider that **no policy lists** — enabled or paused — is _unattached_. Unattached providers run on every request that no policy matches, with no thresholds, which is how a single deployment-wide guardrail webhook behaved before policies existed. They are reported under the policy name `default`. Once a policy lists a provider, the provider only runs where a policy puts it, and pausing that policy does not widen it back to every request.
+
+Keys defined in the config file have no id, so they only reach route and deployment policies.
+
+Each provider still runs at its own stage: a `pre_call` provider judges the request before it goes upstream, a `post_call` provider judges the response before it is delivered. A policy runs its providers of each stage in the order it lists them; a `transform` from one is what the next one sees.
+
+## Thresholds and categories
+
+A provider may score categories alongside, or instead of, an action:
+
+```json
+{ "action": "allow", "categories": { "violence": 0.91, "self_harm": 0.02 } }
+```
+
+A body with `categories` and no `action` is an allow carrying scores. Scores are numbers from 0 to 1; anything else is ignored.
+
+A policy's `thresholds` turn scores into violations: a category scored **at or above** its threshold violates the policy. `"*"` is the threshold for every category the policy does not name; a category covered by neither never violates. `on_violation` says what a violation does:
+
+- `block` (the default) — the request is refused with `400 guardrail_blocked`, or the response is withheld with `403 guardrail_blocked`, naming the policy and the category.
+- `annotate` — the request goes through; the violation is counted in the metrics and, on a request, recorded on the request log.
+
+A provider's own `block` always blocks, whatever the thresholds. Scores are judged before a `transform` is applied, so a provider cannot launder a violating body by rewriting it.
+
+### Choosing a threshold
+
+Every threshold trades false positives against false negatives. A low threshold blocks more harmful content and more legitimate content with it; a high one lets more through on both counts. A few practical rules:
+
+- Start with `on_violation = "annotate"`, watch `rolter_guardrail_policy_violations_total` for a week against real traffic, then switch to `block` at a threshold you have seen.
+- Set thresholds per category rather than one `"*"`: classifiers are calibrated differently per category, and a value that is strict for `violence` can be loose for `prompt_injection`.
+- Scope strict thresholds narrowly. A customer-facing project can afford false positives that an internal coding assistant cannot.
+- A false negative on the request side is caught nowhere else; one on the response side can still be caught by a `post_call` provider. Running both stages costs latency on every request.
+
+## Failure handling
+
+Every call is bounded by the provider's `timeout_ms` and retried up to `max_retries` times. A call that gives no verdict resolves through **that provider's** `failure_mode` — `fail_open` moves on to the next provider as if it had allowed, `fail_closed` refuses the request (`400 guardrail_blocked`, naming the provider and the failure) or withholds the response:
+
+| What happened                                                                                 | Retried | Counted as   |
+| --------------------------------------------------------------------------------------------- | ------- | ------------ |
+| the call outlived `timeout_ms`                                                                | yes     | `timeout`    |
+| the connection failed                                                                         | yes     | `connect`    |
+| the provider answered `429` or `503` (overloaded)                                             | yes     | `overloaded` |
+| any other non-2xx status                                                                      | no      | `status`     |
+| the body could not be read                                                                    | yes     | `body`       |
+| the body is not a decision (not JSON, an unknown `action`, neither `action` nor `categories`) | no      | `unparsable` |
+| the [egress policy](/configuration/egress) refused the URL                                    | no      | `refused`    |
+
+An answer that is not a decision follows the failure mode too: a `fail_closed` provider that starts returning garbage refuses traffic rather than waving it through. (Before policies, an unreadable answer always read as allow.)
+
+A [local classifier](#local-classifier) adds three cases: `model` (its model is not loaded), `overloaded` (no slot freed up within `timeout_ms`) and `truncated` (the text is longer than its `max_scored_bytes` under `on_truncated = "fail_closed"`, which **always** refuses, whatever its `failure_mode`; see [Long texts](#long-texts)); none is retried. A provider whose `kind` the gateway does not know, which only a newer control plane can send it, is counted as `unsupported` and **always** refuses, whatever its `failure_mode`.
+
+## Local classifier
+
+A provider with `kind = "local"` is a classifier the gateway runs in its own process: no sidecar, no network hop, no URL. It is meant for cheap, high-volume checks such as keyword-style prompt injection ("ignore all previous instructions") or obvious toxicity, and answers like any other provider: one score from 0 to 1 per category, held to the policy's `thresholds`. It never answers `block` or `transform` itself, so set a threshold for every category it should act on. The design decision is [ADR-0039](https://github.com/rolter-ai/rolter/blob/master/docs/dev-docs/adr/2026-10-28-local-semantic-classifier.md).
+
+<Warning>
+  The default local classifier is a hashed word n-gram logistic model. It is fast and small, and
+  far weaker than a transformer: paraphrased or obfuscated attacks get past it. A gateway built with
+  the `onnx` feature can run a transformer classifier in process instead (see [ONNX
+  models](#onnx-models)); otherwise run one such as a fine-tuned DeBERTa behind a
+  [webhook](/security/guardrails#external-providers).
+</Warning>
+
+**What it reads.** Every string in the body the stage judges, one per line, except structural fields such as `model`, `role`, `type`, `id`, `finish_reason` and `url`, and inline binary `data` (a base64 image or audio; an Anthropic plain-text document's `data` is read). On a buffered stream that is the assembled text. A text that fits in the provider's `max_body_bytes` is read whole; a longer one is read in windows, as [Long texts](#long-texts) describes.
+
+**The model file.** A JSON file in the `rolter-linear/1` format:
+
+```json
+{
+  "format": "rolter-linear/1",
+  "buckets": 65536,
+  "ngrams": 2,
+  "categories": {
+    "prompt_injection": { "bias": -4.0, "weights": [[17, 2.5], [903, 1.25]] },
+    "toxicity": { "bias": -3.0, "weights": [[48, 4.0]] }
+  }
+}
+```
+
+The text is lowercased and split into words on every character that is not a letter or a digit. Every run of 1 to `ngrams` consecutive words, joined by one space, is hashed with 64-bit FNV-1a modulo `buckets`; a bucket is present or not, however often it occurs. A category's score is `1 / (1 + e^-(bias + the sum of its weights over the present buckets))`. Limits: at most 64 MiB on disk, `buckets` up to 1 048 576, `ngrams` 1 to 3, 1 to 32 categories, and `buckets × categories` at most 4 194 304, so a model holds at most 16 MiB of weights in memory. Each distinct model (by digest) is loaded once per gateway, however many providers use it. Parsing a file takes about three times its size in memory while it runs, so a 64 MiB file peaks near 190 MiB during a reload.
+
+**Training one.** Any logistic regression over the same features produces a model. With scikit-learn, from a list of `(text, {category: 0 or 1})` examples:
+
+```python
+import json
+from scipy.sparse import lil_matrix
+from sklearn.linear_model import LogisticRegression
+
+BUCKETS, NGRAMS = 1 << 16, 2
+
+def fnv1a(text):
+    h = 0xCBF29CE484222325
+    for byte in text.encode("utf-8"):
+        h = ((h ^ byte) * 0x100000001B3) & 0xFFFFFFFFFFFFFFFF
+    return h
+
+def features(text):
+    words = "".join(c if c.isalnum() else " " for c in text.lower()).split()
+    return {fnv1a(" ".join(words[end - n:end])) % BUCKETS
+            for end in range(1, len(words) + 1)
+            for n in range(1, min(NGRAMS, end) + 1)}
+
+def train(examples, categories):
+    x = lil_matrix((len(examples), BUCKETS))
+    for row, (text, _) in enumerate(examples):
+        for bucket in features(text):
+            x[row, bucket] = 1
+    x = x.tocsr()
+    model = {"format": "rolter-linear/1", "buckets": BUCKETS, "ngrams": NGRAMS, "categories": {}}
+    for category in categories:
+        y = [labels.get(category, 0) for _, labels in examples]
+        fit = LogisticRegression(max_iter=1000).fit(x, y)
+        model["categories"][category] = {
+            "bias": float(fit.intercept_[0]),
+            "weights": [[b, float(w)] for b, w in enumerate(fit.coef_[0]) if abs(w) > 1e-6],
+        }
+    return model
+
+# json.dump(train(examples, ["prompt_injection"]), open("injection.json", "w"))
+```
+
+Python's and Rust's ideas of a letter and of lowercase agree on almost all text; train and evaluate on the languages your traffic uses.
+
+**Shipping it.** The gateway never downloads a model. Put the file on every gateway's file system at the same path — a Kubernetes `ConfigMap` or `Secret` for a small model, a volume or an init container for a larger one, a bind mount under Docker — and pin it:
+
+```bash
+sha256sum injection.json
+```
+
+```toml
+[[semantic_guards.providers]]
+name = "injection"
+enabled = true
+kind = "local"
+model_path = "/etc/rolter/models/injection.json"
+model_sha256 = "<the digest>"
+stage = "pre_call"
+timeout_ms = 50
+failure_mode = "fail_closed"
+```
+
+The pin is required. A file whose digest differs is not loaded, so replacing a model is a configuration change, recorded like one, rather than a file silently swapped under a running policy. The gateway loads models when it applies a configuration — at start and on every reload, reading the file off the request path — and keeps a loaded model while its pin is unchanged. Only a regular file is read. A model that fails to load is logged (`local guardrail model not loaded`, with the reason) and its provider follows its `failure_mode` until the model loads. When the file could not be read — it is not there yet, or not readable yet, or neither is `model_root` — the gateway reads it again in the background, 1 second after the failure and then twice as long after each further failure, up to once a minute (`local guardrail model still not loaded`, at `warn`), until it loads or no configuration names it; so a model whose volume was mounted after the pin was pushed starts judging within a minute, with no configuration change. A configuration change that adds or changes a local provider starts that wait at 1 second again. A read that takes longer than 30 seconds, on a hung network mount for example, is abandoned and counts as a file that could not be read: the configuration still applies without the model, and the background reads try again later. While such a read has not returned, the gateway does not start another read of the same path, and it runs at most 8 model reads at once, so a hung mount cannot tie up more than 8 threads however many models it holds. A read that returns after its 30 seconds is not wasted: a model it loaded, checked against its pin, is installed by the next background read (`an abandoned local guardrail model read returned after its deadline`), so a mount that is always that slow still loads, one read late. A file that was read but is refused — a digest that differs from the pin, a path outside `model_root`, a file that is not a regular file or not a valid model — gives the same answer until the configuration changes, so it is logged once and not read again until the next configuration change. The [`rolter_local_classifier_models`](/observability/metrics#rolter_local_classifier_models) gauge reports each local provider's model as `loaded` or `failed`, by provider name.
+
+**Confining models to one directory.** `model_path` may point anywhere on the gateway host unless the gateway sets a model root: the `--semantic-model-root` flag, else the `ROLTER_SEMANTIC_MODEL_ROOT` environment variable, else `[semantic_guards] model_root` in its own file. The first of the three that is set wins, and the gateway logs the root and where it came from once at start (`local guardrail model_root`). A gateway fed only by a control plane, with no file, sets its root with the flag or the variable. With a root, the gateway resolves `model_path` in full before reading it — every `..` and every symlink, whether the file or a directory on the way is the link — and reads it only if it is a regular file under the resolved root. A path that leads outside, through `..`, an absolute path elsewhere or a symlink, is not loaded: the log says `the model file resolves to <path>, outside model_root <root>` and the provider follows its `failure_mode`. A root that does not exist refuses every model. The file is opened once and checked on the open handle, so a file swapped for a symlink, a FIFO or another directory's file after the check is refused too, without stalling the gateway. A relative `model_path` resolves against the gateway process's working directory, so prefer absolute paths. A hard link inside the root to a file elsewhere on the same file system is not detected: it is the same file, and the pin still decides what is loaded. Mount the models' volume at the root and point every `model_path` into it. The root is fixed when the gateway starts; a control plane never sends one, so a dashboard user who can set `model_path` cannot widen it. A gateway started with `--config` or `ROLTER_CONFIG` naming a file that does not exist refuses to start, so a mistyped path cannot drop the root with the rest of the file.
+
+```toml
+[semantic_guards]
+model_root = "/etc/rolter/models"
+```
+
+**CPU.** Inference runs off the request workers, behind one limit per gateway shared by every local provider: `[semantic_guards] local_concurrency`, by default half the CPUs the process may use (at least one). A gateway fed by a control plane takes it from the control plane's own config file, since the dashboard does not set it. A call waits for a slot at most its provider's `timeout_ms`, which also bounds the inference; a call that gets no slot is `overloaded` and follows the provider's `failure_mode`, exactly like a webhook that answered `503`. Scoring costs about a millisecond per 64 KiB window of text on one core (measured with the bundled test model in a release build; a model with more buckets or n-grams costs more), so a text that fills the default budget of 8 windows takes about 10 ms. `timeout_ms` bounds the whole call, every window included, so set it to cover a full budget with room to spare, `50` or more with the defaults: a `timeout_ms` tuned for one short prompt times out on exactly the long texts the windows exist to read, and the call then follows `failure_mode`. The limit is per gateway replica.
+
+### ONNX models
+
+<Warning>
+  **Experimental:** the `onnx/1` manifest and native runtime compatibility contract may change.
+  This feature is source-build only; published images do not enable it.
+</Warning>
+
+A gateway built with the `onnx` cargo feature also runs transformer classifiers exported to ONNX (a DeBERTa, DistilBERT or MiniLM prompt-injection or toxicity model, say) through [ONNX Runtime](https://onnxruntime.ai). The feature is off by default and the published image does not enable it. A gateway built without it refuses an ONNX model: the log says `this gateway was built without the onnx cargo feature` and the provider follows its `failure_mode`.
+
+The provider's `model_path` then names a small JSON **manifest** in the `onnx/1` format, and `model_sha256` pins the manifest, which in turn pins the model and its tokenizer, so the one pin covers all three files:
+
+```json
+{
+  "format": "onnx/1",
+  "model": { "path": "model.onnx", "sha256": "<sha256sum of model.onnx>" },
+  "tokenizer": { "path": "tokenizer.json", "sha256": "<sha256sum of tokenizer.json>" },
+  "labels": [null, "prompt_injection"],
+  "activation": "softmax",
+  "max_tokens": 512
+}
+```
+
+- `model` and `tokenizer` each name a `path`, relative to the manifest's directory (or absolute), and its `sha256`. Both fall under [`model_root`](#local-classifier) like the manifest. `tokenizer` is the model's Hugging Face `tokenizer.json`.
+- `labels` names the model's output columns in order: each becomes a category the policy's `thresholds` apply to, and a `null` column (typically the "safe" class) is not reported. At most 32 named labels.
+- `activation` turns the logits into scores from 0 to 1: `softmax` (the default) across the columns for a single-label classifier, `sigmoid` per column for a multi-label one.
+- `max_tokens` (default 512, at most 8192) is each native inference window's input length. Longer text is scored in overlapping token windows, with special tokens reapplied and the highest score per category retained. At most 64 native windows are scored; a larger stream keeps the first quarter and last three quarters of that window budget and flags truncation. `on_truncated = "fail_closed"` refuses that cut even if the text fits its byte budget.
+- `output` optionally names the output to read; the model's first otherwise. The model must take `input_ids` and may take `attention_mask` and `token_type_ids`; no other input.
+
+The selected output must be f32 with exactly one value per label. The gateway runs an empty-input inference before reporting the model loaded, so an incompatible output or empty-input path fails at configuration load rather than on every request.
+
+<Warning>
+  Use trusted, self-contained ONNX graphs with all tensor data embedded in the `.onnx` file.
+  External-data initializers can make ONNX Runtime read sidecar weights relative to the gateway's
+  working directory. Those reads are outside the manifest's hashes and `model_root`; the gateway
+  does not validate or confine them. A pin on the serialized graph is not a pin on external weights.
+</Warning>
+
+Limits: the manifest and the tokenizer at most 64 MiB each, the ONNX model at most 1 GiB. Each model holds one single-threaded session. Calls wait for that model before taking a gateway-wide `local_concurrency` slot, so a queue for one native model does not consume the slots for linear providers. Both waits share `timeout_ms`; exhausted admission is `overloaded`. A timed-out caller cannot preempt a running native inference, which keeps its slots until it finishes. Give a CPU transformer a timeout suited to its measured latency and watch `rolter_guardrail_provider_latency_ms`.
+
+**The runtime library.** The source build pins the release-candidate Rust binding `ort = 2.0.0-rc.15` and uses its CPU-only `api-21` path. ONNX Runtime 1.22.0 is tested; newer runtimes are not an unconditional compatibility promise. The ONNX shared library itself is not linked or downloaded at build time: it is loaded from `ORT_DYLIB_PATH` or the system library path. A missing library is checked before reading large model parts and remains retryable, so mounting it later does not require a gateway restart. A gateway that cannot load it logs `cannot load the ONNX Runtime library` and fails ONNX providers through their `failure_mode`; linear models are unaffected.
+
+The tokenizer uses a pure-Rust regex backend. Custom serialized `Regex` patterns must compile with Rust's linear regex engine: lookaround, backreferences and oversized patterns are refused when the model loads, rather than silently losing text at a runtime backtracking limit. This applies to Split and Replace patterns, including nested sequences. Built-in pre-tokenizers such as ByteLevel are supported. A tokenizer needing unsupported custom patterns must be adapted or served through a webhook classifier. Tokenizer failures follow `failure_mode`; they are not reported as benign classifications. CI's all-features nextest job installs the pinned 1.22.0 CPU runtime and requires native inference rather than allowing its tests to self-skip.
+
+The prebuilt x86-64 ONNX Runtime releases assume a CPU with AVX. To run ONNX models in a container, build the image with the feature and add the library from an official [ONNX Runtime release](https://github.com/microsoft/onnxruntime/releases) to the distroless image, which already carries the C++ runtime the library needs:
+
+```dockerfile
+# docker build --build-arg CARGO_FEATURES="postgres onnx" -t rolter:onnx -f docker/Dockerfile .
+FROM rolter:onnx
+COPY onnxruntime-linux-x64-1.22.0/lib/libonnxruntime.so.1.22.0 /usr/local/lib/libonnxruntime.so
+ENV ORT_DYLIB_PATH=/usr/local/lib/libonnxruntime.so
+```
+
+**On the dashboard**, choose **Local classifier** as the provider's kind and enter the path and digest. The control plane never opens the file, so the provider test is for webhooks only.
+
+### Long texts
+
+For the linear classifier, a text longer than `max_body_bytes` is read whole in **overlapping windows** of `max_body_bytes`, up to the provider's `max_scored_bytes`, which defaults to 8 × `max_body_bytes` (512 KiB with the default 64 KiB). Each window overlaps the next by an eighth of a window, and by at least 256 bytes, so a phrase that falls on a window boundary is still read whole. Every window is scored, and each category takes its **highest** score across them: an injection in the middle of one huge message counts as much as one at its end. Each window costs about a millisecond (see **CPU** above), so the default budget takes about 10 ms, and the provider's `timeout_ms` must cover it. ONNX models use the same byte budget, then their own token windows described above instead of nesting token windows inside byte windows.
+
+A text longer than `max_scored_bytes` is still cut. The classifier then reads the first quarter and the **last three quarters** of the budget (with the defaults, the first 128 KiB, holding the system prompt and the start of the conversation, and the last 384 KiB, holding the latest turns), and what lies between is not read. Such a request is flagged in three places:
+
+- on its request-log row, as `semantic_truncated:<provider>` in `guardrail_events`;
+- on the [`rolter_semantic_local_truncated_total{provider}`](/observability/metrics#rolter_semantic_local_truncated_total) counter;
+- on the `guardrails.local` span of the provider call, as `truncated = true`.
+
+An operator who cannot accept text that was never read sets `on_truncated = "fail_closed"` on the provider. A request whose text is cut is then refused before it is scored, whatever the provider's `failure_mode` says, and the row carries `provider_error:<provider>` next to `semantic_truncated:<provider>`. The default, `on_truncated = "score"`, scores what fits and only flags the cut. Raise `max_scored_bytes` (up to 16 MiB, and at most 64 windows) to read more of a long conversation, at the cost of CPU per call, and raise `timeout_ms` with it.
+
+```toml
+[[semantic_guards.providers]]
+name = "injection"
+kind = "local"
+# ...
+max_body_bytes = 65536      # one window
+max_scored_bytes = 1048576  # 16 windows
+on_truncated = "fail_closed"
+```
+
+Both settings are set in a configuration file. A provider created on the dashboard uses the defaults: it scores 8 windows and flags a cut without refusing it.
+
+## Streamed responses
+
+A `post_call` provider judges a whole response, and a streamed response is never whole while it is being delivered. A client's `"stream": true` never switches the response check off; the policy's `streaming` setting decides instead ([ADR-0037](https://github.com/rolter-ai/rolter/blob/master/docs/dev-docs/adr/2026-10-27-semantic-guard-streaming.md)):
+
+- `reject` (the default) — a streamed request whose policy has a `post_call` provider is refused with `400 guardrail_streaming_unsupported` before the upstream call, so nothing is billed. The caller can retry without `"stream": true`.
+- `buffer` — the gateway lets the upstream stream, holds every event (up to 16 MiB), shows the providers the assembled text as `{"stream": true, "text": "…"}` with `streamed: true` on the envelope, and then replays the events unchanged or answers `403 guardrail_blocked` in their place. The caller keeps its SSE client but receives nothing until the whole answer exists, so time to first token becomes time to last token; a client or proxy with an idle timeout shorter than the generation can give up first. A stream larger than the cap is withheld, and so is a stream a provider answers with `transform`, since a rewritten body cannot be re-encoded as the original event sequence.
+
+There is no setting that delivers a stream with the `post_call` providers skipped. To let a scope stream, give it a policy without `post_call` providers. A policy with only `pre_call` providers leaves streaming untouched.
+
+A [realtime](/api/realtime) session is a stream that cannot be buffered: its client events go through the `pre_call` providers, and a session whose policy has a `post_call` provider is refused with `400 guardrail_streaming_unsupported`.
+
+## Audio transcriptions and translations
+
+`/v1/audio/transcriptions` and `/v1/audio/translations` take audio and answer with text, so only the response stage applies to them. The policy is resolved exactly as for a chat request, and its `post_call` providers judge the transcript before it is delivered, under the same thresholds, `on_violation` and failure modes. A `json` or `verbose_json` answer is shown to them as the JSON it is; a `text`, `srt` or `vtt` answer as `{"text": "…"}`, and a `transform` that keeps a `text` string is delivered as that text again. A transcript a provider blocks is answered `403 guardrail_blocked`, and is still billed by its audio minutes. A transcription asked for with `stream=true` follows the policy's `streaming` setting as a [streamed chat request](#streamed-responses) does: `reject` refuses it with `400 guardrail_streaming_unsupported` before the upstream call, and `buffer` holds the stream (up to 16 MiB), shows the providers the transcript joined from its `transcript.text.delta` and `transcript.text.done` events as `{"stream": true, "text": "…"}`, then replays the stream unchanged or withholds it.
+
+The policy's `pre_call` providers do not run on these requests: the request is an audio file, which no provider can read. The [built-in rules, plugins and PII sanitizer](/security/guardrails#audio-transcriptions-and-translations) treat the endpoints the same way: the response stage runs on the transcript, the request stage does not run.
+
+## What is recorded
+
+Protected content never reaches a log, a metric or a span. The gateway exports:
+
+| Metric                                     | Labels                                    |
+| ------------------------------------------ | ----------------------------------------- |
+| `rolter_guardrail_policy_decisions_total`  | `policy`, `provider`, `stage`, `outcome`  |
+| `rolter_guardrail_policy_violations_total` | `policy`, `category`, `action`            |
+| `rolter_guardrail_provider_latency_ms`     | `provider` (histogram, failures included) |
+| `rolter_guardrail_stream_rejections_total` | —                                         |
+| `rolter_guardrail_streams_buffered_total`  | —                                         |
+| `rolter_semantic_local_truncated_total`    | `provider`                                |
+
+`outcome` is `allow`, `block`, `transform`, `violation`, `flagged`, `error_open` or `error_closed`. A `category` label is one the policy sets a threshold for by name, or `other`, so a provider cannot add label values. The latency histogram is in the Prometheus endpoint only; the counters also go to OTLP.
+
+On the request log, `guardrail_events` gains `provider_blocked:<provider>`, `provider_transformed:<provider>`, `provider_error:<provider>`, `policy_blocked:<policy>`, `policy_flagged:<policy>` and, for a local provider that could not read all of the text, `semantic_truncated:<provider>`, on both stages: a response a provider rewrote, a response flagged under `on_violation = "annotate"` and a response a fail-open provider gave no verdict on are recorded on the row of the delivered response, cached answers included. A response the policy withheld is also recorded as `blocked:<provider or policy>` with the withheld reason.
+
+## Configure in the file
+
+```toml
+[[semantic_guards.providers]]
+name = "injection"
+enabled = true
+url = "https://guard.internal/injection"
+stage = "pre_call"
+failure_mode = "fail_closed"
+
+[[semantic_guards.providers]]
+name = "toxicity"
+enabled = true
+url = "https://guard.internal/toxicity"
+stage = "post_call"
+timeout_ms = 1500
+failure_mode = "fail_open"
+
+[[semantic_guards.policies]]
+name = "everyone"
+scope = "deployment"
+providers = ["injection"]
+
+[[semantic_guards.policies]]
+name = "support-bot"
+scope = "project"
+scope_id = "1f0e…"
+providers = ["injection", "toxicity"]
+thresholds = { violence = 0.8, "*" = 0.95 }
+on_violation = "block"
+streaming = "buffer"
+```
+
+`[guardrail_webhook]` keeps working and joins the providers under its `name` (or `guardrail_webhook` when it has none). The keys are listed in the [configuration reference](/configuration/config-file). Dashboard policies and providers extend the file's; the file wins a name, and an enabled file policy wins its scope.
+
+## API
+
+| Method          | Endpoint                           | Purpose                    |
+| --------------- | ---------------------------------- | -------------------------- |
+| `GET`, `POST`   | `/api/v1/guardrails/policies`      | List or create policies    |
+| `PUT`, `DELETE` | `/api/v1/guardrails/policies/{id}` | Replace or delete a policy |
+
+A policy body has `name`, `enabled`, `scope_kind`, `scope_id` (omitted or `null` for `deployment`), `provider_ids` (registry provider ids, in order), `thresholds`, `on_violation`, `streaming` and an optional `description`. A field the control plane cannot accept is a `400` naming it; a second enabled policy for the same scope, or a name already taken, is a `409`. Deleting a provider that a policy still lists is a `409` naming the policies. Every change is audit logged as `guardrail_policy.create`, `.update` or `.delete` and reaches the gateways through the next snapshot, without a restart.
+
+A provider body takes `kind` (`webhook` by default, or `local`); a `local` one sends `model_path` and `model_sha256` (64 lowercase hex digits), an empty `url`, `auth_kind = "none"` and no `auth_env`, and a webhook sends neither model field. Rows always carry all three.
+
+`GET /api/v1/guardrails/effective` carries a `semantic` object: `providers` (every provider the gateways run, with `kind`, `source` and `provider_id`), `policies` (with `source` and `policy_id`) and `unattached`.

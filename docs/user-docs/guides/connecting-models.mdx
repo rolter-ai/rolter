@@ -41,6 +41,8 @@ Rolter connects models in two moves: a **provider** says how to reach an upstrea
 
 Give a route two targets that serve the same model — two regions of one vendor, or two vendors. In the route sheet, **+ Add target** adds the second line. A transient failure on one (a 5xx, a timeout) is retried on the other before the client sees it, a target that keeps failing is put in cooldown, and a circuit breaker stops sending it traffic until it recovers.
 
+To split a route's traffic between groups of targets instead, for an A/B test or a canary, use the route sheet's **Variants** section: each variant has a name, a weight and its own targets in the order they are tried, and the sheet previews the resulting split as you type. See [Variants](/concepts/providers-and-routes#variants).
+
 - Retries, backoff and timeouts: **Settings → Performance Tuning**, and [Retries & cooldowns](/reliability/retries-and-cooldowns).
 - Uptime and SLA state per provider and target: **Models → Provider Health**, and [Provider health in the dashboard](/reliability/health-checks#provider-health-in-the-dashboard). Breaker trips are counted in `/metrics`; see [Circuit breakers](/reliability/circuit-breakers).
 - Probe targets before a request fails: [Health checks](/reliability/health-checks).
@@ -74,7 +76,7 @@ See [Load balancing](/concepts/load-balancing), [Cache-aware routing](/concepts/
 Keep providers, provider groups, routes, prices and prompt templates in a `rolter.toml` and apply it as the **desired state**:
 
 ```bash
-rolter-seed --import rolter.toml        # create or update rows to match the file
+rolter seed --import rolter.toml        # create or update rows to match the file
 rolter config export --output rolter.toml   # read the live state back out
 ```
 

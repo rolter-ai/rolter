@@ -7,10 +7,10 @@
    (#1990). `static` keeps every one in `:root` even where only a `var()` reads
    it. DESIGN.md records what each is for */
 @theme static {
-  /* Overline: ListTable headers and small eyebrows */
+  /* Overline and badge text: ListTable headers, small eyebrows and badge labels,
+     and the floor for any text at all. a 10px step (`--text-3xs`) sat below it
+     until the floor was raised to 11px (#2230) */
   --text-2xs: 0.6875rem;
-  /* Badge: badge text, and the floor for any text at all */
-  --text-3xs: 0.625rem;
   /* Figure: the headline number of a stat card */
   --text-figure: 1.75rem;
 
@@ -38,32 +38,40 @@
        no rule keyed off any more (#1199) */
     color-scheme: dark;
 
-    /* shadcn contract (space-separated HSL) — graphite/zinc, dark by default */
-    --background: 240 5% 7%; /* #111113 surface-base */
-    --foreground: 0 0% 98%; /* #fafafa */
-    --card: 240 5% 7%;
-    --card-foreground: 0 0% 98%;
-    --popover: 240 6% 13%; /* #1f1f23 elevated */
-    --popover-foreground: 0 0% 98%;
-    --primary: 0 0% 98%; /* near-white primary button (dark text) */
-    --primary-foreground: 240 5% 7%;
-    --secondary: 240 4% 16%; /* #27272a */
-    --secondary-foreground: 0 0% 98%;
-    --muted: 240 4% 16%;
-    --muted-foreground: 240 5% 65%; /* #a1a1aa */
-    --accent: 240 4% 16%; /* subtle zinc hover — NOT the brand red */
-    --accent-foreground: 0 0% 98%;
-    /* --red-folk (#b41d21) in the shadcn HSL contract, not the #e53935 status
+    /* shadcn contract: graphite/zinc, dark by default. every entry is an alias
+       of the design token that carries the same value (#1993), so a value has
+       one source: retuning --zinc-800 moves bg-muted, bg-secondary, bg-accent and
+       --surface-subtle together. tailwind.config.js reads them as plain colours,
+       `var(--muted)`, no longer as the HSL channels they used to be */
+    --background: var(--surface-base);
+    --foreground: var(--text-primary);
+    --card: var(--surface-card);
+    --card-foreground: var(--text-primary);
+    --popover: var(--surface-elevated);
+    --popover-foreground: var(--text-primary);
+    --primary: var(--text-primary); /* near-white primary button (dark text) */
+    --primary-foreground: var(--surface-base);
+    --secondary: var(--surface-subtle);
+    --secondary-foreground: var(--text-primary);
+    --muted: var(--surface-subtle);
+    --muted-foreground: var(--text-muted);
+    --accent: var(--surface-hover); /* subtle zinc hover — NOT the brand red */
+    --accent-foreground: var(--text-primary);
+    /* --red-folk (#b41d21) in the shadcn contract, not the #e53935 status
        fill (#1181): the destructive button paints --destructive-foreground on
        this, and #fafafa on #e53935 is 4.05:1 while on the folkloric red it is
        6.41:1. --destructive survives here only as a *surface* —
        `bg-destructive`, `border-destructive/30`, `bg-destructive/5`;
        destructive *text* reads --status-danger-text */
-    --destructive: 358 72% 41%;
-    --destructive-foreground: 0 0% 98%;
-    --border: 240 4% 16%;
-    --input: 240 4% 16%;
-    --ring: 0 0% 55%;
+    --destructive: var(--red-folk);
+    --destructive-foreground: var(--text-primary);
+    /* the default border is the opaque zinc-800 step, the same pixels as before
+       the alias. the translucent hairlines are --border-subtle, --border-default
+       and --border-strong below, and a bare `border` still reads the opaque one */
+    --border: var(--zinc-800);
+    --input: var(--zinc-800);
+    /* #8c8c8c, DESIGN.md's focus-ring: 55% grey, no ramp step carries it */
+    --ring: #8c8c8c;
     --radius: 0.625rem; /* 10px cards; controls derive to 8px */
 
     /* ---- raw design ramp (reference in DS components / ornament) --------- */
@@ -147,12 +155,12 @@
        family with the status hues above.
 
        chart fills carry a shape, not a glyph: the floor is the 3:1 WCAG
-       non-text one. a chart sits on a card, a sheet or a panel, and the donut
-       ring draws its slices over a --surface-subtle track, so each entry is
-       measured on all four surfaces and the worst of the four is recorded —
-       that is #27272a for every hue here (#1269).
+       non-text one. a chart sits on a card, a sheet or a panel, and a bar draws
+       over a --surface-subtle track, so each entry is measured on all four
+       surfaces and the worst of the four is recorded — that is #27272a for
+       every hue here (#1269).
        --chart-1 was --red-folk (2.23:1 worst), the ornament red: it is the
-       first colour, so it painted the largest donut slice and the top provider
+       first colour, so it painted the busiest model and the top provider
        bar under the floor. --red-600 is the same brand family lifted to clear
        it. --chart-7 was --zinc-600 (1.93:1 worst); --zinc-500 is the
        shape half of the --zinc-450 text pair and clears it.
@@ -172,13 +180,6 @@
     --chart-6: #22d3ee; /* cyan · 8.24:1 worst */
     --chart-7: var(--zinc-500); /* #71717a · 3.08:1 worst */
     --chart-8: var(--zinc-300); /* #d4d4d8 · 10.08:1 worst */
-    /* the tail a donut rolls everything past its named slices into. exempt
-       from the 3:1 floor on purpose (#1269): it is meant to be quieter than
-       the slices it stands for, and it never carries meaning alone — its
-       legend row names it and states its share as text at full contrast. a
-       lifted value would land between --chart-7 and --chart-2 and read as one
-       more named series. never use it for a series that has no legend row */
-    --chart-other: var(--zinc-700); /* #3f3f46 · 1.43:1 worst, exempt */
 
     /* avatar chips carry white initials, so each entry is measured against
        #ffffff at the 4.5:1 body-text floor rather than the 3:1 one */
@@ -194,7 +195,6 @@
     --surface-base: var(--zinc-925);
     --surface-elevated: var(--zinc-850);
     --surface-subtle: var(--zinc-800);
-    --surface-active: var(--zinc-700);
     --surface-card: var(--zinc-925);
     --surface-hover: var(--zinc-800);
     --border-default: rgba(255, 255, 255, 0.15);
@@ -208,8 +208,6 @@
     /* an alias of the *text* half, not the fill: every call site colours a
        message with it (#1181, #1219) */
     --danger-text: var(--status-danger-text);
-    --danger-border: rgba(229, 57, 53, 0.4);
-    --danger-surface: rgba(229, 57, 53, 0.1);
     --green-tint: rgba(22, 163, 74, 0.12);
     /* text selection (#2419). opaque, so the pair reads the same on every
        surface instead of taking the colour of whatever it is laid over:
@@ -240,7 +238,6 @@
 
     /* layout */
     --sidebar-width: 232px;
-    --header-height: 52px;
 
     /* ---- syntax highlighting (#949) -------------------------------------
        the highlighter is themed from this palette, not from a stock Prism

@@ -151,11 +151,31 @@ const ROLES: CustomRoleRow[] = [
 ];
 
 /**
+ * What `GET /api/v1/orgs/{org}/access-profiles?include=roles,assignments,policy`
+ * answers (#3301): each profile with what it carries. The screen reads this one
+ * request instead of one detail per card.
+ */
+function embedded(
+  rows: AccessProfileRow[],
+  details: Record<string, AccessProfileDetail> = DETAILS,
+): AccessProfileDetail[] {
+  return rows.map((row) => ({
+    ...row,
+    roles: details[row.id]?.roles ?? [],
+    assignments: details[row.id]?.assignments ?? [],
+    policy: details[row.id]?.policy ?? null,
+  }));
+}
+
+const INCLUDES_DETAIL = /[?&]include=[^&]*roles/;
+
+/**
  * Route by URL.
  *
  * The detail path is tested before the list it is a prefix of: both contain
- * `/access-profiles`, and answering the detail with the list would leave the
- * card reporting a profile that carries nothing.
+ * `/access-profiles`, and answering the detail with the list would leave an
+ * edit seeded from a profile that carries nothing. A list read that asks for
+ * `include` is answered with each profile's roles, assignments and policy.
  */
 function stub(
   profiles: () => Promise<Response>,
@@ -166,7 +186,11 @@ function stub(
     const url = String(input);
     const detail = /\/access-profiles\/([^/?]+)$/.exec(url);
     if (detail) return json(details[detail[1]] ?? {});
-    if (url.includes("/access-profiles")) return profiles();
+    if (url.includes("/access-profiles")) {
+      const answer = await profiles();
+      if (!INCLUDES_DETAIL.test(url) || !answer.ok) return answer;
+      return json(embedded((await answer.clone().json()) as AccessProfileRow[], details));
+    }
     if (url.includes("/custom-roles")) return json(roles);
     if (/\/orgs\/[^/]+\/users/.test(url)) return json(USERS);
     return json([]);
@@ -198,13 +222,45 @@ export const Loaded: Story = {
     // and a profile assigned to nobody says so plainly
     await expect(canvas.getByText("Not assigned to anyone yet")).toBeVisible();
 
-    // the roles and the policy it carries, read back from the detail — before
+    // the roles and the policy it carries, read back with the list — before
     // #1184 a policy could be written and never shown again
     await expect(canvas.getByText("1 custom role")).toBeVisible();
     await expect(canvas.getByText("3 policy patterns")).toBeVisible();
     await expect(canvas.getByText("No model or route policy")).toBeVisible();
     // a slug is an identifier someone types into the API: it keeps its case
     await expect(canvas.getByText("support-engineers")).toHaveStyle({ textTransform: "none" });
+  },
+};
+
+const oneRead = recording(stub(async () => json(PROFILES)));
+
+/**
+ * #3301: the screen used to read each profile's detail once per card, so an org
+ * with many profiles made one request per profile. The list now carries every
+ * profile's roles, assignments and policy (`?include=roles,assignments,policy`),
+ * so two profiles are one request and the cards are drawn from it.
+ */
+export const LoadsEveryProfileWithOneRequest: Story = {
+  render: () => (
+    <Harness fetchStub={oneRead.stub}>
+      <AccessProfiles />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getByText("1 user · 1 team")).toBeVisible());
+    await expect(canvas.getByText("Not assigned to anyone yet")).toBeVisible();
+    const reads = oneRead.calls.filter(
+      (c) => c.method === "GET" && c.url.includes("/access-profiles"),
+    );
+    // one read of the list, asking for everything a card draws, and no read of
+    // a single profile
+    await expect(reads).toHaveLength(1);
+    const url = new URL(reads[0].url, "http://localhost");
+    await expect(url.pathname).toBe(`/api/v1/orgs/${ORG}/access-profiles`);
+    await expect(url.searchParams.get("include")).toBe("roles,assignments,policy");
+    oneRead.expectNotSent("GET", "/access-profiles/p-1");
+    oneRead.expectNotSent("GET", "/access-profiles/p-2");
   },
 };
 
@@ -295,7 +351,7 @@ export const RefusesAStarThatIsNotTheLastCharacter: Story = {
     const refusal = await form.findByText(/o1-\*-mini: a \* only works as the last character/);
     await waitFor(() => expect(refusal).toBeVisible());
     await expect(form.getByLabelText("Allowed models")).toBeInvalid();
-    await waitFor(() => expect(save).toBeDisabled());
+    await waitFor(() => expect(save).toHaveAttribute("aria-disabled", "true"));
 
     // a trailing glob is what the hint promises, and it saves
     await userEvent.clear(form.getByLabelText("Allowed models"));
@@ -354,9 +410,8 @@ export const EditsAProfile: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     const edit = await canvas.findByRole("button", { name: "Edit Support engineers" });
-    // the button waits for the detail: there is nothing to seed the sheet with
-    // until the roles and the policy have landed
-    await waitFor(() => expect(edit).toBeEnabled());
+    // the list carried the roles and the policy, so there is something to seed
+    // the sheet with as soon as the card is drawn
     await userEvent.click(edit);
 
     const form = within(sheet());
@@ -849,17 +904,18 @@ function assignable() {
       removed = new Set([...removed, url.split("/").pop() as string]);
       return json({}, 204);
     }
-    const detail = /\/access-profiles\/([^/?]+)$/.exec(url);
-    if (detail && detail[1] === "p-2") {
-      return json({ ...DETAILS["p-2"], assignments: extra.filter((a) => !removed.has(a.id)) });
-    }
-    if (detail && detail[1] === "p-1") {
-      return json({
+    // what each profile carries now, after the writes the story has made
+    const current: Record<string, AccessProfileDetail> = {
+      ...DETAILS,
+      "p-2": { ...DETAILS["p-2"], assignments: extra.filter((a) => !removed.has(a.id)) },
+      "p-1": {
         ...DETAILS["p-1"],
         assignments: DETAILS["p-1"].assignments.filter((a) => !removed.has(a.id)),
-      });
-    }
-    return stub(async () => json(PROFILES))(input, init);
+      },
+    };
+    const detail = /\/access-profiles\/([^/?]+)$/.exec(url);
+    if (detail && current[detail[1]]) return json(current[detail[1]]);
+    return stub(async () => json(PROFILES), ROLES, current)(input, init);
   });
   return rec;
 }
@@ -900,7 +956,10 @@ export const AssignsAUser: Story = {
     const form = within(sheet());
     // an already-assigned account is not offered twice, and the save waits for a pick
     // story-wait-allow: disabled by the sheet's own empty pick, not by the gate
-    await expect(form.getByRole("button", { name: "Assign profile" })).toBeDisabled();
+    await expect(form.getByRole("button", { name: "Assign profile" })).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
     const listbox = await openOptions(await form.findByRole("combobox", { name: "User" }));
     await waitFor(() =>
       expect(within(listbox).getByRole("option", { name: /Grace Hopper/ })).toBeVisible(),
@@ -916,6 +975,31 @@ export const AssignsAUser: Story = {
     await expectToast(canvasElement, /On-call assigned/);
     const list = await canvas.findByRole("list", { name: "Who On-call reaches" });
     await expect(within(list).getByText("Grace Hopper")).toBeVisible();
+  },
+};
+
+/** a press on Assign with nobody picked names the picker instead of doing nothing (#3242) */
+export const AssignWithoutAPickNamesTheField: Story = {
+  render: () => (
+    <Harness fetchStub={userAssign.stub} role="admin">
+      <Toasted>
+        <AccessProfiles />
+      </Toasted>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expectAllowed(canvasElement, "Assign On-call");
+    await userEvent.click(canvas.getByRole("button", { name: "Assign On-call" }));
+
+    const form = within(sheet());
+    const picker = await form.findByRole("combobox", { name: "User" });
+    await expect(picker).toBeRequired();
+    await expect(form.queryByText("Required")).toBeNull();
+    await userEvent.click(form.getByRole("button", { name: "Assign profile" }));
+    await waitFor(async () => expect(await form.findByText("Required")).toBeVisible());
+    await waitFor(() => expect(picker).toHaveFocus());
+    await expect(await form.findByRole("status")).toHaveTextContent("1 field needs attention");
   },
 };
 
@@ -1029,7 +1113,7 @@ export const DeleteConfirmationNamesTheReach: Story = {
     );
     await cancelConfirmation();
 
-    // the reach is known once the detail has landed
+    // the reach arrived with the list
     await expect(await canvas.findByText("Not assigned to anyone yet")).toBeVisible();
     await userEvent.click(canvas.getByRole("button", { name: "Delete On-call" }));
     await waitFor(async () =>
@@ -1105,7 +1189,9 @@ const unassignedPicker = recording(
     const url = String(input);
     const detail = /\/access-profiles\/([^/?]+)$/.exec(url);
     if (detail) return json(DETAILS[detail[1]] ?? {});
-    if (url.includes("/access-profiles")) return json(PROFILES);
+    if (url.includes("/access-profiles")) {
+      return json(INCLUDES_DETAIL.test(url) ? embedded(PROFILES) : PROFILES);
+    }
     if (/\/orgs\/[^/]+\/users/.test(url)) {
       return json(url.includes("include_unassigned=true") ? [SEEDED_ADMIN, ...USERS] : USERS);
     }

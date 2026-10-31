@@ -48,7 +48,7 @@ Work through these steps before sending production traffic to your gateway:
 
     This is a gate, not a linter: it exits non-zero on anything that would produce a silently-degraded process. The failure it was built for is the one that produces no error at all — a missing `ROLTER_KEK` makes the control plane store provider credentials **unsealed** with only a log warning, so the deployment looks completely healthy while a credential you believed was encrypted at rest is not.
 
-    Add `--connect` to also probe that the database and Redis accept a connection.
+    Add `--connect` to also probe that the database and Redis accept a connection, and, when `ROLTER_SMTP_URL` is set, that the mail relay accepts a connection, negotiates TLS and takes the credential (a warning that names the stage, never the address or the password).
 
     The Helm chart runs exactly this as an init container by default (`preflight.enabled`), against the same environment block the workload gets. See [Cluster deployment](/deployment/cluster).
 
@@ -104,7 +104,7 @@ Work through these steps before sending production traffic to your gateway:
 
     A failing **liveness** probe restarts the pod, so `/healthz` deliberately checks nothing outside the process — otherwise a PostgreSQL blip would restart your whole control-plane deployment instead of draining it. A failing **readiness** probe only removes the pod from the Service.
 
-    On the gateway, `/readyz` returns `503` while the instance is draining. On the control plane, it returns `503` until the PostgreSQL pool hands out a connection, every migration is applied, and `ROLTER_KEK` parses when set; Redis and ClickHouse are treated as degraded, not unready.
+    On the gateway, `/readyz` returns `503` with a body that says why: `draining` while the instance is draining; `snapshot_format_unsupported` while it has never received a config snapshot in a format it reads (see [Upgrading](/deployment/upgrading#upgrade-order)); and, for a gateway started with `--snapshot-url`, `awaiting_snapshot` until it applies its first snapshot from the control plane. Until then such a gateway refuses every key, so it stays out of the Service. A gateway whose own config file carries virtual keys, or sets `server.require_auth = false`, can serve before that and is ready. Once it has applied a snapshot it stays ready when a later poll fails, and keeps serving the config it holds. On the control plane, it returns `503` until the PostgreSQL pool hands out a connection, every migration is applied, and `ROLTER_KEK` parses when set; Redis and ClickHouse are treated as degraded, not unready.
 
     ```yaml
     # Example Kubernetes probe config

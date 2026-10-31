@@ -113,7 +113,7 @@ fn config(upstream: SocketAddr, clickhouse: SocketAddr) -> GatewayConfig {
         targets: vec![Target {
             provider: "slow".into(),
             model: Some("slow-chat".into()),
-            weight: 1,
+            ..Default::default()
         }],
         params: Default::default(),
         param_policy: Default::default(),
@@ -238,7 +238,7 @@ async fn a_caller_that_leaves_during_a_retry_backoff_is_not_charged_to_the_targe
     config.routes[0].targets.push(Target {
         provider: "sibling".into(),
         model: Some("slow-chat".into()),
-        weight: 1,
+        ..Default::default()
     });
     let gateway = serve(rolter_gateway::build_router_from_config(&config)).await;
 
@@ -334,6 +334,9 @@ async fn a_request_abandoned_on_a_variant_route_names_its_variant_and_target() {
     assert_eq!(row["provider"], "slow");
     assert_eq!(row["target"], "slow-chat");
     assert_eq!(row["variant"], "canary");
+    assert_eq!(row["first_variant"], "canary");
+    // the cancel row carries the split's sample too (#3547)
+    assert_eq!(row["sampled_variant"], "canary");
 }
 
 #[tokio::test]
@@ -441,4 +444,258 @@ async fn a_completed_request_is_neither_counted_nor_marked() {
     let body = metrics(gateway).await;
     assert_eq!(sample(&body, "rolter_client_disconnects_total"), 0.0);
     assert_eq!(sample(&body, "rolter_inflight_requests"), 0.0);
+}
+
+/// Every `rolter_target_requests_total` series in the exposition, with its value.
+fn target_requests(body: &str) -> Vec<(String, f64)> {
+    body.lines()
+        .filter(|line| line.starts_with("rolter_target_requests_total{"))
+        .filter_map(|line| {
+            let (series, value) = line.rsplit_once(' ')?;
+            Some((series.to_string(), value.parse().ok()?))
+        })
+        .collect()
+}
+
+/// A caller leaving is not the target's failure (#1933): nothing was charged to
+/// the target it was waiting on, neither as an error nor as a success, and no
+/// passive health event was emitted, so the uptime rollup and the
+/// `provider_health_flaps` alert never see it. The disconnect stays visible in
+/// `rolter_client_disconnects_total`.
+async fn assert_target_not_charged(gateway: SocketAddr, rows: &Rows) {
+    // health events flush on their own timer; give one the chance to arrive
+    // before asserting it never did
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    let body = metrics(gateway).await;
+    assert_eq!(
+        sample(&body, "rolter_client_disconnects_total"),
+        1.0,
+        "the disconnect itself stays countable"
+    );
+    let charged: Vec<_> = target_requests(&body)
+        .into_iter()
+        .filter(|(_, value)| *value > 0.0)
+        .collect();
+    assert!(
+        charged.is_empty(),
+        "a client disconnect was counted against its target: {charged:?}"
+    );
+    let events = rows.health_events();
+    assert!(
+        events.is_empty(),
+        "a client disconnect became a passive health event: {events:?}"
+    );
+}
+
+/// In flight: the caller leaves while the upstream is still working.
+#[tokio::test]
+async fn a_disconnect_while_the_upstream_works_is_not_charged_to_the_target() {
+    let upstream = serve(Router::new().route(
+        "/v1/chat/completions",
+        post(|| async {
+            tokio::time::sleep(Duration::from_secs(30)).await;
+            axum::Json(json!({"choices": []}))
+        }),
+    ))
+    .await;
+    let rows = Rows::default();
+    let clickhouse = rows.serve().await;
+    let gateway = serve(rolter_gateway::build_router_from_config(&config(
+        upstream, clickhouse,
+    )))
+    .await;
+
+    let hung_up = reqwest::Client::builder()
+        .timeout(Duration::from_millis(300))
+        .build()
+        .unwrap()
+        .post(format!("http://{gateway}/v1/chat/completions"))
+        .json(&json!({"model": "slow-chat", "messages": [{"role": "user", "content": "hi"}]}))
+        .send()
+        .await;
+    assert!(hung_up.is_err(), "the client was supposed to give up");
+
+    let row = rows
+        .wait_for("client-disconnect", |row| row["status"] == 499)
+        .await;
+    // the row still names the target, so an operator can see where callers give up
+    assert_eq!(row["provider"], "slow");
+    assert_eq!(row["target"], "slow-chat");
+    assert_target_not_charged(gateway, &rows).await;
+}
+
+/// Queued: the caller leaves while its job still waits in rolter's own provider
+/// queue, before any upstream I/O. A healthy target must not be charged for
+/// rolter's queueing.
+#[tokio::test]
+async fn a_disconnect_while_queued_in_rolter_is_not_charged_to_the_target() {
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let upstream = serve(Router::new().route(
+        "/v1/chat/completions",
+        post({
+            let attempts = attempts.clone();
+            move || async move {
+                attempts.fetch_add(1, Ordering::Relaxed);
+                tokio::time::sleep(Duration::from_secs(30)).await;
+                axum::Json(json!({"choices": []}))
+            }
+        }),
+    ))
+    .await;
+    let rows = Rows::default();
+    let clickhouse = rows.serve().await;
+    let mut config = config(upstream, clickhouse);
+    // one worker: the first request holds it, the second waits in the queue
+    config.queue = rolter_core::QueueConfig {
+        enabled: true,
+        capacity: 4,
+        workers: 1,
+        backpressure: rolter_core::BackpressurePolicy::Block,
+        block_timeout_ms: 30_000,
+    };
+    let gateway = serve(rolter_gateway::build_router_from_config(&config)).await;
+
+    let url = format!("http://{gateway}/v1/chat/completions");
+    let body = json!({"model": "slow-chat", "messages": [{"role": "user", "content": "hi"}]});
+    let holder = tokio::spawn({
+        let (url, body) = (url.clone(), body.clone());
+        async move { reqwest::Client::new().post(url).json(&body).send().await }
+    });
+    // the holder reaches the upstream before the second request is sent
+    for _ in 0..200 {
+        if attempts.load(Ordering::Relaxed) == 1 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert_eq!(
+        attempts.load(Ordering::Relaxed),
+        1,
+        "the holder never started"
+    );
+
+    let queued = reqwest::Client::builder()
+        .timeout(Duration::from_millis(300))
+        .build()
+        .unwrap()
+        .post(url)
+        .json(&body)
+        .send()
+        .await;
+    assert!(queued.is_err(), "the queued client was supposed to give up");
+
+    let row = rows
+        .wait_for("queued client-disconnect", |row| row["status"] == 499)
+        .await;
+    // the row names the target it was queued for, which never saw the request
+    assert_eq!(row["provider"], "slow");
+    assert_eq!(
+        attempts.load(Ordering::Relaxed),
+        1,
+        "the queued job reached the upstream"
+    );
+    assert_target_not_charged(gateway, &rows).await;
+    holder.abort();
+}
+
+/// Mid-stream: the caller leaves after the upstream began answering. The target
+/// did answer, but the row is rewritten to 499 and is not the target's verdict
+/// either way.
+#[tokio::test]
+async fn a_disconnect_mid_stream_is_not_charged_to_the_target() {
+    let upstream = serve(Router::new().route(
+        "/v1/chat/completions",
+        post(|| async {
+            use futures_util::StreamExt;
+            let frames = futures_util::stream::iter(vec![Ok::<_, std::io::Error>(
+                axum::body::Bytes::from_static(
+                    b"data: {\"usage\":{\"prompt_tokens\":4,\"completion_tokens\":6,\"total_tokens\":10}}\n\n",
+                ),
+            )])
+            .chain(futures_util::stream::once(async {
+                tokio::time::sleep(Duration::from_secs(30)).await;
+                Ok(axum::body::Bytes::from_static(b"data: [DONE]\n\n"))
+            }));
+            (
+                [("content-type", "text/event-stream")],
+                Body::from_stream(frames),
+            )
+        }),
+    ))
+    .await;
+    let rows = Rows::default();
+    let clickhouse = rows.serve().await;
+    let gateway = serve(rolter_gateway::build_router_from_config(&config(
+        upstream, clickhouse,
+    )))
+    .await;
+
+    let response = reqwest::Client::new()
+        .post(format!("http://{gateway}/v1/chat/completions"))
+        .json(&json!({
+            "model": "slow-chat",
+            "stream": true,
+            "messages": [{"role": "user", "content": "hi"}]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let mut stream = response.bytes_stream();
+    {
+        use futures_util::StreamExt;
+        tokio::time::timeout(Duration::from_secs(5), stream.next())
+            .await
+            .expect("no first frame")
+            .expect("stream ended early")
+            .unwrap();
+    }
+    drop(stream);
+
+    rows.wait_for("client-disconnect", |row| row["status"] == 499)
+        .await;
+    assert_target_not_charged(gateway, &rows).await;
+}
+
+/// The rule is about the caller leaving, not about the number 499: an upstream
+/// that answers 499 itself (a proxy in front of it closing on its own client)
+/// still counts against the target it came from.
+#[tokio::test]
+async fn an_upstream_that_answers_499_is_still_that_targets_failure() {
+    let upstream = serve(Router::new().route(
+        "/v1/chat/completions",
+        post(|| async {
+            (
+                axum::http::StatusCode::from_u16(499).unwrap(),
+                axum::Json(json!({"error": {"message": "closed"}})),
+            )
+        }),
+    ))
+    .await;
+    let rows = Rows::default();
+    let clickhouse = rows.serve().await;
+    let gateway = serve(rolter_gateway::build_router_from_config(&config(
+        upstream, clickhouse,
+    )))
+    .await;
+
+    let response = reqwest::Client::new()
+        .post(format!("http://{gateway}/v1/chat/completions"))
+        .json(&json!({"model": "slow-chat", "messages": [{"role": "user", "content": "hi"}]}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 499);
+    rows.wait_for("upstream 499", |row| row["status"] == 499)
+        .await;
+
+    let body = metrics(gateway).await;
+    assert_eq!(sample(&body, "rolter_client_disconnects_total"), 0.0);
+    assert_eq!(
+        sample(
+            &body,
+            r#"rolter_target_requests_total{provider="slow",target="slow-chat",outcome="error"}"#
+        ),
+        1.0
+    );
 }

@@ -184,6 +184,7 @@ fn all_binary_cli_env_vars_are_documented_in_reference() {
     vars.insert("CLICKHOUSE_URL".to_string());
     vars.insert("OPENROUTER_HTTP_REFERER".to_string());
     vars.insert("OPENROUTER_X_TITLE".to_string());
+    vars.insert("OPENROUTER_API_KEY".to_string());
     vars.insert("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT".to_string());
     vars.insert("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT".to_string());
     vars.insert("OTEL_EXPORTER_OTLP_LOGS_ENDPOINT".to_string());
@@ -276,7 +277,7 @@ fn every_user_doc_is_listed_in_docs_json() {
 
     assert!(
         missing.is_empty(),
-        "the following user documentation files exist under docs/user-docs/ but are not listed in docs.json:\n  {}\nAn unlisted page is invisible in the Mintlify navigation.",
+        "the following user documentation files exist under docs/user-docs/ but are not listed in docs.json:\n  {}\nAn unlisted page is invisible in the docs site navigation.",
         missing.join("\n  ")
     );
 }

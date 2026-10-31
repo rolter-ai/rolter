@@ -14,6 +14,7 @@ import {
   recording,
   type FetchStub,
 } from "./story-harness";
+import { buttonVariants } from "@/components/ui/button";
 import { AuthProvider, useAuth } from "@/lib/auth";
 import en from "@/lib/i18n/locales/en.json";
 import { withPageA11y } from "@/lib/story-a11y";
@@ -143,6 +144,55 @@ export const LockedOut: Story = {
     await expect(alert).toHaveTextContent(/90 seconds/i);
     // waiting only helps a typo (#2070)
     await expect(alert).toHaveTextContent(/waiting will not help/i);
+  },
+};
+
+/**
+ * A control plane started with `ROLTER_ADMIN_TOKEN` and no database serves no
+ * `/auth/*` routes at all, and the analytics and health routes accept the admin
+ * token alone (#1909). The card takes that token rather than an address, and
+ * stores it as the bearer every later request carries.
+ */
+export const AdminTokenWithoutADatabase: Story = {
+  render: () => (
+    <Harness
+      fetchStub={async (input) => {
+        const url = String(input);
+        if (url.includes("/auth/methods") || url.includes("/auth/me")) {
+          return new Response(
+            JSON.stringify({ error: { message: "no such endpoint", code: "no_such_endpoint" } }),
+            { status: 404, headers: { "Content-Type": "application/json" } },
+          );
+        }
+        return json({});
+      }}
+    >
+      <AuthProvider>
+        <Login />
+      </AuthProvider>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    try {
+      const field = await canvas.findByLabelText(/admin token/i);
+      // no address and no password: the token is the whole credential
+      await expect(canvas.queryByLabelText(/^email/i)).toBeNull();
+      await expect(canvas.queryByLabelText(/^password/i)).toBeNull();
+      await expect(field).toHaveAccessibleDescription(/ROLTER_ADMIN_TOKEN/);
+      const submit = canvas.getByRole("button", { name: /use token/i });
+      // nothing typed yet, nothing to submit
+      await expect(submit).toBeDisabled();
+      await userEvent.type(field, "tok-from-the-operator");
+      await userEvent.click(submit);
+      await waitFor(() =>
+        expect(localStorage.getItem("rolter.session.token")).toBe("tok-from-the-operator"),
+      );
+    } finally {
+      localStorage.removeItem("rolter.session.token");
+      localStorage.removeItem("rolter.session.email");
+      localStorage.removeItem("rolter.session.user");
+    }
   },
 };
 
@@ -970,7 +1020,9 @@ function LateLogin() {
   const [mounted, setMounted] = React.useState(false);
   return (
     <>
-      <button onClick={() => setMounted(true)}>open the login</button>
+      <button type="button" onClick={() => setMounted(true)}>
+        open the login
+      </button>
       {mounted && (
         <AuthProvider>
           <SignedInProbe>
@@ -1058,6 +1110,7 @@ const SSO_MESSAGES: Record<string, RegExp> = {
   unknown_provider: /no longer available/i,
   no_mapped_group: /not in any group/i,
   account_deactivated: /has been deactivated/i,
+  account_outside_org: /cannot sign in through this organization/i,
   idp_verification_failed: /could not be reached or its response/i,
   not_configured: /cannot finish a single sign-on/i,
   internal_error: /failed on our side/i,
@@ -1111,6 +1164,11 @@ export const SsoErrorAccountDeactivated: Story = {
   beforeEach: atQuery("sso_error=account_deactivated"),
   render: refusalRender,
   play: refusalPlay(SSO_MESSAGES.account_deactivated),
+};
+export const SsoErrorAccountOutsideOrg: Story = {
+  beforeEach: atQuery("sso_error=account_outside_org"),
+  render: refusalRender,
+  play: refusalPlay(SSO_MESSAGES.account_outside_org),
 };
 export const SsoErrorVerificationFailed: Story = {
   beforeEach: atQuery("sso_error=idp_verification_failed"),
@@ -1174,6 +1232,11 @@ export const IdleCard: Story = {
   },
 };
 
+/** what the brand variant adds to a button, read off the variant rather than spelled out here */
+const BRAND_CLASSES = buttonVariants({ variant: "brand" })
+  .split(" ")
+  .filter((name) => !buttonVariants({ variant: "outline" }).split(" ").includes(name));
+
 /** A password form beside an identity provider: the provider stays the quiet alternative. */
 export const PasswordAndProvider: Story = {
   render: () => (
@@ -1187,7 +1250,7 @@ export const PasswordAndProvider: Story = {
     const canvas = within(canvasElement);
     const link = await canvas.findByRole("link", { name: /continue with okta/i });
     await expect(canvas.getByLabelText(/^password/i)).toBeVisible();
-    await expect(link).not.toHaveClass("bg-brand-folk");
+    for (const name of BRAND_CLASSES) await expect(link).not.toHaveClass(name);
   },
 };
 
@@ -1202,7 +1265,7 @@ export const SsoOnlyProviderIsTheBrandButton: Story = {
   ),
   play: async ({ canvasElement }) => {
     const link = await within(canvasElement).findByRole("link", { name: /continue with okta/i });
-    await expect(link).toHaveClass("bg-brand-folk");
+    await expect(link).toHaveClass(...BRAND_CLASSES);
     // keyboard focus is drawn with the focus-ring token, not the browser default
     await expect(link).toHaveClass("focus-visible:ring-1");
   },

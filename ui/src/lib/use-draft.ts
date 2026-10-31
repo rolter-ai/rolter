@@ -8,8 +8,8 @@ import * as React from "react";
  * form from an edited one by looking at the button. This holds both copies and
  * answers "which fields changed" so Save can wait for an edit, a field can say
  * it was edited, and Discard has a value to restore. The Security screen is
- * the first to use it; the leave guard, the field errors and the saved line
- * that #2214 asks the other settings screens to share belong beside it.
+ * the first to use it; `useSettingsForm` puts it together with the field
+ * errors and the leave guard for the other settings screens (#2214).
  */
 export interface DraftState<T> {
   /** what the server held at the last load or save; null before the first */

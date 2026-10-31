@@ -16,6 +16,7 @@ import {
   Toasted,
   type FetchStub,
   type StoryRole,
+  openOptions,
 } from "./story-harness";
 import type { AnalyticsByModelRow, LoggingSettingsDto, VirtualKeyRow } from "@/lib/api";
 
@@ -24,6 +25,8 @@ const BASE: LoggingSettingsDto = {
   payload_capture_enabled: true,
   payload_capture_max_bytes: 65536,
   payload_capture_redact_fields: ["authorization", "api_key"],
+  payload_capture_redact_detectors: ["aws_key", "jwt"],
+  payload_capture_redact_patterns: [],
   payload_capture_models: [],
   payload_capture_virtual_key_ids: [],
   retention_days: 90,
@@ -46,7 +49,6 @@ const model = (name: string): AnalyticsByModelRow => ({
 const key = (id: string, name: string, prefix: string): VirtualKeyRow => ({
   id,
   project_id: "project-1",
-  key_hash: "hash",
   key_prefix: prefix,
   name,
   models: [],
@@ -287,10 +289,7 @@ export const CaptureOffIgnoresAnOutOfRangeMaxBytes: Story = {
     await waitFor(() => expect(maxBytes()).toBeDisabled());
     await expect(maxBytes()).not.toHaveAttribute("aria-invalid", "true");
     await expect(canvas.queryByText(/Max payload bytes must be/)).toBeNull();
-    await expect(canvas.getByRole("button", { name: "Save changes" })).not.toHaveAttribute(
-      "aria-disabled",
-      "true",
-    );
+    await expect(canvas.queryByText(/attention/)).toBeNull();
     // re-enabling capture re-validates the value
     await userEvent.click(canvas.getByRole("switch", { name: /capture/i }));
     await waitFor(() => expect(maxBytes()).toHaveAttribute("aria-invalid", "true"));
@@ -607,10 +606,14 @@ export const SaveWaitsForAnEdit: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     const save = await canvas.findByRole("button", { name: "Save changes" });
-    await expect(canvas.getByText(/Last changed/)).toBeVisible();
-    await expect(save).toBeDisabled();
-    await userEvent.type(canvas.getByLabelText("Sample rate percent"), "5");
-    await waitFor(() => expect(save).toBeEnabled());
+    await expect(canvas.getByText(/Last saved/)).toBeVisible();
+    await expect(save).toHaveAttribute("aria-disabled", "true");
+    // an edit that leaves the form valid, so Save reads as available
+    const rate = canvas.getByLabelText("Sample rate percent");
+    await userEvent.clear(rate);
+    await userEvent.type(rate, "5");
+    await waitFor(() => expect(save).not.toHaveAttribute("aria-disabled"));
+    await expect(canvas.queryByText(/attention/)).toBeNull();
   },
 };
 
@@ -731,6 +734,34 @@ export const PicksAModelAndMarksAnUnseenOne: Story = {
 };
 
 /**
+ * #3486: the traffic read answers one row per organization's model, and two
+ * organizations may each have a `gpt-4o`. A capture filter matches names, so
+ * the picker offers the name once.
+ */
+export const AModelTwoOrganizationsServeIsOfferedOnce: Story = {
+  render: () => (
+    <Harness
+      reads={{
+        models: [
+          { ...model("gpt-4o"), org_id: "org-1" },
+          { ...model("gpt-4o"), org_id: "org-2" },
+          { ...model("claude-sonnet-5"), org_id: "org-1" },
+        ],
+      }}
+      fetchStub={async () => json(BASE)}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const combobox = await canvas.findByRole("combobox", { name: "Add a model to capture" });
+    await waitFor(() => expect(combobox).toBeEnabled());
+    const listbox = within(await openOptions(combobox));
+    await waitFor(() => expect(listbox.getAllByRole("option", { name: "gpt-4o" })).toHaveLength(1));
+    await expect(listbox.getAllByRole("option", { name: "claude-sonnet-5" })).toHaveLength(1);
+  },
+};
+
+/**
  * With no list to check against (analytics unavailable, keys refused), nothing
  * is marked stale and a model can still be typed.
  */
@@ -785,5 +816,53 @@ export const LoadFailsAndRetries: Story = {
       /failed to return logs settings/,
       async () => await expect(await canvas.findByRole("note")).toBeVisible(),
     );
+  },
+};
+
+// both switches wait for Save, and each says so beside its own title (#2214)
+export const SwitchesWaitForSave: Story = {
+  render: () => <Harness fetchStub={withClickHouse} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const events = await canvas.findByRole("switch", { name: "Dashboard usage events" });
+    await expect(canvas.queryByText("Not saved")).toBeNull();
+    await userEvent.click(events);
+    await expect(canvas.getAllByText("Not saved")).toHaveLength(1);
+    await userEvent.click(canvas.getByRole("button", { name: "Discard changes" }));
+    await expect(canvas.queryByText("Not saved")).toBeNull();
+  },
+};
+
+/**
+ * #1835: the preview runs the policy as edited against a pasted sample and
+ * shows what capture would store, without saving anything. The request carries
+ * the form's own detectors and patterns, so an unsaved edit is what is tried.
+ */
+export const PreviewShowsTheRedactedSample: Story = {
+  render: () => {
+    const stub: FetchStub = async (input, init) => {
+      const path = new URL(String(input), "http://localhost").pathname;
+      if (path === "/api/v1/logging-settings/redaction-preview") {
+        const sent = JSON.parse(String(init?.body)) as {
+          sample: string;
+          redact_detectors: string[];
+        };
+        const hit = sent.redact_detectors.includes("aws_key");
+        return json({
+          output: hit ? "key [redacted:aws_key]" : sent.sample,
+          report: { fields: 0, detections: hit ? { aws_key: 1 } : {} },
+        });
+      }
+      return json(BASE);
+    };
+    return <Harness fetchStub={stub} />;
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const sample = await canvas.findByLabelText("Sample body");
+    await userEvent.type(sample, "key AKIAIOSFODNN7EXAMPLE");
+    await userEvent.click(canvas.getByRole("button", { name: "Run preview" }));
+    await expect(await canvas.findByText("Found: aws_key ×1")).toBeVisible();
+    await expect(canvas.getByText("key [redacted:aws_key]")).toBeVisible();
   },
 };

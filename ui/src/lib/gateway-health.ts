@@ -1,18 +1,22 @@
 import { useQuery } from "@tanstack/react-query";
 
+import { fetchClusterSummary } from "@/lib/api/cluster";
 import { fetchGatewayReadiness, type GatewayReadiness } from "@/lib/gateway";
 
-// the gateway pill in every screen header (#1973). it used to be a hard-coded
-// green "gateway healthy" with no request behind it, so it stayed green through
-// the one incident an operator would look at it for.
+// the gateway pill in every screen header (#1973) and the fleet tile on the
+// dashboard home (#3263) read one query, so the two cannot disagree.
 //
-// the signal is the gateway's own `/readyz`, reached through the control
-// plane's `/gw` proxy — the only gateway state the dashboard can read for every
-// role: `/api/v1/cluster/nodes` is superadmin-only, and `/api/v1/health/*` is
-// provider health out of ClickHouse, not the gateway's. what it proves is that
+// the signal is the control plane's `GET /api/v1/cluster/summary` (#2013): how
+// many gateways are live, stale and behind on config, readable by every role.
+// it sees the whole fleet, which a probe through a Kubernetes Service cannot, and
+// it sees a gateway that still answers `/readyz` on an old `config_version`.
+//
+// it falls back to the gateway's own `/readyz`, reached through the control
+// plane's `/gw` proxy, when the summary has nothing to count: `inventory: false`
+// (no database), no gateway in the inventory (none sends a node id), or a failed
+// request (an older control plane answers 404). what that proves is only that
 // the control plane reached *a* gateway at `ROLTER_GATEWAY_URL` and that one is
-// taking traffic. it cannot see the rest of a fleet or whether a gateway runs
-// the current config; that needs an endpoint every caller can read (#2013).
+// taking traffic.
 
 /** What the pill shows. */
 export type GatewayHealth = "checking" | "healthy" | "degraded" | "down" | "unknown";
@@ -36,11 +40,45 @@ export const GATEWAY_HEALTH_POLL_MS = 30_000;
  */
 export const GATEWAY_HEALTH_STALE_MS = GATEWAY_HEALTH_POLL_MS * 1.5;
 
+/** The gateways the control plane counted: what `GET /api/v1/cluster/summary` calls `gateways`. */
+export interface FleetCounts {
+  live: number;
+  stale: number;
+  lagging: number;
+}
+
+/** What one check learned: the fleet's counts, or the one gateway a probe reached. */
+export type GatewayCheck = GatewayReadiness | FleetCounts;
+
 const HEALTH: Record<GatewayReadiness, GatewayHealth> = {
   ready: "healthy",
   draining: "degraded",
   unreachable: "down",
+  // a gateway with no config refuses every key, which is down for whoever calls
+  // it, however well the process itself is running (#3348, #3350)
+  awaitingSnapshot: "down",
+  snapshotFormatUnsupported: "down",
 };
+
+/** A probe answer that says more than its health does, so the pill words it on its own. */
+export type GatewayRefusal = Extract<
+  GatewayReadiness,
+  "awaitingSnapshot" | "snapshotFormatUnsupported"
+>;
+
+function refusalOf(data: GatewayCheck): GatewayRefusal | null {
+  return data === "awaitingSnapshot" || data === "snapshotFormatUnsupported" ? data : null;
+}
+
+/**
+ * What a fleet of gateways adds up to. Down only when none is live: a stale or
+ * lagging gateway beside live ones is a fleet that is degraded, still taking
+ * traffic, which is not the same alarm.
+ */
+export function fleetHealth(fleet: FleetCounts): GatewayHealth {
+  if (fleet.live === 0) return "down";
+  return fleet.lagging > 0 || fleet.stale > 0 ? "degraded" : "healthy";
+}
 
 export interface GatewayHealthView {
   health: GatewayHealth;
@@ -51,11 +89,18 @@ export interface GatewayHealthView {
   live: boolean;
   /** when the answer shown arrived, or `null` when there has been none */
   answeredAt: number | null;
+  /** the fleet's counts when the answer came from the cluster summary, else `null` (a probe) */
+  fleet: FleetCounts | null;
+  /**
+   * why a probed gateway refuses every key when it has no config to serve, or
+   * `null`. Its health reads `down` either way; this is what the words say
+   */
+  refusal: GatewayRefusal | null;
 }
 
 /** The slice of a query's state the pill is derived from. */
 export interface GatewayHealthQuery {
-  data: GatewayReadiness | undefined;
+  data: GatewayCheck | undefined;
   dataUpdatedAt: number;
   errorUpdatedAt: number;
   isError: boolean;
@@ -72,20 +117,56 @@ export interface GatewayHealthQuery {
 export function gatewayHealthFrom(query: GatewayHealthQuery): GatewayHealthView {
   const { data, dataUpdatedAt, errorUpdatedAt, isError } = query;
   if (data === undefined) {
-    return { health: isError ? "unknown" : "checking", live: false, answeredAt: null };
+    return {
+      health: isError ? "unknown" : "checking",
+      live: false,
+      answeredAt: null,
+      fleet: null,
+      refusal: null,
+    };
   }
   const failedSince = isError && errorUpdatedAt > dataUpdatedAt;
   if (failedSince && errorUpdatedAt - dataUpdatedAt >= GATEWAY_HEALTH_STALE_MS) {
-    return { health: "unknown", live: false, answeredAt: dataUpdatedAt };
+    return {
+      health: "unknown",
+      live: false,
+      answeredAt: dataUpdatedAt,
+      fleet: null,
+      refusal: null,
+    };
   }
-  return { health: HEALTH[data], live: !failedSince, answeredAt: dataUpdatedAt };
+  const fleet = typeof data === "string" ? null : data;
+  return {
+    health: fleet ? fleetHealth(fleet) : HEALTH[data as GatewayReadiness],
+    live: !failedSince,
+    answeredAt: dataUpdatedAt,
+    fleet,
+    refusal: refusalOf(data),
+  };
 }
 
-/** Poll the gateway's readiness and say what the header pill should show. */
+/**
+ * One check: the cluster summary when it counted any gateway, the `/readyz`
+ * probe when it did not. A summary that failed is not an error of its own, since
+ * the probe is the answer an older control plane has always given.
+ */
+export async function fetchGatewayCheck(signal?: AbortSignal): Promise<GatewayCheck> {
+  try {
+    const { inventory, gateways } = await fetchClusterSummary();
+    if (inventory && gateways.live + gateways.stale > 0) {
+      return { live: gateways.live, stale: gateways.stale, lagging: gateways.lagging };
+    }
+  } catch {
+    // fall through to the probe
+  }
+  return fetchGatewayReadiness(signal);
+}
+
+/** Poll the fleet's health and say what the header pill and the dashboard's fleet tile show. */
 export function useGatewayHealth(): GatewayHealthView {
   const query = useQuery({
     queryKey: GATEWAY_HEALTH_KEY,
-    queryFn: ({ signal }) => fetchGatewayReadiness(signal),
+    queryFn: ({ signal }) => fetchGatewayCheck(signal),
     refetchInterval: GATEWAY_HEALTH_POLL_MS,
     // the poll is the retry: a backoff would only delay the answer the grace
     // window above is already waiting for

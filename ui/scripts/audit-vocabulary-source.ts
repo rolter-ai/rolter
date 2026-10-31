@@ -65,11 +65,16 @@ export function parseTargets(sources: string[]): string[] {
   return [...found].sort();
 }
 
-/** Read every `.rs` file under the control plane's `src/` (resolved from `root`, the repo root). */
+/**
+ * Read every `.rs` file under the control plane's `src/` (resolved from `root`,
+ * the repo root), nested modules included: a handler moved into a submodule
+ * such as `crud/users.rs` (#1043) still audits what it did.
+ */
 export function readSources(root: string): string[] {
   const dir = join(root, SOURCE_DIR);
-  return readdirSync(dir)
+  return readdirSync(dir, { recursive: true, encoding: "utf8" })
     .filter((name) => name.endsWith(".rs"))
+    .sort()
     .map((name) => readFileSync(join(dir, name), "utf8"));
 }
 

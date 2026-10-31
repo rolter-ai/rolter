@@ -50,4 +50,17 @@ describe("capGateScope", () => {
     expect(capGateScope({ scope_type: "business_unit", scope_id: "bu" }, ctx)).toBeUndefined();
     expect(capGateScope({ scope_type: "customer", scope_id: "c" }, ctx)).toBeUndefined();
   });
+
+  it("asks a user cap at the place it is narrowed to (#3282)", () => {
+    const user = { scope_type: "user", scope_id: "u-1" };
+    expect(capGateScope({ ...user, within_project_id: "project-2" }, ctx)).toEqual({
+      projectId: "project-2",
+      teamId: "team-2",
+    });
+    expect(capGateScope({ ...user, within_org_id: "org-1" }, ctx)).toEqual({ projectId: null });
+  });
+
+  it("keeps the page answer for a user cap narrowed to nowhere", () => {
+    expect(capGateScope({ scope_type: "user", scope_id: "u-1" }, ctx)).toBeUndefined();
+  });
 });

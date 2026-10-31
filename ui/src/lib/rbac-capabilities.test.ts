@@ -75,6 +75,29 @@ describe("effective capabilities", () => {
   });
 });
 
+describe("deployment roles (#1834)", () => {
+  it("opens exactly the rows the table names for the role, to no scoped holder", () => {
+    const operator = effectiveFor(null, false, "operator");
+    expect(operator.deployment_role).toBe("operator");
+    expect(has(operator.allowed, "cluster_node:update")).toBe(true);
+    expect(has(operator.allowed, "security_settings:read")).toBe(false);
+    const auditor = effectiveFor(null, false, "security_auditor");
+    expect(has(auditor.allowed, "security_settings:read")).toBe(true);
+    expect(has(auditor.allowed, "security_settings:update")).toBe(false);
+    expect(has(auditor.allowed, "deployment_role:update")).toBe(false);
+    // an org admin holds no deployment capability
+    expect(has(allowedFor("admin"), "cluster_node:update")).toBe(false);
+  });
+
+  it("is dropped for a superadmin, who needs none", () => {
+    expect(effectiveFor(null, true, "operator").deployment_role).toBeNull();
+  });
+
+  it("publishes the roles in the matrix", () => {
+    expect(matrixFixture().deployment_roles).toEqual(["operator", "security_auditor"]);
+  });
+});
+
 // the `chain()` and `membership()` fixtures of the Rust tests, and the cases
 // they state about a caller whose role sits below the org (#2376)
 const CHAIN: ScopeChain = { orgId: "o", teamId: "t", projectId: "p" };
@@ -173,8 +196,18 @@ describe("each capability decided at its own scope", () => {
       for (const c of CAPABILITIES) {
         for (const action of ACTIONS) {
           const authority = c[action];
-          if (authority === null || authority === "superadmin" || authority === "authenticated")
+          if (
+            authority === null ||
+            authority === "superadmin" ||
+            authority === "authenticated" ||
+            // a deployment role is no scoped role: no membership reaches it
+            authority === "operator" ||
+            authority === "security_auditor"
+          )
             continue;
+          // a row that also takes a deployment role is decided here by its scoped half:
+          // `allowedAt` holds no deployment role
+          const floor = authority.split("|")[0] as keyof typeof rank;
           const scope = scopeOf(c, action);
           const guard: ScopeChain =
             scope === "org"
@@ -183,13 +216,37 @@ describe("each capability decided at its own scope", () => {
                 ? { orgId: "o", teamId: "t", projectId: null }
                 : CHAIN;
           const role = resolveRole(ms, guard);
-          const decided = role !== null && rank[role] >= rank[authority];
+          const decided = role !== null && rank[role] >= rank[floor];
           expect([`${c.resource}:${action}`, has(allowed, `${c.resource}:${action}`)]).toEqual([
             `${c.resource}:${action}`,
             decided,
           ]);
         }
       }
+    }
+  });
+});
+
+describe("a row a scoped role or a deployment role reaches (#3362)", () => {
+  const alerting = ["alert_channel", "alert_rule", "alert_history"].flatMap((resource) =>
+    ACTIONS.filter((action) => CAPABILITIES.find((c) => c.resource === resource)?.[action]).map(
+      (action) => `${resource}:${action}`,
+    ),
+  );
+
+  it("is published as both authorities and decided by either", () => {
+    expect(alerting.length).toBeGreaterThan(0);
+    const row = CAPABILITIES.find((c) => c.resource === "alert_rule");
+    expect(row?.update).toBe("admin|operator");
+    // an operator holds no membership, and still runs every rule
+    const operator = effectiveFor(null, false, "operator").allowed;
+    for (const pair of alerting) expect(has(operator, pair)).toBe(true);
+    // an admin at the scope runs its own, and an auditor or a viewer none
+    const admin = effectiveFor("admin").allowed;
+    for (const pair of alerting) expect(has(admin, pair)).toBe(true);
+    for (const pair of alerting) {
+      expect(has(effectiveFor("viewer").allowed, pair)).toBe(false);
+      expect(has(effectiveFor(null, false, "security_auditor").allowed, pair)).toBe(false);
     }
   });
 });
@@ -228,12 +285,15 @@ describe("the published matrix", () => {
       superadmin_only: false,
       authenticated_only: false,
     });
+    // reached by a deployment role besides a superadmin (#1834)
     expect(action("feature_flags", "update")).toEqual({
       action: "update",
       minimum_role: null,
-      superadmin_only: true,
+      superadmin_only: false,
+      deployment_roles: ["operator"],
       authenticated_only: false,
     });
+    expect(action("deployment_role", "update")?.superadmin_only).toBe(true);
     expect(action("model", "read")).toEqual({
       action: "read",
       minimum_role: null,

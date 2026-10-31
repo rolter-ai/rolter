@@ -1,4 +1,4 @@
-import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { KeySquare, Lock, Pencil, Plus, X } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
@@ -21,7 +21,6 @@ import { Tabs } from "@/components/ui/tabs";
 import {
   createCustomRole,
   deleteCustomRole,
-  fetchAccessProfile,
   fetchAccessProfiles,
   fetchCustomRoles,
   fetchMemberships,
@@ -92,12 +91,16 @@ interface RoleColumn {
 // --text-subtle at 0.45 is about 2.3:1, and an empty tint already reads as "not
 // granted" (#1181). the hue is never the only difference (#2081): the glyph
 // tells allowed from not allowed from superadmin-only, and a custom grant's
-// dashed border tells it from a base-role allow in a greyscale render too
+// dashed border tells it from a base-role allow in a greyscale render too.
+// allowed is neutral on purpose (#2250): a loaded matrix draws hundreds of
+// them, and red is the colour of danger and of a view's one red action. the
+// letter is --text-primary on --surface-subtle (14.27:1) and the border is
+// --zinc-500, 3.90:1 on --surface-base and 3.60:1 on the scope band
 const CELL_STYLE: Record<CellState, React.CSSProperties> = {
   allowed: {
-    color: "var(--red-folk-text)",
-    background: "var(--red-tint)",
-    borderColor: "color-mix(in srgb, var(--red-folk) 30%, transparent)",
+    color: "var(--text-primary)",
+    background: "var(--surface-subtle)",
+    borderColor: "var(--zinc-500)",
   },
   granted: {
     color: "var(--status-info-text)",
@@ -128,7 +131,12 @@ function cellState(resource: RbacResourceView, action: RbacAction, column: RoleC
   const view = resource.actions.find((a) => a.action === action);
   // absent from `actions` means the backend's authority was None
   if (!view) return "na";
-  if (view.superadmin_only) return "superadmin";
+  // a deployment role (#1834) is held on the account, never at a scope, so no
+  // column of this table reaches such a row either
+  // unless it also takes a scoped role (#3362), which the columns below decide
+  if (view.superadmin_only || (view.deployment_roles?.length && view.minimum_role === null)) {
+    return "superadmin";
+  }
   if (view.authenticated_only) return "allowed";
   if (view.minimum_role !== null && column.rank >= RANK[view.minimum_role]) {
     return "allowed";
@@ -164,7 +172,7 @@ function CellMark({
       aria-hidden
       title={title}
       className={cn(
-        "flex items-center justify-center rounded-[6px] border font-mono text-3xs font-semibold",
+        "flex items-center justify-center rounded-sm border font-mono text-2xs font-semibold",
         className,
       )}
       style={CELL_STYLE[state]}
@@ -325,7 +333,7 @@ function MatrixTab({
       </div>
 
       {unknown.length > 0 && (
-        <p className="rounded-[10px] border border-[color:var(--border-subtle)] bg-[color:var(--surface-subtle)] px-3.5 py-2.5 text-xs text-muted-foreground">
+        <p className="rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-subtle)] px-3.5 py-2.5 text-xs text-muted-foreground">
           {t("pages.rbac.unknownGrants", { count: unknown.length })}
         </p>
       )}
@@ -344,7 +352,7 @@ function MatrixTab({
           against the page and widen the document to the table's full width */}
       <div
         tabIndex={0}
-        className="relative overflow-x-auto rounded-[10px] border border-[color:var(--border-subtle)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+        className="relative overflow-x-auto rounded-lg border border-[color:var(--border-subtle)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
       >
         <table className="w-full table-fixed border-collapse text-left" style={{ minWidth }}>
           <caption className="sr-only">{t("pages.rbac.tabs.matrix")}</caption>
@@ -373,7 +381,7 @@ function MatrixTab({
                       ? t(`shell.roles.${col.key}`, { defaultValue: col.label })
                       : col.label}
                   </span>
-                  <span className="mt-0.5 block text-3xs text-[color:var(--text-subtle)]">
+                  <span className="mt-0.5 block text-2xs text-[color:var(--text-subtle)]">
                     {col.custom
                       ? t("pages.rbac.viaAccessProfiles")
                       : membershipsFailed
@@ -448,7 +456,7 @@ function MatrixTab({
       <div className="flex flex-wrap items-center gap-x-3.5 gap-y-2 text-xs text-[color:var(--text-subtle)]">
         {ACTIONS.map((action) => (
           <span key={action} className="inline-flex items-center gap-[5px]">
-            <span className="font-mono text-3xs font-semibold text-[color:var(--text-secondary)]">
+            <span className="font-mono text-2xs font-semibold text-[color:var(--text-secondary)]">
               {t(`pages.rbac.letters.${action}`)}
             </span>
             {t(`pages.rbac.actions.${action}`)}
@@ -547,36 +555,25 @@ function CustomRolesTab({ matrix, orgId }: { matrix: RbacMatrix; orgId?: string 
   });
 
   // which profiles compose each role, so the list can say what a delete would
-  // have to be detached from first. a deployment has a handful of profiles, and
-  // only the detail call carries the composition — the list endpoint does not.
-  // a caller who may read the matrix but not the profiles simply sees no usage
+  // have to be detached from first. the list embeds each profile's roles, so
+  // this is one request however many profiles there are (#1996). a caller who
+  // may read the matrix but not the profiles simply sees no usage
   const profiles = useQuery({
-    queryKey: ["access-profiles", orgId],
-    queryFn: () => fetchAccessProfiles(orgId as string),
+    queryKey: ["access-profiles", orgId, "roles"],
+    queryFn: () => fetchAccessProfiles(orgId as string, ["roles"]),
     enabled: !!orgId,
     retry: false,
   });
-  const details = useQueries({
-    queries: (profiles.data ?? []).map((profile) => ({
-      queryKey: ["access-profile", profile.id],
-      queryFn: () => fetchAccessProfile(profile.id),
-      retry: false,
-    })),
-  });
-  // role id -> the profiles composing it. a handful of entries over a handful
-  // of profiles, so it is rebuilt per render rather than memoized against a
-  // dependency that would have to be the whole `useQueries` result
-  // and whether that map is an answer yet. the profiles resolve independently
-  // of the roles, so a row rendered "not used by any access profile" — a claim,
-  // not a placeholder — for as long as the detail calls were still in flight,
-  // and then swapped it for the real composition (#1266)
-  const usageKnown = !profiles.isLoading && details.every((detail) => !detail.isLoading);
+  // role id -> the profiles composing it, and whether that map is an answer yet.
+  // the profiles resolve independently of the roles, so a row must not render
+  // "not used by any access profile" — a claim, not a placeholder — while the
+  // read is still in flight (#1266)
+  const usageKnown = !profiles.isLoading;
   const usedBy = new Map<string, string[]>();
-  for (const detail of details) {
-    if (!detail.data) continue;
-    for (const composed of detail.data.roles) {
+  for (const profile of profiles.data ?? []) {
+    for (const composed of profile.roles ?? []) {
       const names = usedBy.get(composed.role_id) ?? [];
-      if (!names.includes(detail.data.name)) names.push(detail.data.name);
+      if (!names.includes(profile.name)) names.push(profile.name);
       usedBy.set(composed.role_id, names);
     }
   }
@@ -716,7 +713,7 @@ function CustomRolesTab({ matrix, orgId }: { matrix: RbacMatrix; orgId?: string 
           return (
             <div
               key={role.id}
-              className="flex items-start gap-3 rounded-[10px] border border-[color:var(--border-default)] bg-card p-4"
+              className="flex items-start gap-3 rounded-lg border border-[color:var(--border-default)] bg-card p-4"
             >
               <IconFrame className="mt-0.5">
                 <KeySquare className="h-4 w-4" />
@@ -862,10 +859,10 @@ function RoleSheet({
       saveLabel={draft.id ? t("pages.rbac.custom.save") : t("pages.rbac.custom.create")}
       canSave={!!draft.name.trim()}
       saving={saving}
-      onSave={onSave}
+      onSubmit={onSave}
     >
       <div className="space-y-3.5">
-        <Field label={t("pages.rbac.custom.fieldName")}>
+        <Field label={t("pages.rbac.custom.fieldName")} required>
           <Input
             value={draft.name}
             placeholder={t("pages.rbac.custom.namePlaceholder")}
@@ -928,7 +925,7 @@ function RoleSheet({
         />
 
         {draft.unknown.length > 0 && (
-          <p className="rounded-[10px] border border-[color:var(--border-subtle)] bg-[color:var(--surface-subtle)] px-3.5 py-2.5 text-xs text-muted-foreground">
+          <p className="rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-subtle)] px-3.5 py-2.5 text-xs text-muted-foreground">
             {t("pages.rbac.custom.unknownCarried", { count: draft.unknown.length })}
           </p>
         )}
@@ -975,7 +972,7 @@ function GrantGrid({
         aria-label={t("pages.rbac.custom.filterPlaceholder")}
         onChange={(e) => setFilter(e.target.value)}
       />
-      <div className="max-h-[420px] overflow-y-auto rounded-[10px] border border-[color:var(--border-subtle)]">
+      <div className="max-h-[420px] overflow-y-auto rounded-lg border border-[color:var(--border-subtle)]">
         {matching.length === 0 && (
           <p className="px-3.5 py-6 text-center text-xs text-muted-foreground">
             {t("pages.rbac.custom.noResources")}
@@ -1022,12 +1019,15 @@ function GrantGrid({
                       </span>
                     );
                   }
+                  const deploymentWide =
+                    view.superadmin_only ||
+                    (!!view.deployment_roles?.length && view.minimum_role === null);
                   return (
                     <span key={action} className="flex w-6 justify-center">
                       <Checkbox
                         aria-label={label}
-                        title={view.superadmin_only ? t("pages.rbac.custom.superadminHint") : label}
-                        disabled={view.superadmin_only}
+                        title={deploymentWide ? t("pages.rbac.custom.superadminHint") : label}
+                        disabled={deploymentWide}
                         checked={grants.includes(key)}
                         onChange={() => onToggle(key)}
                       />
@@ -1053,7 +1053,7 @@ function MatrixSkeleton() {
         <Skeleton width={320} height={16} />
         <Skeleton width={140} height={22} radius={999} className="ml-auto" />
       </div>
-      <div className="overflow-hidden rounded-[10px] border border-[color:var(--border-subtle)]">
+      <div className="overflow-hidden rounded-lg border border-[color:var(--border-subtle)]">
         <div className="flex items-center gap-3 border-b border-[color:var(--border-subtle)] bg-[color:var(--surface-subtle)] px-4 py-[13px]">
           <Skeleton width={90} height={12} />
           <Skeleton width={70} height={12} className="ml-auto" />

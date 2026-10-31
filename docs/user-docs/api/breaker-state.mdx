@@ -1,0 +1,96 @@
+---
+title: "Circuit-Breaker State API for the Rolter Gateway Fleet"
+sidebarTitle: "Breaker state"
+description: "GET /api/v1/breaker-state reports which targets have an open or half-open circuit breaker on which gateways — the live fleet view the dashboard shows on Provider Health, Models and Routing Rules."
+---
+
+Each rolter gateway keeps its own circuit breakers in memory, one set per replica
+([circuit breaker](/configuration/config-file#breaker)). `GET /api/v1/breaker-state` is the control
+plane's picture of all of them at once: for every `(model, target)` that some gateway holds a
+breaker entry for, the state it is in and how many gateways agree.
+
+The dashboard reads it for the **Provider Health** screen and for the target rows of **Models** and
+**Routing Rules**. It is a different signal from the 7-day SLA verdict on Provider Health, which
+comes from request history: this one is what the gateways are doing _right now_.
+
+## How the control plane learns it
+
+Each gateway samples its breaker registry every 10 seconds and pushes the result to the control
+plane over the internal channel it already uses for the config snapshot, identifying itself with the
+same node id as the cluster inventory (see [Cluster](/deployment/cluster#identifying-a-node)). A
+report replaces everything that node sent before, so a breaker that closes again leaves the view on
+the node's next report. A node that stops reporting drops out after 40 seconds.
+
+Two consequences follow from that:
+
+- **A target that is not listed is closed.** Only targets with an open, half-open or still-counting
+  breaker are reported. `gateways_live` says how many gateways were polling; `0` means the view
+  knows nothing about the fleet, and a dashboard must not read an empty `targets` as "all healthy".
+- **A gateway with no node id is invisible.** Without `ROLTER_NODE_ID` or a `HOSTNAME`, a gateway
+  stays out of the cluster inventory and out of this view too.
+
+The breaker must be enabled (`[breaker] enabled = true`); a disabled breaker records nothing and
+there is nothing to report.
+
+## Request
+
+```http
+GET /api/v1/breaker-state
+Authorization: Bearer <session or admin token>
+```
+
+Any authenticated caller may read it. What a caller sees is narrowed to the models they see in
+`GET /api/v1/models`, by the same tenancy and access-profile rules: a member of one organization
+never sees another organization's models or providers here. Per-node detail (`nodes`) is returned
+only to a superadmin, the admin token and open mode, since a node id is a host name. A deployment
+without a database answers with an empty view, because nothing can push to it.
+
+## Response
+
+```json
+{
+  "generated_at": "2026-10-27T09:14:02.511Z",
+  "fresh_window_secs": 40,
+  "gateways_live": 3,
+  "targets": [
+    {
+      "org_id": "3f2c9a1e-7b4d-4c55-9a0e-2d1f6b8c4e10",
+      "model": "gpt-4o",
+      "target_index": 1,
+      "provider": "azure-eu",
+      "upstream_model": "gpt-4o-2024",
+      "state": "open",
+      "nodes_open": 2,
+      "nodes_half_open": 1,
+      "nodes": [
+        {
+          "node_id": "gw-1",
+          "state": "open",
+          "consecutive_failures": 5,
+          "retry_after_secs": 18,
+          "reported_at": "2026-10-27T09:14:00.102Z"
+        }
+      ]
+    }
+  ]
+}
+```
+
+| Field                       | Meaning                                                                                      |
+| --------------------------- | -------------------------------------------------------------------------------------------- |
+| `gateways_live`             | gateways that polled in the last minute, whether or not they hold a breaker entry            |
+| `targets[].org_id`          | the organization that owns the route; empty for a route from the gateway's own config file   |
+| `targets[].model`           | the route's name; with `org_id`, which route this is                                         |
+| `targets[].target_index`    | the target's position in the route's target list                                             |
+| `targets[].state`           | the worst state any gateway reports: `open`, else `half_open`, else `closed`                 |
+| `targets[].nodes_open`      | gateways whose breaker for this target is open                                               |
+| `targets[].nodes_half_open` | gateways currently admitting a single probe                                                  |
+| `targets[].nodes[]`         | per-gateway detail, superadmin only; `retry_after_secs` is how long an open breaker has left |
+
+A `closed` row is a target that has been failing without reaching the threshold yet; its
+`consecutive_failures` shows how close it is.
+
+Two organizations may each have a route of the same name, so a route is `(org_id, model)`, never
+the name alone: each organization's members see their own route's breaker, and a caller who sees
+both organizations gets one entry per route. A gateway older than this release reports no
+`org_id`; its rows for an organization's route stay out of the view until it is upgraded.

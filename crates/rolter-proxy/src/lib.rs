@@ -13,16 +13,21 @@
 //! rolter's HTTP surfaces instead — see
 //! [ADR-0032](https://github.com/rolter-ai/rolter/blob/master/docs/dev-docs/adr/2026-09-09-one-point-oh-compatibility-guarantees.md).
 
+pub mod adjustments;
 pub mod egress_resolver;
+pub mod hop_by_hop;
+mod infinity;
 pub mod pool;
 pub mod route;
 mod translation;
 
+pub use adjustments::{Disposition, ParamAdjustment, ParamAdjustments, PARAM_ADJUSTMENTS_HEADER};
 pub use route::{RouteHeaders, RouteOverrides};
 pub use translation::{
     anthropic_cache_written_tokens, cache_written_one_hour_tokens, cache_written_prompt_tokens,
-    cached_prompt_tokens, reasoning_tokens_beside_completion, Protocol, ThinkingCount,
-    TranslatedStream, TranslationPlan,
+    cached_prompt_tokens, cached_prompt_tokens_header, cached_prompt_tokens_spelling,
+    reasoning_tokens_beside_completion, Protocol, ThinkingCount, TranslatedStream, TranslationPlan,
+    CACHED_PROMPT_TOKENS_HEADER,
 };
 
 use std::path::{Path, PathBuf};
@@ -356,6 +361,10 @@ impl Forwarder {
     /// [`Self::forward_json`] under the settings of the route the request
     /// resolved to: its own bound on the wait for response headers, and its
     /// static headers (#2924).
+    ///
+    /// When dialect translation did not forward every caller parameter as
+    /// sent, the returned response carries a [`ParamAdjustments`] in its
+    /// extensions (#1586); it carries none otherwise.
     #[allow(clippy::too_many_arguments)]
     pub async fn forward_json_with(
         &self,
@@ -405,7 +414,7 @@ impl Forwarder {
         // rewritten between the OpenAI and Anthropic shapes is real time spent
         // in the gateway rather than at the provider (#805)
         let translate_stage = rolter_core::stage_span!("translate.request");
-        let body = translation.translate_request_with(body, &compatibility)?;
+        let (body, adjustments) = translation.translate_request_reporting(body, &compatibility)?;
         let body = translation.apply_model_defaults(body, &self.model_defaults.load());
         let body = translation::normalize_prompt_cache_control(body, provider.kind)?;
         drop(translate_stage);
@@ -442,6 +451,15 @@ impl Forwarder {
             req.body(body.clone())
         })
         .await
+        .map(|mut response| {
+            // what translation did to the caller's parameters travels with the
+            // answer it shaped, read by the gateway before the first byte
+            // (#1586). nothing is inserted when nothing was adjusted
+            if !adjustments.is_empty() {
+                response.extensions_mut().insert(adjustments);
+            }
+            response
+        })
     }
 
     /// Forward a raw request body verbatim under an explicit `content_type`.
@@ -769,6 +787,7 @@ fn apply_passthrough(
     request
 }
 
+// spec-ref: anthropic-messages
 /// Auth headers for `provider`, applying the deployment's compatibility policy
 /// where a header is version-pinned (Anthropic's `anthropic-version`, #546).
 ///
@@ -828,6 +847,7 @@ fn provider_url(provider: &ProviderConfig, path: &str) -> String {
     provider.kind.resolve_upstream_url(&provider.api_base, path)
 }
 
+// spec-ref: gemini-generate-content
 /// build the gemini native generateContent url from the request. the model is
 /// taken from the configured upstream override, else the request's `model`
 /// field; streaming requests use `:streamGenerateContent?alt=sse`.
@@ -860,6 +880,7 @@ fn gemini_generate_url(
     }
 }
 
+// spec-ref: mcp-transport, oauth2-bearer
 /// How the gateway presents itself to an MCP server.
 #[derive(Debug, Clone, Copy)]
 pub enum McpUpstreamAuth<'a> {
@@ -1004,11 +1025,11 @@ mod tests {
     fn cloud_openai_compatible_bases_do_not_duplicate_v1() {
         let bedrock = provider(
             ProviderKind::Bedrock,
-            "https://bedrock-runtime.us-east-1.amazonaws.com/v1".to_string(),
+            "https://bedrock-runtime.us-east-1.amazonaws.com/openai/v1".to_string(),
         );
         assert_eq!(
             provider_url(&bedrock, "/v1/chat/completions"),
-            "https://bedrock-runtime.us-east-1.amazonaws.com/v1/chat/completions"
+            "https://bedrock-runtime.us-east-1.amazonaws.com/openai/v1/chat/completions"
         );
     }
 
@@ -1861,30 +1882,62 @@ mod tests {
     }
 
     struct TestTlsFixture {
-        ca_pem: &'static str,
-        server_cert_pem: &'static str,
-        server_key_pem: &'static str,
+        ca_pem: String,
+        server_cert_pem: String,
+        server_key_pem: String,
     }
 
-    const ONE: TestTlsFixture = TestTlsFixture {
-        ca_pem: "-----BEGIN CERTIFICATE-----\nMIIBoTCCAUegAwIBAgIUOywZS1wTTQGvHfTfJs+E/2A374wwCgYIKoZIzj0EAwIw\nHTEbMBkGA1UEAwwScm9sdGVyIHRlc3Qgb25lIGNhMCAXDTI2MDcxNTEzMDgzMVoY\nDzIxMjYwNjIxMTMwODMxWjAdMRswGQYDVQQDDBJyb2x0ZXIgdGVzdCBvbmUgY2Ew\nWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAAS/DcZgePnQsThk5eArc9ZK4BZ/noeh\nWPxPkrYGX4EkIVUp++Km8WuRLjzJnQGYLtgySAgEjXPb1ID1DHwdJUrJo2MwYTAP\nBgNVHRMBAf8EBTADAQH/MB0GA1UdDgQWBBSltfKu0VJcZPa9FCLJWQqIwU8m0zAf\nBgNVHSMEGDAWgBSltfKu0VJcZPa9FCLJWQqIwU8m0zAOBgNVHQ8BAf8EBAMCAQYw\nCgYIKoZIzj0EAwIDSAAwRQIgIDuLKEw/aG7bEeI2fXGArtFUivAijRCHdAckqhf9\nAHECIQCK+vyFaGiZRuiSlirbCpG/Bj22VaXGWP3SNhcRjAoKtA==\n-----END CERTIFICATE-----\n",
-        server_cert_pem: "-----BEGIN CERTIFICATE-----\nMIIBxjCCAW2gAwIBAgIUcq+1etqKMzPPjTDH1vLZr1JJwGkwCgYIKoZIzj0EAwIw\nHTEbMBkGA1UEAwwScm9sdGVyIHRlc3Qgb25lIGNhMCAXDTI2MDcxNTEzMDgzMVoY\nDzIxMjYwNjIxMTMwODMxWjAhMR8wHQYDVQQDDBZyb2x0ZXIgdGVzdCBvbmUgc2Vy\ndmVyMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE9nm2M1pjXYVgocpnmuhZ6Mx2\nshN3F26dbrdOi1Bnuf/+fBDXiNI7Ul+eVW8BiFj1LwiK1UqbYMqRkbkjz0O7zaOB\nhDCBgTAJBgNVHRMEAjAAMA8GA1UdEQQIMAaHBH8AAAEwEwYDVR0lBAwwCgYIKwYB\nBQUHAwEwDgYDVR0PAQH/BAQDAgWgMB0GA1UdDgQWBBRwXyPXl8GxkEyfmv0Og8WX\nHrt83zAfBgNVHSMEGDAWgBSltfKu0VJcZPa9FCLJWQqIwU8m0zAKBggqhkjOPQQD\nAgNHADBEAiAkOfd7cjmMMzs5cycYE+yK32mTY2a14BZ6gLUDVezcPgIgbtBfBH87\nBP1SjlCjhGlrKwP3V+FMPZ9jX9wDEp0I1V4=\n-----END CERTIFICATE-----\n",
-        server_key_pem: concat!(
-            "-----BEGIN EC ",
-            "PRIVATE KEY-----\nMHcCAQEEIHSJL8ih1JLjEbAt/TeQ1N80q+VIZd3NA0680S5w6cTzoAoGCCqGSM49\nAwEHoUQDQgAE9nm2M1pjXYVgocpnmuhZ6Mx2shN3F26dbrdOi1Bnuf/+fBDXiNI7\nUl+eVW8BiFj1LwiK1UqbYMqRkbkjz0O7zQ==\n-----END EC ",
-            "PRIVATE KEY-----\n",
-        ),
-    };
+    /// A CA and a `127.0.0.1` server certificate it signed, minted for this
+    /// test run.
+    ///
+    /// Valid from yesterday to a month ahead: nothing expires under the suite,
+    /// and the lifetime stays well inside the 825 days Apple's verifier accepts
+    /// for a server certificate, which the old 100-year fixtures did not (#2968).
+    fn tls_fixture(common_name: &str) -> TestTlsFixture {
+        use rcgen::{
+            BasicConstraints, CertificateParams, DistinguishedName, DnType,
+            ExtendedKeyUsagePurpose, IsCa, KeyPair, KeyUsagePurpose, SanType,
+        };
 
-    const TWO: TestTlsFixture = TestTlsFixture {
-        ca_pem: "-----BEGIN CERTIFICATE-----\nMIIBoTCCAUegAwIBAgIUb/PGRwbxSceLQXpgs/MeWebvJMIwCgYIKoZIzj0EAwIw\nHTEbMBkGA1UEAwwScm9sdGVyIHRlc3QgdHdvIGNhMCAXDTI2MDcxNTEzMDgzMVoY\nDzIxMjYwNjIxMTMwODMxWjAdMRswGQYDVQQDDBJyb2x0ZXIgdGVzdCB0d28gY2Ew\nWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAARk1P9GXr+2YdsbdEUtmEdGpnhvGH5p\nWkmDekne56IfEdvoyRqwRuQeaEbJH9VX6aynP2Ln8R2GEkIx1qgVUcBwo2MwYTAP\nBgNVHRMBAf8EBTADAQH/MB0GA1UdDgQWBBSMmIuW8upym2nXRBwrW5lqL9MEvDAf\nBgNVHSMEGDAWgBSMmIuW8upym2nXRBwrW5lqL9MEvDAOBgNVHQ8BAf8EBAMCAQYw\nCgYIKoZIzj0EAwIDSAAwRQIgT1J77HJlltep0qr6u7jwkyFtAWCg7Wcfxl80pfpb\nQL4CIQDfdjscsGHwRrBMN0Js8SK2y08GrnGTpHhpwgCIKllSCg==\n-----END CERTIFICATE-----\n",
-        server_cert_pem: "-----BEGIN CERTIFICATE-----\nMIIByDCCAW2gAwIBAgIUUUn86mPVojDWs8O+tR/ZogJPphgwCgYIKoZIzj0EAwIw\nHTEbMBkGA1UEAwwScm9sdGVyIHRlc3QgdHdvIGNhMCAXDTI2MDcxNTEzMDgzMVoY\nDzIxMjYwNjIxMTMwODMxWjAhMR8wHQYDVQQDDBZyb2x0ZXIgdGVzdCB0d28gc2Vy\ndmVyMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEvMwYoXPeMjBpta56AhjH9UVI\nKxqtOK3xp/s8+vgHuIzqnN5jKc2Fng5WqMm9TmzkTQJR4S8raOxOl92WeJzO+aOB\nhDCBgTAJBgNVHRMEAjAAMA8GA1UdEQQIMAaHBH8AAAEwEwYDVR0lBAwwCgYIKwYB\nBQUHAwEwDgYDVR0PAQH/BAQDAgWgMB0GA1UdDgQWBBQbfJhkqT7Ppws9+p/ZKaLx\nwmsKajAfBgNVHSMEGDAWgBSMmIuW8upym2nXRBwrW5lqL9MEvDAKBggqhkjOPQQD\nAgNJADBGAiEA/AaH7vUsNK06p1RydKSWZQU1EXxgZDz7vf54YEOdI7QCIQCYRNXF\nIuXJHr9h3naQ/b+Sc8jk3liqsB3t9mFtnd0Anw==\n-----END CERTIFICATE-----\n",
-        server_key_pem: concat!(
-            "-----BEGIN EC ",
-            "PRIVATE KEY-----\nMHcCAQEEIEcxFCSFxrCf9mszmnKbv3ODG8xd5RTvNm/74yum0lM0oAoGCCqGSM49\nAwEHoUQDQgAEvMwYoXPeMjBpta56AhjH9UVIKxqtOK3xp/s8+vgHuIzqnN5jKc2F\nng5WqMm9TmzkTQJR4S8raOxOl92WeJzO+Q==\n-----END EC ",
-            "PRIVATE KEY-----\n",
-        ),
-    };
+        let now = time::OffsetDateTime::now_utc();
+        let validity = |params: &mut CertificateParams| {
+            params.not_before = now - time::Duration::days(1);
+            params.not_after = now + time::Duration::days(30);
+        };
+        let name = |cn: String| {
+            let mut dn = DistinguishedName::new();
+            dn.push(DnType::CommonName, cn);
+            dn
+        };
+
+        let ca_key = KeyPair::generate().unwrap();
+        let mut ca_params = CertificateParams::default();
+        ca_params.distinguished_name = name(format!("{common_name} ca"));
+        ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+        ca_params.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::CrlSign];
+        validity(&mut ca_params);
+        let ca = ca_params.self_signed(&ca_key).unwrap();
+
+        let server_key = KeyPair::generate().unwrap();
+        let mut server_params = CertificateParams::default();
+        server_params.distinguished_name = name(format!("{common_name} server"));
+        server_params.subject_alt_names =
+            vec![SanType::IpAddress(std::net::Ipv4Addr::LOCALHOST.into())];
+        server_params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
+        server_params.key_usages = vec![
+            KeyUsagePurpose::DigitalSignature,
+            KeyUsagePurpose::KeyEncipherment,
+        ];
+        validity(&mut server_params);
+        let issuer = rcgen::Issuer::from_params(&ca_params, &ca_key);
+        let server = server_params.signed_by(&server_key, &issuer).unwrap();
+
+        TestTlsFixture {
+            ca_pem: ca.pem(),
+            server_cert_pem: server.pem(),
+            server_key_pem: server_key.serialize_pem(),
+        }
+    }
 
     impl Drop for TestTlsServer {
         fn drop(&mut self) {
@@ -1892,7 +1945,8 @@ mod tests {
         }
     }
 
-    async fn spawn_tls_server(fixture: &TestTlsFixture) -> TestTlsServer {
+    async fn spawn_tls_server(name: &str) -> TestTlsServer {
+        let fixture = tls_fixture(name);
         use std::sync::Arc;
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         use tokio_rustls::rustls::pki_types::{pem::PemObject, CertificateDer, PrivateKeyDer};
@@ -1933,7 +1987,7 @@ mod tests {
             std::process::id(),
             addr.port()
         ));
-        std::fs::write(&ca_path, fixture.ca_pem).unwrap();
+        std::fs::write(&ca_path, &fixture.ca_pem).unwrap();
         TestTlsServer { addr, ca_path }
     }
 
@@ -1967,34 +2021,34 @@ mod tests {
 
     #[tokio::test]
     async fn custom_ca_allows_private_tls_upstream() {
-        let server = spawn_tls_server(&ONE).await;
+        let server = spawn_tls_server("rolter test one").await;
         let response = tls_request(&server, "127.0.0.1", true).await.unwrap();
         assert_eq!(response.status(), reqwest::StatusCode::OK);
     }
 
     #[tokio::test]
     async fn private_tls_upstream_is_rejected_without_custom_ca() {
-        let server = spawn_tls_server(&ONE).await;
+        let server = spawn_tls_server("rolter test one").await;
         let error = tls_request(&server, "127.0.0.1", false).await.unwrap_err();
         assert!(matches!(error, Error::Upstream(_)));
     }
 
     #[tokio::test]
     async fn custom_ca_keeps_hostname_verification_enabled() {
-        let server = spawn_tls_server(&ONE).await;
+        let server = spawn_tls_server("rolter test one").await;
         let error = tls_request(&server, "localhost", true).await.unwrap_err();
         assert!(matches!(error, Error::Upstream(_)));
     }
 
     #[tokio::test]
     async fn reload_rereads_rotated_ca_bundle() {
-        let first = spawn_tls_server(&ONE).await;
+        let first = spawn_tls_server("rolter test one").await;
         let fwd = Forwarder::new();
         tls_request_with(&fwd, &first, "127.0.0.1", true)
             .await
             .unwrap();
 
-        let second = spawn_tls_server(&TWO).await;
+        let second = spawn_tls_server("rolter test two").await;
         std::fs::copy(&second.ca_path, &first.ca_path).unwrap();
         fwd.reload(&TimeoutConfig::default());
         let mut provider = provider(

@@ -6,11 +6,13 @@ import { Link } from "react-router";
 
 import { FormSkeleton } from "@/components/LoadingState";
 import { GatedButton } from "@/components/GatedButton";
+import { PriceProvenanceLine } from "@/components/PriceProvenance";
 import { ModelCheckOutcome } from "@/components/ProviderTestOutcome";
 import { RouteTargetList } from "@/components/RouteTargetList";
 import { StrategyPicker } from "@/components/StrategyPicker";
 import { useDiscardGuard } from "@/components/DiscardGuard";
 import { DocsLink } from "@/components/DocsLink";
+import { TakesOverField } from "@/components/TakesOverField";
 import { ProviderLogo } from "@/components/ui/provider-logo";
 import { Button } from "@/components/ui/button";
 import { ChipGroup } from "@/components/ui/chip-group";
@@ -41,6 +43,7 @@ import {
   fetchModelPrices,
   fetchProviderModels,
   fetchRouteTargets,
+  fetchRouteVariants,
   fetchTeams,
   fetchUsers,
   fetchVirtualKeys,
@@ -65,6 +68,7 @@ import { errorText } from "@/lib/error-copy";
 import { readEffectivePolicy } from "@/lib/guardrail-policy";
 import { keptRatePatches, type KeptRates } from "@/lib/cache-write-rate";
 import { useErrorVisibility } from "@/lib/error-visibility";
+import { ALL_TARGETS_RESTRICTED, isRestricted, onlyRestrictedDialled } from "@/lib/failure-classes";
 import { providersUsableFrom } from "@/lib/provider-scope";
 import type { RouteTargetView } from "@/lib/route-targets";
 import { usesWeights } from "@/lib/strategies";
@@ -111,6 +115,11 @@ export interface DraftTarget {
   /** the model id sent upstream; blank sends the public name through as-is */
   upstream: string;
   weight: string;
+  /**
+   * the failure classes the target is a fallback for (#1584, #3319); empty
+   * for an ordinary member of the pool
+   */
+  takesOver: string[];
 }
 
 let targetKeys = 0;
@@ -119,9 +128,10 @@ export function newTarget(
   upstream = "",
   weight = "1",
   id?: string,
+  takesOver: string[] = [],
 ): DraftTarget {
   targetKeys += 1;
-  return { key: `t${targetKeys}`, id, providerId, upstream, weight };
+  return { key: `t${targetKeys}`, id, providerId, upstream, weight, takesOver };
 }
 
 interface Caps {
@@ -143,6 +153,8 @@ interface ModelDraft {
   paramMode: LockMode;
   params: DraftParam[];
   caps: Caps;
+  /** the model's context window in tokens, served on `GET /v1/models` and not enforced (#3265) */
+  contextLength: string;
   price: {
     input: string;
     output: string;
@@ -266,6 +278,7 @@ function blankDraft(
     paramMode: "manual",
     params: paramDefs("chat", false),
     caps: defaultCaps("chat"),
+    contextLength: "",
     price: {
       input: "",
       output: "",
@@ -312,6 +325,8 @@ const MAX_ROUTE_RETRIES = 10;
 const MAX_ROUTE_THROUGHPUT = 10_000_000;
 /** `tpm` is a u32 on the backend */
 const MAX_ROUTE_TPM = 4_294_967_295;
+/** `context_length` is a u32 on the backend (#3265) */
+const MAX_CONTEXT_LENGTH = 4_294_967_295;
 
 /**
  * Seed the draft from a route's stored `advanced` blob (#1178).
@@ -342,6 +357,7 @@ function seedAdvanced(draft: ModelDraft, advanced: Record<string, unknown>) {
       draft.caps[key] = capabilities.includes(key);
     }
   }
+  draft.contextLength = num(advanced.context_length);
   draft.params = paramDefs(draft.modality, draft.caps.reasoning);
   draft.description = str(advanced.description);
 
@@ -434,6 +450,7 @@ function advancedToApi(
   out.capabilities = Object.entries(draft.caps)
     .filter(([, on]) => on)
     .map(([key]) => key);
+  put(out, "context_length", limit(draft.contextLength));
   put(out, "description", draft.description.trim() || undefined);
 
   // rebuilt from the limits the gateway applies, so one it never read
@@ -550,10 +567,11 @@ function targetInput(target: DraftTarget, publicName: string) {
     provider_id: target.providerId,
     upstream_model: upstreamFor(target.upstream, publicName),
     weight: Number(target.weight),
+    takes_over: target.takesOver,
   };
 }
 
-export type RefusalField = "targets" | "provider" | "weight";
+export type RefusalField = "targets" | "provider" | "weight" | "takesOver";
 
 /**
  * A refusal the control plane pinned to one part of the target list: the whole
@@ -564,16 +582,28 @@ export type RefusalField = "targets" | "provider" | "weight";
 export interface ServerRefusal {
   field: RefusalField;
   key?: string;
+  /**
+   * the list was refused because every target is a restricted fallback
+   * (`all_targets_restricted`), which the sheet words apart from an empty list
+   */
+  allRestricted?: boolean;
 }
 
-/** `targets`, `targets[2].weight`, `targets[0].provider_id` */
+/** `targets`, `targets[2].weight`, `targets[0].provider_id`, `targets[1].takes_over` */
 export function refusalOf(error: unknown, targets: DraftTarget[]): ServerRefusal | null {
   if (!(error instanceof ApiError) || error.code !== "invalid_field" || !error.field) return null;
-  const match = /^targets(?:\[(\d+)\]\.(weight|provider_id))?$/.exec(error.field);
+  const match = /^targets(?:\[(\d+)\]\.(weight|provider_id|takes_over))?$/.exec(error.field);
   if (!match) return null;
-  if (match[1] === undefined) return { field: "targets" };
+  if (match[1] === undefined) {
+    return error.message.includes(ALL_TARGETS_RESTRICTED)
+      ? { field: "targets", allRestricted: true }
+      : { field: "targets" };
+  }
   const key = targets[Number(match[1])]?.key;
-  return key ? { field: match[2] === "weight" ? "weight" : "provider", key } : null;
+  if (!key) return null;
+  const field: RefusalField =
+    match[2] === "weight" ? "weight" : match[2] === "takes_over" ? "takesOver" : "provider";
+  return { field, key };
 }
 
 /**
@@ -595,6 +625,8 @@ function targetsToApi(targets: DraftTarget[], publicName: string): RouteTargetIn
         : tg.upstream
       : (upstreamFor(tg.upstream, publicName) ?? null),
     weight: Number(tg.weight),
+    // always sent: an entry without it clears the stored set
+    takes_over: tg.takesOver,
   }));
 }
 
@@ -690,6 +722,7 @@ function buildPreview(
         ? targetsToApi([tg], publicName)[0].upstream_model
         : upstreamFor(tg.upstream, publicName),
       weight: weightValid(tg.weight) ? Number(tg.weight) : tg.weight,
+      takes_over: tg.takesOver.length > 0 ? tg.takesOver : undefined,
     })),
     params,
     param_policy: paramPolicy,
@@ -735,6 +768,7 @@ export function TargetEditor({
   shown,
   providerInvalid,
   weightInvalid,
+  takesOverError,
   onChange,
   onTouch,
 }: {
@@ -755,6 +789,8 @@ export function TargetEditor({
   shown: TargetErrorsShown;
   providerInvalid: (target: DraftTarget) => boolean;
   weightInvalid: (target: DraftTarget) => boolean;
+  /** what is wrong with a target's `takes_over`, if anything; already translated */
+  takesOverError?: (target: DraftTarget) => string | undefined;
   onChange: (next: DraftTarget[]) => void;
   /** a provider or weight field was visited, so its error may show */
   onTouch: (field: "provider" | "weight") => void;
@@ -837,6 +873,7 @@ export function TargetEditor({
             badWeight={shown.weight && weightInvalid(tg)}
             providerErrorId={providerErrorId}
             weightErrorId={weightErrorId}
+            takesOverError={takesOverError?.(tg)}
             onChange={(patch) => update(i, patch)}
             onRemove={() => onChange(targets.filter((_, idx) => idx !== i))}
             onTouch={onTouch}
@@ -875,6 +912,7 @@ function TargetRow({
   badWeight,
   providerErrorId,
   weightErrorId,
+  takesOverError,
   onChange,
   onRemove,
   onTouch,
@@ -888,6 +926,7 @@ function TargetRow({
   badWeight: boolean;
   providerErrorId: string;
   weightErrorId: string;
+  takesOverError?: string;
   onChange: (patch: Partial<DraftTarget>) => void;
   onRemove: () => void;
   onTouch: (field: "provider" | "weight") => void;
@@ -1027,6 +1066,12 @@ function TargetRow({
           )}
         </div>
       )}
+      <TakesOverField
+        groupLabel={t("fallbackTargets.groupAria", { n })}
+        value={target.takesOver}
+        error={takesOverError}
+        onChange={(takesOver) => onChange({ takesOver })}
+      />
     </li>
   );
 }
@@ -1059,6 +1104,7 @@ type FieldKey =
   | "rpm"
   | "tpm"
   | "concurrency"
+  | "contextLength"
   | "param"
   | "header"
   | "cacheWrite"
@@ -1068,7 +1114,8 @@ type FieldKey =
   | "speech"
   | "audioInputTokens"
   | "audioOutputTokens"
-  | "cachedAudio";
+  | "cachedAudio"
+  | "variants";
 
 export interface ModelSheetProps {
   open: boolean;
@@ -1133,6 +1180,8 @@ export function ModelSheet({
   });
   const [dupFrom, setDupFrom] = React.useState("");
   const initialRef = React.useRef("");
+  // the price form as it was seeded, to tell a price left alone from one edited (#966)
+  const initialPriceRef = React.useRef("");
   // the advanced payload as it was seeded, so a save can skip the extra PUT
   // when the operator changed nothing on that half of the form
   const initialAdvancedRef = React.useRef("");
@@ -1154,6 +1203,13 @@ export function ModelSheet({
   const targets = useQuery({
     queryKey: ["route-targets", route?.id],
     queryFn: () => fetchRouteTargets(route!.id),
+    enabled: open && mode === "edit" && !!route,
+  });
+  // the route's variants are not edited here, but their targets count with
+  // the list's when the control plane decides a route is all fallbacks (#3373)
+  const variants = useQuery({
+    queryKey: ["route-variants", route?.id],
+    queryFn: () => fetchRouteVariants(route!.id),
     enabled: open && mode === "edit" && !!route,
   });
   const prices = useQuery({
@@ -1220,7 +1276,13 @@ export function ModelSheet({
       // every target the route has, not only the first: editing one line of a
       // fleet used to rewrite target 0 and never show the rest (#1979)
       d.targets = (targets.data ?? []).map((tg) =>
-        newTarget(tg.provider_id, tg.upstream_model ?? "", String(tg.weight), tg.id),
+        newTarget(
+          tg.provider_id,
+          tg.upstream_model ?? "",
+          String(tg.weight),
+          tg.id,
+          tg.takes_over ?? [],
+        ),
       );
       d.enabled = route.enabled;
       seedAdvanced(d, route.advanced ?? {});
@@ -1272,6 +1334,7 @@ export function ModelSheet({
       preview: false,
     });
     initialRef.current = JSON.stringify(d);
+    initialPriceRef.current = JSON.stringify(d.price);
     initialAdvancedRef.current = JSON.stringify(
       advancedToApi(d, mode === "edit" ? (route?.advanced ?? {}) : {}),
     );
@@ -1313,10 +1376,16 @@ export function ModelSheet({
       return { ...d, caps, params: [...paramDefs("chat", on), ...custom] };
     });
 
-  // the overrides a config-file route carries, which the sheet only shows
+  // the overrides a config-file route carries, which the sheet only shows.
+  // the effective config also lists every organization's routes, and one may
+  // share the file route's name (#1857), so only a route of the same owner is it
   const fileOverride =
     readonly && configModel
-      ? policy?.routes.find((route) => route.model === configModel.model)
+      ? policy?.routes.find(
+          (route) =>
+            route.model === configModel.model &&
+            (route.org_id ?? "") === (configModel.org_id ?? ""),
+        )
       : undefined;
 
   const providerName = (id: string) => providers.find((p) => p.id === id)?.name ?? "";
@@ -1327,11 +1396,16 @@ export function ModelSheet({
   // separate question, answered by `visibility` (#2810)
   const publicName = draft.name.trim();
   const nameMissing = !readonly && !publicName;
+  // a name is taken only in this organization, across its projects, or by a
+  // config-file model, which every organization shares: another
+  // organization's model of the same name is no conflict (#1857, #3460), and
+  // the control plane accepts it
   const nameConflict =
     !readonly &&
     publicName !== "" &&
     models.some(
       (m) =>
+        (!m.org_id || m.org_id === orgId) &&
         m.model.toLowerCase() === publicName.toLowerCase() &&
         (mode !== "edit" || m.model !== route?.model),
     );
@@ -1343,10 +1417,39 @@ export function ModelSheet({
   // a route with no target is accepted by the API and answers every request
   // with an error, so the sheet does not create one
   // a refusal from the control plane marks the same fields until the list is edited
-  const errTargets =
-    !readonly && (draft.targets.length === 0 || refusal?.field === "targets")
-      ? t("modelSheet.errors.targets")
-      : "";
+  // a list of nothing but fallbacks could never dial anything, which the
+  // control plane refuses as `all_targets_restricted` (#1584)
+  // a route with stored variants dials only them, so the list does not count
+  // then, as the control plane counts it (#3487); while they are unread the
+  // list alone is judged, and the save's own refusal still says so
+  const variantTargetSets = (Array.isArray(variants.data) ? variants.data : []).map((v) =>
+    (v.targets ?? []).map((tg) => tg.takes_over ?? []),
+  );
+  const stranded =
+    onlyRestrictedDialled(
+      draft.targets.map((tg) => tg.takesOver),
+      variantTargetSets,
+    ) || !!refusal?.allRestricted;
+  // with variants the list is not what strands the route, so the message sits
+  // beside the variants instead; this sheet does not edit them, so it says
+  // where they are edited (#3510)
+  const variantsStranded = !readonly && stranded && variantTargetSets.length > 0;
+  const onlyFallbacks = stranded && !variantsStranded;
+  const errTargets = readonly
+    ? ""
+    : onlyFallbacks
+      ? t("fallbackTargets.errors.allRestricted")
+      : draft.targets.length === 0 || (refusal?.field === "targets" && !refusal.allRestricted)
+        ? t("modelSheet.errors.targets")
+        : "";
+  const errVariants = variantsStranded
+    ? t("fallbackTargets.errors.variantsAllRestrictedElsewhere")
+    : "";
+  // a set the control plane refused, said under that target's own set
+  const takesOverError = (tg: DraftTarget) =>
+    refusal?.field === "takesOver" && refusal.key === tg.key
+      ? t("fallbackTargets.errors.refused")
+      : undefined;
   // a target with no provider is not a target: the control plane would refuse
   // it, and a default that picked one for the operator sent traffic to the
   // wrong provider (#2810). only a blank line counts: a stored target whose
@@ -1390,6 +1493,11 @@ export function ModelSheet({
     MAX_ROUTE_THROUGHPUT,
     t("modelSheet.errors.concurrency", { max: MAX_ROUTE_THROUGHPUT }),
   );
+  const errContextLength = capError(
+    draft.contextLength,
+    MAX_CONTEXT_LENGTH,
+    t("modelSheet.errors.contextLength"),
+  );
   const paramRowInvalid = (p: (typeof draft.params)[number]) =>
     p.custom && p.value.trim() !== "" && p.key.trim() === "";
   const headerRowInvalid = (h: (typeof draft.headers)[number]) =>
@@ -1431,6 +1539,7 @@ export function ModelSheet({
     rpm: errRpm,
     tpm: errTpm,
     concurrency: errConcurrency,
+    contextLength: errContextLength,
     param: errParam,
     header: errHeader,
     cacheWrite: errCacheWrite,
@@ -1441,6 +1550,7 @@ export function ModelSheet({
     audioInputTokens: errAudioInputTokens,
     audioOutputTokens: errAudioOutputTokens,
     cachedAudio: errCachedAudio,
+    variants: errVariants,
   };
   const problems = (Object.keys(found) as FieldKey[]).filter((key) => found[key]);
   // what the sheet says under each field: its error, once it may be shown
@@ -1448,6 +1558,10 @@ export function ModelSheet({
   // for the field to be visited
   const shownError = (key: FieldKey) =>
     visibility.shows(key) || refusal?.field === key ? found[key] : "";
+  // the list's refusal for holding only fallbacks is the variants' news when
+  // the route has them
+  const variantsMessage =
+    visibility.shows("variants") || refusal?.allRestricted ? found.variants : "";
   const rowNumber = (key?: string) => draft.targets.findIndex((tg) => tg.key === key) + 1;
   const weightMessage =
     refusal?.field === "weight" && !draft.targets.some((tg) => !weightValid(tg.weight))
@@ -1465,6 +1579,8 @@ export function ModelSheet({
     targetsErr: `${fid}-targets-err`,
     providerErr: `${fid}-provider-err`,
     weightErr: `${fid}-weight-err`,
+    variantsLabel: `${fid}-variants-label`,
+    variantsErr: `${fid}-variants-err`,
     timeoutHint: `${fid}-timeout-hint`,
     retriesHint: `${fid}-retries-hint`,
     retriesErr: `${fid}-retries-err`,
@@ -1475,6 +1591,8 @@ export function ModelSheet({
     tpmErr: `${fid}-tpm-err`,
     concurrencyHint: `${fid}-concurrency-hint`,
     concurrencyErr: `${fid}-concurrency-err`,
+    contextLengthHint: `${fid}-context-length-hint`,
+    contextLengthErr: `${fid}-context-length-err`,
     paramErr: `${fid}-param-err`,
     headerErr: `${fid}-header-err`,
     cacheWriteHint: `${fid}-cache-write-hint`,
@@ -1529,8 +1647,15 @@ export function ModelSheet({
           model: publicName,
           strategy: draft.strategy,
         });
-        // one at a time, so the targets are stored in the order they are listed
-        for (const target of draft.targets) {
+        // one at a time, so the targets are stored in the order they are
+        // listed, the ordinary ones first: a fallback added to a route with no
+        // ordinary target yet is refused (`all_targets_restricted`), and a
+        // fallback is never dialled first, so this moves no traffic
+        const ordered = [
+          ...draft.targets.filter((tg) => !isRestricted(tg.takesOver)),
+          ...draft.targets.filter((tg) => isRestricted(tg.takesOver)),
+        ];
+        for (const target of ordered) {
           await createRouteTarget(created.id, targetInput(target, publicName));
         }
         if (Object.keys(params).length > 0 || draft.paramMode !== "unlockAll") {
@@ -1561,7 +1686,13 @@ export function ModelSheet({
       if (draft.enabled !== r.enabled) input.enabled = draft.enabled;
       if (draft.strategy !== r.strategy) input.strategy = draft.strategy;
       await updateRoute(r.id, input);
-      if (hasPricing) {
+      // a save writes the price with the same PUT an operator uses, which makes
+      // it an override. so a catalogue price the form never touched is not
+      // written back: saving the route must not turn it into one (#966)
+      const catalogueUntouched =
+        !!prices.data?.find((p) => p.model === r.model)?.source &&
+        initialPriceRef.current === JSON.stringify(draft.price);
+      if (hasPricing && !catalogueUntouched) {
         await upsertModelPrice({
           model: r.model,
           input_per_mtok: draft.price.input.trim() || "0",
@@ -1690,7 +1821,13 @@ export function ModelSheet({
       // renamed next, so it names that model outright instead
       if (srcTargets.length > 0) {
         next.targets = srcTargets.map((tg) =>
-          newTarget(tg.provider_id, tg.upstream_model || src.model, String(tg.weight)),
+          newTarget(
+            tg.provider_id,
+            tg.upstream_model || src.model,
+            String(tg.weight),
+            undefined,
+            tg.takes_over ?? [],
+          ),
         );
       }
       seedParams(next, src.params ?? {}, src.param_policy ?? {});
@@ -2035,6 +2172,7 @@ export function ModelSheet({
               }}
               providerInvalid={providerRowInvalid}
               weightInvalid={weightRowInvalid}
+              takesOverError={takesOverError}
               onChange={(next) => {
                 set({ targets: next });
                 setRefusal(null);
@@ -2047,6 +2185,22 @@ export function ModelSheet({
           <FieldError id={ids.targetsErr} error={shownError("targets")} />
           <FieldError id={ids.providerErr} error={shownError("provider")} />
           <FieldError id={ids.weightErr} error={weightMessage} />
+          {variantsMessage && (
+            <div className="space-y-1.5">
+              <FieldLabel label={t("routeSheet.variants.title")} id={ids.variantsLabel} />
+              <FieldError id={ids.variantsErr} error={variantsMessage} />
+              {/* the variants are edited in the route sheet, so the way there
+                  is what takes focus when the save is refused for them */}
+              <Link
+                to="/routing-rules"
+                data-error-anchor="true"
+                aria-describedby={describedBy(ids.variantsLabel, ids.variantsErr)}
+                className="text-xs text-foreground underline underline-offset-2 hover:no-underline focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              >
+                {t("modelSheet.routing.editVariants")}
+              </Link>
+            </div>
+          )}
         </FormSection>
 
         {/* a config route's parameters, caps, prices, headers and access are
@@ -2238,6 +2392,13 @@ export function ModelSheet({
               className="space-y-3"
             >
               <p className="text-xs text-muted-foreground">{t("modelSheet.pricing.hint")}</p>
+              {/* an imported price is a catalogue value that can change; one an
+                  operator set is theirs (#966). nothing for a model with no price */}
+              <PriceProvenanceLine
+                price={
+                  mode === "edit" ? prices.data?.find((p) => p.model === route?.model) : undefined
+                }
+              />
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                 {tokenPriced &&
                   priceInput("input", t("modelSheet.pricing.input", { currency: cur }))}
@@ -2357,6 +2518,35 @@ export function ModelSheet({
                   { id: ids.concurrencyHint, text: t("modelSheet.net.concurrencyHint") },
                   { field: "concurrency", errId: ids.concurrencyErr },
                 )}
+                {/* served on /v1/models whatever the model type, so it sits in
+                    a section every type shows rather than with the chat and
+                    audio flags (#3406) */}
+                <div className="space-y-1 sm:col-span-2">
+                  <FieldLabel
+                    label={t("modelSheet.caps.contextLength")}
+                    htmlFor="ms-context-length"
+                  />
+                  <Input
+                    id="ms-context-length"
+                    type="number"
+                    min={1}
+                    className="font-mono"
+                    value={draft.contextLength}
+                    placeholder="128000"
+                    disabled={readonly}
+                    aria-invalid={shownError("contextLength") ? true : undefined}
+                    aria-describedby={describedBy(
+                      ids.contextLengthHint,
+                      shownError("contextLength") && ids.contextLengthErr,
+                    )}
+                    onChange={(e) => set({ contextLength: e.target.value })}
+                    onBlur={() => visibility.touch("contextLength")}
+                  />
+                  <p id={ids.contextLengthHint} className="text-xs text-muted-foreground">
+                    {t("modelSheet.caps.contextLengthHint")}
+                  </p>
+                  <FieldError id={ids.contextLengthErr} error={shownError("contextLength")} />
+                </div>
               </div>
             </FormSection>
 

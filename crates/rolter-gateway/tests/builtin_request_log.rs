@@ -95,20 +95,14 @@ fn config(clickhouse: SocketAddr) -> GatewayConfig {
     config.logging.flush_ms = 20;
     config.logging.batch_max = 1;
     config.db_virtual_keys.push(VirtualKeyRecord {
-        access_policy: None,
         key_hash: rolter_auth::hash_key(&config.server.resolve_key_pepper(), KEY),
         id: KEY_ID.into(),
         org_id: ORG.into(),
         team_id: TEAM.into(),
         project_id: PROJECT.into(),
-        user_id: String::new(),
-        models: vec![],
-        providers: vec![],
-        disabled: false,
-        expires_at: None,
-        cache: None,
         business_unit_id: "bu-smoke".into(),
         customer_id: "customer-smoke".into(),
+        ..Default::default()
     });
     config
 }
@@ -405,7 +399,7 @@ async fn a_configured_route_named_fake_llm_is_logged_as_its_provider() {
         targets: vec![Target {
             provider: "shadow".into(),
             model: Some("fake-llm".into()),
-            weight: 1,
+            ..Default::default()
         }],
         params: Default::default(),
         param_policy: Default::default(),
@@ -462,8 +456,7 @@ async fn rows_carry_the_id_from_the_configured_request_id_header() {
         strategy: BalancingStrategy::RoundRobin,
         targets: vec![Target {
             provider: "upstream".into(),
-            model: None,
-            weight: 1,
+            ..Default::default()
         }],
         params: Default::default(),
         param_policy: Default::default(),

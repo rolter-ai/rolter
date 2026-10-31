@@ -74,7 +74,9 @@ def test_model_scope_enforced(admin: ControlClient, tenant) -> None:
     assert gw.chat(model_a).status_code == 200
     denied = gw.chat(model_b)
     gw.close()
-    assert denied.status_code == 403, f"out-of-scope model should be 403: {denied.status_code} {denied.text}"
+    assert denied.status_code == 403, (
+        f"out-of-scope model should be 403: {denied.status_code} {denied.text}"
+    )
     assert denied.json()["error"].get("code") == "model_not_allowed", denied.text
 
 
@@ -161,7 +163,9 @@ def test_provider_api_key_never_returned(admin: ControlClient, tenant) -> None:
     """a provider's api_key is encrypted at rest and never echoed in an API
     response (create or list)."""
     secret = f"sk-supersecret-{uuid.uuid4().hex}"
-    created = admin.create_provider(tenant.org_id, api_base=SIM_ENGINES[0], name=_rand("prov"), api_key=secret)
+    created = admin.create_provider(
+        tenant.org_id, api_base=SIM_ENGINES[0], name=_rand("prov"), api_key=secret
+    )
     listing = admin.list_providers(tenant.org_id)
     assert secret not in str(created), "create response leaked the plaintext api_key"
     assert secret not in str(listing), "list response leaked the plaintext api_key"
@@ -173,10 +177,16 @@ def test_viewer_cannot_mint_key(admin: ControlClient, tenant) -> None:
     admin.create_user(tenant.org_id, email=email, password=password, role="viewer")
     viewer = admin.login(email, password)
 
-    admin_path = viewer.raw("POST", f"/api/v1/projects/{tenant.project_id}/virtual-keys",
-                            json={"name": _rand("vk"), "models": [], "providers": []})
-    self_path = viewer.raw("POST", f"/api/v1/me/projects/{tenant.project_id}/virtual-keys",
-                           json={"name": _rand("vk"), "models": []})
+    admin_path = viewer.raw(
+        "POST",
+        f"/api/v1/projects/{tenant.project_id}/virtual-keys",
+        json={"name": _rand("vk"), "models": [], "providers": []},
+    )
+    self_path = viewer.raw(
+        "POST",
+        f"/api/v1/me/projects/{tenant.project_id}/virtual-keys",
+        json={"name": _rand("vk"), "models": []},
+    )
     assert admin_path.status_code == 403, admin_path.text
     assert self_path.status_code == 403, self_path.text
 

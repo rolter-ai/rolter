@@ -139,6 +139,24 @@ the next startup replay every migration against a populated database (#499).
 ClickHouse has no such runner, so `clickhouse/` _is_ mounted into its initdb
 directory and is that schema's only provisioning path.
 
+### SigNoz overlay
+
+The optional SigNoz overlay waits for its schema migrator to complete before
+starting either the collector or the query service. The migrator first runs
+`migrate ready`; the collector also checks `migrate sync check` before accepting
+OTLP. A fresh volume therefore does not rely on a collector crash and restart
+to wait for missing databases or tables. The same ordering applies to `just dogfood`.
+
+The overlay deliberately does not enable Foundry's `signozspanmapper` or
+`signozllmpricing` processors: Rolter emits canonical `gen_ai.*` attributes,
+and request-log costs use the deployment's configured prices rather than a
+second catalogue of model-pattern rules in the collector. It also omits the
+`histogramQuantile` executable ClickHouse function; the bundled dogfood boards
+compute quantiles in SQL and need no startup binary download. SigNoz features
+that require that function or collector-generated `signoz.gen_ai.usage.*.cost`
+attributes are not provided by this overlay. Those are explicit differences
+from Foundry, not claims of feature parity (#2929).
+
 ## Image
 
 The multi-stage `docker/Dockerfile` produces a slim Debian runtime with both
@@ -177,10 +195,7 @@ directory, the bundled `/app/rolter.toml`, `ROLTER_UI_DIR=/app/ui/dist`, the two
 exposed ports and the `easy-up --host 0.0.0.0` command. `runtime` compiles the
 binaries and the dashboard in its builder stages; `runtime-prebuilt` copies
 them from the named build contexts `rolter-bin` and `rolter-ui`, so CI smokes
-the published layout without a cold release build on every call. CI builds it
-on distroless debian13 (`--build-arg RUNTIME_DISTRO=debian13`), because binaries
-compiled on its Ubuntu 24.04 runner need a newer glibc than debian 12 has; the
-default, and every image that is built for use, stays on debian12. It is never
+the published layout without a cold release build on every call. It is never
 published. See
 [testing](../development/testing.md#published-port-image-smoke) for the local
 commands.
@@ -208,6 +223,30 @@ docker run --rm -p 4001:4001 \
   -e ROLTER_CONTROL_HOST=0.0.0.0 -e ROLTER_ADMIN_TOKEN \
   rolter:dev rolter-control
 ```
+
+### Runtime base
+
+The `runtime` image is built on distroless `cc-debian13:nonroot` (glibc 2.41),
+pinned by index digest in the `runtime-base` stage of `docker/Dockerfile`. There
+is no `RUNTIME_DISTRO` switch: CI's `runtime-prebuilt` image and the published
+one share the base (#2702).
+
+- **glibc.** `aws-lc-sys` (the rustls crypto provider) defines `_GNU_SOURCE`, so a
+  binary compiled against glibc 2.38 or newer headers references the
+  `GLIBC_2.38` symbols `__isoc23_strtol` and `__isoc23_sscanf`. Distroless
+  debian12 ships glibc 2.36 and refuses to start such a binary. The image's own
+  builder is `rust:1-bookworm`, so the published image never hit this, but an
+  operator who builds on a current host and copies the binaries in, and CI's
+  Ubuntu 24.04 runner, did.
+- **Support window.** Debian 12 left regular security support in June 2026 and
+  continues only under LTS until June 2028. Debian 13 is supported until
+  August 2028, then under LTS until June 2030.
+- **Alternatives rejected.** Dropping aws-lc for a ring-only provider would give
+  up aws-lc's FIPS-capable build for a constraint a newer base removes,
+  and keeping both bases left a build argument that only CI passed.
+
+The base keeps the properties the layout relies on: no shell, no `perl-base`, the
+system CA bundle, and the built-in `nonroot` user (uid 65532). Bump the digest by hand.
 
 ## Published images
 

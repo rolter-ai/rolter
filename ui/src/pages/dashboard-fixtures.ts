@@ -13,13 +13,32 @@ export const SUMMARY = {
   tokens: 1_284_000,
   prompt_tokens: 900_000,
   completion_tokens: 384_000,
+  // 40% of the prompt tokens were read from a provider's prompt cache
+  cache_read_tokens: 360_000,
   cost_usd: 41.27,
   unpriced_requests: 0,
   unpriced_models: 0,
+  withheld_requests: 0,
+  withheld_cost: 0,
+  usage_unknown_requests: 0,
+  // a quarter of the requests were answered from a cache
+  cache_hit_requests: 33,
   errors: 7,
   avg_latency_ms: 214.6,
   p50_latency_ms: 210,
   p95_latency_ms: 980,
+};
+
+/**
+ * `GET /api/v1/cluster/summary` for a fleet of three live gateways, all on the
+ * control plane's config: the roll-up the header pill and the dashboard's fleet
+ * tile both read (#3263).
+ */
+export const CLUSTER_SUMMARY = {
+  inventory: true,
+  gateways: { live: 3, stale: 0, lagging: 0 },
+  config_version: 412,
+  checked_at: "2026-10-05T09:14:02.511Z",
 };
 
 const HOURLY_REQUESTS = [14, 18, 21, 24, 26, 29];

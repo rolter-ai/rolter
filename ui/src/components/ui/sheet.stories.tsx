@@ -1,6 +1,6 @@
 import type { Meta, StoryObj } from "@storybook/react";
 import * as React from "react";
-import { expect, userEvent, within } from "storybook/test";
+import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import { Button } from "./button";
 import { Field } from "./field";
@@ -25,7 +25,7 @@ const meta = {
 export default meta;
 type Story = StoryObj<typeof meta>;
 
-function Editor() {
+function Editor({ info }: { info?: string }) {
   const [open, setOpen] = React.useState(false);
   return (
     <div>
@@ -33,7 +33,7 @@ function Editor() {
       <Sheet open={open} onOpenChange={setOpen}>
         <SheetHeader title="Edit route" subtitle="gpt-4o" onClose={() => setOpen(false)} />
         <SheetBody>
-          <Field label="Model name" htmlFor="model">
+          <Field label="Model name" htmlFor="model" info={info}>
             <Input id="model" defaultValue="gpt-4o" />
           </Field>
           <Field label="Strategy" htmlFor="strategy">
@@ -278,5 +278,42 @@ export const UnbrokenDescriptionStaysInThePanel: Story = {
     await expectNotTruncated(description);
     await expectInViewport(description);
     await expect(dialog.scrollWidth).toBeLessThanOrEqual(dialog.clientWidth);
+  },
+};
+
+// a floating note is `position: fixed`, which a transformed ancestor turns into
+// "placed against the ancestor": opened in the sheet's first quarter second it
+// landed against the sliding sheet and stayed there once the slide ended
+// (#3286). it is placed again, so it sits beside its (i) before and after
+export const NoteOpenedWhileTheSheetSlidesInSitsBesideItsAnchor: Story = {
+  render: () => <Editor info="The model clients ask for." />,
+  play: async ({ canvasElement }) => {
+    await userEvent.click(within(canvasElement).getByRole("button", { name: "Edit route" }));
+    const sheet = within(document.body);
+    const anchor = await sheet.findByRole("button", { name: "About Model name" });
+    // hold the slide at its first frame, so the hover is certain to land inside
+    // it and not by luck of timing: the sheet is mostly off screen and the note
+    // is clamped to the window
+    const slide = document
+      .getAnimations()
+      .find((a) => a instanceof CSSAnimation && a.animationName === "rl-sheet-in");
+    await expect(slide).toBeDefined();
+    slide!.pause();
+    slide!.currentTime = 0;
+    await userEvent.hover(anchor);
+    const note = await sheet.findByRole("tooltip");
+    const besideAnchor = async () => {
+      const a = anchor.getBoundingClientRect();
+      const n = note.getBoundingClientRect();
+      await expect(Math.abs((n.left + n.right) / 2 - (a.left + a.right) / 2)).toBeLessThan(2);
+      const gap = n.top >= a.bottom ? n.top - a.bottom : a.top - n.bottom;
+      await expect(gap).toBeGreaterThanOrEqual(0);
+      await expect(gap).toBeLessThan(16);
+    };
+    slide!.play();
+    await animationsSettled();
+    // placed again on the slide's `animationend`, a frame after it finishes
+    await waitFor(besideAnchor);
+    await expect(note.getBoundingClientRect().right).toBeLessThanOrEqual(window.innerWidth);
   },
 };

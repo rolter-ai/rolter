@@ -20,38 +20,50 @@ import { AnalyticsUnavailable } from "@/components/AnalyticsUnavailable";
 import { FilterCheckList, FilterPanel, FilterSection } from "@/components/ui/filter-panel";
 import { RowFilterSections, useRowFilterData } from "@/components/RowFilters";
 import { LoadError } from "@/components/LoadError";
+import { ErasePayloadAction } from "@/components/LogErasure";
 import { SampledLogNotice } from "@/components/SampledLogNotice";
 import { SavedViews } from "@/components/SavedViews";
+import { TimeWindowPicker } from "@/components/TimeWindowPicker";
 import { ListSkeleton } from "@/components/LoadingState";
 import { Badge, HttpStatusBadge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { ExportCsvButton } from "@/components/ExportCsvButton";
 import { CodeBlock } from "@/components/ui/code-block";
 import { Combobox } from "@/components/ui/combobox";
 import { CopyableText } from "@/components/ui/copyable-value";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Input } from "@/components/ui/input";
 import { Segmented } from "@/components/ui/segmented";
+import { Table, type TableColumn } from "@/components/ui/table";
 import { Sheet, SheetBody, SheetHeader } from "@/components/ui/sheet";
 import {
   AnalyticsUnavailableError,
+  invocationsExport,
   fetchInvocationsPage,
   fetchLoggingSettings,
   fetchVirtualKeys,
+  REQUEST_OUTCOMES,
   type InvocationRow,
+  type RequestOutcome,
   type SavedViewFilters,
 } from "@/lib/api";
 import type { CodeLanguage } from "@/lib/code";
 import { useCan } from "@/lib/can";
-import { useCurrencyCode } from "@/lib/currency";
+import { dispositionLabel, parseAdjustment } from "@/lib/param-adjustments";
+import { useBaseCurrency, useCurrencyCode } from "@/lib/currency";
+import { exportFileName } from "@/lib/export-file-name";
 import { useFormat } from "@/lib/i18n/format";
 import { parseLogLookup, type LogLookup } from "@/lib/log-lookup";
 import { useModalA11y } from "@/lib/modal-a11y";
 import {
   DEFAULT_TIME_WINDOW,
-  readTimeWindow,
-  useTimeWindowOptions,
+  readWindowSelection,
+  windowAddress,
   windowBounds,
-  type TimeWindow,
+  windowFilters,
+  windowFromFilters,
+  type WindowSelection,
+  useWindowQueryKey,
 } from "@/lib/time-window";
 import { useDrawerA11y } from "@/lib/use-drawer-a11y";
 import { BELOW_MD, BELOW_XL, useMediaQuery } from "@/lib/use-media-query";
@@ -171,16 +183,34 @@ function readStatus(raw: string | null): StatusFilter {
   return raw === "error" || raw === "success" ? raw : "all";
 }
 
+// one outcome the gateway recorded (#3307); anything else reads as no filter,
+// since the control plane would answer it with a 400
+function readOutcome(raw: string | null): RequestOutcome | "" {
+  return REQUEST_OUTCOMES.find((outcome) => outcome === raw) ?? "";
+}
+
+// a row's outcome in words. a name this build has no copy for is printed as
+// the control plane sent it, so an outcome a newer gateway adds is still read
+function outcomeLabel(t: TFunction, outcome: string): string {
+  const known = REQUEST_OUTCOMES.find((name) => name === outcome);
+  return known ? t(`pages.logs.outcomes.${known}`) : outcome;
+}
+
 type FilterParam =
   | "window"
+  | "since"
+  | "until"
   | "status"
   | "model"
   | "key"
   | "business_unit"
   | "customer"
   | "unpriced"
+  | "withheld"
+  | "usage_unknown"
   | "guardrail"
   | "plugin"
+  | "outcome"
   | "request_id"
   | "trace_id";
 
@@ -207,17 +237,22 @@ type FilterParam =
  */
 function useLogFilters() {
   const [params, setParams] = useSearchParams();
-  const timeWindow = readTimeWindow(params.get("window"));
+  // a named window, or a custom range of days (`window=custom&since=…&until=…`, #3407)
+  const timeWindow = readWindowSelection(params);
   const status = readStatus(params.get("status"));
   const keyId = (params.get("key") ?? "").trim();
   const model = params.get("model") ?? "";
   const unitParam = params.get("business_unit") ?? "";
   const customerParam = params.get("customer") ?? "";
   const unpriced = params.get("unpriced") === "true";
+  // the other two states a billed request can be in (#3302), read the same way
+  const withheld = params.get("withheld") === "true";
+  const usageUnknown = params.get("usage_unknown") === "true";
   // one guardrail outcome, as the Guardrail Rules cards link it (#2158)
   const guardrail = (params.get("guardrail") ?? "").trim();
   // one plugin outcome, as the plugin rollup names it (#2243)
   const plugin = (params.get("plugin") ?? "").trim();
+  const outcome = readOutcome(params.get("outcome"));
   const requestId = (params.get("request_id") ?? "").trim();
   const traceId = (params.get("trace_id") ?? "").trim();
   // memoised on the raw value: a fresh array every render would look like a
@@ -257,8 +292,11 @@ function useLogFilters() {
     units,
     customers,
     unpriced,
+    withheld,
+    usageUnknown,
     guardrail,
     plugin,
+    outcome,
     /** the id being looked up, if any */
     lookup,
     /** changes whenever any filter does */
@@ -270,26 +308,38 @@ function useLogFilters() {
       unitParam,
       customerParam,
       unpriced,
+      withheld,
+      usageUnknown,
       guardrail,
       plugin,
+      outcome,
       lookup?.kind,
       lookup?.value,
     ].join("|"),
-    setWindow: (next: TimeWindow) => update({ window: next === DEFAULT_TIME_WINDOW ? "" : next }),
+    // all three parameters in one write, so a named window drops a range's days
+    setWindow: (next: WindowSelection) => update(windowAddress(next)),
     /**
      * Replace every filter a saved view holds with the view's own, and leave
      * the rest of the address alone. A filter the view does not name is
      * cleared: applying it must give the view, not the view plus what was
-     * already picked. A lookup would mask the filters, so it goes too.
+     * already picked, and that includes the Cost checks (unpriced, withheld,
+     * unknown usage), which a view does not hold (#3346), and the guardrail and
+     * plugin outcomes the Guardrails and Plugins screens link here (#3405). A lookup would mask
+     * the filters, so it goes too.
      */
     applyView: (view: SavedViewFilters) =>
       update({
-        window: view.window && view.window !== DEFAULT_TIME_WINDOW ? view.window : "",
+        ...windowAddress(windowFromFilters(view)),
         status: view.status && view.status !== "all" ? view.status : "",
         model: view.model ?? "",
         key: view.key ?? "",
         business_unit: (view.business_unit ?? []).join(","),
         customer: (view.customer ?? []).join(","),
+        unpriced: "",
+        withheld: "",
+        usage_unknown: "",
+        guardrail: "",
+        plugin: "",
         request_id: "",
         trace_id: "",
       }),
@@ -298,9 +348,17 @@ function useLogFilters() {
     setKey: (next: string) => update({ key: next }),
     setUnits: (next: string[]) => update({ business_unit: next.join(",") }),
     setCustomers: (next: string[]) => update({ customer: next.join(",") }),
-    setUnpriced: (next: boolean) => update({ unpriced: next ? "true" : "" }),
+    // the three flags of the Cost section in one write: separate writes in one
+    // click would each start from the address as it was, and the last would win
+    setCostFlags: (picked: string[]) =>
+      update({
+        unpriced: picked.includes("unpriced") ? "true" : "",
+        withheld: picked.includes("withheld") ? "true" : "",
+        usage_unknown: picked.includes("usage_unknown") ? "true" : "",
+      }),
     clearGuardrail: () => update({ guardrail: "" }),
     clearPlugin: () => update({ plugin: "" }),
+    setOutcome: (next: RequestOutcome | "") => update({ outcome: next }),
     clear: () =>
       update({
         status: "",
@@ -309,8 +367,11 @@ function useLogFilters() {
         business_unit: "",
         customer: "",
         unpriced: "",
+        withheld: "",
+        usage_unknown: "",
         guardrail: "",
         plugin: "",
+        outcome: "",
       }),
     setLookup: (next: LogLookup | null) =>
       update({
@@ -326,13 +387,20 @@ function useLogFilters() {
               business_unit: "",
               customer: "",
               unpriced: "",
+              withheld: "",
+              usage_unknown: "",
               guardrail: "",
               plugin: "",
+              outcome: "",
             }
           : {}),
       }),
   };
 }
+
+// the model's name beside the operation badge: it wraps in a wide row and is cut
+// with an ellipsis in a stacked one, so the badge keeps its room either way
+const MODEL_BESIDE_BADGE = "min-w-0 [overflow-wrap:anywhere] @max-[479px]:truncate";
 
 // the columns a reader cannot do without stay at every width: time, model,
 // status and cost, then the way into the drawer. the others give way as the
@@ -341,23 +409,6 @@ function useLogFilters() {
 // sidebar, the filter rail and the detail drawer all take width the window
 // still reports as free, so a table that kept its columns scrolled Cost out of
 // view (#1986). `@container` is on the scroll area below
-const TH =
-  "sticky top-0 z-[1] whitespace-nowrap border-b border-[color:var(--border-default)] bg-[color:var(--surface-subtle)] px-2 py-2.5 text-left text-xs font-medium text-muted-foreground @min-[480px]:px-3";
-const TD =
-  "border-b border-[color:var(--border-subtle)] px-2 py-[9px] font-mono text-xs @min-[480px]:px-3";
-// below 480px the table is the wrong shape for a request, so each row stacks
-// instead: model and status on the first line, time and cost on the second,
-// the chevron beside both (#2446). the table elements stay, so the header and
-// the cells keep their names; the header is only taken out of sight. the
-// model gets what the fixed cells leave and is cut with an ellipsis rather than
-// wrapped, its full name in `title` and in the chevron's accessible name.
-// every class is written out whole: tailwind cannot see one built from parts
-const TR_STACKED =
-  "@max-[479px]:grid @max-[479px]:grid-cols-[minmax(0,1fr)_auto_1.75rem] @max-[479px]:items-center @max-[479px]:gap-x-2 @max-[479px]:border-b @max-[479px]:border-[color:var(--border-subtle)] @max-[479px]:px-3 @max-[479px]:py-2";
-const TD_STACKED = "@max-[479px]:border-b-0 @max-[479px]:p-0";
-// the model's name beside the operation badge: it wraps in a wide row and is cut
-// with an ellipsis in a stacked one, so the badge keeps its room either way
-const MODEL_BESIDE_BADGE = "min-w-0 [overflow-wrap:anywhere] @max-[479px]:truncate";
 const PROVIDER_COL = "hidden @min-[840px]:table-cell";
 const TOKENS_COL = "hidden @min-[720px]:table-cell";
 const LATENCY_COL = "hidden @min-[600px]:table-cell";
@@ -393,6 +444,7 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
   const { t } = useTranslation();
   const fmt = useFormat();
   const currency = useCurrencyCode();
+  const baseCurrency = useBaseCurrency();
   const [filtersOpen, setFiltersOpen] = React.useState(false);
   const filters = useLogFilters();
   const {
@@ -403,11 +455,13 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
     units: unitSel,
     customers: customerSel,
     unpriced,
+    withheld,
+    usageUnknown,
     guardrail,
     plugin,
+    outcome,
     lookup,
   } = filters;
-  const windowOptions = useTimeWindowOptions();
   const lookupKey = lookup ? `${lookup.kind}:${lookup.value}` : "";
   // the cursor each page after the first was opened with, oldest first. a
   // stack rather than a page index: the control plane pages on a keyset, so
@@ -443,19 +497,26 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
   React.useEffect(() => setCursors([]), [filters.key]);
   // the drawer belongs to the lookup it was opened by
   React.useEffect(() => setSelected(null), [lookupKey]);
+  // the window's days are the chart zone's, so a zone change reads it again (#3519)
+  const logWindowKey = useWindowQueryKey(logWindow);
+  // a cursor walks the window it was read over, which a zone change moves
+  React.useEffect(() => setCursors([]), [logWindowKey[1]]);
 
   const query = useQuery({
     queryKey: [
       "invocations",
-      lookup ? "lookup" : logWindow,
+      ...(lookup ? (["lookup", null] as const) : logWindowKey),
       status,
       keyId,
       model,
       unitSel.join(","),
       customerSel.join(","),
       unpriced,
+      withheld,
+      usageUnknown,
       guardrail,
       plugin,
+      outcome,
       cursors[page - 1] ?? "",
       lookupKey,
     ],
@@ -474,8 +535,11 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
         business_unit: unitSel.length ? unitSel : undefined,
         customer: customerSel.length ? customerSel : undefined,
         unpriced: unpriced || undefined,
+        withheld: withheld || undefined,
+        usage_unknown: usageUnknown || undefined,
         guardrail: guardrail || undefined,
         plugin: plugin || undefined,
+        outcome: outcome || undefined,
         status,
         limit: PAGE_SIZE,
         cursor: cursors[page - 1],
@@ -485,7 +549,11 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
     // answers the same question: rows from the feed are not a lookup's rows,
     // and a lookup holds nothing back while it is out
     placeholderData: (prev, prevQuery) =>
-      !lookup && prevQuery?.queryKey[1] === logWindow ? prev : undefined,
+      !lookup &&
+      prevQuery?.queryKey[1] === logWindowKey[0] &&
+      prevQuery?.queryKey[2] === logWindowKey[1]
+        ? prev
+        : undefined,
     // a lookup reads every retained row, so it is asked again on request
     // (Find) rather than on a timer or on every return to the tab
     refetchOnWindowFocus: !lookup,
@@ -571,8 +639,152 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
   // when it was served. re-deriving it from today's model prices re-judges an
   // old row against a price added or removed after the fact (#1226)
   const isUnpriced = (row: InvocationRow) => num(row.unpriced) === 1;
+  // the upstream answered but reported no usage, so zero tokens and zero cost
+  // are unknown, not free; this outranks `unpriced` for the same cells
+  const isUsageUnknown = (row: InvocationRow) => num(row.usage_unknown) === 1;
+  // the provider billed for a response an output guardrail or post_response
+  // plugin refused to deliver; tokens and cost are real, the caller got a 403
+  const isWithheld = (row: InvocationRow) => num(row.withheld) === 1;
   const cost = (row: InvocationRow) =>
-    isUnpriced(row) ? null : fmt.currency(num(row.cost_usd), currency);
+    isUnpriced(row) || isUsageUnknown(row) ? null : fmt.currency(num(row.cost_usd), currency);
+  // the columns a reader cannot do without stay at every width and the others
+  // give way as the table narrows (see the note above `PROVIDER_COL`, which decides each width); below
+  // 480px each row stacks, a column's `stackedClassName` placing its cell in the
+  // grid (#2446)
+  const columns: TableColumn<InvocationRow>[] = [
+    {
+      key: "ts",
+      header: t("pages.logs.time"),
+      colClassName: "w-[104px] @min-[480px]:w-28",
+      // the clock and its milliseconds, which tell rows apart. the day is in
+      // the title and in the drawer's verdict, not repeated on every row of a
+      // 24 hour window
+      cellClassName: "truncate whitespace-nowrap",
+      stackedClassName:
+        "@max-[479px]:col-start-1 @max-[479px]:row-start-2 @max-[479px]:text-[color:var(--text-secondary)]",
+      render: (_, r) => (
+        <time dateTime={r.ts} title={fmt.dateTimeMs(r.ts)}>
+          {fmt.timeMs(r.ts)}
+        </time>
+      ),
+    },
+    {
+      key: "model",
+      header: t("pages.logs.model"),
+      // what is left once the fixed ones have theirs
+      cellClassName: "[overflow-wrap:anywhere]",
+      stackedClassName:
+        "@max-[479px]:col-start-1 @max-[479px]:row-start-1 @max-[479px]:truncate @max-[479px]:whitespace-nowrap @max-[479px]:text-sm",
+      cellProps: (r) => ({ title: r.model }),
+      render: (_, r) => {
+        const lifecycle = lifecycleLabel(t, r);
+        return lifecycle ? (
+          <span className="flex min-w-0 items-baseline gap-1.5">
+            {r.model && <span className={MODEL_BESIDE_BADGE}>{r.model}</span>}
+            <LifecycleBadge label={lifecycle} />
+          </span>
+        ) : (
+          r.model
+        );
+      },
+    },
+    {
+      key: "provider",
+      header: t("common.provider"),
+      colClassName: "hidden w-[148px] @min-[840px]:table-column",
+      className: PROVIDER_COL,
+      cellClassName: "truncate whitespace-nowrap text-[color:var(--text-secondary)]",
+      render: (_, r) => r.provider || "—",
+    },
+    {
+      key: "status",
+      header: t("pages.logs.status"),
+      // wide enough from 600px for the upstream's status beside the caller's;
+      // narrower, it wraps under the badge
+      colClassName: "w-[58px] @min-[480px]:w-[68px] @min-[600px]:w-[104px]",
+      stackedClassName:
+        "@max-[479px]:col-start-2 @max-[479px]:row-start-1 @max-[479px]:justify-self-end",
+      render: (_, r) => {
+        const st = num(r.status);
+        return (
+          <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1">
+            <HttpStatusBadge status={st} className="font-mono">
+              {st ? undefined : "ERR"}
+            </HttpStatusBadge>
+            {isWithheld(r) && <Withheld titled />}
+            <UpstreamHint row={r} />
+          </div>
+        );
+      },
+    },
+    {
+      key: "latency",
+      header: t("pages.logs.latency"),
+      align: "right",
+      colClassName: "hidden w-24 @min-[600px]:table-column",
+      className: LATENCY_COL,
+      cellClassName: "text-[color:var(--text-secondary)]",
+      render: (_, r) => t("analytics.ms", { value: fmt.number(Math.round(num(r.latency_ms))) }),
+    },
+    {
+      key: "tokens",
+      header: t("pages.logs.tokens"),
+      align: "right",
+      colClassName: "hidden w-[88px] @min-[720px]:table-column",
+      className: TOKENS_COL,
+      cellClassName: "text-[color:var(--text-secondary)]",
+      render: (_, r) =>
+        isUsageUnknown(r) ? (
+          <span title={t("analytics.usageUnknownHint")}>
+            <Absent />
+          </span>
+        ) : (
+          fmt.number(num(r.total_tokens))
+        ),
+    },
+    {
+      key: "cost",
+      header: t("pages.logs.cost"),
+      align: "right",
+      colClassName: "w-[84px] @min-[480px]:w-24",
+      cellClassName: "whitespace-nowrap text-[color:var(--text-secondary)]",
+      stackedClassName: "@max-[479px]:col-start-2 @max-[479px]:row-start-2",
+      render: (_, r) =>
+        cost(r) ??
+        (isUsageUnknown(r) ? (
+          <span title={t("analytics.usageUnknownHint")}>
+            <Absent />
+          </span>
+        ) : (
+          <Unpriced titled />
+        )),
+    },
+    {
+      key: "details",
+      header: <span className="sr-only">{t("analytics.details")}</span>,
+      align: "right",
+      colClassName: "w-7 @min-[480px]:w-9",
+      cellClassName: "pl-0 pr-2 @min-[480px]:pl-0 @min-[480px]:pr-2.5",
+      stackedClassName:
+        "@max-[479px]:col-start-3 @max-[479px]:row-span-2 @max-[479px]:row-start-1 @max-[479px]:justify-self-end",
+      // the row's click target is a mouse convenience; this button is the
+      // keyboard's and the screen reader's way into the same drawer
+      render: (_, r) => (
+        <button
+          type="button"
+          aria-label={t("analytics.openDetails", { model: rowName(t, r) })}
+          onClick={(e) => {
+            e.stopPropagation();
+            setSelected(r);
+          }}
+          className="-my-[5px] -mr-[5px] ml-auto flex rounded-sm p-[5px] text-[color:var(--text-subtle)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+        >
+          <ChevronRight className="h-[15px] w-[15px]" />
+        </button>
+      ),
+    },
+  ];
+
   const filterCount =
     (status === "all" ? 0 : 1) +
     (model ? 1 : 0) +
@@ -580,13 +792,16 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
     unitSel.length +
     customerSel.length +
     (unpriced ? 1 : 0) +
+    (withheld ? 1 : 0) +
+    (usageUnknown ? 1 : 0) +
     (guardrail ? 1 : 0) +
-    (plugin ? 1 : 0);
+    (plugin ? 1 : 0) +
+    (outcome ? 1 : 0);
   // what a saved view keeps of the screen: the lookup, the page and the
   // unpriced flag are not filters it holds, and an `all` status or an empty
   // value is left out rather than saved as a filter that filters nothing
   const savedFilters: SavedViewFilters = {
-    window: logWindow,
+    ...windowFilters(logWindow),
     ...(status !== "all" ? { status } : {}),
     ...(model ? { model } : {}),
     ...(keyId ? { key: keyId } : {}),
@@ -673,6 +888,10 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
         {selectedLifecycle && (
           <DetailRow label={t("pages.logs.detail.lifecycle.label")}>{selectedLifecycle}</DetailRow>
         )}
+        {/* absent from a control plane that predates the column (#3307) */}
+        {selected.outcome && (
+          <DetailRow label={t("pages.logs.outcome")}>{outcomeLabel(t, selected.outcome)}</DetailRow>
+        )}
         <DetailRow label={t("pages.logs.detail.providerTarget")} mono>
           {selected.provider || selected.target ? (
             t("pages.logs.detail.providerToTarget", {
@@ -686,6 +905,33 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
         <DetailRow label={t("pages.logs.detail.variant")} mono>
           {selected.variant || <Absent />}
         </DetailRow>
+        {/* why a fallback target answered: the failure class the request
+            was walked away from. a request the first dial answered says
+            nothing here (#1584, #3319) */}
+        {selected.fallback_reason && (
+          <DetailRow label={t("pages.logs.detail.fallbackReason")} mono>
+            {selected.fallback_reason}
+          </DetailRow>
+        )}
+        {/* what dialect translation did to the caller's parameters (#3323):
+            only a translated request that lost or changed one has the row */}
+        {(selected.param_adjustments?.length ?? 0) > 0 && (
+          <DetailRow label={t("pages.logs.detail.paramAdjustments")}>
+            <ul className="flex flex-col gap-1">
+              {selected.param_adjustments?.map((entry) => {
+                const { disposition, param } = parseAdjustment(entry);
+                return (
+                  <li key={entry}>
+                    {t("pages.logs.detail.paramAdjustment", {
+                      param,
+                      disposition: dispositionLabel(t, disposition),
+                    })}
+                  </li>
+                );
+              })}
+            </ul>
+          </DetailRow>
+        )}
         {/* rolter's own response cache: a hit never reached the upstream. the
             provider's prompt cache is a token count, under usage */}
         <DetailRow label={t("pages.logs.detail.responseCache")}>
@@ -707,10 +953,19 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
       </DetailSection>
       <DetailSection title={t("pages.logs.detail.usage")}>
         <DetailRow label={t("pages.logs.tokens")} mono>
-          {t("pages.logs.tokensInOut", {
-            in: fmt.number(num(selected.prompt_tokens)),
-            out: fmt.number(num(selected.completion_tokens)),
-          })}
+          {isUsageUnknown(selected) ? (
+            <span className="flex flex-col items-start gap-1.5">
+              <Absent />
+              <span className="font-sans text-xs text-muted-foreground">
+                {t("analytics.usageUnknownHint")}
+              </span>
+            </span>
+          ) : (
+            t("pages.logs.tokensInOut", {
+              in: fmt.number(num(selected.prompt_tokens)),
+              out: fmt.number(num(selected.completion_tokens)),
+            })
+          )}
         </DetailRow>
         <DetailRow label={t("pages.logs.detail.promptCache")} mono>
           {t("pages.logs.detail.promptCacheTokens", {
@@ -731,17 +986,35 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
           </DetailRow>
         )}
         <DetailRow label={t("pages.logs.cost")} mono>
-          {cost(selected) ?? (
-            // room enough here to say it, so the explanation is text on the
-            // screen and not a tooltip a keyboard or a touch never reaches
+          {cost(selected) ??
+            (isUsageUnknown(selected) ? (
+              <span className="flex flex-col items-start gap-1.5">
+                <Absent />
+                <span className="font-sans text-xs text-muted-foreground">
+                  {t("analytics.usageUnknownHint")}
+                </span>
+              </span>
+            ) : (
+              // room enough here to say it, so the explanation is text on the
+              // screen and not a tooltip a keyboard or a touch never reaches
+              <span className="flex flex-col items-start gap-1.5">
+                <Unpriced />
+                <span className="font-sans text-xs text-muted-foreground">
+                  {t("analytics.unpricedHint")}
+                </span>
+              </span>
+            ))}
+        </DetailRow>
+        {isWithheld(selected) && (
+          <DetailRow label={t("pages.logs.detail.delivery")}>
             <span className="flex flex-col items-start gap-1.5">
-              <Unpriced />
+              <Withheld />
               <span className="font-sans text-xs text-muted-foreground">
-                {t("analytics.unpricedHint")}
+                {t("analytics.withheldHint")}
               </span>
             </span>
-          )}
-        </DetailRow>
+          </DetailRow>
+        )}
       </DetailSection>
       <DetailSection title={t("pages.logs.detail.attribution")}>
         <DetailRow label={t("pages.logs.virtualKey")}>
@@ -757,6 +1030,7 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
         </DetailRow>
       </DetailSection>
       <Payloads row={selected} />
+      <ErasePayloadAction row={selected} />
     </div>
   );
 
@@ -820,11 +1094,26 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
                 defaultOpen
                 count={logWindow === DEFAULT_TIME_WINDOW ? 0 : 1}
               >
-                <Combobox
+                <TimeWindowPicker
                   aria-label={t("pages.logs.window")}
-                  options={windowOptions}
                   value={logWindow}
-                  onChange={(next) => filters.setWindow(readTimeWindow(next))}
+                  onChange={filters.setWindow}
+                />
+              </FilterSection>
+              {/* what the gateway recorded happened to each request (#3307),
+                so a refusal is picked by its reason rather than inferred */}
+              <FilterSection title={t("pages.logs.outcome")} defaultOpen count={outcome ? 1 : 0}>
+                <Combobox
+                  aria-label={t("pages.logs.outcome")}
+                  options={[
+                    { value: "", label: t("pages.logs.outcomeAny") },
+                    ...REQUEST_OUTCOMES.map((name) => ({
+                      value: name,
+                      label: outcomeLabel(t, name),
+                    })),
+                  ]}
+                  value={outcome}
+                  onChange={(next) => filters.setOutcome(readOutcome(next))}
                 />
               </FilterSection>
               <RowFilterSections
@@ -834,11 +1123,23 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
               />
               {/* the flag the gateway recorded per request, applied by the server
                 before the page is cut like every other filter here (#1986) */}
-              <FilterSection title={t("pages.logs.cost")} defaultOpen count={unpriced ? 1 : 0}>
+              <FilterSection
+                title={t("pages.logs.cost")}
+                defaultOpen
+                count={(unpriced ? 1 : 0) + (withheld ? 1 : 0) + (usageUnknown ? 1 : 0)}
+              >
                 <FilterCheckList
-                  options={[{ value: "unpriced", label: t("pages.logs.unpricedOnly") }]}
-                  selected={unpriced ? ["unpriced"] : []}
-                  onChange={(picked) => filters.setUnpriced(picked.includes("unpriced"))}
+                  options={[
+                    { value: "unpriced", label: t("pages.logs.unpricedOnly") },
+                    { value: "withheld", label: t("pages.logs.withheldOnly") },
+                    { value: "usage_unknown", label: t("pages.logs.usageUnknownOnly") },
+                  ]}
+                  selected={[
+                    ...(unpriced ? ["unpriced"] : []),
+                    ...(withheld ? ["withheld"] : []),
+                    ...(usageUnknown ? ["usage_unknown"] : []),
+                  ]}
+                  onChange={filters.setCostFlags}
                 />
               </FilterSection>
               {/* arrives from a Guardrail Rules card, and is the only way to drop it */}
@@ -891,6 +1192,40 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
             {feed.label}
           </span>
           <div className="ml-auto flex flex-wrap items-center gap-2">
+            {/* the whole filtered log as a file, read by the control plane rather
+                than by paging here; a lookup is one request, not a report */}
+            {!lookup && (
+              <ExportCsvButton
+                what={t("errors.resources.requestLogExport")}
+                // the name the server gives, so the save dialog suggests it
+                // before the request leaves (#3498). until the base currency
+                // is known the name would be a guess, so the plain one stands
+                fallbackName={() =>
+                  baseCurrency
+                    ? exportFileName("request-log", windowBounds(logWindow), baseCurrency)
+                    : "request-log.csv"
+                }
+                toDisk
+                request={() =>
+                  invocationsExport({
+                    ...windowBounds(logWindow),
+                    model: model || undefined,
+                    key: keyId || undefined,
+                    business_unit: unitSel.length ? unitSel : undefined,
+                    customer: customerSel.length ? customerSel : undefined,
+                    unpriced: unpriced || undefined,
+                    // the whole rail travels, so a filtered view never
+                    // exports unfiltered (#3386)
+                    withheld: withheld || undefined,
+                    usage_unknown: usageUnknown || undefined,
+                    guardrail: guardrail || undefined,
+                    plugin: plugin || undefined,
+                    outcome: outcome || undefined,
+                    status,
+                  })
+                }
+              />
+            )}
             {/* a lookup does not stream, so there is nothing to pause */}
             {!lookup && (
               <Button size="sm" variant="outline" onClick={() => setStreaming((v) => !v)}>
@@ -973,179 +1308,34 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
         </form>
 
         <div className="@container relative min-h-0 flex-1 overflow-auto">
-          <table className="w-full min-w-[320px] table-fixed border-collapse text-sm @max-[479px]:block">
-            <colgroup>
-              <col className="w-[104px] @min-[480px]:w-28" />
-              {/* what is left once the fixed ones have theirs */}
-              <col />
-              <col className="hidden w-[148px] @min-[840px]:table-column" />
-              {/* wide enough from 600px for the upstream's status beside the
-                  caller's; narrower, it wraps under the badge */}
-              <col className="w-[58px] @min-[480px]:w-[68px] @min-[600px]:w-[104px]" />
-              <col className="hidden w-24 @min-[600px]:table-column" />
-              <col className="hidden w-[88px] @min-[720px]:table-column" />
-              <col className="w-[84px] @min-[480px]:w-24" />
-              <col className="w-7 @min-[480px]:w-9" />
-            </colgroup>
-            <thead className="@max-[479px]:sr-only">
-              <tr>
-                <th scope="col" className={TH}>
-                  {t("pages.logs.time")}
-                </th>
-                <th scope="col" className={TH}>
-                  {t("pages.logs.model")}
-                </th>
-                <th scope="col" className={cn(TH, PROVIDER_COL)}>
-                  {t("common.provider")}
-                </th>
-                <th scope="col" className={TH}>
-                  {t("pages.logs.status")}
-                </th>
-                <th scope="col" className={cn(TH, LATENCY_COL, "text-right")}>
-                  {t("pages.logs.latency")}
-                </th>
-                <th scope="col" className={cn(TH, TOKENS_COL, "text-right")}>
-                  {t("pages.logs.tokens")}
-                </th>
-                <th scope="col" className={cn(TH, "text-right")}>
-                  {t("pages.logs.cost")}
-                </th>
-                <th scope="col" className={TH}>
-                  <span className="sr-only">{t("analytics.details")}</span>
-                </th>
-              </tr>
-            </thead>
-            <tbody className="@max-[479px]:block">
-              {rows.map((r) => {
-                const st = num(r.status);
-                // the drawer beside the table has no other tie back to the
-                // row it describes, so the open row says so, to the eye and
-                // to a screen reader (#1983)
-                const isOpen = selected != null && rowKey(selected) === rowKey(r);
-                const lifecycle = lifecycleLabel(t, r);
-                return (
-                  <tr
-                    key={rowKey(r)}
-                    aria-selected={isOpen}
-                    onClick={() => setSelected(r)}
-                    className={cn(
-                      "cursor-pointer transition-colors",
-                      TR_STACKED,
-                      isOpen
-                        ? "bg-[color:var(--surface-selected)]"
-                        : "hover:bg-[color:var(--surface-hover)]",
-                    )}
-                  >
-                    {/* the clock and its milliseconds, which tell rows apart.
-                        the day is in the title and in the drawer's verdict,
-                        not repeated on every row of a 24 hour window */}
-                    <td
-                      className={cn(
-                        TD,
-                        TD_STACKED,
-                        "truncate whitespace-nowrap @max-[479px]:col-start-1 @max-[479px]:row-start-2 @max-[479px]:text-[color:var(--text-secondary)]",
-                      )}
-                    >
-                      <time dateTime={r.ts} title={fmt.dateTimeMs(r.ts)}>
-                        {fmt.timeMs(r.ts)}
-                      </time>
-                    </td>
-                    <td
-                      title={r.model}
-                      className={cn(
-                        TD,
-                        TD_STACKED,
-                        "[overflow-wrap:anywhere] @max-[479px]:col-start-1 @max-[479px]:row-start-1 @max-[479px]:truncate @max-[479px]:whitespace-nowrap @max-[479px]:text-sm",
-                      )}
-                    >
-                      {lifecycle ? (
-                        <span className="flex min-w-0 items-baseline gap-1.5">
-                          {r.model && <span className={MODEL_BESIDE_BADGE}>{r.model}</span>}
-                          <LifecycleBadge label={lifecycle} />
-                        </span>
-                      ) : (
-                        r.model
-                      )}
-                    </td>
-                    <td
-                      className={cn(
-                        TD,
-                        PROVIDER_COL,
-                        "truncate whitespace-nowrap text-[color:var(--text-secondary)]",
-                      )}
-                    >
-                      {r.provider || "—"}
-                    </td>
-                    <td
-                      className={cn(
-                        TD,
-                        TD_STACKED,
-                        "@max-[479px]:col-start-2 @max-[479px]:row-start-1 @max-[479px]:justify-self-end",
-                      )}
-                    >
-                      <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1">
-                        <HttpStatusBadge status={st} className="font-mono">
-                          {st ? undefined : "ERR"}
-                        </HttpStatusBadge>
-                        <UpstreamHint row={r} />
-                      </div>
-                    </td>
-                    <td
-                      className={cn(
-                        TD,
-                        LATENCY_COL,
-                        "text-right text-[color:var(--text-secondary)]",
-                      )}
-                    >
-                      {t("analytics.ms", { value: fmt.number(Math.round(num(r.latency_ms))) })}
-                    </td>
-                    <td
-                      className={cn(
-                        TD,
-                        TOKENS_COL,
-                        "text-right text-[color:var(--text-secondary)]",
-                      )}
-                    >
-                      {fmt.number(num(r.total_tokens))}
-                    </td>
-                    <td
-                      className={cn(
-                        TD,
-                        TD_STACKED,
-                        "@max-[479px]:col-start-2 @max-[479px]:row-start-2",
-                        "whitespace-nowrap text-right text-[color:var(--text-secondary)]",
-                      )}
-                    >
-                      {cost(r) ?? <Unpriced titled />}
-                    </td>
-                    <td
-                      className={cn(
-                        TD,
-                        TD_STACKED,
-                        "@max-[479px]:col-start-3 @max-[479px]:row-span-2 @max-[479px]:row-start-1 @max-[479px]:justify-self-end",
-                        "pl-0 pr-2 @min-[480px]:pl-0 @min-[480px]:pr-2.5 text-right",
-                      )}
-                    >
-                      {/* the row's click target is a mouse convenience; this
-                          button is the keyboard's and the screen reader's way
-                          into the same drawer */}
-                      <button
-                        type="button"
-                        aria-label={t("analytics.openDetails", { model: rowName(t, r) })}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setSelected(r);
-                        }}
-                        className="-my-[5px] -mr-[5px] ml-auto flex rounded-sm p-[5px] text-[color:var(--text-subtle)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                      >
-                        <ChevronRight className="h-[15px] w-[15px]" />
-                      </button>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+          <Table
+            bare
+            compact
+            stickyHeader
+            stacked
+            hover={false}
+            caption={t("screens.logs.title")}
+            columns={columns}
+            data={rows}
+            rowKey={rowKey}
+            tableClassName="min-w-[320px] table-fixed"
+            rowProps={(r) => {
+              // the drawer beside the table has no other tie back to the
+              // row it describes, so the open row says so, to the eye and
+              // to a screen reader (#1983)
+              const isOpen = selected != null && rowKey(selected) === rowKey(r);
+              return {
+                "aria-selected": isOpen,
+                onClick: () => setSelected(r),
+                className: cn(
+                  "cursor-pointer",
+                  isOpen
+                    ? "bg-[color:var(--surface-selected)]"
+                    : "hover:bg-[color:var(--surface-hover)]",
+                ),
+              };
+            }}
+          />
           {query.error && (
             <div className="p-4">
               <LoadError
@@ -1638,6 +1828,20 @@ function Unpriced({ titled = false }: { titled?: boolean }) {
       title={titled ? t("analytics.unpricedHint") : undefined}
     >
       {t("analytics.unpriced")}
+    </Badge>
+  );
+}
+
+/**
+ * The mark on a request the provider billed but the gateway refused to deliver:
+ * an output guardrail or post_response plugin turned it into a 403. The policy
+ * is in the row's error; the cost beside it is real.
+ */
+function Withheld({ titled = false }: { titled?: boolean }) {
+  const { t } = useTranslation();
+  return (
+    <Badge tone="warning" title={titled ? t("analytics.withheldHint") : undefined}>
+      {t("analytics.withheld")}
     </Badge>
   );
 }

@@ -33,7 +33,6 @@ import {
   deleteAccessProfile,
   deleteAccessProfileAssignment,
   fetchUsers,
-  fetchAccessProfile,
   fetchAccessProfiles,
   fetchCustomRoles,
   updateAccessProfile,
@@ -52,13 +51,12 @@ import { useScreenReady } from "@/lib/ux-react";
 
 /// One profile card, with everything the profile actually carries.
 ///
-/// `GET /api/v1/access-profiles/{id}` answers roles, assignments and policy in
-/// one call, which is why the card reads it instead of the three separate lists
-/// (#1184): the policy in particular has no list endpoint at all, so a profile's
-/// model rules could be written through `setAccessProfilePolicy` and never shown
-/// back. Fetched per profile because the API scopes it that way; a deployment
-/// has few profiles, so this stays a handful of requests rather than a fan-out
-/// worth batching.
+/// The roles, assignments and policy arrive with the list itself, through the
+/// single `?include=roles,assignments,policy` read (#3301, #1996), so the screen
+/// asks once however many profiles the org has. The card used to read
+/// `GET /api/v1/access-profiles/{id}` for each profile (#1184), one request per
+/// card: the policy has no list endpoint of its own, and `include` is how the
+/// list embeds it.
 function ProfileCard({
   profile,
   roleCatalog,
@@ -69,12 +67,12 @@ function ProfileCard({
   deleting,
   unassigning,
 }: {
-  profile: AccessProfileRow;
+  profile: AccessProfileDetail;
   /** the org's custom roles, so a composition can be named rather than shown as an id */
   roleCatalog: CustomRoleRow[];
   onEdit: (detail: AccessProfileDetail) => void;
-  /** the reach is what the confirmation names; null while the detail is not known */
-  onDelete: (profile: AccessProfileRow, reach: { users: number; teams: number } | null) => void;
+  /** the reach is what the confirmation names */
+  onDelete: (profile: AccessProfileRow, reach: { users: number; teams: number }) => void;
   onAssign: (profile: AccessProfileRow, assigned: AccessProfileAssignmentRow[]) => void;
   onUnassign: (
     profile: AccessProfileRow,
@@ -86,11 +84,6 @@ function ProfileCard({
   unassigning: string | null;
 }) {
   const { t } = useTranslation();
-  const detail = useQuery({
-    queryKey: ["access-profile", profile.id],
-    queryFn: () => fetchAccessProfile(profile.id),
-    retry: false,
-  });
   // shares react-query's cache with the sheet's picker, so a screen full of
   // cards pays for one teams request and one projects request
   const orgScope = useOrgScope(profile.org_id);
@@ -113,12 +106,12 @@ function ProfileCard({
   // only the compositions that are *narrower* than the profile's org: an
   // org-wide one is what the count already says, and repeating it for every
   // role would bury the one that is pinned to a single project
-  const narrow = (detail.data?.roles ?? []).filter((role) => role.team_id || role.project_id);
+  const narrow = profile.roles.filter((role) => role.team_id || role.project_id);
 
-  const users = detail.data?.assignments.filter((a) => a.user_id).length ?? 0;
-  const teams = detail.data?.assignments.filter((a) => a.team_id).length ?? 0;
-  const roles = detail.data?.roles.length ?? 0;
-  const policy = detail.data?.policy;
+  const users = profile.assignments.filter((a) => a.user_id).length;
+  const teams = profile.assignments.filter((a) => a.team_id).length;
+  const roles = profile.roles.length;
+  const policy = profile.policy;
   const rules = policy
     ? policy.allowed_models.length +
       policy.denied_models.length +
@@ -142,26 +135,20 @@ function ProfileCard({
           )}
           <div className="mt-2 flex items-center gap-1.5 text-sm text-muted-foreground">
             <Users className="size-3.5" />
-            {detail.isLoading ? (
-              <span>{t("common.loading")}</span>
-            ) : detail.isError ? (
-              <span>{t("pages.accessProfiles.detailUnavailable")}</span>
-            ) : (
-              // a profile that reaches nobody grants nothing, which is worth
-              // saying plainly rather than showing as "0 users, 0 teams"
-              <span>
-                {users === 0 && teams === 0
-                  ? t("pages.accessProfiles.unassigned")
-                  : `${t("pages.accessProfiles.userCount", { count: users })} · ${t("pages.accessProfiles.teamCount", { count: teams })}`}
-              </span>
-            )}
+            {/* a profile that reaches nobody grants nothing, which is worth
+                saying plainly rather than showing as "0 users, 0 teams" */}
+            <span>
+              {users === 0 && teams === 0
+                ? t("pages.accessProfiles.unassigned")
+                : `${t("pages.accessProfiles.userCount", { count: users })} · ${t("pages.accessProfiles.teamCount", { count: teams })}`}
+            </span>
           </div>
-          {detail.data && detail.data.assignments.length > 0 && (
+          {profile.assignments.length > 0 && (
             <ul
               aria-label={t("pages.accessProfiles.reachLabel", { name: profile.name })}
               className="mt-2 space-y-1"
             >
-              {detail.data.assignments.map((a) => {
+              {profile.assignments.map((a) => {
                 const name = subjectName(a);
                 return (
                   <li key={a.id} className="flex items-center gap-2 text-sm">
@@ -193,17 +180,15 @@ function ProfileCard({
               })}
             </ul>
           )}
-          {detail.data && (
-            <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
-              <span>{t("pages.accessProfiles.roleCount", { count: roles })}</span>
-              <span aria-hidden>·</span>
-              <span>
-                {rules === 0
-                  ? t("pages.accessProfiles.policyNone")
-                  : t("pages.accessProfiles.policyCount", { count: rules })}
-              </span>
-            </div>
-          )}
+          <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
+            <span>{t("pages.accessProfiles.roleCount", { count: roles })}</span>
+            <span aria-hidden>·</span>
+            <span>
+              {rules === 0
+                ? t("pages.accessProfiles.policyNone")
+                : t("pages.accessProfiles.policyCount", { count: rules })}
+            </span>
+          </div>
           {narrow.length > 0 && (
             <div className="mt-1.5 flex flex-wrap items-center gap-1">
               {narrow.map((role) => (
@@ -231,8 +216,7 @@ function ProfileCard({
             size="icon"
             title={t("pages.accessProfiles.assign.open", { name: profile.name })}
             aria-label={t("pages.accessProfiles.assign.open", { name: profile.name })}
-            disabled={!detail.data}
-            onClick={() => detail.data && onAssign(profile, detail.data.assignments)}
+            onClick={() => onAssign(profile, profile.assignments)}
           >
             <UserPlus className="size-4" />
           </GatedButton>
@@ -243,8 +227,7 @@ function ProfileCard({
             size="icon"
             title={t("pages.accessProfiles.editProfile", { name: profile.name })}
             aria-label={t("pages.accessProfiles.editProfile", { name: profile.name })}
-            disabled={!detail.data}
-            onClick={() => detail.data && onEdit(detail.data)}
+            onClick={() => onEdit(profile)}
           >
             <Pencil className="size-4" />
           </GatedButton>
@@ -253,7 +236,7 @@ function ProfileCard({
             control="access-profile-delete"
             label={t("pages.accessProfiles.deleteProfile", { name: profile.name })}
             pending={deleting}
-            onClick={() => onDelete(profile, detail.data ? { users, teams } : null)}
+            onClick={() => onDelete(profile, { users, teams })}
           />
         </div>
       </div>
@@ -348,8 +331,11 @@ export default function AccessProfiles() {
   const orgId = scope.orgId as string | undefined;
 
   const profiles = useQuery({
-    queryKey: ["access-profiles", orgId],
-    queryFn: () => fetchAccessProfiles(orgId as string),
+    // the one read that carries every profile's roles, assignments and policy
+    // (#3301). the key stays under `["access-profiles", orgId]`, which every
+    // invalidation of the screen's lists names
+    queryKey: ["access-profiles", orgId, "detail"],
+    queryFn: () => fetchAccessProfiles(orgId as string, ["roles", "assignments", "policy"]),
     enabled: !!orgId,
   });
 
@@ -364,9 +350,8 @@ export default function AccessProfiles() {
 
   useScreenReady(!profiles.isLoading);
 
-  const invalidate = (id?: string) => {
+  const invalidate = () => {
     void queryClient.invalidateQueries({ queryKey: ["access-profiles", orgId] });
-    if (id) void queryClient.invalidateQueries({ queryKey: ["access-profile", id] });
     // the Users and Teams screens read assignments through the org-wide list
     void queryClient.invalidateQueries({ queryKey: ASSIGNMENTS_KEY() });
   };
@@ -397,7 +382,7 @@ export default function AccessProfiles() {
           });
     },
     onSuccess: (saved, draft) => {
-      invalidate(saved.id);
+      invalidate();
       setDraft(null);
       toast.push({
         tone: "success",
@@ -433,12 +418,9 @@ export default function AccessProfiles() {
   // people can do — confirmed by name first (#1179)
   const [deleteTarget, setDeleteTarget] = React.useState<{
     profile: AccessProfileRow;
-    reach: { users: number; teams: number } | null;
+    reach: { users: number; teams: number };
   } | null>(null);
-  const startDelete = (
-    profile: AccessProfileRow,
-    reach: { users: number; teams: number } | null,
-  ) => {
+  const startDelete = (profile: AccessProfileRow, reach: { users: number; teams: number }) => {
     remove.reset();
     setDeleteTarget({ profile, reach });
   };
@@ -455,8 +437,8 @@ export default function AccessProfiles() {
   const unassign = useMutation({
     mutationFn: (target: { assignment: AccessProfileAssignmentRow }) =>
       deleteAccessProfileAssignment(target.assignment.id),
-    onSuccess: (_void, target) => {
-      invalidate(target.assignment.profile_id);
+    onSuccess: () => {
+      invalidate();
       setUnassignTarget(null);
       toast.push({
         tone: "success",
@@ -716,10 +698,10 @@ function ProfileSheet({
       saveLabel={draft.id ? t("pages.accessProfiles.save") : t("pages.accessProfiles.create")}
       canSave={!!draft.name.trim() && !policyInvalid}
       saving={saving}
-      onSave={onSave}
+      onSubmit={onSave}
     >
       <div className="space-y-3.5">
-        <Field label={t("pages.accessProfiles.fieldName")}>
+        <Field label={t("pages.accessProfiles.fieldName")} required>
           <Input
             value={draft.name}
             placeholder={t("pages.accessProfiles.namePlaceholder")}

@@ -88,7 +88,7 @@ def world(admin: ControlClient) -> World:
 # endpoint catalogue: each entry drives one guarded action with a *fresh*,     #
 # valid body (so repeated allowed-role calls never collide) and declares the   #
 # minimum role rank the control plane enforces for it (see crates/             #
-# rolter-control/src/crud.rs authorize() / require_superadmin call sites).     #
+# rolter-control/src/crud/ authorize() / require_superadmin call sites).     #
 # --------------------------------------------------------------------------- #
 # rank: viewer=0, member=1, admin=2, superadmin=3
 VIEWER, MEMBER, ADMIN, SUPERADMIN = 0, 1, 2, 3
@@ -105,13 +105,20 @@ def _endpoints(sa: ControlClient, org: Org):
 
     def provider(actor: Actor):
         return actor.client.raw(
-            "POST", f"/api/v1/orgs/{org.org_id}/providers",
-            json={"name": _rand("prov"), "kind": "openai_compatible",
-                  "api_base": SIM_ENGINES[0], "api_key": "sk-fake"},
+            "POST",
+            f"/api/v1/orgs/{org.org_id}/providers",
+            json={
+                "name": _rand("prov"),
+                "kind": "openai_compatible",
+                "api_base": SIM_ENGINES[0],
+                "api_key": "sk-fake",
+            },
         )
 
     def team(actor: Actor):
-        return actor.client.raw("POST", f"/api/v1/orgs/{org.org_id}/teams", json={"name": _rand("team")})
+        return actor.client.raw(
+            "POST", f"/api/v1/orgs/{org.org_id}/teams", json={"name": _rand("team")}
+        )
 
     def project(actor: Actor):
         return actor.client.raw(
@@ -122,46 +129,65 @@ def _endpoints(sa: ControlClient, org: Org):
     # with no targets fails snapshot validation ("neither targets nor variants")
     # and 500s the WHOLE gateway snapshot, freezing every polling gateway. the
     # matrix is about the authz decision, not leaving half-built config behind.
-    route_provider = sa.create_provider(org.org_id, api_base=SIM_ENGINES[0], name=_rand("route-prov"))
+    route_provider = sa.create_provider(
+        org.org_id, api_base=SIM_ENGINES[0], name=_rand("route-prov")
+    )
 
     def route(actor: Actor):
         resp = actor.client.raw(
-            "POST", f"/api/v1/projects/{org.project_id}/routes",
+            "POST",
+            f"/api/v1/projects/{org.project_id}/routes",
             json={"model": _rand("model"), "strategy": "round_robin"},
         )
         if 200 <= resp.status_code < 300:
             # keep the created route valid so it doesn't poison the shared snapshot
-            sa.add_route_target(resp.json()["id"], route_provider["id"], upstream_model=UPSTREAM_MODEL)
+            sa.add_route_target(
+                resp.json()["id"], route_provider["id"], upstream_model=UPSTREAM_MODEL
+            )
         return resp
 
     def virtual_key(actor: Actor):
         return actor.client.raw(
-            "POST", f"/api/v1/projects/{org.project_id}/virtual-keys",
+            "POST",
+            f"/api/v1/projects/{org.project_id}/virtual-keys",
             json={"name": _rand("vk"), "models": [], "providers": []},
         )
 
     def budget(actor: Actor):
         return actor.client.raw(
-            "POST", "/api/v1/budgets",
+            "POST",
+            "/api/v1/budgets",
             json={"scope_type": "org", "scope_id": org.org_id, "limit_usd": "100", "period": "30d"},
         )
 
     def create_user(actor: Actor):
         return actor.client.raw(
-            "POST", f"/api/v1/orgs/{org.org_id}/users",
-            json={"email": f"{_rand('u')}@e2e.test", "password": uuid.uuid4().hex, "role": "viewer"},
+            "POST",
+            f"/api/v1/orgs/{org.org_id}/users",
+            json={
+                "email": f"{_rand('u')}@e2e.test",
+                "password": uuid.uuid4().hex,
+                "role": "viewer",
+            },
         )
 
     def create_membership(actor: Actor):
         # grant viewer at org scope to a throwaway account minted for this call,
         # so superadmin and admin can both exercise it without a 409 collision
-        target = sa.create_user(org.org_id, email=f"{_rand('m')}@e2e.test", password=uuid.uuid4().hex, role="viewer")
+        target = sa.create_user(
+            org.org_id, email=f"{_rand('m')}@e2e.test", password=uuid.uuid4().hex, role="viewer"
+        )
         # the account already carries an org membership from create_user; grant a
         # second, team-scoped one to keep the write unambiguous and conflict-free
         return actor.client.raw(
-            "POST", f"/api/v1/orgs/{org.org_id}/memberships",
-            json={"user_id": target["user"]["id"], "scope_type": "team",
-                  "scope_id": org.team_id, "role": "viewer"},
+            "POST",
+            f"/api/v1/orgs/{org.org_id}/memberships",
+            json={
+                "user_id": target["user"]["id"],
+                "scope_type": "team",
+                "scope_id": org.team_id,
+                "role": "viewer",
+            },
         )
 
     def list_providers(actor: Actor):
@@ -175,7 +201,8 @@ def _endpoints(sa: ControlClient, org: Org):
 
     def model_price(actor: Actor):
         return actor.client.raw(
-            "PUT", "/api/v1/model-prices",
+            "PUT",
+            "/api/v1/model-prices",
             json={"model": _rand("price-model"), "input_per_mtok": "1", "output_per_mtok": "2"},
         )
 
@@ -224,10 +251,14 @@ def test_permission_matrix(world: World) -> None:
             allowed = actor.rank >= required
             if allowed:
                 if not (200 <= resp.status_code < 300):
-                    failures.append(f"{name} as {role}: expected 2xx, got {resp.status_code} {resp.text}")
+                    failures.append(
+                        f"{name} as {role}: expected 2xx, got {resp.status_code} {resp.text}"
+                    )
             else:
                 if resp.status_code != 403:
-                    failures.append(f"{name} as {role}: expected 403, got {resp.status_code} {resp.text}")
+                    failures.append(
+                        f"{name} as {role}: expected 403, got {resp.status_code} {resp.text}"
+                    )
                 else:
                     body = resp.json()
                     if not (isinstance(body, dict) and body.get("error", {}).get("message")):
@@ -257,15 +288,23 @@ def test_live_grant_revoke_control(world: World) -> None:
 
     # 2. secondary admin grants Admin at team scope
     grant = org.admin2.client.raw(
-        "POST", f"/api/v1/orgs/{org.org_id}/memberships",
-        json={"user_id": subject.user_id, "scope_type": "team", "scope_id": org.team_id, "role": "admin"},
+        "POST",
+        f"/api/v1/orgs/{org.org_id}/memberships",
+        json={
+            "user_id": subject.user_id,
+            "scope_type": "team",
+            "scope_id": org.team_id,
+            "role": "admin",
+        },
         expect=(200, 201),
     )
     membership_id = grant.json()["id"]
 
     # 3. allowed immediately — no snapshot/poll wait on the control path
     ok = create_project()
-    assert 200 <= ok.status_code < 300, f"post-grant create should succeed, got {ok.status_code} {ok.text}"
+    assert 200 <= ok.status_code < 300, (
+        f"post-grant create should succeed, got {ok.status_code} {ok.text}"
+    )
 
     # 4. secondary admin revokes the grant
     org.admin2.client.raw("DELETE", f"/api/v1/memberships/{membership_id}", expect=(200, 204))
@@ -310,7 +349,9 @@ def test_live_gateway_key_revoke(world: World) -> None:
         resp = gw_target.chat(model)
         if resp.status_code == 200:
             break
-        assert time.monotonic() < deadline, f"key never became usable: {resp.status_code} {resp.text}"
+        assert time.monotonic() < deadline, (
+            f"key never became usable: {resp.status_code} {resp.text}"
+        )
         time.sleep(1)
 
     # revoke the target and poll until the gateway rejects it
@@ -328,7 +369,9 @@ def test_live_gateway_key_revoke(world: World) -> None:
 
     # the guard key must keep working: only the revoked key lost access
     guard_resp = gw_guard.chat(model)
-    assert guard_resp.status_code == 200, f"guard key should still work, got {guard_resp.status_code} {guard_resp.text}"
+    assert guard_resp.status_code == 200, (
+        f"guard key should still work, got {guard_resp.status_code} {guard_resp.text}"
+    )
 
     gw_target.close()
     gw_guard.close()
@@ -347,32 +390,52 @@ def test_scope_escalation_negatives(world: World) -> None:
     world.admin_client.create_membership(org.org_id, subject.user_id, "team", org.team_id, "admin")
 
     # up: cannot create a provider on the parent org (Admin@org required)
-    assert_forbidden(subject.client.raw(
-        "POST", f"/api/v1/orgs/{org.org_id}/providers",
-        json={"name": _rand("prov"), "kind": "openai_compatible", "api_base": SIM_ENGINES[0], "api_key": "sk-fake"},
-    ))
+    assert_forbidden(
+        subject.client.raw(
+            "POST",
+            f"/api/v1/orgs/{org.org_id}/providers",
+            json={
+                "name": _rand("prov"),
+                "kind": "openai_compatible",
+                "api_base": SIM_ENGINES[0],
+                "api_key": "sk-fake",
+            },
+        )
+    )
     # up: cannot create a sibling team (Admin@org required)
-    assert_forbidden(subject.client.raw(
-        "POST", f"/api/v1/orgs/{org.org_id}/teams", json={"name": _rand("team")}
-    ))
+    assert_forbidden(
+        subject.client.raw("POST", f"/api/v1/orgs/{org.org_id}/teams", json={"name": _rand("team")})
+    )
     # sideways: cannot write into the sibling team
-    assert_forbidden(subject.client.raw(
-        "POST", f"/api/v1/teams/{org.team_id_sibling}/projects", json={"name": _rand("proj")}
-    ))
+    assert_forbidden(
+        subject.client.raw(
+            "POST", f"/api/v1/teams/{org.team_id_sibling}/projects", json={"name": _rand("proj")}
+        )
+    )
     # in scope: creating a project under the granted team still works
     ok = subject.client.raw(
         "POST", f"/api/v1/teams/{org.team_id}/projects", json={"name": _rand("proj")}
     )
-    assert 200 <= ok.status_code < 300, f"in-scope create should succeed, got {ok.status_code} {ok.text}"
+    assert 200 <= ok.status_code < 300, (
+        f"in-scope create should succeed, got {ok.status_code} {ok.text}"
+    )
 
 
 def test_cross_org_isolation(world: World) -> None:
     """an Admin in one org has no authority in another org."""
     org1, org2 = world.org1, world.org2
     # org1's admin tries to create a provider in org2 → forbidden
-    assert_forbidden(org1.admin.client.raw(
-        "POST", f"/api/v1/orgs/{org2.org_id}/providers",
-        json={"name": _rand("prov"), "kind": "openai_compatible", "api_base": SIM_ENGINES[0], "api_key": "sk-fake"},
-    ))
+    assert_forbidden(
+        org1.admin.client.raw(
+            "POST",
+            f"/api/v1/orgs/{org2.org_id}/providers",
+            json={
+                "name": _rand("prov"),
+                "kind": "openai_compatible",
+                "api_base": SIM_ENGINES[0],
+                "api_key": "sk-fake",
+            },
+        )
+    )
     # and cannot list org2's providers either (read is Viewer@org2, which they lack)
     assert_forbidden(org1.admin.client.raw("GET", f"/api/v1/orgs/{org2.org_id}/providers"))

@@ -1,6 +1,8 @@
 import type { Meta, StoryObj } from "@storybook/react";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 
+import { Link, useLocation } from "react-router";
+
 import AdaptiveSettings from "./AdaptiveSettings";
 import {
   expectForbidden,
@@ -283,5 +285,129 @@ export const LoadFailsAndRetries: Story = {
       /failed to return adaptive routing settings/,
       async () => await expect(await canvas.findByLabelText("Exploration ratio")).toHaveValue("5"),
     );
+  },
+};
+
+// the shared settings footer (#2214): a switch waits for Save and says so, a
+// pristine screen has nothing to save, and a save says when and how far it got
+function Elsewhere() {
+  const { pathname } = useLocation();
+  return (
+    <>
+      <Link to="/elsewhere">Go elsewhere</Link>
+      <output data-testid="pathname">{pathname}</output>
+    </>
+  );
+}
+
+const gateway = (id: string, converged: boolean) => ({
+  id,
+  role: "gateway",
+  build_version: "1.0.0",
+  config_version: converged ? 8 : 7,
+  desired_state: "active",
+  state_changed_at: "2026-07-31T12:00:00Z",
+  first_seen_at: "2026-07-31T12:00:00Z",
+  last_seen_at: "2026-07-31T12:00:00Z",
+  live: true,
+  converged,
+});
+
+const savingTo = (nodes: unknown[]) =>
+  recording(async (input, init) => {
+    if (String(input).includes("/cluster/nodes")) return json(nodes);
+    return init?.method === "PUT"
+      ? json({ ...BASE, ...JSON.parse(String(init.body)) })
+      : json(BASE);
+  });
+
+export const KillSwitchWaitsForSave: Story = {
+  render: () => <Harness fetchStub={async () => json(BASE)} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const kill = await canvas.findByRole("switch");
+    const save = canvas.getByRole("button", { name: "Save changes" });
+    // untouched: nothing to save, nothing to discard, and the screen says when it was last saved
+    await expect(save).toHaveAttribute("aria-disabled", "true");
+    await expect(canvas.getByRole("button", { name: "Discard changes" })).toBeDisabled();
+    await expect(canvas.getByText(/^Last saved /)).toBeVisible();
+    await expect(canvas.queryByText("Not saved")).toBeNull();
+    // flipped: the switch moved, the gateways have not heard of it, and the screen says so
+    await userEvent.click(kill);
+    await expect(kill).toHaveAttribute("aria-checked", "false");
+    await expect(canvas.getByText("Not saved")).toBeVisible();
+    await expect(canvas.getByText(/^1 change not saved yet/)).toHaveAttribute("role", "status");
+    await expect(save).not.toHaveAttribute("aria-disabled");
+    // discarded: back to what the gateways run
+    await userEvent.click(canvas.getByRole("button", { name: "Discard changes" }));
+    await expect(kill).toHaveAttribute("aria-checked", "true");
+    await expect(canvas.queryByText("Not saved")).toBeNull();
+    await expect(save).toHaveAttribute("aria-disabled", "true");
+  },
+};
+
+export const SavedLineSaysHowManyGatewaysRunIt: Story = {
+  render: () => {
+    rec = savingTo([gateway("gw-a", true), gateway("gw-b", false)]);
+    return <Harness fetchStub={rec.stub} />;
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByRole("switch"));
+    await userEvent.click(canvas.getByRole("button", { name: "Save changes" }));
+    await expect(await canvas.findByText(/^Saved at /)).toBeVisible();
+    await expect(canvas.queryByText("Not saved")).toBeNull();
+    // read from the config versions the Cluster screen reads
+    await waitFor(() => expect(canvas.getByText(/Applied to 1 of 2 live gateways/)).toBeVisible());
+  },
+};
+
+export const EnterInAFieldSaves: Story = {
+  render: () => {
+    rec = savingTo([]);
+    return <Harness fetchStub={rec.stub} />;
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const cost = await canvas.findByLabelText("Cost weight");
+    await userEvent.clear(cost);
+    await userEvent.type(cost, "3{Enter}");
+    const body = await rec.expectSentBody<{ cost_weight: number }>("PUT", "adaptive-routing");
+    await expect(body.cost_weight).toBe(3);
+  },
+};
+
+export const EnterInAWrongFieldFocusesItInstead: Story = {
+  render: () => {
+    rec = savingTo([]);
+    return <Harness fetchStub={rec.stub} />;
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const cost = await canvas.findByLabelText("Cost weight");
+    await userEvent.clear(cost);
+    await userEvent.type(cost, "-1{Enter}");
+    await waitFor(() => expect(cost).toHaveAttribute("aria-invalid", "true"));
+    await waitFor(() => expect(cost).toHaveFocus());
+    rec.expectNotSent("PUT", "adaptive-routing");
+  },
+};
+
+export const LeavingWithAnUnsavedSwitchAsksFirst: Story = {
+  render: () => (
+    <ScreenHarness fetchStub={async () => json(BASE)}>
+      <AdaptiveSettings />
+      <Elsewhere />
+    </ScreenHarness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByRole("switch"));
+    await userEvent.click(canvas.getByRole("link", { name: "Go elsewhere" }));
+    const prompt = within(await within(document.body).findByRole("dialog"));
+    await waitFor(() => expect(prompt.getByText("Discard unsaved changes?")).toBeVisible());
+    await userEvent.click(prompt.getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(within(document.body).queryByRole("dialog")).toBeNull());
+    await expect(canvas.getByTestId("pathname")).toHaveTextContent("/");
   },
 };

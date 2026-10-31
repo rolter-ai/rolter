@@ -27,6 +27,8 @@ import {
 import { useAuth } from "@/lib/auth";
 import { useDocumentTitle } from "@/lib/document-title";
 import { useFormat } from "@/lib/i18n/format";
+import { ssoFailureKey } from "@/lib/sso-failures";
+import { isOpenMode } from "@/lib/telemetry";
 import { useToast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 
@@ -36,26 +38,6 @@ import { cn } from "@/lib/utils";
  * visitor and the QR encoder behind it is needed by almost none of them.
  */
 const SignInEnrolment = lazy(() => import("@/components/SignInEnrolment"));
-
-/** the refusal codes `/auth/sso/{slug}/callback` sends (`SsoFailure` in `sso.rs`) */
-const SSO_ERRORS = [
-  "idp_error",
-  "state_expired",
-  "sso_disabled",
-  "unknown_provider",
-  "no_mapped_group",
-  "account_deactivated",
-  "idp_verification_failed",
-  "not_configured",
-  "internal_error",
-] as const;
-
-/** a code this dashboard has no wording for is still an SSO failure, not a blank screen */
-function ssoErrorKey(code: string): (typeof SSO_ERRORS)[number] {
-  return (SSO_ERRORS as readonly string[]).includes(code)
-    ? (code as (typeof SSO_ERRORS)[number])
-    : "internal_error";
-}
 
 /**
  * Guesses one challenge allows, matching `MAX_CHALLENGE_ATTEMPTS` in
@@ -94,6 +76,14 @@ export default function Login() {
   // one case the email-only gate exists for, and it is identifiable up front
   // rather than inferred from a failed sign-in (#1160)
   const [openMode, setOpenMode] = useState(false);
+  // the same 404 with an admin token configured: no database means no accounts
+  // and no sessions, and the analytics and health routes accept the admin token
+  // alone. The card takes that token instead of an address, and keeps it as the
+  // bearer every request carries (#1909). The control plane says whether it is
+  // open in the block it injects into the page, so the two are told apart
+  // without a request
+  const tokenMode = openMode && !isOpenMode();
+  const [adminToken, setAdminToken] = useState("");
   // the password was right and the account owes a factor (#1078). Holding the
   // challenge is what turns this screen into two steps; until #1324 the
   // dashboard modelled only the session branch, so an org that set
@@ -155,7 +145,7 @@ export default function Login() {
     // a code in the address bar outlives the redeeming of it in history
     window.history.replaceState(null, "", window.location.pathname + window.location.hash);
     if (ssoError) {
-      setSsoNotice({ key: `auth.sso.errors.${ssoErrorKey(ssoError)}`, slug: params.get("sso") });
+      setSsoNotice({ key: ssoFailureKey(ssoError), slug: params.get("sso") });
       return;
     }
     setPending(true);
@@ -167,7 +157,7 @@ export default function Login() {
             err instanceof ApiError && err.code === "invalid_exchange_code"
               ? "auth.sso.exchangeExpired"
               : err instanceof ApiError && err.status < 500
-                ? "auth.sso.errors.internal_error"
+                ? ssoFailureKey("internal_error")
                 : "auth.errors.unavailable",
           slug: null,
         });
@@ -236,6 +226,14 @@ export default function Login() {
     const addr = email.trim() || "operator";
     setError(null);
     setPending(true);
+    if (tokenMode) {
+      // nothing to verify against: there is no endpoint that checks it. A wrong
+      // token is refused by the first screen that uses it, with an explanation
+      // and a way back here (LoadError, `adminToken`)
+      signIn("admin", adminToken.trim());
+      setPending(false);
+      return;
+    }
     if (openMode) {
       signIn(addr);
       setPending(false);
@@ -374,9 +372,10 @@ export default function Login() {
             />
           </Field>
           <Button
+            variant="brand"
             type="submit"
             disabled={pending || code.trim().length === 0}
-            className="w-full bg-brand-folk text-white hover:bg-brand-press"
+            className="w-full"
           >
             {pending ? (
               <>
@@ -419,30 +418,45 @@ export default function Login() {
             void submit();
           }}
         >
-          <Field label={t("auth.email")}>
-            <Input
-              type="email"
-              name="email"
-              autoComplete="email"
-              autoFocus
-              required
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              aria-invalid={error ? true : undefined}
-              aria-describedby={error ? errorId : undefined}
-            />
-          </Field>
-          <Field label={t("auth.password")}>
-            <PasswordInput
-              name="password"
-              autoComplete="current-password"
-              required
-              value={pw}
-              onChange={(e) => setPw(e.target.value)}
-              aria-invalid={error ? true : undefined}
-              aria-describedby={error ? errorId : undefined}
-            />
-          </Field>
+          {tokenMode ? (
+            <Field label={t("auth.adminToken.label")} hint={t("auth.adminToken.hint")}>
+              <PasswordInput
+                name="admin-token"
+                autoComplete="off"
+                autoFocus
+                required
+                value={adminToken}
+                onChange={(e) => setAdminToken(e.target.value)}
+              />
+            </Field>
+          ) : (
+            <>
+              <Field label={t("auth.email")}>
+                <Input
+                  type="email"
+                  name="email"
+                  autoComplete="email"
+                  autoFocus
+                  required
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  aria-invalid={error ? true : undefined}
+                  aria-describedby={error ? errorId : undefined}
+                />
+              </Field>
+              <Field label={t("auth.password")}>
+                <PasswordInput
+                  name="password"
+                  autoComplete="current-password"
+                  required
+                  value={pw}
+                  onChange={(e) => setPw(e.target.value)}
+                  aria-invalid={error ? true : undefined}
+                  aria-describedby={error ? errorId : undefined}
+                />
+              </Field>
+            </>
+          )}
           {error && (
             <div
               id={errorId}
@@ -454,9 +468,10 @@ export default function Login() {
             </div>
           )}
           <Button
+            variant="brand"
             type="submit"
-            disabled={pending}
-            className="w-full bg-brand-folk text-white hover:bg-brand-press"
+            disabled={pending || (tokenMode && adminToken.trim().length === 0)}
+            className="w-full"
           >
             {pending ? (
               <>
@@ -464,7 +479,8 @@ export default function Login() {
               </>
             ) : (
               <>
-                {t("auth.signIn")} <ArrowRight className="h-4 w-4" />
+                {tokenMode ? t("auth.adminToken.submit") : t("auth.signIn")}{" "}
+                <ArrowRight className="h-4 w-4" />
               </>
             )}
           </Button>
@@ -487,11 +503,9 @@ export default function Login() {
               // with no password form, signing in is the one action this screen
               // exists for, so the first provider is the brand button (DESIGN.md)
               className={cn(
-                buttonVariants({ variant: "outline" }),
-                "w-full text-muted-foreground hover:text-foreground",
-                !showPassword &&
-                  i === 0 &&
-                  "border-transparent bg-brand-folk text-white hover:bg-brand-press hover:text-white",
+                buttonVariants({ variant: !showPassword && i === 0 ? "brand" : "outline" }),
+                "w-full",
+                (showPassword || i !== 0) && "text-muted-foreground hover:text-foreground",
               )}
             >
               {t("auth.continueWith", { provider: p.name })}

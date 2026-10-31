@@ -11,7 +11,7 @@ use uuid::Uuid;
 use rolter_core::Result;
 
 use super::super::models::SavedView;
-use super::store_err;
+use super::support::store_err;
 
 const COLUMNS: &str = "id, user_id, surface, name, filters, created_at, updated_at";
 

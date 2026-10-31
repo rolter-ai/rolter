@@ -143,7 +143,7 @@ export function TableSkeleton({ rows = 4, className }: { rows?: number; classNam
   return (
     <LoadingRegion
       className={cn(
-        "overflow-hidden rounded-[10px] border border-[color:var(--border-subtle)]",
+        "overflow-hidden rounded-lg border border-[color:var(--border-subtle)]",
         className,
       )}
     >

@@ -9,7 +9,10 @@ const LOCALES = join(ROOT, "ui", "src", "lib", "i18n", "locales");
 
 /** the `PROVIDER_KINDS` allowlist the control plane validates a write against */
 function controlPlaneKinds(): string[] {
-  const source = readFileSync(join(ROOT, "crates", "rolter-control", "src", "crud.rs"), "utf8");
+  const source = readFileSync(
+    join(ROOT, "crates", "rolter-control", "src", "crud", "providers.rs"),
+    "utf8",
+  );
   const list = /const PROVIDER_KINDS: \[&str; \d+\] = \[([\s\S]*?)\];/.exec(source)?.[1] ?? "";
   return [...list.matchAll(/"([a-z0-9_]+)"/g)].map((m) => m[1]!);
 }

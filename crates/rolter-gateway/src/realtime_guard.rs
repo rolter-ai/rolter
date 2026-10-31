@@ -16,8 +16,8 @@ use std::sync::Arc;
 
 use rolter_core::guardrails::RuleSelection;
 use rolter_core::{
-    CompiledGuardrails, GuardrailReport, GuardrailWebhookConfig, PluginStage, PluginsConfig,
-    ScanOutcome, WebhookStage, WebhookTenant,
+    CompiledGuardrails, CompiledPolicy, CompiledSemanticGuards, GuardrailReport, PluginStage,
+    PluginsConfig, ScanOutcome, WebhookStage, WebhookTenant,
 };
 use serde_json::Value;
 
@@ -75,7 +75,9 @@ pub(crate) struct ContentPolicy {
     selection: RuleSelection,
     input: bool,
     output: bool,
-    webhook: Option<GuardrailWebhookConfig>,
+    /// the semantic guardrail policy this session's scope resolves to, when
+    /// it runs `pre_call` providers (#459)
+    semantic: Option<(Arc<CompiledSemanticGuards>, CompiledPolicy)>,
     plugins: Option<Arc<PluginsConfig>>,
     org: String,
     project: Option<String>,
@@ -85,6 +87,8 @@ pub(crate) struct ContentPolicy {
     tenant: WebhookTenant,
     /// the egress-checked client the webhook and plugins are consulted through
     egress: crate::egress_client::EgressClient,
+    /// the in-process classifiers `local` semantic guard providers run on
+    local: crate::local_classifier::LocalClassifiers,
     /// responses whose text was withheld; the rest of their text events are
     /// dropped
     blocked: Vec<String>,
@@ -105,18 +109,27 @@ impl ContentPolicy {
         model: &str,
         trace_id: &str,
         egress: &crate::egress_client::EgressClient,
+        local: &crate::local_classifier::LocalClassifiers,
     ) -> Option<Self> {
         let input = snap.guardrails.pre_call_active_for(&entry.guardrails);
         let output = snap.guardrails.post_call_active_for(&entry.guardrails);
-        let webhook = (snap.guardrail_webhook.enabled
-            && snap.guardrail_webhook.stage == WebhookStage::PreCall)
-            .then(|| snap.guardrail_webhook.clone());
+        // a session whose policy has `post_call` providers is refused before it
+        // gets here (in `realtime.rs`), so only the request
+        // side can apply
+        let semantic = snap
+            .semantic_guards
+            .resolve(&crate::semantic_guards::policy_request(
+                scope,
+                &entry.route.model,
+            ))
+            .filter(|policy| policy.runs_at(WebhookStage::PreCall))
+            .map(|policy| (snap.semantic_guards.clone(), policy.clone()));
         let project = (!scope.project.is_empty()).then(|| scope.project.clone());
         let has_plugins = !snap
             .plugins
             .for_stage(PluginStage::PreUpstream, &scope.org, project.as_deref())
             .is_empty();
-        if !input && !output && webhook.is_none() && !has_plugins {
+        if !input && !output && semantic.is_none() && !has_plugins {
             return None;
         }
         Some(Self {
@@ -124,7 +137,7 @@ impl ContentPolicy {
             selection: entry.guardrails.clone(),
             input,
             output,
-            webhook,
+            semantic,
             plugins: has_plugins.then(|| snap.plugins.clone()),
             org: scope.org.clone(),
             project,
@@ -133,6 +146,7 @@ impl ContentPolicy {
             trace_id: trace_id.to_string(),
             tenant: crate::handlers::plugin_tenant(scope),
             egress: egress.clone(),
+            local: local.clone(),
             blocked: Vec::new(),
             tails: Vec::new(),
             plugin_calls: Default::default(),
@@ -220,28 +234,30 @@ impl ContentPolicy {
             }
         }
 
-        if let Some(webhook) = &self.webhook {
-            match crate::guardrail_webhook::consult_pre_call(
-                webhook,
+        if let Some((guards, policy)) = &self.semantic {
+            let guard = crate::semantic_guards::SemanticGuard {
+                guards,
+                policy,
                 metrics,
-                &self.egress,
-                &self.model,
-                &self.route,
-                &self.trace_id,
-                self.tenant.clone(),
-                &event,
-            )
-            .await
+                egress: &self.egress,
+                local: &self.local,
+                model: self.model.clone(),
+                route: self.route.clone(),
+                trace_id: self.trace_id.clone(),
+                tenant: self.tenant.clone(),
+            };
+            // a session's events have no request log row of their own; the
+            // metrics still count every call
+            let mut events = Vec::new();
+            match guard
+                .check(WebhookStage::PreCall, &event, false, &mut events)
+                .await
             {
-                crate::guardrail_webhook::WebhookOutcome::Allow => {}
-                crate::guardrail_webhook::WebhookOutcome::Block(reason) => {
-                    return ClientVerdict::Reject(rejection(
-                        "guardrail_blocked",
-                        reason.unwrap_or_else(|| "event blocked by guardrail service".into()),
-                        event_id,
-                    ));
+                crate::semantic_guards::Verdict::Allow(None) => {}
+                crate::semantic_guards::Verdict::Block { reason, .. } => {
+                    return ClientVerdict::Reject(rejection("guardrail_blocked", reason, event_id));
                 }
-                crate::guardrail_webhook::WebhookOutcome::Transform(content) => {
+                crate::semantic_guards::Verdict::Allow(Some(content)) => {
                     match transformed(&kind, content) {
                         Some(content) => {
                             event = content;

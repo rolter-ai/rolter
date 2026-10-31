@@ -7,7 +7,7 @@ use serde::Deserialize;
 
 use rolter_core::{BackpressurePolicy, Error};
 use rolter_store::postgres::models::RuntimePolicy;
-use rolter_store::postgres::repo::{AuditLogRepo, RuntimePolicyRepo};
+use rolter_store::postgres::repo::{AuditLogRepo, RuntimePolicyRepo, RuntimePolicyUpdate};
 
 use crate::crud::{pool, publish_config_change, ApiError, ApiResult, SafeJson};
 use crate::rbac::{authorize_superadmin, Principal};
@@ -77,6 +77,11 @@ fn validate_policy(body: &UpdateRuntimePolicy) -> ApiResult<()> {
     if !(0..=120_000).contains(&body.queue_block_ms) {
         return Err(invalid("queue_block_ms must be between 0 and 120000"));
     }
+    // a spelling this build does not know decodes as `Unknown` (#3347); on
+    // input it is a mistake, not a value from a newer release
+    if body.queue_backpressure == BackpressurePolicy::Unknown {
+        return Err(invalid("queue_backpressure must be drop, block or error"));
+    }
     if body.queue_backpressure == BackpressurePolicy::Block && body.queue_block_ms == 0 {
         return Err(invalid(
             "queue_block_ms must be greater than zero when queue_backpressure is block",
@@ -93,22 +98,23 @@ async fn update_runtime_policy(
     authorize_superadmin(&principal, superadmin_cap!("runtime_policy", Update))?;
     validate_policy(&body)?;
     let row = RuntimePolicyRepo(pool(&state))
-        .update(
-            body.retry_max_retries,
-            body.retry_base_ms,
-            body.retry_max_ms,
-            body.timeout_connect_s,
-            body.timeout_request_s,
-            body.queue_enabled,
-            body.queue_capacity,
-            body.queue_workers,
-            match body.queue_backpressure {
+        .update(RuntimePolicyUpdate {
+            retry_max_retries: body.retry_max_retries,
+            retry_base_ms: body.retry_base_ms,
+            retry_max_ms: body.retry_max_ms,
+            timeout_connect_s: body.timeout_connect_s,
+            timeout_request_s: body.timeout_request_s,
+            queue_enabled: body.queue_enabled,
+            queue_capacity: body.queue_capacity,
+            queue_workers: body.queue_workers,
+            queue_backpressure: match body.queue_backpressure {
                 BackpressurePolicy::Drop => "drop",
                 BackpressurePolicy::Block => "block",
-                BackpressurePolicy::Error => "error",
+                // `validate_policy` refused `Unknown` above
+                BackpressurePolicy::Error | BackpressurePolicy::Unknown => "error",
             },
-            body.queue_block_ms,
-        )
+            queue_block_ms: body.queue_block_ms,
+        })
         .await?;
     publish_config_change(&state).await?;
     let actor = principal.account_id();

@@ -24,6 +24,12 @@ export interface EffectiveRule {
 export interface RouteOverride {
   /** the route's public model name */
   model: string;
+  /**
+   * the organization that owns the route, `""` for a config-file route: two
+   * organizations may each have a route of one name (#1857). Always set by
+   * {@link readEffectivePolicy}
+   */
+  org_id?: string;
   /** rules that do not apply on this route */
   disable: string[];
   /** rules that apply on this route, winning a conflict with `disable` */
@@ -128,7 +134,8 @@ function readRoute(value: unknown): RouteOverride | undefined | null {
   const enable = section.enable ?? [];
   if (!isStrings(disable) || !isStrings(enable)) return null;
   if (disable.length === 0 && enable.length === 0) return undefined;
-  return { model: value.model, disable, enable };
+  const org = isObject(value.tenancy) ? value.tenancy.org_id : undefined;
+  return { model: value.model, org_id: typeof org === "string" ? org : "", disable, enable };
 }
 
 /**

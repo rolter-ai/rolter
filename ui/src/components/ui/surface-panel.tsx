@@ -14,7 +14,7 @@ export function SurfacePanel({ className, ...props }: React.HTMLAttributes<HTMLE
   return (
     <section
       className={cn(
-        "rounded-[10px] border border-[color:var(--border-subtle)] bg-[color:var(--surface-card)]",
+        "rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-card)]",
         className,
       )}
       {...props}

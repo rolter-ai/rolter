@@ -62,6 +62,15 @@ impl CancelGuard {
         }
     }
 
+    /// Name the variant the route's weighted split sampled (#3547), once, before
+    /// the first pick, so a request abandoned at any point records it.
+    pub fn sampled(&mut self, variant: &str) {
+        if let Some(row) = self.row.as_mut() {
+            row.sampled_variant.clear();
+            row.sampled_variant.push_str(variant);
+        }
+    }
+
     /// Name the target the forward loop just picked, so a request abandoned
     /// while it waits on that upstream is logged against it (#1816).
     ///
@@ -79,6 +88,11 @@ impl CancelGuard {
         let Some(row) = self.row.as_mut() else {
             return;
         };
+        // the first attribution is the first dial, which names the variant
+        // dialled first (#3505); a failover keeps it
+        if row.first_variant.is_empty() {
+            row.first_variant.push_str(variant);
+        }
         for (slot, value) in [
             (&mut row.provider, provider),
             (&mut row.target, target),
@@ -193,6 +207,30 @@ mod tests {
     }
 
     #[test]
+    fn the_row_keeps_the_variant_first_dialled_across_a_failover() {
+        let metrics = Arc::new(Metrics::default());
+        let mut guard = CancelGuard::new(LogSink::disabled(metrics), Instant::now(), row());
+        guard.attribute("down", "m", "primary");
+        guard.attribute("up", "m", "spare");
+        let row = guard.row.as_ref().unwrap();
+        assert_eq!(row.variant, "spare");
+        assert_eq!(row.first_variant, "primary");
+    }
+
+    #[test]
+    fn the_row_keeps_the_sampled_variant_beside_the_one_dialled_first() {
+        // #3547: the split sampled "parked", which the loop skipped
+        let metrics = Arc::new(Metrics::default());
+        let mut guard = CancelGuard::new(LogSink::disabled(metrics), Instant::now(), row());
+        guard.sampled("parked");
+        guard.attribute("up", "m", "spare");
+        let row = guard.row.as_ref().unwrap();
+        assert_eq!(row.sampled_variant, "parked");
+        assert_eq!(row.first_variant, "spare");
+        assert_eq!(row.variant, "spare");
+    }
+
+    #[test]
     fn a_disarmed_guard_is_silent() {
         let metrics = Arc::new(Metrics::default());
         let sink = LogSink::disabled(metrics.clone());
@@ -249,7 +287,7 @@ mod tests {
     }
 
     #[test]
-    fn a_caller_leaving_during_the_next_attempt_is_charged_to_that_target() {
+    fn a_caller_leaving_during_the_next_attempt_is_not_charged_to_that_target() {
         let metrics = Arc::new(Metrics::default());
         let mut guard = CancelGuard::new(LogSink::disabled(metrics.clone()), Instant::now(), row());
         guard.attribute("vllm-spot-02", "deepseek-r1", "");
@@ -258,11 +296,14 @@ mod tests {
         guard.attribute("vllm-spot-01", "deepseek-r1", "");
         drop(guard);
 
+        // the 429 was the target's, and is counted once
         assert_eq!(target_errors(&metrics, "vllm-spot-02", "deepseek-r1"), 1);
+        // a caller leaving is nobody's failure (#1933)
         assert_eq!(
             target_errors(&metrics, "vllm-spot-01", "deepseek-r1"),
-            1,
-            "the attempt in flight was never counted, so the drop counts it"
+            0,
+            "a client disconnect was charged to the target it was waiting on"
         );
+        assert_eq!(metrics.client_disconnects_total.load(Relaxed), 1);
     }
 }

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 
-import { decisionRequest } from "./decisions";
+import { decisionRequest, pickDecisionModel } from "./decisions";
 
 const questions = JSON.stringify({
   visible: { type: "noul", instructions: "Is a parcel visible?" },
@@ -40,5 +40,23 @@ describe("decision requests", () => {
     for (const state of ["null", "true", "42", "{"]) {
       expect(() => decisionRequest("m", state, true, questions)).toThrow();
     }
+  });
+});
+
+describe("pickDecisionModel", () => {
+  const offered = [{ id: "openjev" }, { id: "fake-llm" }];
+
+  it("keeps the model chosen while it is still on offer", () => {
+    expect(pickDecisionModel(offered, "openjev", "fake-llm")).toBe("openjev");
+  });
+
+  it("falls back to the builtin, then to the first model on offer", () => {
+    expect(pickDecisionModel(offered, "gone", "fake-llm")).toBe("fake-llm");
+    // a route named fake-llm shadows the builtin and leaves the decision list
+    expect(pickDecisionModel([{ id: "openjev" }], "fake-llm", "fake-llm")).toBe("openjev");
+  });
+
+  it("names nothing when no model serves decisions", () => {
+    expect(pickDecisionModel([], "fake-llm", "fake-llm")).toBe("");
   });
 });

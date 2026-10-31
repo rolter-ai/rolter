@@ -51,7 +51,9 @@ Authorization code with PKCE, no implicit grant, no client-side tokens:
 
 6. The callback answers on `Accept` (#2297). A caller that is not a browser
    gets the session as JSON, as it always did. A browser is sent a `303` to the
-   dashboard; see [Ending a browser sign-in](#ending-a-browser-sign-in).
+   dashboard; see [Ending a browser sign-in](#ending-a-browser-sign-in). A
+   refusal answered as JSON carries the same code a browser is sent, see
+   [JSON refusals](#json-refusals).
 
 Rules that hold on every path:
 
@@ -114,17 +116,49 @@ from a closed set (`SsoFailure` in `sso.rs`); never rename one, and add a
 dashboard translation for each new one. Nothing the identity provider said is
 in the URL.
 
-| `sso_error`               | When                                                                 |
-| ------------------------- | -------------------------------------------------------------------- |
-| `idp_error`               | the provider answered with an `error` (declined, policy)             |
-| `state_expired`           | no `state`/`code`, or a state unknown, expired, spent or mismatched  |
-| `sso_disabled`            | the org turned SSO off                                               |
-| `unknown_provider`        | `/start` named a slug no enabled provider answers to                 |
-| `no_mapped_group`         | in no mapped group and the provider has no `default_role`            |
-| `account_deactivated`     | the account is deactivated                                           |
-| `idp_verification_failed` | the provider was unreachable, or the token or id token did not check |
-| `not_configured`          | the deployment cannot finish a sign-in, e.g. no `ROLTER_KEK`         |
-| `internal_error`          | anything else                                                        |
+| `sso_error`               | When                                                                               |
+| ------------------------- | ---------------------------------------------------------------------------------- |
+| `idp_error`               | the provider answered with an `error` (declined, policy)                           |
+| `state_expired`           | no `state`/`code`, or a state unknown, expired, spent or mismatched                |
+| `sso_disabled`            | the org turned SSO off                                                             |
+| `unknown_provider`        | `/start` named a slug no enabled provider answers to                               |
+| `no_mapped_group`         | in no mapped group and the provider has no `default_role`                          |
+| `account_deactivated`     | the account is deactivated                                                         |
+| `account_outside_org`     | the account is a superadmin, holds a deployment role, or has a role in another org |
+| `idp_verification_failed` | the provider was unreachable, or the token or id token did not check               |
+| `not_configured`          | the deployment cannot finish a sign-in, e.g. no `ROLTER_KEK`                       |
+| `internal_error`          | anything else                                                                      |
+
+#### JSON refusals
+
+A caller that does not ask for `text/html` is answered with
+`{"error": {"code": "<code>", "message": "…"}}` (#3468), where `code` is the
+same `SsoFailure` code as the table above and the HTTP status is the one the
+failure always had (`403` for `sso_disabled`, `no_mapped_group`,
+`account_deactivated` and `account_outside_org`, `400` for `idp_error`,
+`state_expired`, `unknown_provider` (at `/start`) and `idp_verification_failed`, `500` for `internal_error`).
+Before this, a cross-org adoption refusal was a bare `403` "insufficient role
+for this resource", indistinguishable from any other forbidden response. The
+message is a fixed sentence per code (`SsoFailure::message`): it never repeats
+what the identity provider said and never names the account, so the refusal
+tells a caller who has just authenticated nothing the browser path does not.
+The detail an operator acts on is logged. The dashboard translates the codes
+that name one failure (`KNOWN_ERROR_CODES`); `not_configured` and
+`internal_error` are left out (`SSO_SHARED_NAMES`): their names say nothing of
+single sign-on, so a code of that name from any other endpoint would read as an
+SSO failure. Only this callback sends them as a JSON `error.code` today; the MCP
+consent flow uses both as redirect `reason=` codes with copy of its own
+(`CONSENT_FAILURES` in `ui/src/lib/mcp-consent.ts`). A JSON refusal carrying
+one is worded by its status.
+
+Each code has one sentence in the catalogs, `errors.api.codes.<code>` (#3524):
+the login page words a `sso_error` through it (`ssoFailureKey` in
+`ui/src/lib/sso-failures.ts`, which reads an unknown code as
+`internal_error`), and `describeError` words a JSON refusal through the same
+entry, so a failure reads the same on both paths and a new code is worded once
+per catalog. `ui/scripts/sso-failure-codes.test.ts` holds `SSO_FAILURES` to
+the arms of `SsoFailure::code`, to `KNOWN_ERROR_CODES` and to every catalog,
+so a code added on the server fails the dashboard's tests until it is worded.
 
 **What the dashboard's `/login` screen handles:** `sso_code` (call the exchange,
 store the token as a local sign-in does, clear the query string, route on) and
@@ -169,6 +203,17 @@ An account is adopted **by verified email**: someone invited last month who now
 arrives through the IdP keeps the same user row, the same virtual keys and the
 same manual roles. SSO-created accounts get no password — an SSO identity must
 not silently gain a second, weaker credential.
+
+A provider adopts an existing account **only when every role it holds is
+inside the provider's org**, and never a superadmin or an account holding a deployment role
+(`users.deployment_role`: operator, security auditor); anything else is refused
+with `account_outside_org` and its roles are left alone. A provider is
+registered by an org's admins, who decide every email it asserts, so without
+this an admin of one org could point a provider they control at another org's
+member, at the break-glass account, or at an account whose deployment role
+carries deployment-wide authority, and be handed a session carrying grants
+their own org never gave. The cost is that a person with roles in two orgs
+cannot use either org's provider and signs in with their password instead.
 
 ## Org login policy
 
@@ -232,7 +277,7 @@ is enforced in three places that have to agree (#2304):
   what will be saved; it only suggests a corrected value.
 
 `sso_slug_outside_the_charset_is_a_400_that_states_the_rule` in
-`crates/rolter-control/tests/control_integration.rs` asks the store and the
+`crates/rolter-control/tests/control/` asks the store and the
 endpoint about the same table of slugs and requires the same answer, and
 `sso-slug.test.ts` reads the migration and compares the pattern, so a change to
 one is caught by the others. Widening the rule means a new migration (the
@@ -256,7 +301,7 @@ rolter, since it issues the client id and secret the add form asks for. So the
 add sheet previews it from the slug as it is typed, on the base
 `GET /api/v1/public-url` returns (`public_url.rs`, capability `public_url`,
 readable by any authenticated caller), with `ssoRedirectUri()` in
-`ui/src/lib/api.ts` mirroring the Rust path. One read serves every keystroke.
+`ui/src/lib/api/sso.ts` mirroring the Rust path. One read serves every keystroke.
 The endpoint also reports `configured: false` when `ROLTER_PUBLIC_URL` is unset,
 and the screen warns that the default only reaches rolter from a browser on the
 control plane's own host. It is deployment-wide rather than SSO-specific so the

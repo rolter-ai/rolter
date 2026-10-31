@@ -145,9 +145,12 @@ out (#2084), on the Single Sign-On screen:
   on (the control plane refuses both off). It warns and never blocks, since one
   flip undoes it. The providers come from the list the screen already read, so a
   caller refused that list gets no confirmation.
-- **The second-factor confirmation** counts people with `distinctPeople`: the
-  memberships endpoint returns one row per grant, so a person holding a role on
-  the org and another on a team is one member.
+- **The second-factor confirmation** says how many of the members the policy
+  binds have no armed factor, from `GET /api/v1/orgs/{id}/mfa-status` (#3264):
+  that roster has one row per active member however many grants they hold, and
+  `mfaGap` counts `required_all` over every row and `required_superadmin` over
+  the `is_superadmin` rows only. A caller refused the roster gets the plain
+  warning with no number.
 
 A save that needs more than one of these asks them in turn, password sign-in
 first, then single sign-on, then the second factor, and sends one request after
@@ -238,14 +241,25 @@ withdraws the role at once, single sign-on stops granting it at the next
 sign-in.
 
 A save on the Security screen that loosens the gateway or the dashboard raises the same dialog
-(#2103), as `security-loosen` with `tone="default"`, since one more save undoes it. Three edits
-loosen and nothing else does: virtual-key enforcement turned off, dashboard protection turned off,
-and each route added to the auth bypass list. `loosenings` in `ui/src/lib/security-loosening.ts`
+(#2103), as `security-loosen` with `tone="default"`, since one more save undoes it. Two edits
+loosen and nothing else does: each route added to the auth bypass list, and each required header
+removed (#2358: the ingress filter it stood for, a mesh identity or a WAF marker, stops applying and
+requests without it are served). `loosenings` in `ui/src/lib/security-loosening.ts`
 decides, comparing the draft with what the store held at the last load or save rather than with the
-previous keystroke, so a switch flipped off and back on asks nothing. The body lists exactly the
+previous keystroke, so a header removed and typed back asks nothing; header names compare without
+regard to case, as the gateway does. The body lists exactly the
 changes that opened something, each with what it means, as `children`, and the title and intro
-count them. A tightening, such as a route removed or a header required, saves at once, and one
-request goes out either way. The dialog is mounted beside the form, and the items it lists are kept
+count them. A tightening, such as a route removed, a header required or its value changed, saves at
+once, and one request goes out either way.
+
+An **allowed origin added** also opens something, since another site's browser code may then call
+the control plane cross-origin, and it deliberately stays one click (#2358). Adding an origin is the
+routine edit of this screen, made whenever a console or a preview deployment gets an address, and a
+dialog in front of every one is the click-through this page warns about: people learn to dismiss
+it, and then dismiss the one that matters. An origin must be an exact `http://` or `https://`
+origin with no wildcard, so the edit cannot open the control plane to every site, and the Security
+screen's saved line reports when the change reached the gateways. A new case belongs in `loosenings`
+only when it takes away protection that no one adds or removes as a matter of course. The dialog is mounted beside the form, and the items it lists are kept
 after it closes so its body does not empty while it fades. The words state the documented meaning of
 each setting and no more: see
 [the Security screen](../architecture/security.md#the-security-screen-2103-2114).

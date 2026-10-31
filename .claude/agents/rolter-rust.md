@@ -76,7 +76,7 @@ same PR.
   `member_id`).
 - **Secrets in tests.** GitGuardian flags literal passwords; build them with
   the `random_password()` helper in
-  `crates/rolter-control/tests/control_integration.rs`, or an equivalent
+  `crates/rolter-control/tests/control/`, or an equivalent
   generated at run time.
 - **Feature-gated helpers.** A helper whose only caller is behind
   `#[cfg(feature = "postgres")]` needs the same `cfg`, or

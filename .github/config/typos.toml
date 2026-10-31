@@ -55,6 +55,11 @@ extend-ignore-re = [
   "connect_timout_ms",
   "wieght",
   "defualt",
+  # "blok"/"fail_closd": deliberately-misspelled enum values in the config-file
+  # typo test (#3347), which asserts an unknown value is refused with the
+  # accepted ones listed. correcting them would delete the test's subject
+  '\\"blok\\"',
+  '\\"fail_closd\\"',
   # "nam": a truncated `name` in the suggestion-distance test, which pins that a
   # three-letter key still gets its obvious match
   "\"nam\"",
@@ -62,9 +67,18 @@ extend-ignore-re = [
   # dashboards (#956) are parsed by SigNoz, not by us — correcting the spelling
   # would make the import silently drop the setting
   "timePreferance",
+  # published MCP unread-body metric reason, kept stable for dashboards
+  "unparseable",
+  # "titel": a misspelt key in the specification registry's unknown-key test,
+  # which asserts a record carrying a key no table declares is refused.
+  # correcting it would delete the test's subject
+  "titel",
 ]
 
 [files]
 # vendored upstream build artifact (the mermaid runtime the mdbook build ships
 # so the docs render air-gapped). minified identifier soup, not our prose.
-extend-exclude = ["docs/dev-docs/mermaid.min.js"]
+extend-exclude = [
+  "docs/dev-docs/mermaid.min.js",
+  "crates/rolter-control/catalogue/",
+]

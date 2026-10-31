@@ -16,6 +16,7 @@ import {
   ListCell,
   ListEmptyRow,
   ListHeader,
+  ListHeaderCell,
   ListLoadingRow,
   STICKY_ACTIONS,
   ListRow,
@@ -27,6 +28,8 @@ import {
   useSort,
   primaryColumn,
 } from "@/components/screen";
+import { CacheReportingBadge } from "@/components/CacheReportingBadge";
+import { ProbeCacheDialog } from "@/components/ProbeCacheDialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { DeleteIconButton } from "@/components/ui/delete-icon-button";
@@ -40,17 +43,20 @@ import {
   fetchConfigProblems,
   fetchProviderGroups,
   fetchProviders,
+  canProbeCache,
   type GatewayConfigDto,
   type ProviderGroupRow,
   type ProviderRow,
 } from "@/lib/api";
 import { errorText } from "@/lib/error-copy";
+import { summarizeCacheReporting } from "@/lib/cache-reporting";
 import { providerKindName } from "@/lib/provider-kinds";
 import { providerUsage, type UsageEntry } from "@/lib/provider-usage";
 import { RowCapabilityScope } from "@/lib/can";
 import { rowGateScope } from "@/lib/provider-scope";
 import { useScope } from "@/lib/scope";
 import { useToast } from "@/lib/toast";
+import { useProviderCacheProbes } from "@/lib/use-provider-cache-probes";
 import { useScreenReady } from "@/lib/ux-react";
 
 const PROVIDERS_QUERY_KEY = ["providers"];
@@ -250,6 +256,11 @@ export default function Providers() {
   // the label the list is narrowed to, as `key=value`; "" is no filter
   const [labelFilter, setLabelFilter] = React.useState("");
   const [labelling, setLabelling] = React.useState<ProviderRow | null>(null);
+  const [probing, setProbing] = React.useState<ProviderRow | null>(null);
+
+  // one read of every verdict, shown per row; a failed read shows no badge
+  // rather than a "not probed yet" it has no evidence for
+  const cacheProbes = useProviderCacheProbes(scope.orgId);
 
   const labels = useSubjectLabels(scope.orgId, "provider");
 
@@ -299,7 +310,7 @@ export default function Providers() {
   });
   const filtering = !!q || !!labelFilter;
 
-  const GRID = `${primaryColumn(1)} 1.1fr 1.7fr 1fr 1fr 1fr 108px`;
+  const GRID = `${primaryColumn(1)} 1.1fr 1.7fr 1fr 1fr 1.3fr 1fr 108px`;
 
   return (
     <PageBody>
@@ -347,7 +358,7 @@ export default function Providers() {
 
       {/* the name column holds at least its floor, which the other columns used to
           give up at this width, so the table's floor carries it too (#2812) */}
-      <ListTable label={t("screens.providers.title")} minWidth={860}>
+      <ListTable label={t("screens.providers.title")} minWidth={1000}>
         <ListHeader grid={GRID}>
           <SortLabel
             label={t("pages.providers.colName")}
@@ -379,6 +390,7 @@ export default function Providers() {
             sort={sort}
             onCycle={(c) => cycle(c as never)}
           />
+          <ListHeaderCell>{t("pages.providers.colCache")}</ListHeaderCell>
           <SortLabel
             label={t("pages.providers.colScope")}
             col="scope"
@@ -414,6 +426,26 @@ export default function Providers() {
             </ListCell>
             <ListCell className="flex min-w-0 items-center">
               <CredentialSource provider={provider} />
+            </ListCell>
+            <ListCell className="flex min-w-0 flex-col items-start gap-1">
+              <CacheReportingBadge
+                state={summarizeCacheReporting([provider.id], cacheProbes.byProvider)}
+              />
+              {canProbeCache(provider.kind) && (
+                <RowCapabilityScope at={rowGateScope(provider, orgScope.byTeam)}>
+                  <GatedButton
+                    gate="provider:update"
+                    control="provider-probe-cache"
+                    size="sm"
+                    variant="outline"
+                    className="h-6 px-2 text-2xs"
+                    aria-label={t("pages.providers.probeOne", { name: provider.name })}
+                    onClick={() => setProbing(provider)}
+                  >
+                    {t("pages.providers.probeCache")}
+                  </GatedButton>
+                </RowCapabilityScope>
+              )}
             </ListCell>
             <ListCell className="grid">
               <ProjectScopeBadge projectId={provider.project_id} scope={orgScope} />
@@ -505,6 +537,12 @@ export default function Providers() {
         provider={sheet?.provider ?? null}
         defaultProjectId={scope.projectId}
         onDone={invalidate}
+      />
+
+      <ProbeCacheDialog
+        provider={probing}
+        suggestedModel={probing ? cacheProbes.byProvider?.get(probing.id)?.model : undefined}
+        onOpenChange={(open) => !open && setProbing(null)}
       />
 
       <ConfirmDialog

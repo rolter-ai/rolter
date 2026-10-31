@@ -5,6 +5,7 @@
 # Architecture
 
 - [Overview](architecture/overview.md)
+- [Request pipeline](architecture/request-pipeline.md)
 - [Load balancing](architecture/load-balancing.md)
 - [Caching](architecture/caching.md)
 - [Config & hot reload](architecture/config-and-hot-reload.md)
@@ -20,7 +21,8 @@
 - [MCP OAuth](architecture/mcp-oauth.md)
 - [SCIM provisioning](architecture/scim-provisioning.md)
 - [Security](architecture/security.md)
-- [LDAP authentication (not shipped)](architecture/ldap.md)
+- [Semantic guard policies](architecture/semantic-guards.md)
+- [LDAP authentication](architecture/ldap.md)
 - [Health & readiness](architecture/health-and-readiness.md)
 - [Observability](architecture/observability.md)
 - [Client disconnects](architecture/client-disconnects.md)
@@ -54,6 +56,12 @@
   - [ADR-0033 — The merge queue is how master stays green](adr/2026-09-18-merge-queue.md)
   - [ADR-0034 — CI is sized to the 20-slot runner pool](adr/2026-09-29-ci-runner-budget.md)
   - [ADR-0035 — System One decisions: one generic kind on a native pass-through route](adr/2026-10-14-system-one-decision-api.md)
+  - [ADR-0036 — PII restoration on streamed responses: the sanitizer restores the stream](adr/2026-10-27-pii-streaming-restoration.md)
+  - [ADR-0037 — Semantic guard policies on streamed responses: refuse or buffer, never bypass](adr/2026-10-27-semantic-guard-streaming.md)
+  - [ADR-0038 — A negotiated format version for /internal/snapshot](adr/2026-10-27-snapshot-format-version.md)
+  - [ADR-0039 — An in-process local classifier for semantic guard policies](adr/2026-10-28-local-semantic-classifier.md)
+  - [ADR-0040 — Per-org namespaces for routes, providers and provider groups](adr/2026-10-28-per-org-namespaces.md)
+  - [ADR-0041 — Single-use download tickets for the analytics CSV exports](adr/2026-10-29-export-download-tickets.md)
 
 # API
 
@@ -85,6 +93,7 @@
 - [Dashboard one-time secrets](development/secret-reveal.md)
 - [Dashboard capability gating](development/rbac-gating.md)
 - [Dashboard navigation rail](development/dashboard-navigation.md)
+- [Dashboard home](development/dashboard-home.md)
 - [Dashboard theme](development/dashboard-theme.md)
 - [Dashboard design context for agents (impeccable)](development/impeccable.md)
 - [Dashboard code highlighting](development/highlighting.md)
@@ -98,7 +107,9 @@
 - [Merge protection on master](development/merge-protection.md)
 - [The ci-ok gate and the title-edit fast path](development/ci-gating.md)
 - [API stability and the semver gate](development/api-stability.md)
+- [External specification registry](development/spec-registry.md)
 - [Stability markers](development/stability-markers.md)
+- [Deprecating a control-plane operation or field](development/deprecations.md)
 - [Config export and the import round trip](development/config-export-round-trip.md)
 - [Packaging (uv / cargo / docker)](development/packaging.md)
 - [Competitive study: an open-source gateway](development/experiential-comparison.md)
@@ -114,6 +125,7 @@
 - [Docker](deployment/docker.md)
 - [Kubernetes and Helm](deployment/kubernetes.md)
 - [llama.cpp](deployment/llama-cpp.md)
+- [Infinity](deployment/infinity.md)
 - [Hugging Face TEI](deployment/tei.md)
 - [Air-gapped install & operation](deployment/air-gapped.md)
 - [Backup, restore and KEK rotation](deployment/backup-and-restore.md)

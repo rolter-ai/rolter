@@ -34,7 +34,7 @@ concurrency:
 jobs:
   smoke:
     name: live interactions endpoint
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 20
     # the key lives in this environment, so a run against a real provider is
     # reviewable rather than something any workflow can reach for
@@ -76,7 +76,7 @@ jobs:
         with:
           toolchain: stable
 
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         if: ${{ steps.cred.outputs.configured == 'true' }}
         with:
           key: gemini-smoke

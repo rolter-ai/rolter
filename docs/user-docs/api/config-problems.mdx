@@ -51,6 +51,30 @@ A caller reads only the lines about rows it can see: those of the organizations 
 removed from a route that is still served, a denied operator URL, a budget period the gateway
 reads as monthly. It is for a person to read. Do not parse it.
 
+A stored value that this build of the control plane does not know, one a newer release wrote,
+one left behind by a downgrade, or one written by hand, also gets a line naming the row, the
+value and what happens to it:
+
+- a route whose balancing strategy is unknown is left out of the snapshot;
+- a provider whose kind is unknown is left out of the snapshot, with the route targets and group members that named it;
+- a budget or rate limit whose scope is unknown counts every request the gateways serve, every tenant's, so it binds well beyond the scope it was set for;
+- a budget whose period is unknown is enforced as a monthly cap;
+- a fallback target whose `takes_over` class is unknown is left out of its route.
+
+An organization's provider, route or provider group that has the same name (a group's slug) as
+a deployment-wide row of the control plane's config file gets a line too, starting
+`warning:`. It names the organization, the kind and the name, and says that the organization's
+row shadows the file's row for that organization's keys; every other key is served the file's
+row. Nothing is left out of the snapshot for it, so it has no `omitted` entry. The control
+plane refuses such a row when it is created, so one exists only when the file gained the name
+later or the row was written around the API. Rename the row, or remove the name from the file,
+to clear it.
+
+Each line belongs to the organization (and project) that owns the row, so a caller sees the
+lines about its own rows; a budget or rate limit on an unknown scope names no tenant and is
+the deployment's. The line goes once the control plane is upgraded to a release that knows
+the value, or the row is changed to one it does.
+
 `omitted` has one entry for each provider, route or config-file virtual key that is not served
 at all, so a client never has to read a sentence to learn that. It is additive: a client
 written against `problems` alone keeps working. A part dropped from an entry that is still

@@ -11,6 +11,8 @@ import { cn } from "@/lib/utils";
 // docs/dev-docs/development/dashboard-theme.md
 // the tone classes, shared with `Pill` (components/screen.tsx), so a status
 // tint has one source whichever shape carries it (#1989)
+// the label is `text-2xs`, 11px: the floor for any text in the dashboard, so a
+// badge can carry data (a price, a cap) and not only a status word (#2230)
 export const TONE_CLASSES = {
   neutral: "border-border bg-muted text-muted-foreground",
   outline: "border-border bg-transparent text-muted-foreground",
@@ -29,7 +31,7 @@ export const TONE_CLASSES = {
 export type BadgeTone = keyof typeof TONE_CLASSES;
 
 const badgeVariants = cva(
-  "inline-flex items-center gap-1 h-5 px-2 rounded-sm border text-3xs font-medium leading-none whitespace-nowrap",
+  "inline-flex items-center gap-1 h-5 px-2 rounded-sm border text-2xs font-medium leading-none whitespace-nowrap",
   {
     variants: { tone: TONE_CLASSES },
     defaultVariants: { tone: "neutral" },

@@ -1,6 +1,7 @@
 import type { Meta, StoryObj } from "@storybook/react";
 import { expect, userEvent, within } from "storybook/test";
 
+import { expectFieldHint } from "@/lib/story-hints";
 import { InfoHint } from "./info-hint";
 
 const NOTE =
@@ -155,5 +156,49 @@ export const StaysOpenOverTheNote: Story = {
     await expect(canvas.getByRole("tooltip")).toBeVisible();
     await userEvent.unhover(note);
     await expect(canvas.queryByRole("tooltip")).not.toBeInTheDocument();
+  },
+};
+
+/**
+ * A dialog body or a sheet scrolls, and a scroll container clips an absolutely
+ * placed child: the note used to be cut off at the edge of the field it explained
+ * (#487). It is fixed now, placed from the button, so it is whole over a
+ * container narrower than itself.
+ */
+export const EscapesAScrollContainer: Story = {
+  render: (args) => (
+    <div className="h-16 w-40 overflow-auto rounded-md border border-[color:var(--border-default)] p-3">
+      <span className="inline-flex items-center gap-1.5 text-sm">
+        Cap
+        <InfoHint {...args} />
+      </span>
+    </div>
+  ),
+  play: async ({ canvasElement }) => {
+    await expectFieldHint(canvasElement, "More info", /answers 429/);
+  },
+};
+
+/** Near the foot of the window there is no room under the button, so the note turns over. */
+export const TurnsOverNearTheBottomOfTheWindow: Story = {
+  render: (args) => (
+    <div className="fixed bottom-3 left-24">
+      <span className="inline-flex items-center gap-1.5 text-sm">
+        Queue capacity
+        <InfoHint {...args} />
+      </span>
+    </div>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const trigger = canvas.getByRole("button");
+    await userEvent.hover(trigger);
+    const note = canvas.getByRole("tooltip");
+    await expect(note.getBoundingClientRect().bottom).toBeLessThanOrEqual(
+      trigger.getBoundingClientRect().top,
+    );
+    // the pointer can still cross to it: the gap is bridged on this side too
+    await userEvent.hover(note);
+    await expect(canvas.getByRole("tooltip")).toBeVisible();
   },
 };

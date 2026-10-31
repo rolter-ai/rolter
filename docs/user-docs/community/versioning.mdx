@@ -21,6 +21,7 @@ The reasoning behind each decision is in
 | `/api/v1/*` control API    | Additive only; nothing is removed without **two minor releases and 90 days** of notice                               |
 | `rolter.toml` and env vars | A config file accepted by `X.0.0` is accepted by every `X.y.z`, with the same meaning                                |
 | Database schema            | Forward only. There is no downgrade; roll back by restoring a backup                                                 |
+| Control plane and gateway  | A gateway works with a control plane of its own release or a later one, for at least a deprecation window            |
 | Rust crates on crates.io   | **No promise.** They are internal implementation detail                                                              |
 
 Subsystems marked **experimental** are exempt from all of it — see
@@ -150,6 +151,33 @@ guarantee you should build a rollback plan on:
   rolling upgrade survivable. A migration that changes the meaning of an
   existing column breaks this; such a migration is treated as a breaking change
   and announced as one.
+
+---
+
+## Control plane and gateway
+
+Every gateway polls the control plane's `/internal/snapshot` for its
+configuration. During a rolling upgrade the two are different builds, so the
+snapshot carries a **format** number, and the gateway states the format it
+reads every time it polls. This is a promise between Rolter's own binaries,
+under the same window as the control API:
+
+- A gateway works with a control plane of its own release or a later one, for
+  as long as that control plane still serves the gateway's format. That is at
+  least **two minor releases and 90 days** after a newer format replaced it.
+  The release that changes the format announces the older one as deprecated
+  in the release notes, and every snapshot served in it carries `Deprecation`
+  and `Sunset` headers, which the gateway logs once.
+- A gateway **newer** than its control plane is not supported. It works when
+  the format did not change between the two builds, and is refused when it did.
+- A refusal is loud and early, never partial. The control plane answers `406`,
+  and the gateway keeps the config it last applied, logs why, and sets
+  `rolter_snapshot_format_refused`. A gateway that never received a snapshot
+  reports not ready. See [Upgrading](/deployment/upgrading#upgrade-order) for
+  the order to upgrade in.
+
+A script that reads `/internal/snapshot` gets the format it asks for in
+`formats` and no other promise.
 
 ---
 

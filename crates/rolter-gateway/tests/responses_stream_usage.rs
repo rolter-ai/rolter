@@ -190,7 +190,7 @@ fn config(
         targets: vec![Target {
             provider: "up".into(),
             model: Some("test-model".into()),
-            weight: 1,
+            ..Default::default()
         }],
         params: Default::default(),
         param_policy: Default::default(),
@@ -200,20 +200,10 @@ fn config(
         tenancy: None,
     });
     config.db_virtual_keys.push(VirtualKeyRecord {
-        access_policy: None,
         key_hash: rolter_auth::hash_key(&config.server.resolve_key_pepper(), &key()),
         id: KEY_ID.into(),
         org_id: org.into(),
-        team_id: String::new(),
-        project_id: String::new(),
-        user_id: String::new(),
-        models: vec![],
-        providers: vec![],
-        disabled: false,
-        expires_at: None,
-        cache: None,
-        business_unit_id: String::new(),
-        customer_id: String::new(),
+        ..Default::default()
     });
     config.model_prices.push(
         serde_json::from_value(json!({

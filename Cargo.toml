@@ -108,7 +108,7 @@ redis = { version = "1.7", default-features = false, features = [
 async-trait = "0.1"
 arc-swap = "1"
 dashmap = "6"
-parking_lot = "0.12"
+parking_lot = "0.13"
 crossbeam-queue = "0.3"
 zeromq = "0.6"
 rmpv = "1.3"
@@ -139,13 +139,27 @@ jsonwebtoken = { version = "11", default-features = false, features = [
 ] }
 base64 = "0.23"
 
-# ldap identity provider (#241), not yet wired to sign-in (#1826). 0.12, not 0.11: the older release pins rustls
+# ldap identity provider (#241, wired to sign-in by #1826). 0.12, not 0.11: the older release pins rustls
 # 0.21 / ring 0.16, which carry RUSTSEC-2025-0009 and -0010 and would have been
 # a second, stale TLS stack alongside the workspace's rustls 0.23. the
 # aws-lc-rs flavour matches the one crypto provider rustls is built with here
 # (reqwest 0.13, sqlx), so ldaps needs no system openssl and adds no provider
 ldap3 = { version = "0.12", default-features = false, features = [
   "tls-rustls-aws-lc-rs",
+] }
+
+# outbound mail for invitations (#1828). rustls on the same aws-lc-rs provider as
+# reqwest, sqlx and ldap3 (a second provider panics at the first handshake, and
+# `.config/deny.toml` bans ring), verifying through the platform's trust store
+# like the upstream client, so a private CA installed on the host applies to
+# the mail relay too. no native-tls, so no system openssl
+lettre = { version = "0.11", default-features = false, features = [
+  "builder",
+  "smtp-transport",
+  "tokio1",
+  "tokio1-rustls",
+  "aws-lc-rs",
+  "rustls-platform-verifier",
 ] }
 
 # postgres persistence (rolter-store `postgres` feature)

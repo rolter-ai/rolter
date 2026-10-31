@@ -36,6 +36,7 @@
 //! does not match the server it claims to be about, or an `iss` that does not
 //! match what was recorded ends the flow rather than warning and continuing.
 
+// spec-ref: mcp-authorization, oauth2, pkce, oauth2-token-exchange
 use std::collections::HashSet;
 
 use axum::extract::{Path, Query, State};
@@ -391,9 +392,101 @@ pub(crate) fn require_https(url: &str, field: &str) -> ApiResult<()> {
 
 #[derive(Debug, Deserialize, Default)]
 struct AuthorizeBody {
-    /// scopes to request; falls back to the server's `default_scopes`
+    /// scopes to request, taken exactly as given. Without them the request
+    /// asks for what the resource's challenge or the server's configuration
+    /// names; see [`select_scopes`] for the order
     #[serde(default)]
     scopes: Option<Vec<String>>,
+    /// scopes a resource refused a call for with `insufficient_scope` (#1417).
+    /// The request asks for these _on top of_ what the caller's live grant
+    /// already holds and what the server requires, so re-consenting widens the
+    /// grant rather than replacing it. Takes precedence over `scopes`
+    #[serde(default)]
+    step_up_scopes: Option<Vec<String>>,
+}
+
+/// How an authorization request's scopes were chosen, for the audit line.
+struct SelectedScopes {
+    scopes: Vec<String>,
+    source: &'static str,
+}
+
+/// Choose the scopes of an authorization request (#1417).
+///
+/// Highest precedence first:
+///
+/// 1. **`explicit`**, the caller's own list, used exactly as given.
+/// 2. **`challenge`**, the `scope` of the resource's `WWW-Authenticate`
+///    challenge: what the resource itself says the request needed, which the
+///    MCP specification asks a client to request in preference to anything it
+///    was configured with. The server's `required_scopes` are added, since a
+///    session lacking them is one the gateway will not use.
+/// 3. **`configured`**, the server's `default_scopes`.
+/// 4. **`supported`**, the resource's `scopes_supported`. It is a vocabulary,
+///    everything the resource understands, not a statement of need, so it is
+///    only the answer when nothing more specific exists, and requesting all of
+///    it is the price of an operator having configured nothing. `required` is
+///    added.
+/// 5. **`required`** alone, which may be empty.
+fn select_scopes(
+    explicit: Option<&[String]>,
+    challenge: &[String],
+    configured: &[String],
+    supported: &[String],
+    required: &[String],
+) -> SelectedScopes {
+    if let Some(explicit) = explicit {
+        return SelectedScopes {
+            scopes: explicit.to_vec(),
+            source: "explicit",
+        };
+    }
+    if !challenge.is_empty() {
+        return SelectedScopes {
+            scopes: union(challenge, required),
+            source: "challenge",
+        };
+    }
+    if !configured.is_empty() {
+        return SelectedScopes {
+            scopes: configured.to_vec(),
+            source: "configured",
+        };
+    }
+    if !supported.is_empty() {
+        return SelectedScopes {
+            scopes: union(supported, required),
+            source: "supported",
+        };
+    }
+    SelectedScopes {
+        scopes: required.to_vec(),
+        source: "required",
+    }
+}
+
+/// `first` then whatever of `second` it lacks, order kept.
+fn union(first: &[String], second: &[String]) -> Vec<String> {
+    let mut merged = first.to_vec();
+    for scope in second {
+        if !merged.contains(scope) {
+            merged.push(scope.clone());
+        }
+    }
+    merged
+}
+
+/// The scope tokens of a request body list, or a `400` naming the field.
+fn require_scope_tokens(scopes: &[String], field: &str) -> ApiResult<()> {
+    if scopes
+        .iter()
+        .all(|scope| rolter_core::mcp_challenge::is_scope_token(scope))
+    {
+        return Ok(());
+    }
+    Err(invalid(format!(
+        "{field} must hold OAuth scope tokens: printable ASCII with no space, quote or backslash"
+    )))
 }
 
 #[derive(Debug, Serialize)]
@@ -436,9 +529,37 @@ async fn start_authorize(
     // is waiting on this request, and what it resolves is cached for the
     // background paths that must not
     let client = resolve_client(&state, &server, &resource, true).await?;
-    let requested = body
-        .and_then(|SafeJson(b)| b.scopes)
-        .unwrap_or_else(|| server.default_scopes.clone());
+    let body = body.map(|SafeJson(b)| b).unwrap_or_default();
+    require_scope_tokens(body.scopes.as_deref().unwrap_or_default(), "scopes")?;
+    require_scope_tokens(
+        body.step_up_scopes.as_deref().unwrap_or_default(),
+        "step_up_scopes",
+    )?;
+    let selected = match body.step_up_scopes.as_deref().filter(|s| !s.is_empty()) {
+        // a step-up widens the live grant; asking for only the new scope would
+        // let the re-consent replace the old set with the narrower one
+        Some(wanted) => {
+            let held = McpOAuthRepo(pool(&state))
+                .list_grants(server.org_id, Some(account_id))
+                .await?
+                .into_iter()
+                .find(|grant| grant.server_id == server.id && grant.revoked_at.is_none())
+                .map(|grant| grant.scopes)
+                .unwrap_or_default();
+            SelectedScopes {
+                scopes: union(&union(&held, wanted), &server.required_scopes),
+                source: "step_up",
+            }
+        }
+        None => select_scopes(
+            body.scopes.as_deref(),
+            &client.scopes.challenge,
+            &server.default_scopes,
+            &client.scopes.supported,
+            &server.required_scopes,
+        ),
+    };
+    let requested = selected.scopes;
 
     let (verifier, challenge) = pkce_pair();
     let csrf_state = random_token();
@@ -476,6 +597,7 @@ async fn start_authorize(
             "issuer": client.issuer,
             "resource": resource.as_str(),
             "scopes": requested,
+            "scope_source": selected.source,
         }),
     )
     .await;
@@ -507,6 +629,8 @@ struct ResolvedClient {
     iss_supported: bool,
     /// `discovery`, `cache` or `configured`, for the audit line
     source: &'static str,
+    /// what the resource said about scopes; empty unless discovery ran just now
+    scopes: mcp_oauth_discovery::DiscoveredScopes,
 }
 
 /// Resolve a server's OAuth endpoints.
@@ -579,6 +703,7 @@ async fn resolve_client(
                         issuer: Some(endpoints.issuer),
                         iss_supported: endpoints.iss_supported,
                         source: "discovery",
+                        scopes: endpoints.scopes,
                     });
                 }
                 Err(error) => tracing::info!(
@@ -600,6 +725,7 @@ async fn resolve_client(
                 issuer: Some(issuer),
                 iss_supported: server.oauth_discovered_iss_supported,
                 source: "cache",
+                scopes: Default::default(),
             });
         }
     }
@@ -613,6 +739,7 @@ async fn resolve_client(
             // the RFC 9207 table, where a response with no `iss` proceeds
             iss_supported: false,
             source: "configured",
+            scopes: Default::default(),
         }),
         _ => Err(invalid(format!(
             "mcp server '{}' publishes no protected resource metadata and has no authorize_url \
@@ -1000,6 +1127,9 @@ async fn complete_consent(
         }),
     )
     .await;
+    // a session now exists for this user, which is what a server behind OAuth
+    // needs before it will answer tools/list (#1283)
+    crate::mcp_discovery::discover_in_background(state, server.id, Some(login.user_id));
     Ok(ConsentCompleted {
         grant_id: grant.id,
         session_id: session.id,
@@ -1563,7 +1693,7 @@ async fn owned_session(
     match principal {
         Principal::Superadmin { .. } => Ok(context),
         Principal::User(user) if user.id == context.user_id => Ok(context),
-        Principal::User(_) => Err(ApiError::Forbidden),
+        Principal::User(_) | Principal::Token(_) => Err(ApiError::Forbidden),
     }
 }
 
@@ -1640,6 +1770,58 @@ async fn log_audit_system(
 
 #[cfg(test)]
 mod tests {
+    fn names(items: &[&str]) -> Vec<String> {
+        items.iter().map(|item| (*item).to_string()).collect()
+    }
+
+    #[test]
+    fn scopes_are_chosen_by_the_documented_precedence() {
+        let required = names(&["req"]);
+        let pick = |explicit: Option<&[String]>,
+                    challenge: &[&str],
+                    configured: &[&str],
+                    supported: &[&str]| {
+            let selected = select_scopes(
+                explicit,
+                &names(challenge),
+                &names(configured),
+                &names(supported),
+                &required,
+            );
+            (selected.scopes, selected.source)
+        };
+        // an explicit list is used as given, even when empty
+        let explicit = names(&["only"]);
+        assert_eq!(
+            pick(Some(&explicit), &["c"], &["d"], &["s"]),
+            (names(&["only"]), "explicit")
+        );
+        assert_eq!(
+            pick(Some(&[]), &["c"], &["d"], &["s"]),
+            (vec![], "explicit")
+        );
+        // the challenge beats configuration, and carries the required scopes
+        assert_eq!(
+            pick(None, &["c1", "c2"], &["d"], &["s"]),
+            (names(&["c1", "c2", "req"]), "challenge")
+        );
+        // a challenge scope that is already required is not repeated
+        assert_eq!(
+            pick(None, &["req"], &[], &[]),
+            (names(&["req"]), "challenge")
+        );
+        // configuration beats scopes_supported, and is not padded
+        assert_eq!(
+            pick(None, &[], &["d"], &["s"]),
+            (names(&["d"]), "configured")
+        );
+        assert_eq!(
+            pick(None, &[], &[], &["s"]),
+            (names(&["s", "req"]), "supported")
+        );
+        assert_eq!(pick(None, &[], &[], &[]), (names(&["req"]), "required"));
+    }
+
     use super::*;
 
     /// #1949: a token endpoint whose name resolves only to an address the

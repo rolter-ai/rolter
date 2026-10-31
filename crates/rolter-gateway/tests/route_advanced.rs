@@ -86,7 +86,7 @@ fn config_over(providers: &[SocketAddr], advanced: AdvancedModelConfig) -> Gatew
         targets.push(Target {
             provider: format!("up{i}"),
             model: Some("up-model".into()),
-            weight: 1,
+            ..Default::default()
         });
     }
     config.routes.push(ModelRoute {

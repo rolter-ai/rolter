@@ -397,6 +397,38 @@ describe("api client", () => {
   });
 
   describe("getAnalytics (via fetchAnalyticsSummary)", () => {
+    // a session-token 401 on an analytics read signs the session out like any
+    // other call (#3226); the admin-token shape of a control plane with no
+    // database (#1909) is the one 401 that is not an expired session
+    describe("a 401 (#3226)", () => {
+      const refused = (code: string) =>
+        new Response(JSON.stringify({ error: { message: "no", code } }), { status: 401 });
+
+      it("signs the session out when the token is dead", async () => {
+        localStorageMock["rolter.session.token"] = "sess-1";
+        let signalled = 0;
+        setSessionExpiredHandler(() => {
+          signalled += 1;
+        });
+        fetchMock.mockResolvedValueOnce(refused("unauthenticated"));
+        await expect(fetchAnalyticsSummary()).rejects.toThrow();
+        expect(signalled).toBe(1);
+        setSessionExpiredHandler(null);
+      });
+
+      it("does not sign out when the control plane wants the admin token", async () => {
+        localStorageMock["rolter.session.token"] = "sess-1";
+        let signalled = 0;
+        setSessionExpiredHandler(() => {
+          signalled += 1;
+        });
+        fetchMock.mockResolvedValueOnce(refused("admin_token_required"));
+        await expect(fetchAnalyticsSummary()).rejects.toThrow();
+        expect(signalled).toBe(0);
+        setSessionExpiredHandler(null);
+      });
+    });
+
     it("should fetch analytics data successfully", async () => {
       const summaryData = {
         requests: 100,

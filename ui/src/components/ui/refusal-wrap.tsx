@@ -41,7 +41,7 @@ export function RefusalWrap({
       {...rest}
       className={cn(
         shown
-          ? "inline-flex rounded-[6px] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          ? "inline-flex rounded-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
           : "contents",
       )}
       {...(shown

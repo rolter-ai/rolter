@@ -158,7 +158,9 @@ def test_all_targets_down_returns_clean_5xx(chaos: str) -> None:
     """chaos-alldown = [bad500, bad500b]: with no healthy sibling the gateway
     exhausts retries and returns a bounded 5xx carrying the OpenAI error shape."""
     resp = _chat(chaos, "chaos-alldown")
-    assert resp.status_code >= 500, f"expected a 5xx when all targets are down, got {resp.status_code}"
+    assert resp.status_code >= 500, (
+        f"expected a 5xx when all targets are down, got {resp.status_code}"
+    )
     assert resp.status_code < 600
     _assert_openai_error(resp)
 
@@ -187,7 +189,9 @@ def test_circuit_breaker_opens_on_sustained_failure(chaos: str) -> None:
     for _ in range(9):
         _chat(chaos, "chaos-alldown")
     after = _metric(chaos, "rolter_breaker_opened_total")
-    assert after > before, f"breaker never re-tripped open under sustained failure ({before} -> {after})"
+    assert after > before, (
+        f"breaker never re-tripped open under sustained failure ({before} -> {after})"
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -200,7 +204,9 @@ def test_slow_upstream_times_out_within_bound(chaos: str) -> None:
     start = time.monotonic()
     resp = _chat(chaos, "chaos-slow", timeout=30.0)
     elapsed = time.monotonic() - start
-    assert resp.status_code >= 500, f"a stalled upstream should surface a 5xx, got {resp.status_code}"
+    assert resp.status_code >= 500, (
+        f"a stalled upstream should surface a 5xx, got {resp.status_code}"
+    )
     _assert_openai_error(resp)
     # 1 initial + up to 2 retries, each bounded by the ~2s request timeout, plus
     # backoff — comfortably under 20s and nowhere near the 60s default

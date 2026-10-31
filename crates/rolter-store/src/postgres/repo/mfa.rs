@@ -15,8 +15,11 @@ use uuid::Uuid;
 use rolter_core::{Error, Result};
 
 use super::super::crypto::Kek;
-use super::super::models::{MfaChallenge, TotpFactorStatus};
+use super::super::models::{MfaChallenge, OrgMemberMfa, TotpFactorStatus};
 use super::support::store_err;
+
+/// Every column of `mfa_challenges` that its row type reads.
+const MFA_CHALLENGE_COLUMNS: &str = "id, user_id, attempts, expires_at, after_lock";
 
 pub struct MfaRepo<'a>(pub &'a PgPool);
 
@@ -288,6 +291,40 @@ impl MfaRepo<'_> {
         Ok(result.rows_affected() > 0)
     }
 
+    /// Every active member of the org's tree (an org-scoped grant, or one on a
+    /// team or project under it) with whether they hold an armed factor.
+    ///
+    /// The roster an admin reads before turning `mfa_policy` up to a
+    /// `required_*` value: it counts the members the policy would send through
+    /// enrolment, and names them. A deactivated account is left out, since no
+    /// policy can lock out someone who cannot sign in anyway.
+    pub async fn org_roster(&self, org_id: Uuid) -> Result<Vec<OrgMemberMfa>> {
+        sqlx::query_as(
+            "select u.id as user_id, u.email, u.is_superadmin,
+                    (f.confirmed_at is not null) as enabled,
+                    case when f.confirmed_at is not null
+                         then (select count(*) from user_recovery_codes c
+                               where c.user_id = u.id and c.used_at is null)
+                         else 0 end as recovery_codes_remaining
+             from users u
+             left join user_totp_factors f on f.user_id = u.id
+             where u.deactivated_at is null
+               and exists (
+                   select 1 from memberships m
+                   left join teams t on t.id = m.team_id
+                   left join projects p on p.id = m.project_id
+                   left join teams pt on pt.id = p.team_id
+                   where m.user_id = u.id
+                     and (m.org_id = $1 or t.org_id = $1 or pt.org_id = $1)
+               )
+             order by u.email",
+        )
+        .bind(org_id)
+        .fetch_all(self.0)
+        .await
+        .map_err(store_err)
+    }
+
     /// How many of the user's recovery codes are still unspent.
     pub async fn remaining_recovery_codes(&self, user_id: Uuid) -> Result<i64> {
         let (count,): (i64,) = sqlx::query_as(
@@ -312,11 +349,11 @@ impl MfaRepo<'_> {
         purpose: ChallengePurpose,
         after_lock: bool,
     ) -> Result<MfaChallenge> {
-        sqlx::query_as(
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "insert into mfa_challenges (user_id, token_hash, expires_at, purpose, after_lock)
              values ($1, $2, $3, $4, $5)
-             returning id, user_id, attempts, expires_at, after_lock",
-        )
+             returning {MFA_CHALLENGE_COLUMNS}"
+        )))
         .bind(user_id)
         .bind(token_hash)
         .bind(expires_at)
@@ -342,12 +379,12 @@ impl MfaRepo<'_> {
         purpose: ChallengePurpose,
         max_attempts: i32,
     ) -> Result<Option<MfaChallenge>> {
-        sqlx::query_as(
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "update mfa_challenges set attempts = attempts + 1
              where token_hash = $1 and purpose = $2 and expires_at > now()
                and attempts < $3
-             returning id, user_id, attempts, expires_at, after_lock",
-        )
+             returning {MFA_CHALLENGE_COLUMNS}"
+        )))
         .bind(token_hash)
         .bind(purpose.as_str())
         .bind(max_attempts)
@@ -368,11 +405,11 @@ impl MfaRepo<'_> {
         purpose: ChallengePurpose,
         max_attempts: i32,
     ) -> Result<Option<MfaChallenge>> {
-        sqlx::query_as(
-            "select id, user_id, attempts, expires_at, after_lock from mfa_challenges
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "select {MFA_CHALLENGE_COLUMNS} from mfa_challenges
              where token_hash = $1 and purpose = $2 and expires_at > now()
-               and attempts < $3",
-        )
+               and attempts < $3"
+        )))
         .bind(token_hash)
         .bind(purpose.as_str())
         .bind(max_attempts)
@@ -393,11 +430,11 @@ impl MfaRepo<'_> {
         token_hash: &str,
         purpose: ChallengePurpose,
     ) -> Result<Option<MfaChallenge>> {
-        sqlx::query_as(
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "delete from mfa_challenges
              where token_hash = $1 and purpose = $2 and expires_at > now()
-             returning id, user_id, attempts, expires_at, after_lock",
-        )
+             returning {MFA_CHALLENGE_COLUMNS}"
+        )))
         .bind(token_hash)
         .bind(purpose.as_str())
         .fetch_optional(self.0)

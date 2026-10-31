@@ -50,7 +50,7 @@ gets (see [One org never reaches another](#one-org-never-reaches-another-1844-18
    any variant) is a provider the key may use (`key_allows_route`); refused as
    `provider_not_allowed`.
 
-The per-target provider filter in `pick_untried` still runs during balancing;
+The per-target provider filter in `TargetPool::pick` still runs during balancing;
 the route gate only guarantees that at least one target is reachable, so the
 caller gets an explicit `403` rather than a failed target selection.
 
@@ -124,6 +124,20 @@ file carry none. `Tenancy::admits` decides whether a key may use a row:
 | no `tenancy` (config file)     | admitted                             | admitted                                    |
 | `tenancy` of the key's own org | admitted                             | admitted                                    |
 | `tenancy` of another org       | refused                              | admitted                                    |
+
+Names are per org (#1857, [ADR-0040](../adr/2026-10-28-per-org-namespaces.md)):
+the snapshot keys routes by `(org, model)` and provider and group slugs by
+`(org, slug)` (`rolter_core::namespace::Namespaced`), with config-file rows in
+the global namespace. A key resolves a name in its own org first, then
+globally; a key with no org gets the global row, or the one org row when only
+one org has the name, and a name two orgs share is unknown to it. A route's
+targets, a variant's and a group's members resolve the same way from the row's
+own org, so a row never names another org's provider. An org's own row the key
+may not use (a `project_only` route, or a provider or group scoped to another
+project) is no match for it either: the name goes on to the global row, under
+that row's own tenancy check (#3546, ADR-0040 addendum). Per-target state is kept
+apart too: providers are keyed by a runtime id and routes by a namespace, each
+the bare name unless another org shares it, then `name@org`.
 
 Every way of addressing a model resolves through `Snapshot::resolve_for`,
 which applies the rule before anything else: a named route; then
@@ -221,19 +235,23 @@ The write path keeps the snapshot inside that rule:
   gets, so the refusal does not confirm that the provider exists. The snapshot
   loader also drops, with a warning, any cross-org target or member written
   before the guard existed, rather than serve it.
-- Route names and provider names are unique across the whole deployment,
-  because the gateway indexes them that way and `Config::validate` refuses a
-  snapshot holding a duplicate, which would stop config propagation for every
-  org at once.
-- Provider slugs and provider-group slugs form one address namespace across
-  the deployment, bootstrap-file rows included, because the gateway resolves
-  `provider-slug/model` and `group-slug/model` from it. `Config::validate` does
-  not check slugs; a second holder would silently take the address instead, and
-  a group whose slug a provider holds would drop out of routing. So a provider
-  slug is refused when any provider or group holds it, and the same for a
-  group slug, on create and on a slug change. The gateway indexes first-wins in
-  file order, bootstrap rows before database rows, so a slug two rows still
-  share from before the guard resolves the same way on every build.
+- Route names and provider names are unique per org, not across the
+  deployment (#1857, [ADR-0040](../adr/2026-10-28-per-org-namespaces.md)):
+  the gateway names rows `(org, name)` and `Config::validate` refuses a name
+  only twice in one org. A route name is held once across all of an org's
+  projects, since a key resolves a name per org (`RouteRepo::model_in_use`,
+  `ProviderRepo::name_in_use`, both scoped by org).
+- Provider slugs and provider-group slugs form one address namespace per org,
+  because the gateway resolves `provider-slug/model` and `group-slug/model`
+  from it; a bootstrap-file row's slug is kept from every org. `Config::validate`
+  does not check slugs; a second holder would silently take the address
+  instead, and a group whose slug a provider of its org holds would drop out of
+  routing. So a provider slug is refused when a provider or group of the same
+  org (or a bootstrap row) holds it, and the same for a group slug, on create
+  and on a slug change (`ProviderRepo::address_slug_in_use`). The gateway
+  indexes first-wins in file order, bootstrap rows before database rows, so a
+  slug two rows of one org still share from before the guard resolves the same
+  way on every build.
 - A route name may contain `/` (`Qwen/Qwen2.5-7B`), but not as the address of
   another org's or a bootstrap-file provider or group (`edge/…` while another
   org holds `edge`), and a database route may not be named `fake-llm`. The
@@ -247,11 +265,13 @@ The write path keeps the snapshot inside that rule:
   reach the other org's route. An operator may still replace the builtin:
   a bootstrap-file route, a `[[models.default]]` or a `rolter-seed --import`
   named `fake-llm` shadows it.
-- Every refusal is a `409` ("… is already in use in this deployment; choose
-  another") that never says which org holds the name. `rolter-seed --import`
-  refuses the same collisions, and the startup seeders (`[[providers.default]]`,
-  `[[provider_groups.default]]`, `[[models.default]]`) skip a colliding default
-  with a warning instead of writing it. Per-org namespaces are #1857.
+- Every refusal is a `409`: "… is already in use in this organization; choose
+  another" for the caller's own org, and "… in this deployment" for a
+  bootstrap-file row or another org's address, which never says which org
+  holds it. `rolter-seed --import` refuses the same collisions, and the startup
+  seeders (`[[providers.default]]`, `[[provider_groups.default]]`,
+  `[[models.default]]`) skip a colliding default with a warning instead of
+  writing it.
 
 The dashboard never sees `tenancy`: `redact_config_for_dashboard` clears it
 along with the credentials, and drops the database key records, which name
@@ -265,87 +285,6 @@ applies the same cut to its sentences: the sanitize runs on the full config and
 on the caller's cut, and only lines both runs produce are kept, so a line about
 another tenant's row (or one that only breaks together with it) never appears.
 The store's own lines carry a `ProblemOwner` (deployment, tenant or scope).
-
-### One org never reaches another (#1844, #1845)
-
-Routes, providers and provider groups live in the store under an org, and a
-route under a project as well. The snapshot carries that as `tenancy`
-(`rolter_core::Tenancy`) on every `ModelRoute`, `ProviderConfig` and
-`ProviderGroupConfig` it loads from the store; rows from a gateway-only config
-file carry none. `Tenancy::admits` decides whether a key may use a row:
-
-| row                            | key minted in the store (has an org) | key from the gateway's config file (no org) |
-| ------------------------------ | ------------------------------------ | ------------------------------------------- |
-| no `tenancy` (config file)     | admitted                             | admitted                                    |
-| `tenancy` of the key's own org | admitted                             | admitted                                    |
-| `tenancy` of another org       | refused                              | admitted                                    |
-
-Every way of addressing a model resolves through `Snapshot::resolve_for`,
-which applies the rule before anything else: a named route; then
-`provider-slug/model`, whose synthetic route takes the provider's tenancy; then
-`group-slug/model`, whose synthetic route takes the group's. A row the key's
-org may not use is a miss, not a refusal. Another org's route named
-`edge/gpt-4o` therefore never shadows this org's own `edge` provider, and
-another org's route named `fake-llm` never hides the builtin. The key gets the
-`404 model_not_found` a model nobody configured gets, so the answer does not
-confirm the row exists. `GET /v1/models` lists providers, routes and groups
-through the same rule, so a key neither lists nor calls another org's rows.
-Before #1844 any key could address any org's provider by slug and spend that
-org's credential.
-
-`advanced.visibility.project_only` narrows a route further, to keys minted in
-the project the route lives in, and a key of another project gets the same
-miss. It is off by default (a route is visible to its whole org), and an admin
-turns it on as **This project** under the model's **Access & permissions**. A
-key from the gateway's config file is not narrowed. It narrows the named route
-only; confining the provider or group behind it is the provider's own project
-scope, described under
-[Project-scoped providers and groups](#project-scoped-providers-and-groups-1919).
-
-The write path keeps the snapshot inside that rule:
-
-- A route target or a provider-group member must name a provider in the route's
-  (or group's) own org. Another org's provider id gets the `404` an unknown id
-  gets, so the refusal does not confirm that the provider exists. The snapshot
-  loader also drops, with a warning, any cross-org target or member written
-  before the guard existed, rather than serve it.
-- Route names and provider names are unique across the whole deployment,
-  because the gateway indexes them that way and `Config::validate` refuses a
-  snapshot holding a duplicate, which would stop config propagation for every
-  org at once.
-- Provider slugs and provider-group slugs form one address namespace across
-  the deployment, bootstrap-file rows included, because the gateway resolves
-  `provider-slug/model` and `group-slug/model` from it. `Config::validate` does
-  not check slugs; a second holder would silently take the address instead, and
-  a group whose slug a provider holds would drop out of routing. So a provider
-  slug is refused when any provider or group holds it, and the same for a
-  group slug, on create and on a slug change. The gateway indexes first-wins in
-  file order, bootstrap rows before database rows, so a slug two rows still
-  share from before the guard resolves the same way on every build.
-- A route name may contain `/` (`Qwen/Qwen2.5-7B`), but not as the address of
-  another org's or a bootstrap-file provider or group (`edge/…` while another
-  org holds `edge`), and a database route may not be named `fake-llm`. The
-  gateway already treats those routes as absent for other orgs' keys; the
-  refusal protects keys from a config file, which carry no org and would reach
-  the route instead of the address. It runs one way only: a provider or group
-  created later with the slug of another org's existing `slug/…` route is
-  accepted, because refusing it would let any org reserve slugs by naming
-  routes after them. That org's own keys get their address; org-less keys (and
-  anonymous callers with `require_auth` off) resolve the named route first and
-  reach the other org's route. An operator may still replace the builtin:
-  a bootstrap-file route, a `[[models.default]]` or a `rolter-seed --import`
-  named `fake-llm` shadows it.
-- Every refusal is a `409` ("… is already in use in this deployment; choose
-  another") that never says which org holds the name. `rolter-seed --import`
-  refuses the same collisions, and the startup seeders (`[[providers.default]]`,
-  `[[provider_groups.default]]`, `[[models.default]]`) skip a colliding default
-  with a warning instead of writing it. Per-org namespaces are #1857.
-
-The dashboard never sees `tenancy`: `redact_config_for_dashboard` clears it
-along with the credentials, and drops the database key records, which name
-every key's org, team, project and creator. `GET /api/v1/config` still lists
-every org's providers, routes and groups, so it needs a session of any role
-(#1840).
 
 ### Empty key sets
 
@@ -378,6 +317,59 @@ equally to the admin (`/api/v1/projects/{id}/virtual-keys`) and self-service
 
 Rotation replaces a secret without renewing the decision: the fresh key inherits
 the old one's `expires_at`, and its `purpose`.
+
+### Caps chosen at mint time (#1171)
+
+A key's spend or rate cap is not a column on `virtual_keys`: budgets and rate
+limits already scope to `virtual_key` (`BudgetScope::Key`), the gateway already
+matches them against `KeyMeta::id`, and `config_version` is already bumped by
+their statement triggers, so a second place to store the same number would only
+have been a second place to disagree. What was missing was a way to decide it
+where the key is decided. Both mint bodies (`CreateVirtualKey`, `MintKey`) now
+take optional `budget` (`limit_usd`, `period`) and `rate_limit` (`rpm`, `tpm`),
+validated by the same functions the budgets and rate-limits endpoints use
+(`KeyCapsBody`), **before** a key exists, and written by
+`VirtualKeyRepo::create_with_caps` in the key's own transaction. A refused cap
+therefore leaves no key behind (the plaintext is shown once, so a half-made key
+could not be repaired), and a polling gateway sees the key and its cap in the
+same snapshot or not at all.
+
+Two lifecycle edges would otherwise leak the bound. **Rotation** copies the old
+key's caps onto the new one (`KeyCaps::inherit_from`), as it copies the expiry;
+a rotation that dropped them would turn "rotate the leaked key" into "hand back
+an unbounded one". **Deleting** a key deletes the rows scoped to it, since
+`budgets` and `rate_limits` carry no foreign key to a scope and would otherwise
+list, and ship in every snapshot, caps for a key that no longer exists.
+Editing a cap afterwards is the ordinary `PATCH /api/v1/budgets/{id}`.
+
+### Caps on a person (#1830)
+
+`BudgetScope::User` (`budgets.scope_type = 'user'`, migration `0096`) counts
+every key a person minted. The gateway needs no new lookup: `KeyMeta::user_id`
+is `virtual_keys.created_by`, `ScopeIds::user` carries it, and `applicable()`
+matches it like any other scope id. A key nobody minted has an empty user, and
+an empty id never matches, so config-file and admin-minted keys are outside
+every user cap.
+
+A person belongs to no org, which is the one real design problem: RBAC
+resolves a capability in an org/team/project chain. The cap is therefore
+narrowed with `within_org_id` / `within_project_id` (nullable, mutually
+exclusive, `user` only, both enforced by check constraints and
+`ScopeWithin` in the snapshot) and authorized by that place, in
+`ScopeChain::from_cap`. A cap with neither counts the person everywhere, has
+no chain, and `authorize_cap` passes only a superadmin. The narrowing is also
+part of the counter: `rolter:budget:user:<id>:org:<org>:<bucket>`
+(`BudgetConfig::spend_key`, and the rate limiter's `limit_prefix`), because two
+caps on one person must not share a counter. The org-wide lists (`in_org!`)
+pick up a user row through its narrowing, so an un-narrowed one appears in no
+org's list. The FKs on `within_*` cascade, and `UserRepo::delete` removes the
+caps on the person, since `scope_id` has none.
+
+`GET /api/v1/me/budgets` (`my_budget:read`, any signed-in role) reads the
+caller's rows by the session's user id and reads the counters the way
+`/budgets/spend` does, so an unreadable counter is `null`, not zero. Tested by
+`tests/control/budgets.rs` (authorization, snapshot, self-read) and the
+gateway's `tests/scoped_budgets.rs` (two keys, one cap; narrowing).
 
 ### Personal keys follow their creator (#1841)
 
@@ -508,6 +500,29 @@ flowchart LR
   Caps --> Action{allowed?}
 ```
 
+### Deployment roles: an operator and a security auditor (#1834)
+
+Everything deployment-scoped used to be `Authority::Superadmin`, and `custom_grants_allow` refuses a superadmin requirement on purpose: a deployment setting has no org to define a role in, so a custom role reaching one would be an escalation path out of the tenant. Two real jobs still forced a superadmin account, which also reads every tenant, so the table gained a third kind of deployment authority beside it.
+
+- **`users.deployment_role`** (migration `0100`, a nullable column with a check constraint) holds `operator` or `security_auditor`. One role per account, set only through `PUT /api/v1/users/{id}/deployment-role` (`crud::users::set_deployment_role`), whose capability `deployment_role:update` is `Authority::Superadmin`, so neither role can grant itself or the other. `UserRepo::set_deployment_role` is its own statement and stays out of `update_account`, whose `set` list fires the `users` `config_version` trigger; the gateway never reads the column, so no trigger is needed.
+- **`Authority::Deployment(&[DeploymentRole])`** names the roles that reach a row besides a superadmin. `authorize`, `authorize_superadmin` and `ScopeFilter::allows_as` answer it from the account row the extractor already loaded (`Principal::deployment_role`), never from memberships or custom grants, so a scoped admin and a custom role still cannot reach it. An unrecognised stored value reads as no role. `superadmin_cap!` accepts both kinds, because both are guards with no scope to resolve a role in, which is why the 86 existing handlers changed nothing.
+- **`Authority::RoleOrDeployment(Role, &[DeploymentRole])`** (#3362) is "a scoped role at the row's scope, or one of these deployment roles", for a row delegated to the people who own a slice that a deployment role still runs whole: the alert rows (`ADMIN_OR_OPERATOR`). `authorize`, `ScopeFilter::allows_as` and `allowed_for` (`rbac/effective`) pass the deployment role at every scope and otherwise decide the scoped half as for `Authority::Role`, custom grants included; an API token holds no deployment role and gets the scoped half alone. The matrix publishes both halves of one action (`minimum_role` and `deployment_roles`), which the dashboard reads as `<role>|<deployment role>` (`ScopedOrDeployment` in `ui/src/lib/rbac-capabilities.ts`). The alerting handlers carry no operator special case any more: only the deployment-wide channel or rule, which has no scope to resolve a role in, is still refused to everyone but a superadmin or an operator.
+- **The rows.** `OPERATOR` covers `cluster_node`, `runtime_policy`, `feature_flags` and `connector`, every action they define; `alert_channel`, `alert_rule` and `alert_history` are `ADMIN_OR_OPERATOR` (above), so an operator reaches them as well. `AUDITOR` covers the reads of `security_settings`, `logging_settings`, `compatibility_policy`, `guardrail_rule`, `guardrail_provider`, `guardrail_policy`, `deployment_audit_log`, `deployment_user` (the audit log names an actor from any org by that list) and `config_export`. Tests pin the split: the auditor is named only on reads, the roles do not overlap, no row names a tenant or credential resource (`request_payload`, `virtual_key`, `provider`, `membership`, `custom_role`, ...) and a deployment row is `deployment`-scoped.
+- **What the API publishes.** The matrix carries `deployment_roles` per action and for the table as a whole, and a `Deployment` action has `superadmin_only: false` and no `minimum_role` (a `RoleOrDeployment` action carries both its `minimum_role` and its `deployment_roles`), so a client that predates the field reads it as unreachable at any scope. `rbac/effective` carries `deployment_role` and puts the pairs the role opens in `allowed`, decided by the same rule as the guard (`allowed_for`).
+- **The dashboard.** `superadminOnly(Screen, key, gate)` takes the screen's `resource:read` pair and blocks on an explicit `no` for it, so the operator opens Cluster, Performance, Feature flags, Alerting and Connectors, and the auditor opens Security, Logs settings, Compatibility, Guardrails and the audit log. The Roles & Permissions screen draws a row a deployment role reaches like a superadmin row, and a custom role cannot tick it. Assigning the role from a screen is not built: use the endpoint.
+
+### Scoped API tokens for automation (#1836)
+
+`api_tokens` (migration `0101`) holds a service account: a name, one role at one org, team or project, an expiry, and a peppered sha-256 of a `rolter_api_<64 hex>` secret (`session_pepper()`, like sessions and SCIM tokens). The plaintext is returned once, by the mint (`POST /api/v1/orgs/{org_id}/api-tokens`) or a rotation (`POST /api/v1/api-tokens/{id}/rotate`), and is nowhere else, including the audit log. The role is a built-in one or a custom role of the org, exactly one of the two by a check constraint; neither column can express superadmin or a deployment role. The scope is stored as the whole chain (`org_id` always, `team_id` for a team or project token, `project_id` for a project token), so a row names the chain it is checked at without a lookup. The gateway never reads the table, so it has no `bump_config_version()` trigger.
+
+- **Resolution.** `Principal::from_request_parts` tries the admin token first, then, for a bearer starting with `rolter_api_`, `api_tokens::resolve`, then the session lookup. The prefix only picks the table: a session never has it, and a token that is not live is `401`, never retried as a session. `find_active_by_hash` filters `revoked_at is null and (expires_at is null or expires_at > now())`, so revocation and expiry take effect on the next request with no cache. A custom role's grants are read per request, so editing the role changes its tokens at once, and deleting it deletes them (`on delete cascade`).
+- **Authorization.** `Principal::Token` carries the token and the memberships and grants it stands for: one synthetic membership for a built-in role, or the role's grants as `EffectiveGrant` rows. `authorize`, `ScopeFilter`, `PolicyContext`, `holds_admin` and `rbac/effective` read them through the same pure functions as for a user, so every existing check applies unchanged. `authorize_token` and `authorize_superadmin` refuse `Authority::Superadmin` and `Authority::Deployment` for a token, which is what keeps it out of everything deployment-wide. `authorize_token` also refuses every write to a resource in `TOKEN_REFUSED_WRITES` (memberships, invitations, custom roles and their assignments, password resets, accounts, SSO providers and group mappings, LDAP directories and group mappings, SCIM tokens and group mappings, the org's sign-in policy, tokens themselves), whatever role the token holds: access a token grants would outlive its revocation, so granting stays with people. Reads are unaffected, and `every_write_refused_to_a_token_names_a_resource_with_writes` keeps the list in step with the matrix.
+- **Where a token deliberately gets nothing.** It has no account, so MCP OAuth sessions are not its to list or revoke, and access profiles (assigned to people and teams) apply none. A token cannot manage tokens: the four handlers call `refuse_tokens` first, so a leaked token cannot mint a successor that outlives its own revocation.
+- **Request logs and analytics (#3291).** A token reads them for the chain it holds, by the same rules as a person with that role (`analytics_access::resolve` is shared, so the same holds for the request-log CSV export, savings, provider health, the sampling rate and the MCP tool-call log): `analytics_access::resolve` hands the token's synthetic membership and grants to the function that reduces a user's memberships to a row filter (`scoped::for_roles`), so the tenancy match, the most-specific-role rule, the `request_payload` floor and a project's `payload_min_role = viewer` all apply unchanged. A `viewer` token on a project reads that project's rows with both bodies blanked and `payload_withheld` set; a `member` token reads the bodies. The one thing a token lacks is an account, so the rows of an MCP OAuth session "made under the caller's own account" never match for it.
+- **Minting.** The minter needs `api_token:create` (admin) at the token's own chain, so a project admin mints for that project only and a token never holds more than its maker. A custom role must belong to the token's org. The expiry defaults to 90 days (`1..=730`), and `never_expires: true` is an explicit opt-out.
+- **Audit.** `log_audit` merges `detail.api_token = {id, name}` into every row a token writes, and a token has no `actor_user_id`, so an automation's changes are told apart from a person's and from another token's. `api_token.create`, `.rotate` and `.revoke` are written at the org. `created_by` names the minting account, and survives as null if it is deleted: a token outlives its maker, so offboarding includes revoking theirs.
+- **The row.** `api_token` is a `project` row in the capability table that may be listed from a shallower chain (`MULTI_SCOPE`), like `membership`. The dashboard screen is Governance › API tokens (`ui/src/pages/ApiTokens.tsx`, `ui/src/lib/api/api-tokens.ts`, #3289): a list of the org's tokens with their state derived from `revoked_at` and `expires_at` (a dead token can be neither rotated nor, once revoked, revoked again), a mint sheet with the shared `OrgScopePicker`, and a `SecretRevealDialog` for the once-only secret of a mint or rotation. Its controls are gated on `api_token:create`, `:update` and `:delete`, and `api_token` audit rows link to it from the Audit Log.
+
 ### The capability table is the only source of truth
 
 `CAPABILITIES` in `crates/rolter-control/src/rbac_matrix.rs` records, for every resource, what each of `read` / `create` / `update` / `delete` takes — a minimum scoped role, superadmin-only, or that the resource has no such action at all. **Both** the published matrix and the guard read it, so they cannot drift.
@@ -520,7 +535,7 @@ authorize(&state, &principal, ScopeChain::org(org_id), cap!("provider", Create))
 authorize_superadmin(&principal, superadmin_cap!("feature_flags", Update))?;
 ```
 
-`cap!` resolves the requirement through a `const fn`, so naming a resource the table does not define — or an action it marks as unsupported — is a **compile error**, and `superadmin_cap!` additionally fails to compile unless the table says the pair is superadmin-only. No handler names a `Role`; unit tests in `rbac_matrix.rs` scan every control-plane module to keep it that way, check the module list against `src/` so a new file cannot slip past, and assert that every row in the table is claimed by at least one guard.
+`cap!` resolves the requirement through a `const fn`, so naming a resource the table does not define — or an action it marks as unsupported — is a **compile error**, and `superadmin_cap!` additionally fails to compile unless the table says the pair has no scoped role to resolve: superadmin-only, or superadmin plus a deployment role (below). No handler names a `Role`; unit tests in `rbac_matrix.rs` scan every control-plane module to keep it that way, check the module list against `src/` so a new file cannot slip past, and assert that every row in the table is claimed by at least one guard.
 
 Two read-only endpoints publish that table, so a dashboard never assembles a permission matrix of its own:
 
@@ -531,7 +546,7 @@ Two read-only endpoints publish that table, so a dashboard never assembles a per
 
 Read access is a viewer's and mutations are an admin's, with three deliberate exceptions:
 
-- **deployment-wide policy** (feature flags, runtime/compatibility/adaptive policy, logging settings, cluster nodes, security settings, alerting, MCP tool-call logs) has no tenancy scope to be a member of, so it is superadmin-only;
+- **deployment-wide policy** (feature flags, runtime/compatibility/adaptive policy, logging settings, cluster nodes, security settings, alerting, MCP tool-call logs) has no tenancy scope to be a member of, so it is superadmin-only, except for the rows an operator or a security auditor reaches (#1834, above);
 - **global account lifecycle** — creating an org, editing or deleting a user account, and the model/pricing catalog — reaches across orgs, so it is superadmin-only too, while inviting a user _into_ an org stays an org admin's;
 - **a user's own things** — minting a virtual key for yourself takes `member` (a viewer cannot), and revoking your own MCP OAuth grant or session takes only a viewer membership plus ownership, which the handler checks after the guard.
 
@@ -558,6 +573,7 @@ for every list here except invitations, which take admin:
 | `GET /api/v1/orgs/{org_id}/teams`                 | every team            | the teams they hold a role in or inside                        |
 | `GET /api/v1/teams/{team_id}/projects`            | every project         | the projects they hold a role in                               |
 | `GET /api/v1/orgs/{org_id}/projects`              | every project         | the projects they read through a team or project role          |
+| `GET /api/v1/orgs/{org_id}/virtual-keys`          | every key             | the keys of the projects they read (judged per key, #3467)     |
 | `GET /api/v1/orgs/{org_id}/users`, `/memberships` | everyone              | the people and memberships in the teams and projects they read |
 | `GET /api/v1/orgs/{org_id}/invitations`           | every invitation      | the invitations into the teams and projects they administer    |
 
@@ -588,8 +604,7 @@ an account with such a row is `display_name_managed` and the route answers
 first sign-in of an account with no name writes it through
 `UserRepo::default_display_name` (`where display_name is null`, so it never
 replaces a name), and the account stays unmanaged and edits it freely. LDAP's
-name attribute is read into `Identity` but the LDAP provider is not yet wired
-into a sign-in route, so nothing persists it today. The audit row
+name attribute is persisted the same way on a directory user's first sign-in. The audit row
 `user.profile.update` carries `{"fields": [...]}` and never the bio.
 
 A handler that starts from the session (`CurrentUser`) and then authorizes
@@ -632,6 +647,16 @@ rather than a clean close. The export is recorded as `audit_log.export` before
 the first byte, with the format and filters in `detail`; it adds no capability,
 since "can read the log" already means "can read all of it".
 
+A browser without the File System Access API downloads it through a single-use
+ticket (#3545, the audit addendum of
+[ADR-0041](../adr/2026-10-29-export-download-tickets.md)): `ExportKind` names
+both exports (`DeploymentAudit`, and `OrgAudit` with the org's id, stored as
+`org_audit_log:<id>`), the mint runs `audit_export::authorize_export` instead of
+the request log's reach, and the redemption hands the ticket to
+`audit_export::run_redeemed`, which runs the same check again for the
+re-resolved principal before it records the export and walks the log. The walk
+reports its rows to the ticket's status.
+
 ### Who an audit row names as the actor (#2844)
 
 `audit_log.actor_user_id` and the other "who did this" columns (`scim_tokens.created_by`, `invitations.invited_by`, `mcp_oauth_grants.revoked_by`) are filled from `Principal::account_id()`, never by matching the variant. `Principal::for_user` turns a superadmin account into `Principal::Superadmin { account: Some(id) }` (#2813), and that account holds no membership anywhere when it is the operator `rolter-seed` creates, so a `match` that keeps `Principal::User` and sends `Superadmin` to `None` drops exactly the actor an audit trail matters most for. Until #2844 about sixteen handlers carried that `match`.
@@ -651,7 +676,7 @@ Two kinds of site are deliberately not on this rule. Handlers that start from th
 
 The actor now being a superadmin is why the org read had to be narrowed (#2857): the org-less branch used to key on the actor alone, so a superadmin who also holds a role in an org would have made their deployment-wide rows (`security.settings.update`, `cluster_node.forget`, ...) readable by that org's admins. It names the account-event families instead, see [who reads account events](security.md#who-reads-account-events-1854).
 
-The tests are in `crates/rolter-control/tests/control_integration.rs`: `an_audited_action_names_the_superadmin_session_that_took_it` (the shared writer), `hand_written_audit_rows_name_the_superadmin_session_that_wrote_them` (a table with a row per hand-written site above, each for a membership-less superadmin session and for the admin token), `a_scim_token_records_the_superadmin_session_that_minted_it` and `an_mcp_grant_revocation_records_the_superadmin_session_that_made_it`. `an_orgs_audit_log_omits_the_deployment_changes_of_a_superadmin_it_counts_among_its_people` covers the org read. The dashboard half is [#2858](https://github.com/rolter-ai/rolter/issues/2858): the Actor column of a superadmin viewer also resolves the accounts with no membership, through `include_unassigned=true` (see the Audit Log paragraph under the users list above).
+The tests are in `crates/rolter-control/tests/control/`: `an_audited_action_names_the_superadmin_session_that_took_it` (the shared writer), `hand_written_audit_rows_name_the_superadmin_session_that_wrote_them` (a table with a row per hand-written site above, each for a membership-less superadmin session and for the admin token), `a_scim_token_records_the_superadmin_session_that_minted_it` and `an_mcp_grant_revocation_records_the_superadmin_session_that_made_it`. `an_orgs_audit_log_omits_the_deployment_changes_of_a_superadmin_it_counts_among_its_people` covers the org read. The dashboard half is [#2858](https://github.com/rolter-ai/rolter/issues/2858): the Actor column of a superadmin viewer also resolves the accounts with no membership, through `include_unassigned=true` (see the Audit Log paragraph under the users list above).
 
 ### Custom roles and access profiles
 
@@ -690,12 +715,12 @@ Changing one is safe by construction:
 
 `GET /api/v1/rbac/matrix?org_id=` returns the org's custom roles alongside the built-in ones, so the dashboard's matrix is API-backed and updates after any change instead of holding state of its own.
 
-The dashboard edits both halves (#1184). `ui/src/pages/Rbac.tsx` carries the matrix on one tab and the org's custom roles on another, with a resource x action grant grid built from the same `resources[]` the matrix returns — never a list held in the dashboard, so the grid can only offer pairs this build defines. A pair the resource does not have renders as a dash and a superadmin-only pair as a disabled checkbox, and grants naming a resource the build no longer defines ride through an edit untouched, since `PUT` replaces the grant set wholesale. `ui/src/pages/AccessProfiles.tsx` reads `GET /api/v1/access-profiles/{id}` per profile — the only call that answers roles, assignments and policy together — and sends the composition and the policy in the one request that saves the profile.
+The dashboard edits both halves (#1184). `ui/src/pages/Rbac.tsx` carries the matrix on one tab and the org's custom roles on another, with a resource x action grant grid built from the same `resources[]` the matrix returns — never a list held in the dashboard, so the grid can only offer pairs this build defines. A pair the resource does not have renders as a dash and a superadmin-only pair as a disabled checkbox, and grants naming a resource the build no longer defines ride through an edit untouched, since `PUT` replaces the grant set wholesale. `ui/src/pages/AccessProfiles.tsx` reads the org's profiles with one `GET /api/v1/orgs/{org_id}/access-profiles?include=roles,assignments,policy` — roles, assignments and policy together, as the Teams and custom-roles screens do (#3301, #1996); it read `GET /api/v1/access-profiles/{id}` once per card before — and sends the composition and the policy in the one request that saves the profile.
 
 Endpoints:
 
 - `GET`/`POST /api/v1/orgs/{org_id}/custom-roles`, `GET`/`PUT`/`DELETE /api/v1/custom-roles/{id}`
-- `GET`/`POST /api/v1/orgs/{org_id}/access-profiles`, `GET`/`PUT`/`DELETE /api/v1/access-profiles/{id}`
+- `GET`/`POST /api/v1/orgs/{org_id}/access-profiles`, `GET`/`PUT`/`DELETE /api/v1/access-profiles/{id}`. The list takes `?include=roles,assignments,policy` and embeds each profile's fields exactly as the detail returns them (three queries for the whole org, dealt out by profile), so a screen of N profiles is one request, not N+1 (#1996); a plain list keeps its old body and an unknown include is a 400
 - `GET`/`POST /api/v1/access-profiles/{id}/assignments`, `DELETE /api/v1/access-profile-assignments/{id}`
 - `GET /api/v1/orgs/{org_id}/access-profile-assignments[?user_id=|team_id=]`: every assignment of the org's profiles in one read, narrowed to one user or team on request (#3025). Gated as `access_profile_assignment` read at the org, the same as the per-profile list, and joined to the org's own profiles, so a subject holding profiles in another org shows none of them. The Users and Teams screens read it instead of one profile detail per profile. It lists direct assignments only; the profiles a user reaches through a team are not folded in
 - `PUT /api/v1/access-profiles/{id}/policy`
@@ -724,10 +749,9 @@ group → role reconciliation, audit logging) is unchanged.
 
 ## Roadmap
 
-- **LDAP** — bind + group mapping for enterprise directories. The provider
-  implements `IdentityProvider` (#241) but no configuration, route or screen
-  reaches it, so LDAP sign-in is not shipped; wiring it is #1826. See
-  [LDAP authentication](ldap.md).
+- **LDAP** — shipped (#241, #1826): a directory per org, configured through the
+  API, reached from the password login. A dashboard screen next to Single
+  Sign-On is still to come. See [LDAP authentication](ldap.md).
 - **JWT** service auth and short-lived tokens.
 - **Audit log** surfaced in the UI.
 - Optional **constant-time map** / pepper for virtual-key lookup hardening.

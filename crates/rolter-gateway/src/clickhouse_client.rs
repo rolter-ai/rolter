@@ -228,6 +228,9 @@ mod tests {
             arguments: String::new(),
             result: String::new(),
             error: String::new(),
+            error_scopes: Vec::new(),
+            notification: false,
+            outcome: "",
         }
     }
 
