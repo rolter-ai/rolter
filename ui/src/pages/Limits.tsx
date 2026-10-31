@@ -31,15 +31,18 @@ import {
   deleteBudget,
   deleteRateLimit,
   fetchBudgetSpend,
+  fetchOrgBudgetSpend,
   fetchBudgets,
   fetchBusinessUnits,
   fetchCustomers,
   fetchOrgBudgets,
   fetchOrgRateLimits,
   fetchRateLimits,
+  fetchUsers,
   fetchVirtualKeys,
   SCOPE_TYPES,
   UNPRICED_POLICIES,
+  USER_SCOPE,
   updateBudget,
   updateRateLimit,
   type BudgetRow,
@@ -48,18 +51,26 @@ import {
   type RateLimitRow,
   type UpdateBudgetInput,
   type UpdateRateLimitInput,
+  type UserScopeNarrowing,
 } from "@/lib/api";
 import { errorText } from "@/lib/error-copy";
 import { PERIOD_KINDS, periodKind } from "@/lib/budget-period";
 import { spendFigures, type SpendTone } from "@/lib/budget-spend";
 import { useCurrencyCode } from "@/lib/currency";
 import { useFormat } from "@/lib/i18n/format";
+import { useOptionalAuth } from "@/lib/auth";
 import { useScope } from "@/lib/scope";
 import { RowCapabilityScope, type RowScope } from "@/lib/can";
 import { capGateScope } from "@/lib/limit-scope";
+import { capReach, type CapReach } from "@/lib/my-budget";
 import { useOrgScope } from "@/components/OrgScopePicker";
 import { useToast } from "@/lib/toast";
 import { useScreenReady } from "@/lib/ux-react";
+
+/** a person as the screen names them: what they go by, or the address they sign in with */
+function personName(user: { display_name?: string | null; email: string }): string {
+  return user.display_name?.trim() || user.email;
+}
 
 // the picker's placeholder per scope type, as catalog keys
 const SCOPE_PLACEHOLDERS: Record<string, string> = {
@@ -69,6 +80,7 @@ const SCOPE_PLACEHOLDERS: Record<string, string> = {
   virtual_key: "pages.limits.selectVirtualKey",
   business_unit: "pages.limits.selectBusinessUnit",
   customer: "pages.limits.selectCustomer",
+  user: "pages.limits.selectUser",
 };
 
 // the scope type that lists every cap the caller may read across the org
@@ -111,6 +123,11 @@ export default function Limits() {
   // the whole org for the first frame and then the project
   const defaultPending = !typePicked && !scopeId && (scope.isLoading || !!scope.projectId);
   const orgWide = !scopeId && !defaultPending;
+  // a person's caps come from the org-wide read too: the per-scope read of a user
+  // is authorized at the exact place a cap is narrowed to, which a bare person
+  // does not name. the read is narrowed to the person below (#3282)
+  const userScope = scopeType === USER_SCOPE;
+  const orgRead = orgWide || userScope;
 
   const virtualKeys = useQuery({
     queryKey: ["virtual-keys", scope.projectId],
@@ -134,6 +151,14 @@ export default function Limits() {
     enabled: !!scope.orgId && (scopeType === "customer" || (orgWide && scopeType === ALL_SCOPES)),
   });
 
+  // the people a user cap can be set on, and the names a user row is drawn with
+  // everywhere it appears (#3282)
+  const users = useQuery({
+    queryKey: ["users", scope.orgId],
+    queryFn: () => fetchUsers(scope.orgId as string),
+    enabled: !!scope.orgId && (userScope || (orgWide && scopeType === ALL_SCOPES)),
+  });
+
   // UX stream (#805). the screen key comes from the enclosing UxScreenProvider;
 
   // `virtualKeys` is the query the user is actually waiting on for this screen
@@ -143,28 +168,31 @@ export default function Limits() {
   // `in-org` keeps the org-wide read apart from the per-scope one, whose key
   // is `["budgets", "org", <org id>]` when the picked scope is the org itself
   const budgets = useQuery({
-    queryKey: orgWide ? ["budgets", "in-org", scope.orgId] : ["budgets", scopeType, scopeId],
+    queryKey: orgRead ? ["budgets", "in-org", scope.orgId] : ["budgets", scopeType, scopeId],
     queryFn: () =>
-      orgWide ? fetchOrgBudgets(scope.orgId as string) : fetchBudgets(scopeType, scopeId),
-    enabled: orgWide ? !!scope.orgId : !!scopeId,
+      orgRead ? fetchOrgBudgets(scope.orgId as string) : fetchBudgets(scopeType, scopeId),
+    enabled: orgRead ? !!scope.orgId : !!scopeId,
   });
 
   // the gateway's own counters, read through the control plane. a separate
   // query so a slow or failed read never holds the budgets themselves back
   const spend = useQuery({
-    queryKey: ["budgets", scopeType, scopeId, "spend"],
-    queryFn: () => fetchBudgetSpend(scopeType, scopeId),
-    enabled: !!scopeId,
+    queryKey: orgRead
+      ? ["budgets", "in-org", scope.orgId, "spend"]
+      : ["budgets", scopeType, scopeId, "spend"],
+    queryFn: () =>
+      orgRead ? fetchOrgBudgetSpend(scope.orgId as string) : fetchBudgetSpend(scopeType, scopeId),
+    enabled: orgRead ? !!scope.orgId : !!scopeId,
     refetchInterval: 30_000,
   });
 
   const rateLimits = useQuery({
-    queryKey: orgWide
+    queryKey: orgRead
       ? ["rate-limits", "in-org", scope.orgId]
       : ["rate-limits", scopeType, scopeId],
     queryFn: () =>
-      orgWide ? fetchOrgRateLimits(scope.orgId as string) : fetchRateLimits(scopeType, scopeId),
-    enabled: orgWide ? !!scope.orgId : !!scopeId,
+      orgRead ? fetchOrgRateLimits(scope.orgId as string) : fetchRateLimits(scopeType, scopeId),
+    enabled: orgRead ? !!scope.orgId : !!scopeId,
   });
 
   // a cap written on one scope changes the org-wide list too, so both go stale
@@ -173,8 +201,12 @@ export default function Limits() {
 
   // the org-wide read answers every scope type; the picked type narrows it
   const ofType = <T extends { scope_type: string }>(rows: T[] | undefined) =>
-    rows && orgWide && scopeType !== ALL_SCOPES
-      ? rows.filter((row) => row.scope_type === scopeType)
+    rows && orgRead && scopeType !== ALL_SCOPES
+      ? rows.filter(
+          (row) =>
+            row.scope_type === scopeType &&
+            (!userScope || !scopeId || (row as { scope_id?: string }).scope_id === scopeId),
+        )
       : rows;
   const budgetRows = ofType(budgets.data);
   const rateLimitRows = ofType(rateLimits.data);
@@ -248,6 +280,12 @@ export default function Limits() {
         return named(businessUnits.data ?? []);
       case "customer":
         return named(customers.data ?? []);
+      case USER_SCOPE:
+        return (users.data ?? []).map((user) => ({
+          value: user.id,
+          label: personName(user),
+          description: user.display_name ? user.email : undefined,
+        }));
       default:
         return [];
     }
@@ -267,12 +305,19 @@ export default function Limits() {
         ? { query: businessUnits, target: "scope-business-units", resource: "businessUnits" }
         : scopeType === "customer"
           ? { query: customers, target: "scope-customers", resource: "customers" }
-          : null;
+          : userScope
+            ? { query: users, target: "scope-users", resource: "users" }
+            : null;
   const pickerPending = !!pickerRead?.query.isLoading;
   // a scope typed in as a uuid has no name to show, and is shown as that uuid
-  // a cap's scope by name. a key outside the picked project has no name the
-  // dashboard can read org-wide, and is shown by the start of its id
-  const nameOf = (type: string, id: string): string => {
+  // a cap's scope by name. a key's name comes with the org-wide row itself
+  // (`scope_name`, #3128); the start of its id is the fallback for a row with none
+  const userName = (id: string) => {
+    const user = users.data?.find((u) => u.id === id);
+    return user ? personName(user) : undefined;
+  };
+  const nameOf = (type: string, id: string, rowName?: string | null): string => {
+    if (type === "virtual_key" && rowName) return rowName;
     if (type === scopeType) {
       const picked = scopeOptions.find((option) => option.value === id)?.label;
       if (picked) return picked;
@@ -290,18 +335,51 @@ export default function Limits() {
               ? named(businessUnits.data)
               : type === "customer"
                 ? named(customers.data)
-                : virtualKeys.data?.find((key) => key.id === id)?.name;
+                : type === USER_SCOPE
+                  ? userName(id)
+                  : virtualKeys.data?.find((key) => key.id === id)?.name;
     return found || (type === "virtual_key" ? id.slice(0, 8) : id);
   };
   const scopeName = scopeId ? nameOf(scopeType, scopeId) : "";
   // a name is only unique within its type, so an org-wide row says which kind
   // it belongs to; the per-scope view already said it in the picker
-  const scopeLabelOf = (row: { scope_type: string; scope_id: string }) =>
-    t("pages.limits.scopeNamed", {
-      type: t(`pages.limits.scopeTypes.${orgWide ? row.scope_type : scopeType}`),
-      name: orgWide ? nameOf(row.scope_type, row.scope_id) : scopeName,
+  const scopeLabelOf = (
+    row: { scope_type: string; scope_id: string; scope_name?: string | null } & UserScopeNarrowing,
+  ) => {
+    const type = orgWide ? row.scope_type : scopeType;
+    return t("pages.limits.scopeNamed", {
+      type: t(`pages.limits.scopeTypes.${type}`),
+      // a user row names the person and what their cap counts, since the same
+      // person can hold one cap per place it is narrowed to (#3282); until the
+      // people are read it says only what it counts rather than showing a uuid
+      name:
+        type === USER_SCOPE
+          ? userName(row.scope_id)
+            ? t("pages.limits.userScopeNamed", {
+                name: userName(row.scope_id),
+                reach: t(`pages.limits.userScope.${capReach(row)}`),
+              })
+            : t(`pages.limits.userScope.${capReach(row)}`)
+          : orgWide
+            ? nameOf(row.scope_type, row.scope_id, row.scope_name)
+            : scopeName,
     });
+  };
   // the delete confirmations open on it, so the type comes with the name
+  const auth = useOptionalAuth();
+  // where a new user cap can be narrowed to, which is also who may manage it
+  const userReach: UserReachOptions | undefined = userScope
+    ? {
+        orgs: scope.orgs.map((org) => ({ value: org.id, label: org.name })),
+        projects: orgScope.byTeam.flatMap((entry) =>
+          entry.projects.map((project) => ({ value: project.id, label: project.name })),
+        ),
+        orgId: scope.orgId ?? null,
+        // an open-mode session has no account, and its caller acts as the admin
+        // token, so it may leave a cap un-narrowed; the control plane decides
+        canLeaveOpen: auth?.user ? auth.user.is_superadmin : true,
+      }
+    : undefined;
   const budgetNames = useBudgetNames(scopeName);
   const rateLimitCaps = useRateLimitCaps();
 
@@ -319,7 +397,7 @@ export default function Limits() {
           <CardDescription>{t("pages.limits.scopeBody")}</CardDescription>
         </CardHeader>
         <CardContent className="grid gap-3 sm:grid-cols-2">
-          <Field label={t("pages.limits.scopeTypeLabel")}>
+          <Field label={t("pages.limits.scopeTypeLabel")} info={t("pages.limits.scopeTypeInfo")}>
             <Combobox
               value={scopeType}
               onChange={(picked) => {
@@ -460,17 +538,8 @@ export default function Limits() {
             <BudgetCard
               key={budget.id}
               budget={budget}
-              scope={orgWide ? scopeLabelOf(budget) : scopeName}
-              // the counters are read per scope, so the org-wide list has none
-              spend={
-                orgWide
-                  ? "off"
-                  : spend.isLoading
-                    ? "loading"
-                    : spend.isError
-                      ? null
-                      : (spend.data ?? null)
-              }
+              scope={orgWide || userScope ? scopeLabelOf(budget) : scopeName}
+              spend={spend.isLoading ? "loading" : spend.isError ? null : (spend.data ?? null)}
               gateAt={capGateScope(budget, {
                 byTeam: orgScope.byTeam,
                 keyProjectId: orgWide ? undefined : scope.projectId,
@@ -558,7 +627,7 @@ export default function Limits() {
             <RateLimitCard
               key={limit.id}
               limit={limit}
-              scope={orgWide ? scopeLabelOf(limit) : scopeName}
+              scope={orgWide || userScope ? scopeLabelOf(limit) : scopeName}
               gateAt={capGateScope(limit, {
                 byTeam: orgScope.byTeam,
                 keyProjectId: orgWide ? undefined : scope.projectId,
@@ -580,6 +649,7 @@ export default function Limits() {
         scopeType={scopeType}
         scopeId={scopeId}
         scopeName={scopeName}
+        userReach={userReach}
         onDone={invalidateBudgets}
       />
       {editingBudget && (
@@ -588,7 +658,11 @@ export default function Limits() {
           onOpenChange={setEditBudgetOpen}
           scopeType={editingBudget.scope_type}
           scopeId={editingBudget.scope_id}
-          scopeName={nameOf(editingBudget.scope_type, editingBudget.scope_id)}
+          scopeName={nameOf(
+            editingBudget.scope_type,
+            editingBudget.scope_id,
+            editingBudget.scope_name,
+          )}
           budget={editingBudget}
           onDone={invalidateBudgets}
         />
@@ -599,6 +673,7 @@ export default function Limits() {
         scopeType={scopeType}
         scopeId={scopeId}
         scopeName={scopeName}
+        userReach={userReach}
         onDone={invalidateRateLimits}
       />
       {editingRateLimit && (
@@ -607,7 +682,11 @@ export default function Limits() {
           onOpenChange={setEditRateLimitOpen}
           scopeType={editingRateLimit.scope_type}
           scopeId={editingRateLimit.scope_id}
-          scopeName={nameOf(editingRateLimit.scope_type, editingRateLimit.scope_id)}
+          scopeName={nameOf(
+            editingRateLimit.scope_type,
+            editingRateLimit.scope_id,
+            editingRateLimit.scope_name,
+          )}
           limit={editingRateLimit}
           onDone={invalidateRateLimits}
         />
@@ -676,7 +755,9 @@ export default function Limits() {
  * them and scopes by name, so "which caps exist here" reads scope by scope
  * (#2093).
  */
-function ScopeGroups<T extends { id: string; scope_type: string; scope_id: string }>({
+function ScopeGroups<
+  T extends { id: string; scope_type: string; scope_id: string } & UserScopeNarrowing,
+>({
   rows,
   grouped,
   labelOf,
@@ -692,10 +773,15 @@ function ScopeGroups<T extends { id: string; scope_type: string; scope_id: strin
   if (!grouped) return <div className={grid}>{rows.map(renderCard)}</div>;
   const groups = new Map<string, T[]>();
   for (const row of rows) {
-    const key = `${row.scope_type}:${row.scope_id}`;
+    // one person's caps narrowed differently are different groups
+    const key = `${row.scope_type}:${row.scope_id}:${row.within_org_id ?? ""}:${row.within_project_id ?? ""}`;
     groups.set(key, [...(groups.get(key) ?? []), row]);
   }
-  const typeOrder = (row: T) => SCOPE_TYPES.indexOf(row.scope_type as (typeof SCOPE_TYPES)[number]);
+  // a type the picker does not list (a user) sorts after the ones it does
+  const typeOrder = (row: T) => {
+    const at = SCOPE_TYPES.indexOf(row.scope_type as (typeof SCOPE_TYPES)[number]);
+    return at < 0 ? SCOPE_TYPES.length : at;
+  };
   const ordered = [...groups.entries()]
     .map(([key, members]) => ({ key, members, label: labelOf(members[0]) }))
     .sort(
@@ -819,12 +905,12 @@ function BudgetSpend({
   spend,
 }: {
   budget: BudgetRow;
-  spend: BudgetSpendReport | "loading" | "off" | null;
+  spend: BudgetSpendReport | "loading" | null;
 }) {
   const { t } = useTranslation();
   const fmt = useFormat();
   const currency = useCurrencyCode();
-  if (spend === "loading" || spend === "off") return null;
+  if (spend === "loading") return null;
   const row = spend?.budgets.find((entry) => entry.id === budget.id);
   const figures = spendFigures(row, budget.limit_usd);
   if (!figures) {
@@ -884,10 +970,9 @@ function BudgetCard({
   budget: BudgetRow;
   scope: string;
   /**
-   * "loading" while the read is in flight, "off" where no counter is read (the
-   * org-wide list), null when it failed outright
+   * "loading" while the read is in flight, null when it failed outright
    */
-  spend: BudgetSpendReport | "loading" | "off" | null;
+  spend: BudgetSpendReport | "loading" | null;
   gateAt: RowScope | undefined;
   onEdit: () => void;
   onDelete: () => void;
@@ -1025,6 +1110,94 @@ function CapFigure({ value, unit }: { value: string; unit: string }) {
   );
 }
 
+/** the places a user cap can be narrowed to, as the sheet's pickers list them */
+interface UserReachOptions {
+  orgs: { value: string; label: string }[];
+  projects: { value: string; label: string }[];
+  /** the org the picker opens on, so the common case is one click */
+  orgId: string | null;
+  /** only a superadmin may leave a cap un-narrowed (#1830) */
+  canLeaveOpen: boolean;
+}
+
+interface ReachDraft {
+  reach: CapReach;
+  id: string;
+}
+
+const initialReach = (options: UserReachOptions | undefined): ReachDraft => ({
+  reach: "org",
+  id: options?.orgId ?? "",
+});
+
+/** the narrowing a draft sends; an un-narrowed cap sends none */
+function withinOf(draft: ReachDraft): UserScopeNarrowing {
+  if (draft.reach === "org") return { within_org_id: draft.id };
+  if (draft.reach === "project") return { within_project_id: draft.id };
+  return {};
+}
+
+const reachComplete = (draft: ReachDraft) => draft.reach === "all" || draft.id !== "";
+
+/**
+ * Which of a person's keys a new cap counts (#3282): all of them, the ones
+ * minted in one organization, or the ones minted in one project. The place also
+ * decides who may manage the cap, so an un-narrowed one is offered only to a
+ * superadmin.
+ */
+function UserReachFields({
+  value,
+  onChange,
+  options,
+}: {
+  value: ReachDraft;
+  onChange: (next: ReachDraft) => void;
+  options: UserReachOptions;
+}) {
+  const { t } = useTranslation();
+  const reaches: CapReach[] = options.canLeaveOpen ? ["org", "project", "all"] : ["org", "project"];
+  const places = value.reach === "project" ? options.projects : options.orgs;
+  return (
+    <>
+      <Field
+        label={t("pages.limits.reachLabel")}
+        hint={t("pages.limits.reachHint")}
+        htmlFor="cap-reach"
+      >
+        <Combobox
+          id="cap-reach"
+          value={value.reach}
+          onChange={(reach) =>
+            onChange({
+              reach: reach as CapReach,
+              id: reach === "org" ? (options.orgId ?? "") : "",
+            })
+          }
+          options={reaches.map((reach) => ({
+            value: reach,
+            label: t(`pages.limits.reachOptions.${reach}`),
+          }))}
+        />
+      </Field>
+      {value.reach !== "all" && (
+        <Field
+          label={t(`pages.limits.reachPlace.${value.reach}`)}
+          htmlFor="cap-reach-place"
+          required
+        >
+          <Combobox
+            id="cap-reach-place"
+            value={value.id}
+            onChange={(id) => onChange({ ...value, id })}
+            placeholder={t(`pages.limits.reachPlacePlaceholder.${value.reach}`)}
+            options={places}
+          />
+        </Field>
+      )}
+    </>
+  );
+}
+
 /**
  * The budget form, for a new budget or, given `budget`, for that one in place
  * (#1285).
@@ -1040,6 +1213,7 @@ function BudgetSheet({
   scopeId,
   scopeName,
   budget,
+  userReach,
   onDone,
 }: {
   open: boolean;
@@ -1049,6 +1223,8 @@ function BudgetSheet({
   /** what the subtitle calls the scope: its name, not the `type:uuid` it is stored as */
   scopeName: string;
   budget?: BudgetRow;
+  /** a new user cap picks the place it is narrowed to (#3282) */
+  userReach?: UserReachOptions;
   onDone: () => void;
 }) {
   const { t } = useTranslation();
@@ -1075,13 +1251,17 @@ function BudgetSheet({
   const [limitUsd, setLimitUsd] = React.useState(seed.limitUsd);
   const [period, setPeriod] = React.useState(seed.period);
   const [unpriced, setUnpriced] = React.useState<UnpricedPolicy | "">(seed.unpriced);
+  const [reach, setReach] = React.useState<ReachDraft>(() => initialReach(userReach));
 
   React.useEffect(() => {
     if (open) {
       setLimitUsd(seed.limitUsd);
       setPeriod(seed.period);
       setUnpriced(seed.unpriced);
+      setReach(initialReach(userReach));
     }
+    // the options are rebuilt every render; the sheet resets when it opens
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, seed]);
 
   const dirty = limitUsd !== seed.limitUsd || period !== seed.period || unpriced !== seed.unpriced;
@@ -1105,6 +1285,7 @@ function BudgetSheet({
         limit_usd: limitUsd,
         period,
         unpriced_policy: unpriced === "" ? null : unpriced,
+        ...(userReach ? withinOf(reach) : {}),
       });
     },
     onSuccess: () => {
@@ -1136,12 +1317,21 @@ function BudgetSheet({
       dirty={dirty}
       errorMessage={save.isError ? errorText(save.error, t) : undefined}
       saveLabel={t(budget ? "common.save" : "common.create")}
-      canSave={Boolean(limitUsd.trim() && periodKind(period)) && (!budget || dirty)}
+      canSave={
+        Boolean(limitUsd.trim() && periodKind(period)) &&
+        (!budget || dirty) &&
+        (!userReach || reachComplete(reach))
+      }
       saving={save.isPending}
-      onSave={() => save.mutate()}
+      onSubmit={() => save.mutate()}
     >
       <div className="space-y-3">
-        <Field label={t("pages.limits.budgetLimitLabel", { currency })}>
+        {userReach && <UserReachFields value={reach} onChange={setReach} options={userReach} />}
+        <Field
+          label={t("pages.limits.budgetLimitLabel", { currency })}
+          info={t("pages.limits.budgetLimitInfo", { currency })}
+          required
+        >
           {/* the ceiling is the numeric(12,4) column's; the server refuses above it */}
           <Input
             type="number"
@@ -1216,6 +1406,7 @@ function RateLimitSheet({
   scopeId,
   scopeName,
   limit,
+  userReach,
   onDone,
 }: {
   open: boolean;
@@ -1225,6 +1416,8 @@ function RateLimitSheet({
   /** what the subtitle calls the scope: its name, not the `type:uuid` it is stored as */
   scopeName: string;
   limit?: RateLimitRow;
+  /** a new user cap picks the place it is narrowed to (#3282) */
+  userReach?: UserReachOptions;
   onDone: () => void;
 }) {
   const { t } = useTranslation();
@@ -1238,12 +1431,16 @@ function RateLimitSheet({
   );
   const [rpm, setRpm] = React.useState(seed.rpm);
   const [tpm, setTpm] = React.useState(seed.tpm);
+  const [reach, setReach] = React.useState<ReachDraft>(() => initialReach(userReach));
 
   React.useEffect(() => {
     if (open) {
       setRpm(seed.rpm);
       setTpm(seed.tpm);
+      setReach(initialReach(userReach));
     }
+    // the options are rebuilt every render; the sheet resets when it opens
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, seed]);
 
   const dirty = rpm !== seed.rpm || tpm !== seed.tpm;
@@ -1262,6 +1459,7 @@ function RateLimitSheet({
         scope_id: scopeId,
         rpm: cap(rpm) ?? undefined,
         tpm: cap(tpm) ?? undefined,
+        ...(userReach ? withinOf(reach) : {}),
       });
     },
     onSuccess: () => {
@@ -1293,12 +1491,20 @@ function RateLimitSheet({
       dirty={dirty}
       errorMessage={save.isError ? errorText(save.error, t) : undefined}
       saveLabel={t(limit ? "common.save" : "common.create")}
-      canSave={Boolean(rpm.trim() || tpm.trim()) && (!limit || dirty)}
+      canSave={
+        Boolean(rpm.trim() || tpm.trim()) &&
+        (!limit || dirty) &&
+        (!userReach || reachComplete(reach))
+      }
+      // either cap will do, so neither field is `required` on its own: a refused
+      // submit with both empty says so in the footer instead
+      blockedMessage={rpm.trim() || tpm.trim() ? undefined : t("pages.limits.rateLimitNeedsOne")}
       saving={save.isPending}
-      onSave={() => save.mutate()}
+      onSubmit={() => save.mutate()}
     >
       <div className="space-y-3">
-        <Field label={t("pages.limits.rpmLabel")}>
+        {userReach && <UserReachFields value={reach} onChange={setReach} options={userReach} />}
+        <Field label={t("pages.limits.rpmLabel")} info={t("pages.limits.rpmInfo")}>
           {/* the gateway reads a cap below 1 as none, so the server refuses one */}
           <Input
             type="number"
@@ -1309,7 +1515,7 @@ function RateLimitSheet({
             placeholder={t("pages.limits.uncapped")}
           />
         </Field>
-        <Field label={t("pages.limits.tpmLabel")}>
+        <Field label={t("pages.limits.tpmLabel")} info={t("pages.limits.tpmInfo")}>
           <Input
             type="number"
             min={1}

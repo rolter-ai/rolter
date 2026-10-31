@@ -145,9 +145,10 @@ export default function SignInEnrolment({
         </div>
         <div className="flex flex-col gap-2">
           <Button
+            variant="brand"
             disabled={!saved}
             onClick={() => onSignedIn(signedIn)}
-            className="w-full bg-brand-folk text-white hover:bg-brand-press"
+            className="w-full"
           >
             {t("auth.enrol.continue")} <ArrowRight className="h-4 w-4" />
           </Button>
@@ -195,9 +196,10 @@ export default function SignInEnrolment({
         />
       )}
       <Button
+        variant="brand"
         disabled={!enrolment.data || confirm.isPending || code.trim().length === 0}
         onClick={() => confirm.mutate()}
-        className="w-full bg-brand-folk text-white hover:bg-brand-press"
+        className="w-full"
       >
         {confirm.isPending ? (
           <>

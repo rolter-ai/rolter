@@ -1,10 +1,10 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import * as React from "react";
-import { createMemoryRouter, RouterProvider, useInRouterContext } from "react-router";
+import { createMemoryRouter, RouterProvider, useInRouterContext, useLocation } from "react-router";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import { Toaster } from "@/components/ui/toaster";
-import type { RbacEffective, Role } from "@/lib/api";
+import type { DeploymentRole, RbacEffective, Role } from "@/lib/api";
 import { AuthProvider } from "@/lib/auth";
 import { CapabilityProvider, useCapabilities } from "@/lib/can";
 import en from "@/lib/i18n/locales/en.json";
@@ -82,6 +82,19 @@ export const scopeResponse = (url: string): Response | null => {
   }
   return null;
 };
+
+/**
+ * Puts the router's query string where a story can read it: render it beside
+ * the screen and read the address back with {@link addressOf}.
+ */
+export function AddressProbe() {
+  const { search } = useLocation();
+  return <span data-testid="address" data-search={search} hidden />;
+}
+
+/** the address an {@link AddressProbe} in `canvasElement` holds, as parameters */
+export const addressOf = (canvasElement: HTMLElement) =>
+  new URLSearchParams(within(canvasElement).getByTestId("address").dataset.search ?? "");
 
 /** A stub that resolves the scope and then answers `handler`. */
 export function scoped(handler: FetchStub): FetchStub {
@@ -237,8 +250,11 @@ function GateProbe() {
   return <span data-testid={GATE_PROBE} data-gate={state} hidden />;
 }
 
-/** The four kinds of caller the gating stories are written for. */
-export type StoryRole = Role | "superadmin";
+/**
+ * The kinds of caller the gating stories are written for: an org role, a
+ * superadmin, or an account whose only authority is a deployment role (#1834).
+ */
+export type StoryRole = Role | "superadmin" | DeploymentRole;
 
 /**
  * A caller held by memberships rather than one org role (#2522). The stub reads
@@ -273,7 +289,12 @@ export function adminOfProject(projectId: string): StoryMemberships {
  * A bare role is one org membership, which every row of every chain reaches.
  */
 export function effectiveFor(role: StoryRole): RbacEffective {
-  return role === "superadmin" ? effectiveFromTable(null, true) : effectiveFromTable(role);
+  if (role === "superadmin") return effectiveFromTable(null, true);
+  // a deployment role is held on the account and reaches no scope
+  if (role === "operator" || role === "security_auditor") {
+    return effectiveFromTable(null, false, role);
+  }
+  return effectiveFromTable(role);
 }
 
 /** The published rules, which is where a disabled control reads its role from. */
@@ -316,7 +337,16 @@ export function withCapabilities(
  *
  * Pass a function to change the answer between checks.
  */
-export type GatewayAnswer = "ready" | "draining" | "unreachable" | "unrecognised" | "pending";
+export type GatewayAnswer =
+  | "ready"
+  | "draining"
+  | "unreachable"
+  | "unrecognised"
+  | "pending"
+  // a managed gateway with no config snapshot applied yet (#3348)
+  | "awaitingSnapshot"
+  // a gateway that cannot read the control plane's snapshot format (ADR-0038)
+  | "snapshotFormatUnsupported";
 
 function gatewayResponse(answer: GatewayAnswer): Promise<Response> {
   const text = (body: string, status: number, type = "text/plain; charset=utf-8") =>
@@ -326,6 +356,10 @@ function gatewayResponse(answer: GatewayAnswer): Promise<Response> {
       return text("ok", 200);
     case "draining":
       return text("draining", 503);
+    case "awaitingSnapshot":
+      return text("awaiting_snapshot", 503);
+    case "snapshotFormatUnsupported":
+      return text("snapshot_format_unsupported", 503);
     case "unreachable":
       return Promise.resolve(
         json({ error: { message: "gateway unreachable: error sending request" } }, 502),
@@ -337,13 +371,44 @@ function gatewayResponse(answer: GatewayAnswer): Promise<Response> {
   }
 }
 
-/** Answer the header's gateway probe with `answer`, then fall through to `handler`. */
+/**
+ * What `GET /api/v1/cluster/summary` answers in a story (#3263): a roll-up of
+ * the fleet, `"failing"` for a control plane that errors on it, and `undefined`
+ * for one older than the endpoint, which answers 404. The check falls back to
+ * the `/readyz` probe in the last two and when `inventory` is `false`.
+ */
+export type FleetAnswer =
+  | { inventory: boolean; gateways: { live: number; stale: number; lagging: number } }
+  | "failing"
+  | undefined;
+
+/** The summary body for a counted fleet, or for one with `inventory: false`. */
+export function clusterSummary(
+  gateways: { live: number; stale: number; lagging: number },
+  inventory = true,
+) {
+  return { inventory, gateways, config_version: 412, checked_at: "2026-10-27T09:14:02.511Z" };
+}
+
+/**
+ * Answer the header's gateway checks, then fall through to `handler`: the
+ * cluster summary the pill asks first (`fleet`, a 404 when omitted) and the
+ * `/readyz` probe it falls back to (`answer`).
+ */
 export function withGateway(
   answer: GatewayAnswer | (() => GatewayAnswer),
   handler: FetchStub,
+  fleet?: FleetAnswer,
 ): FetchStub {
   return async (input, init) => {
     const path = new URL(String(input), "http://localhost").pathname;
+    if (path === "/api/v1/cluster/summary") {
+      return fleet === undefined
+        ? json({ error: { message: "not found" } }, 404)
+        : fleet === "failing"
+          ? json({ error: { message: "cluster summary failed" } }, 500)
+          : json(clusterSummary(fleet.gateways, fleet.inventory));
+    }
     if (path === "/gw/readyz")
       return gatewayResponse(typeof answer === "function" ? answer() : answer);
     return handler(input, init);
@@ -449,6 +514,139 @@ export function stubClipboard(writeText: (value: string) => Promise<void>): () =
       else Reflect.deleteProperty(navigator, "clipboard");
     };
   };
+}
+
+/** a file a stubbed save dialog handed out, as the page left it */
+export interface SavedFile {
+  suggestedName?: string;
+  /** the file types the dialog was asked to offer, as `showSaveFilePicker` takes them */
+  types?: { description?: string; accept: Record<string, string[]> }[];
+  /** what was written, in order */
+  chunks: Uint8Array[];
+  closed: boolean;
+  aborted: boolean;
+  /** the file was taken away again, as the page does for an export that wrote nothing */
+  removed: boolean;
+}
+
+/**
+ * Stand in for the browser's save dialog (`showSaveFilePicker`, #3434), which
+ * a story cannot answer. Each `files` entry is one file the page opened for
+ * writing. Pass `reject` to answer as a person who closed the dialog.
+ */
+export function stubSavePicker(options: { reject?: boolean } = {}) {
+  const files: SavedFile[] = [];
+  const picker = async (opts: { suggestedName?: string; types?: SavedFile["types"] }) => {
+    if (options.reject) throw new DOMException("closed", "AbortError");
+    const file: SavedFile = {
+      suggestedName: opts.suggestedName,
+      types: opts.types,
+      chunks: [],
+      closed: false,
+      aborted: false,
+      removed: false,
+    };
+    files.push(file);
+    return {
+      // a file the picker just made: nothing in it yet
+      getFile: async () => ({ size: 0 }),
+      remove: async () => {
+        file.removed = true;
+      },
+      createWritable: async () => ({
+        write: async (chunk: Uint8Array) => {
+          file.chunks.push(chunk);
+        },
+        close: async () => {
+          file.closed = true;
+        },
+        abort: async () => {
+          file.aborted = true;
+        },
+      }),
+    };
+  };
+  return {
+    files,
+    /** run `body` with the dialog in the page, or without it when `picker` is `false` */
+    async within(body: () => Promise<void>, installed = true) {
+      const w = window as { showSaveFilePicker?: unknown };
+      const original = Object.getOwnPropertyDescriptor(w, "showSaveFilePicker");
+      // the browser's own sits on the prototype, so "absent" is an own property
+      // that hides it rather than a delete
+      Object.defineProperty(w, "showSaveFilePicker", {
+        value: installed ? picker : undefined,
+        configurable: true,
+      });
+      try {
+        await body();
+      } finally {
+        if (original) Object.defineProperty(w, "showSaveFilePicker", original);
+        else Reflect.deleteProperty(w, "showSaveFilePicker");
+      }
+    },
+  };
+}
+
+/** the text a stubbed file received */
+export function savedText(file: SavedFile): string {
+  const decoder = new TextDecoder();
+  return file.chunks.map((c) => decoder.decode(c, { stream: true })).join("");
+}
+
+/** the download link every stubbed ticket carries */
+export const STORY_DOWNLOAD_URL = "/api/v1/analytics/exports/download/rolter_dl_story";
+
+/**
+ * Answer the export download tickets (#3504) in front of `inner`: the mint
+ * answers `mint` (a ticket by default), and each status read answers the next
+ * of `reads`, the last one repeating. `reads` are the ticket's states, such as
+ * `{ state: "streaming", rows: 1000 }`; `done` is filled in as the control
+ * plane fills it.
+ */
+export function withExportTickets(
+  inner: FetchStub,
+  reads: Record<string, unknown>[],
+  mint: () => Response = () =>
+    json({
+      id: "story-ticket",
+      download_url: STORY_DOWNLOAD_URL,
+      status_url: "/api/v1/analytics/exports/tickets/story-ticket",
+      expires_at: "2026-10-29T12:01:00Z",
+    }),
+): FetchStub {
+  let read = 0;
+  return async (input, init) => {
+    const path = new URL(String(input), "http://localhost").pathname;
+    if (path === "/api/v1/analytics/exports/tickets") return mint();
+    if (path.startsWith("/api/v1/analytics/exports/tickets/")) {
+      const state = reads[Math.min(read, reads.length - 1)]!;
+      read += 1;
+      const done = !["pending", "streaming"].includes(String(state.state));
+      return json({ id: "story-ticket", export: "invocations", expires_at: "", done, ...state });
+    }
+    return inner(input, init);
+  };
+}
+
+/**
+ * Run `body` with every link click captured instead of followed, collecting
+ * each link's `href`: a download the page hands to the browser is a click on a
+ * hidden link, which a story must not let navigate.
+ */
+export async function captureFollowedLinks(
+  links: string[],
+  body: () => Promise<void>,
+): Promise<void> {
+  const original = HTMLAnchorElement.prototype.click;
+  HTMLAnchorElement.prototype.click = function capture(this: HTMLAnchorElement) {
+    links.push(this.getAttribute("href") ?? "");
+  };
+  try {
+    await body();
+  } finally {
+    HTMLAnchorElement.prototype.click = original;
+  }
 }
 
 /**
@@ -927,6 +1125,8 @@ export function withSampleRate(inner: FetchStub, rate: number): FetchStub {
         payload_capture_enabled: false,
         payload_capture_max_bytes: 65536,
         payload_capture_redact_fields: [],
+        payload_capture_redact_detectors: ["aws_key", "jwt"],
+        payload_capture_redact_patterns: [],
         payload_capture_models: [],
         payload_capture_virtual_key_ids: [],
         retention_days: 30,

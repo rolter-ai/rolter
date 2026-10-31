@@ -27,7 +27,13 @@ pub mod trie;
 use trie::Trie;
 
 /// Per-request context a balancer may use to make a decision.
+///
+/// `#[non_exhaustive]`, so a field added later is not a semver break (#1969).
+/// Outside this crate build one with [`RouteContext::new`] (or `default()`) and
+/// the `with_*` setters; a struct literal, with or without `..Default::default()`,
+/// does not compile there. Inside the crate a literal still works.
 #[derive(Debug, Default, Clone)]
+#[non_exhaustive]
 pub struct RouteContext<'a> {
     /// stable session/user identifier extracted from headers or body
     pub session_key: Option<&'a str>,
@@ -54,6 +60,49 @@ pub struct RouteContext<'a> {
     /// affinity; `None` on a route with no adapters, which leaves adapter
     /// scoring inert.
     pub adapter: Option<&'a str>,
+}
+
+impl<'a> RouteContext<'a> {
+    /// An empty context: no session, prompt, token ids or adapter.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Set the session key.
+    #[must_use]
+    pub fn with_session_key(mut self, session_key: Option<&'a str>) -> Self {
+        self.session_key = session_key;
+        self
+    }
+
+    /// Set the prompt text.
+    #[must_use]
+    pub fn with_prompt(mut self, prompt: Option<&'a str>) -> Self {
+        self.prompt = prompt;
+        self
+    }
+
+    /// Set the length and digest of the whole prompt `prompt` was taken from.
+    #[must_use]
+    pub fn with_prompt_summary(mut self, len: Option<usize>, digest: Option<u64>) -> Self {
+        self.prompt_len = len;
+        self.prompt_digest = digest;
+        self
+    }
+
+    /// Set the token ids used for exact block-prefix matching.
+    #[must_use]
+    pub fn with_token_ids(mut self, token_ids: Option<&'a [u32]>) -> Self {
+        self.token_ids = token_ids;
+        self
+    }
+
+    /// Set the LoRA adapter the request needs.
+    #[must_use]
+    pub fn with_adapter(mut self, adapter: Option<&'a str>) -> Self {
+        self.adapter = adapter;
+        self
+    }
 }
 
 /// A strategy that selects one target index for a request.
@@ -85,6 +134,19 @@ pub trait LoadBalancer: Send + Sync {
     ) -> Option<usize> {
         let _ = eligible;
         self.pick(ctx, loads)
+    }
+
+    /// Whether this strategy reads [`RouteContext::prompt`], `prompt_len` or
+    /// `prompt_digest`. The gateway builds the prompt text, its length and its
+    /// digest (a walk over the conversation and a hash) only for a route whose
+    /// balancer says so, so a strategy that never looks at them should answer
+    /// `false` and spare every request that cost (#1929).
+    ///
+    /// Defaults to `true`: a strategy that does not say is assumed to read it,
+    /// which is correct and merely slower. A pipeline answers from its
+    /// scorers ([`scorer::Scorer::reads_prompt`]).
+    fn reads_prompt(&self) -> bool {
+        true
     }
 
     /// Record that `target` served the given context. Strategies that learn from
@@ -291,6 +353,28 @@ pub fn build_with_stats(
                     .with(Box::new(scorer::LeastLoadScorer::new(n)), 1.0),
             ),
         },
+        // a strategy from a newer release (#3347). The snapshot sanitizer
+        // omits such a route before it gets here; should one arrive anyway, it
+        // refuses rather than being balanced by a guess
+        BalancingStrategy::Unknown => Box::new(Refusing),
+    }
+}
+
+/// The balancer of a strategy this build does not know: it never picks a
+/// target, so the route refuses every request (#3347).
+pub struct Refusing;
+
+impl LoadBalancer for Refusing {
+    fn name(&self) -> &'static str {
+        "unknown"
+    }
+
+    fn pick(&self, _ctx: &RouteContext, _loads: &[u64]) -> Option<usize> {
+        None
+    }
+
+    fn reads_prompt(&self) -> bool {
+        false
     }
 }
 
@@ -312,6 +396,9 @@ impl RoundRobin {
 impl LoadBalancer for RoundRobin {
     fn name(&self) -> &'static str {
         "round_robin"
+    }
+    fn reads_prompt(&self) -> bool {
+        false
     }
     fn pick(&self, _ctx: &RouteContext, _loads: &[u64]) -> Option<usize> {
         if self.n == 0 {
@@ -350,6 +437,9 @@ impl LoadBalancer for WeightedRoundRobin {
     fn name(&self) -> &'static str {
         "weighted"
     }
+    fn reads_prompt(&self) -> bool {
+        false
+    }
     fn pick(&self, _ctx: &RouteContext, _loads: &[u64]) -> Option<usize> {
         let n = self.weights.len();
         if n == 0 {
@@ -385,6 +475,9 @@ impl LoadBalancer for Random {
     fn name(&self) -> &'static str {
         "random"
     }
+    fn reads_prompt(&self) -> bool {
+        false
+    }
     fn pick(&self, _ctx: &RouteContext, _loads: &[u64]) -> Option<usize> {
         if self.n == 0 {
             return None;
@@ -408,6 +501,9 @@ impl LoadBalancer for PowerOfTwo {
     fn name(&self) -> &'static str {
         "power_of_two"
     }
+    fn reads_prompt(&self) -> bool {
+        false
+    }
     fn pick(&self, _ctx: &RouteContext, loads: &[u64]) -> Option<usize> {
         if self.n == 0 {
             return None;
@@ -420,6 +516,38 @@ impl LoadBalancer for PowerOfTwo {
         if b == a {
             b = (b + 1) % self.n;
         }
+        if loads.len() == self.n {
+            return Some(if loads[a] <= loads[b] { a } else { b });
+        }
+        Some(a)
+    }
+
+    /// Sample the two candidates among the targets the caller can use, so a
+    /// dead replica's empty queue cannot win every draw it is in (#1942). With
+    /// nothing eligible this samples over every target, as `pick` does.
+    fn pick_eligible(
+        &self,
+        _ctx: &RouteContext,
+        loads: &[u64],
+        eligible: &dyn Fn(usize) -> bool,
+    ) -> Option<usize> {
+        if self.n == 0 {
+            return None;
+        }
+        let usable = Usable::ask(self.n, eligible);
+        let count = usable.count();
+        let mut rng = rand::rng();
+        let rank_a = rng.random_range(0..count);
+        if count == 1 {
+            return usable.nth(rank_a);
+        }
+        // a second rank over the other `count - 1`, shifted past the first, is
+        // uniform over the remaining usable targets
+        let mut rank_b = rng.random_range(0..count - 1);
+        if rank_b >= rank_a {
+            rank_b += 1;
+        }
+        let (a, b) = (usable.nth(rank_a)?, usable.nth(rank_b)?);
         if loads.len() == self.n {
             return Some(if loads[a] <= loads[b] { a } else { b });
         }
@@ -565,7 +693,7 @@ fn overloaded(target: usize, loads: &[u64], usable: &dyn Fn(usize) -> bool) -> b
 /// The targets one [`CacheAware`] pick may choose from, asked of the caller
 /// once each, since the caller's answer may take locks. A route with up to 64
 /// targets keeps the answer in a word, so a pick allocates nothing.
-enum Usable {
+pub(crate) enum Usable {
     Word(u64),
     Wide(Vec<bool>),
 }
@@ -574,7 +702,7 @@ impl Usable {
     /// Ask `eligible` about each of `n > 0` targets. With nothing eligible the
     /// caller fails open over every target, so all of them are weighed, as a
     /// plain pick does.
-    fn ask(n: usize, eligible: &dyn Fn(usize) -> bool) -> Self {
+    pub(crate) fn ask(n: usize, eligible: &dyn Fn(usize) -> bool) -> Self {
         if n <= 64 {
             let mut word = 0u64;
             for i in (0..n).filter(|&i| eligible(i)) {
@@ -592,10 +720,38 @@ impl Usable {
         Usable::Wide(mask)
     }
 
-    fn contains(&self, i: usize) -> bool {
+    pub(crate) fn contains(&self, i: usize) -> bool {
         match self {
             Usable::Word(word) => i < 64 && word & (1 << i) != 0,
             Usable::Wide(mask) => mask.get(i).copied().unwrap_or(false),
+        }
+    }
+
+    /// How many targets are usable.
+    pub(crate) fn count(&self) -> usize {
+        match self {
+            Usable::Word(word) => word.count_ones() as usize,
+            Usable::Wide(mask) => mask.iter().filter(|usable| **usable).count(),
+        }
+    }
+
+    /// The index of the `rank`-th usable target, counting from zero, so a
+    /// uniform `rank` in `0..count()` is a uniform pick among the usable.
+    pub(crate) fn nth(&self, rank: usize) -> Option<usize> {
+        match self {
+            Usable::Word(word) => {
+                let mut rest = *word;
+                for _ in 0..rank {
+                    rest &= rest.wrapping_sub(1);
+                }
+                (rest != 0).then(|| rest.trailing_zeros() as usize)
+            }
+            Usable::Wide(mask) => mask
+                .iter()
+                .enumerate()
+                .filter(|(_, usable)| **usable)
+                .nth(rank)
+                .map(|(i, _)| i),
         }
     }
 }
@@ -1046,5 +1202,119 @@ mod tests {
     fn pipeline_strategy_empty_returns_none() {
         let lb = build(BalancingStrategy::Pipeline, &[]);
         assert_eq!(lb.pick(&RouteContext::default(), &[]), None);
+    }
+
+    #[test]
+    fn power_of_two_never_samples_an_ineligible_target() {
+        // target 0 is dead and drained to load 0, so a draw that includes it
+        // reads it as the better of the two (#1942)
+        let lb = PowerOfTwo::new(3);
+        let ctx = RouteContext::default();
+        let loads = [0, 7, 9];
+        assert!(
+            (0..400).any(|_| lb.pick(&ctx, &loads) == Some(0)),
+            "the blind pick no longer prefers the dead target, so this test proves nothing"
+        );
+        for _ in 0..400 {
+            let pick = lb.pick_eligible(&ctx, &loads, &|i| i != 0);
+            assert!(matches!(pick, Some(1 | 2)), "{pick:?}");
+        }
+        // among the usable pair it still takes the less loaded
+        for _ in 0..50 {
+            assert_eq!(lb.pick_eligible(&ctx, &loads, &|i| i != 0), Some(1));
+        }
+        // a single usable target is the pick, and nothing usable behaves as pick
+        assert_eq!(lb.pick_eligible(&ctx, &loads, &|i| i == 2), Some(2));
+        assert!(lb.pick_eligible(&ctx, &loads, &|_| false).is_some());
+        assert_eq!(PowerOfTwo::new(0).pick_eligible(&ctx, &[], &|_| true), None);
+    }
+
+    #[test]
+    fn power_of_two_samples_a_wide_pool_among_the_eligible() {
+        // more than 64 targets takes the heap-backed answer
+        let n = 100;
+        let lb = PowerOfTwo::new(n);
+        let ctx = RouteContext::default();
+        let loads: Vec<u64> = (0..n as u64)
+            .map(|i| if i < 90 { 0 } else { 5 + i })
+            .collect();
+        for _ in 0..400 {
+            let pick = lb.pick_eligible(&ctx, &loads, &|i| i >= 90).unwrap();
+            assert!((90..n).contains(&pick), "{pick}");
+        }
+    }
+
+    #[test]
+    fn usable_ranks_enumerate_the_set_bits() {
+        let word = Usable::ask(10, &|i| i % 3 == 0);
+        assert_eq!(word.count(), 4);
+        let ranks: Vec<_> = (0..5).map(|r| word.nth(r)).collect();
+        assert_eq!(ranks, [Some(0), Some(3), Some(6), Some(9), None]);
+        let wide = Usable::ask(70, &|i| i == 3 || i == 69);
+        assert_eq!(
+            (wide.count(), wide.nth(0), wide.nth(1)),
+            (2, Some(3), Some(69))
+        );
+    }
+
+    #[test]
+    fn reads_prompt_is_false_only_for_strategies_that_never_look_at_it() {
+        // #1929: the gateway skips building the prompt for these
+        let never = [
+            BalancingStrategy::RoundRobin,
+            BalancingStrategy::Random,
+            BalancingStrategy::PowerOfTwo,
+            BalancingStrategy::Weighted,
+            BalancingStrategy::Cheapest,
+            BalancingStrategy::Fastest,
+            // a pipeline answers from its scorers: no predictor or lmcache
+            // source is wired here, so these are load-only stacks
+            BalancingStrategy::PredictedLatency,
+            BalancingStrategy::LmcacheAware,
+        ];
+        for strategy in never {
+            assert!(
+                !build(strategy, &[1, 1, 1]).reads_prompt(),
+                "{strategy:?} never reads the prompt"
+            );
+        }
+        // the ones that match prefixes, hash the prompt or score its size
+        let reads = [
+            BalancingStrategy::ConsistentHash,
+            BalancingStrategy::CacheAware,
+            BalancingStrategy::Pipeline,
+            BalancingStrategy::LoraAware,
+            // its fallback stack is the default pipeline, which has a prefix scorer
+            BalancingStrategy::Adaptive,
+        ];
+        for strategy in reads {
+            assert!(
+                build(strategy, &[1, 1, 1]).reads_prompt(),
+                "{strategy:?} reads the prompt"
+            );
+        }
+    }
+
+    #[test]
+    fn reads_prompt_defaults_to_true_for_a_strategy_that_does_not_say() {
+        struct Opaque;
+        impl LoadBalancer for Opaque {
+            fn name(&self) -> &'static str {
+                "opaque"
+            }
+            fn pick(&self, _ctx: &RouteContext, _loads: &[u64]) -> Option<usize> {
+                None
+            }
+        }
+        assert!(Opaque.reads_prompt());
+    }
+
+    #[test]
+    fn a_pipeline_reads_the_prompt_when_a_scorer_does() {
+        use crate::scorer::{LeastLoadScorer, Pipeline, PrefixCacheScorer};
+        let load_only = Pipeline::new(2).with(Box::new(LeastLoadScorer::new(2)), 1.0);
+        assert!(!load_only.reads_prompt());
+        let with_prefix = load_only.with(Box::new(PrefixCacheScorer::new(2)), 0.5);
+        assert!(with_prefix.reads_prompt());
     }
 }

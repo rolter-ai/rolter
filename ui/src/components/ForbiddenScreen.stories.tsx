@@ -29,7 +29,11 @@ function DeploymentSecrets() {
   return <p>runtime policy: 3 rules</p>;
 }
 
-const Gated = superadminOnly(DeploymentSecrets, "errors.resources.featureFlags");
+const Gated = superadminOnly(
+  DeploymentSecrets,
+  "errors.resources.featureFlags",
+  "feature_flags:read",
+);
 
 /**
  * an org admin is not a superadmin, so the wrapper refuses before the screen
@@ -61,6 +65,36 @@ export const Superadmin: Story = {
     const canvas = within(canvasElement);
     await waitFor(() => expect(canvas.getByText(/runtime policy/)).toBeVisible());
     await expect(canvas.queryByRole("alert")).toBeNull();
+  },
+};
+
+/** an operator is named for the feature flags (#1834), so the screen mounts without superadmin */
+export const Operator: Story = {
+  args: { resource: "" },
+  render: () => (
+    <Harness role="operator" fetchStub={pending}>
+      <Gated />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getByText(/runtime policy/)).toBeVisible());
+    await expect(canvas.queryByRole("alert")).toBeNull();
+  },
+};
+
+/** a security auditor reads security policy, not the feature flags an operator owns */
+export const SecurityAuditorOnAnOperatorScreen: Story = {
+  args: { resource: "" },
+  render: () => (
+    <Harness role="security_auditor" fetchStub={pending}>
+      <Gated />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await expectForbidden(canvasElement);
+    const canvas = within(canvasElement);
+    await expect(canvas.queryByText(/runtime policy/)).toBeNull();
   },
 };
 

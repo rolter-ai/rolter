@@ -9,13 +9,14 @@ import sys
 import time
 import urllib.error
 import urllib.request
-from typing import Dict, Optional
 
 
-def request(url: str, body: Optional[Dict] = None, timeout: float = 30.0):
+def request(url: str, body: dict | None = None, timeout: float = 30.0):
     data = None if body is None else json.dumps(body).encode()
     headers = {"content-type": "application/json"} if data else {}
-    return urllib.request.urlopen(urllib.request.Request(url, data=data, headers=headers), timeout=timeout)
+    return urllib.request.urlopen(
+        urllib.request.Request(url, data=data, headers=headers), timeout=timeout
+    )
 
 
 def wait_for_models(base_url: str) -> None:
@@ -32,13 +33,19 @@ def wait_for_models(base_url: str) -> None:
 
 
 STRATEGY_MODELS = (
-    "dummy-round-robin", "dummy-random", "dummy-power-of-two",
-    "dummy-consistent-hash", "dummy-cache-aware", "dummy-weighted",
-    "dummy-pipeline", "dummy-cheapest", "dummy-fastest",
+    "dummy-round-robin",
+    "dummy-random",
+    "dummy-power-of-two",
+    "dummy-consistent-hash",
+    "dummy-cache-aware",
+    "dummy-weighted",
+    "dummy-pipeline",
+    "dummy-cheapest",
+    "dummy-fastest",
 )
 
 
-def chat(base_url: str, model: str, stream: bool) -> Optional[str]:
+def chat(base_url: str, model: str, stream: bool) -> str | None:
     payload = {
         "model": model,
         "messages": [{"role": "user", "content": "Reply with one token."}],
@@ -124,20 +131,25 @@ def main() -> None:
     providers = {model: chat(args.gateway_url, model, stream=False) for model in STRATEGY_MODELS}
     # two consecutive round-robin calls must alternate across the pool;
     # only that route's own picks count so other strategies cannot mask it
-    round_robin = {providers["dummy-round-robin"], chat(args.gateway_url, "dummy-round-robin", stream=False)}
+    round_robin = {
+        providers["dummy-round-robin"],
+        chat(args.gateway_url, "dummy-round-robin", stream=False),
+    }
     chat(args.gateway_url, "dummy-round-robin", stream=True)
     responses(args.gateway_url, "dummy-round-robin", stream=False)
     responses(args.gateway_url, "dummy-round-robin", stream=True)
     anthropic_messages(args.gateway_url, "dummy-round-robin", stream=False)
     anthropic_messages(args.gateway_url, "dummy-round-robin", stream=True)
     if round_robin != {"engine-1", "engine-2"}:
-        raise RuntimeError(f"round-robin did not use both pool targets: {sorted(round_robin, key=str)}")
+        raise RuntimeError(
+            f"round-robin did not use both pool targets: {sorted(round_robin, key=str)}"
+        )
     print("real-engine smoke passed")
 
 
 if __name__ == "__main__":
     try:
         main()
-    except Exception as error:
+    except Exception as error:  # noqa: BLE001 - the entry point: any failure is a red smoke run
         print(f"smoke failed: {error}", file=sys.stderr)
         raise SystemExit(1)

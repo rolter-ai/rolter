@@ -31,6 +31,10 @@ pub const MAX_VARIABLE_LEN: usize = 4 * 1024;
 pub const TEMPLATE_VARS_FIELD: &str = "rolter_template_vars";
 
 /// Role a decorator message carries.
+///
+/// Deliberately closed (#3347): a decorator is content rather than a
+/// restriction, and no reading of an unknown role delivers what the operator
+/// wrote. A new role is a snapshot format bump (ADR-0038).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DecoratorRole {
@@ -56,6 +60,10 @@ impl DecoratorRole {
 }
 
 /// Where a decorator message is placed relative to the caller's own messages.
+///
+/// Deliberately closed (#3347): as for [`DecoratorRole`], no reading of an
+/// unknown position delivers what the operator wrote. A new position is a
+/// snapshot format bump (ADR-0038).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DecoratorPosition {
@@ -113,6 +121,11 @@ pub struct PromptTemplate {
 }
 
 /// One tenant-aware activation binding for a database-backed template.
+///
+/// Deliberately closed (#3347): it carries data, and a binding this
+/// build cannot match must neither apply one tenant's template to another's
+/// requests nor silently drop it. A new scope is a snapshot format bump
+/// (ADR-0038).
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum PromptTemplateActivationScope {

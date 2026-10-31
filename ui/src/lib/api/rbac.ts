@@ -98,11 +98,16 @@ export type RbacAction = "read" | "create" | "update" | "delete";
  * away — so a UI must render a missing entry as "not applicable" and never as
  * "denied".
  */
+/** a delegable deployment role (#1834): held on the account, granted by a superadmin only */
+export type DeploymentRole = "operator" | "security_auditor";
+
 export interface RbacActionView {
   action: RbacAction;
   /** minimum scoped role; null when the action is superadmin- or auth-only */
   minimum_role: Role | null;
   superadmin_only: boolean;
+  /** the deployment roles that also reach this action besides a superadmin; absent for the rest */
+  deployment_roles?: DeploymentRole[];
   /** no membership required: any authenticated caller may perform it */
   authenticated_only: boolean;
   /** the scope this action is decided at when it differs from the resource's; absent otherwise */
@@ -144,6 +149,8 @@ export interface RbacCustomRoleView {
 
 export interface RbacMatrix {
   roles: RbacRoleView[];
+  /** the delegable deployment roles, which no scope holds (#1834) */
+  deployment_roles?: DeploymentRole[];
   resources: RbacResourceView[];
   /** org-defined roles; empty when no org was asked for, or none are defined */
   custom_roles: RbacCustomRoleView[];
@@ -184,6 +191,8 @@ export interface RbacModelPolicy {
 export interface RbacEffective {
   /** the admin token, a superadmin user, or any caller in open mode */
   superadmin: boolean;
+  /** the caller's deployment role (#1834); null for a superadmin and for anyone holding none */
+  deployment_role?: DeploymentRole | null;
   /** the resolved role at the chain, null when no membership reaches it */
   role: Role | null;
   /** the `resource:action` pairs the caller may perform, default-deny */

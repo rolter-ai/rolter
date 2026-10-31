@@ -1,0 +1,11 @@
+-- #1404 makes the proxy enforce a server's declared tool manifest for an org
+-- whose saved MCP settings do not allow unlisted tools. Before it, the
+-- `allow_unlisted_tools` column was stored but never read, so a row saying
+-- `false` refused nothing. Every row written before this migration is set to
+-- allow unlisted tools, so an upgrade keeps the behaviour those orgs had; an
+-- admin turns enforcement on by saving the setting off. An org with no row is
+-- treated as allowing them in the proxy, for the same reason.
+--
+-- The statement trigger from 0114 bumps config_version, so gateways pick the
+-- change up on their next snapshot poll.
+update mcp_gateway_settings set allow_unlisted_tools = true where not allow_unlisted_tools;

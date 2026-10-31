@@ -24,7 +24,8 @@ url = "https://presidio.internal/sanitize"
 restore_url = "https://presidio.internal/restore"
 direction = "request"        # request | response | both
 restoration = "never"        # never | trusted_downstream | caller_authorized
-streaming = "reject"         # reject | passthrough
+streaming = "reject"         # reject | passthrough | restore
+restore_stream_url = "https://presidio.internal/restore-stream"   # only for streaming = "restore"
 timeout_ms = 5000
 max_retries = 0
 failure_mode = "fail_open"   # fail_open | fail_closed
@@ -59,13 +60,63 @@ Restoration only ever reverses placeholders the _request_ leg introduced. Conten
 
 The [response cache](/concepts/response-cache) stores what the provider returned, placeholders and all. It never stores a restored response. The response leg runs on every delivery, cache hits included, with the restoration token of the request being answered. Two callers whose requests sanitize to the same body share one cache entry, and each gets back only their own values.
 
+### With payload capture
+
+When [payload capture](/observability/log-settings#payload-capture) is on, the captured request is the sanitized body Rolter forwarded, and the captured response is the body **before** restoration, placeholders and all. A caller under `trusted_downstream` or `caller_authorized` receives the restored plaintext, but the capture store, like the cache, only ever holds the placeholders. Token counts and cost are read from the provider's response as usual.
+
 ### Streaming
 
-Sanitizing or restoring a response needs the complete body — a placeholder can straddle any number of SSE frames, and reversing one per chunk would mean a network round trip per token.
+The buffered response leg needs the complete body: a placeholder can straddle any number of SSE frames, and a restore call per frame would cost a network round trip per token. So `streaming` decides what a streamed request gets while the response leg is active:
 
-So when the response leg is active, a streamed request is refused with `pii_streaming_unsupported` (HTTP 400). Set `streaming = "passthrough"` to serve the stream with the response leg skipped instead. This mirrors how `guardrails.streaming_post_call` behaves.
+<ParamField path="reject" type="default">
+The request is refused with `pii_streaming_unsupported` (HTTP 400). This mirrors how `guardrails.streaming_post_call` behaves.
+</ParamField>
 
-A request-only setup (`direction = "request"`, `restoration = "never"`) has no response leg, so it streams normally.
+<ParamField path="passthrough">
+The stream is served with the response leg skipped: the caller gets placeholders, and provider-generated text is not sanitized.
+</ParamField>
+
+<ParamField path="restore">
+The stream is restored as it goes, through `restore_stream_url` (below). Rolter still never holds the mapping: the sanitizer does the restoring. This covers **restoration only**. When `direction` is `response` or `both`, a streamed request is refused as under `reject`, because finding entities in a stream needs context the holdback does not give. `restore` needs `restore_stream_url` and a `restoration` other than `never`, or the configuration does not load.
+</ParamField>
+
+A request-only setup (`direction = "request"`, `restoration = "never"`) has no response leg, so it streams normally in every mode, and so does a `caller_authorized` request that does not ask for restoration.
+
+### Restoring a stream
+
+Under `streaming = "restore"`, each streamed response is restored over one full-duplex `POST` to `restore_stream_url`: Rolter streams the request body and reads the reply body at the same time, one JSON object per line (`application/x-ndjson`). This needs HTTP/2 (negotiated over `https`), or an HTTP/1.1 server that answers while it is still reading the request body.
+
+The first line names the exchange, as a restore call does, and is not answered:
+
+```json
+{"trace_id": "0af7651916cd43dd8448eb211c80319c", "tenant": {"org": "acme", "team": "platform", "project": "chat"}, "restoration_token": "opaque-handle"}
+```
+
+Then Rolter sends the text of each delta of the stream, decoded from its JSON, as it arrives:
+
+```json
+{"seq": 17, "channel": "0/content", "text": "_ADDRESS"}
+```
+
+A **channel** is one text field of the stream: a choice's `content`, a tool call's arguments, an Anthropic content block, a Responses API output part. Keep a separate holdback for each. `"format": "json"` marks a channel whose text is JSON source (tool-call arguments, Anthropic `partial_json`): write a value restored into it JSON-escaped, as it sits between quotes, so a `"` in a name does not break the arguments.
+
+When a channel ends (`finish_reason`, `content_block_stop`, a Responses API done event, or the end of the stream), Rolter sends `{"seq": 18, "close": "0/content"}`. The last line is `{"seq": 19, "end": true}`, after which you may discard the exchange.
+
+Answer **every line after the first with exactly one line, in order**:
+
+```json
+{"seq": 17, "text": "", "held": 9}
+```
+
+`text` is the restored text to emit for that line, and `held` is how many characters (Unicode scalar values) of the channel's input you are holding back because they could be the start of a placeholder. Held text comes out later, restored, in the reply to a later line of the same channel or in the reply to its `close`, which must report `held: 0`. `held` may never exceed 1,024; a reply that holds more is treated as a failure. Hold back only a suffix that is a prefix of one of **this exchange's** placeholders, so other text, a `<` in code included, is not delayed. Rolter puts reply 17's text into frame 17 and leaves the rest of the frame as the provider sent it; a frame whose text you held is sent once the held text is released.
+
+Rolter keeps at most 256 lines (or 256 KiB of text) unanswered. When that window is full it stops reading from the provider, so a slow sanitizer slows the stream rather than filling a buffer. If the caller disconnects, the request is reset; discard the exchange's holdback then too.
+
+A failure is never fatal and never the unsafe way round. If the exchange cannot be opened (a refused connection, a non-2xx status, or a URL the egress policy refuses), the stream is served unrestored. You may send the response head together with your first reply: the clock starts when Rolter sends its first delta, not before, so a slow first token does not count against you. If it fails mid-stream (an error, a reset, a reply that breaks the rules above, or no reply for `timeout_ms` while a line is waiting for one), Rolter emits the text you were holding and every unanswered delta as the provider sent it, then carries on unrestored: nothing is duplicated or lost, and the caller sees placeholders from that point. Rolter does not retry, since a new exchange would need holdback state you have discarded. Both count in `rolter_pii_restore_errors_total`.
+
+Restoration on a stream never restores more than the buffered path would: a placeholder the model mangled (`PERSON_1`, `<Person_1>`) stays as it is in both. A cached SSE response is restored the same way when it is replayed, with the replaying request's own token. Usage and cost are read from the provider's stream, and payload capture stores it before restoration. A streamed request that the provider answers without a stream (plain JSON) is delivered with its placeholders and counted in `rolter_pii_restore_errors_total`.
+
+[Presidio](https://microsoft.github.io/presidio/) has no streaming endpoint, so it needs a small service in front that wraps `deanonymize` with the holdback. A reference one, with its tests, is in [`examples/presidio-restore-shim`](https://github.com/rolter-ai/rolter/tree/master/examples/presidio-restore-shim): read it, then back its mapping store with the one your sanitize service writes to.
 
 ### Failure mode
 
@@ -81,7 +132,7 @@ A failure on the _response_ leg never fails the request, in either mode: the ups
 
 ## Egress policy
 
-`url` and `restore_url` are checked against the [egress policy](/configuration/egress) when the configuration loads and again before every call, and Rolter does not follow a redirect from either. In a control-plane snapshot a denied URL does not switch the sanitizer off: it is listed as a configuration problem and every call is refused, so the sanitizer's failure mode decides whether the request is rejected or forwarded unchanged.
+`url`, `restore_url` and `restore_stream_url` are checked against the [egress policy](/configuration/egress) when the configuration loads and again before every call, and Rolter does not follow a redirect from either. In a control-plane snapshot a denied URL does not switch the sanitizer off: it is listed as a configuration problem and every call is refused, so the sanitizer's failure mode decides whether the request is rejected or forwarded unchanged.
 
 ## The service contract
 
@@ -114,7 +165,7 @@ The reply:
 
 Omit `restoration_token` if the service cannot reverse this exchange. Rolter reads that as "do not restore", not as an error.
 
-`POST` to `restore_url` carries `trace_id`, `tenant`, the `restoration_token`, and the `content` to reverse; the reply is `{"content": ..., "restored": <count>}`.
+`POST` to `restore_url` carries `trace_id`, `tenant`, the `restoration_token`, and the `content` to reverse; the reply is `{"content": ..., "restored": <count>}`. A streamed response under `streaming = "restore"` uses `restore_stream_url` instead, described in [Restoring a stream](#restoring-a-stream).
 
 <Note>
 A malformed reply is a failure, not a pass. Defaulting to "allow" here would forward content the gateway believes is sanitized and is not.
@@ -124,13 +175,13 @@ A malformed reply is a failure, not a pass. Defaulting to "allow" here would for
 
 All six counters are cardinality-bounded and carry no content:
 
-| Metric                               | Meaning                                                          |
-| ------------------------------------ | ---------------------------------------------------------------- |
-| `rolter_pii_entities_redacted_total` | entities replaced across both legs                               |
-| `rolter_pii_sanitizer_errors_total`  | calls that failed (timeout, transport, non-2xx, malformed reply) |
-| `rolter_pii_sanitizer_blocks_total`  | requests refused under `fail_closed`                             |
-| `rolter_pii_restorations_total`      | successful restores                                              |
-| `rolter_pii_restore_errors_total`    | failed restores — the caller kept placeholders                   |
-| `rolter_pii_stream_rejections_total` | streamed requests refused under `streaming = "reject"`           |
+| Metric                               | Meaning                                                                                                        |
+| ------------------------------------ | -------------------------------------------------------------------------------------------------------------- |
+| `rolter_pii_entities_redacted_total` | entities replaced across both legs                                                                             |
+| `rolter_pii_sanitizer_errors_total`  | calls that failed (timeout, transport, non-2xx, malformed reply)                                               |
+| `rolter_pii_sanitizer_blocks_total`  | requests refused under `fail_closed`                                                                           |
+| `rolter_pii_restorations_total`      | successful restores; a restored stream counts once                                                             |
+| `rolter_pii_restore_errors_total`    | failed restores — the caller kept placeholders, from the failure on a stream                                   |
+| `rolter_pii_stream_rejections_total` | streamed requests refused under `streaming = "reject"`, or under `restore` when the response is also sanitized |
 
 A rising `rolter_pii_sanitizer_errors_total` under `fail_open` is the alert that matters: it means unsanitized traffic is reaching providers.

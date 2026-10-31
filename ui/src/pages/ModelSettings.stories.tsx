@@ -290,7 +290,8 @@ export const ServerRejectionLandsOnTheField: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     const model = await canvas.findByLabelText("Default model");
-    await userEvent.type(model, "x");
+    // a typed model is taken on Enter, and that edit is what enables Save
+    await userEvent.type(model, "x{Enter}");
     await userEvent.click(canvas.getByRole("button", { name: "Save changes" }));
     await waitFor(() => expect(model).toHaveAttribute("aria-invalid", "true"));
     await expect(model).toHaveAccessibleDescription("default_model must be at most 256 characters");
@@ -308,16 +309,9 @@ export const DefaultsOffIgnoresAnOutOfRangeTemperature: Story = {
     await waitFor(() => expect(canvas.getByLabelText("Temperature")).toBeDisabled());
     await expect(canvas.getByLabelText("Temperature")).toHaveValue("3");
     await expect(canvas.queryByText("Temperature must be between 0 and 2.")).toBeNull();
-    await expect(canvas.getByRole("button", { name: "Save changes" })).not.toHaveAttribute(
-      "aria-disabled",
-    );
+    await expect(canvas.queryByText(/attention/)).toBeNull();
     await userEvent.click(canvas.getByRole("switch", { name: "Apply defaults" }));
-    await waitFor(() =>
-      expect(canvas.getByRole("button", { name: "Save changes" })).toHaveAttribute(
-        "aria-disabled",
-        "true",
-      ),
-    );
+    await waitFor(() => expect(canvas.getByText(/attention/)).toBeVisible());
     await expect(canvas.getByLabelText("Temperature")).toHaveAccessibleDescription(
       "Temperature must be between 0 and 2.",
     );
@@ -342,6 +336,23 @@ export const SwitchingOffKeepsTheStoredValue: Story = {
     const body = await switchingOff.expectSentBody<ModelDefaultsDto>("PUT", "model-defaults");
     await expect(body.enabled).toBe(false);
     await expect(body.default_temperature).toBe(CONFIGURED.default_temperature);
+  },
+};
+
+const typedModel = recording(answering(CONFIGURED));
+
+// a model name typed and not confirmed with Enter is still the value once focus
+// moves on, so clicking Save sends it rather than saving nothing (#3244)
+export const TypedModelIsSavedWithoutPressingEnter: Story = {
+  render: () => <Harness fetchStub={typedModel.stub} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const model = await canvas.findByLabelText("Default model");
+    await userEvent.clear(model);
+    await userEvent.type(model, "my-fine-tune");
+    await userEvent.click(canvas.getByRole("button", { name: "Save changes" }));
+    const body = await typedModel.expectSentBody<ModelDefaultsDto>("PUT", "model-defaults");
+    await expect(body.default_model).toBe("my-fine-tune");
   },
 };
 
@@ -443,5 +454,26 @@ export const LoadFailsAndRetries: Story = {
       async () =>
         await expect(await canvas.findByLabelText("Default model")).toHaveValue("gpt-4o-mini"),
     );
+  },
+};
+
+// the switch looks like it applies at once; it waits for Save, and the panel says so (#2214)
+export const SwitchWaitsForSave: Story = {
+  render: () => <Harness fetchStub={answering(BASE)} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const apply = await canvas.findByRole("switch", { name: "Apply defaults" });
+    await expect(canvas.getByRole("button", { name: "Save changes" })).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
+    await userEvent.click(apply);
+    await expect(canvas.getByText("Not saved")).toBeVisible();
+    await expect(canvas.getByRole("button", { name: "Save changes" })).not.toHaveAttribute(
+      "aria-disabled",
+    );
+    await userEvent.click(canvas.getByRole("button", { name: "Discard changes" }));
+    await expect(apply).toHaveAttribute("aria-checked", "false");
+    await expect(canvas.queryByText("Not saved")).toBeNull();
   },
 };

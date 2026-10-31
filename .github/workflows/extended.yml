@@ -15,9 +15,11 @@ name: extended
 # not on the PR that caused it. coverage also keeps running on every PR, in
 # quality.yml, because testing.md asks for the baseline edit in the same PR.
 #
-# takes no secrets. only `report failure` writes anything, and it holds
-# `issues: write` and `actions: write` at job level with no checkout: at
-# workflow level zizmor rates those scopes high and fails the gate.
+# takes no secrets. only `report failure` writes anything: it calls the shared
+# report-failure.yml, whose job holds `issues: write` and `actions: write` at
+# job level (at workflow level zizmor rates those scopes high and fails the
+# gate) and checks out nothing but scripts/report-failure.sh, without
+# credentials (#2682).
 on:
   workflow_dispatch:
   schedule:
@@ -41,7 +43,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
           toolchain: stable
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           save-if: ${{ github.ref == 'refs/heads/master' }}
       - name: cargo check (macos)
@@ -55,7 +57,7 @@ jobs:
   # ROLTER_DATABASE_URL). see ROL-245
   compose-smoke:
     name: compose smoke
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -75,7 +77,7 @@ jobs:
   # `str::floor_char_boundary` and the 1.89 that uuid declares (#2026)
   msrv:
     name: msrv build
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -95,7 +97,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
           toolchain: ${{ steps.msrv.outputs.version }}
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           save-if: ${{ github.ref == 'refs/heads/master' }}
       - name: cargo check (msrv)
@@ -117,6 +119,9 @@ jobs:
   # steps identical, or the keys drift and PR coverage builds cold
   coverage:
     name: coverage
+    # still 24.04, like quality.yml's coverage job: some tests shell out to the
+    # runner's pg_dump and psql against the postgres:16 service, and the 26.04
+    # postgres 18 client writes dumps a 16 server refuses. moves with #3235
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     services:
@@ -155,7 +160,7 @@ jobs:
           toolchain: stable
           components: llvm-tools-preview
       - uses: ./.github/actions/wild-linker
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: coverage
           save-if: ${{ github.ref == 'refs/heads/master' }}
@@ -189,7 +194,7 @@ jobs:
   # reads bun.lock
   bun-pin:
     name: bun pin
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -221,7 +226,7 @@ jobs:
   # issue. needs no install: bun audit reads package.json and bun.lock
   ui-audit:
     name: ui lockfile audit
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -247,69 +252,27 @@ jobs:
   # left in the Actions tab. close the issue once the fix lands; the next
   # failure opens a fresh one. master only: a dispatch on a branch is someone
   # trying a change, and its failure belongs in that run, not on the issue.
-  # the only job with a write scope, and it never checks the tree out. the run
-  # url, ref and results reach the script through env, never inline in run:
-  #
-  # an issue this token opens raises no `issues` event, so project-automation
-  # never sees it (#2201). the job therefore triages a new issue itself: the
-  # milestone it can set, and a dispatch of
-  # project-automation.yml (the one event the token may start, hence
-  # `actions: write`) for the board item and its fields. both are best-effort
-  # and only warn: the issue is what matters, and a renamed milestone must not
-  # cost it
+  # the logic is report-failure.yml's, shared with ui-e2e.yml and sso-e2e.yml
+  # (#2682); this job only says when to report, under which title and what the
+  # table holds. the called job needs the two write scopes, and the caller has
+  # to grant them
   report-failure:
     name: report failure
     needs: [cross-platform, compose-smoke, msrv, coverage, bun-pin, ui-audit]
     if: ${{ !cancelled() && contains(needs.*.result, 'failure') && github.ref == 'refs/heads/master' }}
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
     permissions:
+      contents: read
       issues: write
       actions: write
-    steps:
-      - name: open or comment on the tracking issue
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          REF: ${{ github.ref_name }}
-          SHA: ${{ github.sha }}
-          MACOS: ${{ needs.cross-platform.result }}
-          COMPOSE_SMOKE: ${{ needs.compose-smoke.result }}
-          MSRV: ${{ needs.msrv.result }}
-          COVERAGE: ${{ needs.coverage.result }}
-          BUN_PIN: ${{ needs.bun-pin.result }}
-          UI_AUDIT: ${{ needs.ui-audit.result }}
-          MILESTONE: Maintenance, CI & DX
-        run: |
-          set -euo pipefail
-          title="extended.yml: nightly checks failing"
-          body="$(printf '%s\n' \
-            "[Run]($RUN_URL) on \`$REF\` at \`$SHA\`:" \
-            "" \
-            "| job | result |" \
-            "| --- | --- |" \
-            "| macos check | $MACOS |" \
-            "| compose smoke | $COMPOSE_SMOKE |" \
-            "| msrv build | $MSRV |" \
-            "| coverage | $COVERAGE |" \
-            "| bun pin | $BUN_PIN |" \
-            "| ui lockfile audit | $UI_AUDIT |")"
-          number="$(gh issue list --state open --label ci --limit 200 --json number,title \
-            | jq -r --arg t "$title" 'map(select(.title == $t)) | .[0].number // empty')"
-          if [ -n "$number" ]; then
-            gh issue comment "$number" --body "$body"
-            echo "commented on #$number" >> "$GITHUB_STEP_SUMMARY"
-          else
-            url="$(gh issue create --title "$title" --label ci \
-              --body "$(printf '%s\n\n%s\n' "$body" "Opened by the \`report failure\` job. Close it once the failing checks are fixed; the next failure opens a new one.")")"
-            echo "opened $url" >> "$GITHUB_STEP_SUMMARY"
-            number="${url##*/}"
-            if ! gh issue edit "$number" --milestone "$MILESTONE"; then
-              echo "::warning title=report failure::could not set the milestone of #$number to $MILESTONE; set it by hand"
-            fi
-            if ! gh workflow run project-automation.yml --ref "$REF" \
-              -f number="$number" -f area=ci -f effort=XS; then
-              echo "::warning title=report failure::could not dispatch project-automation for #$number; add it by hand: gh workflow run project-automation.yml -f number=$number -f area=ci -f effort=XS"
-            fi
-          fi
+    uses: ./.github/workflows/report-failure.yml
+    with:
+      title: "extended.yml: nightly checks failing"
+      area: ci
+      effort: XS
+      results: |
+        macos check|${{ needs.cross-platform.result }}
+        compose smoke|${{ needs.compose-smoke.result }}
+        msrv build|${{ needs.msrv.result }}
+        coverage|${{ needs.coverage.result }}
+        bun pin|${{ needs.bun-pin.result }}
+        ui lockfile audit|${{ needs.ui-audit.result }}

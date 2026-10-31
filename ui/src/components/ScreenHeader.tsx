@@ -1,9 +1,15 @@
 import { Menu, RefreshCw } from "lucide-react";
 import { useQueryClient, type Query } from "@tanstack/react-query";
 import { useState } from "react";
+import type { TFunction } from "i18next";
 import { useTranslation } from "react-i18next";
 
-import { GATEWAY_HEALTH_KEY, useGatewayHealth, type GatewayHealth } from "@/lib/gateway-health";
+import {
+  GATEWAY_HEALTH_KEY,
+  useGatewayHealth,
+  type FleetCounts,
+  type GatewayHealth,
+} from "@/lib/gateway-health";
 import { useFormat } from "@/lib/i18n/format";
 import { cn } from "@/lib/utils";
 
@@ -25,7 +31,35 @@ const TONE: Record<GatewayHealth, { dot: string; label: string }> = {
   unknown: { dot: "bg-[color:var(--text-subtle)]", label: "text-muted-foreground" },
 };
 
-// what the gateway's own `/readyz` says, polled through the `/gw` proxy (#1973).
+// what the pill says of a fleet it could count: how many gateways are live and,
+// when some are not, how many are behind on config or have gone quiet. a lag
+// outranks a stale gateway in the label, since it is the one an operator can act
+// on from the dashboard; the title carries both
+function fleetPhrases(t: TFunction, fleet: FleetCounts): { label: string; detail: string } {
+  const { live, stale, lagging } = fleet;
+  const label =
+    live === 0
+      ? t("shell.gateway.fleet.none")
+      : lagging > 0
+        ? t("shell.gateway.fleet.behind", { count: live, lagging })
+        : stale > 0
+          ? t("shell.gateway.fleet.stale", { count: stale, live })
+          : t("shell.gateway.fleet.live", { count: live });
+  const detail = [
+    live === 0 ? t("shell.gateway.detail.fleet.none") : undefined,
+    live > 0 && lagging === 0 && stale === 0
+      ? t("shell.gateway.detail.fleet.healthy", { count: live })
+      : undefined,
+    lagging > 0 ? t("shell.gateway.detail.fleet.behind", { count: lagging, live }) : undefined,
+    stale > 0 ? t("shell.gateway.detail.fleet.stale", { count: stale }) : undefined,
+  ]
+    .filter(Boolean)
+    .join(" ");
+  return { label, detail };
+}
+
+// what the fleet summary says, or the gateway's own `/readyz` through the `/gw`
+// proxy when the summary has nothing to count (#1973, #3263).
 // set in Geist, not Geist Mono: "gateway healthy" is a sentence nobody pastes
 // anywhere, and mono is kept for what someone would copy (#2015)
 // it breathes only while the latest check came back healthy; an answer held
@@ -34,7 +68,7 @@ const TONE: Record<GatewayHealth, { dot: string; label: string }> = {
 function GatewayPill() {
   const { t } = useTranslation();
   const fmt = useFormat();
-  const { health, live, answeredAt } = useGatewayHealth();
+  const { health, live, answeredAt, fleet, refusal } = useGatewayHealth();
   const tone = TONE[health];
   const when =
     answeredAt === null
@@ -42,7 +76,13 @@ function GatewayPill() {
       : t(live ? "shell.gateway.checkedAt" : "shell.gateway.lastAnswerAt", {
           time: fmt.time(answeredAt),
         });
-  const detail = [t(`shell.gateway.detail.${health}`), when].filter(Boolean).join(" ");
+  const phrases = fleet ? fleetPhrases(t, fleet) : null;
+  // a gateway with no config is down for its callers, but "unreachable" would
+  // send the operator to the network rather than to the control plane
+  const key = refusal ?? health;
+  const detail = [phrases?.detail ?? t(`shell.gateway.detail.${key}`), when]
+    .filter(Boolean)
+    .join(" ");
   return (
     <span
       role="status"
@@ -57,7 +97,7 @@ function GatewayPill() {
           health === "healthy" && live && "rl-pulse",
         )}
       />
-      <span className={tone.label}>{t(`shell.gateway.${health}`)}</span>
+      <span className={tone.label}>{phrases?.label ?? t(`shell.gateway.${key}`)}</span>
     </span>
   );
 }

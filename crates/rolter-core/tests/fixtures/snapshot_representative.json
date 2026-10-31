@@ -1,0 +1,842 @@
+{
+  "adaptive_routing": {
+    "cost_weight": 0.5,
+    "enabled": false,
+    "exploration_ratio": 0.05000000074505806,
+    "latency_weight": 1.0,
+    "load_weight": 0.25,
+    "min_samples": 50
+  },
+  "breaker": {
+    "enabled": false,
+    "failure_threshold": 5,
+    "open_secs": 30
+  },
+  "budgets": [
+    {
+      "scope": "project",
+      "id": "project-1",
+      "limit_usd": 100.5,
+      "period": "monthly",
+      "unpriced_policy": "ignore",
+      "within": {
+        "org": "org-1"
+      }
+    }
+  ],
+  "cache": {
+    "default_ttl_secs": 60,
+    "enabled": false,
+    "max_entry_bytes": 1048576,
+    "namespace": "rolter:cache"
+  },
+  "client": {
+    "forwarded_headers": ["x-trace"],
+    "injected_headers": {
+      "x-gateway": "rolter"
+    },
+    "public_base_url": "https://gateway.example.com",
+    "request_id_header": "x-request-id"
+  },
+  "compatibility": {
+    "anthropic_version": "2023-06-01",
+    "default_max_tokens": 1024
+  },
+  "cooldown": {
+    "base_secs": 5,
+    "max_secs": 300
+  },
+  "currency": {
+    "base": "USD",
+    "rates": {
+      "EUR": 0.9
+    }
+  },
+  "db_virtual_keys": [
+    {
+      "key_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "id": "key-1",
+      "org_id": "org-1",
+      "team_id": "team-1",
+      "project_id": "project-1",
+      "user_id": "user-1",
+      "models": ["llama"],
+      "providers": ["vllm-1"],
+      "disabled": false,
+      "expires_at": "2030-01-01T00:00:00Z",
+      "cache": true,
+      "business_unit_id": "bu-1",
+      "customer_id": "cust-1",
+      "access_policy": {
+        "allowed_models": ["llama"],
+        "denied_models": ["x"],
+        "allowed_routes": ["llama"],
+        "denied_routes": ["y"]
+      },
+      "previous": {
+        "key_hash": "hash-retired",
+        "valid_until": "2030-01-01T00:00:00Z"
+      }
+    }
+  ],
+  "egress": {
+    "allow_hosts": ["api.openai.com"],
+    "block_link_local": true,
+    "block_loopback": false,
+    "block_private": false
+  },
+  "feature_flags": {
+    "active_health_checks": true,
+    "cache_aware_routing": true,
+    "circuit_breaker": true,
+    "complexity_routing": true,
+    "guardrails": true,
+    "response_cache": true
+  },
+  "guardrail_webhook": {
+    "enabled": false,
+    "failure_mode": "fail_open",
+    "max_body_bytes": 65536,
+    "max_retries": 0,
+    "stage": "pre_call",
+    "timeout_ms": 2000,
+    "url": ""
+  },
+  "guardrails": {
+    "enabled": false,
+    "streaming_post_call": "reject"
+  },
+  "health": {
+    "catalogue_interval_secs": 900,
+    "consecutive_failure_threshold": 3,
+    "enabled": false,
+    "interval_secs": 10,
+    "path": "/",
+    "probe_concurrency": 2,
+    "recovery_success_threshold": 2,
+    "status_page_interval_secs": 60,
+    "timeout_secs": 2
+  },
+  "logging": {
+    "batch_max": 1000,
+    "clickhouse_url": "http://clickhouse:8123",
+    "flush_ms": 1000,
+    "payload_capture": {
+      "enabled": false,
+      "max_bytes": 32768,
+      "models": ["llama"],
+      "redact_detectors": [
+        "private_key",
+        "anthropic_key",
+        "openai_key",
+        "google_api_key",
+        "github_token",
+        "slack_token",
+        "stripe_key",
+        "aws_key",
+        "jwt",
+        "bearer_token",
+        "connection_string"
+      ],
+      "redact_fields": ["api_key", "authorization", "password", "secret", "token"],
+      "redact_patterns": [
+        {
+          "name": "ticket",
+          "pattern": "T-[0-9]+"
+        }
+      ],
+      "virtual_key_ids": ["key-1"]
+    },
+    "queue_capacity": 10000,
+    "sample_rate": 1.0,
+    "ui_events": true
+  },
+  "mcp_oauth_sessions": [
+    {
+      "id": "sess-1",
+      "server_id": "mcp-1",
+      "user_id": "user-1",
+      "scopes": ["read"],
+      "expires_at": "2030-01-01T00:00:00Z",
+      "access_token": "placeholder"
+    }
+  ],
+  "mcp_servers": [
+    {
+      "id": "mcp-1",
+      "org_id": "org-1",
+      "slug": "docs",
+      "url": "https://mcp.example.com/mcp",
+      "transport": "streamable_http",
+      "required_scopes": ["read"],
+      "auth_kind": "none",
+      "auth_header_name": "x-api-key",
+      "connect_timeout_ms": 1000,
+      "request_timeout_ms": 5000,
+      "max_retries": 1,
+      "tools": ["search"],
+      "enforce_manifest_by_default": true
+    }
+  ],
+  "mcp_settings": [
+    {
+      "org_id": "org-1",
+      "connect_timeout_ms": 1000,
+      "request_timeout_ms": 5000,
+      "max_retries": 1,
+      "fail_open": false,
+      "allow_unlisted_tools": false
+    }
+  ],
+  "mcp_manifest_enforcement": [{ "org": "acme", "enforce": true }],
+  "mcp_gateway_settings": [
+    {
+      "org": "acme",
+      "default_transport": "streamable_http",
+      "connect_timeout_ms": 5000,
+      "request_timeout_ms": 30000,
+      "max_retries": 1,
+      "default_failure_mode": "fail_closed",
+      "allow_unlisted_tools": false
+    }
+  ],
+  "mcp_gateway_tool_groups": [
+    {
+      "org": "acme",
+      "slug": "read-only",
+      "name": "Read only",
+      "description": "no writes",
+      "enabled": true,
+      "tools": [{ "server": "github", "tool": "search_code" }],
+      "teams": ["acme/platform"],
+      "projects": ["acme/platform/gateway"],
+      "keys": [
+        { "project": "acme/platform/gateway", "name": "ci" },
+        { "project": "acme/platform/gateway", "prefix": "rk-ab" }
+      ]
+    }
+  ],
+  "mcp_tool_groups": [
+    {
+      "id": "grp-1",
+      "org_id": "org-1",
+      "slug": "search",
+      "tools": [
+        {
+          "server_id": "mcp-1",
+          "tool": "search"
+        }
+      ],
+      "assignments": [
+        {
+          "kind": "team",
+          "id": "team-1"
+        }
+      ]
+    }
+  ],
+  "metrics_scrape": {
+    "enabled": false,
+    "interval_secs": 5,
+    "path": "/metrics",
+    "timeout_secs": 2
+  },
+  "model_defaults": {
+    "default_model": "llama",
+    "enabled": false,
+    "max_tokens": 512,
+    "temperature": 0.7,
+    "top_p": 0.9
+  },
+  "model_prices": [
+    {
+      "model": "llama",
+      "input_per_mtok": 0.5,
+      "output_per_mtok": 1.5,
+      "cached_input_per_mtok": 0.1,
+      "cache_write_per_mtok": 0.6,
+      "cache_write_1h_per_mtok": 1.0,
+      "image_per_unit": 0.01,
+      "audio_input_per_minute": 0.006,
+      "speech_per_mchar": 15,
+      "audio_input_per_mtok": 10,
+      "audio_output_per_mtok": 20,
+      "cached_audio_input_per_mtok": 2,
+      "currency": "USD"
+    }
+  ],
+  "models": {
+    "readonly": [
+      {
+        "advanced": {
+          "model_type": "chat",
+          "capabilities": ["tools"],
+          "context_length": 8192,
+          "description": "example route",
+          "limits": {
+            "timeout_secs": 30,
+            "retries": 1,
+            "output_tokens": 1024,
+            "rpm": 60,
+            "tpm": 100000,
+            "concurrency": 8
+          },
+          "headers": {
+            "x-route": "one"
+          },
+          "locked_headers": ["x-route"],
+          "visibility": {
+            "allowed_key_ids": ["key-1"],
+            "allowed_team_ids": ["team-1"],
+            "allowed_user_ids": ["user-1"]
+          },
+          "guardrails": {}
+        },
+        "cache": {
+          "enabled": true,
+          "ttl_secs": 60,
+          "per_key": true,
+          "semantic": {
+            "provider": "vllm-1",
+            "model": "embed"
+          }
+        },
+        "model": "ro-model",
+        "param_policy": {
+          "allow": ["temperature"],
+          "deny": ["logit_bias"],
+          "mode": "allow"
+        },
+        "params": {
+          "temperature": 0.2
+        },
+        "strategy": "cache_aware",
+        "targets": [
+          {
+            "model": "meta-llama/Llama-3.1-8B-Instruct",
+            "provider": "vllm-1",
+            "weight": 1
+          }
+        ],
+        "variants": [
+          {
+            "name": "b",
+            "weight": 1,
+            "targets": [
+              {
+                "provider": "vllm-1",
+                "model": "m",
+                "weight": 1
+              },
+              {
+                "provider": "vllm-1",
+                "model": "m-burst",
+                "weight": 1,
+                "takes_over": ["timeout"]
+              }
+            ],
+            "params": {
+              "top_p": 0.9
+            }
+          }
+        ],
+        "tenancy": {
+          "org_id": "org-1",
+          "project_id": "project-1"
+        }
+      }
+    ],
+    "default": [
+      {
+        "advanced": {
+          "model_type": "chat",
+          "capabilities": ["tools"],
+          "context_length": 8192,
+          "description": "example route",
+          "limits": {
+            "timeout_secs": 30,
+            "retries": 1,
+            "output_tokens": 1024,
+            "rpm": 60,
+            "tpm": 100000,
+            "concurrency": 8
+          },
+          "headers": {
+            "x-route": "one"
+          },
+          "locked_headers": ["x-route"],
+          "visibility": {
+            "allowed_key_ids": ["key-1"],
+            "allowed_team_ids": ["team-1"],
+            "allowed_user_ids": ["user-1"]
+          },
+          "guardrails": {}
+        },
+        "cache": {
+          "enabled": true,
+          "ttl_secs": 60,
+          "per_key": true,
+          "semantic": {
+            "provider": "vllm-1",
+            "model": "embed"
+          }
+        },
+        "model": "default-model",
+        "param_policy": {
+          "allow": ["temperature"],
+          "deny": ["logit_bias"],
+          "mode": "allow"
+        },
+        "params": {
+          "temperature": 0.2
+        },
+        "strategy": "cache_aware",
+        "targets": [
+          {
+            "model": "meta-llama/Llama-3.1-8B-Instruct",
+            "provider": "vllm-1",
+            "weight": 1
+          }
+        ],
+        "variants": [
+          {
+            "name": "b",
+            "weight": 1,
+            "targets": [
+              {
+                "provider": "vllm-1",
+                "model": "m",
+                "weight": 1
+              }
+            ],
+            "params": {
+              "top_p": 0.9
+            }
+          }
+        ],
+        "tenancy": {
+          "org_id": "org-1",
+          "project_id": "project-1"
+        }
+      }
+    ]
+  },
+  "pii_sanitizer": {
+    "direction": "request",
+    "enabled": false,
+    "entities": ["EMAIL_ADDRESS"],
+    "failure_mode": "fail_open",
+    "max_body_bytes": 262144,
+    "max_retries": 0,
+    "restoration": "never",
+    "restore_stream_url": "",
+    "restore_url": "",
+    "streaming": "reject",
+    "timeout_ms": 5000,
+    "url": ""
+  },
+  "plugins": {
+    "instances": [
+      {
+        "slug": "audit",
+        "org_id": "org-1",
+        "project_id": "project-1",
+        "stage": "pre_route",
+        "position": 0,
+        "failure_mode": "fail_open",
+        "endpoint": "https://plugins.example.com/audit"
+      }
+    ]
+  },
+  "prompt_templates": {
+    "enabled": false
+  },
+  "provider_groups": [
+    {
+      "name": "pool",
+      "slug": "pool",
+      "strategy": "weighted",
+      "members": [
+        {
+          "provider": "vllm-1",
+          "model": "m",
+          "weight": 2
+        }
+      ],
+      "tenancy": {
+        "org_id": "org-1"
+      },
+      "project_scoped": true
+    }
+  ],
+  "providers": [
+    {
+      "allow_custom_api_base": false,
+      "also_track_via_llm_call": false,
+      "api_base": "https://api.openai.com",
+      "api_key": null,
+      "api_key_env": null,
+      "api_keys": [
+        {
+          "env": "OPENAI_API_KEY",
+          "key": null,
+          "weight": 1
+        }
+      ],
+      "ca_bundles": null,
+      "egress_proxies": [],
+      "egress_proxy": null,
+      "kind": "openai",
+      "kv_events": null,
+      "llm_probe_model": null,
+      "lmcache": null,
+      "model_role_profiles": {},
+      "name": "openai",
+      "role_profile": null,
+      "slug": null,
+      "status_page_url": null
+    },
+    {
+      "allow_custom_api_base": false,
+      "also_track_via_llm_call": false,
+      "api_base": "https://api.openai.com",
+      "api_key": null,
+      "api_key_env": null,
+      "api_keys": [
+        {
+          "env": "OPENAI_API_KEY",
+          "key": null,
+          "weight": 1
+        }
+      ],
+      "ca_bundles": null,
+      "egress_proxies": [],
+      "egress_proxy": null,
+      "kind": "openai",
+      "kv_events": null,
+      "llm_probe_model": null,
+      "lmcache": null,
+      "model_role_profiles": {},
+      "name": "openai",
+      "role_profile": null,
+      "slug": null,
+      "status_page_url": null,
+      "tenancy": {
+        "org_id": "org-1",
+        "project_id": "project-1"
+      }
+    },
+    {
+      "allow_custom_api_base": false,
+      "also_track_via_llm_call": false,
+      "api_base": "https://api.anthropic.com",
+      "api_key": null,
+      "api_key_env": null,
+      "api_keys": [
+        {
+          "env": "ANTHROPIC_API_KEY",
+          "key": null,
+          "weight": 1
+        }
+      ],
+      "ca_bundles": null,
+      "egress_proxies": [],
+      "egress_proxy": null,
+      "kind": "anthropic",
+      "kv_events": null,
+      "llm_probe_model": null,
+      "lmcache": null,
+      "model_role_profiles": {},
+      "name": "anthropic",
+      "role_profile": null,
+      "slug": null,
+      "status_page_url": null
+    },
+    {
+      "allow_custom_api_base": false,
+      "also_track_via_llm_call": false,
+      "api_base": "http://localhost:8001",
+      "api_key": null,
+      "api_key_env": null,
+      "api_keys": [],
+      "ca_bundles": ["/etc/ssl/internal.pem"],
+      "egress_proxies": ["http://proxy.internal:3128"],
+      "egress_proxy": null,
+      "kind": "openai_compatible",
+      "kv_events": {
+        "endpoint": "tcp://vllm-1:5557"
+      },
+      "llm_probe_model": "probe-model",
+      "lmcache": {
+        "endpoint": "http://lmcache:8000"
+      },
+      "model_role_profiles": {
+        "some-model": "openai"
+      },
+      "name": "vllm-1",
+      "role_profile": "system_only",
+      "slug": "vllm-1",
+      "status_page_url": "https://status.example.com"
+    }
+  ],
+  "queue": {
+    "backpressure": "error",
+    "block_timeout_ms": 1000,
+    "capacity": 256,
+    "enabled": true,
+    "workers": 8
+  },
+  "rate_limits": [
+    {
+      "scope": "key",
+      "id": "key-1",
+      "rpm": 60,
+      "tpm": 1000,
+      "within": {
+        "project": "project-1"
+      }
+    }
+  ],
+  "realtime": {
+    "idle_timeout_secs": 300,
+    "max_connections": 1000,
+    "max_session_secs": 3600,
+    "usage_flush_secs": 15
+  },
+  "responses": {
+    "registry_max_entries": 100000,
+    "registry_ttl_secs": 86400
+  },
+  "retry": {
+    "base_backoff_ms": 100,
+    "max_backoff_ms": 2000,
+    "max_retries": 2
+  },
+  "routes": [
+    {
+      "advanced": {
+        "capabilities": [],
+        "guardrails": {},
+        "headers": {},
+        "limits": {},
+        "locked_headers": [],
+        "visibility": {
+          "allowed_key_ids": [],
+          "allowed_team_ids": [],
+          "allowed_user_ids": []
+        }
+      },
+      "cache": null,
+      "model": "gpt-4o",
+      "param_policy": {
+        "allow": [],
+        "deny": [],
+        "mode": "allow"
+      },
+      "params": {},
+      "strategy": "round_robin",
+      "targets": [
+        {
+          "model": "gpt-4o",
+          "provider": "openai",
+          "weight": 1
+        },
+        {
+          "model": "burst-model",
+          "provider": "anthropic",
+          "weight": 1,
+          "takes_over": ["throttled", "refusal:violence"]
+        }
+      ],
+      "variants": []
+    },
+    {
+      "advanced": {
+        "capabilities": [],
+        "guardrails": {},
+        "headers": {},
+        "limits": {},
+        "locked_headers": [],
+        "visibility": {
+          "allowed_key_ids": [],
+          "allowed_team_ids": [],
+          "allowed_user_ids": []
+        }
+      },
+      "cache": null,
+      "model": "gpt-4o",
+      "param_policy": {
+        "allow": [],
+        "deny": [],
+        "mode": "allow"
+      },
+      "params": {},
+      "strategy": "round_robin",
+      "targets": [
+        {
+          "model": "gpt-4o",
+          "provider": "openai",
+          "weight": 1
+        }
+      ],
+      "variants": [],
+      "tenancy": {
+        "org_id": "org-1"
+      }
+    },
+    {
+      "advanced": {
+        "model_type": "chat",
+        "capabilities": ["tools"],
+        "context_length": 8192,
+        "description": "example route",
+        "limits": {
+          "timeout_secs": 30,
+          "retries": 1,
+          "output_tokens": 1024,
+          "rpm": 60,
+          "tpm": 100000,
+          "concurrency": 8
+        },
+        "headers": {
+          "x-route": "one"
+        },
+        "locked_headers": ["x-route"],
+        "visibility": {
+          "allowed_key_ids": ["key-1"],
+          "allowed_team_ids": ["team-1"],
+          "allowed_user_ids": ["user-1"]
+        },
+        "guardrails": {}
+      },
+      "cache": {
+        "enabled": true,
+        "ttl_secs": 60,
+        "per_key": true,
+        "semantic": {
+          "provider": "vllm-1",
+          "model": "embed"
+        }
+      },
+      "model": "llama",
+      "param_policy": {
+        "allow": ["temperature"],
+        "deny": ["logit_bias"],
+        "mode": "allow"
+      },
+      "params": {
+        "temperature": 0.2
+      },
+      "strategy": "cache_aware",
+      "targets": [
+        {
+          "model": "meta-llama/Llama-3.1-8B-Instruct",
+          "provider": "vllm-1",
+          "weight": 1
+        }
+      ],
+      "variants": [
+        {
+          "name": "b",
+          "weight": 1,
+          "targets": [
+            {
+              "provider": "vllm-1",
+              "model": "m",
+              "weight": 1
+            }
+          ],
+          "params": {
+            "top_p": 0.9
+          }
+        }
+      ],
+      "tenancy": {
+        "org_id": "org-1",
+        "project_id": "project-1"
+      }
+    }
+  ],
+  "schema_version": 3,
+  "security": {
+    "required_headers": {
+      "x-mesh-id": "edge"
+    },
+    "auth_bypass_routes": ["llama"]
+  },
+  "semantic_guards": {
+    "providers": [
+      {
+        "enabled": true,
+        "name": "classifier",
+        "url": "https://guard.example.com/check",
+        "stage": "post_call",
+        "timeout_ms": 2000,
+        "max_retries": 1,
+        "failure_mode": "fail_closed",
+        "max_body_bytes": 65536
+      },
+      {
+        "enabled": true,
+        "name": "local-injection",
+        "kind": "local",
+        "url": "",
+        "model_path": "/etc/rolter/models/injection.json",
+        "model_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "stage": "pre_call",
+        "timeout_ms": 50,
+        "max_retries": 0,
+        "failure_mode": "fail_closed",
+        "max_body_bytes": 65536,
+        "max_scored_bytes": 524288,
+        "on_truncated": "fail_closed"
+      }
+    ],
+    "policies": [
+      {
+        "name": "strict",
+        "enabled": true,
+        "scope": "org",
+        "scope_id": "org-1",
+        "providers": ["classifier"],
+        "thresholds": {
+          "*": 0.8
+        },
+        "on_violation": "block",
+        "streaming": "buffer"
+      }
+    ],
+    "local_concurrency": 4
+  },
+  "server": {
+    "host": "0.0.0.0",
+    "key_pepper": null,
+    "max_body_bytes": 33554432,
+    "metrics_path": "/metrics",
+    "port": 4000,
+    "require_auth": true
+  },
+  "timeouts": {
+    "connect_secs": 10,
+    "request_secs": 60
+  },
+  "tls": {
+    "ca_bundles": ["/etc/ssl/extra.pem"]
+  },
+  "unpriced_policy": "ignore",
+  "usage_recording": {
+    "queue_capacity": 10000,
+    "workers": 4
+  },
+  "virtual_keys": [
+    {
+      "cache": false,
+      "disabled": false,
+      "expires_at": "2030-01-01T00:00:00Z",
+      "key": "local-dev-placeholder",
+      "models": ["llama"],
+      "name": "local-dev",
+      "providers": ["vllm-1"]
+    }
+  ]
+}

@@ -2,7 +2,7 @@ name: rolter-ollama-smoke
 
 services:
   ollama:
-    image: ollama/ollama:0.40.2
+    image: ollama/ollama:0.40.12
     volumes:
       - ollama-data:/root/.ollama
 

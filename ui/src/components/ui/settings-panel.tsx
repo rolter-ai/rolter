@@ -1,5 +1,6 @@
 import * as React from "react";
 
+import { UnsavedBadge } from "@/components/ui/unsaved-badge";
 import { cn } from "@/lib/utils";
 
 /**
@@ -30,6 +31,7 @@ export function SettingsPanel({
   title,
   description,
   badge,
+  unsaved = false,
   action,
   headingLevel = 2,
   dimmed = false,
@@ -42,6 +44,11 @@ export function SettingsPanel({
   description?: React.ReactNode;
   /** a status chip set beside the title */
   badge?: React.ReactNode;
+  /**
+   * The panel's control moved and the new value waits for Save: a "Not saved"
+   * chip beside the title, so a switch in `action` cannot look immediate (#2214)
+   */
+  unsaved?: boolean;
   /** the control that governs the whole panel, usually a `Switch`, set in the header */
   action?: React.ReactNode;
   /** `h2` by default, under the screen's `h1` */
@@ -58,7 +65,7 @@ export function SettingsPanel({
   return (
     <section
       className={cn(
-        "flex flex-col gap-3.5 rounded-[10px] border border-[color:var(--border-subtle)] p-4",
+        "flex flex-col gap-3.5 rounded-lg border border-[color:var(--border-subtle)] p-4",
         className,
       )}
       {...props}
@@ -68,6 +75,7 @@ export function SettingsPanel({
           <div className="flex flex-wrap items-center gap-2">
             <Heading className="text-sm font-medium">{title}</Heading>
             {badge}
+            {unsaved && <UnsavedBadge />}
           </div>
           {description && (
             <p className="mt-1 max-w-[65ch] text-sm text-muted-foreground">{description}</p>

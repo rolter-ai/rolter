@@ -52,12 +52,16 @@ import {
 export type ProviderSheetMode = "add" | "edit";
 
 /**
- * The result of a connection probe.
+ * The base-URL hint for a kind whose base follows neither `/v1` rule.
  *
- * Always names the URL that was tried. "It failed" is not actionable when the
- * operator cannot see how their `api_base` was turned into an endpoint — a
- * doubled `/v1` is the single most common cause and is invisible otherwise.
+ * Infinity serves its routes under `--url-prefix`, empty by default, so its base
+ * is the server address plus whatever prefix it was started with, and neither
+ * "include the version" nor "leave it off" says that.
  */
+const BASE_HINTS: Readonly<Record<string, { hint: string; placeholder: string }>> = {
+  infinity: { hint: "providerSheet.apiBase.urlPrefix", placeholder: "http://infinity:7997" },
+};
+
 /**
  * What a create leaves on screen (#2142).
  *
@@ -195,6 +199,8 @@ export function ProviderSheet({
     return known.includes(draft.kind) || !draft.kind ? known : [draft.kind, ...known];
   }, [kinds.data, draft.kind]);
   const kindInfo = kinds.data?.find((k) => k.kind === draft.kind);
+  // from the specification registry via the kinds list, not a list of ours (#3428)
+  const unverifiedKinds = new Set(kinds.data?.filter((k) => k.unverified).map((k) => k.kind));
   // default to the openai-shaped rule: it is the default kind, and it is the
   // one the old static ".../v1" placeholder got wrong
   const baseIncludesV1 = kindInfo?.base_includes_v1 ?? false;
@@ -464,6 +470,14 @@ export function ProviderSheet({
             <>
               {kindDescription(draft.kind) && <>{kindDescription(draft.kind)} · </>}
               <span className="font-mono">{draft.kind}</span>
+              {unverifiedKinds.has(draft.kind) && (
+                <>
+                  {" · "}
+                  <span className="text-[color:var(--status-warning-text)]">
+                    {t("providerSheet.unverified.note")}
+                  </span>
+                </>
+              )}
             </>
           }
         >
@@ -474,7 +488,10 @@ export function ProviderSheet({
               value: k,
               label: kindName(k),
               icon: <ProviderLogo kind={k} name={kindName(k)} />,
-              description: kindDescription(k) || undefined,
+              description:
+                [kindDescription(k), unverifiedKinds.has(k) && t("providerSheet.unverified.option")]
+                  .filter(Boolean)
+                  .join(" · ") || undefined,
             }))}
           />
         </Field>
@@ -487,9 +504,10 @@ export function ProviderSheet({
           label={t("providerSheet.fields.apiBase")}
           htmlFor="provider-api-base"
           hint={t(
-            baseIncludesV1
-              ? "providerSheet.apiBase.includesV1"
-              : "providerSheet.apiBase.excludesV1",
+            BASE_HINTS[draft.kind]?.hint ??
+              (baseIncludesV1
+                ? "providerSheet.apiBase.includesV1"
+                : "providerSheet.apiBase.excludesV1"),
             { kind: draft.kind },
           )}
           error={
@@ -504,7 +522,10 @@ export function ProviderSheet({
             id="provider-api-base"
             value={draft.apiBase}
             onChange={(e) => set({ apiBase: e.target.value })}
-            placeholder={baseIncludesV1 ? "https://api.example.com/v1" : "https://api.example.com"}
+            placeholder={
+              BASE_HINTS[draft.kind]?.placeholder ??
+              (baseIncludesV1 ? "https://api.example.com/v1" : "https://api.example.com")
+            }
           />
           {resolvedUrl && (
             <p

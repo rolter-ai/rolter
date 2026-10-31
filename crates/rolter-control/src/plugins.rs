@@ -13,7 +13,7 @@ use uuid::Uuid;
 use rolter_core::slug::{is_valid_slug, slugify};
 use rolter_core::Error;
 use rolter_store::postgres::models::PluginInstance;
-use rolter_store::postgres::repo::PluginRepo;
+use rolter_store::postgres::repo::{NewPlugin, PluginRepo, PluginUpdate};
 
 use crate::crud::{log_audit, pool, ApiError, ApiResult, SafeJson};
 use crate::rbac::{authorize, Principal, ScopeChain};
@@ -156,18 +156,20 @@ async fn create_plugin(
     let row = PluginRepo(pool(&state))
         .create(
             org_id,
-            body.project_id,
-            &body.name,
-            &slug,
-            &body.description,
-            &body.kind,
-            &body.stage,
-            body.enabled,
-            body.position,
-            &body.failure_mode,
-            &body.endpoint,
-            body.secret_env.as_deref(),
-            &body.config,
+            NewPlugin {
+                project_id: body.project_id,
+                name: &body.name,
+                slug: &slug,
+                description: &body.description,
+                kind: &body.kind,
+                stage: &body.stage,
+                enabled: body.enabled,
+                position: body.position,
+                failure_mode: &body.failure_mode,
+                endpoint: &body.endpoint,
+                secret_env: body.secret_env.as_deref(),
+                config: &body.config,
+            },
         )
         .await?;
     log_audit(
@@ -211,16 +213,18 @@ async fn update_plugin(
     let row = repo
         .update(
             id,
-            body.project_id,
-            &body.name,
-            &body.description,
-            &body.stage,
-            body.enabled,
-            body.position,
-            &body.failure_mode,
-            &body.endpoint,
-            body.secret_env.as_deref(),
-            &body.config,
+            PluginUpdate {
+                project_id: body.project_id,
+                name: &body.name,
+                description: &body.description,
+                stage: &body.stage,
+                enabled: body.enabled,
+                position: body.position,
+                failure_mode: &body.failure_mode,
+                endpoint: &body.endpoint,
+                secret_env: body.secret_env.as_deref(),
+                config: &body.config,
+            },
         )
         .await?;
     log_audit(

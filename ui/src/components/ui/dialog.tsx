@@ -3,6 +3,7 @@ import * as React from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 
+import { SubmitForm } from "@/components/ui/submit-form";
 import { useModalA11y } from "@/lib/modal-a11y";
 import { cn } from "@/lib/utils";
 
@@ -33,13 +34,33 @@ export interface DialogProps {
    * mid-token costs the reader more than the extra width does (#948)
    */
   size?: "md" | "lg";
+  /**
+   * An editor dialog: its header, body and footer are one `<form>`, so Enter in a
+   * field submits and a footer button of `type="submit"` means it. Runs once
+   * nothing is at fault; a refused submit shows each required field's reason
+   * under it (#1205). A dialog without it renders no form
+   */
+  onSubmit?: () => void;
+  /** false while the caller knows the form cannot be submitted yet; a press then asks for the reasons */
+  canSubmit?: boolean;
+  /** a submit is in flight, so a second is ignored */
+  busy?: boolean;
 }
 
 const SIZES = { md: "max-w-md", lg: "max-w-3xl" } as const;
 
 const LabelContext = React.createContext<{ titleId: string; descriptionId: string } | null>(null);
 
-export function Dialog({ open, onOpenChange, children, initialFocus, size = "md" }: DialogProps) {
+export function Dialog({
+  open,
+  onOpenChange,
+  children,
+  initialFocus,
+  size = "md",
+  onSubmit,
+  canSubmit,
+  busy,
+}: DialogProps) {
   const { t } = useTranslation();
   const panel = React.useRef<HTMLDivElement>(null);
   const titleId = React.useId();
@@ -88,7 +109,13 @@ export function Dialog({ open, onOpenChange, children, initialFocus, size = "md"
             >
               <X className="h-4 w-4" />
             </button>
-            {children}
+            {onSubmit ? (
+              <SubmitForm onSubmit={onSubmit} canSubmit={canSubmit} busy={busy}>
+                {children}
+              </SubmitForm>
+            ) : (
+              children
+            )}
           </LabelContext.Provider>
         </div>
       </div>

@@ -3,7 +3,7 @@ import { getJson, sendJson } from "./request";
 
 /**
  * Every balancing strategy the control plane accepts, in the order of the
- * `STRATEGIES` allowlist in `crates/rolter-control/src/crud.rs` (#897).
+ * `STRATEGIES` allowlist in `crates/rolter-control/src/crud/routes.rs` (#897).
  *
  * This is the API contract, not the menu: which of these a picker offers, and
  * with what caveat, is decided in `lib/strategies.ts`. Adding a strategy to the
@@ -27,6 +27,15 @@ export const STRATEGIES = [
   "predicted_latency",
 ] as const;
 
+/**
+ * The fields of a route's `AdvancedModelConfig` the dashboard types; the rest
+ * of the blob travels untouched. `context_length` is the model's context
+ * window in tokens, served on `GET /v1/models` and not enforced (#3265).
+ */
+export interface RouteAdvanced extends Record<string, unknown> {
+  context_length?: number;
+}
+
 export interface RouteRow {
   id: string;
   project_id: string;
@@ -41,7 +50,7 @@ export interface RouteRow {
    * `#[serde(default)]` on the backend, so a route nobody has edited carries
    * `{}` rather than null
    */
-  advanced: Record<string, unknown>;
+  advanced: RouteAdvanced;
   created_at: string;
   /**
    * the route's targets; present only when the list was read with
@@ -49,6 +58,11 @@ export interface RouteRow {
    * "no targets" (that is an empty array)
    */
   targets?: RouteTargetRow[];
+  /**
+   * the route's weighted variants (#391); present only when the list was read
+   * with `include: ["variants"]`
+   */
+  variants?: RouteVariantRow[];
   /**
    * the route's complexity policy; present only when the list was read with
    * `include: ["complexity"]`. `{ tiers: [] }` is a route with no policy
@@ -62,11 +76,16 @@ export interface RouteTargetRow {
   provider_id: string;
   upstream_model?: string | null;
   weight: number;
+  /**
+   * the failure classes this target is a fallback for (#1584); empty for an
+   * ordinary member of the pool. Absent from a control plane that predates it
+   */
+  takes_over?: string[];
   created_at: string;
 }
 
 /** what `GET /api/v1/projects/{id}/routes` can embed beside each route */
-export type RouteInclude = "targets" | "complexity";
+export type RouteInclude = "targets" | "variants" | "complexity";
 
 /**
  * A project's routes. `include` embeds each route's targets and/or complexity
@@ -91,6 +110,12 @@ export interface RouteTargetInput {
   /** null or blank forwards the route's own name; a stored value is sent back unchanged */
   upstream_model?: string | null;
   weight: number;
+  /**
+   * the failure classes the target takes over; omitted or empty makes it an
+   * ordinary target. Sent on every entry, since an entry without it clears a
+   * stored set
+   */
+  takes_over?: string[];
 }
 
 /**
@@ -133,6 +158,53 @@ export function fetchRouteTargets(routeId: string): Promise<RouteTargetRow[]> {
   return getJson<RouteTargetRow[]>(`/api/v1/routes/${routeId}/targets`);
 }
 
+/**
+ * One weighted variant of a route (#391), in fallback order (`position`), with
+ * its targets in routing order. A route with variants samples one by weight per
+ * request and falls back through the rest; its own targets are not used.
+ */
+export interface RouteVariantRow {
+  id: string;
+  route_id: string;
+  name: string;
+  weight: number;
+  position: number;
+  params: Record<string, unknown>;
+  created_at: string;
+  targets: RouteVariantTargetRow[];
+}
+
+export interface RouteVariantTargetRow {
+  id: string;
+  variant_id: string;
+  provider_id: string;
+  upstream_model?: string | null;
+  weight: number;
+  position: number;
+  /** the failure classes this target takes over (#3373); empty for an ordinary target */
+  takes_over?: string[];
+}
+
+/** One variant as `PUT /api/v1/routes/{id}/variants` takes it. */
+export interface RouteVariantInput {
+  name: string;
+  weight: number;
+  params?: Record<string, unknown>;
+  targets: RouteTargetInput[];
+}
+
+export function fetchRouteVariants(routeId: string): Promise<RouteVariantRow[]> {
+  return getJson<RouteVariantRow[]>(`/api/v1/routes/${routeId}/variants`);
+}
+
+/** Replace the route's whole variant set; an empty list puts it back on its targets. */
+export function setRouteVariants(
+  routeId: string,
+  variants: RouteVariantInput[],
+): Promise<RouteVariantRow[]> {
+  return sendJson<RouteVariantRow[]>("PUT", `/api/v1/routes/${routeId}/variants`, { variants });
+}
+
 export function createRouteTarget(
   routeId: string,
   input: { provider_id: string; upstream_model?: string; weight?: number },
@@ -164,11 +236,15 @@ export function fetchModels(): Promise<EffectiveModelDto[]> {
   return getJson<EffectiveModelDto[]>("/api/v1/models");
 }
 
-export function deleteModel(model: string): Promise<void> {
-  return sendJson<void>("DELETE", `/api/v1/models/${encodeURIComponent(model)}`);
+/**
+ * Delete a database model: its routes in one organization (#1857). Names are
+ * per organization, so `orgId` says whose; the control plane refuses a delete
+ * without it once two organizations share the name.
+ */
+export function deleteModel(model: string, orgId?: string): Promise<void> {
+  const query = orgId ? `?org_id=${encodeURIComponent(orgId)}` : "";
+  return sendJson<void>("DELETE", `/api/v1/models/${encodeURIComponent(model)}${query}`);
 }
-
-// --- virtual keys (crates/rolter-control/src/crud.rs) ---
 
 export interface ComplexityTier {
   name: string;
@@ -194,10 +270,7 @@ export function setRouteComplexity(routeId: string, policy: ComplexityPolicy): P
 }
 
 // advanced per-route model configuration (base_url, pricing, limits, headers…)
-export function setRouteAdvanced(
-  routeId: string,
-  advanced: Record<string, unknown>,
-): Promise<RouteRow> {
+export function setRouteAdvanced(routeId: string, advanced: RouteAdvanced): Promise<RouteRow> {
   return sendJson<RouteRow>("PUT", `/api/v1/routes/${routeId}/advanced`, {
     advanced,
   });

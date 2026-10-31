@@ -22,6 +22,8 @@ import {
   uxEvents,
 } from "./story-harness";
 import type { AccessProfileDetail, CustomRoleRow, MembershipRow, RbacMatrix } from "@/lib/api";
+import { contrastRatio, parseRgb } from "@/lib/contrast";
+import { resolveColorToken } from "@/lib/story-tokens";
 import { UxScreenProvider } from "@/lib/ux-react";
 
 // a slice of the real CAPABILITIES table, chosen for the four things a cell can
@@ -172,6 +174,84 @@ const MATRIX: RbacMatrix = {
   custom_roles: [],
 };
 
+// #3362: a row that takes a scoped role *or* a deployment role (the alert rows,
+// "an admin at the scope, or an operator") carries both on the wire. The role
+// columns decide it like any scoped row, and a custom role can still be granted
+// it, unlike the deployment-only row beside it that no scope reaches
+const WITH_OPERATOR_ROWS: RbacMatrix = {
+  ...MATRIX,
+  resources: [
+    ...MATRIX.resources,
+    {
+      resource: "alert_rule",
+      scope: "project",
+      actions: [
+        {
+          action: "update",
+          minimum_role: "admin",
+          superadmin_only: false,
+          deployment_roles: ["operator"],
+          authenticated_only: false,
+        },
+      ],
+    },
+    {
+      resource: "cluster_node",
+      scope: "deployment",
+      actions: [
+        {
+          action: "update",
+          minimum_role: null,
+          superadmin_only: false,
+          deployment_roles: ["operator"],
+          authenticated_only: false,
+        },
+      ],
+    },
+  ],
+};
+
+export const ARowAScopedRoleOrAnOperatorReachesIsDecidedByTheRoleColumns: Story = {
+  render: () => (
+    <Harness fetchStub={stub(WITH_OPERATOR_ROWS)}>
+      <Rbac />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await within(canvasElement).findByText("alert_rule");
+    // an admin at the scope reaches it, a member does not: the deployment role
+    // does not turn the row into a superadmin's
+    await expect(matrixCell(canvasElement, "alert_rule", "admin")).toHaveAccessibleName(
+      /Update: allowed/,
+    );
+    await expect(matrixCell(canvasElement, "alert_rule", "member")).toHaveAccessibleName(
+      /Update: not allowed/,
+    );
+    // while a row only a deployment role reaches is nobody's scoped role
+    await expect(matrixCell(canvasElement, "cluster_node", "admin")).toHaveAccessibleName(
+      /Update: superadmin only/,
+    );
+  },
+};
+
+export const ACustomRoleCanBeGrantedARowAnOperatorAlsoReaches: Story = {
+  render: () => (
+    <Harness fetchStub={withRoles([], WITH_OPERATOR_ROWS)}>
+      <Rbac />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await openCustomTab(canvasElement);
+    await clickNewRole(canvasElement);
+    const form = within(sheet());
+    // story-wait-allow: a checkbox the matrix enables, not a gated control
+    await expect(await form.findByLabelText("Update on alert_rule")).not.toBeDisabled();
+    // and the deployment-only row stays out of reach of any custom role
+    // story-wait-allow: disabled by the matrix row (deployment-only) from the first paint, not by a gate
+    await expect(form.getByLabelText("Update on cluster_node")).toBeDisabled();
+  },
+};
+
 // a viewer that may also mint keys, plus a grant naming a resource this build
 // retired — reported rather than hidden, because it silently allows nothing
 const WITH_CUSTOM_ROLE: RbacMatrix = {
@@ -266,19 +346,21 @@ const stub = (matrix: RbacMatrix) =>
     ["/memberships", () => MEMBERSHIPS],
   ]);
 
-/**
- * The custom-roles tab's own fan-out.
- *
- * Longest path first: `/access-profiles/p-1` has to answer the detail rather
- * than the list it is a prefix of, and both contain `/access-profiles`.
- */
+// the profile list embeds each profile's roles (`?include=roles`), so the tab
+// reads the composition in one request however many profiles there are (#1996)
+const PROFILES: AccessProfileDetail[] = [
+  PROFILE_DETAIL,
+  { ...PROFILE_DETAIL, id: "p-2", slug: "billing", name: "Billing", roles: [] },
+  { ...PROFILE_DETAIL, id: "p-3", slug: "audit", name: "Audit", roles: [] },
+];
+
+/** The custom-roles tab's own reads. */
 const withRoles = (roles: CustomRoleRow[], matrix = WITH_CUSTOM_ROLE) =>
   routes([
     ["/rbac/matrix", () => matrix],
     ["/memberships", () => MEMBERSHIPS],
     ["/custom-roles", () => roles],
-    ["/access-profiles/p-1", () => PROFILE_DETAIL],
-    ["/access-profiles", () => [{ id: "p-1", name: "Support" }]],
+    ["/access-profiles", () => PROFILES],
   ]);
 
 /**
@@ -422,6 +504,67 @@ export const MarksNotApplicableAndSuperadmin: Story = {
   },
 };
 
+// #2250: a loaded matrix draws hundreds of allowed cells, so they are neutral
+// (the letter in --text-primary on --surface-subtle) and the glyphs and the
+// legend carry the state, with red left to danger. axe does not check non-text
+// contrast, so the letter and the border are measured here, on the two
+// grounds a cell can sit on: the page and the scope band over it
+export const AllowedCellsAreNeutralAndKeepTheirContrast: Story = {
+  render: () => (
+    <Harness fetchStub={withRoles(CUSTOM_ROLES)}>
+      <Rbac />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const [allowed] = await canvas.findAllByTitle("Read: allowed");
+    const granted = await canvas.findByTitle("Create: granted by this custom role");
+
+    const paint = (chip: HTMLElement) => {
+      const style = getComputedStyle(chip);
+      return {
+        color: style.color,
+        background: style.backgroundColor,
+        border: style.borderTopColor,
+        borderStyle: style.borderTopStyle,
+      };
+    };
+    const cell = paint(allowed);
+    await expect(cell.color).toBe(resolveColorToken("--text-primary"));
+    await expect(cell.background).toBe(resolveColorToken("--surface-subtle"));
+    await expect(cell.borderStyle).toBe("solid");
+
+    // the letter reads on its chip, and the border on the page and on the band.
+    // contrastRatio ignores alpha, so a translucent border (a hairline token)
+    // would measure as its opaque colour: it has to be opaque to be measured
+    await expect(cell.border).toMatch(/^rgb\(/);
+    const base = parseRgb(resolveColorToken("--surface-base"));
+    const subtle = parseRgb(resolveColorToken("--surface-subtle"));
+    const band = `rgb(${base.map((c, i) => 0.6 * c + 0.4 * subtle[i]).join(", ")})`;
+    await expect(contrastRatio(cell.color, cell.background)).toBeGreaterThanOrEqual(4.5);
+    await expect(
+      contrastRatio(cell.border, resolveColorToken("--surface-base")),
+    ).toBeGreaterThanOrEqual(3);
+    await expect(contrastRatio(cell.border, band)).toBeGreaterThanOrEqual(3);
+
+    // none of it is the red family
+    for (const red of ["--red-folk-text", "--red-folk", "--red-500"] as const) {
+      await expect(cell.color).not.toBe(resolveColorToken(red));
+      await expect(cell.border).not.toBe(resolveColorToken(red));
+    }
+
+    // a custom grant is still told apart: another hue and a dashed border
+    const grant = paint(granted);
+    await expect(grant.borderStyle).toBe("dashed");
+    await expect(grant.color).not.toBe(cell.color);
+    await expect(grant.background).not.toBe(cell.background);
+
+    // and the legend's Allowed swatch is drawn the way the matrix draws it
+    const swatch = canvas.getByText("Allowed").firstElementChild as HTMLElement;
+    await expect(paint(swatch)).toEqual(cell);
+  },
+};
+
 export const WithCustomRole: Story = {
   render: () => (
     <Harness fetchStub={withRoles(CUSTOM_ROLES)}>
@@ -464,11 +607,29 @@ export const CustomRolesList: Story = {
     // the known grant and the retired one both count: both are stored on the role
     await expect(canvas.getByText("2 grants")).toBeVisible();
     // derived from the profiles that compose it, which is what a 409 would name.
-    // those are their own two requests — the profile list, then a detail call
-    // per profile — so this is awaited rather than read off the roles' settle
-    // point, and the row says nothing about composition until they answer (#1266)
+    // that is its own request, so this is awaited rather than read off the
+    // roles' settle point, and the row says nothing about composition until it
+    // answers (#1266)
     await expect(await canvas.findByText("Composed into Support")).toBeVisible();
     await expect(canvas.getByRole("button", { name: "Delete Support engineer" })).toBeVisible();
+  },
+};
+
+// three profiles are still one profiles request: no read per profile (#1996)
+const usageReads = recording(withRoles(CUSTOM_ROLES));
+export const UsageIsOneRequestForManyProfiles: Story = {
+  render: () => (
+    <Harness fetchStub={usageReads.stub}>
+      <Rbac />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await openCustomTab(canvasElement);
+    await expect(await canvas.findByText("Composed into Support")).toBeVisible();
+    const profileReads = usageReads.calls.filter((c) => c.url.includes("/access-profiles"));
+    await expect(profileReads).toHaveLength(1);
+    await expect(profileReads[0].url).toContain("include=roles");
   },
 };
 

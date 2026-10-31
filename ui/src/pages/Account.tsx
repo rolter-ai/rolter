@@ -19,6 +19,8 @@ import {
   ttlToDays,
   type CacheMode,
 } from "@/components/KeyMintFields";
+import { KeyCapFields } from "@/components/KeyCapFields";
+import { OwnedKeyCaps } from "@/components/KeyCaps";
 import { KeyNextStep } from "@/components/KeyNextStep";
 import { KeyProvidersField } from "@/components/KeyAttributionFields";
 import { LoadError } from "@/components/LoadError";
@@ -26,6 +28,7 @@ import { CardGridSkeleton } from "@/components/LoadingState";
 import { EmptyState } from "@/components/ui/empty-state";
 import { EditorSheet } from "@/components/EditorSheet";
 import { GatedButton } from "@/components/GatedButton";
+import { MyBudgets } from "@/components/MyBudgets";
 import { ListSummary, PageBody, Toolbar } from "@/components/screen";
 import { SelfServiceUnavailable } from "@/components/SelfServiceUnavailable";
 import { PasswordPanel } from "@/components/PasswordPanel";
@@ -53,6 +56,7 @@ import {
   type ProviderRow,
 } from "@/lib/api";
 import { useCan } from "@/lib/can";
+import { EMPTY_CAPS, capsToInput, capsTouched, capsValid, type CapDraft } from "@/lib/key-caps";
 import { useFormat } from "@/lib/i18n/format";
 import { useScope } from "@/lib/scope";
 import { describeError, errorText } from "@/lib/error-copy";
@@ -133,6 +137,8 @@ export default function Account() {
       {/* the second factor comes first: it protects the session that reaches
           every key below it, and an org policy can make it mandatory (#1078) */}
       <TwoFactorPanel />
+      {/* what the keys below may spend, before the keys themselves (#1830) */}
+      <MyBudgets />
       {/* the screen sits under "Account" in a product that also has provider
           keys and an admin token; say which credential this one is (#943) */}
       <p className="text-sm text-muted-foreground">
@@ -376,6 +382,7 @@ function KeyCard({
             <Badge tone="neutral">{t("account.keys.card.allModels")}</Badge>
           )}
         </div>
+        <OwnedKeyCaps keyId={keyRow.id} />
         <div className="text-xs text-muted-foreground">
           {usageUnavailable ? (
             <span>{t("account.keys.card.usageUnavailable")}</span>
@@ -453,6 +460,7 @@ function MintKeyDialog({
   const [ttl, setTtl] = React.useState(String(DEFAULT_KEY_TTL_DAYS));
   const [providerSel, setProviderSel] = React.useState<string[]>([]);
   const [cache, setCache] = React.useState<CacheMode>("inherit");
+  const [caps, setCaps] = React.useState<CapDraft>(EMPTY_CAPS);
   // the models this project routes; only asked for while the sheet is open
   const routes = useRouteModels(projectId, open);
 
@@ -463,6 +471,7 @@ function MintKeyDialog({
       setTtl(String(DEFAULT_KEY_TTL_DAYS));
       setProviderSel([]);
       setCache("inherit");
+      setCaps(EMPTY_CAPS);
     }
   }, [open]);
 
@@ -476,6 +485,7 @@ function MintKeyDialog({
         providers: providerSel,
         cache: parseCacheMode(cache),
         expires_in_days: ttlToDays(ttl),
+        ...capsToInput(caps),
       }),
     onSuccess: (m) => {
       onOpenChange(false);
@@ -490,7 +500,11 @@ function MintKeyDialog({
       onOpenChange={onOpenChange}
       title={t("account.keys.mint.title")}
       subtitle={t("account.keys.mint.subtitle", { project })}
-      dirty={Boolean(name || models.length || providerSel.length) || cache !== "inherit"}
+      dirty={
+        Boolean(name || models.length || providerSel.length) ||
+        cache !== "inherit" ||
+        capsTouched(caps)
+      }
       // the lead is ours and translated; the control plane's own words follow as
       // the detail, since the server answers in English whatever the locale
       errorMessage={mint.isError ? t("account.keys.mint.failed") : undefined}
@@ -500,9 +514,9 @@ function MintKeyDialog({
           : undefined
       }
       saveLabel={t("account.keys.mint.save")}
-      canSave={keyNameProblem(name) === null}
+      canSave={keyNameProblem(name) === null && capsValid(caps)}
       saving={mint.isPending}
-      onSave={() => mint.mutate()}
+      onSubmit={() => mint.mutate()}
     >
       <div className="space-y-3">
         <KeyNameField value={name} onChange={setName} />
@@ -517,7 +531,14 @@ function MintKeyDialog({
           onRetry={routes.retry}
         />
         <KeyProvidersField providers={providers} selected={providerSel} onChange={setProviderSel} />
-        <KeyReachSummary project={project} models={models} providers={providerSel} ttl={ttl} />
+        <KeyCapFields value={caps} onChange={setCaps} />
+        <KeyReachSummary
+          project={project}
+          models={models}
+          providers={providerSel}
+          ttl={ttl}
+          caps={caps}
+        />
       </div>
     </EditorSheet>
   );

@@ -1,6 +1,7 @@
 import { CircleDollarSign } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import { Link } from "react-router";
+
+import { SpendNotice } from "@/components/SpendNotice";
 
 /**
  * Says that a spend figure is a floor rather than a total (#969).
@@ -22,29 +23,12 @@ export function IncompleteSpendNotice({
   const { t } = useTranslation();
   if (requests <= 0) return null;
   return (
-    // one tone: the amber warning pair, fill for the wash and border and the
-    // `-text` half for the glyph. the wash used to be the red tint, which set
-    // an amber icon on red and said two things at once (#1994)
-    <div
-      role="status"
-      className="flex items-start gap-2.5 rounded-lg border border-[color:var(--status-warning)]/40 bg-[color:var(--status-warning)]/10 px-4 py-3"
-    >
-      <CircleDollarSign
-        aria-hidden
-        className="mt-0.5 h-4 w-4 flex-none text-[color:var(--status-warning-text)]"
-      />
-      <p className="min-w-0 text-sm text-muted-foreground">
-        <span className="font-medium text-foreground">
-          {t("pages.dashboard.unpriced.title", { count: requests })}
-        </span>{" "}
-        {t("pages.dashboard.unpriced.body", { count: models })}{" "}
-        <Link
-          to="/pricing-overrides"
-          className="rounded-sm font-medium text-foreground underline underline-offset-2 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-        >
-          {t("pages.dashboard.unpriced.link")}
-        </Link>
-      </p>
-    </div>
+    <SpendNotice
+      icon={CircleDollarSign}
+      title={t("pages.dashboard.unpriced.title", { count: requests })}
+      body={t("pages.dashboard.unpriced.body", { count: models })}
+      to="/pricing-overrides"
+      link={t("pages.dashboard.unpriced.link")}
+    />
   );
 }

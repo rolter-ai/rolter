@@ -16,20 +16,21 @@ themselves are components.
 They live in `ui/src/components/ui/` beside the other primitives, and their
 stories are grouped under **Forms/** in Storybook.
 
-| Primitive       | File                 | What it is                                                                              |
-| --------------- | -------------------- | --------------------------------------------------------------------------------------- |
-| `FieldLabel`    | `field-label.tsx`    | the compact label a sheet row carries, with the optional required marker and (i) note   |
-| `FieldError`    | `field-error.tsx`    | the message under a control, carrying the id the control points at                      |
-| `describedBy`   | `field-error.tsx`    | joins the ids a control actually has into one `aria-describedby`                        |
-| `FormSection`   | `form-section.tsx`   | one collapsible group of fields, open state owned by the caller                         |
-| `Segmented`     | `segmented.tsx`      | a two-to-four way choice rendered inline as a `radiogroup`                              |
-| `LockButton`    | `lock-button.tsx`    | the padlock toggle beside a parameter or header                                         |
-| `ChipGroup`     | `chip-group.tsx`     | a multi-select over a short, fully visible list                                         |
-| `SwitchRow`     | `switch-row.tsx`     | a boolean as a full-width row: title, hint, switch                                      |
-| `SettingsPanel` | `settings-panel.tsx` | a titled group of settings controls that can be switched off as a block                 |
-| `CopyableValue` | `copyable-value.tsx` | a labelled value to copy again: mono, `select-all`, wrapping, with hint and note        |
-| `Checkbox`      | `checkbox.tsx`       | a native checkbox drawn by the tokens: neutral when ticked, with an indeterminate state |
-| `AuthCard`      | `auth-card.tsx`      | the signed-out card: `<main>`, wordmark, вышивка rule, `h1`, description, then the form |
+| Primitive       | File                 | What it is                                                                               |
+| --------------- | -------------------- | ---------------------------------------------------------------------------------------- |
+| `FieldLabel`    | `field-label.tsx`    | the compact label a sheet row carries, with the optional required marker and (i) note    |
+| `FieldError`    | `field-error.tsx`    | the message under a control, carrying the id the control points at                       |
+| `describedBy`   | `field-error.tsx`    | joins the ids a control actually has into one `aria-describedby`                         |
+| `FormSection`   | `form-section.tsx`   | one collapsible group of fields, open state owned by the caller                          |
+| `Segmented`     | `segmented.tsx`      | a two-to-four way choice rendered inline as a `radiogroup`                               |
+| `LockButton`    | `lock-button.tsx`    | the padlock toggle beside a parameter or header                                          |
+| `ChipGroup`     | `chip-group.tsx`     | a multi-select over a short, fully visible list                                          |
+| `SwitchRow`     | `switch-row.tsx`     | a boolean as a full-width row: title, hint, switch                                       |
+| `SettingsPanel` | `settings-panel.tsx` | a titled group of settings controls that can be switched off as a block                  |
+| `CopyableValue` | `copyable-value.tsx` | a labelled value to copy again: mono, `select-all`, wrapping, with hint and note         |
+| `Checkbox`      | `checkbox.tsx`       | a native checkbox drawn by the tokens: neutral when ticked, with an indeterminate state  |
+| `AuthCard`      | `auth-card.tsx`      | the signed-out card: `<main>`, wordmark, вышивка rule, `h1`, description, then the form  |
+| `SubmitForm`    | `submit-form.tsx`    | the `<form>` an editor sheet or dialog sits in: Enter submits, a refused submit says why |
 
 ## Which one to reach for
 
@@ -76,6 +77,37 @@ stories are grouped under **Forms/** in Storybook.
   into a new signed-out screen; AcceptInvite lost its landmark and heading that
   way (#2069, #2228).
 
+## The (i) note beside a field
+
+A field whose effect is not obvious from its label and control explains itself
+in an (i) beside the label (#487). There is one primitive for it, `InfoHint`
+(`ui/src/components/ui/info-hint.tsx`), and a form row reaches it through the
+`info` prop of `Field`, `FieldLabel`, `SwitchRow` and `FormSection`, never by
+laying a second copy out by hand.
+
+- **`info` and `hint` are different jobs.** `hint` is the line always visible
+  under the control, for a state of this field right now (a clash, an
+  unreadable value, what the chosen option does). `info` is the note a reader
+  opens to learn what the field is and which values fit. A field that already
+  says all of it in a `hint` needs no `info`; do not write the same sentence in
+  both.
+- **The copy is short and lives in the catalogs.** One or two sentences: what
+  the field does, then the sensible value or the default. Put it under
+  `<screen>.<field>Info` (`pages.guardrailProviders.timeoutInfo`) in **every**
+  catalog, like any other string; `check:i18n` and `check:literals` fail on a
+  literal. State a default only where the code or the backend says it.
+- **The note is an `AnchoredPanel`.** It is fixed and placed from the (i)'s
+  rectangle, so the scroll area of a dialog or sheet cannot clip it (the old,
+  absolutely placed note was cut off at the edge of a field with a short label
+  or one in the last column), and it turns over near the foot of the window. It
+  opens on hover and on focus, a press toggles it, Escape closes it without
+  closing the dialog around it, and the pointer can travel onto it.
+- **A screen's story asserts its notes** with `expectFieldHint` from
+  `ui/src/lib/story-hints.ts`: it points at the button named
+  `About <label>`, reads the note, checks both edges of the note are hit-testable
+  (whole, not clipped) and moves away. Cover the second locale where the copy is
+  long.
+
 ## What they already guarantee
 
 Each primitive owns an accessibility detail that is invisible on screen and
@@ -108,6 +140,21 @@ easy to lose when the shape is retyped in the next sheet:
 
 Every one of those is asserted in the primitive's own story, so a rewrite that
 drops one fails the story rather than shipping.
+
+## Editors are forms
+
+`EditorSheet` and a `Dialog` given an `onSubmit` render a real `<form>` (`SubmitForm`, `ui/src/components/ui/submit-form.tsx`, #1205). Enter in a field submits it, a footer button of `type="submit"` means it, and `Button` defaults to `type="button"` so a Cancel or a row's delete placed inside never does.
+
+- `EditorSheet` takes `onSubmit` (it was `onSave`) and `canSave`. A `Dialog` takes `onSubmit`, `canSubmit` and `busy`, and its footer's primary button is `type="submit"` by hand.
+- The primary button is never natively `disabled` for a validation error. While `canSave` is false it is `aria-disabled` and still pressable, because pressing it, or Enter in a field, is how the form is asked why. Only `saving` really disables it.
+- A required field is `<Field required>`: the control gets the native `required` and `aria-required`, the label a marker. After a refused submit a still-empty required control says "Required" under itself (`role="alert"`, wired through `aria-describedby`), focus moves to the first field at fault, and `SubmitFormStatus` in the footer counts them (`N fields need attention`, a polite `role="status"`). Typing into the field clears its message. A value of spaces counts as empty, since every save trims it.
+- A `Combobox` takes `required` and `aria-required` on its text input, so `<Field required>` works on a picker the same way (an empty pick refuses the submit and names the field). Where either of two inputs will do (a rate limit needs a requests or a tokens cap), neither is `required`: pass the sheet's `blockedMessage` for the refused submit instead. A dialog that already owns a `<form>` (the two-factor enrol step) cannot take `Dialog onSubmit`, since forms do not nest; say so in a comment there.
+- A screen whose own validation already names the field (`useFieldErrors`: Pricing, Plugins) uses `<Field markRequired>`: the label's marker and `aria-required`, so a screen reader announces it before the first refused save, but no native `required`, which would make the empty control `:invalid` from the first paint and add the generic "Required" beside the screen's own message (#3451). Stories assert the marker and `aria-required`, and that the pristine form is still not flagged.
+- Only `required` is read from the attributes. A range, a charset or a clash with another field stays with the screen's own check (`useFieldErrors`, `FieldError`), which says more than a browser message can, in the dashboard's language. The browser's own bubble is off (`noValidate`).
+- A refusal that comes from the caller's rule rather than a field (a pick that is not an input) passes `blockedMessage` to `EditorSheet`, which the status line shows when no field is at fault.
+- A native `<button>` written by hand inside an editor carries `type="button"`, or it submits the form. `filter-panel.tsx` was the one that did not.
+
+Stories submit with Enter and assert the refused submit: `EnterSubmits` and `BlockedSubmitNamesTheField` under **Overlays/EditorSheet**, `EditorSubmitsWithEnter` under **Overlays/Dialog**, `DoesNotSubmitAFormUnlessAskedTo` under **Primitives/Button**. A story asserting that a sheet's Save is held reads `aria-disabled="true"`, not `toBeDisabled()`.
 
 ## Footers and bodies on small screens
 
@@ -228,7 +275,12 @@ const fields = useFieldErrors<FieldKey>({
   and does not run; otherwise it runs the save. Save therefore stays pressable on an invalid form and
   is `aria-disabled`, not `disabled`.
 - `SaveBar` (`ui/src/components/ui/save-bar.tsx`) is the footer: the "N fields need attention" status,
-  the `aria-disabled` Save, a `leading` slot and secondary buttons as children.
+  the `aria-disabled` Save, a `leading` slot and secondary buttons as children. A pristine form
+  (`disabled`) is `aria-disabled` too, with the press ignored: a real `disabled` button has
+  `pointer-events: none`, so the press that blurs a `commitOnBlur` field would never reach it. That
+  press commits the field, the bar re-renders dirty, and the click then submits (#3449). Only a save
+  in flight (`pending`) is really `disabled`. Assert a pristine Save with
+  `toHaveAttribute("aria-disabled", "true")`, never `toBeDisabled()`.
 - Both error renderers announce the same way: `Field`'s built-in `error` and `FieldError` are
   `role="alert"`, and the control's `aria-describedby` points at it. The footer count is a
   `role="status"`, which is polite. A story that needs one specific message picks it by its text, not
@@ -258,7 +310,8 @@ screen's wording stays in the screen's namespace and arrives as a prop.
 
 `bun run check:primitives` (`ui/scripts/check-ui-primitives.ts`) is what keeps
 this page from being advice. It runs in the `ui, storybook, docs` job and fails on
-ten things: a bare `<select>`, a hand-written `role="listbox"` / `"option"` /
+eleven things: a native `<button>` with no `type` and no props spread (a
+button defaults to submit, so one inside an editor sheet submits the form, #3241), a bare `<select>`, a hand-written `role="listbox"` / `"option"` /
 `"combobox"` (#3058), a native `<input type="checkbox">` outside
 `checkbox.tsx` (#2223), a raw `<pre>`, a `window.confirm`/`alert`/
 `prompt`, a component re-declared under a name `src/components/ui/` already
@@ -320,7 +373,7 @@ knobs keep it from flagging ordinary Tailwind:
   five screens is the primitive doing its job, and flagging it would punish the
   composition this page is asking for.
 - **at least four classes, at least two of them arbitrary values.**
-  `rounded-[10px]`, `text-[color:var(--text-subtle)]`, `max-w-[840px]` are the
+  `p-[22px]`, `text-[color:var(--text-subtle)]`, `max-w-[840px]` are the
   design system spelled out by hand; `flex items-center gap-2` is a sentence in
   Tailwind and repeats in eighteen files for good reasons. Both numbers were
   tuned against the tree: at four and two, the #1658 footer line is caught and
@@ -385,8 +438,49 @@ const { draft, saved, changed, dirty, set, reset, commit } = useDraft(source, EQ
   Discard.
 
 The reducer and `changedKeys` are plain functions with unit tests beside them, since the tree has no
-React test renderer. The Security screen is the first consumer. The shared field errors are `useFieldErrors` above. The saved-at line that #2214 asks every settings
-screen to carry is not here yet; it belongs beside this hook rather than in each screen.
+React test renderer. The Security screen was the first consumer. The shared field errors are `useFieldErrors` above.
+
+### One form state for the settings screens
+
+`useSettingsForm` (`ui/src/lib/use-settings-form.ts`, #2214) is `useDraft`, `useFieldErrors` and the
+leave guard (`useLeaveGuard`) as one hook, and `SettingsSaveBar` (`ui/src/components/SettingsSaveBar.tsx`)
+is the footer that reads it. Adaptive Routing, Model Settings, Performance, Client Settings, Logs
+Settings, Compatibility and Feature Flags use them; a new deployment-settings screen does too.
+
+```tsx
+const source = React.useMemo(() => (query.data ? fromDto(query.data) : undefined), [query.data]);
+const sf = useSettingsForm<FormState, FieldKey>({
+  source,
+  equals: EQUALS, // optional, as for useDraft
+  fieldErrors: (draft) => ({ order, wire, idOf, local: draft ? translateErrors(validate(draft), t) : {} }),
+});
+const { draft: form, fields, changed, set } = sf;
+// a field:   value={form.x}  onChange={(e) => set({ x: e.target.value })}
+// a save:    onSuccess: (dto) => sf.commit(fromDto(dto))
+// the page:  <SettingsBody onSubmit={() => fields.submit(() => save.mutate(form))}> … </SettingsBody>
+// the foot:  <SettingsSaveBar form={sf} pending={save.isPending} updatedAt={query.data?.updated_at} />
+```
+
+- `set(patch)` also answers the control plane's complaint about the fields it touches. `commit` adopts
+  the answer as both the form and the baseline, clears the complaints and stamps `savedAt`; `discard`
+  restores the baseline.
+- **Dirty, reset, leave.** Save is `aria-disabled` (and its press ignored) until a field differs from what the server holds (a value
+  typed back to the stored one is no edit), Discard is the way back, and leaving with an edit asks first
+  (`form.leavePrompt`, rendered by the footer).
+- **Errors.** A wrong field is a `FieldError` with `aria-invalid` and `aria-describedby` through
+  `fields.inputProps`, as above; the footer counts them, and Save stays pressable and moves focus to the first.
+- **The line beside Save** says which state the screen is in: `N changes not saved yet`, or `Saved at
+14:03.` followed by `Applied to 1 of 2 live gateways`, or `Last saved <date>` from the DTO's `updated_at`
+  on a fresh load. The applied line reads the config versions the Cluster screen reads
+  (`useSettingsPickup`, `gatewayPickup`), polls while a gateway is behind, and is left out with
+  `gateways={false}` for a setting no running gateway reads (Compatibility, while a field there needs a restart).
+- **Enter saves.** `SettingsBody` given `onSubmit` is one `<form>` (#1205); the footer's Save is its submit
+  button. Feature Flags opens its confirmation from the same handler.
+- **A switch is not immediate.** The panel's or row's switch moves at once and the gateways still run
+  the old value until Save, so `SettingsPanel unsaved` and `SwitchRow unsaved` draw a `Not saved` chip
+  (`UnsavedBadge`) beside the title while the field differs from the baseline: `unsaved={changed.includes("enabled")}`.
+
+The Security screen uses the same pieces (#3243): its lists feed `useFieldErrors` through `local` (one message per list, with the full per-entry problems still drawn under the field), and its Save asks the loosening confirmation from `security-loosening.ts` before the request, like Feature Flags asks its own.
 
 ## The versioned-repository kit
 
@@ -398,6 +492,42 @@ The Prompt Repository and the Skills Repository are both a named thing with immu
 - `DeleteBySlugDialog` is the destructive confirmation that needs the slug typed back.
 
 What differs stays with the screen: the editor, the copy that names the thing, and what a make-live dialog says about impact. A screen passes its own already-translated title and description. Selecting a row, a version, or the row a create just made goes through `useDraftSwitch`, so unsaved edits are never replaced without the discard prompt.
+
+## The reporting window picker
+
+A screen that reads over a reporting window draws it with `TimeWindowPicker`
+(`ui/src/components/TimeWindowPicker.tsx`), not a `Combobox` of
+`useTimeWindowOptions()` (#3407). It offers the named windows and **Custom
+range…**, a start and an end day. The selection is a `WindowSelection` from
+`ui/src/lib/time-window.ts`: a named window, or the string
+`custom:YYYY-MM-DD:YYYY-MM-DD`, so it still works as a query key and in `===`.
+The address and a saved view hold the three fields (`window=custom`, `since`,
+`until`); read them with `readWindowSelection` / `windowFromFilters` and write
+them with `windowAddress` / `windowFilters`, never by hand, so a named window
+drops the days a range left. `useAddressSelection` and `useTimeWindow` do this
+for a screen that keeps the window in the address; `windowBounds` and
+`previousWindowBounds` take the selection. The range is whole calendar days in
+the chart zone (`chartTimeZone()`, the browser's when the account sets none,
+#3500) with the last day included, so `until` is the start of the day after
+it; a range that has not ended yet sends no `until` (#3506). The month windows
+and `previousWindowBounds` count in the same zone: each function takes the
+zone as its last argument, the chart zone by default, and does its wall-clock
+arithmetic through `Intl` (`wallClock` / `zonedInstant`) rather than the
+browser-local `Date` getters. Because those bounds move with the zone, a
+read over the window is keyed through `useWindowQueryKey(selection)` (#3519),
+spread into the query key where the window's name went: it adds the chart zone
+for a window of calendar days (`null` for a rolling one) and re-renders when
+the zone changes, so a change of **Time zone** in Preferences is a new read
+over the new zone's midnights rather than a cached answer over the old one's.
+Savings, the Dashboard, LLM Logs, MCP Logs and Cost Attribution use it; a new
+screen that reads over the picker's selection does too. Where the chart zone is not the browser's, the
+picker names it under the list, as the list's description. Placed in a
+`Field`, the picker forwards the `id`, `aria-describedby`, `aria-invalid` and
+`aria-required` the field clones onto it to the list (#3507), so the field's
+hint or error is what a screen reader hears beside the zone note. The saved-view allow-list in
+`crates/rolter-control/src/me_saved_views.rs` is the server's copy of the
+shape. `useTimeWindowOptions` stays named-only for a control that offers no
+range (the route sheet's observed-traffic window).
 
 ## Still to do
 

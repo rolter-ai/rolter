@@ -8,12 +8,13 @@
 //! analytics reads serve (#3057).
 
 use axum::extract::State;
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 
+use rolter_core::payload_redaction::{PayloadRedactor, RedactPattern, RedactionReport};
 use rolter_store::postgres::models::LoggingSettings;
-use rolter_store::postgres::repo::{AuditLogRepo, LoggingSettingsRepo};
+use rolter_store::postgres::repo::{AuditLogRepo, LoggingSettingsRepo, LoggingSettingsUpdate};
 
 use crate::analytics_access::AnalyticsAccess;
 use crate::crud::{invalid_field, pool, publish_config_change, ApiResult, SafeJson};
@@ -26,6 +27,10 @@ pub(crate) fn router() -> Router<ControlState> {
         .route(
             "/api/v1/logging-settings",
             get(get_logging_settings).put(update_logging_settings),
+        )
+        .route(
+            "/api/v1/logging-settings/redaction-preview",
+            post(preview_redaction),
         )
         .route("/api/v1/analytics/sampling", get(get_log_sampling))
 }
@@ -79,6 +84,13 @@ struct UpdateLoggingSettings {
     payload_capture_max_bytes: i32,
     #[serde(default)]
     payload_capture_redact_fields: Vec<String>,
+    /// built-in value detectors; absent keeps the stored set, so a client that
+    /// predates the field cannot switch value redaction off (#1835)
+    #[serde(default)]
+    payload_capture_redact_detectors: Option<Vec<String>>,
+    /// operator value patterns; absent keeps the stored set
+    #[serde(default)]
+    payload_capture_redact_patterns: Option<Vec<RedactPattern>>,
     #[serde(default)]
     payload_capture_models: Vec<String>,
     #[serde(default)]
@@ -125,6 +137,17 @@ fn validate_settings(body: &UpdateLoggingSettings) -> ApiResult<()> {
             "payload_capture_redact_fields must contain 1-128 visible-character keys",
         ));
     }
+    // compile the value policy now, so a pattern that cannot run is a 422 here
+    // and never a silent gap in what the gateway redacts
+    compile_value_policy(
+        &body.payload_capture_redact_fields,
+        body.payload_capture_redact_detectors
+            .as_deref()
+            .unwrap_or(&[]),
+        body.payload_capture_redact_patterns
+            .as_deref()
+            .unwrap_or(&[]),
+    )?;
     if body.payload_capture_models.iter().any(|model| {
         model.trim().is_empty() || model.len() > 255 || model.chars().any(char::is_control)
     }) {
@@ -166,6 +189,73 @@ fn validate_settings(body: &UpdateLoggingSettings) -> ApiResult<()> {
     Ok(())
 }
 
+fn compile_value_policy(
+    fields: &[String],
+    detectors: &[String],
+    patterns: &[RedactPattern],
+) -> ApiResult<PayloadRedactor> {
+    PayloadRedactor::compile(fields, detectors, patterns)
+        .map_err(|err| invalid_field(err.field(), err.to_string()))
+}
+
+/// The largest sample the preview accepts.
+const MAX_PREVIEW_SAMPLE_BYTES: usize = 64 * 1024;
+
+/// A dry run of the redaction policy against a pasted sample. Any part of the
+/// policy left out is read from the stored settings, so the dashboard can
+/// preview unsaved edits alongside the saved remainder.
+#[derive(Deserialize)]
+struct RedactionPreviewRequest {
+    sample: String,
+    #[serde(default)]
+    redact_fields: Option<Vec<String>>,
+    #[serde(default)]
+    redact_detectors: Option<Vec<String>>,
+    #[serde(default)]
+    redact_patterns: Option<Vec<RedactPattern>>,
+}
+
+#[derive(Serialize)]
+struct RedactionPreview {
+    /// what capture would store for this body
+    output: String,
+    /// what was found, by kind
+    report: RedactionReport,
+}
+
+/// Run the redaction policy over a pasted sample and show the result.
+///
+/// Nothing is stored: the handler touches no table, and the sample is not
+/// written to the audit log or to any log line, since a sample pasted to test a
+/// detector is by construction a body that contains the secret it tests for.
+async fn preview_redaction(
+    principal: Principal,
+    State(state): State<ControlState>,
+    SafeJson(body): SafeJson<RedactionPreviewRequest>,
+) -> ApiResult<Json<RedactionPreview>> {
+    authorize_superadmin(&principal, superadmin_cap!("logging_settings", Update))?;
+    if body.sample.len() > MAX_PREVIEW_SAMPLE_BYTES {
+        return Err(invalid_field(
+            "sample",
+            format!("sample must be at most {MAX_PREVIEW_SAMPLE_BYTES} bytes"),
+        ));
+    }
+    let stored = LoggingSettingsRepo(pool(&state)).get().await?;
+    let fields = body
+        .redact_fields
+        .unwrap_or(stored.payload_capture_redact_fields);
+    let detectors = body
+        .redact_detectors
+        .unwrap_or(stored.payload_capture_redact_detectors);
+    let patterns = body
+        .redact_patterns
+        .unwrap_or(stored.payload_capture_redact_patterns.0);
+    let redactor = compile_value_policy(&fields, &detectors, &patterns)?;
+    let mut report = RedactionReport::default();
+    let output = redactor.capture(body.sample.as_bytes(), usize::MAX, &mut report);
+    Ok(Json(RedactionPreview { output, report }))
+}
+
 async fn update_logging_settings(
     principal: Principal,
     State(state): State<ControlState>,
@@ -174,17 +264,19 @@ async fn update_logging_settings(
     authorize_superadmin(&principal, superadmin_cap!("logging_settings", Update))?;
     validate_settings(&body)?;
     let row = LoggingSettingsRepo(pool(&state))
-        .update(
-            body.sample_rate,
-            body.payload_capture_enabled,
-            body.payload_capture_max_bytes,
-            &body.payload_capture_redact_fields,
-            &body.payload_capture_models,
-            &body.payload_capture_virtual_key_ids,
-            body.retention_days,
-            body.payload_retention_hours,
-            body.ui_events,
-        )
+        .update(LoggingSettingsUpdate {
+            sample_rate: body.sample_rate,
+            payload_capture_enabled: body.payload_capture_enabled,
+            payload_capture_max_bytes: body.payload_capture_max_bytes,
+            payload_capture_redact_fields: &body.payload_capture_redact_fields,
+            payload_capture_redact_detectors: body.payload_capture_redact_detectors.as_deref(),
+            payload_capture_redact_patterns: body.payload_capture_redact_patterns.as_deref(),
+            payload_capture_models: &body.payload_capture_models,
+            payload_capture_virtual_key_ids: &body.payload_capture_virtual_key_ids,
+            retention_days: body.retention_days,
+            payload_retention_hours: body.payload_retention_hours,
+            ui_events: body.ui_events,
+        })
         .await?;
     publish_config_change(&state).await?;
     // clickhouse owns expiry; a failure here leaves the stored policy in place
@@ -213,6 +305,13 @@ async fn update_logging_settings(
                 "payload_capture_enabled": row.payload_capture_enabled,
                 "payload_capture_max_bytes": row.payload_capture_max_bytes,
                 "payload_capture_redact_field_count": row.payload_capture_redact_fields.len(),
+                "payload_capture_redact_detectors": row.payload_capture_redact_detectors,
+                "payload_capture_redact_pattern_names": row
+                    .payload_capture_redact_patterns
+                    .0
+                    .iter()
+                    .map(|pattern| pattern.name.as_str())
+                    .collect::<Vec<_>>(),
                 "payload_capture_model_count": row.payload_capture_models.len(),
                 "payload_capture_virtual_key_id_count": row.payload_capture_virtual_key_ids.len(),
                 "retention_days": row.retention_days,
@@ -281,6 +380,8 @@ mod tests {
             payload_capture_enabled: false,
             payload_capture_max_bytes: 32768,
             payload_capture_redact_fields: vec!["api_key".to_string()],
+            payload_capture_redact_detectors: None,
+            payload_capture_redact_patterns: None,
             payload_capture_models: Vec::new(),
             payload_capture_virtual_key_ids: Vec::new(),
             retention_days,
@@ -296,6 +397,8 @@ mod tests {
             payload_capture_enabled: true,
             payload_capture_max_bytes: 4096,
             payload_capture_redact_fields: vec!["authorization".to_string()],
+            payload_capture_redact_detectors: Vec::new(),
+            payload_capture_redact_patterns: Default::default(),
             payload_capture_models: vec!["gpt-4o".to_string()],
             payload_capture_virtual_key_ids: vec![uuid::Uuid::nil().to_string()],
             retention_days: 30,
@@ -322,6 +425,8 @@ mod tests {
             payload_capture_enabled: seeded.payload_capture.enabled,
             payload_capture_max_bytes: seeded.payload_capture.max_bytes as i32,
             payload_capture_redact_fields: seeded.payload_capture.redact_fields.clone(),
+            payload_capture_redact_detectors: seeded.payload_capture.redact_detectors.clone(),
+            payload_capture_redact_patterns: Default::default(),
             payload_capture_models: Vec::new(),
             payload_capture_virtual_key_ids: Vec::new(),
             retention_days: 90,
@@ -336,6 +441,22 @@ mod tests {
         assert_eq!(LogSampling::served(&untouched, &file).sample_rate, 0.25);
         // with no file the seeded row is all there is
         assert_eq!(LogSampling::served(&untouched, &seeded).sample_rate, 1.0);
+    }
+
+    #[test]
+    fn a_pattern_that_cannot_run_is_refused_with_its_field() {
+        let mut body = settings(90, 168);
+        body.payload_capture_redact_patterns = Some(vec![RedactPattern {
+            name: "bad".into(),
+            pattern: "(unclosed".into(),
+        }]);
+        assert!(validate_settings(&body).is_err());
+        body.payload_capture_redact_patterns = None;
+        body.payload_capture_redact_detectors = Some(vec!["nope".into()]);
+        assert!(validate_settings(&body).is_err());
+        body.payload_capture_redact_detectors =
+            Some(rolter_core::payload_redaction::detector_names());
+        assert!(validate_settings(&body).is_ok());
     }
 
     #[test]

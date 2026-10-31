@@ -8,7 +8,6 @@ import { IconFrame } from "@/components/ui/icon-frame";
 import { CardStack } from "@/components/ui/card";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { EditorSheet } from "@/components/EditorSheet";
-import { superadminOnly } from "@/components/ForbiddenScreen";
 import { GatedButton } from "@/components/GatedButton";
 import { DeleteIconButton } from "@/components/ui/delete-icon-button";
 import { GatedSwitch } from "@/components/GatedSwitch";
@@ -40,6 +39,7 @@ import { Segmented } from "@/components/ui/segmented";
 import {
   ALERT_COMPARISONS,
   ALERT_NO_DATA_POLICIES,
+  ALERT_SCOPE_TYPES,
   ALERT_SIGNALS,
   createAlertChannel,
   createAlertRule,
@@ -56,7 +56,17 @@ import {
   type AlertNoDataPolicy,
   type AlertNotificationRow,
   type AlertRuleRow,
+  type AlertScopeType,
 } from "@/lib/api";
+import {
+  channelFits,
+  ruleOrgFor,
+  useAlertScopeName,
+  useAlertScopeOptions,
+  type AlertScopeChoice,
+} from "@/lib/alert-scope";
+import { useIsSuperadmin } from "@/lib/can";
+import { useScope } from "@/lib/scope";
 import { errorText } from "@/lib/error-copy";
 import { deliveryDetail, evaluateErrorText, isNoDataRow, ruleErrorText } from "@/lib/alert-codes";
 import {
@@ -153,12 +163,16 @@ const WINDOW_MAX_SECS = 86_400;
 // the signal and window a new rule starts from
 const DEFAULT_SIGNAL: AlertSignal = ALERT_SIGNALS[0];
 const DEFAULT_WINDOW_SECS = 300;
+/** the owner / scope choice that names no org: the whole deployment */
+const DEPLOYMENT = "deployment";
 
 // ---------------------------------------------------------------------------
 // channels: webhook destinations alerts are delivered to
 
 function AlertChannelsScreen() {
   const { t } = useTranslation();
+  const scope = useScope();
+  const orgName = (id: string) => scope.orgs.find((o) => o.id === id)?.name ?? id.slice(0, 8);
   const queryClient = useQueryClient();
   const toast = useToast();
   const channels = useQuery({
@@ -258,13 +272,17 @@ function AlertChannelsScreen() {
               </IconFrame>
               <div className="min-w-0 flex-1">
                 <div className="font-mono text-sm font-semibold">{c.name}</div>
-                <div className="truncate text-xs text-muted-foreground">{c.endpoint}</div>
+                {/* a deployment channel an org admin may only name on a rule
+                    comes without its address, which can carry a token */}
+                <div className="truncate text-xs text-muted-foreground">
+                  {c.manageable === false ? t("pages.alerting.channels.addressHidden") : c.endpoint}
+                </div>
               </div>
               <GatedSwitch
                 gate="alert_channel:update"
                 control="alert-channel-toggle"
                 checked={c.enabled}
-                disabled={toggle.isPending}
+                disabled={toggle.isPending || c.manageable === false}
                 aria-label={t("pages.alerting.channels.toggleAria", { name: c.name })}
                 onCheckedChange={() => toggle.mutate(c)}
               />
@@ -273,31 +291,38 @@ function AlertChannelsScreen() {
               <Pill color="var(--text-secondary)" tint="var(--surface-subtle)">
                 {channelKindLabel(c.kind, t)}
               </Pill>
+              <Pill color="var(--text-secondary)" tint="var(--surface-subtle)">
+                {c.org_id
+                  ? t("pages.alerting.channels.ownerOrg", { name: orgName(c.org_id) })
+                  : t("pages.alerting.channels.ownerDeployment")}
+              </Pill>
               {c.secret_configured && (
                 <Pill tone="info">{t("pages.alerting.channels.secretSet")}</Pill>
               )}
               {/* the labels name the channel: a column of cards each
                   offering "Delete channel" is N buttons a screen reader
                   cannot tell apart (#1214) */}
-              <div className="ml-auto flex items-center gap-1.5">
-                <RowIconButton
-                  gate="alert_channel:update"
-                  control="alert-channel-edit"
-                  className="p-1.5"
-                  title={t("pages.alerting.channels.editAria", { name: c.name })}
-                  aria-label={t("pages.alerting.channels.editAria", { name: c.name })}
-                  onClick={() => openSheet(c)}
-                >
-                  <Pencil className="h-3.5 w-3.5" />
-                </RowIconButton>
-                <DeleteIconButton
-                  gate="alert_channel:delete"
-                  control="alert-channel-delete"
-                  label={t("pages.alerting.channels.deleteAria", { name: c.name })}
-                  pending={remove.isPending && remove.variables === c.id}
-                  onClick={() => startDelete(c)}
-                />
-              </div>
+              {c.manageable !== false && (
+                <div className="ml-auto flex items-center gap-1.5">
+                  <RowIconButton
+                    gate="alert_channel:update"
+                    control="alert-channel-edit"
+                    className="p-1.5"
+                    title={t("pages.alerting.channels.editAria", { name: c.name })}
+                    aria-label={t("pages.alerting.channels.editAria", { name: c.name })}
+                    onClick={() => openSheet(c)}
+                  >
+                    <Pencil className="h-3.5 w-3.5" />
+                  </RowIconButton>
+                  <DeleteIconButton
+                    gate="alert_channel:delete"
+                    control="alert-channel-delete"
+                    label={t("pages.alerting.channels.deleteAria", { name: c.name })}
+                    pending={remove.isPending && remove.variables === c.id}
+                    onClick={() => startDelete(c)}
+                  />
+                </div>
+              )}
             </div>
           </CardStack>
         ))}
@@ -359,6 +384,12 @@ function ChannelSheet({
   const [endpoint, setEndpoint] = React.useState("");
   // write-only: an edit starts blank, because the stored secret is never read back
   const [secret, setSecret] = React.useState("");
+  // who owns a new channel (#1829): the deployment, which only a superadmin
+  // can, or one org. an edit keeps its owner
+  const scope = useScope();
+  const isSuperadmin = useIsSuperadmin();
+  const defaultOwner = scope.orgId && isSuperadmin !== true ? scope.orgId : DEPLOYMENT;
+  const [owner, setOwner] = React.useState(defaultOwner);
 
   const save = useMutation({
     mutationFn: () => {
@@ -368,7 +399,11 @@ function ChannelSheet({
       // found it; a new channel starts on
       return existing
         ? updateAlertChannel(existing.id, { ...input, enabled: existing.enabled })
-        : createAlertChannel({ ...input, enabled: true });
+        : createAlertChannel({
+            ...input,
+            enabled: true,
+            ...(owner === DEPLOYMENT ? {} : { org_id: owner }),
+          });
     },
     onSuccess: () => {
       // the sheet closes on success, so the outcome is announced somewhere
@@ -399,6 +434,7 @@ function ChannelSheet({
       setName(existing?.name ?? "");
       setEndpoint(existing?.endpoint ?? "");
       setSecret("");
+      setOwner(defaultOwner);
       // a refusal for one channel must not greet the next one opened
       save.reset();
     }
@@ -433,13 +469,17 @@ function ChannelSheet({
       saveLabel={existing ? t("common.save") : t("common.create")}
       canSave={Boolean(name.trim() && endpoint.trim())}
       saving={save.isPending}
-      onSave={() => save.mutate()}
+      onSubmit={() => save.mutate()}
     >
       <div className="space-y-3">
-        <Field label={t("pages.alerting.channels.fieldName")}>
+        <Field label={t("pages.alerting.channels.fieldName")} required>
           <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="ops-webhook" />
         </Field>
-        <Field label={t("pages.alerting.channels.fieldEndpoint")}>
+        <Field
+          label={t("pages.alerting.channels.fieldEndpoint")}
+          info={t("pages.alerting.channels.fieldEndpointInfo")}
+          required
+        >
           <Input
             className="font-mono"
             value={endpoint}
@@ -447,6 +487,32 @@ function ChannelSheet({
             placeholder="https://alerts.example.com/rolter"
           />
         </Field>
+        {!existing && (
+          <Field
+            label={t("pages.alerting.channels.fieldOwner")}
+            hint={t(
+              owner === DEPLOYMENT
+                ? "pages.alerting.channels.ownerDeploymentHint"
+                : "pages.alerting.channels.ownerOrgHint",
+            )}
+          >
+            <Combobox
+              value={owner}
+              onChange={setOwner}
+              options={[
+                // a deployment channel is a superadmin's; the server refuses
+                // anyone else, so it is only offered while that is not known
+                ...(isSuperadmin === false
+                  ? []
+                  : [{ value: DEPLOYMENT, label: t("pages.alerting.channels.ownerDeployment") }]),
+                ...scope.orgs.map((o) => ({
+                  value: o.id,
+                  label: t("pages.alerting.channels.ownerOrg", { name: o.name }),
+                })),
+              ]}
+            />
+          </Field>
+        )}
         <Field label={t("pages.alerting.channels.fieldSecret")} hint={secretHint}>
           <Input
             type="password"
@@ -465,6 +531,7 @@ function ChannelSheet({
 
 function AlertRulesScreen() {
   const { t } = useTranslation();
+  const scopeName = useAlertScopeName();
   const fmt = useFormat();
   // the "Evaluated" figures are relative, so they read the same clock
   const now = useNow();
@@ -639,7 +706,7 @@ function AlertRulesScreen() {
             <article
               key={r.id}
               aria-labelledby={nameId}
-              className="flex flex-col gap-3 rounded-[10px] border border-[color:var(--border-default)] bg-card p-4"
+              className="flex flex-col gap-3 rounded-lg border border-[color:var(--border-default)] bg-card p-4"
             >
               <div className="flex items-center gap-2.5">
                 <StatusDot color={tone.fill} />
@@ -711,6 +778,15 @@ function AlertRulesScreen() {
                 <RuleStat
                   label={t("pages.alerting.rules.statChannel")}
                   value={channelName(r.channel_id)}
+                />
+                <RuleStat
+                  label={t("pages.alerting.rules.statScope")}
+                  value={
+                    r.scope_type && r.scope_id
+                      ? scopeName(r.scope_type, r.scope_id)
+                      : t("pages.alerting.rules.scopeDeployment")
+                  }
+                  mono={false}
                 />
               </dl>
               {r.last_error && (
@@ -890,6 +966,19 @@ function RuleSheet({
   const [noData, setNoData] = React.useState<AlertNoDataPolicy>(seed.noData);
   const [windowSecs, setWindowSecs] = React.useState(seed.windowSecs);
   const [channelId, setChannelId] = React.useState(seed.channelId);
+  // what a new rule watches (#1829): fixed once created, so an edit shows it
+  // and a create picks it. the whole deployment is a superadmin's, so anyone
+  // else opens on the project the switcher is on
+  const scope = useScope();
+  const isSuperadmin = useIsSuperadmin();
+  const defaultScope: AlertScopeChoice =
+    isSuperadmin === false ? (scope.projectId ? "project" : "org") : DEPLOYMENT;
+  const defaultScopeId = (type: AlertScopeChoice) =>
+    type === "project" ? (scope.projectId ?? "") : type === "org" ? (scope.orgId ?? "") : "";
+  const [scopeType, setScopeType] = React.useState<AlertScopeChoice>(defaultScope);
+  const [scopeId, setScopeId] = React.useState(defaultScopeId(defaultScope));
+  const scopeOptions = useAlertScopeOptions(scopeType);
+  const scopeName = useAlertScopeName();
   const comparisonLabelId = React.useId();
   const noDataLabelId = React.useId();
 
@@ -919,11 +1008,12 @@ function RuleSheet({
         window_secs: Number(windowSecs),
         channel_id: channelId || null,
       };
+      const watched = scopeType === DEPLOYMENT ? {} : { scope_type: scopeType, scope_id: scopeId };
       // PUT replaces the whole row, so an edit sends the switch back as it
       // found it; a new rule starts on
       return existing
         ? updateAlertRule(existing.id, { ...input, enabled: existing.enabled })
-        : createAlertRule({ ...input, enabled: true });
+        : createAlertRule({ ...input, ...watched, enabled: true });
     },
     onSuccess: () => {
       // the sheet closes on success, so the outcome is announced somewhere
@@ -960,11 +1050,39 @@ function RuleSheet({
       setNoData(seed.noData);
       setWindowSecs(seed.windowSecs);
       setChannelId(seed.channelId);
+      setScopeType(defaultScope);
+      setScopeId(defaultScopeId(defaultScope));
       // a refusal for one rule must not greet the next one opened
       save.reset();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, existing]);
+
+  // a rule notifies a channel of its own org or a deployment one, so another
+  // org's is not offered; the control plane refuses it all the same
+  const ruleOrg = existing
+    ? (existing.org_id ?? null)
+    : ruleOrgFor(scopeType, scopeId, scope.orgId);
+  const fitting = channels.filter((c) => channelFits(c, ruleOrg));
+  React.useEffect(() => {
+    if (channelId && !fitting.some((c) => c.id === channelId)) setChannelId("");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scopeType, scopeId]);
+  // provider health is recorded per org, so a narrower scope cannot watch it
+  const scopeSignals = ALERT_SIGNALS.filter(
+    (s) =>
+      s !== "provider_health_flaps" ||
+      (existing
+        ? !existing.scope_type || existing.scope_type === "org"
+        : scopeType === DEPLOYMENT || scopeType === "org"),
+  );
+  const chooseScopeType = (next: string) => {
+    setScopeType(next as AlertScopeChoice);
+    setScopeId("");
+    if (next !== DEPLOYMENT && next !== "org" && signal === "provider_health_flaps") {
+      chooseSignal(DEFAULT_SIGNAL);
+    }
+  };
 
   // the same bounds the API checks, so a window the form accepts is never a 400
   const windowNumber = Number(windowSecs);
@@ -1008,18 +1126,71 @@ function RuleSheet({
       dirty={dirty}
       errorMessage={save.isError ? errorText(save.error, t) : undefined}
       saveLabel={existing ? t("common.save") : t("common.create")}
-      canSave={Boolean(name.trim() && thresholdOk && windowValid)}
+      canSave={Boolean(
+        name.trim() &&
+        thresholdOk &&
+        windowValid &&
+        (existing || scopeType === DEPLOYMENT || scopeId),
+      )}
       saving={save.isPending}
-      onSave={() => save.mutate()}
+      onSubmit={() => save.mutate()}
     >
       <div className="space-y-3">
-        <Field label={t("pages.alerting.rules.fieldName")}>
+        <Field label={t("pages.alerting.rules.fieldName")} required>
           <Input
             value={name}
             onChange={(e) => setName(e.target.value)}
             placeholder={t("pages.alerting.rules.namePlaceholder")}
           />
         </Field>
+        {existing ? (
+          <p className="text-xs text-muted-foreground">
+            {t("pages.alerting.rules.scopeFixed", {
+              scope:
+                existing.scope_type && existing.scope_id
+                  ? scopeName(existing.scope_type, existing.scope_id)
+                  : t("pages.alerting.rules.scopeDeployment"),
+            })}
+          </p>
+        ) : (
+          <>
+            <Field
+              label={t("pages.alerting.rules.fieldScopeType")}
+              hint={t(
+                scopeType === DEPLOYMENT
+                  ? "pages.alerting.rules.scopeDeploymentHint"
+                  : "pages.alerting.rules.scopeHint",
+              )}
+            >
+              <Combobox
+                value={scopeType}
+                onChange={chooseScopeType}
+                options={[
+                  ...(isSuperadmin === false
+                    ? []
+                    : [{ value: DEPLOYMENT, label: t("pages.alerting.rules.scopeDeployment") }]),
+                  ...ALERT_SCOPE_TYPES.map((type: AlertScopeType) => ({
+                    value: type,
+                    label: t(`pages.alerting.scope.types.${type}`),
+                  })),
+                ]}
+              />
+            </Field>
+            {scopeType !== DEPLOYMENT && (
+              <Field label={t("pages.alerting.rules.fieldScope")}>
+                <Combobox
+                  value={scopeId}
+                  onChange={setScopeId}
+                  placeholder={t("pages.alerting.rules.scopePlaceholder")}
+                  emptyText={
+                    scopeOptions.pending ? t("common.loading") : t("pages.alerting.rules.scopeNone")
+                  }
+                  options={scopeOptions.options}
+                />
+              </Field>
+            )}
+          </>
+        )}
         {/* the option's second line is the id the API and the docs use; a
             signal this build does not know is offered under its id alone */}
         <Field
@@ -1031,7 +1202,7 @@ function RuleSheet({
             onChange={chooseSignal}
             options={[
               ...(isAlertSignal(signal) ? [] : [{ value: signal, label: signal }]),
-              ...ALERT_SIGNALS.map((s) => ({
+              ...scopeSignals.map((s) => ({
                 value: s,
                 label: signalLabel(s, t),
                 description: s,
@@ -1077,7 +1248,11 @@ function RuleSheet({
         </div>
         {supportsNoData(signal) && (
           <div className="space-y-1.5">
-            <FieldLabel label={t("pages.alerting.rules.fieldNoData")} id={noDataLabelId} />
+            <FieldLabel
+              label={t("pages.alerting.rules.fieldNoData")}
+              info={t("pages.alerting.rules.fieldNoDataInfo")}
+              id={noDataLabelId}
+            />
             <Segmented
               labelledBy={noDataLabelId}
               value={noData}
@@ -1104,13 +1279,16 @@ function RuleSheet({
             onChange={(e) => setWindowSecs(e.target.value)}
           />
         </Field>
-        <Field label={t("pages.alerting.rules.fieldChannel")}>
+        <Field
+          label={t("pages.alerting.rules.fieldChannel")}
+          info={t("pages.alerting.rules.fieldChannelInfo")}
+        >
           <Combobox
             value={channelId}
             onChange={setChannelId}
             options={[
               { value: "", label: t("pages.alerting.rules.channelNone") },
-              ...channels.map((c) => ({ value: c.id, label: c.name })),
+              ...fitting.map((c) => ({ value: c.id, label: c.name })),
             ]}
           />
         </Field>
@@ -1346,9 +1524,9 @@ function AlertHistoryScreen() {
   );
 }
 
-// deployment-scoped settings: superadmin-only in the capability table, so a
-// lesser caller sees the refusal instead of a screen that loads and then 403s
-// (#1183)
-export const AlertChannels = superadminOnly(AlertChannelsScreen, "errors.resources.alertChannels");
-export const AlertRules = superadminOnly(AlertRulesScreen, "errors.resources.alertRules");
-export const AlertHistory = superadminOnly(AlertHistoryScreen, "errors.resources.alertHistory");
+// not wrapped in `superadminOnly`: an org, team or project admin owns the rules and
+// channels of their own scope (#1829), and a caller who owns none is refused by
+// the control plane with the same `forbidden` state the wrapper rendered
+export const AlertChannels = AlertChannelsScreen;
+export const AlertRules = AlertRulesScreen;
+export const AlertHistory = AlertHistoryScreen;

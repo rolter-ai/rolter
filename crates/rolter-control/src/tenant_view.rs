@@ -33,7 +33,7 @@ use crate::ControlState;
 pub(crate) enum TenantView {
     All,
     Scoped {
-        filter: ScopeFilter,
+        filter: Box<ScopeFilter>,
         reach: Vec<ScopeChain>,
         // a project resolves to its chain once however many rows name it;
         // `None` is a project that no longer exists
@@ -51,13 +51,13 @@ impl TenantView {
         state: &ControlState,
         principal: Option<&Principal>,
     ) -> ApiResult<Self> {
-        let Some(principal @ Principal::User(_)) = principal else {
+        let Some(principal @ (Principal::User(_) | Principal::Token(_))) = principal else {
             return Ok(Self::All);
         };
         let filter = ScopeFilter::load(state, principal, cap!("route", Read)).await?;
         let reach = filter.reach(pool(state)).await?;
         Ok(Self::Scoped {
-            filter,
+            filter: Box::new(filter),
             reach,
             projects: HashMap::new(),
             scopes: HashMap::new(),
@@ -110,6 +110,7 @@ impl TenantView {
         state: &ControlState,
         scope: BudgetScope,
         id: &str,
+        within: Option<&rolter_core::ScopeWithin>,
         requirement: Requirement,
     ) -> bool {
         let Self::Scoped {
@@ -124,6 +125,29 @@ impl TenantView {
         let Ok(id) = id.parse::<Uuid>() else {
             return true;
         };
+        if scope == BudgetScope::User {
+            // a person belongs to no org: a cap on one is the caller's to see
+            // only through the place it is narrowed to (#1830), and one with
+            // no such place is a deployment-level row only a superadmin sees
+            let narrowed = match within {
+                Some(rolter_core::ScopeWithin::Org(org)) => org
+                    .parse::<Uuid>()
+                    .ok()
+                    .map(rolter_store::postgres::repo::Within::org),
+                Some(rolter_core::ScopeWithin::Project(project)) => project
+                    .parse::<Uuid>()
+                    .ok()
+                    .map(rolter_store::postgres::repo::Within::project),
+                None => None,
+            };
+            let Some(narrowed) = narrowed else {
+                return false;
+            };
+            return match ScopeChain::from_cap(pool(state), "user", id, narrowed).await {
+                Ok(chain) => filter.allows_as(chain, requirement),
+                Err(_) => false,
+            };
+        }
         let scope_type = scope_type(scope);
         if let std::collections::hash_map::Entry::Vacant(slot) = scopes.entry((scope_type, id)) {
             slot.insert(
@@ -166,7 +190,7 @@ impl TenantView {
                 ProblemOwner::Deployment => true,
                 ProblemOwner::Tenant(tenancy) => self.sees(state, Some(tenancy)).await,
                 ProblemOwner::Scope { scope, id } => {
-                    self.sees_scope(state, *scope, id, cap!("budget", Read))
+                    self.sees_scope(state, *scope, id, None, cap!("budget", Read))
                         .await
                 }
             };
@@ -187,6 +211,9 @@ fn scope_type(scope: BudgetScope) -> &'static str {
         BudgetScope::Key => "virtual_key",
         BudgetScope::BusinessUnit => "business_unit",
         BudgetScope::Customer => "customer",
+        BudgetScope::User => "user",
+        // a scope a newer release stored (#3347); no row is named this way
+        BudgetScope::Unknown => "unknown",
     }
 }
 
@@ -225,15 +252,27 @@ impl ConfigVisibility {
         let mut budgets = Vec::with_capacity(config.budgets.len());
         for b in &config.budgets {
             budgets.push(
-                view.sees_scope(state, b.scope, &b.id, cap!("budget", Read))
-                    .await,
+                view.sees_scope(
+                    state,
+                    b.scope,
+                    &b.id,
+                    b.within.as_ref(),
+                    cap!("budget", Read),
+                )
+                .await,
             );
         }
         let mut rate_limits = Vec::with_capacity(config.rate_limits.len());
         for l in &config.rate_limits {
             rate_limits.push(
-                view.sees_scope(state, l.scope, &l.id, cap!("rate_limit", Read))
-                    .await,
+                view.sees_scope(
+                    state,
+                    l.scope,
+                    &l.id,
+                    l.within.as_ref(),
+                    cap!("rate_limit", Read),
+                )
+                .await,
             );
         }
         Self {

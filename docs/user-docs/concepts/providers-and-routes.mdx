@@ -20,9 +20,9 @@ A provider is an upstream AI service that Rolter can forward requests to. Each p
 | `egress_proxy` | —        | Optional outbound proxy URL (`http://`, `https://`, `socks5://`, or `socks5h://`) |
 
 <Note>
-  Providers, provider groups and routes created through the dashboard or the API belong to an organization. Only that organization's virtual keys can use them — by route name, as `provider-slug/model`, or through a group as `group-slug/model` — and a route target or group member must be a provider of the same organization. Route names and provider names are unique across the whole deployment for now, and provider slugs and provider group slugs share one namespace, so a provider cannot take a slug a group already has and the other way round. A name another organization already uses is refused with `409 Conflict`, without saying which organization holds it. A route name may contain `/`, as in `Qwen/Qwen2.5-7B`, but not as another organization's `provider-slug/…` or `group-slug/…` address, and `fake-llm` is reserved for the built-in model. The address check is made when the route is created: a slug created afterwards is not refused, and keys from a config file, which carry no organization, then reach the route rather than the new address.
+  Providers, provider groups and routes created through the dashboard or the API belong to an organization. Only that organization's virtual keys can use them — by route name, as `provider-slug/model`, or through a group as `group-slug/model` — and a route target or group member must be a provider of the same organization. Names belong to the organization too: two organizations can each have a `gpt-4o` route and an `openai` provider, and each organization's keys reach only their own. Within one organization a route name is used once across all its projects, a provider name once, and provider slugs and provider group slugs share one namespace, so a provider cannot take a slug a group of the same organization already has and the other way round. A name your organization already uses is refused with `409 Conflict`. Once a second organization takes a name, the gateway keeps the two apart under `name@<organization id>`: that is the label the provider metrics, the circuit-breaker and adaptive-routing series, and the per-model latency, variant and complexity series show for each of them from then on, and the first organization's circuit breaker, cooldowns and latency history for that name start fresh once. The circuit-breaker and adaptive-routing views in the dashboard and the API name each route by its organization and plain name instead. Request logs keep the plain name in `provider` and record the organization in `provider_org_id`. A name, slug or address that a readonly row of the bootstrap file holds is refused to every organization, without saying who holds it. That check is made when a row is created: an organization's row that already exists when the bootstrap file gains the same name (or one written around the API) keeps serving that organization's keys, every other key gets the file's row, and `GET /api/v1/config/problems` lists the overlap as a warning. If the organization's row is narrowed to one project (a project-only route, or a project-scoped provider or group), it serves that project's keys only: a key of any other project of the organization resolves the name as if the organization had no such row, and gets the file's row, under that row's own access rules, both for requests and in `GET /v1/models`. A route name may contain `/`, as in `Qwen/Qwen2.5-7B`, but not as another organization's `provider-slug/…` or `group-slug/…` address, and `fake-llm` is reserved for the built-in model. The address check is made when the route is created: a slug created afterwards is not refused, and keys from a config file, which carry no organization, then reach the route rather than the new address.
 
-Only the readonly rows of a file a process loads directly are deployment-wide: a gateway's `--config`, and the control plane's bootstrap `--config` (flat `[[providers]]`, `[[routes]]`, `[[provider_groups]]` and the `*.readonly` tiers). Entries under `[[providers.default]]`, `[[provider_groups.default]]` and `[[models.default]]` are seeded into the `default` organization, skipping any whose name another organization already uses, and `rolter-seed --import` writes into the organization it imports into (`default` unless you name another). Like dashboard-created rows, only that organization's keys can use them.
+Only the readonly rows of a file a process loads directly are deployment-wide: a gateway's `--config`, and the control plane's bootstrap `--config` (flat `[[providers]]`, `[[routes]]`, `[[provider_groups]]` and the `*.readonly` tiers). Entries under `[[providers.default]]`, `[[provider_groups.default]]` and `[[models.default]]` are seeded into the `default` organization, skipping any whose name the `default` organization or a readonly row already uses (another organization's row of the same name is no obstacle), and `rolter-seed --import` writes into the organization it imports into (`default` unless you name another). Like dashboard-created rows, only that organization's keys can use them. A deployment-wide route or provider group uses deployment-wide providers only: a target or member naming a provider that belongs to an organization is left out of the snapshot and named in `GET /api/v1/config/problems`, since serving it would hand that organization's credential to every organization's keys. If that was the route's only target, the model answers `404`; declare the provider in the file as well, or move the route into the organization with `[[models.default]]` or `rolter-seed --import`.
 
 </Note>
 
@@ -103,14 +103,14 @@ egress_proxy = "http://corp-proxy:3128"   # optional outbound proxy
 
 A route maps a **public model name** — what your application actually sends in the `"model"` field — to one or more upstream targets plus a load-balancing strategy. When a request arrives for `"gpt-4o"`, Rolter looks up the matching route and forwards it to the appropriate provider.
 
-| Field                | Description                                                                    |
-| -------------------- | ------------------------------------------------------------------------------ |
-| `model`              | Public model name clients request (must be unique across the deployment)       |
-| `strategy`           | Load-balancing strategy (see [Load Balancing](/concepts/load-balancing))       |
-| `[[routes.targets]]` | One or more upstream targets to balance across                                 |
-| `targets[].provider` | Name of a declared provider                                                    |
-| `targets[].model`    | Upstream model identifier; omit to forward the public name as-is               |
-| `targets[].weight`   | Relative traffic share for `weighted` and `pipeline` strategies (default: `1`) |
+| Field                | Description                                                                                                                                  |
+| -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| `model`              | Public model name clients request (unique in the file; an organization's own route of the same name serves that organization's keys instead) |
+| `strategy`           | Load-balancing strategy (see [Load Balancing](/concepts/load-balancing))                                                                     |
+| `[[routes.targets]]` | One or more upstream targets to balance across                                                                                               |
+| `targets[].provider` | Name of a declared provider                                                                                                                  |
+| `targets[].model`    | Upstream model identifier; omit to forward the public name as-is                                                                             |
+| `targets[].weight`   | Relative traffic share for `weighted` and `pipeline` strategies (default: `1`)                                                               |
 
 ### Basic route example
 
@@ -190,7 +190,7 @@ Beyond params, a route carries an **advanced** block: catalog metadata, request 
 
 `timeout_secs`, `retries`, `headers`, `rpm`, `tpm` and `concurrency` apply to a request that names the route, on `/v1/chat/completions`, `/v1/responses`, the other JSON endpoints and the multipart audio uploads alike. They do not apply to a request addressed as `provider-slug/model` or `group-slug/model`, which has no route, nor to health probes. A Realtime session is one request for `rpm`, holds a `concurrency` slot until it closes, and its turns count towards `tpm`; `timeout_secs`, `retries` and `headers` do not apply to it.
 
-**Catalog metadata.** `model_type`, `capabilities` and `description` are labels the dashboard reads back: the model type and capability flags decide which parameters and prices the model sheet offers, and the description is a note for your team that the routes API returns. The gateway does not enforce them, so a request is forwarded whether or not a capability flag is set, and none of the three is sent to API clients or shown in `GET /v1/models`.
+**Catalog metadata.** `model_type`, `capabilities` and `context_length` (the context window in tokens, at least `1`) are labels the dashboard reads back and `GET /v1/models` serves on the route's entry when they are set, so an API client can learn what a model is for and how large its context is. The route sheet sets `context_length` under **Limits & network** for every model type, an embedding route's input limit included. `description` is a note for your team that the routes API returns; it is never sent to API clients. The gateway enforces none of them, so a request is forwarded whether or not a capability flag is set or the prompt fits `context_length`.
 
 ### Route limits
 
@@ -297,9 +297,11 @@ Variants let you run **A/B tests**, **canary deployments**, and **per-key traffi
     Within a variant, the route's `strategy` picks the leading target. If the primary variant fails, Rolter tries the remaining variants in declared order until one succeeds.
   </Step>
   <Step title="Attribution">
-    The chosen variant name is written to the `variant` column in request logs for analysis.
+    The chosen variant name is written to the `variant` column in request logs for analysis. On **Routing Rules**, a route with variants lists them on its card in fallback order with the share each weight gives, and says that its own targets are not used while the variants exist. The route sheet's **Variants** section shows each saved variant's observed share of that traffic beside its configured split, with requests, errors and p50/p95 latency, over a window you pick (7 days by default); the same numbers come from `GET /api/v1/analytics/by-variant?model=<route>`. A deployment without ClickHouse sees a note instead.
   </Step>
 </Steps>
+
+Variants apply to every request that names the route, audio uploads to `/v1/audio/transcriptions` and `/v1/audio/translations` included: an upload samples a variant the same way and is logged with it. The upload is forwarded as it came, so a variant's `params` do not reach it.
 
 Each variant can carry its own `params` table. Variant params **layer over** the route-level params (variant wins on collision), and the route's `param_policy` governs both.
 
@@ -325,6 +327,8 @@ model = "claude-sonnet-4-20250514"
 <Info>
   The `weight` on each variant controls proportional sampling — `9:1` sends 90 % of requests to `control` and 10 % to `canary`. A route uses either `[[routes.variants]]` _or_ a `[[routes.targets]]` pool, not both.
 </Info>
+
+A route created in the dashboard or through the API can carry variants too: open the route's sheet and use its **Variants** section, which previews the traffic split as you set the weights, or call [`PUT /api/v1/routes/{id}/variants`](/api/routes#weighted-variants). `rolter-seed --import` stores a file route's variants in the database and `rolter config export` writes them back, so a route keeps its split when it moves between the file and the control plane.
 
 ### Variant-level param overrides
 

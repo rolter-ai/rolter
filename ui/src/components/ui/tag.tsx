@@ -22,7 +22,7 @@ export function Tag({ onRemove, removeLabel, className, children, ...props }: Ta
   return (
     <span
       className={cn(
-        "inline-flex items-center gap-2 h-[22px] px-2 rounded border border-border bg-muted font-mono text-3xs text-muted-foreground whitespace-nowrap",
+        "inline-flex items-center gap-2 h-[22px] px-2 rounded border border-border bg-muted font-mono text-2xs text-muted-foreground whitespace-nowrap",
         className,
       )}
       {...props}

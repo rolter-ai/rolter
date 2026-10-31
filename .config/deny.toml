@@ -4,7 +4,12 @@
 [advisories]
 # fail on any security advisory or unmaintained/yanked crate
 yanked = "deny"
-ignore = []
+ignore = [
+  # paste: unmaintained, no vulnerability. a compile-time proc macro reached
+  # only through tokenizers under rolter-gateway's off-by-default `onnx`
+  # feature (#3443); no default build compiles it. removal is tracked in #3581
+  { id = "RUSTSEC-2024-0436", reason = "paste is an unmaintained compile-time macro reached only through the off-by-default onnx feature; remove with #3581" },
+]
 
 [licenses]
 # permissive licenses used across the dependency tree; extend as deps change
@@ -27,15 +32,24 @@ confidence-threshold = 0.9
 # per-crate allowances, kept narrower than widening `allow` above. win_uds is a
 # windows-only unix-socket shim pulled in by zeromq; Unlicense is a public
 # domain dedication in the same spirit as the CC0-1.0 already allowed, but it
-# is granted here rather than tree-wide
-exceptions = [{ name = "win_uds", allow = ["Unlicense"] }]
+# is granted here rather than tree-wide. quoted_printable is lettre's encoder
+# for the invitation email (#1828); 0BSD is the zero-clause BSD licence, which
+# asks for less than the MIT already allowed, granted to that crate alone
+exceptions = [
+  { name = "win_uds", allow = [
+    "Unlicense",
+  ] },
+  { name = "quoted_printable", allow = [
+    "0BSD",
+  ] },
+]
 
 [bans]
 multiple-versions = "warn"
 # rustls picks its crypto provider from the crate features, and panics on the
 # first `ClientConfig::builder()` (a `wss://` dial, an ldaps bind) when it finds
 # two. aws-lc-rs is the one provider here: reqwest 0.13 brings it, sqlx and
-# ldap3 are set to it. a dependency that turns on ring would put the second one
+# ldap3 and lettre are set to it. a dependency that turns on ring would put the second one
 # back without a compile error, so this fails the bump that does it
 deny = [
   { crate = "ring", reason = "second rustls crypto provider; use aws-lc-rs" },

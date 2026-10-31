@@ -140,7 +140,7 @@ Every amount the dashboard renders — LLM Logs, budget cards, team cards, the s
 A spend budget blocks incoming requests with **HTTP 402** once the cumulative cost for a scope reaches `limit_usd` within the configured period. Add one `[[budgets]]` block per scope you want to cap.
 
 <ParamField path="scope" type="string" required>
-  The scope level this budget applies to. One of `org`, `team`, `project`, `key`, `business_unit`, or `customer`.
+  The scope level this budget applies to. One of `org`, `team`, `project`, `key`, `business_unit`, `customer`, or `user`.
 </ParamField>
 
 <ParamField path="id" type="string" required>
@@ -149,6 +149,10 @@ A spend budget blocks incoming requests with **HTTP 402** once the cumulative co
 
 <Note>
   `business_unit` and `customer` are not part of the org → team → project chain: they are the [cost-attribution dimensions](/observability/logs-and-cost) a virtual key rolls its spend up to, so a budget on one caps everything attributed to it regardless of which project the traffic came through. The control plane API and the dashboard's **Budgets & Limits** screen accept all six scopes; in the dashboard, picking one of these two lists your org's business units or customers rather than asking for a UUID. Picking a virtual key lists the current project's keys the same way. While the list loads the field shows a placeholder, and if the control plane cannot return it (keys, business units or customers alike) the screen says so under the scope picker with a **Try again** button, and the field takes the UUID meanwhile.
+</Note>
+
+<Note>
+  **A budget on a person.** Members mint their own keys, as many as they like, so a key cap bounds one key and a project cap is shared by everyone in the project. A `user` budget (and a `user` rate limit) counts every key that person minted, however many, which is how "each engineer may spend $50 a month" is said. It is narrowed with `within` to the keys they minted in one org (`{ org = "…" }`) or one project (`{ project = "…" }`); without it, it counts their keys everywhere, and only a superadmin may set that. It composes like every other scope: the most restrictive matching budget wins, and the `402` names the user budget (`budget exceeded for User '…'`) when it is the one that tripped. A key nobody minted (a config-file key, or one an admin created for a project) has no owner, so no user cap reaches it. In the dashboard, pick **User** as the scope type on **Budgets & Limits**, choose the person, and the new budget or rate limit asks which keys it counts: the ones minted in one organization (the default), in one project, or, for a superadmin only, every key. Rows of this kind are named after the person everywhere on the screen. The person sees their own caps and what is left of them under **Account**; deleting the person deletes their caps.
 </Note>
 
 <ParamField path="limit_usd" type="float" required>
@@ -276,7 +280,7 @@ Each budget card on **Budgets & Limits** shows how much of the cap is spent, how
 A rate limit rejects requests with **HTTP 429** (plus a `Retry-After` header) when the number of requests or tokens in the trailing one-minute window exceeds the cap. Add one `[[rate_limits]]` block per scope you want to throttle. To protect one model rather than a caller, set `rpm`, `tpm` or `concurrency` on the route instead; see [Route limits](/concepts/providers-and-routes#route-limits).
 
 <ParamField path="scope" type="string" required>
-  The scope level this limit applies to. One of `org`, `team`, `project`, `key`, `business_unit`, or `customer`.
+  The scope level this limit applies to. One of `org`, `team`, `project`, `key`, `business_unit`, `customer`, or `user`.
 </ParamField>
 
 <ParamField path="id" type="string" required>

@@ -9,7 +9,14 @@ import { type DataEnvelope, getJson } from "./request";
  */
 export type HealthGrain = "provider" | "target";
 
+/**
+ * A provider in the health rollups is `org_id` and `provider` together: two
+ * organizations may each have an `openai` (#1857), and the rollups answer one
+ * series for each (#3441). `org_id` is empty for a provider from the gateway's
+ * own config file, and absent from a control plane that predates the field.
+ */
 export interface UptimeRow {
+  org_id?: string;
   provider: string;
   target_id: string;
   grain: HealthGrain;
@@ -27,6 +34,8 @@ export interface UptimeRow {
 }
 
 export interface MttrRow {
+  /** see {@link UptimeRow} */
+  org_id?: string;
   provider: string;
   target_id: string;
   grain: HealthGrain;
@@ -36,6 +45,8 @@ export interface MttrRow {
 
 export interface TimelineRow {
   bucket: string;
+  /** see {@link UptimeRow} */
+  org_id?: string;
   provider: string;
   target_id: string;
   grain: HealthGrain;
@@ -58,6 +69,3 @@ export function fetchHealthTimeline(bucket = "hour"): Promise<TimelineRow[]> {
     (r) => r.data,
   );
 }
-
-// --- control-plane CRUD (only reachable when rolter-control is started
-// with --database-url; see crates/rolter-control/src/crud.rs) ---

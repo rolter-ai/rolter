@@ -25,6 +25,7 @@ import type { GuardrailRuleInput, GuardrailRuleRow } from "@/lib/api";
 import type { EffectiveRule } from "@/lib/guardrail-policy";
 import en from "@/lib/i18n/locales/en.json";
 import ru from "@/lib/i18n/locales/ru.json";
+import { expectFieldHint } from "@/lib/story-hints";
 import { atShort, expectInViewport, phoneFits } from "@/lib/story-viewport";
 
 const RULES: GuardrailRuleRow[] = [
@@ -1420,6 +1421,30 @@ export const PickersSayWhatTheyDo: Story = {
     );
   },
 };
+
+/**
+ * The two pickers the others hang off say what they choose between in an (i)
+ * (#487): where a rule looks for a match, and which leg of the request it
+ * reads. The action and the detector already describe the chosen option under
+ * the field.
+ */
+function explainsSourceAndStage(locale: "en" | "ru"): Story {
+  const catalog = locale === "ru" ? ru : en;
+  const r = catalog.pages.guardrailRules;
+  const about = (label: string) => catalog.common.aboutField.replace("{{label}}", label);
+  return {
+    ...(locale === "ru" ? { globals: { locale: "ru" } } : {}),
+    render: () => <Harness fetchStub={withPolicy(async () => json(RULES))} />,
+    play: async ({ canvasElement }) => {
+      await userEvent.click(await within(canvasElement).findByRole("button", { name: r.addRule }));
+      const dialog = await within(document.body).findByRole("dialog", { name: r.dialogAddTitle });
+      await expectFieldHint(dialog, about(r.fieldSource), r.sourceInfo);
+      await expectFieldHint(dialog, about(r.fieldStage), r.stageInfo);
+    },
+  };
+}
+export const ExplainsSourceAndStageInAHint: Story = explainsSourceAndStage("en");
+export const ExplainsSourceAndStageInAHintInRussian: Story = explainsSourceAndStage("ru");
 
 /** the panel in Russian, with the plural the count needs */
 export const TrialInRussian: Story = {

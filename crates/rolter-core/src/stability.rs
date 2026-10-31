@@ -110,32 +110,6 @@ pub const SUBSYSTEMS: &[SubsystemStability] = &[
         nav_keys: &[],
     },
     SubsystemStability {
-        id: "mcp_settings",
-        stability: Stability::Experimental,
-        note: "organization MCP defaults for transport, timeout intent, retries \
-               and undeclared tools are stored but not yet read by the proxy. \
-               a per-server override is read (#952); a server without one \
-               falls back to the deployment-level transport timeouts rather \
-               than to these",
-        nav_keys: &["mcp-settings"],
-    },
-    SubsystemStability {
-        id: "mcp_tool_groups",
-        stability: Stability::Experimental,
-        note: "tool-group manifests are stored and published to MCP-aware \
-               clients, but the proxy does not enforce group membership as an \
-               access boundary",
-        nav_keys: &["tool-groups"],
-    },
-    SubsystemStability {
-        id: "plugins",
-        stability: Stability::Experimental,
-        note: "the webhook payload a plugin receives carries no version of its \
-               own, so the dispatch contract cannot change without silently \
-               breaking every endpoint already written against it",
-        nav_keys: &["plugins"],
-    },
-    SubsystemStability {
         id: "realtime",
         stability: Stability::Experimental,
         note: "guardrails, the guardrail webhook and pre_upstream plugins run \
@@ -143,6 +117,13 @@ pub const SUBSYSTEMS: &[SubsystemStability] = &[
                the PII sanitizer and pre_route / post_response plugins do \
                not; a fail_closed PII sanitizer refuses the session, a \
                fail_open one admits it unsanitized (#2489)",
+        nav_keys: &[],
+    },
+    SubsystemStability {
+        id: "semantic_onnx",
+        stability: Stability::Experimental,
+        note: "the onnx/1 manifest and runtime compatibility contract may change; \
+               source builds only, with a separately installed ONNX Runtime library",
         nav_keys: &[],
     },
     SubsystemStability {

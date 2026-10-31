@@ -123,3 +123,28 @@ export const OffTrackIsVisibleOnTheRow: Story = {
     await expect(ratio).toBeGreaterThanOrEqual(3);
   },
 };
+
+/** The row says the switch moved and the new value waits for Save (#2214). */
+export const WaitsForSave: Story = {
+  render: () => {
+    const [checked, setChecked] = React.useState(true);
+    return (
+      <div className="max-w-md">
+        <SwitchRow
+          title="Kill switch"
+          checked={checked}
+          onChange={setChecked}
+          unsaved={checked !== true}
+        />
+      </div>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.queryByText("Not saved")).toBeNull();
+    await userEvent.click(canvas.getByRole("switch", { name: "Kill switch" }));
+    await expect(canvas.getByText("Not saved")).toBeVisible();
+    await userEvent.click(canvas.getByRole("switch", { name: "Kill switch" }));
+    await expect(canvas.queryByText("Not saved")).toBeNull();
+  },
+};

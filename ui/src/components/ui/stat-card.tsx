@@ -6,7 +6,7 @@ import { cn } from "@/lib/utils";
 export type StatTrend = "up" | "down" | "flat";
 
 /** what that move means to whoever reads the tile */
-export type StatTone = "good" | "bad" | "neutral";
+export type StatTone = "good" | "warning" | "bad" | "neutral";
 
 /**
  * The grid a strip of stat cards sits in: one column on a phone, two from `sm`,
@@ -49,6 +49,8 @@ const ARROWS: Record<StatTrend, string> = {
 // the `-text` half of each status pair: the delta is a glyph, not a shape
 const TONE_CLASS: Record<StatTone, string> = {
   good: "text-[color:var(--status-success-text)]",
+  // the amber pair: degraded, still serving, as the header's gateway pill draws it
+  warning: "text-[color:var(--status-warning-text)]",
   bad: "text-[color:var(--status-danger-text)]",
   neutral: "text-muted-foreground",
 };

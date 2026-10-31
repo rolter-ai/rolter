@@ -12,7 +12,10 @@
 use std::sync::atomic::Ordering::Relaxed;
 
 use rolter_core::guardrail_webhook::{WebhookAuth, WebhookDecision};
-use rolter_core::{FailureMode, PluginInstanceConfig, PluginRequest, PluginStage, WebhookTenant};
+use rolter_core::{
+    FailureMode, PluginInstanceConfig, PluginRequest, PluginStage, WebhookTenant,
+    PLUGIN_CONTRACT_VERSION,
+};
 use serde_json::Value;
 
 use crate::egress_client::EgressClient;
@@ -150,6 +153,7 @@ async fn consult_one(
     };
 
     let envelope = PluginRequest {
+        contract_version: PLUGIN_CONTRACT_VERSION,
         plugin: &plugin.slug,
         stage,
         model,
@@ -166,7 +170,7 @@ async fn consult_one(
             metrics.plugin_errors_total.fetch_add(1, Relaxed);
             let decision = match plugin.failure_mode {
                 FailureMode::FailOpen => WebhookDecision::Allow,
-                FailureMode::FailClosed => WebhookDecision::Block {
+                FailureMode::FailClosed | FailureMode::Unknown => WebhookDecision::Block {
                     reason: Some(format!("plugin '{}' is unavailable", plugin.slug)),
                 },
             };
@@ -382,6 +386,53 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
         format!("http://{addr}/hook")
+    }
+
+    /// Every body carries the contract version, so a plugin author can tell
+    /// which shape they were sent and rolter can change it compatibly (#1405).
+    #[tokio::test]
+    async fn the_posted_body_carries_the_contract_version() {
+        use axum::routing::post;
+        use axum::{Json, Router};
+        let seen: std::sync::Arc<parking_lot::Mutex<Option<Value>>> = Default::default();
+        let sink = seen.clone();
+        let app = Router::new().route(
+            "/hook",
+            post(move |Json(body): Json<Value>| {
+                let sink = sink.clone();
+                async move {
+                    *sink.lock() = Some(body);
+                    Json(serde_json::json!({"action": "allow"}))
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let p = plugin(
+            "audit",
+            format!("http://{addr}/hook"),
+            FailureMode::FailClosed,
+        );
+        let out = dispatch(
+            &[&p],
+            PluginStage::PreRoute,
+            &Metrics::default(),
+            &crate::egress_client::testing::permissive(),
+            "gpt-4",
+            "route",
+            "trace",
+            &WebhookTenant::default(),
+            &mut Vec::new(),
+            &serde_json::json!({"messages": []}),
+        )
+        .await;
+        assert!(matches!(out, DispatchOutcome::Allow(_)));
+        let body = seen.lock().take().expect("the plugin received a body");
+        assert_eq!(body["contract_version"], PLUGIN_CONTRACT_VERSION);
+        assert_eq!(body["plugin"], "audit");
+        assert_eq!(body["stage"], "pre_route");
     }
 
     #[tokio::test]

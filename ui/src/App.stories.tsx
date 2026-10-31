@@ -375,9 +375,9 @@ export const ScopePopoverChangesTheScope: Story = {
 /**
  * The landing screen's reference render is one day of traffic, not figures
  * over empty charts. The shell's stub answered the summary and nothing else, so
- * the tiles said 132 requests beside a spend chart, a donut, bars and a request
+ * the tiles said 132 requests beside a spend chart, a by-model table and a request
  * log that said there was nothing (#1994), and the latency tile read "0 ms"
- * from a summary with no average.
+ * from a summary with no percentile.
  */
 export const TheLandingScreenHoldsOneDayOfTraffic: Story = {
   render: () => <AppShell route="/dashboard" />,
@@ -385,7 +385,8 @@ export const TheLandingScreenHoldsOneDayOfTraffic: Story = {
     const canvas = within(canvasElement);
     const figures = await canvas.findByTestId("dashboard-figures");
     await expect(await within(figures).findByText("132")).toBeVisible();
-    await expect(figures).toHaveTextContent(/215\s*ms/);
+    // the tile is the 95th percentile of the window, not its mean (#1978)
+    await expect(figures).toHaveTextContent(/980\s*ms/);
     await expect(
       await canvas.findByRole("img", {
         name: en.pages.dashboard.spendChartAria.replace("{{window}}", en.common.timeWindow.last24h),
@@ -734,7 +735,7 @@ export const ExperimentalMarker: Story = {
   play: async ({ canvasElement }) => {
     const rail = await railOf(canvasElement);
     const marked = await within(rail).findByRole("button", {
-      name: `${nav.plugins} ${en.shell.experimental}`,
+      name: `${nav["skills-repo"]} ${en.shell.experimental}`,
     });
     await expect(marked).toBeVisible();
     // the badge is the entry's own, not a row of its own
@@ -742,7 +743,7 @@ export const ExperimentalMarker: Story = {
     await expect(badge).toBeVisible();
     // its note is the catalog's copy for the subsystem id, not the English
     // prose the stub sent on the wire (#1401)
-    await expect(badge).toHaveAttribute("title", en.stability.notes.plugins);
+    await expect(badge).toHaveAttribute("title", en.stability.notes.skills_repository);
     // and the marker is the exception it claims to be: a sibling the answer
     // did not name carries nothing
     const plain = within(rail).getByRole("button", { name: nav.playground });
@@ -764,10 +765,10 @@ export const ExperimentalMarkerTranslated: Story = {
   play: async ({ canvasElement }) => {
     const rail = await railOf(canvasElement, ru.shell.navLabel);
     const marked = await within(rail).findByRole("button", {
-      name: `${ru.nav.plugins} ${ru.shell.experimental}`,
+      name: `${ru.nav["skills-repo"]} ${ru.shell.experimental}`,
     });
     const badge = within(marked).getByText(ru.shell.experimental);
-    await expect(badge).toHaveAttribute("title", ru.stability.notes.plugins);
+    await expect(badge).toHaveAttribute("title", ru.stability.notes.skills_repository);
     await expect(badge).not.toHaveAttribute("title", EXPERIMENTAL_SUBSYSTEM.note);
   },
 };
@@ -787,7 +788,7 @@ export const ExperimentalMarkerWithoutNote: Story = {
   play: async ({ canvasElement }) => {
     const rail = await railOf(canvasElement);
     const marked = await within(rail).findByRole("button", {
-      name: `${nav.plugins} ${en.shell.experimental}`,
+      name: `${nav["skills-repo"]} ${en.shell.experimental}`,
     });
     const badge = within(marked).getByText(en.shell.experimental);
     await expect(badge).toBeVisible();
@@ -809,7 +810,7 @@ export const ExperimentalMarkerOnIconRail: Story = {
     const rail = await railOf(canvasElement);
     await waitFor(() => expect(rail.getBoundingClientRect().width).toBe(52));
     const marked = await within(rail).findByRole("button", {
-      name: en.shell.experimentalItem.replace("{{label}}", nav.plugins),
+      name: en.shell.experimentalItem.replace("{{label}}", nav["skills-repo"]),
     });
     await expect(marked).toBeVisible();
     // the word itself is not painted at this width
@@ -995,7 +996,6 @@ const SPLIT_KEYS: VirtualKeyRow[] = [
   {
     id: "vk-1",
     project_id: "project-1",
-    key_hash: "hash-1",
     key_prefix: "sk-rolter-play",
     name: "Playground",
     models: ["gpt-4o"],
@@ -1012,7 +1012,6 @@ const SPLIT_KEYS: VirtualKeyRow[] = [
   {
     id: "vk-2",
     project_id: "project-1",
-    key_hash: "hash-2",
     key_prefix: "sk-rolter-ci",
     name: "ci-nightly-regression-runner-eu-west",
     models: [],

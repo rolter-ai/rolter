@@ -53,7 +53,8 @@ static_check "the step compares against the base the pr targets now" \
 
 # ── #2649: gate-ok records the base it gated ──────────────────────────────────
 # the script matches `gated against base <sha>` among gate-ok's step names, so
-# the job has to carry exactly that step, rendered from the payload's base
+# the job has to carry exactly that step, rendered from the payload's base and,
+# on a dispatch, from the pr the resolver found (#2657)
 gate_ok_steps=$(awk '
   $0 == "  gate-ok:" { in_job = 1; next }
   in_job && /^  [a-z]/ { exit }
@@ -61,9 +62,9 @@ gate_ok_steps=$(awk '
 ' "$workflow")
 # shellcheck disable=SC2016
 case $gate_ok_steps in
-  *"- name: gated against base \${{ github.event.pull_request.base.sha || 'none' }}"*) ;;
+  *"- name: gated against base \${{ github.event.pull_request.base.sha || steps.base.outputs.sha || 'none' }}"*) ;;
   *)
-    echo "FAIL [workflow wiring] gate-ok must record its base as a step named 'gated against base \${{ github.event.pull_request.base.sha || 'none' }}', got: ${gate_ok_steps:-no steps}" >&2
+    echo "FAIL [workflow wiring] gate-ok must record its base as a step named 'gated against base \${{ github.event.pull_request.base.sha || steps.base.outputs.sha || 'none' }}', got: ${gate_ok_steps:-no steps}" >&2
     failures=$((failures + 1))
     ;;
 esac
@@ -71,6 +72,27 @@ if ! grep -qF 'capture("^gated against base (?<sha>[0-9a-f]{40})$")' "$script"; 
   echo "FAIL [workflow wiring] assert-gate-ran.sh no longer reads the 'gated against base <sha>' step name gate-ok writes" >&2
   failures=$((failures + 1))
 fi
+# the resolver step feeds that name, runs on a dispatch only, and has the token
+# and permission to list pull requests
+gate_ok_job=$(awk '
+  $0 == "  gate-ok:" { in_job = 1; next }
+  in_job && /^  [a-z]/ { exit }
+  in_job { print }
+' "$workflow")
+gate_ok_check() {
+  if ! printf '%s\n' "$gate_ok_job" | grep -qF -- "$2"; then
+    echo "FAIL [workflow wiring] gate-ok: $1" >&2
+    failures=$((failures + 1))
+  fi
+}
+gate_ok_check "a step with id base resolves the dispatched run's base" "id: base"
+gate_ok_check "the resolver is the script under test" 'bash scripts/resolve-gated-base.sh'
+# shellcheck disable=SC2016
+gate_ok_check "the resolver runs on a dispatch and nothing else" \
+  "if: \${{ github.event_name == 'workflow_dispatch' }}"
+# shellcheck disable=SC2016
+gate_ok_check "the resolver is told the dispatched ref" 'REF_NAME: ${{ github.ref_name }}'
+gate_ok_check "the job may list pull requests" "pull-requests: read"
 
 # ── #2031: a retarget is not a metadata edit ──────────────────────────────────
 # github sends `edited` for a title edit, a body edit and a base-branch change.
@@ -210,7 +232,8 @@ EOF
 # base it gated, `gated against base <base>`, as on github; a null `base` is a
 # gate-ok from before that step existed, with only its old step
 # $FAKE/faults holds how many of the next calls fail with a 502, and a
-# non-empty $FAKE/respond replaces the answer to every call that gets through
+# non-empty $FAKE/respond replaces the answer to every call that gets through.
+# $FAKE/pulls is the open pull request listing scripts/resolve-gated-base.sh reads
 cat >"$bin/gh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -233,6 +256,8 @@ case $path in
     jq --argjson now "$now" '{workflow_runs: [.[] | {id,
       status: (if .done != null and $now >= .done then "completed" else "in_progress" end)}]}' \
       "$FAKE/runs" ;;
+  "repos/rolter-ai/rolter/pulls?state=open&head=rolter-ai:release-plz-2026-10-27&per_page=100")
+    cat "$FAKE/pulls" ;;
   repos/rolter-ai/rolter/actions/runs/*/jobs?per_page=100)
     id=${path#repos/rolter-ai/rolter/actions/runs/}
     id=${id%%/*}
@@ -268,6 +293,7 @@ start_case() {
   echo 0 >"$case_dir/clock"
   echo 0 >"$case_dir/faults"
   : >"$case_dir/respond"
+  echo '[]' >"$case_dir/pulls"
   : >"$case_dir/calls"
   : >"$case_dir/slept"
   jq --argjson self "$self" --arg base "$base" \
@@ -559,6 +585,97 @@ env -i PATH="$bin:$PATH" HOME="$HOME" FAKE="$case_dir" REPO=rolter-ai/rolter \
   bash --noprofile --norc "$script" >"$case_dir/out" 2>&1 || rc=$?
 check "exit code" "$rc" 1
 check "api calls" "$(cat "$case_dir/calls")" ""
+finish_case
+
+# ── #2657: a dispatch-gated release pr records the base it gated ──────────────
+# a dispatch run has no pull request in its payload, so the base comes from
+# scripts/resolve-gated-base.sh. the cases run it against a fake pull request
+# listing and feed what it prints to the fast path as the base `gate-ok` recorded
+resolver="$root/scripts/resolve-gated-base.sh"
+run_resolver() {
+  local rc=0
+  env -i \
+    PATH="$bin:$PATH" HOME="$HOME" TMPDIR="${TMPDIR:-/tmp}" FAKE="$case_dir" \
+    GH_TOKEN=fake-token REPO=rolter-ai/rolter REF_NAME=release-plz-2026-10-27 \
+    bash --noprofile --norc "$resolver" >"$case_dir/out" 2>"$case_dir/err" || rc=$?
+  echo "$rc" >"$case_dir/rc"
+}
+release_pr() {
+  # release_pr BASE_SHA: the open pr for the dispatched ref, and an unrelated one
+  jq -n --arg base "$1" '[
+    {number: 7, head: {ref: "other", repo: {owner: {login: "rolter-ai"}}}, base: {sha: "'"$old_base"'"}},
+    {number: 9, head: {ref: "release-plz-2026-10-27", repo: {owner: {login: "rolter-ai"}}}, base: {sha: $base}}
+  ]'
+}
+
+start_case "the resolver prints the base of the pr for the dispatched ref" "[]"
+release_pr "$base" >"$case_dir/pulls"
+run_resolver
+expect_rc 0
+check "recorded base" "$(cat "$case_dir/out")" "$base"
+finish_case
+
+start_case "the resolver ignores a fork's branch of the same name" "[]"
+jq -n '[{number: 3, head: {ref: "release-plz-2026-10-27", repo: {owner: {login: "stranger"}}}, base: {sha: "'"$old_base"'"}}]' \
+  >"$case_dir/pulls"
+run_resolver
+expect_rc 0
+check "recorded base" "$(cat "$case_dir/out")" none
+finish_case
+
+start_case "the resolver records none when no pr has the ref as its head" "[]"
+run_resolver
+expect_rc 0
+check "recorded base" "$(cat "$case_dir/out")" none
+finish_case
+
+start_case "the resolver retries a failing api call" "[]"
+release_pr "$base" >"$case_dir/pulls"
+echo 2 >"$case_dir/faults"
+run_resolver
+expect_rc 0
+check "recorded base" "$(cat "$case_dir/out")" "$base"
+check "calls" "$(wc -l <"$case_dir/calls" | tr -d ' ')" 3
+finish_case
+
+start_case "the resolver records none, not a failure, when the api keeps failing" "[]"
+echo 9 >"$case_dir/faults"
+run_resolver
+expect_rc 0
+check "recorded base" "$(cat "$case_dir/out")" none
+check "calls" "$(wc -l <"$case_dir/calls" | tr -d ' ')" 3
+finish_case
+
+start_case "the resolver records none over a listing that is not json" "[]"
+echo '<html>unicorn</html>' >"$case_dir/pulls"
+run_resolver
+expect_rc 0
+check "recorded base" "$(cat "$case_dir/out")" none
+finish_case
+
+# the whole chain: the release pr is gated by a dispatch, the resolver names its
+# base, and the fast path accepts that gate for an edit made against the same
+# base. before #2657 the recorded base was `none` and this was red
+start_case "an edit to a dispatch-gated release pr goes green on the gate it recorded" "[]"
+release_pr "$base" >"$case_dir/pulls"
+run_resolver
+dispatch_base=$(cat "$case_dir/out")
+jq --arg base "$dispatch_base" \
+  '. + [{id: 100, done: 0, gate_at: 0, gate: "success", base: $base}]' \
+  "$case_dir/runs" >"$case_dir/runs.new"
+mv "$case_dir/runs.new" "$case_dir/runs"
+run_script
+expect_rc 0
+expect_output "gate already passed for $sha against base $base in 1 run(s)"
+finish_case
+
+start_case "a dispatch gate that resolved no pr still does not vouch for an edit" \
+  '[{"id": 100, "done": 0, "gate_at": 0, "gate": "success", "base": null}]'
+run_resolver
+check "resolver output" "$(cat "$case_dir/out")" none
+run_script
+expect_rc 1
+expect_output "no ci run on $sha recorded a passing gate-ok job against the current base"
 finish_case
 
 if [ "$failures" -ne 0 ]; then

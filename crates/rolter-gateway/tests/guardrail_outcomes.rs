@@ -108,7 +108,7 @@ fn config(
         targets: vec![Target {
             provider: "up".into(),
             model: Some("test-model".into()),
-            weight: 1,
+            ..Default::default()
         }],
         params: Default::default(),
         param_policy: Default::default(),
@@ -118,20 +118,10 @@ fn config(
         tenancy: None,
     });
     config.db_virtual_keys.push(VirtualKeyRecord {
-        access_policy: None,
         key_hash: rolter_auth::hash_key(&config.server.resolve_key_pepper(), KEY),
         id: "key-guardrails".into(),
         org_id: "org-guardrails".into(),
-        team_id: String::new(),
-        project_id: String::new(),
-        user_id: String::new(),
-        models: vec![],
-        providers: vec![],
-        disabled: false,
-        expires_at: None,
-        cache: None,
-        business_unit_id: String::new(),
-        customer_id: String::new(),
+        ..Default::default()
     });
     config.guardrails = GuardrailsConfig {
         enabled: true,
@@ -188,6 +178,8 @@ async fn a_pre_call_block_leaves_a_row_naming_the_rule_and_never_the_text() {
     assert_eq!(status, 400);
     assert_eq!(row["status"], 400, "{row}");
     assert_eq!(row["guardrail_events"], json!(["blocked:email"]), "{row}");
+    // refused before routing, and named for why (#3307)
+    assert_eq!(row["outcome"], "refused_guardrail", "{row}");
     assert!(!row.to_string().contains("secret.example"), "{row}");
 }
 
@@ -201,6 +193,7 @@ async fn a_pre_call_redaction_is_recorded_on_the_delivered_request() {
     .await;
     assert_eq!(status, 200);
     assert_eq!(row["guardrail_events"], json!(["redacted:email"]), "{row}");
+    assert_eq!(row["outcome"], "served", "{row}");
 }
 
 #[tokio::test]
@@ -228,6 +221,22 @@ async fn a_post_call_block_names_the_rule_on_the_withheld_row() {
     assert_eq!(status, 403);
     assert_eq!(row["withheld"], 1, "{row}");
     assert_eq!(row["guardrail_events"], json!(["blocked:email"]), "{row}");
+    assert_eq!(row["outcome"], "withheld", "{row}");
+}
+
+#[tokio::test]
+async fn a_post_call_redaction_and_annotation_are_on_the_delivered_row() {
+    // the upstream answers with an address, so the output rule matches (#3330)
+    for (action, event) in [
+        (GuardAction::Redact, "redacted:email"),
+        (GuardAction::Annotate, "annotated:email"),
+    ] {
+        let (status, row) = run(GuardStage::PostCall, action, "ping").await;
+        assert_eq!(status, 200, "{action:?}");
+        assert_eq!(row["withheld"], 0, "{row}");
+        assert_eq!(row["guardrail_events"], json!([event]), "{row}");
+        assert!(!row.to_string().contains("ops@corp.com"), "{row}");
+    }
 }
 
 /// Runs one request against `config` and returns the status and the one row.
@@ -265,6 +274,36 @@ async fn a_pre_call_block_keeps_the_redactions_applied_before_it() {
         json!(["blocked:card", "redacted:email"]),
         "{row}"
     );
+}
+
+/// A response-stage block keeps the redactions of the output rules that ran
+/// before it, as the request stage does (#3403).
+#[tokio::test]
+async fn a_post_call_block_keeps_the_redactions_applied_before_it() {
+    let rows = Rows::default();
+    let clickhouse = rows.serve().await;
+    let up = upstream().await;
+    let mut config = config(up, clickhouse, GuardStage::PostCall, GuardAction::Redact);
+    // the upstream answers "write to ops@corp.com": the address is redacted
+    // first, then the verb withholds the masked answer
+    config.guardrails.rules.push(GuardrailRule {
+        name: "verb".to_string(),
+        builtin: None,
+        pattern: Some("write".to_string()),
+        stage: GuardStage::PostCall,
+        action: GuardAction::Block,
+        replacement: None,
+        include_system: false,
+    });
+    let (status, row) = run_with(config, &rows, "ping").await;
+    assert_eq!(status, 403);
+    assert_eq!(row["withheld"], 1, "{row}");
+    assert_eq!(
+        row["guardrail_events"],
+        json!(["redacted:email", "blocked:verb"]),
+        "{row}"
+    );
+    assert!(!row.to_string().contains("ops@corp.com"), "{row}");
 }
 
 async fn webhook(decision: Value) -> SocketAddr {
@@ -335,4 +374,68 @@ async fn a_provider_without_a_name_records_the_bare_action() {
         json!(["provider_blocked"]),
         "{row}"
     );
+}
+
+/// An upstream that streams `text` whatever the request asked for.
+async fn sse_upstream(text: &'static str) -> SocketAddr {
+    serve(Router::new().route(
+        "/v1/chat/completions",
+        post(move || async move {
+            let chunk = json!({
+                "id": "c", "object": "chat.completion.chunk",
+                "choices": [{"index": 0, "delta": {"content": text}}]
+            });
+            let usage = json!({
+                "id": "c", "object": "chat.completion.chunk",
+                "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 3, "completion_tokens": 4, "total_tokens": 7}
+            });
+            (
+                [(axum::http::header::CONTENT_TYPE, "text/event-stream")],
+                format!("data: {chunk}\n\ndata: {usage}\n\ndata: [DONE]\n\n"),
+            )
+        }),
+    ))
+    .await
+}
+
+/// #3471: a request that did not ask for a stream keeps the whole-body
+/// response guardrails, which cannot read an event stream. An upstream that
+/// streams anyway has its answer withheld, still billed, rather than relayed
+/// past the output rules; with no such rule the stream is served as it came.
+#[tokio::test]
+async fn an_unrequested_stream_is_withheld_under_output_rules() {
+    let rows = Rows::default();
+    let clickhouse = rows.serve().await;
+    let up = sse_upstream("write to ops@corp.com").await;
+    let guarded = config(up, clickhouse, GuardStage::PostCall, GuardAction::Redact);
+    let response = ask(&guarded, "ping").await;
+    assert_eq!(response.status(), 403);
+    let body = response.text().await.unwrap();
+    assert!(body.contains("guardrail_blocked"), "{body}");
+    assert!(
+        !body.contains("ops@corp.com"),
+        "the answer must not leak: {body}"
+    );
+    let row = rows.only_row().await;
+    assert_eq!(row["withheld"], 1, "{row}");
+    assert_eq!(
+        row["total_tokens"], 7,
+        "billed from the stream it sent: {row}"
+    );
+    assert_eq!(
+        row["guardrail_events"],
+        json!(["blocked:unrequested_stream"]),
+        "{row}"
+    );
+
+    // the same answer on a route without response rules streams through
+    let rows = Rows::default();
+    let clickhouse = rows.serve().await;
+    let up = sse_upstream("hello").await;
+    let mut open = config(up, clickhouse, GuardStage::PreCall, GuardAction::Redact);
+    open.guardrails.rules.clear();
+    let response = ask(&open, "ping").await;
+    assert_eq!(response.status(), 200);
+    assert!(response.text().await.unwrap().contains("hello"));
 }

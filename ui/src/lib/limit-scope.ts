@@ -9,6 +9,9 @@ import type { RowScope } from "@/lib/can";
 export interface CapRow {
   scope_type: string;
   scope_id: string;
+  /** a user cap's narrowing (#1830); the place it names decides who may manage it */
+  within_org_id?: string | null;
+  within_project_id?: string | null;
 }
 
 export interface CapGateContext {
@@ -37,6 +40,11 @@ export function capGateScope(row: CapRow, ctx: CapGateContext): RowScope | undef
       return projectChain(row.scope_id, ctx.byTeam);
     case "virtual_key":
       return ctx.keyProjectId ? projectChain(ctx.keyProjectId, ctx.byTeam) : undefined;
+    case "user":
+      // a user cap is managed at the place it is narrowed to; one narrowed to
+      // nowhere is a superadmin's, which the page's own answer already covers
+      if (row.within_project_id) return projectChain(row.within_project_id, ctx.byTeam);
+      return row.within_org_id ? { projectId: null } : undefined;
     default:
       return undefined;
   }

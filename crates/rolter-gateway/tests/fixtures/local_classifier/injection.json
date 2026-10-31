@@ -1,0 +1,24 @@
+{
+  "buckets": 512,
+  "categories": {
+    "prompt_injection": {
+      "bias": -4.0,
+      "weights": [
+        [145, 3.0],
+        [354, 2.5],
+        [384, 1.5],
+        [451, 1.5],
+        [500, 4.5]
+      ]
+    },
+    "toxicity": {
+      "bias": -3.0,
+      "weights": [
+        [48, 4.0],
+        [360, 4.0]
+      ]
+    }
+  },
+  "format": "rolter-linear/1",
+  "ngrams": 2
+}

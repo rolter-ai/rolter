@@ -10,6 +10,8 @@ When an upstream provider returns a transient error — a 408 timeout, a 429 rat
 
 On a transient upstream failure, Rolter re-picks a target from the route's pool, deliberately excluding any targets already tried in this request, and forwards the request again. This means retries naturally fail over to sibling targets rather than hammering the same broken one.
 
+A target can also stay out of this pool altogether and be reached only after a particular kind of failure, such as a content refusal or throttling: see [Fallback targets](/reliability/fallback-targets).
+
 **Important safety guarantee:** retries only happen before any response body bytes have been streamed to the client. Once Rolter starts forwarding a response, it never retries mid-stream, so your client never receives a duplicated or spliced response.
 
 ### Backoff

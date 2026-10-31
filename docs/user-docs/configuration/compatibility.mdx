@@ -16,6 +16,8 @@ Sent as the `anthropic-version` header on every request Rolter translates into t
 
 Anything else is rejected up front, by both the dashboard and the API. A malformed version does not fail loudly at the point you save it — it fails every Anthropic call afterwards, with an opaque error from the upstream.
 
+When no value is stored or configured, the default is the version recorded in Rolter's [specification registry](/api/specifications); a database-backed deployment that never saved this setting reads the default its migrations stored, which is the same version today. A native Anthropic request that sends its own `anthropic-version` keeps it; this value only fills the gap when there is none. Health probes and the provider connection test always send the recorded default rather than this setting: they check that the API answers and accepts the key, which no dated version changes.
+
 ---
 
 ## Default max tokens
@@ -28,7 +30,7 @@ Valid range is 1–1000000. A request that sets `max_tokens` explicitly always w
 
 ## API
 
-Both endpoints are **superadmin only**, and every update is audited.
+Reading is for a **superadmin** or a **security auditor** (a [deployment role](/security/rbac#deployment-roles)); updating is **superadmin only**. Every update is audited.
 
 ```bash
 curl -H "Authorization: Bearer $ROLTER_ADMIN_TOKEN" \

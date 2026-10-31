@@ -648,7 +648,13 @@ function RuleDialog({
   const [trialOpen, setTrialOpen] = React.useState(false);
   const streamingNote = form.stage === "post_call" ? streaming : undefined;
   return (
-    <Dialog open={open} onOpenChange={(value) => !value && onClose()}>
+    <Dialog
+      open={open}
+      onOpenChange={(value) => !value && onClose()}
+      onSubmit={() => onSave(ruleBody(form))}
+      canSubmit={valid}
+      busy={pending}
+    >
       <DialogHeader>
         <DialogTitle>
           {initial
@@ -661,6 +667,7 @@ function RuleDialog({
         <Field
           label={t("pages.guardrailRules.fieldName")}
           htmlFor="rule-name"
+          required
           hint={
             fileNames.includes(form.name.trim()) ? t("pages.guardrailRules.nameClash") : undefined
           }
@@ -672,7 +679,11 @@ function RuleDialog({
           />
         </Field>
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-          <Field label={t("pages.guardrailRules.fieldSource")} htmlFor="rule-source">
+          <Field
+            label={t("pages.guardrailRules.fieldSource")}
+            htmlFor="rule-source"
+            info={t("pages.guardrailRules.sourceInfo")}
+          >
             <Combobox
               id="rule-source"
               value={form.source_type}
@@ -740,7 +751,11 @@ function RuleDialog({
           </Field>
         )}
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-          <Field label={t("pages.guardrailRules.fieldStage")} htmlFor="rule-stage">
+          <Field
+            label={t("pages.guardrailRules.fieldStage")}
+            htmlFor="rule-stage"
+            info={t("pages.guardrailRules.stageInfo")}
+          >
             <Combobox
               id="rule-stage"
               aria-describedby={streamingNote ? noteId : undefined}
@@ -827,7 +842,12 @@ function RuleDialog({
         <Button variant="ghost" onClick={onClose}>
           {t("common.cancel")}
         </Button>
-        <Button disabled={!valid || pending} onClick={() => onSave(ruleBody(form))}>
+        <Button
+          type="submit"
+          disabled={pending}
+          aria-disabled={!valid || undefined}
+          className="aria-disabled:opacity-50"
+        >
           {pending && <Loader2 className="mr-2 h-4 w-4 motion-safe:animate-spin" aria-hidden />}
           {pending ? t("pages.guardrailRules.publishing") : t("pages.guardrailRules.publish")}
         </Button>
@@ -1007,4 +1027,8 @@ function StreamingEffect({
 // deployment-scoped settings: superadmin-only in the capability table, so a
 // lesser caller sees the refusal instead of a screen that loads and then 403s
 // (#1183)
-export default superadminOnly(GuardrailRulesScreen, "errors.resources.guardrailRules");
+export default superadminOnly(
+  GuardrailRulesScreen,
+  "errors.resources.guardrailRules",
+  "guardrail_rule:read",
+);

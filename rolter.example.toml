@@ -1,7 +1,7 @@
 # rolter bootstrap config
 #
 # copy to rolter.toml and adjust. secrets should come from environment variables
-# referenced by `api_key_env`, not be written inline.
+# referenced by `env` in `api_keys`, not be written inline.
 #
 # every table a file can set has a block below, most of them commented out with
 # their defaults. the control plane builds five tables from its database and a
@@ -9,10 +9,10 @@
 # mcp_oauth_sessions, plugins and feature_flags. see the config reference at
 # docs/user-docs/configuration/config-file.mdx
 
-# the schema version this file was written for (current: 2). optional: a file
+# the schema version this file was written for (current: 3). optional: a file
 # without the key is read as the oldest version. `rolter check --migrations`
 # reports a file that is behind, and `rolter config export` writes the stamp.
-# schema_version = 2
+# schema_version = 3
 
 [server]
 host = "0.0.0.0"
@@ -60,21 +60,26 @@ port = 4000
 name = "openai"
 kind = "openai"
 api_base = "https://api.openai.com"
-api_key_env = "OPENAI_API_KEY"
-# egress_proxy = "http://corp-proxy:3128"   # legacy one-element proxy pool
+api_keys = [{ env = "OPENAI_API_KEY" }]
 # egress_proxies = ["${PROVIDER_PROXY_EU}", "socks5h://proxy-us:1080"]
 # ca_bundles = ["/etc/rolter/ca/openai.pem"] # optional provider override
-# api_key = "..."                            # inline key; prefer api_key_env
+# api_keys = [{ key = "..." }]               # inline key; prefer env
+# deprecated singular spellings, still read; `rolter check --migrations` shows
+# the rewrite to the plural keys above
+# api_key_env = "OPENAI_API_KEY"
+# api_key = "..."
+# egress_proxy = "http://corp-proxy:3128"
 # active health checks send a real max_tokens = 1 completion to this provider
 # instead of the free liveness probe, which costs a few tokens per sweep
 # also_track_via_llm_call = true
 # llm_probe_model = "gpt-4o-mini"            # required when the flag is on
 # a statuspage.io-style status.json; polled as a secondary health signal
 # status_page_url = "https://status.openai.com/api/v2/status.json"
-# several weighted keys instead of the single pair above; rolter picks one per
+# several weighted keys instead of the single one above; rolter picks one per
 # request by weight and parks a key that gets 429/401 on a cooldown. the control
 # plane stores one credential per provider, so rolter-seed --import keeps only
-# the first entry that names an `env`.
+# the first entry that names an `env`. a weight of 0 takes no first attempts
+# while another key has a positive weight
 # [[providers.api_keys]]
 # env = "OPENAI_API_KEY_PRIMARY"
 # weight = 3
@@ -83,13 +88,13 @@ api_key_env = "OPENAI_API_KEY"
 name = "anthropic"
 kind = "anthropic"
 api_base = "https://api.anthropic.com"
-api_key_env = "ANTHROPIC_API_KEY"
+api_keys = [{ env = "ANTHROPIC_API_KEY" }]
 
 [[providers]]
 name = "openrouter"
 kind = "openrouter"
 api_base = "https://openrouter.ai/api/v1"
-api_key_env = "OPENROUTER_API_KEY"
+api_keys = [{ env = "OPENROUTER_API_KEY" }]
 # A hosted kind is pinned to its vendor's host, so a config edit cannot redirect
 # the key somewhere else. Set `allow_custom_api_base = true` when the endpoint
 # genuinely is elsewhere — an egress proxy in front of the vendor, a compatible
@@ -113,28 +118,28 @@ api_key_env = "OPENROUTER_API_KEY"
 # name = "azure"
 # kind = "azure_openai"
 # api_base = "https://RESOURCE.openai.azure.com/openai/v1"
-# api_key_env = "AZURE_OPENAI_API_KEY"
+# api_keys = [{ env = "AZURE_OPENAI_API_KEY" }]
 #
 # [[providers]]
 # name = "bedrock"
 # kind = "bedrock"
-# api_base = "https://bedrock-runtime.us-east-1.amazonaws.com/v1"
-# api_key_env = "AWS_BEARER_TOKEN_BEDROCK"
+# api_base = "https://bedrock-runtime.us-east-1.amazonaws.com/openai/v1"
+# api_keys = [{ env = "AWS_BEARER_TOKEN_BEDROCK" }]
 #
 # [[providers]]
 # name = "vertex"
 # kind = "vertex"
 # api_base = "https://aiplatform.googleapis.com/v1/projects/PROJECT/locations/global/endpoints/openapi"
-# api_key_env = "VERTEX_ACCESS_TOKEN"
+# api_keys = [{ env = "VERTEX_ACCESS_TOKEN" }]
 
-# Hosted OpenAI-compatible clouds (bearer key from api_key_env; inline keys
+# Hosted OpenAI-compatible clouds (bearer key from `api_keys`; inline keys
 # rejected). rolter strips the leading /v1 from the gateway path and appends it
 # to the version already in api_base.
 # [[providers]]
 # name = "gemini"
 # kind = "gemini"
 # api_base = "https://generativelanguage.googleapis.com/v1beta/openai"
-# api_key_env = "GEMINI_API_KEY"
+# api_keys = [{ env = "GEMINI_API_KEY" }]
 #
 # gemini_native talks Gemini's native generateContent wire format: rolter
 # translates OpenAI/Anthropic requests to `:generateContent` (SSE:
@@ -144,7 +149,7 @@ api_key_env = "OPENROUTER_API_KEY"
 # name = "gemini-native"
 # kind = "gemini_native"
 # api_base = "https://generativelanguage.googleapis.com/v1beta"
-# api_key_env = "GEMINI_API_KEY"
+# api_keys = [{ env = "GEMINI_API_KEY" }]
 #
 # gemini_interactions talks Gemini's stateful Interactions API: rolter maps
 # OpenAI/Anthropic/Responses requests onto `{api_base}/interactions` and back.
@@ -154,7 +159,7 @@ api_key_env = "OPENROUTER_API_KEY"
 # name = "gemini-interactions"
 # kind = "gemini_interactions"
 # api_base = "https://generativelanguage.googleapis.com/v1beta"
-# api_key_env = "GEMINI_API_KEY"
+# api_keys = [{ env = "GEMINI_API_KEY" }]
 #
 # system_one fronts a decision model: typed answers to choice, score and yes/no
 # questions on POST /v1/systemone instead of generated text. One kind covers
@@ -165,37 +170,56 @@ api_key_env = "OPENROUTER_API_KEY"
 # name = "typesafe"
 # kind = "system_one"
 # api_base = "https://api.typesafe.ai"
-# api_key_env = "TYPESAFE_API_KEY"
+# api_keys = [{ env = "TYPESAFE_API_KEY" }]
 #
 # [[providers]]
 # name = "vllm-sr"
 # kind = "system_one"
 # api_base = "http://vllm-sr:8899"
 #
+# infinity fronts a self-hosted michaelfeil/infinity server: /v1/embeddings
+# and /v1/rerank for every model the one process was started with, picked per
+# route by the target's model. api_base is the server root plus any
+# --url-prefix it was started with (empty by default, so no /v1); the key is
+# optional and travels as a bearer token when the server sets --api-key.
+# [[providers]]
+# name = "infinity"
+# kind = "infinity"
+# api_base = "http://infinity:7997"
+# # api_keys = [{ env = "INFINITY_API_KEY" }]
+#
 # [[providers]]
 # name = "mistral"
 # kind = "mistral"
 # api_base = "https://api.mistral.ai/v1"
-# api_key_env = "MISTRAL_API_KEY"
+# api_keys = [{ env = "MISTRAL_API_KEY" }]
 #
 # [[providers]]
 # name = "groq"
 # kind = "groq"
 # api_base = "https://api.groq.com/openai/v1"
-# api_key_env = "GROQ_API_KEY"
+# api_keys = [{ env = "GROQ_API_KEY" }]
 #
 # [[providers]]
 # name = "xai"
 # kind = "xai"
 # api_base = "https://api.x.ai/v1"
-# api_key_env = "XAI_API_KEY"
+# api_keys = [{ env = "XAI_API_KEY" }]
+#
+# GigaChat's documented base since 17 July 2026; the key is the 30-minute
+# access token its OAuth endpoint issues, which rolter does not mint
+# [[providers]]
+# name = "gigachat"
+# kind = "gigachat"
+# api_base = "https://api.giga.chat/v1"
+# api_keys = [{ env = "GIGACHAT_ACCESS_TOKEN" }]
 
 # direct Cloud access requires an environment-sourced bearer key
 [[providers]]
 name = "ollama-cloud"
 kind = "ollama_cloud"
 api_base = "https://ollama.com"
-api_key_env = "OLLAMA_API_KEY"
+api_keys = [{ env = "OLLAMA_API_KEY" }]
 
 [[providers]]
 name = "vllm-1"
@@ -256,6 +280,14 @@ strategy = "round_robin"
 [[routes.targets]]
 provider = "anthropic"
 model = "claude-sonnet-4-20250514"
+# a fallback target that takes no ordinary traffic: it is never dialled first,
+# and is tried only after another target failed with one of these classes
+# (throttled, timeout, transport, server_error, refusal, refusal:<category>).
+# a route needs at least one target without takes_over
+# [[routes.targets]]
+# provider = "openai"
+# model = "gpt-4o"
+# takes_over = ["refusal", "throttled"]
 
 # a self-hosted pool of vllm instances balanced with cache-aware routing
 [[routes]]
@@ -324,8 +356,9 @@ weight = 1
 # sheet. the gateway applies `limits.timeout_secs`, `limits.retries`,
 # `limits.output_tokens`, `limits.rpm`, `limits.tpm`, `limits.concurrency`, `headers` / `locked_headers`, `visibility` and the
 # `guardrails` selection (see the guardrails block below). `model_type`,
-# `capabilities` and `description` are labels the dashboard reads; the gateway
-# does not enforce them. `base_url`, `insecure_tls`, `[routes.advanced.pricing]`
+# `capabilities` and `context_length` are labels the dashboard reads and
+# `GET /v1/models` serves; `description` is dashboard-only. the gateway does
+# not enforce any of them. `base_url`, `insecure_tls`, `[routes.advanced.pricing]`
 # and the `context_window` limit never took effect and were removed (#2924): a file that still sets one loads, the key
 # ignored and reported as unknown. a second endpoint is a second provider, and a
 # private CA is [tls] ca_bundles.
@@ -334,6 +367,7 @@ weight = 1
 # [routes.advanced]
 # model_type = "chat"             # dashboard label, e.g. chat or embedding
 # capabilities = ["vision"]       # dashboard label, not enforced
+# context_length = 128000         # context window in tokens, served on /v1/models, not enforced
 # description = "gpt-4o for the platform team"
 # headers = { "x-team" = "platform" }         # sent upstream; credentials belong on the provider
 # locked_headers = ["x-team"]                 # a caller's x-team (if forwarded) may not replace it
@@ -463,6 +497,56 @@ disabled = false # revoke without deleting
 # base = "USD"
 # rates = { EUR = 1.09, GBP = 1.27, RUB = 0.011 }
 
+# --- mcp manifest enforcement (imported by rolter-seed, written by config export) ---
+# whether an organization that never saved mcp settings enforces its servers'
+# tool manifests. `org` is the slug. an import never makes an existing
+# organization stricter: `enforce = false` relaxes the organization the import
+# targets (other entries are skipped), and `enforce = true` changes nothing on
+# an organization that exists.
+# [[mcp_manifest_enforcement]]
+# org = "acme"
+# enforce = true
+
+# --- saved mcp gateway settings (imported by rolter-seed, written by config export) ---
+# the mcp settings an organization saved on the MCP Settings screen. `org` is
+# the slug. unlike the manifest marker above this is the desired state: an
+# import sets the organization it targets (`--org-slug`) to exactly these values,
+# stricter or laxer than it was, and skips entries for any other organization.
+# `allow_unlisted_tools = false` is the organization enforcing its servers'
+# tool manifests. the control plane never ships this table in the snapshot.
+# [[mcp_gateway_settings]]
+# org = "acme"
+# default_transport = "streamable_http"   # sse | streamable_http | websocket
+# connect_timeout_ms = 5000               # 100 to 60000
+# request_timeout_ms = 30000              # 1000 to 300000
+# max_retries = 1                         # 0 to 5
+# deprecated and ignored (#3527): a body the proxy cannot check is always
+# refused. still accepted and exported, so existing files keep loading
+# default_failure_mode = "fail_closed"    # fail_open | fail_closed
+# allow_unlisted_tools = false
+
+# --- mcp tool groups (imported by rolter-seed, written by config export) ---
+# an organization's mcp tool groups: the tools each allows and whom it is
+# assigned to, every one named the way the file names it, never by an id or a
+# secret. `org` is the slug; a server is named by its slug in that
+# organization, a team as `org/team`, a project as `org/team/project`, and a
+# key by its project and its `name`, or the `prefix` the dashboard shows when
+# it has none. an import is the desired state for the groups it names, in the
+# organization it targets (`--org-slug`) only. an assignment whose team,
+# project or key does not exist is skipped with a warning (keys are never
+# exported), and the group is still created. the control plane never ships
+# this table in the snapshot.
+# [[mcp_gateway_tool_groups]]
+# org = "acme"
+# slug = "read-only"
+# name = "Read only"
+# description = "no writes"
+# enabled = true
+# tools = [{ server = "github", tool = "search_code" }]
+# teams = ["acme/platform"]
+# projects = ["acme/platform/gateway"]
+# keys = [{ project = "acme/platform/gateway", name = "ci" }]
+
 # --- spend caps (enforced against redis-tracked cost) ---
 # a request is blocked with 402 when any matching budget's spend has reached its
 # limit (most-restrictive-wins across the scope chain). requires --redis-url;
@@ -479,6 +563,9 @@ disabled = false # revoke without deleting
 # across the scope chain and against the deployment setting, so a budget can
 # tighten what the deployment asked for but never loosen it:
 # unpriced_policy = "block"   # ignore | warn | block
+# a `user` budget counts every key that person minted (id is the user's uuid);
+# narrow it to one org or project with `within`:
+# within = { org = "org-uuid" }   # or { project = "project-uuid" }
 
 # what to do about traffic the gateway cannot price. a model with no
 # [[model_prices]] row accrues zero spend, so it can never exceed a budget no
@@ -503,6 +590,8 @@ disabled = false # revoke without deleting
 # id = "vk-uuid"
 # rpm = 600            # requests per minute; omit to leave requests uncapped
 # tpm = 150000         # tokens per minute; omit to leave tokens uncapped
+# a `user` limit counts every key that person minted; narrow it with `within`:
+# within = { org = "org-uuid" }   # or { project = "project-uuid" }
 
 # --- upstream retry policy ---
 # on a transient upstream failure (http 408/429/5xx or a connection error) the
@@ -614,6 +703,8 @@ disabled = false # revoke without deleting
 # recovery_success_threshold = 2      # probe successes before it recovers
 # status_page_interval_secs = 60      # status-page polls; only providers with a
 #                                     # status_page_url, even with enabled = false
+# catalogue_interval_secs = 900       # model-catalogue refresh behind /v1/models,
+#                                     # even with enabled = false; 0 turns it off
 
 # --- per-target circuit breaker ---
 # complements the short per-failure cooldown with a longer-lived state machine.
@@ -748,6 +839,10 @@ disabled = false # revoke without deleting
 # redact_fields = ["api_key", "authorization", "password", "secret", "token"]
 # models = ["support-agent"]                 # empty means every route
 # virtual_key_ids = ["key-uuid"]             # empty means every virtual key
+# redact_detectors = ["aws_key", "jwt", "openai_key"]   # default: every built-in value detector
+# [[logging.payload_capture.redact_patterns]]           # your own value patterns
+# name = "employee_id"                                  # marker: [redacted:employee_id]
+# pattern = 'EMP-\d{6}'
 
 # Model presets can be declared in two tiers when the control plane uses Postgres.
 # [[models.readonly]] stays config-owned and cannot be edited in the dashboard.
@@ -829,13 +924,69 @@ disabled = false # revoke without deleting
 # enabled = true
 # name = "llm-guard"              # recorded with its outcomes in LLM Logs
 # url = "https://guard.internal/check"
-# stage = "pre_call"              # post_call is validated but not yet enforced
+# stage = "pre_call"              # pre_call judges the request, post_call the response
 # timeout_ms = 2000
 # max_retries = 0                 # extra attempts on a transient failure
 # failure_mode = "fail_open"      # fail_open | fail_closed
 # max_body_bytes = 65536          # oversized content is sent as a truncated preview
+# max_scored_bytes = 524288       # kind = "local" only: scored in overlapping
+#                                 # max_body_bytes windows up to this; unset =
+#                                 # 8 x max_body_bytes (#3513)
+# on_truncated = "score"          # kind = "local" only: score | fail_closed for
+#                                 # text longer than max_scored_bytes
 # auth = { bearer = { token_env = "GUARD_TOKEN" } }
 #                                 # or: { shared_secret = { secret_env = "GUARD_SECRET" } }
+
+# Semantic guard policies (#459): several guardrail providers side by side,
+# and policies scoped to the deployment, an org, a project, a route or a
+# virtual key that pick which of them judge a request. exactly one policy
+# applies: the most specific enabled match (key > route > project > org >
+# deployment), replacing the broader ones. a provider no policy lists runs on
+# every request no policy matches. `[guardrail_webhook]` above joins the
+# providers under its name. the dashboard's Guardrails -> Policies adds to
+# these
+# [semantic_guards]
+# local_concurrency = 4           # local classifier calls one gateway runs at
+#                                 # once; unset = half its CPUs (#3329)
+# model_root = "/etc/rolter/models"  # local models must resolve under it,
+#                                 # symlinks included; this gateway's own
+#                                 # setting, never from a snapshot (#3454);
+#                                 # --semantic-model-root, then
+#                                 # ROLTER_SEMANTIC_MODEL_ROOT, override it
+# [[semantic_guards.providers]]   # the same keys as [guardrail_webhook]
+# name = "toxicity"               # required, unique; policies list it by name
+# enabled = true
+# url = "https://guard.internal/toxicity"
+# stage = "post_call"
+# timeout_ms = 2000
+# max_retries = 0
+# failure_mode = "fail_open"      # also applies to an answer that is not a decision
+# max_body_bytes = 65536
+# max_scored_bytes = 524288       # local only; unset = 8 x max_body_bytes
+# on_truncated = "score"          # local only: score | fail_closed
+# auth = { bearer = { token_env = "GUARD_TOKEN" } }
+# [[semantic_guards.policies]]
+# name = "support-bot"
+# enabled = true
+# scope = "project"               # deployment | org | project | route | key
+# scope_id = "<project id>"       # none for deployment; a route's model name for route
+# providers = ["toxicity"]        # consulted in this order at each stage
+# thresholds = { violence = 0.8, "*" = 0.95 }  # score >= threshold violates
+# on_violation = "block"          # block | annotate (record only)
+# streaming = "reject"            # reject | buffer: never streams unchecked
+#                                 # when the policy has a post_call provider
+# a provider can instead be a small classifier the gateway runs in process
+# (#3329): no url and no auth, a rolter-linear/1 weights file on the gateway's
+# file system and its pinned sha256. nothing is ever downloaded
+# [[semantic_guards.providers]]
+# name = "injection"
+# enabled = true
+# kind = "local"                  # webhook (default) | local
+# model_path = "/etc/rolter/models/injection.json"
+# model_sha256 = "<sha256sum of the file>"   # required; a mismatch is not loaded
+# stage = "pre_call"
+# timeout_ms = 50                 # bounds the wait for a slot plus inference
+# failure_mode = "fail_closed"    # also covers a model that did not load
 
 # External PII sanitizer: hand request (and optionally response) content to a
 # self-hosted de-identification service — Presidio, or anything speaking the same
@@ -857,13 +1008,18 @@ disabled = false # revoke without deleting
 #                                 # the caller and nothing is ever reversed.
 #                                 # `caller_authorized` reverses only when the
 #                                 # request carries `x-rolter-pii-restore: true`
-# streaming = "reject"            # reject | passthrough. restoring or sanitizing a
-#                                 # response needs the whole body, so it cannot run
-#                                 # on an SSE stream; `reject` refuses a streamed
-#                                 # request while the response leg is active,
-#                                 # `passthrough` serves the stream with that leg
-#                                 # not applied. only matters when the response leg
-#                                 # is active — a request-only setup always streams
+# streaming = "reject"            # reject | passthrough | restore. what a streamed
+#                                 # request gets while the response leg is active:
+#                                 # `reject` refuses it, `passthrough` serves the
+#                                 # stream with that leg not applied, `restore`
+#                                 # restores it through restore_stream_url
+#                                 # (restoration only: a response-direction
+#                                 # sanitize is still refused). only matters when
+#                                 # the response leg is active — a request-only
+#                                 # setup always streams
+# restore_stream_url = "https://presidio.internal/restore-stream"
+#                                 # required when streaming = "restore": one
+#                                 # full-duplex NDJSON exchange per stream
 # timeout_ms = 5000
 # max_retries = 0                 # extra attempts on a transient failure
 # failure_mode = "fail_open"      # fail_open forwards the *unsanitized* body when

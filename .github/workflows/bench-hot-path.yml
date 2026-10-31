@@ -1,0 +1,65 @@
+name: bench-hot-path
+
+# a regression signal for the data plane's hot path, not a gate (#1054). it runs
+# the criterion benches in crates/rolter-gateway/benches/hot_path.rs on a base
+# ref and on the ref it is dispatched from, and prints criterion's change report
+# plus the allocs/op table. only on demand: shared runners are too noisy to gate
+# a merge on a duration, so nothing here is required and nothing schedules it.
+# read the allocs/op numbers before the timings, since a count is exact where a
+# duration is not. the fixed-hardware baseline is #894.
+#
+# takes no secrets and needs read access only.
+on:
+  workflow_dispatch:
+    inputs:
+      base:
+        description: "ref to compare against (a branch, tag or sha that has the hot_path bench)"
+        required: false
+        default: master
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  bench:
+    name: hot-path benches
+    runs-on: ubuntu-26.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: false
+      - name: bench the base ref
+        env:
+          BASE: ${{ inputs.base }}
+        run: |
+          set -euo pipefail
+          head="$(git rev-parse HEAD)"
+          echo "HEAD_SHA=$head" >> "$GITHUB_ENV"
+          git checkout --quiet "$(git rev-parse "origin/$BASE" 2>/dev/null || git rev-parse "$BASE")"
+          cargo bench -p rolter-gateway --bench hot_path -- --save-baseline base
+      - name: bench this ref against it
+        run: |
+          set -euo pipefail
+          git checkout --quiet "$HEAD_SHA"
+          cargo bench -p rolter-gateway --bench hot_path -- --baseline base 2>&1 | tee bench.txt
+      - name: summary
+        run: |
+          {
+            echo '### hot-path benches against the base ref'
+            echo
+            echo 'Informational only. Shared-runner timings swing by tens of percent; the allocs/op table is exact.'
+            echo
+            echo '```'
+            sed -n '/^allocs\/op/,/^$/p' bench.txt
+            grep -E 'change:|Performance has (regressed|improved)' -B3 bench.txt | head -200 || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

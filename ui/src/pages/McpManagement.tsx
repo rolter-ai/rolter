@@ -8,6 +8,7 @@ import {
   Plus,
   Puzzle,
   Radar,
+  ScrollText,
   Server,
   Settings2,
   Wrench,
@@ -21,14 +22,16 @@ import { EditorSheet } from "@/components/EditorSheet";
 import { GatedButton } from "@/components/GatedButton";
 import { GatedSwitch } from "@/components/GatedSwitch";
 import { LoadError } from "@/components/LoadError";
+import { ConnectionHealth, ConnectionTestResult, ToolsSheet } from "@/components/McpServerProbe";
 import { CardGridSkeleton } from "@/components/LoadingState";
 import { PageBody } from "@/components/screen";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { ChipGroup } from "@/components/ui/chip-group";
 import { Combobox } from "@/components/ui/combobox";
 import {
   Dialog as BaseDialog,
+  type DialogProps,
   DialogBody,
   DialogDescription,
   DialogFooter,
@@ -37,38 +40,50 @@ import {
 } from "@/components/ui/dialog";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Field } from "@/components/ui/field";
+import { FieldLabel } from "@/components/ui/field-label";
 import { FormSection } from "@/components/ui/form-section";
 import { Input } from "@/components/ui/input";
 import { SettingsPanel } from "@/components/ui/settings-panel";
 import { SwitchRow } from "@/components/ui/switch-row";
 import { Textarea } from "@/components/ui/textarea";
 import {
+  ApiError,
   createMcpServer,
   createMcpToolGroup,
   deleteMcpServer,
   deleteMcpToolGroup,
+  discoverMcpServerTools,
   fetchMcpGrants,
   fetchMcpLibrary,
   fetchMcpOAuthClient,
   fetchMcpServers,
   fetchMcpSessions,
   fetchMcpSettings,
+  fetchMcpToolGroupAssignments,
   fetchMcpToolGroups,
+  fetchOrgProjects,
+  fetchOrgVirtualKeys,
+  fetchTeams,
+  replaceMcpToolGroupAssignments,
   MCP_AUTH_KINDS,
   MCP_OAUTH_DISCOVERY_MODES,
   setMcpOAuthClient,
   setMcpServerAuth,
+  testMcpServerConnection,
   updateMcpServer,
   updateMcpSettings,
   updateMcpToolGroup,
   type McpGatewaySettingsRow,
   type McpAuthKind,
+  type McpConnectionTest,
   type McpLibraryItem,
   type McpOAuthClientInput,
   type McpOAuthDiscovery,
   type McpServerAuthInput,
   type McpServerInput,
   type McpServerRow,
+  type McpAssignmentSubject,
+  type McpToolGroupAssignmentRow,
   type McpToolGroupRow,
   type McpToolRef,
   type McpTransportOverridesPatch,
@@ -76,6 +91,8 @@ import {
 import { errorText } from "@/lib/error-copy";
 import { useOptionalAuth } from "@/lib/auth";
 import { useCan } from "@/lib/can";
+import { ServerStepUp } from "@/components/McpStepUp";
+import { discoveryReasonKey, discoveryRefetchInterval, discoveryView } from "@/lib/mcp-discovery";
 import { useFormat } from "@/lib/i18n/format";
 import {
   serverConnections,
@@ -132,13 +149,14 @@ const lines = (value: string) => [
 function Dialog({
   onClose,
   children,
+  ...form
 }: {
   open?: boolean;
   onClose: () => void;
   children: React.ReactNode;
-}) {
+} & Pick<DialogProps, "onSubmit" | "canSubmit" | "busy">) {
   return (
-    <BaseDialog open onOpenChange={(open) => !open && onClose()}>
+    <BaseDialog open onOpenChange={(open) => !open && onClose()} {...form}>
       {children}
     </BaseDialog>
   );
@@ -155,7 +173,7 @@ function PageLead({ children, action }: { children: React.ReactNode; action?: Re
   );
 }
 
-function ToolBadges({ tools }: { tools: string[] }) {
+function ToolBadges({ tools, stale = [] }: { tools: string[]; stale?: string[] }) {
   const { t } = useTranslation();
   if (!tools.length)
     return (
@@ -163,14 +181,69 @@ function ToolBadges({ tools }: { tools: string[] }) {
         {t("pages.mcpCatalog.noTools")}
       </span>
     );
+  // the last discovery no longer returned these, but they are kept so a tool
+  // group naming one keeps working. the warning tone is the only visual cue,
+  // so the explanation is also text a screen reader gets
+  const gone = new Set(stale);
   return (
     <div className="flex flex-wrap gap-1.5">
-      {tools.map((tool) => (
-        <Badge key={tool} tone="outline">
-          {tool}
-        </Badge>
-      ))}
+      {tools.map((tool) =>
+        gone.has(tool) ? (
+          <Badge key={tool} tone="warning" title={t("pages.mcpCatalog.discovery.staleTitle")}>
+            {tool}
+            <span className="sr-only"> {t("pages.mcpCatalog.discovery.staleTitle")}</span>
+          </Badge>
+        ) : (
+          <Badge key={tool} tone="outline">
+            {tool}
+          </Badge>
+        ),
+      )}
     </div>
+  );
+}
+
+// what tools/list discovery has said about one server. the three states a
+// manifest can be in read differently on purpose: "declares no tools" is an
+// answer, "not discovered yet" is the absence of one
+function DiscoveryLine({ server }: { server: McpServerRow }) {
+  const { t } = useTranslation();
+  const fmt = useFormat();
+  const view = discoveryView(server);
+  const reasonKey = discoveryReasonKey(server.tools_discovery_error);
+  const reason = reasonKey ? t(reasonKey) : null;
+  const last = server.tools_discovered_at
+    ? t("pages.mcpCatalog.discovery.lastSuccess", {
+        when: fmt.dateTime(server.tools_discovered_at),
+      })
+    : null;
+  const text =
+    view === "failed"
+      ? t("pages.mcpCatalog.discovery.failed", {
+          reason: reason ?? t("pages.mcpCatalog.discovery.reasons.unknown"),
+        })
+      : view === "pending"
+        ? server.tools_discovery_attempted_at === null
+          ? t("pages.mcpCatalog.discovery.running")
+          : reason
+            ? t("pages.mcpCatalog.discovery.pendingWhy", { reason })
+            : t("pages.mcpCatalog.discovery.pending")
+        : view === "declaresNone"
+          ? t("pages.mcpCatalog.discovery.declaresNone", {
+              when: fmt.dateTime(server.tools_discovered_at ?? ""),
+            })
+          : t("pages.mcpCatalog.discovery.discovered", {
+              when: fmt.dateTime(server.tools_discovered_at ?? ""),
+            });
+  const warn = view === "failed";
+  return (
+    <p
+      id={`mcp-discovery-${server.id}`}
+      className={`mt-2 text-xs ${warn ? "text-[color:var(--status-warning-text)]" : "text-muted-foreground"}`}
+    >
+      {text}
+      {warn && last ? ` ${last}` : null}
+    </p>
   );
 }
 
@@ -197,7 +270,7 @@ function DiscoveryPicker({
           return (
             <label
               key={mode}
-              className={`flex cursor-pointer items-start gap-2.5 rounded-[10px] border p-3 transition-colors focus-within:ring-1 focus-within:ring-ring ${selected ? "border-[color:var(--red-500)] bg-[color:var(--red-tint)]" : "border-[color:var(--border-default)] hover:bg-card/60"}`}
+              className={`flex cursor-pointer items-start gap-2.5 rounded-lg border p-3 transition-colors focus-within:ring-1 focus-within:ring-ring ${selected ? "border-[color:var(--red-500)] bg-[color:var(--red-tint)]" : "border-[color:var(--border-default)] hover:bg-card/60"}`}
             >
               <input
                 type="radio"
@@ -245,7 +318,7 @@ function DiscoveredEndpoints({ server, resets }: { server: McpServerRow | null; 
     <div
       role="group"
       aria-labelledby="mcp-oauth-discovered-title"
-      className="rounded-[10px] border border-dashed border-[color:var(--border-default)] bg-card p-3"
+      className="rounded-lg border border-dashed border-[color:var(--border-default)] bg-card p-3"
     >
       <div className="flex flex-wrap items-center gap-2">
         <Radar className="h-4 w-4 text-[color:var(--red-folk-text)]" aria-hidden />
@@ -330,7 +403,7 @@ function OAuthClientSection({
   const manual = draft.discovery === "manual";
   const problem = oauthTouched(draft, server) ? oauthProblem(draft) : null;
   return (
-    <section className="rounded-[10px] border border-[color:var(--border-subtle)] bg-[color:var(--surface-subtle)] p-4">
+    <section className="rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-subtle)] p-4">
       <div className="flex flex-wrap items-center gap-2">
         <KeyRound className="h-4 w-4 text-[color:var(--red-folk)]" aria-hidden />
         <h3 className="text-sm font-semibold">{t("pages.mcpCatalog.oauth.title")}</h3>
@@ -577,6 +650,9 @@ export function McpCatalog() {
     queryFn: () => fetchMcpServers(orgId as string),
     enabled: !!orgId,
     retry: false,
+    // the control plane discovers in the background after an install; keep
+    // reading until every row has an attempt so the result shows without a reload
+    refetchInterval: (q) => discoveryRefetchInterval(q.state.data),
   });
 
   // UX stream (#805); screen key comes from the enclosing UxScreenProvider
@@ -695,6 +771,37 @@ export function McpCatalog() {
         detail: errorText(error, t),
       }),
   });
+  // an error code from the server still answers 200 with the row carrying it,
+  // so only a failed request lands in onError; the card shows the new state
+  const discover = useMutation({
+    mutationFn: (server: McpServerRow) => discoverMcpServerTools(server.id),
+    onSettled: () => void client.invalidateQueries({ queryKey: ["mcp-servers", orgId] }),
+    onError: (error, server) =>
+      toast.push({
+        tone: "error",
+        title: t("pages.mcpCatalog.discovery.failedToast", { name: server.name }),
+        detail: errorText(error, t),
+      }),
+  });
+  // a connection test answers 200 whatever it found, so only a failed request
+  // lands in onError; the result is kept per card until the next test replaces it
+  const [tested, setTested] = React.useState<Record<string, McpConnectionTest>>({});
+  const testConnection = useMutation({
+    mutationFn: (server: McpServerRow) => testMcpServerConnection(server.id),
+    onSuccess: (result, server) => setTested((prev) => ({ ...prev, [server.id]: result })),
+    onSettled: () => void client.invalidateQueries({ queryKey: ["mcp-servers", orgId] }),
+    onError: (error, server) =>
+      toast.push({
+        tone: "error",
+        title: t("pages.mcpCatalog.test.failedToast", { name: server.name }),
+        detail: errorText(error, t),
+      }),
+  });
+  const testing = testConnection.isPending ? testConnection.variables?.id : undefined;
+  // the tools panel follows the list, so a discovery that lands behind it shows
+  const [toolsFor, setToolsFor] = React.useState<string | null>(null);
+  const toolsServer = query.data?.find((server) => server.id === toolsFor);
+  const discovering = discover.isPending ? discover.variables?.id : undefined;
   // only the card whose request is in flight locks; the others stay live
   const toggling = toggle.isPending ? toggle.variables?.id : undefined;
   if (!orgId)
@@ -766,7 +873,7 @@ export function McpCatalog() {
           {query.data.map((server) => (
             <article
               key={server.id}
-              className={`min-w-0 rounded-[10px] border border-[color:var(--border-default)] p-4 ${server.enabled ? "bg-card" : "bg-[color:var(--surface-subtle)]/60"}`}
+              className={`min-w-0 rounded-lg border border-[color:var(--border-default)] p-4 ${server.enabled ? "bg-card" : "bg-[color:var(--surface-subtle)]/60"}`}
             >
               <div className="flex items-start gap-3">
                 <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-[color:var(--border-default)] bg-[color:var(--surface-subtle)]">
@@ -796,14 +903,34 @@ export function McpCatalog() {
                 {server.description || t("pages.mcpCatalog.noDescription")}
               </p>
               <div className="mt-3">
-                <ToolBadges tools={server.tools} />
+                <ToolBadges tools={server.tools} stale={server.tools_stale} />
+                {server.tools_stale.length > 0 && (
+                  <p className="mt-2 text-xs text-[color:var(--status-warning-text)]">
+                    {t("pages.mcpCatalog.discovery.staleHint", {
+                      count: server.tools_stale.length,
+                    })}
+                  </p>
+                )}
+                <DiscoveryLine server={server} />
               </div>
+              <ConnectionHealth server={server} />
+              {tested[server.id] && (
+                <ConnectionTestResult server={server} result={tested[server.id]} />
+              )}
               {server.auth_kind === "oauth" && (
                 <ConnectionLine
                   id={`mcp-connection-${server.id}`}
                   server={server}
                   connection={connections.get(server.id)}
                   known={connectionKnown}
+                />
+              )}
+              {server.auth_kind === "oauth" && (
+                <ServerStepUp
+                  server={server}
+                  grants={grants.data}
+                  sessions={sessions.data}
+                  userId={auth?.user?.id}
                 />
               )}
               <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-[color:var(--border-subtle)] pt-3">
@@ -817,6 +944,53 @@ export function McpCatalog() {
                       describedBy={`mcp-connection-${server.id}`}
                     />
                   )}
+                  <GatedButton
+                    gate="mcp_server:update"
+                    control="mcp-server-discover"
+                    variant="outline"
+                    disabled={discovering === server.id}
+                    aria-describedby={`mcp-discovery-${server.id}`}
+                    aria-label={t("pages.mcpCatalog.discovery.discoverAria", { name: server.name })}
+                    onClick={() => discover.mutate(server)}
+                  >
+                    {discovering === server.id && (
+                      <Loader2 className="mr-2 h-4 w-4 motion-safe:animate-spin" aria-hidden />
+                    )}
+                    {discovering === server.id
+                      ? t("pages.mcpCatalog.discovery.discovering")
+                      : t("pages.mcpCatalog.discovery.discover")}
+                  </GatedButton>
+                  <GatedButton
+                    gate="mcp_server:update"
+                    control="mcp-server-test"
+                    variant="outline"
+                    disabled={testing === server.id}
+                    aria-label={t("pages.mcpCatalog.test.aria", { name: server.name })}
+                    onClick={() => testConnection.mutate(server)}
+                  >
+                    {testing === server.id && (
+                      <Loader2 className="mr-2 h-4 w-4 motion-safe:animate-spin" aria-hidden />
+                    )}
+                    {testing === server.id
+                      ? t("pages.mcpCatalog.test.running")
+                      : t("pages.mcpCatalog.test.action")}
+                  </GatedButton>
+                  <Button
+                    variant="outline"
+                    aria-label={t("pages.mcpCatalog.tools.openAria", { name: server.name })}
+                    onClick={() => setToolsFor(server.id)}
+                  >
+                    <Wrench className="mr-2 h-4 w-4" aria-hidden />
+                    {t("pages.mcpCatalog.tools.open")}
+                  </Button>
+                  <Link
+                    to={`/mcp-logs?server=${encodeURIComponent(server.slug)}`}
+                    aria-label={t("pages.mcpCatalog.logs.aria", { name: server.name })}
+                    className={buttonVariants({ variant: "ghost" })}
+                  >
+                    <ScrollText className="mr-2 h-4 w-4" aria-hidden />
+                    {t("pages.mcpCatalog.logs.link")}
+                  </Link>
                   <GatedButton
                     gate="mcp_server:delete"
                     control="mcp-server-delete"
@@ -853,6 +1027,7 @@ export function McpCatalog() {
           onSave={(draft) => save.mutate({ initial: editing, draft })}
         />
       )}
+      {toolsServer && <ToolsSheet server={toolsServer} onClose={() => setToolsFor(null)} />}
       {/* mounted whether or not a server is picked: the dialog reads how the
           delete ended on its own closing edge, which an unmount never has */}
       <ConfirmDialog
@@ -940,7 +1115,7 @@ function AuthKindPicker({
           return (
             <label
               key={kind}
-              className={`flex cursor-pointer items-start gap-2.5 rounded-[10px] border p-3 transition-colors focus-within:ring-1 focus-within:ring-ring ${selected ? "border-[color:var(--red-500)] bg-[color:var(--red-tint)]" : "border-[color:var(--border-default)] hover:bg-[color:var(--surface-subtle)]/60"}`}
+              className={`flex cursor-pointer items-start gap-2.5 rounded-lg border p-3 transition-colors focus-within:ring-1 focus-within:ring-ring ${selected ? "border-[color:var(--red-500)] bg-[color:var(--red-tint)]" : "border-[color:var(--border-default)] hover:bg-[color:var(--surface-subtle)]/60"}`}
             >
               <input
                 type="radio"
@@ -1237,7 +1412,7 @@ function ServerSheet({
         }
         canSave={!!valid}
         saving={pending}
-        onSave={submit}
+        onSubmit={submit}
       >
         <FormSection title={t("pages.mcpCatalog.sections.endpoint")} {...section("endpoint", true)}>
           <div className="grid gap-3 sm:grid-cols-2">
@@ -1476,7 +1651,7 @@ export function McpLibrary() {
           {query.data.map((item) => (
             <article
               key={item.slug}
-              className="rounded-[10px] border border-[color:var(--border-default)] bg-card p-5"
+              className="rounded-lg border border-[color:var(--border-default)] bg-card p-5"
             >
               <div className="flex items-start gap-3">
                 <span className="flex h-10 w-10 items-center justify-center rounded-lg border border-[color:var(--border-default)] bg-[color:var(--surface-subtle)]">
@@ -1558,18 +1733,38 @@ export function ToolGroups() {
     enabled: !!orgId,
     retry: false,
   });
+  // who each group is assigned to (#3295). a failed read leaves the dialog
+  // without an assignment editor rather than offering one that would replace
+  // the stored set with an empty one
+  const assignments = useQuery({
+    queryKey: ["mcp-tool-group-assignments", orgId],
+    queryFn: () => fetchMcpToolGroupAssignments(orgId as string),
+    enabled: !!orgId,
+    retry: false,
+  });
   const [editing, setEditing] = React.useState<McpToolGroupRow | null | undefined>(undefined);
   const save = useMutation({
-    mutationFn: ({
+    mutationFn: async ({
       initial,
       input,
+      subjects,
     }: {
       initial: McpToolGroupRow | null;
       input: Omit<McpToolGroupRow, "id" | "org_id" | "created_at" | "updated_at">;
-    }) =>
-      initial ? updateMcpToolGroup(initial.id, input) : createMcpToolGroup(orgId as string, input),
+      subjects: McpAssignmentSubject[] | null;
+    }) => {
+      // a new group is created with its assignments in one request, so it is
+      // never visible to a gateway as applying to the whole organization
+      if (!initial) {
+        return createMcpToolGroup(orgId as string, { ...input, assignments: subjects ?? [] });
+      }
+      const group = await updateMcpToolGroup(initial.id, input);
+      if (subjects) await replaceMcpToolGroupAssignments(group.id, subjects);
+      return group;
+    },
     onSuccess: (group, { initial }) => {
       void client.invalidateQueries({ queryKey: ["mcp-tool-groups", orgId] });
+      void client.invalidateQueries({ queryKey: ["mcp-tool-group-assignments", orgId] });
       setEditing(undefined);
       toast.push(
         initial
@@ -1674,7 +1869,7 @@ export function ToolGroups() {
           {groups.data.map((group) => (
             <article
               key={group.id}
-              className="rounded-[10px] border border-[color:var(--border-default)] bg-card p-4"
+              className="rounded-lg border border-[color:var(--border-default)] bg-card p-4"
             >
               <div className="flex items-center gap-2">
                 <Puzzle className="h-4 w-4 text-[color:var(--red-folk-text)]" aria-hidden />
@@ -1686,6 +1881,13 @@ export function ToolGroups() {
               <p className="mt-2 min-h-10 text-xs leading-relaxed text-muted-foreground">
                 {group.description || t("pages.mcpCatalog.noDescription")}
               </p>
+              {assignments.data && (
+                <p className="mt-3 text-xs text-muted-foreground">
+                  {assignments.data.some((row) => row.group_id === group.id)
+                    ? t("pages.tool-groups.assign.narrowed")
+                    : t("pages.tool-groups.assign.everyone")}
+                </p>
+              )}
               <div className="mt-3 flex flex-wrap gap-1.5">
                 {group.tools.map((item) => (
                   <Badge key={`${item.server_id}/${item.tool}`} tone="outline">
@@ -1743,10 +1945,12 @@ export function ToolGroups() {
         <ToolGroupDialog
           initial={editing}
           servers={servers.data ?? []}
+          assignments={assignments.data}
+          assignmentsStatus={assignments.status}
           pending={save.isPending}
           error={save.error}
           onClose={() => setEditing(undefined)}
-          onSave={(input) => save.mutate({ initial: editing, input })}
+          onSave={(input, subjects) => save.mutate({ initial: editing, input, subjects })}
         />
       )}
     </PageBody>
@@ -1756,6 +1960,8 @@ export function ToolGroups() {
 function ToolGroupDialog({
   initial,
   servers,
+  assignments,
+  assignmentsStatus,
   pending,
   error,
   onClose,
@@ -1763,12 +1969,23 @@ function ToolGroupDialog({
 }: {
   initial: McpToolGroupRow | null;
   servers: McpServerRow[];
+  /** every assignment of the org, and how reading them is going */
+  assignments: McpToolGroupAssignmentRow[] | undefined;
+  assignmentsStatus: "pending" | "error" | "success";
   pending: boolean;
   error: Error | null;
   onClose: () => void;
-  onSave: (input: Omit<McpToolGroupRow, "id" | "org_id" | "created_at" | "updated_at">) => void;
+  onSave: (
+    input: Omit<McpToolGroupRow, "id" | "org_id" | "created_at" | "updated_at">,
+    /** the whole assignment set to store, or null to leave it alone */
+    subjects: McpAssignmentSubject[] | null,
+  ) => void;
 }) {
   const { t } = useTranslation();
+  // what the assignment editor last reported: the whole set to store, or null
+  // while it is unchanged (or was never readable), which leaves the stored set
+  // alone
+  const [subjects, setSubjects] = React.useState<McpAssignmentSubject[] | null>(null);
   const [name, setName] = React.useState(initial?.name ?? "");
   const [description, setDescription] = React.useState(initial?.description ?? "");
   const [enabled, setEnabled] = React.useState(initial?.enabled ?? true);
@@ -1780,7 +1997,24 @@ function ToolGroupDialog({
         : [...current, item],
     );
   return (
-    <Dialog open onClose={onClose}>
+    <Dialog
+      open
+      onClose={onClose}
+      onSubmit={() =>
+        onSave(
+          {
+            name,
+            slug: initial?.slug ?? slugify(name),
+            description,
+            enabled,
+            tools: selected,
+          },
+          subjects,
+        )
+      }
+      canSubmit={!!name.trim() && !!selected.length}
+      busy={pending}
+    >
       <DialogHeader>
         <DialogTitle>
           {initial
@@ -1791,7 +2025,7 @@ function ToolGroupDialog({
       </DialogHeader>
       <DialogBody className="grid gap-4 py-4">
         <div className="grid gap-3 sm:grid-cols-2">
-          <Field label={t("pages.mcpCatalog.fields.name")} htmlFor="group-name">
+          <Field label={t("pages.mcpCatalog.fields.name")} htmlFor="group-name" required>
             <Input id="group-name" value={name} onChange={(event) => setName(event.target.value)} />
           </Field>
           <SwitchRow
@@ -1810,7 +2044,7 @@ function ToolGroupDialog({
         </Field>
         <fieldset>
           <legend className="text-sm font-medium">{t("pages.mcpCatalog.fields.tools")}</legend>
-          <div className="mt-2 max-h-64 space-y-3 overflow-y-auto rounded-[10px] border border-[color:var(--border-default)] p-3">
+          <div className="mt-2 max-h-64 space-y-3 overflow-y-auto rounded-lg border border-[color:var(--border-default)] p-3">
             {servers.map((server) => (
               <ChipGroup
                 key={server.id}
@@ -1824,6 +2058,24 @@ function ToolGroupDialog({
             ))}
           </div>
         </fieldset>
+        <fieldset>
+          <legend className="text-sm font-medium">{t("pages.tool-groups.assign.title")}</legend>
+          <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+            {t("pages.tool-groups.assign.hint")}
+          </p>
+          {!initial || (assignmentsStatus === "success" && assignments) ? (
+            <AssignmentEditor
+              rows={(assignments ?? []).filter((row) => row.group_id === initial?.id)}
+              onChange={setSubjects}
+            />
+          ) : (
+            <p className="mt-2 text-xs text-muted-foreground">
+              {assignmentsStatus === "pending"
+                ? t("pages.tool-groups.assign.loading")
+                : t("pages.tool-groups.assign.unavailable")}
+            </p>
+          )}
+        </fieldset>
         {error && (
           <p role="alert" className="text-sm text-[color:var(--danger-text)]">
             {errorText(error, t)}
@@ -1835,22 +2087,158 @@ function ToolGroupDialog({
           {t("common.cancel")}
         </Button>
         <Button
-          disabled={!name.trim() || !selected.length || pending}
-          onClick={() =>
-            onSave({
-              name,
-              slug: initial?.slug ?? slugify(name),
-              description,
-              enabled,
-              tools: selected,
-            })
-          }
+          type="submit"
+          disabled={pending}
+          aria-disabled={!name.trim() || !selected.length || undefined}
+          className="aria-disabled:opacity-50"
         >
           {pending && <Loader2 className="mr-2 h-4 w-4 motion-safe:animate-spin" aria-hidden />}
           {pending ? t("common.saving") : t("pages.tool-groups.dialog.save")}
         </Button>
       </DialogFooter>
     </Dialog>
+  );
+}
+
+/**
+ * The team and project chips of a tool group's assignments. Mounted only once
+ * the stored assignments are known, so its state starts from them and never
+ * from an empty set a slow read has not filled in yet (an empty set would widen
+ * a narrowed group to the whole organization when saved). It reports the whole
+ * set to store, or null while nothing changed.
+ */
+function AssignmentEditor({
+  rows,
+  onChange,
+}: {
+  rows: McpToolGroupAssignmentRow[];
+  onChange: (subjects: McpAssignmentSubject[] | null) => void;
+}) {
+  const { t } = useTranslation();
+  const { orgId } = useScope();
+  const ofKind = (kind: McpToolGroupAssignmentRow["subject_kind"]) =>
+    rows.filter((row) => row.subject_kind === kind).map((row) => row.subject_id);
+  const [stored] = React.useState(() => ({
+    teams: ofKind("team"),
+    projects: ofKind("project"),
+    keys: ofKind("virtual_key"),
+  }));
+  const [teamIds, setTeamIds] = React.useState(stored.teams);
+  const [projectIds, setProjectIds] = React.useState(stored.projects);
+  const [keyIds, setKeyIds] = React.useState(stored.keys);
+  const canAssign = useCan()("mcp_tool_group_assignment", "update") !== false;
+  const teams = useQuery({
+    queryKey: ["teams", orgId],
+    queryFn: () => fetchTeams(orgId as string),
+    enabled: !!orgId,
+    retry: false,
+  });
+  const projects = useQuery({
+    queryKey: ["org-projects", orgId],
+    queryFn: () => fetchOrgProjects(orgId as string),
+    enabled: !!orgId,
+    retry: false,
+  });
+  // one read for the organization's keys, each naming its project (#3467); the
+  // picker groups them under the project names it already has
+  const keys = useQuery({
+    // under the `virtual-keys` prefix, so the Keys page invalidating a
+    // project's keys refreshes this list too
+    queryKey: ["virtual-keys", "org", orgId],
+    queryFn: () => fetchOrgVirtualKeys(orgId as string),
+    enabled: !!orgId,
+    retry: false,
+  });
+  const projectList = projects.data ?? [];
+  const keysKnown = !!projects.data && !!keys.data;
+  const keysReading = projects.isPending || keys.isPending;
+  const keysRefused = keys.error instanceof ApiError && keys.error.status === 403;
+  const keysUnread = projects.isError || (keys.isError && !keysRefused);
+  const keyGroups = projectList
+    .map((project) => ({
+      project,
+      keys: (keys.data ?? []).filter((key) => key.project_id === project.id),
+    }))
+    .filter((group) => group.keys.length > 0);
+  const flip = (ids: string[], id: string) =>
+    ids.includes(id) ? ids.filter((current) => current !== id) : [...ids, id];
+  // an id that is no longer among the options (a deleted team) is dropped from
+  // what is saved, once the options have been read
+  const live = (ids: string[], options: { id: string }[] | undefined) =>
+    options ? ids.filter((id) => options.some((option) => option.id === id)) : ids;
+  const savedTeams = live(teamIds, teams.data);
+  const savedProjects = live(projectIds, projects.data);
+  // a key that is gone (a deleted one) is dropped only once the keys have been
+  // read; until then, or when the read failed or was refused, the stored ones
+  // stay, as they would if the picker did not exist
+  const savedKeys = keysKnown ? live(keyIds, keys.data) : keyIds;
+  const same = (a: string[], b: string[]) =>
+    a.length === b.length && a.every((id) => b.includes(id));
+  const changed =
+    !same(savedTeams, stored.teams) ||
+    !same(savedProjects, stored.projects) ||
+    !same(savedKeys, stored.keys);
+  const report = JSON.stringify([changed, savedTeams, savedProjects, savedKeys]);
+  React.useEffect(() => {
+    onChange(
+      changed
+        ? [
+            ...savedTeams.map((id) => ({ kind: "team" as const, id })),
+            ...savedProjects.map((id) => ({ kind: "project" as const, id })),
+            ...savedKeys.map((id) => ({ kind: "virtual_key" as const, id })),
+          ]
+        : null,
+    );
+    // `report` stands for exactly the values read above
+  }, [report]);
+  return (
+    <div className="mt-2 space-y-3">
+      <ChipGroup
+        label={t("pages.tool-groups.assign.teams")}
+        options={(teams.data ?? []).map((team) => ({ id: team.id, name: team.name }))}
+        selected={teamIds}
+        onToggle={(id) => setTeamIds((current) => flip(current, id))}
+        disabled={!canAssign}
+      />
+      <ChipGroup
+        label={t("pages.tool-groups.assign.projects")}
+        options={(projects.data ?? []).map((project) => ({
+          id: project.id,
+          name: `${project.team_name} / ${project.name}`,
+        }))}
+        selected={projectIds}
+        onToggle={(id) => setProjectIds((current) => flip(current, id))}
+        disabled={!canAssign}
+      />
+      {keyGroups.map(({ project, keys }) => (
+        <ChipGroup
+          key={project.id}
+          label={t("pages.tool-groups.assign.keysOf", {
+            project: `${project.team_name} / ${project.name}`,
+          })}
+          options={keys.map((key) => ({ id: key.id, name: key.name || key.key_prefix }))}
+          selected={keyIds}
+          onToggle={(id) => setKeyIds((current) => flip(current, id))}
+          disabled={!canAssign}
+        />
+      ))}
+      {keysReading && (
+        <p className="text-xs text-muted-foreground">{t("pages.tool-groups.assign.keysLoading")}</p>
+      )}
+      {keysRefused && (
+        <p role="alert" className="text-xs text-[color:var(--status-warning-text)]">
+          {t("pages.tool-groups.assign.keysRefused")}
+        </p>
+      )}
+      {keysUnread && (
+        <p role="alert" className="text-xs text-[color:var(--status-warning-text)]">
+          {t("pages.tool-groups.assign.keysUnavailable")}
+        </p>
+      )}
+      {keysKnown && keyGroups.length === 0 && (
+        <p className="text-xs text-muted-foreground">{t("pages.tool-groups.assign.keysNone")}</p>
+      )}
+    </div>
   );
 }
 
@@ -1953,25 +2341,17 @@ function McpSettingsForm({
                 options={TRANSPORTS.map((transport) => ({ value: transport, label: transport }))}
               />
             </Field>
-            <Field
-              label={t("pages.mcpSettings.failureMode")}
-              htmlFor="failure-mode"
-              hint={t("pages.mcpSettings.failureModeHint")}
-            >
-              <Combobox
-                id="failure-mode"
-                value={form.default_failure_mode}
-                onChange={(picked) =>
-                  set({
-                    default_failure_mode: picked as McpGatewaySettingsRow["default_failure_mode"],
-                  })
-                }
-                options={[
-                  { value: "fail_closed", label: t("pages.mcpSettings.failClosed") },
-                  { value: "fail_open", label: t("pages.mcpSettings.failOpen") },
-                ]}
-              />
-            </Field>
+            {/* deprecated (#3527): the gateway refuses every body it cannot
+                judge, so the saved value is kept as it is and offered as no choice */}
+            <div role="group" aria-labelledby="failure-mode" className="grid gap-1.5">
+              <FieldLabel id="failure-mode" label={t("pages.mcpSettings.failureMode")} />
+              <div>
+                <Badge>{t("pages.mcpSettings.failureModeNoEffect")}</Badge>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                {t("pages.mcpSettings.failureModeNoEffectReason")}
+              </p>
+            </div>
             <SwitchRow
               title={t("pages.mcpSettings.allowUnlisted")}
               hint={t("pages.mcpSettings.allowUnlistedHint")}
@@ -2017,7 +2397,7 @@ function McpSettingsForm({
               />
             </Field>
           </div>
-          <p className="flex w-full items-start gap-2 rounded-[10px] border border-[color:var(--border-subtle)] bg-[color:var(--surface-subtle)] p-3 text-xs leading-relaxed text-muted-foreground">
+          <p className="flex w-full items-start gap-2 rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-subtle)] p-3 text-xs leading-relaxed text-muted-foreground">
             <Wrench className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
             {t("pages.mcpSettings.persistNote")}
           </p>

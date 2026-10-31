@@ -737,6 +737,34 @@ export const RollbackShowsWhatChanged: Story = {
   },
 };
 
+/**
+ * Enter in the create dialog submits it (#3242), and an empty name refuses the
+ * submit by naming the field instead of leaving Create silently dead.
+ */
+export const CreateDialogNamesTheMissingName: Story = {
+  render: () => <Harness fetchStub={loadedStub()} />,
+  play: async ({ canvas, canvasElement }) => {
+    const index = within(await canvas.findByRole("complementary", { name: "Org skills" }));
+    await canvas.findByRole("textbox", { name: "SKILL.md content" });
+    await userEvent.click(index.getByRole("button", { name: "Create skill" }));
+    const dialog = within(await within(canvasElement.ownerDocument.body).findByRole("dialog"));
+    const name = dialog.getByRole("textbox", { name: /^Name/ });
+    await expect(name).toBeRequired();
+    await expect(dialog.queryByText("Required")).toBeNull();
+
+    await userEvent.click(name);
+    await userEvent.keyboard("{Enter}");
+    await waitFor(async () => expect(await dialog.findByText("Required")).toBeVisible());
+    await waitFor(() => expect(name).toHaveFocus());
+    await expect(index.queryByRole("button", { name: /Billing triage/ })).toBeNull();
+
+    await userEvent.type(name, "Billing triage{Enter}");
+    await waitFor(() =>
+      expect(index.getByRole("button", { name: /Billing triage/ })).toBeVisible(),
+    );
+  },
+};
+
 export const CreatingOverAnUnsavedDraftAsksFirst: Story = {
   render: () => <Harness fetchStub={loadedStub()} />,
   play: async ({ canvas, canvasElement }) => {

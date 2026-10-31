@@ -37,7 +37,7 @@ fn config(routes: usize, providers: usize) -> GatewayConfig {
                 .map(|t| Target {
                     provider: format!("provider-{}", (r + t) % providers),
                     model: Some(format!("upstream-model-{r}")),
-                    weight: 1,
+                    ..Default::default()
                 })
                 .collect(),
             params: Default::default(),

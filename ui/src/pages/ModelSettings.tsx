@@ -11,7 +11,7 @@ import { Badge } from "@/components/ui/badge";
 import { Field } from "@/components/ui/field";
 import { Combobox } from "@/components/ui/combobox";
 import { Input } from "@/components/ui/input";
-import { SaveBar } from "@/components/ui/save-bar";
+import { SettingsSaveBar } from "@/components/SettingsSaveBar";
 import { SettingsPanel } from "@/components/ui/settings-panel";
 import { Switch } from "@/components/ui/switch";
 import {
@@ -22,7 +22,8 @@ import {
 } from "@/lib/api";
 import { errorText } from "@/lib/error-copy";
 import { useToast } from "@/lib/toast";
-import { translateErrors, useFieldErrors } from "@/lib/use-field-errors";
+import { translateErrors } from "@/lib/use-field-errors";
+import { useSettingsForm } from "@/lib/use-settings-form";
 import { useScreenReady } from "@/lib/ux-react";
 
 // every field is optional, so the form keeps raw strings and an empty string
@@ -130,7 +131,6 @@ function ModelSettingsScreen() {
   // `defaults` is the query the user is actually waiting on for this screen
   useScreenReady(!defaults.isLoading);
 
-  const [form, setForm] = React.useState<FormState | null>(null);
   const base = React.useId();
   const ids: Record<FieldKey, string> = {
     temperature: `${base}-temperature`,
@@ -138,20 +138,22 @@ function ModelSettingsScreen() {
     maxTokens: `${base}-max-tokens`,
     defaultModel: `${base}-model`,
   };
-  React.useEffect(() => {
-    if (defaults.data && form === null) {
-      setForm(fromDto(defaults.data));
-    }
-  }, [defaults.data, form]);
-
-  const fields = useFieldErrors<FieldKey>({
-    order: FIELD_ORDER,
-    wire: WIRE_FIELDS,
-    idOf: (key) => ids[key],
-    // every field is disabled while the defaults are off, so none can be fixed
-    skip: () => form !== null && !form.enabled,
-    local: form ? translateErrors(validate(form), t) : {},
+  const source = React.useMemo(
+    () => (defaults.data ? fromDto(defaults.data) : undefined),
+    [defaults.data],
+  );
+  const sf = useSettingsForm<FormState, FieldKey>({
+    source,
+    fieldErrors: (draft) => ({
+      order: FIELD_ORDER,
+      wire: WIRE_FIELDS,
+      idOf: (key) => ids[key],
+      // every field is disabled while the defaults are off, so none can be fixed
+      skip: () => draft !== null && !draft.enabled,
+      local: draft ? translateErrors(validate(draft), t) : {},
+    }),
   });
+  const { draft: form, fields } = sf;
 
   const save = useMutation({
     mutationFn: (f: FormState) => {
@@ -179,8 +181,7 @@ function ModelSettingsScreen() {
       // the cached write alone left every other reader of this key on the
       // value it already had; the refetch is what makes the save stick (#1197)
       void queryClient.invalidateQueries({ queryKey: ["model-defaults"] });
-      setForm(fromDto(dto));
-      fields.clear();
+      sf.commit(fromDto(dto));
       toast.push({
         tone: "success",
         title: t("toast.saved"),
@@ -218,20 +219,16 @@ function ModelSettingsScreen() {
   }
   if (!form) return null;
 
-  const set = (patch: Partial<FormState>) => {
-    setForm((f) => (f ? { ...f, ...patch } : f));
-  };
   // an edit answers the server's complaint about that field
-  const edit = (key: FieldKey, value: string) => {
-    set({ [key]: value });
-    fields.edit(key);
-  };
+  const { set, changed } = sf;
+  const edit = (key: FieldKey, value: string) => set({ [key]: value });
   const active = form.enabled && hasAnyDefault(form);
 
   return (
-    <SettingsBody>
+    <SettingsBody onSubmit={() => fields.submit(() => save.mutate(form))}>
       <SettingsPanel
         title={t("pages.modelSettings.applyDefaults")}
+        unsaved={changed.includes("enabled")}
         description={t("pages.modelSettings.applyDefaultsDesc")}
         badge={
           <Badge tone={active ? "success" : "neutral"}>
@@ -321,6 +318,9 @@ function ModelSettingsScreen() {
             className="sm:min-w-[320px]"
             options={modelOptions}
             allowCustom
+            // typed text is the value as it is typed, so clearing and retyping
+            // a name is one edit; a clear alone is not committed on blur (#3244)
+            commitOnInput
             clearable
             placeholder={t("pages.modelSettings.model.placeholder")}
             value={form.defaultModel}
@@ -344,11 +344,7 @@ function ModelSettingsScreen() {
       </p>
       <p className="text-xs text-muted-foreground">{t("pages.modelSettings.precedenceNote")}</p>
 
-      <SaveBar
-        invalid={fields.invalid.length}
-        pending={save.isPending}
-        onSave={() => fields.submit(() => save.mutate(form))}
-      />
+      <SettingsSaveBar form={sf} pending={save.isPending} updatedAt={defaults.data?.updated_at} />
     </SettingsBody>
   );
 }
@@ -356,4 +352,8 @@ function ModelSettingsScreen() {
 // deployment-scoped settings: superadmin-only in the capability table, so a
 // lesser caller sees the refusal instead of a screen that loads and then 403s
 // (#1183)
-export default superadminOnly(ModelSettingsScreen, "errors.resources.modelSettings");
+export default superadminOnly(
+  ModelSettingsScreen,
+  "errors.resources.modelSettings",
+  "model_defaults:read",
+);

@@ -4,6 +4,7 @@ import { expect, waitFor, within } from "storybook/test";
 import Health from "./Health";
 import {
   Harness,
+  ORG,
   expectEmptyState,
   expectLoadError,
   expectSkeleton,
@@ -12,7 +13,7 @@ import {
   routes,
   scoped,
 } from "./story-harness";
-import type { MttrRow, TimelineRow, UptimeRow } from "@/lib/api";
+import type { BreakerStateDto, BreakerTargetDto, MttrRow, TimelineRow, UptimeRow } from "@/lib/api";
 import { resolveColorToken } from "@/lib/story-tokens";
 import { phoneFits } from "@/lib/story-viewport";
 
@@ -534,3 +535,241 @@ const healthFits = phoneFits({
 export const MobileFits: Story = healthFits("mobile", "en");
 export const MobileFitsInRussian: Story = healthFits("mobile", "ru");
 export const SmallPhone: Story = healthFits("small", "en");
+
+// ------------------------------------------------ live circuit breakers (#2254)
+
+const breakerTarget = (patch: Partial<BreakerTargetDto>): BreakerTargetDto => ({
+  model: "gpt-4o",
+  target_index: 0,
+  provider: "openai-dead",
+  upstream_model: "gpt-4o",
+  state: "open",
+  nodes_open: 2,
+  nodes_half_open: 0,
+  nodes: [],
+  ...patch,
+});
+
+const breakerState = (targets: BreakerTargetDto[], gateways_live = 3): BreakerStateDto => ({
+  generated_at: "2026-09-29T08:00:00Z",
+  fresh_window_secs: 40,
+  gateways_live,
+  targets,
+});
+
+const withBreakers = (answerBreakers: () => Response | Promise<Response>) =>
+  scoped(async (input, init) => {
+    if (String(input).includes("/breaker-state")) return answerBreakers();
+    return loaded(input, init);
+  });
+
+/**
+ * The live breakers sit apart from the 7-day SLA verdict and say what they are:
+ * each gateway's in-memory state, reported about every 10 seconds. A provider
+ * with an open or probing breaker is named with its affected models, and its
+ * card carries the same badge; a provider whose breakers are closed is not.
+ */
+export const BreakersOpenAndProbing: Story = {
+  render: () => (
+    <Harness
+      fetchStub={withBreakers(() =>
+        json(
+          breakerState([
+            breakerTarget({ target_index: 0 }),
+            breakerTarget({
+              model: "gpt-4o-mini",
+              target_index: 1,
+              state: "half_open",
+              nodes_open: 0,
+              nodes_half_open: 1,
+              upstream_model: "gpt-4o-mini",
+            }),
+            breakerTarget({
+              model: "claude",
+              provider: "anthropic",
+              state: "closed",
+              nodes_open: 0,
+            }),
+          ]),
+        ),
+      )}
+    >
+      <Health />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const panel = await canvas.findByTestId("health-breakers");
+    await expect(panel).toHaveTextContent(/3 gateways, reported about every 10 seconds/);
+    await expect(panel).toHaveTextContent(/separate from the 7-day SLA verdict/);
+    const dead = within(panel).getByTestId("health-breaker-openai-dead");
+    await expect(dead).toHaveTextContent("gpt-4o (target 1) via gpt-4o");
+    await expect(dead).toHaveTextContent("gpt-4o-mini (target 2)");
+    await expect(within(dead).getAllByText("Breaker open on 2 gateways").length).toBeGreaterThan(0);
+    await expect(within(dead).getByText("Probing on 1 gateway")).toBeVisible();
+    // a closed breaker lists nothing
+    await expect(within(panel).queryByTestId("health-breaker-anthropic")).toBeNull();
+    // the provider's card carries the badge too
+    const card = canvas.getByTestId("health-card-openai-dead");
+    await expect(within(card).getByText("Breaker open on 2 gateways")).toBeVisible();
+    await expect(
+      within(canvas.getByTestId("health-card-anthropic")).queryByTestId("breaker-badge"),
+    ).toBeNull();
+  },
+};
+
+/** a superadmin's answer names each gateway */
+export const BreakersPerGateway: Story = {
+  render: () => (
+    <Harness
+      fetchStub={withBreakers(() =>
+        json(
+          breakerState([
+            breakerTarget({
+              nodes: [
+                {
+                  node_id: "gw-1",
+                  state: "open",
+                  consecutive_failures: 5,
+                  retry_after_secs: 20,
+                  reported_at: "2026-09-29T08:00:00Z",
+                },
+                {
+                  node_id: "gw-2",
+                  state: "open",
+                  consecutive_failures: 6,
+                  reported_at: "2026-09-29T08:00:00Z",
+                },
+                {
+                  node_id: "gw-3",
+                  state: "closed",
+                  consecutive_failures: 0,
+                  reported_at: "2026-09-29T08:00:00Z",
+                },
+              ],
+            }),
+          ]),
+        ),
+      )}
+    >
+      <Health />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const panel = await within(canvasElement).findByTestId("health-breakers");
+    await expect(panel).toHaveTextContent(/gw-1 · open · 5 consecutive failures · retries in 20s/);
+    await expect(panel).toHaveTextContent(/gw-2 · open · 6 consecutive failures/);
+    await expect(panel).not.toHaveTextContent(/gw-3/);
+  },
+};
+
+/** every live gateway reports no tripped breaker */
+export const BreakersNoneOpen: Story = {
+  render: () => (
+    <Harness fetchStub={withBreakers(() => json(breakerState([])))}>
+      <Health />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const panel = await within(canvasElement).findByTestId("health-breakers");
+    await expect(panel).toHaveTextContent(/No breaker is open or probing on any live gateway/);
+    await expect(within(canvasElement).queryByTestId("breaker-badge")).toBeNull();
+  },
+};
+
+/** nothing polls the gateways: the panel says it can say nothing, not that all is well */
+export const BreakersNoGatewayReporting: Story = {
+  render: () => (
+    <Harness fetchStub={withBreakers(() => json(breakerState([], 0)))}>
+      <Health />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const panel = await within(canvasElement).findByTestId("health-breakers");
+    await expect(panel).toHaveTextContent(/No gateway is reporting its breakers/);
+    await expect(panel).not.toHaveTextContent(/No breaker is open/);
+  },
+};
+
+/** a control plane without a store: no panel, no error, the screen as it was */
+export const BreakerStateUnavailable: Story = {
+  render: () => (
+    <Harness fetchStub={withBreakers(() => json({ error: { message: "no store" } }, 404))}>
+      <Health />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getByText("sonnet@eu")).toBeVisible());
+    await expect(canvas.queryByTestId("health-breakers")).toBeNull();
+    await expect(canvas.queryByRole("alert")).toBeNull();
+  },
+};
+
+const ACME = { id: "org-2", name: "Acme", slug: "acme", created_at: "2026-01-01T00:00:00Z" };
+
+const twinRow = (org: string, uptime: number, breached: boolean): UptimeRow => ({
+  org_id: org,
+  provider: "openai",
+  target_id: "openai",
+  grain: "provider",
+  sources: ["probe"],
+  events: 1000,
+  ok: Math.round(uptime * 1000),
+  errors: 1000 - Math.round(uptime * 1000),
+  timeouts: 0,
+  uptime,
+  failure_rate: 1 - uptime,
+  error_budget_burn: (1 - uptime) / 0.01,
+  sla_breached: breached ? 1 : 0,
+  last_event: "2026-08-06T10:00:00Z",
+});
+
+/**
+ * #3441, #3460: two organizations each have a provider called `openai`. They
+ * are two cards, each with its own organization's uptime and its own breakers,
+ * and each says whose it is; one organization's open breaker never lands on the
+ * other's card.
+ */
+export const TwoOrgsShareAProviderName: Story = {
+  render: () => (
+    <Harness
+      fetchStub={async (input, init) => {
+        const path = new URL(String(input), "http://localhost").pathname;
+        if (path === "/api/v1/orgs") return json([ORG, ACME]);
+        return scoped(
+          routes([
+            [
+              "/health/uptime",
+              () => ({ data: [twinRow(ORG.id, 0.5, true), twinRow(ACME.id, 0.9995, false)] }),
+            ],
+            ["/health/mttr", () => ({ data: [] })],
+            ["/health/timeline", () => ({ data: [] })],
+            [
+              "/breaker-state",
+              () => breakerState([breakerTarget({ org_id: ORG.id, provider: "openai" })]),
+            ],
+          ]),
+        )(input, init);
+      }}
+    >
+      <Health />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getAllByTestId("health-card-openai")).toHaveLength(2));
+    const card = (org: string) =>
+      canvas.getAllByTestId("health-card-openai").find((c) => c.dataset.org === org)!;
+    await waitFor(() => expect(within(card(ORG.id)).getByText("Org: Rolter")).toBeVisible());
+    await expect(within(card(ACME.id)).getByText("Org: Acme")).toBeVisible();
+    // each card its own figures
+    await expect(within(card(ORG.id)).getByText("50.00%")).toBeVisible();
+    await expect(within(card(ACME.id)).queryByText("50.00%")).toBeNull();
+    // the open breaker is on Rolter's routes, so only Rolter's card shows it
+    await waitFor(() =>
+      expect(within(card(ORG.id)).getByText("Breaker open on 2 gateways")).toBeVisible(),
+    );
+    await expect(within(card(ACME.id)).queryByTestId("breaker-badge")).toBeNull();
+  },
+};

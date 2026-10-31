@@ -1,7 +1,9 @@
 import type { Meta, StoryObj } from "@storybook/react";
 import { expect, fn, userEvent, within } from "storybook/test";
 
+import { contrastRatio } from "@/lib/contrast";
 import { mediaDeclarations, resolvePx } from "@/lib/story-css";
+import { resolveColorToken } from "@/lib/story-tokens";
 import { Button } from "./button";
 
 const meta = {
@@ -10,7 +12,10 @@ const meta = {
   parameters: { layout: "padded" },
   args: { children: "Save changes", onClick: fn() },
   argTypes: {
-    variant: { control: "select", options: ["default", "outline", "ghost", "destructive"] },
+    variant: {
+      control: "select",
+      options: ["default", "outline", "ghost", "destructive", "brand"],
+    },
     size: { control: "select", options: ["default", "sm", "lg", "icon"] },
   },
 } satisfies Meta<typeof Button>;
@@ -35,8 +40,30 @@ export const Variants: Story = {
       <Button {...args} variant="destructive">
         Delete
       </Button>
+      <Button {...args} variant="brand">
+        Sign in
+      </Button>
     </div>
   ),
+};
+
+/**
+ * The brand button is the folk-red fill with white text (#1993). Screens
+ * ask for it with `variant="brand"` and never spell the classes; the colours
+ * here are read back from the rendered button, so a drift from the
+ * tokens fails. The press colour is a `:hover` rule a story cannot switch on
+ * (a synthetic pointer sets no `:hover`), so it is asserted as the class.
+ */
+export const BrandIsTheFolkRedFill: Story = {
+  args: { variant: "brand", children: "Sign in" },
+  play: async ({ canvasElement }) => {
+    const button = within(canvasElement).getByRole("button", { name: "Sign in" });
+    const fill = resolveColorToken("--red-folk");
+    await expect(getComputedStyle(button).backgroundColor).toBe(fill);
+    await expect(getComputedStyle(button).color).toBe("rgb(255, 255, 255)");
+    await expect(contrastRatio(getComputedStyle(button).color, fill)).toBeGreaterThanOrEqual(4.5);
+    await expect(button).toHaveClass("hover:bg-brand-press");
+  },
 };
 
 export const Disabled: Story = {
@@ -135,5 +162,32 @@ export const FocusSurvivesForcedColors: Story = {
     await expect(forced?.getPropertyValue("outline")).toMatch(/canvastext/i);
     await expect(forced?.getPropertyPriority("outline")).toBe("important");
     await expect(forced?.getPropertyValue("outline-offset")).toBe("2px");
+  },
+};
+
+// a native button inside a <form> submits it, so `Button` says "button" unless
+// the caller says otherwise (#1205): Cancel and a row's delete never submit
+export const DoesNotSubmitAFormUnlessAskedTo: Story = {
+  render: (args) => {
+    const onSubmit = fn((event: React.FormEvent) => event.preventDefault());
+    return (
+      <form onSubmit={onSubmit} aria-label="demo form">
+        <Button {...args}>Cancel</Button>
+        <Button {...args} type="submit">
+          Save
+        </Button>
+      </form>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const form = canvas.getByRole("form", { name: "demo form" });
+    const submits: Event[] = [];
+    form.addEventListener("submit", (event) => submits.push(event));
+    await expect(canvas.getByRole("button", { name: "Cancel" })).toHaveAttribute("type", "button");
+    await userEvent.click(canvas.getByRole("button", { name: "Cancel" }));
+    await expect(submits).toHaveLength(0);
+    await userEvent.click(canvas.getByRole("button", { name: "Save" }));
+    await expect(submits).toHaveLength(1);
   },
 };

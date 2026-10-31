@@ -2,7 +2,7 @@
 // preview it before the round trip.
 //
 // the rule is `rolter_core::slug::slugify`, which `resolve_new_slug` in
-// crates/rolter-control/src/crud.rs applies to a create that sent no slug:
+// crates/rolter-control/src/crud/mod.rs applies to a create that sent no slug:
 // lower-case, every run of characters outside `a-z0-9` becomes one hyphen, no
 // hyphen at either end, at most 63 characters. `slug.test.ts` carries the Rust
 // unit tests' cases. A name with no ASCII letter or digit derives nothing.

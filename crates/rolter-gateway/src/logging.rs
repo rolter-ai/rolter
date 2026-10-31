@@ -76,6 +76,34 @@ pub fn started_at(started: Instant) -> DateTime<Utc> {
         .unwrap_or(now)
 }
 
+/// The instant this process began counting request starts from. Forced when the
+/// log sink is built, before any request can start, so no request begins ahead
+/// of it.
+static SEQ_EPOCH: std::sync::LazyLock<Instant> = std::sync::LazyLock::new(Instant::now);
+
+/// Fix the sequence's epoch. Called when the gateway state is built, before any
+/// request can start, so every start is at or after it.
+pub fn init_start_sequence() {
+    std::sync::LazyLock::force(&SEQ_EPOCH);
+}
+
+/// Where a request began in this process's order of starts (#1392).
+///
+/// `request_logs.ts` is a millisecond, so requests that begin inside one share
+/// it. This is the sequence that tells them apart: nanoseconds on the monotonic
+/// clock since the process began, counted from 1, so a later start is always a
+/// larger number and `0` stays the "no sequence" a row older than the column
+/// reads as. It is taken from the same `Instant` as [`started_at`], so it needs
+/// no counter threaded through the forwarding paths and cannot drift from `ts`.
+///
+/// Only meaningful within one gateway process: another instance's sequence is
+/// unrelated and a restart begins again.
+pub fn start_seq(started: Instant) -> u64 {
+    started
+        .checked_duration_since(*SEQ_EPOCH)
+        .map_or(1, |since| (since.as_nanos() as u64).saturating_add(1))
+}
+
 /// Bounded, lock-free reuse for the response bytes retained only long enough
 /// to extract token usage. Oversized buffers are deliberately not retained so
 /// one unusually large completion cannot inflate the steady-state footprint.
@@ -139,6 +167,17 @@ fn is_zero(n: &u32) -> bool {
     *n == 0
 }
 
+fn is_zero_u8(n: &u8) -> bool {
+    *n == 0
+}
+
+fn serialize_param_adjustments<S: serde::Serializer>(
+    adjustments: &rolter_proxy::ParamAdjustments,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    serializer.collect_seq(adjustments.log_entries())
+}
+
 /// One row of the ClickHouse `request_logs` table. Field names match the column
 /// names so the struct serializes directly as a `JSONEachRow` line.
 #[derive(Debug, Clone, Serialize)]
@@ -149,6 +188,11 @@ pub struct RequestLog {
     /// batch lands on one millisecond and ordering within it is lost
     #[serde(serialize_with = "clickhouse_ts::serialize")]
     pub ts: DateTime<Utc>,
+    /// where the request began in this process's order of starts, which `ts`
+    /// cannot say inside one millisecond (#1392); see [`start_seq`]. `0`, left
+    /// out of the row, when the writer did not stamp one
+    #[serde(skip_serializing_if = "is_zero_seq")]
+    pub seq: u64,
     pub request_id: String,
     /// the gateway's own key for this row, minted when the row is queued. the
     /// caller picks `request_id`, so only this names one request: the control
@@ -167,17 +211,61 @@ pub struct RequestLog {
     pub business_unit_id: String,
     pub customer_id: String,
     pub model: String,
+    /// the provider's display name. The request path carries its runtime id,
+    /// which [`LogSink`] turns back into the name as the row is queued, and
+    /// fills in `provider_org_id` from the same lookup (ADR-0040)
     pub provider: String,
+    /// the org that owns `provider`, empty for a global provider from the
+    /// gateway's own config file. Left out of the row while empty, so a
+    /// ClickHouse without `clickhouse/037_request_log_provider_org.sql` keeps
+    /// accepting every row (#1857)
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub provider_org_id: String,
+    /// the runtime namespace of the route the caller asked for, which labels
+    /// the per-model latency and variant series: the route's name, unless a
+    /// route of another org shares it, then `name@org` (ADR-0040, #3462).
+    /// Never written to the row; `None` where no route was resolved, and the
+    /// series then take `model`. Shared with the route's own entry, so carrying
+    /// it costs a reference count rather than a copy
+    #[serde(skip)]
+    pub route_namespace: Option<std::sync::Arc<str>>,
     pub target: String,
     /// chosen variant name for A/B attribution; empty on the classic single-pool
     /// path (a route with no variants)
     pub variant: String,
+    /// The variant the request was first dialled to (#3505). It differs from
+    /// `variant` exactly when the request failed over to another variant's
+    /// target, so by-variant can report the share of requests a variant was
+    /// sent first beside the share it answered. It is the sampled variant
+    /// unless the loop skipped that one (parked, unhealthy, breaker open). Empty on
+    /// the classic pool, on a row that never dialled, and on every row older
+    /// than `clickhouse/048_first_variant.sql`. Not serialized when empty, so
+    /// a ClickHouse without that file keeps accepting those rows, and drops
+    /// the field from the rest (`input_format_skip_unknown_fields=1`)
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub first_variant: String,
+    /// The variant the route's weighted split sampled as the request's primary
+    /// (#3547), before cooldown, breaker and health skipping. It differs from
+    /// `first_variant` exactly when the loop skipped the sampled variant, so
+    /// by-variant can tell a split that is wrong from a gateway routing around
+    /// a variant. Empty on the classic pool and on every row older than
+    /// `clickhouse/050_sampled_variant.sql`. Not serialized when empty, for
+    /// the same reason as `first_variant`
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub sampled_variant: String,
     pub status: u16,
     pub stream: u8,
     pub cache_hit: u8,
     /// provider-native prompt-cache input tokens reused by the upstream; this
     /// is distinct from `cache_hit`, which means a Rolter response-cache hit
     pub cache_read_tokens: u32,
+    /// `1` when the upstream stated its prompt-cache reads, zero included
+    /// (`Usage::cache_reported`), so a read share can leave out the requests
+    /// of a provider that does not report them (#3410). Not serialized when
+    /// `0`, which is also the column default, so a ClickHouse without
+    /// `clickhouse/045_cache_usage_reported.sql` keeps accepting every row
+    #[serde(skip_serializing_if = "is_zero_u8")]
+    pub cache_usage_reported: u8,
     /// provider-native prompt-cache tokens written/created for this request
     pub cache_write_tokens: u32,
     /// the part of `cache_write_tokens` that went to the provider's 1 hour
@@ -233,6 +321,17 @@ pub struct RequestLog {
     /// How many upstream attempts the request made, the one that answered
     /// included; `0` when it never reached an upstream. Saturates at 255.
     pub attempts: u8,
+    /// The failure that sent the request on to the last target it tried, as
+    /// its class token (`throttled`, `timeout`, `transport`, `server_error`,
+    /// `refusal` or `refusal:<category>`, see `rolter_core::failover`). Empty
+    /// when the first dial answered, so a row that never failed over reads as
+    /// it did before the column (#1584). It is what tells a request that
+    /// reached a fallback target because of a content refusal from one that
+    /// reached it because of load. Not serialized when empty, so a ClickHouse
+    /// without `clickhouse/023_fallback_reason.sql` keeps accepting every row
+    /// that has none
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub fallback_reason: String,
     /// Which call on a stored response this row records: `retrieve`, `delete`,
     /// `cancel`, `input_items`, or one of the two the gateway does not serve
     /// (`compact`, `input_tokens`). Empty for a request that ran a model,
@@ -263,11 +362,44 @@ pub struct RequestLog {
     /// every request no plugin saw
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub plugin_events: Vec<String>,
+    /// Every request parameter dialect translation did not forward as sent,
+    /// one `<disposition>:<param>` entry each (`dropped`, `clamped`,
+    /// `translated`; #1586). Names only, never values. Skipped when empty, for
+    /// the reason `guardrail_events` is, so a ClickHouse without
+    /// `clickhouse/022_param_adjustments.sql` keeps accepting the rows of every
+    /// request whose parameters all went through
+    #[serde(
+        skip_serializing_if = "rolter_proxy::ParamAdjustments::is_empty",
+        serialize_with = "serialize_param_adjustments"
+    )]
+    pub param_adjustments: rolter_proxy::ParamAdjustments,
+    /// What happened to the request, by its published name
+    /// ([`rolter_core::request_outcome::RequestOutcome`], #3307): `served`,
+    /// `upstream_error`, `withheld`, `cancelled` or one of the `refused_*`
+    /// reasons. A path that knows why it refused sets it; every other row is
+    /// named by [`LogSink`] as it is queued ([`outcome_of`]), so no row leaves
+    /// without one. Always serialized: a ClickHouse without
+    /// `clickhouse/030_request_outcome.sql` drops it under
+    /// `input_format_skip_unknown_fields`, and reads its rows as `unknown`
+    #[serde(serialize_with = "serialize_outcome")]
+    pub outcome: Option<rolter_core::request_outcome::RequestOutcome>,
+    /// What the request asked the model to do beyond its tokens: tools, image
+    /// or audio input, a response schema, its caller turns (#3317). Read off
+    /// the parsed body for the OpenAI and Anthropic dialects; each column is
+    /// left out of a row while zero, so a ClickHouse without
+    /// `clickhouse/031_request_shape.sql` keeps accepting every row
+    #[serde(flatten)]
+    pub request_shape: crate::request_shape::RequestShape,
     /// what the request is billed by besides tokens (#2937), known once the
     /// request is parsed and finished off against the response when the stream
     /// ends. Not a column: the cost it produces is
     #[serde(skip)]
     pub unit_basis: crate::unit_billing::UnitBasis,
+    /// the units read from the upstream body before a guardrail, plugin or
+    /// sanitizer rewrote or withheld it, billed instead of what the delivered
+    /// body states (#3331). `None` reads them from the forwarded body
+    #[serde(skip)]
+    pub billed_units: Option<rolter_core::BilledUnits>,
     /// raw bodies are persisted in the short-retention `request_payloads`
     /// table, never in the primary metadata table
     #[serde(skip)]
@@ -279,7 +411,7 @@ pub struct RequestLog {
     #[serde(skip)]
     pub payload_max_bytes: usize,
     #[serde(skip)]
-    pub payload_redact_fields: Vec<String>,
+    pub payload_redactor: Arc<rolter_core::payload_redaction::PayloadRedactor>,
     #[serde(skip)]
     pub sample_rate: f64,
     /// how many real requests this stored row stands for: `1 / sample_rate`
@@ -287,6 +419,38 @@ pub struct RequestLog {
     /// traffic that actually ran (#2239). Stamped by the sink after the
     /// sampling decision, never by the request path.
     pub sample_weight: f64,
+}
+
+/// The outcome of a row whose writer did not name one, read from what the row
+/// records (#3307). A refusal path names its own reason before this runs, so
+/// what reaches here unnamed is a request that was answered (served, failed
+/// upstream, withheld, abandoned) or refused with no target left to try.
+pub(crate) fn outcome_of(row: &RequestLog) -> rolter_core::request_outcome::RequestOutcome {
+    use rolter_core::request_outcome::RequestOutcome;
+    if row.withheld == 1 {
+        RequestOutcome::Withheld
+    } else if row.is_client_disconnect() {
+        RequestOutcome::Cancelled
+    } else if row.status < 400 {
+        RequestOutcome::Served
+    } else if row.attempts > 0 || row.upstream_status > 0 || !row.target.is_empty() {
+        RequestOutcome::UpstreamError
+    } else {
+        RequestOutcome::for_refusal(row.status, None)
+    }
+}
+
+fn serialize_outcome<S: serde::Serializer>(
+    outcome: &Option<rolter_core::request_outcome::RequestOutcome>,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    // a row is only serialized once `enqueue` named it; the empty fallback is
+    // the column's own default, never a name
+    serializer.serialize_str(outcome.map_or("", |outcome| outcome.as_str()))
+}
+
+fn is_zero_seq(seq: &u64) -> bool {
+    *seq == 0
 }
 
 /// How a withheld row's `error` begins when an output guardrail rule refused
@@ -300,6 +464,7 @@ impl Default for RequestLog {
             // slightly late, where a zero would land in a 1970 partition and
             // fall straight past the table's ttl
             ts: Utc::now(),
+            seq: 0,
             request_id: String::new(),
             log_id: Uuid::nil(),
             trace_id: String::new(),
@@ -311,12 +476,17 @@ impl Default for RequestLog {
             customer_id: String::new(),
             model: String::new(),
             provider: String::new(),
+            provider_org_id: String::new(),
+            route_namespace: None,
             target: String::new(),
             variant: String::new(),
+            first_variant: String::new(),
+            sampled_variant: String::new(),
             status: 0,
             stream: 0,
             cache_hit: 0,
             cache_read_tokens: 0,
+            cache_usage_reported: 0,
             cache_write_tokens: 0,
             cache_write_1h_tokens: 0,
             prompt_tokens: 0,
@@ -331,64 +501,40 @@ impl Default for RequestLog {
             error: String::new(),
             upstream_status: 0,
             attempts: 0,
+            fallback_reason: String::new(),
             lifecycle_operation: String::new(),
             guardrail_events: Vec::new(),
             plugin_events: Vec::new(),
+            param_adjustments: rolter_proxy::ParamAdjustments::default(),
+            outcome: None,
+            request_shape: Default::default(),
             unit_basis: crate::unit_billing::UnitBasis::Tokens,
+            billed_units: None,
             request_payload: String::new(),
             response_payload: String::new(),
             capture_payloads: false,
             payload_max_bytes: 0,
-            payload_redact_fields: Vec::new(),
+            payload_redactor: Arc::default(),
             sample_rate: 1.0,
             sample_weight: 1.0,
         }
     }
 }
 
-/// Serialize a payload safely for the short-retention capture store. JSON is
-/// redacted before truncation so a large secret can never escape at the edge of
-/// the retained prefix; non-JSON bodies are retained as lossy UTF-8 text.
-pub fn capture_payload(body: &[u8], max_bytes: usize, redact_fields: &[String]) -> String {
-    if max_bytes == 0 || body.is_empty() {
-        return String::new();
-    }
-    let mut rendered = match serde_json::from_slice::<Value>(body) {
-        Ok(mut json) => {
-            redact_json(&mut json, redact_fields);
-            serde_json::to_string(&json).unwrap_or_else(|_| String::new())
-        }
-        Err(_) => String::from_utf8_lossy(body).into_owned(),
-    };
-    if rendered.len() > max_bytes {
-        let end = rendered.floor_char_boundary(max_bytes);
-        rendered.truncate(end);
-        rendered.push_str("…[truncated]");
-    }
-    rendered
-}
-
-fn redact_json(value: &mut Value, redact_fields: &[String]) {
-    match value {
-        Value::Object(object) => {
-            for (key, value) in object.iter_mut() {
-                if redact_fields
-                    .iter()
-                    .any(|field| field.eq_ignore_ascii_case(key))
-                {
-                    *value = Value::String("[REDACTED]".to_string());
-                } else {
-                    redact_json(value, redact_fields);
-                }
-            }
-        }
-        Value::Array(values) => {
-            for value in values {
-                redact_json(value, redact_fields);
-            }
-        }
-        _ => {}
-    }
+/// Serialize a payload safely for the short-retention capture store. Both the
+/// key rule and the value detectors run before truncation, so a large secret can
+/// never escape at the edge of the retained prefix; non-JSON bodies are scanned
+/// as lossy UTF-8 text (#1835).
+pub fn capture_payload(
+    body: &[u8],
+    max_bytes: usize,
+    redactor: &rolter_core::payload_redaction::PayloadRedactor,
+) -> String {
+    redactor.capture(
+        body,
+        max_bytes,
+        &mut rolter_core::payload_redaction::RedactionReport::default(),
+    )
 }
 
 /// The `model` the upstream reported on its response, for
@@ -622,6 +768,11 @@ pub struct Usage {
     /// whether the body carried a usage object at all. Without it an all-zero
     /// usage is indistinguishable from an upstream that said nothing (#1478)
     pub reported: bool,
+    /// whether the upstream stated its prompt-cache reads at all, zero
+    /// included, in the body or a response header. Without it a `cache_read`
+    /// of `0` cannot tell a provider that never hits from one that does not
+    /// report, and the dashboard's read share leaves the request out (#3410)
+    pub cache_reported: bool,
 }
 
 /// [`parse_usage_with`] for a provider whose usage is read as stated, which is
@@ -754,6 +905,7 @@ fn merge_usage(usage: &mut Usage, value: &Value, thinking: rolter_proxy::Thinkin
             .or_else(|| rolter_proxy::cached_prompt_tokens(u).map(|n| n as u32))
         {
             usage.cache_read = usage.cache_read.max(read);
+            usage.cache_reported = true;
         }
         // the write count has no OpenAI field; anthropic's own, or one of the
         // spellings that count it inside the prompt total, which the
@@ -785,6 +937,15 @@ fn merge_usage(usage: &mut Usage, value: &Value, thinking: rolter_proxy::Thinkin
 }
 
 impl Usage {
+    /// Take the cache read a response header stated, when the body stated none
+    /// (#2882). A body that does report one wins.
+    pub fn fill_cache_read(&mut self, header: Option<u32>) {
+        if let (0, Some(read)) = (self.cache_read, header) {
+            self.cache_read = read;
+        }
+        self.cache_reported |= header.is_some();
+    }
+
     /// The audio share of these tokens, as [`rolter_core::ModelPriceConfig::cost_with_audio`]
     /// takes it.
     pub fn audio(&self) -> rolter_core::AudioTokens {
@@ -858,6 +1019,21 @@ pub type CompletionObserver = Box<dyn FnOnce(&[u8]) + Send>;
 /// logged as, without adding a column (#1083).
 pub const CLIENT_DISCONNECT_STATUS: u16 = 499;
 
+impl RequestLog {
+    /// Whether this row records a caller who left before the answer finished,
+    /// as opposed to an upstream that answered 499 itself. A disconnect row
+    /// carries [`CLIENT_DISCONNECT_STATUS`] as the gateway's status while its
+    /// `upstream_status` is whatever the upstream sent, or `0`; an upstream's
+    /// own 499 is passed through, so the two statuses agree.
+    ///
+    /// Such a row is never charged to the target it names: not as an error in
+    /// `rolter_target_requests_total`, not as a passive health event, so the
+    /// uptime rollup and the `provider_health_flaps` alert never see it.
+    pub(crate) fn is_client_disconnect(&self) -> bool {
+        self.status == CLIENT_DISCONNECT_STATUS && self.upstream_status != CLIENT_DISCONNECT_STATUS
+    }
+}
+
 /// `error` text on a cancelled request's log row.
 pub const CLIENT_DISCONNECT_ERROR: &str = "client disconnected";
 
@@ -899,6 +1075,12 @@ pub struct UsageLoggingStream {
     billed: Option<Usage>,
     /// how the provider counts its thinking tokens (#2880)
     thinking: rolter_proxy::ThinkingCount,
+    /// the `response_payload` to store instead of capturing the forwarded
+    /// bytes: the placeholder-bearing body a PII restore replaced (#3240)
+    captured_payload: Option<String>,
+    /// the prompt-cache hit the response headers state (Fireworks, #2882),
+    /// used when the body states none
+    header_cache_read: Option<u32>,
 }
 
 impl UsageLoggingStream {
@@ -933,7 +1115,17 @@ impl UsageLoggingStream {
             completed: false,
             billed: None,
             thinking: rolter_proxy::ThinkingCount::Stated,
+            captured_payload: None,
+            header_cache_read: None,
         }
+    }
+
+    /// Fill the row's cache read from a response header when the body states
+    /// none (#2882): `merge_usage` only sees the body, and Fireworks reports a
+    /// dedicated deployment's hit in `fireworks-cached-prompt-tokens`.
+    pub fn with_header_cache_read(mut self, header: Option<u64>) -> Self {
+        self.header_cache_read = header.map(|n| u32::try_from(n).unwrap_or(u32::MAX));
+        self
     }
 
     /// Read the usage of the buffered body the way the provider counts its
@@ -954,6 +1146,22 @@ impl UsageLoggingStream {
     /// the provider charged.
     pub fn with_billed_usage(mut self, usage: Usage) -> Self {
         self.billed = Some(usage);
+        self
+    }
+
+    /// Store `payload` as the row's `response_payload` instead of capturing
+    /// the bytes this stream forwards (#3240).
+    ///
+    /// The buffered path hands a PII-restored body to this stream, and the
+    /// restored plaintext is what the sanitizer exists to keep out of rolter's
+    /// stores. The captured response is the placeholder-bearing body the
+    /// restore replaced, the same text the captured request holds, already
+    /// redacted and cut by [`capture_payload`]. `None` keeps the default, the
+    /// forwarded bytes. Billing reads the usage parsed from the upstream body
+    /// (see [`UsageLoggingStream::with_billed_usage`]); the completion
+    /// observer reads the forwarded bytes.
+    pub fn with_captured_payload(mut self, payload: Option<String>) -> Self {
+        self.captured_payload = payload;
         self
     }
 
@@ -1029,16 +1237,19 @@ impl UsageLoggingStream {
                 .client_disconnects_total
                 .fetch_add(1, Relaxed);
         }
-        let usage = self
+        let mut usage = self
             .billed
             .take()
             .unwrap_or_else(|| parse_usage_with(self.is_sse, &self.buf, self.thinking));
+        usage.fill_cache_read(self.header_cache_read);
         // a request billed by the image, the minute or the character is
         // measured in those, so a provider that reports no tokens for it has
         // not left its usage unknown when the count is read and has a rate
         // (#2937)
         let units = if upstream_answered {
-            log.unit_basis.units(&self.buf)
+            log.billed_units
+                .take()
+                .or_else(|| log.unit_basis.units(&self.buf))
         } else {
             None
         };
@@ -1094,14 +1305,17 @@ impl UsageLoggingStream {
             observer(&self.buf);
         }
         if log.capture_payloads {
-            log.response_payload =
-                capture_payload(&self.buf, log.payload_max_bytes, &log.payload_redact_fields);
+            log.response_payload = match self.captured_payload.take() {
+                Some(payload) => payload,
+                None => capture_payload(&self.buf, log.payload_max_bytes, &log.payload_redactor),
+            };
         }
         self.buffer_pool.recycle(std::mem::take(&mut self.buf));
         log.prompt_tokens = usage.prompt;
         log.completion_tokens = usage.completion;
         log.total_tokens = usage.total;
         log.cache_read_tokens = usage.cache_read;
+        log.cache_usage_reported = u8::from(usage.cache_reported);
         log.cache_write_tokens = usage.cache_write;
         // a share of the writes, never more than them
         log.cache_write_1h_tokens = usage.cache_write_1h.min(usage.cache_write);
@@ -1501,15 +1715,20 @@ impl LogSink {
     /// the attempt this row describes was already counted against its target,
     /// or when there is no target to count it against.
     fn observe(&self, record: &RequestLog, attribute_target: bool) {
+        // two orgs' same-named routes are two series (#3462)
+        let series = record.route_namespace.as_deref().unwrap_or(&record.model);
         self.metrics.observe_request(
             &record.provider,
             &record.model,
+            series,
             record.latency_ms,
             record.ttft_ms,
             record.completion_tokens,
         );
-        self.metrics.observe_variant(&record.model, &record.variant);
-        if !attribute_target {
+        self.metrics.observe_variant(series, &record.variant);
+        // a caller leaving is not the target's verdict, in either direction
+        // (#1933). It stays visible in `rolter_client_disconnects_total`
+        if !attribute_target || record.is_client_disconnect() {
             return;
         }
         self.metrics.observe_target(
@@ -1529,9 +1748,28 @@ impl LogSink {
         if !should_sample_request(&record.request_id, record.sample_rate) {
             return;
         }
+        // the one place every row passes, so none is written without a name
+        record.outcome = Some(record.outcome.unwrap_or_else(|| outcome_of(&record)));
         let Some(tx) = &self.tx else {
             return;
         };
+        // the request path carries the provider's runtime id; the row gets its
+        // display name. the org beside it comes from the snapshot that served
+        // the request wherever the row was built with one; a row built
+        // without it (a lifecycle call, a realtime session) takes the org from
+        // the provider list in force now (ADR-0040)
+        if !record.provider.is_empty() {
+            if record.provider_org_id.is_empty() {
+                if let Some(org) = self.health_events.provider_org(&record.provider) {
+                    record.provider_org_id = org;
+                }
+            }
+            let display =
+                rolter_core::namespace::display_name(&record.provider, &record.provider_org_id);
+            if display.len() != record.provider.len() {
+                record.provider = display.to_string();
+            }
+        }
         // recorded per row because the configured rate can change between
         // writes; the rate in force when the row was kept is the one that
         // applies to it
@@ -1688,6 +1926,9 @@ struct PayloadLog<'a> {
     /// the tenancy of the row, so the join can require it on both sides
     org_id: &'a str,
     project_id: &'a str,
+    /// the key that sent the request, so one subject's bodies can be erased by
+    /// their own column (#1085)
+    virtual_key_id: &'a str,
     request_payload: &'a str,
     response_payload: &'a str,
 }
@@ -1700,6 +1941,7 @@ impl<'a> From<&'a RequestLog> for PayloadLog<'a> {
             log_id: log.log_id,
             org_id: &log.org_id,
             project_id: &log.project_id,
+            virtual_key_id: &log.virtual_key_id,
             request_payload: &log.request_payload,
             response_payload: &log.response_payload,
         }
@@ -1721,6 +1963,58 @@ mod tests {
     /// A System One answer states `input_tokens` and `output_tokens` the way
     /// Anthropic does, so it is reported usage (not `usage_unknown`) and a model
     /// whose output is free costs exactly its input (#3150).
+    /// What `LogSink::enqueue` names a row no refusal path named (#3307).
+    #[test]
+    fn an_unnamed_row_is_given_its_outcome_from_what_it_records() {
+        use rolter_core::request_outcome::RequestOutcome::*;
+        let row = |f: fn(&mut RequestLog)| {
+            let mut row = RequestLog {
+                status: 200,
+                ..Default::default()
+            };
+            f(&mut row);
+            outcome_of(&row)
+        };
+        assert_eq!(row(|_| {}), Served);
+        assert_eq!(
+            row(|r| {
+                r.status = 403;
+                r.withheld = 1;
+            }),
+            Withheld
+        );
+        assert_eq!(row(|r| r.status = CLIENT_DISCONNECT_STATUS), Cancelled);
+        assert_eq!(
+            row(|r| {
+                r.status = 503;
+                r.attempts = 2;
+            }),
+            UpstreamError
+        );
+        // the caller got the provider's own 499: not a disconnect
+        assert_eq!(
+            row(|r| {
+                r.status = CLIENT_DISCONNECT_STATUS;
+                r.upstream_status = CLIENT_DISCONNECT_STATUS;
+                r.attempts = 1;
+            }),
+            UpstreamError
+        );
+        // nothing tried and no target left: a refusal by status
+        assert_eq!(row(|r| r.status = 503), Refused);
+        assert_eq!(row(|r| r.status = 429), RefusedRateLimit);
+    }
+
+    #[test]
+    fn a_queued_row_always_carries_its_outcome() {
+        let row = RequestLog {
+            outcome: Some(rolter_core::request_outcome::RequestOutcome::RefusedBudget),
+            ..Default::default()
+        };
+        let json = serde_json::to_value(&row).unwrap();
+        assert_eq!(json["outcome"], "refused_budget");
+    }
+
     #[test]
     fn a_decision_reports_its_usage_and_costs_only_its_input() {
         let body = br#"{"model":"jev-1.13.0","answers":{"q":{"type":"noul","noul":0.9}},"usage":{"input_tokens":307,"output_tokens":3}}"#;
@@ -1823,10 +2117,11 @@ mod tests {
     #[test]
     fn payload_capture_redacts_before_truncation() {
         let fields = vec!["token".to_string(), "password".to_string()];
+        let redactor = rolter_core::payload_redaction::PayloadRedactor::fields_only(&fields);
         let captured = capture_payload(
             br#"{"token":"secret-value","nested":{"password":"also-secret"},"text":"hello"}"#,
             64,
-            &fields,
+            &redactor,
         );
         assert!(!captured.contains("secret-value"));
         assert!(!captured.contains("also-secret"));
@@ -1887,11 +2182,13 @@ mod tests {
             request_id: "shared-id".to_string(),
             org_id: "org-1".to_string(),
             project_id: "project-1".to_string(),
+            virtual_key_id: "key-1".to_string(),
             request_payload: "{}".to_string(),
             ..Default::default()
         };
         let log: serde_json::Value = serde_json::to_value(&rec).unwrap();
         let payload: serde_json::Value = serde_json::to_value(PayloadLog::from(&rec)).unwrap();
+        assert_eq!(payload["virtual_key_id"], log["virtual_key_id"]);
         assert_eq!(log["log_id"], rec.log_id.to_string());
         assert_eq!(payload["log_id"], log["log_id"]);
         assert_eq!(payload["org_id"], "org-1");
@@ -2105,6 +2402,7 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"usage\"
                 completion: 45,
                 total: 165,
                 reported: true,
+                cache_reported: true,
                 ..Usage::default()
             }
         );
@@ -2129,6 +2427,7 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"usage\"
                 total: 2051,
                 cache_read: 1920,
                 reported: true,
+                cache_reported: true,
                 ..Usage::default()
             }
         );
@@ -2148,6 +2447,7 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"
                 total: 2051,
                 cache_read: 1920,
                 reported: true,
+                cache_reported: true,
                 ..Usage::default()
             }
         );
@@ -2198,6 +2498,7 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"
                 total: 95,
                 cache_read: 80,
                 reported: true,
+                cache_reported: true,
                 ..Usage::default()
             }
         );
@@ -2216,9 +2517,65 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"
                 total: 95,
                 cache_read: 80,
                 reported: true,
+                cache_reported: true,
                 ..Usage::default()
             }
         );
+    }
+
+    /// Fireworks' dedicated deployments state the hit in a response header,
+    /// which the body parser cannot see (#2882); the body's own figure wins
+    #[test]
+    fn a_header_cache_read_fills_a_body_that_states_none() {
+        let mut usage = parse_usage(
+            false,
+            r#"{"usage":{"prompt_tokens":2048,"completion_tokens":5}}"#.as_bytes(),
+        );
+        usage.fill_cache_read(Some(1920));
+        assert_eq!(usage.cache_read, 1920);
+        let mut reported = parse_usage(
+            false,
+            r#"{"usage":{"prompt_tokens":2048,"prompt_tokens_details":{"cached_tokens":64}}}"#
+                .as_bytes(),
+        );
+        reported.fill_cache_read(Some(1920));
+        assert_eq!(reported.cache_read, 64);
+        let mut absent = Usage::default();
+        absent.fill_cache_read(None);
+        assert_eq!(absent.cache_read, 0);
+        assert!(!absent.cache_reported);
+        assert!(usage.cache_reported, "the header stated it");
+    }
+
+    /// A stated zero is a measurement and an absent field is not: only the
+    /// first counts towards the read share (#3410)
+    #[test]
+    fn a_stated_zero_cache_read_is_reported_and_an_absent_one_is_not() {
+        let zero = parse_usage(
+            false,
+            br#"{"usage":{"prompt_tokens":10,"prompt_tokens_details":{"cached_tokens":0}}}"#,
+        );
+        assert!(zero.cache_reported);
+        assert_eq!(zero.cache_read, 0);
+        let anthropic = parse_usage(
+            false,
+            br#"{"usage":{"input_tokens":10,"output_tokens":1,"cache_read_input_tokens":0}}"#,
+        );
+        assert!(anthropic.cache_reported);
+        let silent = parse_usage(false, br#"{"usage":{"prompt_tokens":10}}"#);
+        assert!(silent.reported && !silent.cache_reported);
+    }
+
+    /// Databricks' Claude endpoints: a flat `cache_read_input_tokens` beside
+    /// `prompt_tokens` (#2882)
+    #[test]
+    fn databricks_flat_cache_read_is_the_cache_read() {
+        let usage = parse_usage(
+            false,
+            r#"{"usage":{"prompt_tokens":120,"completion_tokens":5,"cache_read_input_tokens":80}}"#
+                .as_bytes(),
+        );
+        assert_eq!((usage.prompt, usage.cache_read), (120, 80));
     }
 
     /// GigaChat: `precached_prompt_tokens`
@@ -2299,6 +2656,7 @@ data: [DONE]\n\n";
                 cache_read: 80,
                 cache_write: 30,
                 reported: true,
+                cache_reported: true,
                 ..Usage::default()
             }
         );
@@ -2662,6 +3020,7 @@ data: {\"type\":\"message_delta\",\"usage\":{\"input_tokens\":10,\"cache_creatio
                 cache_write: 248,
                 cache_write_1h: 100,
                 reported: true,
+                cache_reported: true,
                 ..Usage::default()
             }
         );
@@ -2732,6 +3091,7 @@ data: {\"type\":\"message_delta\",\"usage\":{\"input_tokens\":2048,\"cache_creat
             cache_write: 248,
             cache_write_1h: 100,
             reported: true,
+            cache_reported: true,
             ..Usage::default()
         };
         assert_eq!(parse_usage(false, chat), expected);
@@ -3278,6 +3638,57 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
         // no queue, nothing written or dropped
         assert_eq!(metrics.logs_dropped_total.load(Relaxed), 0);
         assert_eq!(metrics.logs_written_total.load(Relaxed), 0);
+    }
+
+    #[test]
+    fn requests_that_start_inside_one_millisecond_are_ordered_by_start() {
+        init_start_sequence();
+        let first = Instant::now();
+        let second = first + Duration::from_nanos(700);
+        let third = first + Duration::from_nanos(900_000);
+        // the wall clock cannot tell them apart: one millisecond stamp for all
+        let ts = started_at(first);
+        // the sequence can, and it is never 0 (that is "no sequence")
+        let (a, b, c) = (start_seq(first), start_seq(second), start_seq(third));
+        assert!(a > 0 && a < b && b < c, "{a} {b} {c}");
+        // so rows written in the opposite order still sort by when they began
+        let mut rows = [
+            RequestLog {
+                ts,
+                seq: c,
+                request_id: "zzz-third".into(),
+                ..Default::default()
+            },
+            RequestLog {
+                ts,
+                seq: a,
+                request_id: "mmm-first".into(),
+                ..Default::default()
+            },
+            RequestLog {
+                ts,
+                seq: b,
+                request_id: "aaa-second".into(),
+                ..Default::default()
+            },
+        ];
+        rows.sort_by_key(|row| (row.ts.timestamp_millis(), row.seq));
+        let order: Vec<&str> = rows.iter().map(|r| r.request_id.as_str()).collect();
+        assert_eq!(order, ["mmm-first", "aaa-second", "zzz-third"]);
+    }
+
+    #[test]
+    fn the_sequence_is_written_when_stamped_and_left_out_otherwise() {
+        init_start_sequence();
+        let stamped = serde_json::to_value(RequestLog {
+            seq: start_seq(Instant::now()),
+            ..Default::default()
+        })
+        .unwrap();
+        assert!(stamped["seq"].as_u64().unwrap() > 0);
+        // an unstamped row omits the field, so ClickHouse fills in the default
+        let unstamped = serde_json::to_value(RequestLog::default()).unwrap();
+        assert!(unstamped.get("seq").is_none());
     }
 
     #[test]
@@ -4130,5 +4541,32 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
         )
         .await;
         assert!(req.contains("\"error\":\"\""), "{req}");
+    }
+
+    #[test]
+    fn a_disconnect_row_is_told_from_an_upstream_that_answered_499() {
+        // a caller who left: the gateway's status is the disconnect marker and
+        // the upstream said something else, or nothing
+        for upstream_status in [0, 200, 502] {
+            let row = RequestLog {
+                status: CLIENT_DISCONNECT_STATUS,
+                upstream_status,
+                error: CLIENT_DISCONNECT_ERROR.to_string(),
+                ..Default::default()
+            };
+            assert!(row.is_client_disconnect(), "upstream {upstream_status}");
+        }
+        // an upstream's own 499 is passed through, so both statuses agree
+        let upstream = RequestLog {
+            status: CLIENT_DISCONNECT_STATUS,
+            upstream_status: CLIENT_DISCONNECT_STATUS,
+            ..Default::default()
+        };
+        assert!(!upstream.is_client_disconnect());
+        assert!(!RequestLog {
+            status: 200,
+            ..Default::default()
+        }
+        .is_client_disconnect());
     }
 }

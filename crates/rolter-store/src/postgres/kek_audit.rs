@@ -50,6 +50,12 @@ pub const SEALED_COLUMNS: &[SealedColumn] = &[
         holds: "SSO client secrets",
     },
     SealedColumn {
+        table: "ldap_directories",
+        ciphertext: "bind_secret_ciphertext",
+        nonce: "bind_secret_nonce",
+        holds: "LDAP service-account bind passwords",
+    },
+    SealedColumn {
         table: "alert_channels",
         ciphertext: "secret_ciphertext",
         nonce: "secret_nonce",
@@ -69,6 +75,12 @@ pub const SEALED_COLUMNS: &[SealedColumn] = &[
         ciphertext: "auth_ciphertext",
         nonce: "auth_nonce",
         holds: "observability connector credentials",
+    },
+    SealedColumn {
+        table: "invitations",
+        ciphertext: "token_ciphertext",
+        nonce: "token_nonce",
+        holds: "pending invitation links, for a resend",
     },
     SealedColumn {
         table: "user_totp_factors",

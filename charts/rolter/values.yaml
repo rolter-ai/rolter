@@ -1,5 +1,8 @@
 image:
   repository: ghcr.io/rolter-ai/rolter
+  # the release both components run; empty means the chart's appVersion. Set
+  # `control.image.tag` or `gateway.image.tag` to run one component at another
+  # release, as a two-step upgrade does (control plane first, then gateways)
   tag: ""
   pullPolicy: IfNotPresent
 
@@ -26,6 +29,12 @@ securityContext:
   readOnlyRootFilesystem: true
 
 gateway:
+  # the gateways' release; empty means `image.tag` (#3352). Set it to hold the
+  # gateways on the release they run while the control plane moves first, or to
+  # roll the gateways back without the control plane. A gateway may lag behind
+  # its control plane but never lead it (see docs/user-docs/deployment/upgrading.mdx)
+  image:
+    tag: ""
   replicaCount: 2
   service:
     type: ClusterIP
@@ -45,9 +54,17 @@ gateway:
   podDisruptionBudget:
     enabled: true
     maxUnavailable: 1
+  # directory every local guardrail model must resolve under, set as
+  # ROLTER_SEMANTIC_MODEL_ROOT (#3511), where the models' volume is mounted.
+  # Empty leaves the gateway unconfined unless its config file sets
+  # `[semantic_guards] model_root`
+  semanticModelRoot: ""
   extraEnv: []
 
 control:
+  # the control plane's release; empty means `image.tag` (#3352)
+  image:
+    tag: ""
   replicaCount: 1
   # address the control plane binds inside the pod. Must stay reachable from
   # the Service, so it is not loopback here — which means an admin token is
@@ -138,6 +155,17 @@ control:
     # overwrites X-Forwarded-For: an unverified header hands an attacker
     # unlimited budgets and the ability to spend somebody else's
     trustForwardedFor: false
+  # bounds on the request log CSV export (#3360, #3421). an export past the row
+  # or time cap ends its body in an error, so the file cannot pass for complete;
+  # one past the concurrency bounds is answered 429 with Retry-After. 0 turns a
+  # bound off. maxSeconds is also a timer: a client that opens an export and
+  # stops reading loses its place when it passes, though nothing polls it
+  # (#3433). the concurrency counts are per control-plane pod
+  export:
+    maxRows: 1000000
+    maxSeconds: 600
+    maxConcurrent: 4
+    maxConcurrentPerCaller: 1
   # the control plane asks github once at boot and every six hours whether a
   # newer stable rolter release exists, so the dashboard footer can hint at it
   # (#902). one bounded request carrying nothing but a user-agent; offline is
@@ -172,6 +200,12 @@ env:
   redisUrl: ""
   clickhouseUrl: ""
 
+# secrets and other variables the workloads need, as container `env` entries.
+# for example, to email invitation links (#1828):
+#   - name: ROLTER_SMTP_URL
+#     valueFrom: { secretKeyRef: { name: rolter-smtp, key: url } }
+#   - name: ROLTER_SMTP_FROM
+#     value: "Rolter <noreply@example.com>"
 secretEnv: []
 
 ingress:

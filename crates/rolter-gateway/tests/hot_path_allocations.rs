@@ -220,3 +220,69 @@ fn cooldown_lookup_with_a_parked_target_does_not_allocate() {
         "Cooldowns::is_parked allocated {seen} time(s) with a parked target"
     );
 }
+
+/// A multi-key provider's key pick reads the pool's parks once (#3249); that
+/// read must not allocate either.
+#[test]
+fn the_key_pool_parked_mask_does_not_allocate() {
+    let cooldowns = Cooldowns::new();
+    cooldowns.park("key::provider", 1, 3600);
+    // warm: the first read may evict and settle the map
+    std::hint::black_box(cooldowns.parked_mask("key::provider", TARGETS));
+
+    let seen = counting(|| {
+        let mask = cooldowns.parked_mask(std::hint::black_box("key::provider"), TARGETS);
+        for idx in 0..TARGETS {
+            std::hint::black_box(mask.contains(idx));
+        }
+    });
+
+    assert_eq!(seen, 0, "Cooldowns::parked_mask allocated {seen} time(s)");
+}
+
+/// `Pipeline::select` picks in stack scratch for a route of up to
+/// `STACK_TARGETS` targets (#3249). Every stack built from scorers that need no
+/// live source is covered, at both ends of that range, with one target
+/// ineligible so the filter stage does real work.
+#[test]
+fn a_pipeline_pick_up_to_the_stack_width_does_not_allocate() {
+    use rolter_balancer::scorer::STACK_TARGETS;
+    use rolter_balancer::RouteContext;
+    use rolter_core::BalancingStrategy;
+
+    let ctx = RouteContext::new()
+        .with_session_key(Some("user-42-session"))
+        .with_prompt(Some(
+            "summarize the following document in three bullet points",
+        ));
+    for strategy in [
+        BalancingStrategy::Pipeline,
+        BalancingStrategy::LoraAware,
+        BalancingStrategy::Cheapest,
+    ] {
+        for n in [4, STACK_TARGETS] {
+            let weights: Vec<u32> = (0..n as u32).map(|i| 1 + i % 4).collect();
+            let loads: Vec<u64> = (0..n as u64).map(|i| i % 5).collect();
+            let lb = rolter_balancer::build(strategy, &weights);
+            for i in 0..n {
+                lb.observe(i, &ctx);
+            }
+            let eligible = |i: usize| i != 0;
+            // warm: the first pick may settle lazily built scorer state
+            std::hint::black_box(lb.pick_eligible(&ctx, &loads, &eligible));
+
+            let seen = counting(|| {
+                std::hint::black_box(lb.pick_eligible(
+                    std::hint::black_box(&ctx),
+                    &loads,
+                    &eligible,
+                ));
+            });
+
+            assert_eq!(
+                seen, 0,
+                "{strategy:?} over {n} targets allocated {seen} time(s)"
+            );
+        }
+    }
+}

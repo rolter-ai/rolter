@@ -5,6 +5,7 @@
 - **Upstream provider keys** are never stored in plaintext in the database. They are **envelope-encrypted** with AES-256-GCM: a per-record data key/nonce, wrapped by a master key (KEK) supplied via `ROLTER_KEK` (env/file). Pluggable backends (HashiCorp Vault, cloud KMS) are a roadmap item.
 - In the **bootstrap file**, prefer `api_key_env` over inline `api_key` so secrets stay in the environment, not on disk.
 - **Virtual keys** are stored as hashes with a short display prefix; the raw key is shown once at creation.
+- **Control-plane API tokens** (#1836) are stored the same way: a peppered sha-256 plus a display prefix, the secret shown once at mint or rotation, an expiry (90 days by default), and mint, rotation and revocation audited. A token holds one role at one scope, never reaches a deployment-wide capability and cannot manage tokens; see [RBAC & authentication](rbac-and-auth.md#scoped-api-tokens-for-automation-1836).
 - Secrets are never logged. The gateway redacts auth headers from traces.
 - **Logs never carry datastore credentials (#2406).** A Redis, ClickHouse, snapshot or Postgres URL can hold a password as userinfo (`redis://:pw@host`) or in a query parameter (`?password=`). Every startup line that names one, and every error that quotes one, goes through `rolter_core::redact` (`crates/rolter-core/src/redact.rs`): `redact_url` keeps scheme, host, port and path and prints userinfo and credential-named query values as `***`, `redact_urls_in_text` does the same for URLs inside an error string, and a URL that does not parse prints as `<invalid url>` rather than being echoed. Use it for any new log line or error that embeds a URL.
 - **`--help` never prints a secret from the environment (#2793).** clap renders `[env: NAME=value]` under every flag backed by an environment variable, current value included, unless the argument sets `hide_env_values = true`. `--help` is what an operator runs, and pastes into an issue, when something does not start, so it is the same leak as the startup log (#2406) through another door. Every `env =` argument whose name matches `TOKEN`, `KEY`, `PEPPER`, `KEK`, `SECRET`, `PASSWORD`, `CREDENTIAL`, `DSN`, `HEADERS` or `_URL` sets it, across `rolter`, `rolter-control`, `rolter-gateway` and `rolter-seed`. The variable's name is still listed; only its value is withheld. `rolter_core::cli_guard` (`crates/rolter-core/src/cli_guard.rs`, behind the `cli-guard` feature each binary crate enables as a dev-dependency) walks a binary's whole clap `Command`, subcommands included, and each binary's tests fail naming any matching argument that does not hide its value, so a flag added later is caught on the pull request that adds it. `crates/rolter/tests/help_hides_env_values.rs` runs the real `rolter` binary with the variables set and asserts none of them reaches `--help`. A non-secret variable with an unlucky name, such as `ROLTER_UI_DOCS_BASE_URL`, hides its value too: the rule is on the name, with no exemption list to go stale.
@@ -154,9 +155,10 @@ first the operator hears of it.
   keeps the pairs as a map and one of the two values would vanish. `security-lists.test.ts` reads
   `security.rs` and fails when the forbidden-character sets or the `/v1/` prefix change there, so a
   rule widened on one side shows up as a red test rather than as a toast.
-- **`ui/src/lib/security-loosening.ts` decides which saves ask first.** Only one edit loosens:
-  a path added to `auth_bypass_routes`. It compares the draft with what the store held at the last load or save,
-  and a save that only tightens goes out without a dialog (see
+- **`ui/src/lib/security-loosening.ts` decides which saves ask first.** Two edits loosen:
+  a path added to `auth_bypass_routes`, and a name removed from `required_headers` (#2358). It
+  compares the draft with what the store held at the last load or save, and a save that only
+  tightens goes out without a dialog. An allowed origin added does not ask, on purpose (see
   [destructive actions](../development/destructive-actions.md)).
 - **`ui/src/lib/gateway-pickup.ts` reads the fleet after a save.** The write bumps `config_version`
   (the table's trigger), each gateway reports the version it runs on its snapshot poll, and
@@ -403,7 +405,7 @@ sqlx text on, which can name relations, schemas, hosts and the credentials in a
 connection URL.
 
 A message that is safe and useful to show goes through `ApiError::Curated`
-instead (`crates/rolter-control/src/crud.rs`), and is rendered verbatim:
+instead (`crates/rolter-control/src/crud/`), and is rendered verbatim:
 
 | Message                                               | Where                                            |
 | ----------------------------------------------------- | ------------------------------------------------ |
@@ -411,7 +413,7 @@ instead (`crates/rolter-control/src/crud.rs`), and is rendered verbatim:
 | the reason an alert rule's signal read failed         | `alerting.rs`, worded by `read_signal`           |
 | failed to encrypt a connector or channel credential   | `connectors.rs`, `alerting.rs`                   |
 | failed to query observability connectors              | `collector_config.rs`                            |
-| unknown provider kind in a stored row                 | `crud.rs`                                        |
+| unknown provider kind in a stored row                 | `crud/`                                          |
 
 `4xx` answers are untouched: validation (`Error::Config`) and lookups
 (`Error::NotFound`) are written for the caller. A new message that has to reach
@@ -622,11 +624,11 @@ SCIM bearer) are not on the list: anonymously they answer `401`, and the guard r
   empty-looking reason.
 
 That is the one anonymous-route guard. It replaced a GET-only sweep in
-`tests/control_integration.rs` (#1820) that read `.public()` from the document
+`tests/control/` (#1820) that read `.public()` from the document
 and exempted `/gw`; the allowlist guard covers every method, needs no
 database, and `/gw` takes a session since #2463 (#2464).
 
-What stays in `tests/control_integration.rs` is the one case the guard cannot
+What stays in `tests/control/` is the one case the guard cannot
 reach: `every_route_the_spec_does_not_mark_public_refuses_a_forged_bearer`. A
 bearer that is present but is not the admin token is looked up as a session
 token, and that lookup needs a real database, so against the guard's
@@ -730,7 +732,8 @@ disappears on its own as they expire. Bodies written by gateways from v0.1.0 or
 earlier, which let ClickHouse stamp the log row and the payload row separately,
 never joined on `ts` and still do not: after the control plane is upgraded those
 bodies stop showing until payload retention removes them. The user docs'
-upgrade page says to upgrade gateways first for that reason.
+upgrade page keeps ADR-0038's order (control plane first) and says to roll the
+gateways straight after it, which keeps the set of such bodies small (#3349).
 
 Two limits are known and tracked:
 
@@ -753,7 +756,7 @@ Two limits are known and tracked:
 
 What keeps this from regressing is
 `every_route_the_spec_does_not_mark_public_refuses_an_anonymous_caller` in
-`crates/rolter-control/tests/control_integration.rs`: it walks the served
+`crates/rolter-control/tests/control/`: it walks the served
 `/openapi.json` with no credentials and a forged bearer and requires a `401`
 from every GET the document does not mark public. The routes that are open by
 design are listed in `PUBLIC_ROUTES` (see above) and marked `.public()` in
@@ -811,18 +814,21 @@ groups with no owner, so a key from any org could call another org's routes,
 or address its providers directly as `provider-slug/model` or through a group
 as `group-slug/model`, spending that org's credential. Two orgs that picked the
 same provider name also froze config propagation for everyone, because the
-snapshot refuses duplicate names.
+snapshot refused duplicate names.
 
 Every row loaded from the store now carries its org (and a route its project)
 as `tenancy`, and the gateway resolves a model only among the rows the key's
 org may use, on all three address forms and in `GET /v1/models`. Another org's
 row is a miss: it shadows nothing of the caller's own, and the caller gets the
 `404` an unknown model gets. On the write path a route target or group member
-must name a provider in the same org. Names the gateway indexes
-deployment-wide (route and provider names, and the one slug namespace
-providers and groups share) are unique across orgs, and so is a route name
-that would sit on another org's `slug/model` address. A collision is refused
-with a `409` that does not say which org holds the name. The route-name check
+must name a provider in the same org. Names are per org (#1857,
+[ADR-0040](../adr/2026-10-28-per-org-namespaces.md)): two orgs may each have a
+`gpt-4o` route and an `openai` provider, a key resolves its own org's row
+first, and the gateway keeps their breakers, cooldowns, key pools and queues
+apart. Within one org, route and provider names and the one slug namespace
+providers and groups share are unique, and a route name may not sit on
+another org's `slug/model` address. A collision is refused with a `409` that
+does not say which org holds the name. The route-name check
 runs one way: a slug created after another org's `slug/…` route is accepted,
 and keys that carry no org then reach that route rather than the new address
 (the ADR-0017 addendum explains why). An admin can also
@@ -832,7 +838,7 @@ behind it to that project's keys (#1919).
 The contract, the table of which keys admit which rows, and the write-time
 guards are in
 [RBAC & authentication](rbac-and-auth.md#one-org-never-reaches-another-1844-1845);
-per-org namespaces, which would let two orgs reuse a name, are #1857.
+[ADR-0040](../adr/2026-10-28-per-org-namespaces.md) is the naming model.
 
 ## Control↔data-plane trust boundary
 
@@ -884,24 +890,42 @@ Consequences that fall out of that choice:
 - **`RestorationTicket` is not printable.** Its `Display` renders `<restoration token redacted>`, and the token is reachable only through `token_for(&scope)`, which returns `None` unless the caller's org/team/project/route match the scope the ticket was minted under. A token from one project cannot restore content in another.
 - **Restoration is opt-out, not opt-in-by-default.** `RestorationPolicy::Never` is the default; `CallerAuthorized` honours `x-rolter-pii-restore` only because the _policy_ allows it, never because the caller asked.
 - **The response leg never requests reversibility.** Restoring provider-generated content would return the very data that leg exists to remove.
-- **A streamed response with an active response leg is refused** (`pii_streaming_unsupported`, HTTP 400), mirroring `guardrails.streaming_post_call`. Correct streaming restoration would need either a network round trip per chunk — destroying TTFT — or the mapping held in-process, destroying the property above. `streaming = "passthrough"` waives the response leg instead.
+- **A streamed response with an active response leg is refused by default** (`pii_streaming_unsupported`, HTTP 400), mirroring `guardrails.streaming_post_call`. A restore round trip per chunk caps the stream at one frame per round trip, and holding the mapping in-process destroys the property above (ADR `adr/2026-10-27-pii-streaming-restoration.md`). `streaming = "passthrough"` waives the response leg; `streaming = "restore"` restores the stream through the sanitizer instead, described below.
 - **A malformed sanitizer reply is a failure**, unlike the guardrail webhook's decision parsing which defaults to allow. Defaulting would forward content the gateway believes is sanitized and is not.
 - **Restore runs after the cache store**, so what is cached is what the upstream said. A later hit on the same entry is re-evaluated against its own request's policy and ticket rather than replaying someone else's restored plaintext.
+- **Payload capture keeps the pre-restore body** (#3240). `pii_response_leg_apply` returns the placeholder-bearing body a restore replaced alongside the restored one, `Delivery::Send` carries it as `pre_restore`, and `buffered_response` redacts and cuts it to `payload_max_bytes` at once (`capture_payload`) and hands the string to `UsageLoggingStream::with_captured_payload`, so `response_payload` holds placeholders exactly as `request_payload` (built from the sanitized `forward_body`) does. The copy is only made when payload capture is on for the request: `PiiResponseLeg::capture` is the same `payload_capture_enabled` decision the log row makes, and with it off the pre-restore value is neither encoded nor compared. The caller still receives the restored bytes; billing reads the usage parsed from the upstream body before any policy ran (`billed`, #1478), and the completion observer reads the delivered bytes. Test: `payload_capture_keeps_the_pre_restore_response_body` in `crates/rolter-gateway/tests/integration.rs`.
 - **`fail_open` is the default and is the risk to monitor.** It forwards unsanitized content when the service is down. `rolter_pii_sanitizer_errors_total` rising under `fail_open` means personal data is reaching providers; deployments where the sanitizer is a compliance control should set `fail_closed`.
 
 A response-leg failure never fails the request even under `fail_closed`: the upstream call already happened and was already billed, so refusing to deliver would spend the caller's money and return nothing. The counter records it.
+
+### Streamed restoration (#911)
+
+`streaming = "restore"` restores a stream without the mapping entering the process (ADR `adr/2026-10-27-pii-streaming-restoration.md`, option 4). `PiiSanitizerConfig::stream_handling` decides per request: `None` when nothing touches the response, `Reject` when the leg also sanitizes (`restore` covers restoration only), else the configured mode. With `Restore`, the handler builds a `pii_stream::StreamRestore` from the request's own `RestorationTicket` (through `token_for(&scope)`, so the scope check still guards it) and hands it to whichever path answers: `stream_response` (live), `buffered_response` (a cacheable miss, whose body is one buffered chunk) or `cached_response` (an SSE replay, restored with the replaying request's token). No ticket means nothing was replaced and the stream is served as it is.
+
+`RestoringStream` (`crates/rolter-gateway/src/pii_stream.rs`) wraps the `UsageLoggingStream` rather than sitting inside it, so usage, billing (#1478), the disconnect row (#1083) and payload capture read the provider's own bytes, and only the caller sees restored text. It:
+
+- splits the body into SSE events and, per event, finds the text slots of the dialect it is in: OpenAI chat and completions chunks (each choice's `content`, `reasoning_content`, `reasoning`, `refusal`, `text` and each tool call's `arguments`), Anthropic `content_block_delta` (`text_delta`, `thinking_delta`, `input_json_delta`) and Responses API deltas (`output_text`, `reasoning_text`, `reasoning_summary_text`, `refusal`, `function_call_arguments`). A slot's channel is `choice/field`, `choice/tool_calls/k`, `block/field`, `output/content`, `output/summary/s` or `output/arguments`. JSON-source channels carry `"format": "json"`;
+- sends one NDJSON line per slot and a `close` per channel on `finish_reason`, `content_block_stop`, `message_stop`, a Responses done event or the end of the upstream, over one `POST restore_stream_url` whose request body is an unbounded channel bounded in practice by the window (`MAX_UNANSWERED_LINES`, `MAX_UNANSWERED_BYTES`): when it is full the upstream is not polled, and events already read stay in `partial` until replies free room, so one chunk holding a whole body (a buffered cache miss, a cached replay) is held to the window too. The exchange has no timeout of its own while it opens: the per-line deadline, armed when the first delta is sent, covers the response head as well, so a long prefill before the first token cannot time the pipe out. The request goes through `EgressClient::post` like `url` and `restore_url`, with the same `authorize` helper;
+- matches each reply to the front of `outstanding` by `seq` and puts its text into its frame. A frame whose reply held text (`held > 0`) is not emitted until the channel's next reply releases it, so the text a `close` flushes is appended to the frame that carried the held characters rather than to a synthesized frame. Frames go out in order; a frame whose text did not change is forwarded byte for byte, and one that did is re-encoded from its parsed JSON (key order may change);
+- for the Responses API, keeps an xxh3 digest of each channel's original text and the delivered text, and rewrites a done event's or the final response's repeated full text when its digest matches the channel's original, so the final object agrees with the deltas;
+- on failure (`Failure::{Open, Transport, Protocol, Timeout}`) counts `rolter_pii_restore_errors_total` once, logs one line naming the reason and nothing else, resets the pipe, appends each channel's held tail to its held frame, gives every unanswered slot its original text, and serves the rest unrestored. A clean end sends `end`, closes the request body and counts `rolter_pii_restorations_total`; it does not wait for the reply to `end`;
+- on drop before the end (a client disconnect) sends an error into the request body, which resets the exchange, and drops the upstream with `inner`.
+
+A streamed request answered with a body that is not SSE (an upstream that ignored `"stream": true`) cannot be restored: `StreamRestore::not_a_stream` counts it in `rolter_pii_restore_errors_total` and warns, and the body goes out with its placeholders. A ticket whose `token_for` refuses the request's scope is counted and warned about the same way. An OpenAI `finish_reason` of `""` is read as `null`, not as a close.
+
+What it holds: each slot's original text until it is answered, the held tail (at most `MAX_STREAM_HELD_CHARS`, 1,024 characters, per channel: a reply holding more is `Failure::Protocol`), and, for Responses API channels only, the delivered text. That is the provider's placeholder-bearing text and the restored text on its way to the caller, the same exposure as a restored buffered body. `RestoreStreamReply` and `StreamRestore` do not print their text or token. Tests: `crates/rolter-gateway/src/pii_stream_tests.rs`, whose stub sanitizer runs the holdback the contract asks for; `every_segmentation_reassembles_to_the_buffered_restore` drives `RestoringStream` over every frame segmentation (one character per frame, a cut at every offset inside every placeholder, uneven runs) and every byte cut (one byte per chunk, with and without `\u003c` escapes) for all three dialects, `the_gateway_restores_a_live_stream_and_a_cached_replay` runs the same through the gateway (the Responses API is never cached), and the others cover a mid-stream failure, a pipe that does not open, a timeout, backpressure, a client disconnect, and a TRACE-level log, payload-capture and metrics scan for restored values. The Presidio shim is #3339, the latency bench #3340.
 
 ## Streamed responses and post-response controls (#1776)
 
 Output guardrails, `post_response` plugins and the PII sanitizer's response leg all judge a whole response body, and a stream reaches the caller before any whole body exists. A setting that the client flips with `"stream": true` must not switch off a control the operator configured, so each of the three refuses the stream up front with a `400` and `param: "stream"`, before the cache lookup or the upstream call. Each has an explicit way to waive the refusal.
 
-| Control                | Refused with                      | Counter                                    | Waived by                                        |
-| ---------------------- | --------------------------------- | ------------------------------------------ | ------------------------------------------------ |
-| output guardrails      | `guardrail_streaming_unsupported` | `rolter_guardrail_stream_rejections_total` | `guardrails.streaming_post_call = "passthrough"` |
-| `post_response` plugin | `plugin_streaming_unsupported`    | `rolter_plugin_stream_rejections_total`    | the plugin's `failure_mode = "fail_open"`        |
-| PII response leg       | `pii_streaming_unsupported`       | `rolter_pii_stream_rejections_total`       | `pii_sanitizer.streaming = "passthrough"`        |
+| Control                | Refused with                      | Counter                                    | Waived by                                                                       |
+| ---------------------- | --------------------------------- | ------------------------------------------ | ------------------------------------------------------------------------------- |
+| output guardrails      | `guardrail_streaming_unsupported` | `rolter_guardrail_stream_rejections_total` | `guardrails.streaming_post_call = "passthrough"`                                |
+| `post_response` plugin | `plugin_streaming_unsupported`    | `rolter_plugin_stream_rejections_total`    | the plugin's `failure_mode = "fail_open"`                                       |
+| PII response leg       | `pii_streaming_unsupported`       | `rolter_pii_stream_rejections_total`       | `pii_sanitizer.streaming = "passthrough"`, or `"restore"` for restoration alone |
 
-A plugin's waiver is its own failure mode rather than a new setting. `fail_closed` already says "never deliver what I have not approved", and a stream is exactly a response the plugin cannot approve. `fail_open` already says "deliver when I cannot answer", which is all a stream permits. The check (`handlers.rs`, beside `post_response_plugin_list`) refuses when any applicable plugin is fail closed and names it in the message. Before #1776, every `post_response` plugin was silently skipped for a stream. Tests: the `*_post_response_plugin_*stream*` cases in `crates/rolter-gateway/tests/integration.rs`, including a cached stream refused after a hot reload adds the plugin.
+A plugin's waiver is its own failure mode rather than a new setting. `fail_closed` already says "never deliver what I have not approved", and a stream is exactly a response the plugin cannot approve. `fail_open` already says "deliver when I cannot answer", which is all a stream permits. The check (`handlers.rs`, `RequestCtx::post_response_plugins`) refuses when any applicable plugin is fail closed and names it in the message. Before #1776, every `post_response` plugin was silently skipped for a stream. Tests: the `*_post_response_plugin_*stream*` cases in `crates/rolter-gateway/tests/integration.rs`, including a cached stream refused after a hot reload adds the plugin.
 
 The dashboard states the consequence where the choice is made (#2178). `ui/src/pages/Plugins.tsx` shows a note in the plugin dialog once the stage is `post_response`, worded by the selected `failure_mode` and wired as the description of both pickers, and a `post_response` card with `fail_closed` carries a one-line warning. Unlike the guardrail rule screen, which has to read `streaming_post_call` from the effective config, both follow from the plugin's own fields. The stories `WarnsThatAFailClosedPostResponsePluginRefusesStreams` and `DialogNoteTracksStageAndFailurePolicy` pin it.
 
@@ -1005,22 +1029,24 @@ ones included, and is guarded by the superadmin-only `deployment_audit_log:read`
 capability. It is the same keyset-paged read as the per-org one: the handlers
 share the query-string parsing (`audit_log_filter`), the `(at, id)` cursor and
 the response builder, and differ only in the store call (`list_page_all` /
-`count_all` have no org predicate). A security-auditor role (#1834) does not
-exist yet, so the endpoint admits superadmins alone; that role is to be added
-at the guard in `list_deployment_audit_log`.
+`count_all` have no org predicate). The `security_auditor` deployment role (#1834) holds the same capability, so a
+read-only reviewer reads it without being a superadmin; an `operator` does not
+(see [RBAC & authentication](rbac-and-auth.md#deployment-roles-an-operator-and-a-security-auditor-1834)).
+Granting a deployment role is itself audited, as `user.deployment_role`, in this log.
 
-## Three credentials, one word (#943)
+## Four credentials, one word (#943, #1836)
 
-Three unrelated secrets pass through rolter, and each is an "API key" to
+Four unrelated secrets pass through rolter, and each is an "API key" to
 someone. Keeping them apart is a security property, not a documentation
 nicety — a provider key pasted into a client is a credential leak that no
 budget, allow-list or audit row constrains.
 
-| Credential   | Shape                    | Held by               | Checked by                         |
-| ------------ | ------------------------ | --------------------- | ---------------------------------- |
-| virtual key  | `sk-rolter-<48 hex>`     | client applications   | the gateway, on `/v1/*`            |
-| provider key | the provider's own shape | rolter                | nothing — it is presented upstream |
-| admin token  | operator-chosen          | operators, automation | the control plane                  |
+| Credential   | Shape                    | Held by               | Checked by                                                                 |
+| ------------ | ------------------------ | --------------------- | -------------------------------------------------------------------------- |
+| virtual key  | `sk-rolter-<48 hex>`     | client applications   | the gateway, on `/v1/*`                                                    |
+| provider key | the provider's own shape | rolter                | nothing — it is presented upstream                                         |
+| admin token  | operator-chosen          | operators, automation | the control plane                                                          |
+| API token    | `rolter_api_<64 hex>`    | one automation job    | the control plane, as one role at one scope (#1836, never deployment-wide) |
 
 The gateway therefore refuses a _provider-shaped_ key with a message that names
 the mistake ("this looks like an Anthropic provider key…") rather than a bare

@@ -338,7 +338,7 @@ function StageLane({
         <p className="mt-2 text-xs leading-relaxed text-muted-foreground">{stage.description}</p>
       </div>
       {plugins.length === 0 ? (
-        <div className="flex min-h-[116px] items-center justify-center rounded-[10px] border border-dashed border-[color:var(--border-default)] text-xs text-[color:var(--text-subtle)]">
+        <div className="flex min-h-[116px] items-center justify-center rounded-lg border border-dashed border-[color:var(--border-default)] text-xs text-[color:var(--text-subtle)]">
           {t("pages.plugins.stageEmpty")}
         </div>
       ) : (
@@ -346,7 +346,7 @@ function StageLane({
           {plugins.map((plugin) => (
             <article
               key={plugin.id}
-              className="min-w-0 rounded-[10px] border border-[color:var(--border-default)] bg-background p-4"
+              className="min-w-0 rounded-lg border border-[color:var(--border-default)] bg-background p-4"
             >
               <div className="flex items-start gap-3">
                 <div className="min-w-0 flex-1">
@@ -580,7 +580,12 @@ function PluginDialog({
     );
   };
   return (
-    <Dialog open={open} onOpenChange={(value) => !value && onClose()}>
+    <Dialog
+      open={open}
+      onOpenChange={(value) => !value && onClose()}
+      onSubmit={save}
+      busy={mutation.isPending}
+    >
       <DialogHeader>
         <DialogTitle>
           {initial ? t("pages.plugins.dialogTitleEdit") : t("pages.plugins.dialogTitleNew")}
@@ -593,6 +598,7 @@ function PluginDialog({
             label={t("pages.plugins.fieldName")}
             htmlFor="plugin-name"
             error={fields.errorOf("name")}
+            markRequired
           >
             <Input
               id="plugin-name"
@@ -622,7 +628,11 @@ function PluginDialog({
           />
         </Field>
         <div className="grid gap-3 sm:grid-cols-2">
-          <Field label={t("pages.plugins.fieldScope")} htmlFor="plugin-scope">
+          <Field
+            label={t("pages.plugins.fieldScope")}
+            info={t("pages.plugins.fieldScopeInfo")}
+            htmlFor="plugin-scope"
+          >
             <Combobox
               id="plugin-scope"
               value={form.project_id}
@@ -633,7 +643,11 @@ function PluginDialog({
               ]}
             />
           </Field>
-          <Field label={t("pages.plugins.fieldStage")} htmlFor="plugin-stage">
+          <Field
+            label={t("pages.plugins.fieldStage")}
+            info={t("pages.plugins.fieldStageInfo")}
+            htmlFor="plugin-stage"
+          >
             <Combobox
               id="plugin-stage"
               aria-describedby={streaming ? streamingNoteId : undefined}
@@ -645,8 +659,10 @@ function PluginDialog({
         </div>
         <Field
           label={t("pages.plugins.fieldEndpoint")}
+          info={t("pages.plugins.fieldEndpointInfo")}
           htmlFor="plugin-endpoint"
           error={fields.errorOf("endpoint")}
+          markRequired
         >
           <Input
             id="plugin-endpoint"
@@ -671,7 +687,11 @@ function PluginDialog({
               onChange={(event) => set({ position: event.target.value })}
             />
           </Field>
-          <Field label={t("pages.plugins.fieldFailure")} htmlFor="plugin-failure">
+          <Field
+            label={t("pages.plugins.fieldFailure")}
+            info={t("pages.plugins.fieldFailureInfo")}
+            htmlFor="plugin-failure"
+          >
             <Combobox
               id="plugin-failure"
               aria-describedby={streaming ? streamingNoteId : undefined}
@@ -730,7 +750,7 @@ function PluginDialog({
         <Button variant="ghost" onClick={onClose}>
           {t("pages.plugins.cancel")}
         </Button>
-        <Button disabled={mutation.isPending} onClick={save}>
+        <Button type="submit" disabled={mutation.isPending}>
           {mutation.isPending
             ? t("pages.plugins.saving")
             : initial

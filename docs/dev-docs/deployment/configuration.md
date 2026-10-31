@@ -17,7 +17,7 @@ The gateway boots from a TOML file (`--config`, default `rolter.toml`); see [`ro
 ### `[[providers]]`
 
 - `name` (string, unique) — referenced by route targets
-- `kind` (`openai` | `anthropic` | `openai_compatible` | `ollama` | `ollama_cloud` | `llama_cpp` | `openrouter` | `tei` | `azure_openai` | `bedrock` | `vertex` | `gemini` | `gemini_native` | `gemini_interactions` | `mistral` | `groq` | `xai` | `meta_llama_api` | `cohere` | `perplexity` | `together` | `fireworks` | `databricks` | `aleph_alpha` | `nebius` | `ovhcloud` | `scaleway` | `deepseek` | `qwen` | `zhipu` | `kimi` | `ernie` | `doubao` | `hunyuan` | `yi` | `minimax` | `baichuan` | `gigachat` | `yandex_gpt` | `cloud_ru` | `mts_ai` | `naver` | `upstage` | `rinna` | `rakuten` | `sarvam` | `krutrim` | `falcon`)
+- `kind` (`openai` | `anthropic` | `openai_compatible` | `ollama` | `ollama_cloud` | `llama_cpp` | `openrouter` | `tei` | `azure_openai` | `bedrock` | `vertex` | `gemini` | `gemini_native` | `gemini_interactions` | `mistral` | `groq` | `xai` | `meta_llama_api` | `cohere` | `perplexity` | `together` | `fireworks` | `databricks` | `aleph_alpha` | `nebius` | `ovhcloud` | `scaleway` | `deepseek` | `qwen` | `zhipu` | `kimi` | `ernie` | `doubao` | `hunyuan` | `yi` | `minimax` | `baichuan` | `gigachat` | `yandex_gpt` | `cloud_ru` | `mts_ai` | `naver` | `upstage` | `rinna` | `rakuten` | `sarvam` | `krutrim` | `falcon` | `system_one` | `infinity`)
 - `api_base` (string) — base URL, no trailing slash
 - `api_key` (string, optional) — prefer `api_key_env`
 - `api_key_env` (string, optional) — environment variable to read the key from. It is read from the environment of each process that needs the key: the gateway reads it for every request, and the control plane reads it for **Test connection**, so a deployment that runs them apart sets it in both (#2811)
@@ -56,6 +56,7 @@ preview cannot disagree with the forwarder:
 | --------------------- | -------------------------- | ------------------------------------- |
 | `anthropic`           | a chat completion          | `/v1/messages`                        |
 | `tei`                 | an embedding               | `/v1/embeddings`                      |
+| `infinity`            | an embedding               | `/v1/embeddings`                      |
 | `gemini_native`       | a chat completion          | `/models/{model}:generateContent`     |
 | `gemini_interactions` | a chat completion          | `/interactions`                       |
 | every other kind      | a chat completion          | `/v1/chat/completions`                |
@@ -80,6 +81,7 @@ kind:
 | `request`          | `chat` or `embeddings`, the request the preview is for                      |
 | `request_path`     | the upstream path above; `{model}` stands for the upstream model name       |
 | `auth_header`      | the lowercase header the key travels in (`authorization` is a bearer token) |
+| `unverified`       | the specification registry records no located API reference for the kind    |
 
 The kind's display name and one-line description are dashboard copy, not
 served: `providerSheet.kinds.<kind>.name` and `.description` in every catalog.
@@ -101,8 +103,8 @@ path):
 - the body is a `max_tokens = 1` chat completion put through the same
   `TranslationPlan` a client request takes, so `anthropic`, `gemini_native` and
   `gemini_interactions` get their own wire format;
-- a text-embeddings server (`tei`) answers no completion, so it is sent the
-  embedding of one word;
+- a text-embeddings server (`tei`, `infinity`) answers no completion, so it is
+  sent the embedding of one word;
 - the key goes out in the header `ProviderKind::auth_header` names.
 
 If the plan cannot be built the check logs why and falls back to the free probe,
@@ -170,7 +172,7 @@ api_key_env = "AZURE_OPENAI_API_KEY"
 [[providers]]
 name = "bedrock"
 kind = "bedrock"
-api_base = "https://bedrock-runtime.us-east-1.amazonaws.com/v1"
+api_base = "https://bedrock-runtime.us-east-1.amazonaws.com/openai/v1"
 api_key_env = "AWS_BEARER_TOKEN_BEDROCK"
 
 [[providers]]
@@ -323,6 +325,7 @@ Deployment-wide policy for routes using the `adaptive` strategy. See [load balan
 - `probe_concurrency` (usize, default `2`) — max probes in flight at once during a sweep, so probing never stampedes upstreams
 - `consecutive_failure_threshold` (u32, default `3`) — consecutive probe failures before a provider is marked unhealthy
 - `recovery_success_threshold` (u32, default `2`) — consecutive successes before an unhealthy provider recovers
+- `catalogue_interval_secs` (u64, default `900`) — seconds between refreshes of each provider's model catalogue for `GET /v1/models`; runs even when `enabled = false`, `0` turns it off
 - `status_page_interval_secs` (u64, default `60`) — seconds between provider status-page polls; only providers with a `status_page_url` are polled, and the poller runs even when `enabled = false`
 - probes are jittered across the first quarter of the interval (per-provider stable offset), and a `429` on the probe itself pauses that provider's probing with exponential backoff (1, 2, 4, 8 sweeps) without marking it unhealthy
 
@@ -427,16 +430,16 @@ A vendor-neutral hook to a self-hosted semantic guardrail service (e.g. Guardrai
 
 - `enabled` (bool, default `false`) — master switch
 - `url` (string) — http(s) endpoint the envelope is POSTed to (required when enabled)
-- `stage` (string, default `pre_call`) — `pre_call` inspects the request. `post_call` is validated but not yet enforced (output/SSE stage deferred).
+- `stage` (string, default `pre_call`) — `pre_call` inspects the request, `post_call` the response (#459; a stream is refused or buffered per the policy, ADR-0037).
 - `timeout_ms` (u64, default `2000`) — per-call timeout
-- `max_retries` (u32, default `0`) — extra attempts on a transient failure (connect/timeout/non-2xx)
+- `max_retries` (u32, default `0`) — extra attempts on a transient failure (connect, timeout, unreadable body, `429`/`503`)
 - `failure_mode` (string, default `fail_open`) — `fail_open` forwards unchanged when the service is unreachable; `fail_closed` rejects with an OpenAI-compatible error
 - `max_body_bytes` (usize, default `65536`) — cap on the content forwarded; oversized content is sent as a truncated preview with `truncated: true`
 - `auth` — optional credential resolved from the environment at call time, never inlined:
   - `{ bearer = { token_env = "GUARD_TOKEN" } }` → `Authorization: Bearer <env>`
   - `{ shared_secret = { secret_env = "GUARD_SECRET" } }` → `X-Rolter-Guardrail-Secret: <env>`
 
-**Contract.** Request envelope: `{ direction, stage, model, route, trace_id, tenant: { org, team, project, key }, truncated, content }`. Only these fields are sent; prompt content is never logged by the gateway. Response: `{ "action": "allow" | "block" | "transform" | "annotate", "content"?, "reason"?, "annotations"? }`. An unrecognized or malformed decision defaults to `allow` (transport failures are governed by `failure_mode`). Metrics: `rolter_guardrail_webhook_blocks_total`, `_transforms_total`, `_errors_total`; the trace id is propagated in the `X-Rolter-Trace-Id` header.
+**Contract.** Request envelope: `{ direction, stage, model, route, trace_id, tenant: { org, team, project, key }, truncated, content }`. Only these fields are sent; prompt content is never logged by the gateway. Response: `{ "action": "allow" | "block" | "transform" | "annotate", "content"?, "reason"?, "annotations"? }`. Since #459 the response may carry `categories` (name → score in `[0, 1]`), and an answer that is not a decision follows `failure_mode` like a transport failure rather than reading as `allow`. The webhook is one provider of the [semantic guards](../architecture/semantic-guards.md) and runs beside `[semantic_guards]` and the registry's providers. Metrics: `rolter_guardrail_webhook_blocks_total`, `_transforms_total`, `_errors_total`; the trace id is propagated in the `X-Rolter-Trace-Id` header.
 
 ```toml
 [guardrail_webhook]
@@ -522,6 +525,7 @@ keys are rejected.
 - `ROLTER_ADMIN_TOKEN` — bearer token for the management API; at least 32 characters, or the control plane and `easy-up` refuse to start (#1964)
 - `ROLTER_DB_LOCK_TIMEOUT_SECS` (10), `ROLTER_DB_STATEMENT_TIMEOUT_SECS` (30), `ROLTER_REQUEST_TIMEOUT_SECS` (60) — the bounds that keep a write stuck behind a row lock from hanging the control plane (#1925). The first two are `lock_timeout` and `statement_timeout` set on every pooled connection by `rolter_store::postgres::connect_with` (migrations run on a pool without them); Postgres' `55P03` and `57014` become `Error::StoreTimeout`, which the API answers as a `504` with code `store_timeout`. The sign-in and second-factor handlers (`AuthError::StoreTimeout`) answer the same code, and SCIM a `504` in its own envelope (#3148); `crates/rolter-control/tests/store_error_discipline.rs` fails on a call site that stringifies a store error into `Error::Store` or `AuthError::Internal` and so loses the kind. The third is a router layer (`request_timeout.rs`) answering `504` with code `request_timeout`; `/gw/*`, the streaming playground proxy, is exempt. The bound reaches the dashboard as `requestTimeoutSecs` in `window.__ROLTER_CONFIG__`, and `ui/src/lib/api/request.ts` aborts a call 5 s after it with the same code (#3147). `0` disables each bound. Keep lock < statement < request so the database answers first
 - `ROLTER_PUBLIC_URL` — the control plane's externally reachable base URL (default `http://localhost:4001`). The OIDC redirect URI is derived from it, so single sign-on needs it set correctly behind a proxy; see [Single sign-on](../architecture/sso.md). Read once at startup, so a change needs a restart
+- `ROLTER_SMTP_URL`, `ROLTER_SMTP_FROM` — optional mail relay and sender for emailing invitation links (#1828); the URL can carry a password, so supply it as a secret. Read once at startup; see [Invitations](../architecture/invitations.md#email-delivery)
 - `ROLTER_DATABASE_URL`, `ROLTER_REDIS_URL`, `CLICKHOUSE_URL` — datastores (ClickHouse alone is read unprefixed)
 - `RUST_LOG` — tracing filter (e.g. `info`, `rolter_gateway=debug`)
 - provider key vars referenced by `api_key_env` (e.g. `OPENAI_API_KEY`)

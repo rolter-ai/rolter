@@ -222,9 +222,9 @@ The superadmin is exempt from `Password sign-in: off` on purpose. A mistyped iss
 
 Choosing **Continue with …** on the sign-in screen takes the user to the identity provider and back, and they land signed in on the dashboard. The session token never appears in the address bar: the provider's redirect carries a one-time code that is good for a minute and works once, and the dashboard swaps it for the session straight away.
 
-If the sign-in is refused, the user comes back to the sign-in screen with the reason. The reasons are: the provider declined the sign-in, the sign-in took too long or was already used, SSO is turned off for the organization, the user is in no mapped group, the account is deactivated, or the provider's answer could not be verified. The provider's own error text is never shown.
+If the sign-in is refused, the user comes back to the sign-in screen with the reason. The reasons are: the provider declined the sign-in, the sign-in took too long or was already used, SSO is turned off for the organization, the user is in no mapped group, the account is deactivated, the account belongs to another organization, to a superadmin or to a holder of a deployment role, or the provider's answer could not be verified. The provider's own error text is never shown.
 
-Scripts and other non-browser clients that call the callback directly (without asking for `text/html`) still receive the session as JSON.
+Scripts and other non-browser clients that call the callback directly (without asking for `text/html`) still receive the session as JSON. When the sign-in is refused they receive the reason as a stable `error.code` in the JSON body, with the status the refusal always had. The codes are `idp_error`, `state_expired`, `sso_disabled`, `unknown_provider`, `no_mapped_group`, `account_deactivated`, `account_outside_org`, `idp_verification_failed`, `not_configured` and `internal_error`; `account_outside_org`, for example, is a `403` for an account that is a superadmin, holds a deployment role or has roles in another organization. The message never names the account.
 
 ## What the login flow refuses to do
 
@@ -234,6 +234,7 @@ Scripts and other non-browser clients that call the callback directly (without a
 - **One-shot sign-in code.** A browser is handed a code, not the session. The code expires after a minute, works once, and only its digest is stored.
 - **No metadata addresses.** The issuer is checked against the [egress policy](/configuration/egress) when the provider is saved, and the discovery document, token endpoint and JWKS are checked again each time they are fetched. These calls do not follow redirects.
 - **No implicit access.** A user in no mapped group gets the provider's default role, or is refused when there is none.
+- **No adoption across organizations.** A provider signs in as an existing account with the same email only when every role that account holds is in the provider's own organization. It never signs in as a superadmin, or as an account that holds a deployment role (operator or security auditor), even one with no organization roles. Whoever registers a provider decides which emails it asserts, so anything wider would let one organization's admins sign in as another organization's members. A person with roles in two organizations signs in with their password instead.
 
 ## Removing a provider
 

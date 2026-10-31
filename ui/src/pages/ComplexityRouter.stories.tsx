@@ -365,7 +365,10 @@ export const EditorPolicyReadFails: Story = {
     // no tier rows to edit and nothing to save: the draft would have gone over
     // contents the read never returned
     await expect(dialog.queryByDisplayValue("small")).not.toBeInTheDocument();
-    await expect(dialog.getByRole("button", { name: "Save" })).toBeDisabled();
+    await expect(dialog.getByRole("button", { name: "Save" })).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
   },
 };
 
@@ -459,7 +462,10 @@ export const OutOfOrderPolicyIsRefusedOnTheRow: Story = {
     await expect(second).toHaveAccessibleDescription(
       "The ceiling must be larger than the tier before it.",
     );
-    await expect(dialog.getByRole("button", { name: "Save" })).toBeDisabled();
+    await expect(dialog.getByRole("button", { name: "Save" })).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
     // clearing the middle ceiling makes it a catch-all that is not last
     await userEvent.clear(second);
     const third = dialog.getByLabelText("Maximum input size of tier 3, in bytes");

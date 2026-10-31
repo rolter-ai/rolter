@@ -28,7 +28,17 @@ import {
   uxEvents,
   type Recorder,
 } from "./story-harness";
-import type { EffectiveModelDto, LabelRow, RouteRow, TimelineRow, UptimeRow } from "@/lib/api";
+import type {
+  BreakerStateDto,
+  BreakerTargetDto,
+  EffectiveModelDto,
+  LabelRow,
+  ProviderCacheVerdict,
+  RouteRow,
+  TimelineRow,
+  UptimeRow,
+} from "@/lib/api";
+import en from "@/lib/i18n/locales/en.json";
 import { UxScreenProvider } from "@/lib/ux-react";
 
 // each entry carries its own targets (#2210): provider names, not row ids
@@ -512,6 +522,113 @@ export const SameNameInTwoOrganizations: Story = {
   },
 };
 
+/**
+ * #3460: two organizations each have a `gpt-4o`, and this scope's project owns
+ * the first. Its row's Edit opens this project's own route; the other
+ * organization's row is never matched to it, so its Edit stays shut rather
+ * than opening a route that belongs to someone else.
+ */
+let sameNameEdits: Recorder;
+export const SameNameRowOpensItsOwnRoute: Story = {
+  render: () => {
+    sameNameEdits = recording(
+      routes([
+        ["/model-prices", () => []],
+        ["/currency", () => ({ base: "USD", rates: {} })],
+        ["/health/uptime", () => ({ data: [] })],
+        [
+          "/models",
+          () => [
+            MODELS[0],
+            {
+              ...MODELS[0],
+              org_id: "org-2",
+              project_id: "project-9",
+              targets: 1,
+              route_targets: [{ provider: "other-edge", model: null, weight: 1 }],
+            },
+          ],
+        ],
+        ["/providers", () => FANOUT_PROVIDERS],
+        ["/routes", () => [FANOUT_ROUTE]],
+      ]),
+    );
+    return (
+      <Harness fetchStub={sameNameEdits.stub}>
+        <Models />
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() =>
+      expect(canvas.getAllByRole("button", { name: "Edit gpt-4o" })).toHaveLength(2),
+    );
+    const editOf = (provider: string) =>
+      canvas
+        .getAllByRole("button", { name: "Edit gpt-4o" })
+        .find((button) => button.closest('[role="row"]')?.textContent?.includes(provider))!;
+    // enabled once the scope's route list has answered and matched the row;
+    // no role is mounted, so no gate holds it
+    await waitFor(() => expect(editOf("sim-a")).toBeEnabled());
+    // story-wait-allow: the route list has answered above, and matched no row of org-2
+    await expect(editOf("other-edge")).toBeDisabled();
+    await userEvent.click(editOf("sim-a"));
+    await sameNameEdits.expectSent("GET", "/routes/route-1/targets");
+  },
+};
+
+/**
+ * Two organizations share a model name (#1857): each row deletes its own
+ * organization's model, never every route of the name, and only the scope's
+ * own project's row is matched to the scope's route.
+ */
+let sharedNameDeletes: Recorder;
+export const SameNameDeletesOnlyThatOrganizationsModel: Story = {
+  render: () => {
+    const sharedName = routes([
+      ["/model-prices", () => []],
+      ["/currency", () => ({ base: "USD", rates: {} })],
+      ["/health/uptime", () => ({ data: [] })],
+      [
+        "/models",
+        () => [
+          // org-1 named outright, so the not-sent assertion below can fail
+          { ...MODELS[0], org_id: "org-1" },
+          {
+            ...MODELS[0],
+            org_id: "org-2",
+            project_id: "project-9",
+            targets: 1,
+            route_targets: [{ provider: "other-edge", model: null, weight: 1 }],
+          },
+        ],
+      ],
+      ["/providers", () => FANOUT_PROVIDERS],
+      ["/routes", () => [FANOUT_ROUTE]],
+    ]);
+    sharedNameDeletes = recording(
+      scoped(async (input, init) =>
+        init?.method === "DELETE" ? json(null, 204) : sharedName(input, init),
+      ),
+    );
+    return (
+      <Harness fetchStub={sharedNameDeletes.stub}>
+        <Models />
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getAllByText("gpt-4o")).toHaveLength(2));
+    const other = canvas.getByText("other-edge").closest('[role="row"]') as HTMLElement;
+    await userEvent.click(within(other).getByRole("button", { name: "Delete model gpt-4o" }));
+    await confirmDestructive(/every route and target/i, "Delete model");
+    await sharedNameDeletes.expectSent("DELETE", "/models/gpt-4o?org_id=org-2");
+    sharedNameDeletes.expectNotSent("DELETE", "org_id=org-1");
+  },
+};
+
 /** A route with no target has nowhere to send a request, and the row says so. */
 export const RouteWithNoTargets: Story = {
   render: () => (
@@ -707,6 +824,8 @@ const MODEL_LABELS: LabelRow[] = [
     id: "ml-1",
     subject_type: "model",
     subject_id: "gpt-4o",
+    // the label of org-1's `gpt-4o`, the organization that serves it here (#3476)
+    org_id: "org-1",
     key: "tier",
     value: "flagship",
     source: "custom",
@@ -727,14 +846,31 @@ const MODEL_LABELS: LabelRow[] = [
   },
 ];
 
-const withLabels = (labels = MODEL_LABELS) =>
+/**
+ * The model-label reads, answered from `labels` the way the control plane
+ * answers them: `?org_id=` lists that organization's labels and the
+ * deployment-wide ones it has not set a key of its own over (#3476).
+ */
+const answerModelLabels = (url: URL, labels: LabelRow[]): Response => {
+  const subject = url.searchParams.get("subject_id");
+  const org = url.searchParams.get("org_id");
+  let rows = subject ? labels.filter((l) => l.subject_id === subject) : labels;
+  if (org) {
+    const own = rows.filter((l) => l.org_id === org);
+    const set = new Set(own.map((l) => `${l.subject_id}:${l.source}:${l.key}`));
+    rows = [
+      ...own,
+      ...rows.filter((l) => !l.org_id && !set.has(`${l.subject_id}:${l.source}:${l.key}`)),
+    ];
+  }
+  return json(rows);
+};
+
+const withLabels = (labels = MODEL_LABELS, models: EffectiveModelDto[] = MODELS) =>
   scoped(async (input) => {
     const url = new URL(String(input), "http://localhost");
-    if (url.pathname.endsWith("/model-labels")) {
-      const subject = url.searchParams.get("subject_id");
-      return json(subject ? labels.filter((l) => l.subject_id === subject) : labels);
-    }
-    if (url.pathname.endsWith("/models")) return json(MODELS);
+    if (url.pathname.endsWith("/model-labels")) return answerModelLabels(url, labels);
+    if (url.pathname.endsWith("/models")) return json(models);
     if (url.pathname.endsWith("/currency")) return json({ base: "USD", rates: {} });
     return json([]);
   });
@@ -797,11 +933,11 @@ export const NoLabelMatch: Story = {
 };
 
 /**
- * Labelling a model is a superadmin's act — the catalog is deployment-wide, the
- * way `model_price` is — so an admin sees the panel and its contents with the
- * write controls disabled rather than a form that answers 403.
+ * #3520: a label on an organization's own model is that organization's act,
+ * under the `label` capability its provider and route labels use, so an admin
+ * of org-1 writes the labels on org-1's `gpt-4o`.
  */
-export const AdminCannotWriteAModelLabel: Story = {
+export const AnOrgAdminWritesItsOwnOrgsModelLabels: Story = {
   render: () => (
     <Harness fetchStub={withLabels()} role="admin">
       <Models />
@@ -813,19 +949,81 @@ export const AdminCannotWriteAModelLabel: Story = {
     await userEvent.click(canvas.getByRole("button", { name: "Labels on gpt-4o" }));
     const panel = await within(document.body).findByRole("dialog");
     await waitFor(() => expect(within(panel).getByText(/a price row exists/)).toBeVisible());
-    // `expectRefused` rather than a bare `toBeDisabled`, on both counts. The
-    // sheet fires its own label query as it opens and the effective-permissions
-    // answer is a request behind that again, so a one-shot assertion here is
-    // only ever reading whichever of the two happened to land first (#1689) —
-    // and the `title` half is what distinguishes a refusal from `Add label`
-    // being disabled for its own reason, an empty key, which is what made that
-    // line pass while the gate was still in flight
-    await expectRefused(panel, "Add label", NEEDS_SUPERADMIN);
-    await expectRefused(panel, "Remove tier=flagship", NEEDS_SUPERADMIN);
+    // `expectAllowed` rather than a bare `toBeEnabled`: the sheet fires its own
+    // label query as it opens and the effective-permissions answer is a request
+    // behind that again, so a one-shot assertion reads whichever landed first
+    // (#1689, #1707)
+    await expectAllowed(panel, "Remove tier=flagship");
   },
 };
 
-/** and a superadmin gets both */
+/**
+ * #3520: the same admin holds nothing over another organization's model. The
+ * sheet asks at the row's own organization, not the switcher's, so org-2's
+ * `gpt-4o` is refused to an admin of org-1 alone.
+ */
+export const AnOrgAdminCannotLabelAnotherOrgsModel: Story = {
+  render: () => (
+    <Harness
+      fetchStub={withLabels(TWO_ORGS_LABELS, TWO_ORGS_MODELS)}
+      role={[{ role: "admin", orgId: "org-1" }]}
+    >
+      <Models />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getByLabelText("tier=bronze, your label")).toBeVisible());
+    // their own org's row first: the controls are theirs
+    await userEvent.click(
+      within(rowOfChip(canvas, "tier=gold")).getByRole("button", { name: "Labels on gpt-4o" }),
+    );
+    let dialog = await within(document.body).findByRole("dialog");
+    await expectAllowed(dialog, "Remove tier=gold");
+    await userEvent.keyboard("{Escape}");
+    await expectSheetClosed();
+    // and another org's: refused, naming the role it would take there
+    await userEvent.click(
+      within(rowOfChip(canvas, "tier=bronze")).getByRole("button", { name: "Labels on gpt-4o" }),
+    );
+    dialog = await within(document.body).findByRole("dialog");
+    await expectRefused(dialog, "Remove tier=bronze");
+    await expectRefused(dialog, "Add label");
+  },
+};
+
+/**
+ * A deployment-wide label is every organization's, so it stays a superadmin's
+ * (`model_label`, the way `model_price` is): an org admin sees the config-file
+ * model's panel with the write controls refused rather than a form that
+ * answers 403.
+ */
+export const AnOrgAdminCannotWriteADeploymentWideLabel: Story = {
+  render: () => (
+    <Harness fetchStub={withLabels(TWO_ORGS_LABELS, TWO_ORGS_MODELS)} role="admin">
+      <Models />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getAllByText("gpt-4o")).toHaveLength(3));
+    const rows = canvas
+      .getAllByText("gpt-4o")
+      .map((name) => name.closest("[role='row']") as HTMLElement);
+    await waitFor(() =>
+      expect(rows.filter((row) => within(row).queryByLabelText(/^tier=/) === null)).toHaveLength(1),
+    );
+    const config = rows.find((row) => within(row).queryByLabelText(/^tier=/) === null)!;
+    await userEvent.click(within(config).getByRole("button", { name: "Labels on gpt-4o" }));
+    const panel = await within(document.body).findByRole("dialog");
+    // the `title` half of `expectRefused` is what tells a refusal from `Add
+    // label` being disabled for its own reason, an empty key
+    await expectRefused(panel, "Add label", NEEDS_SUPERADMIN);
+    await expectRefused(panel, "Remove family=gpt", NEEDS_SUPERADMIN);
+  },
+};
+
+/** and a superadmin gets them too */
 export const SuperadminCanWriteAModelLabel: Story = {
   render: () => (
     <Harness fetchStub={withLabels()} role="superadmin">
@@ -846,5 +1044,441 @@ export const SuperadminCanWriteAModelLabel: Story = {
     // still no way to touch the observation, asked once the list is on screen —
     // before that the absence would be the skeleton's, not the rule's
     await expect(panel.queryByRole("button", { name: "Remove tier=priced" })).toBeNull();
+  },
+};
+
+// two organizations each serve a `gpt-4o` (#1857), and each labelled its own;
+// the deployment's label applies to both (#3476)
+const TWO_ORGS_MODELS: EffectiveModelDto[] = [
+  { ...MODELS[0], org_id: "org-1" },
+  {
+    ...MODELS[0],
+    org_id: "org-2",
+    project_id: "project-2",
+    targets: 1,
+    route_targets: [{ provider: "other-edge", model: null, weight: 1 }],
+  },
+  // and the gateway's config file serves one too, which no organization owns
+  { ...MODELS[1], model: "gpt-4o" },
+];
+
+const TWO_ORGS_LABELS: LabelRow[] = [
+  { ...MODEL_LABELS[0], id: "ml-gold", org_id: "org-1", value: "gold" },
+  { ...MODEL_LABELS[0], id: "ml-bronze", org_id: "org-2", value: "bronze" },
+  { ...MODEL_LABELS[0], id: "ml-family", org_id: null, key: "family", value: "gpt" },
+];
+
+/** the catalog row a `gpt-4o` chip sits in */
+const rowOfChip = (canvas: ReturnType<typeof within>, label: string) =>
+  canvas.getByLabelText(`${label}, your label`).closest("[role='row']") as HTMLElement;
+
+/**
+ * #3476: two organizations' `gpt-4o` carry different labels. Each row shows its
+ * own organization's `tier` and never the other's, both show the label set for
+ * the whole deployment, and the label filter matches one of them only.
+ */
+export const TwoOrganizationsSameNamedModelsCarryTheirOwnLabels: Story = {
+  render: () => (
+    <Harness fetchStub={withLabels(TWO_ORGS_LABELS, TWO_ORGS_MODELS)}>
+      <Models />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getByLabelText("tier=gold, your label")).toBeVisible());
+    const gold = rowOfChip(canvas, "tier=gold");
+    const bronze = rowOfChip(canvas, "tier=bronze");
+    await expect(gold).not.toBe(bronze);
+    await expect(within(gold).getByText("gpt-4o")).toBeVisible();
+    await expect(within(bronze).getByText("gpt-4o")).toBeVisible();
+    await expect(within(gold).queryByLabelText("tier=bronze, your label")).toBeNull();
+    await expect(within(bronze).queryByLabelText("tier=gold, your label")).toBeNull();
+    // the deployment's own label is on both
+    await expect(within(gold).getByLabelText("family=gpt, your label")).toBeVisible();
+    await expect(within(bronze).getByLabelText("family=gpt, your label")).toBeVisible();
+    // and the config-file model, which no organization owns, reads only it
+    await expect(canvas.getAllByText("gpt-4o")).toHaveLength(3);
+    await expect(canvas.getAllByLabelText("family=gpt, your label")).toHaveLength(3);
+    await expect(canvas.getAllByLabelText("tier=gold, your label")).toHaveLength(1);
+    await expect(canvas.getAllByLabelText("tier=bronze, your label")).toHaveLength(1);
+
+    await userEvent.click(canvas.getByRole("combobox", { name: /Filter by label/i }));
+    await userEvent.click(await within(document.body).findByRole("option", { name: "tier=gold" }));
+    await waitFor(() => expect(canvas.getAllByText("gpt-4o")).toHaveLength(1));
+    await expect(canvas.getByLabelText("tier=gold, your label")).toBeVisible();
+  },
+};
+
+let orgLabelWrites: Recorder;
+/**
+ * #3476: one organization's label sheet lists that organization's labels as
+ * its own, and the deployment-wide ones apart, read-only, since they are every
+ * organization's. A label added there is that organization's.
+ */
+export const AnOrganizationsModelLabelsAreItsOwn: Story = {
+  render: () => {
+    const reads = withLabels(TWO_ORGS_LABELS, TWO_ORGS_MODELS);
+    orgLabelWrites = recording(async (input, init) => {
+      if ((init?.method ?? "GET").toUpperCase() === "POST") {
+        return json({ ...TWO_ORGS_LABELS[1], id: "ml-new", key: "owner", value: "ml" }, 201);
+      }
+      return reads(input, init);
+    });
+    return (
+      <Harness fetchStub={orgLabelWrites.stub} role="superadmin">
+        <Models />
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getByLabelText("tier=bronze, your label")).toBeVisible());
+    const bronze = rowOfChip(canvas, "tier=bronze");
+    await userEvent.click(within(bronze).getByRole("button", { name: "Labels on gpt-4o" }));
+    const dialog = await within(document.body).findByRole("dialog");
+    const panel = within(dialog);
+    // the sheet asks for what applies to org-2's model
+    await orgLabelWrites.expectSent(
+      "GET",
+      "/model-labels?subject_type=model&subject_id=gpt-4o&org_id=org-2",
+    );
+    await expectAllowed(dialog, "Remove tier=bronze");
+    await expect(panel.queryByRole("button", { name: "Remove tier=gold" })).toBeNull();
+    // the deployment's label is shown apart, with nothing to edit it by
+    const inherited = await panel.findByTestId("labels-inherited");
+    await expect(within(inherited).getByText(en.labels.inheritedHeading)).toBeVisible();
+    await expect(within(inherited).getByLabelText("family=gpt, your label")).toBeVisible();
+    await expect(panel.queryByRole("button", { name: "Remove family=gpt" })).toBeNull();
+    await expect(panel.queryByRole("textbox", { name: "Value of family" })).toBeNull();
+
+    await userEvent.type(panel.getByRole("textbox", { name: en.labels.keyLabel }), "owner");
+    await userEvent.type(panel.getByRole("textbox", { name: en.labels.valueLabel }), "ml");
+    await userEvent.click(panel.getByRole("button", { name: en.labels.add }));
+    const sent = await orgLabelWrites.expectSentBody<Record<string, unknown>>(
+      "POST",
+      "/model-labels",
+    );
+    await expect(sent).toEqual({ model: "gpt-4o", org_id: "org-2", key: "owner", value: "ml" });
+  },
+};
+
+/**
+ * #3476: the config-file `gpt-4o` belongs to no organization, so its sheet
+ * holds the deployment-wide labels alone. Asked without an organization, the
+ * control plane lists every organization's labels on the name too; none of
+ * them is this row's to edit or remove, and none trips the duplicate check.
+ */
+export const AConfigFileModelsLabelsAreTheDeploymentsOnly: Story = {
+  render: () => (
+    <Harness fetchStub={withLabels(TWO_ORGS_LABELS, TWO_ORGS_MODELS)} role="superadmin">
+      <Models />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getAllByText("gpt-4o")).toHaveLength(3));
+    // the row with the family label and no tier is the config file's
+    const rows = canvas
+      .getAllByText("gpt-4o")
+      .map((name) => name.closest("[role='row']") as HTMLElement);
+    await waitFor(() =>
+      expect(rows.filter((row) => within(row).queryByLabelText(/^tier=/) === null)).toHaveLength(1),
+    );
+    const config = rows.find((row) => within(row).queryByLabelText(/^tier=/) === null)!;
+    await userEvent.click(within(config).getByRole("button", { name: "Labels on gpt-4o" }));
+    const dialog = await within(document.body).findByRole("dialog");
+    const panel = within(dialog);
+    await expectAllowed(dialog, "Remove family=gpt");
+    await expect(panel.queryByRole("button", { name: "Remove tier=gold" })).toBeNull();
+    await expect(panel.queryByRole("button", { name: "Remove tier=bronze" })).toBeNull();
+    await expect(panel.queryByLabelText("tier=gold, your label")).toBeNull();
+    // its labels are its own, not inherited from anywhere
+    await expect(panel.queryByTestId("labels-inherited")).toBeNull();
+    // another organization's `tier` is not a key this row already holds
+    await userEvent.type(panel.getByRole("textbox", { name: en.labels.keyLabel }), "tier");
+    await expect(panel.queryByText(/is already set here/)).toBeNull();
+  },
+};
+
+// ------------------------------------------------ live circuit breakers (#2254)
+
+const breakerTarget = (patch: Partial<BreakerTargetDto>): BreakerTargetDto => ({
+  model: "llama-70b",
+  target_index: 0,
+  provider: "vllm-a",
+  upstream_model: "meta-llama/Llama-3.1-70B",
+  state: "open",
+  nodes_open: 2,
+  nodes_half_open: 0,
+  nodes: [],
+  ...patch,
+});
+
+const breakerState = (targets: BreakerTargetDto[], gateways_live = 3): BreakerStateDto => ({
+  generated_at: "2026-09-29T08:00:00Z",
+  fresh_window_secs: 40,
+  gateways_live,
+  targets,
+});
+
+const withBreakers = (answer: () => Response | Promise<Response>) =>
+  scoped(async (input, init) => {
+    if (String(input).includes("/breaker-state")) return answer();
+    return routes([
+      ["/model-prices", () => []],
+      ["/currency", () => ({ base: "USD", rates: {} })],
+      ["/health/uptime", () => ({ data: FLEET_UPTIME })],
+      ["/models", () => [FLEET_MODEL]],
+      ["/providers", () => []],
+      ["/routes", () => []],
+    ])(input, init);
+  });
+
+/**
+ * A target whose breaker is open on two gateways says so beside its health, and
+ * one letting a trial request through says it is probing. A target the
+ * gateways list nowhere is closed everywhere and shows nothing new; the model's
+ * row names the worst breaker without opening the list.
+ */
+export const BreakerOpenAndProbing: Story = {
+  render: () => (
+    <Harness
+      fetchStub={withBreakers(() =>
+        json(
+          breakerState([
+            breakerTarget({ target_index: 0, state: "open", nodes_open: 2 }),
+            breakerTarget({
+              target_index: 1,
+              provider: "vllm-b",
+              state: "half_open",
+              nodes_open: 0,
+              nodes_half_open: 1,
+            }),
+          ]),
+        ),
+      )}
+    >
+      <Models />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const toggle = await canvas.findByRole("button", { name: "3 targets for llama-70b" });
+    await waitFor(() => expect(canvas.getByText("Breaker open on 2 gateways")).toBeVisible());
+    await userEvent.click(toggle);
+    const list = await canvas.findByRole("list", { name: "Targets of llama-70b" });
+    const lines = within(list).getAllByRole("listitem");
+    await expect(lines[0]).toHaveTextContent(/vllm-a.*Breaker open on 2 gateways/);
+    await expect(lines[1]).toHaveTextContent(/vllm-b.*Probing on 1 gateway/);
+    // the third target is closed on every gateway: nothing is added to its line
+    await expect(lines[2]).not.toHaveTextContent(/Breaker|Probing/);
+  },
+};
+
+/**
+ * #3460: two organizations each serve a `llama-70b` through a provider called
+ * `vllm-a`. Each row reads its own route's breaker and its own provider's
+ * health: one organization's open breaker and failing provider never appear
+ * on the other's row.
+ */
+export const SameNameInTwoOrganizationsKeepsItsOwnHealth: Story = {
+  render: () => {
+    const model = (org: string): EffectiveModelDto => ({
+      ...FLEET_MODEL,
+      org_id: org,
+      targets: 1,
+      route_targets: [FLEET_MODEL.route_targets![0]],
+    });
+    return (
+      <Harness
+        fetchStub={scoped(async (input, init) => {
+          if (String(input).includes("/breaker-state"))
+            return json(breakerState([breakerTarget({ org_id: "org-2" })]));
+          return routes([
+            ["/model-prices", () => []],
+            ["/currency", () => ({ base: "USD", rates: {} })],
+            [
+              "/health/uptime",
+              () => ({
+                data: [
+                  uptimeRow({ org_id: "org-1" }),
+                  uptimeRow({
+                    org_id: "org-2",
+                    ok: 1000,
+                    errors: 1000,
+                    uptime: 0.5,
+                    sla_breached: 1,
+                  }),
+                ],
+              }),
+            ],
+            ["/models", () => [model("org-1"), model("org-2")]],
+            ["/providers", () => []],
+            ["/routes", () => []],
+          ])(input, init);
+        })}
+      >
+        <Models />
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() =>
+      expect(canvas.getAllByRole("button", { name: "1 target for llama-70b" })).toHaveLength(2),
+    );
+    // the row-level badge is on one row only
+    await waitFor(() => expect(canvas.getAllByText("Breaker open on 2 gateways")).toHaveLength(1));
+    for (const toggle of canvas.getAllByRole("button", { name: "1 target for llama-70b" })) {
+      await userEvent.click(toggle);
+    }
+    const lists = await canvas.findAllByRole("list", { name: "Targets of llama-70b" });
+    await expect(lists).toHaveLength(2);
+    const texts = lists.map((list) => list.textContent ?? "");
+    const healthy = texts.filter((t) => t.includes("99.95% uptime") && !/Breaker/.test(t));
+    const failing = texts.filter(
+      (t) => t.includes("50.00% uptime, below SLA") && t.includes("Breaker open on 2 gateways"),
+    );
+    await expect([healthy.length, failing.length]).toEqual([1, 1]);
+  },
+};
+
+/** a closed breaker row (failing, not yet tripped) and an empty answer add nothing */
+export const BreakerClosedShowsNothing: Story = {
+  render: () => (
+    <Harness
+      fetchStub={withBreakers(() =>
+        json(breakerState([breakerTarget({ state: "closed", nodes_open: 0 })])),
+      )}
+    >
+      <Models />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByRole("button", { name: "3 targets for llama-70b" });
+    await waitFor(() => expect(canvas.getByText("1 below SLA")).toBeVisible());
+    await expect(canvas.queryByTestId("breaker-badge")).toBeNull();
+  },
+};
+
+/** no breaker state (a control plane without a store) leaves the catalog as it was */
+export const BreakerStateUnavailable: Story = {
+  render: () => (
+    <Harness fetchStub={withBreakers(() => json({ error: { message: "no store" } }, 404))}>
+      <Models />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByRole("button", { name: "3 targets for llama-70b" });
+    await waitFor(() => expect(canvas.getByText("1 below SLA")).toBeVisible());
+    await expect(canvas.queryByTestId("breaker-badge")).toBeNull();
+    await expect(canvas.queryByRole("alert")).toBeNull();
+  },
+};
+
+// --- whether the providers behind a route report prompt-cache metrics (#984)
+
+const CACHE_PROVIDERS = [
+  { id: "prov-a", name: "sim-a" },
+  { id: "prov-b", name: "sim-b" },
+  { id: "prov-c", name: "anthropic" },
+];
+
+const verdict = (provider_id: string, reports: boolean): ProviderCacheVerdict => ({
+  provider_id,
+  reports,
+  spelling: reports ? "cached_tokens" : null,
+  model: "probe-model",
+  probed_at: "2026-10-01T10:00:00Z",
+});
+
+const withCache = (read: () => unknown, status = 200) =>
+  routes(
+    [
+      ["/provider-cache-probes", read],
+      ["/model-prices", () => []],
+      ["/currency", () => ({ base: "USD", rates: {} })],
+      ["/health/uptime", () => ({ data: [] })],
+      ["/models", () => MODELS],
+      ["/providers", () => CACHE_PROVIDERS],
+      ["/routes", () => []],
+    ],
+    status,
+  );
+
+const rowOf = async (canvas: ReturnType<typeof within>, name: string) =>
+  within((await canvas.findByText(name)).closest('[role="row"]') as HTMLElement);
+
+/**
+ * A route reports only when every provider behind it does: gpt-4o's two
+ * providers both do, claude-sonnet's has never been probed and so is "not
+ * probed yet", not "no".
+ */
+export const CacheReportingNeedsEveryProviderToReport: Story = {
+  render: () => (
+    <Harness fetchStub={withCache(() => [verdict("prov-a", true), verdict("prov-b", true)])}>
+      <Models />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await (await rowOf(canvas, "gpt-4o")).findByText(/^Reports cache/)).toBeVisible();
+    await expect(
+      await (await rowOf(canvas, "claude-sonnet")).findByText("Not probed yet"),
+    ).toBeVisible();
+  },
+};
+
+/** One provider known not to report makes the route "no cache metrics", whatever its sibling says. */
+export const CacheReportingOneSilentProviderMakesTheRouteSilent: Story = {
+  render: () => (
+    <Harness fetchStub={withCache(() => [verdict("prov-a", true), verdict("prov-b", false)])}>
+      <Models />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const badge = await (await rowOf(canvas, "gpt-4o")).findByText(/^No cache metrics/);
+    await expect(badge).toBeVisible();
+    await expect(badge).toHaveAttribute("title", expect.stringContaining("1 of 2 providers"));
+  },
+};
+
+/** A reporting provider beside an unprobed one proves nothing about the route. */
+export const CacheReportingPartlyProbedIsNotProbedYet: Story = {
+  render: () => (
+    <Harness fetchStub={withCache(() => [verdict("prov-a", true)])}>
+      <Models />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const row = await rowOf(canvas, "gpt-4o");
+    await expect(await row.findByText("Not probed yet")).toBeVisible();
+    await expect(row.queryByText(/^Reports cache/)).toBeNull();
+  },
+};
+
+/** A failed read of the verdicts shows no badge on any route, and the catalog still loads. */
+export const CacheReportingFailedReadShowsNothing: Story = {
+  render: () => (
+    <Harness
+      fetchStub={scoped(async (input) => {
+        const url = String(input);
+        if (url.includes("/provider-cache-probes"))
+          return json({ error: { message: "boom" } }, 500);
+        return withCache(() => [])(input);
+      })}
+    >
+      <Models />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getByText("gpt-4o")).toBeVisible());
+    await waitFor(() => expect(canvas.getByText("sim-a +1 more")).toBeVisible());
+    await expect(canvas.queryByText(/Not probed yet|Reports cache|No cache metrics/)).toBeNull();
   },
 };

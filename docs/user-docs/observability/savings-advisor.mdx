@@ -1,0 +1,87 @@
+---
+title: "Savings Advisor: Re-pricing Your Traffic at Cheaper Models"
+sidebarTitle: "Savings advisor"
+description: "Read where a window's spend went and what the substitutable part would have cost at the cheaper models already in each route's pool. A shortlist to test, never a switch."
+---
+
+The savings advisor reads the request log for a window and answers three questions: where the money went, which requests could plausibly have gone to a cheaper model that is already configured on the same route, and what those requests would have cost there.
+
+<Warning>
+  The advisor **re-prices**. It does not evaluate whether the cheaper model answers as well, and it never changes a route. Treat what it lists as a shortlist to test against your own traffic, for example with a weighted target or a [variant](/concepts/providers-and-routes), before you move anything. Every answer repeats this in its `limits` field.
+</Warning>
+
+It needs the control plane's `CLICKHOUSE_URL`, like every other analytics read; without it the endpoint answers `503`.
+
+## Reading it in the dashboard
+
+**Observability → Savings** shows the same report. It is hidden from roles that lack the `savings` capability, and a deployment without ClickHouse sees a note naming `CLICKHOUSE_URL` instead of figures.
+
+- **The warning comes first.** The screen opens on what the advisor is not: it re-prices, it does not judge quality, and the report's own `limits` are listed under that heading with every answer.
+- **Window and scope.** The window defaults to the last 7 days, as the endpoint does, and, with the organization, project, route and virtual key pickers and the three thresholds, lives in the address, so a link opens on the same report. The thresholds apply together when you press **Recalculate**.
+- **Spend.** Requests, spend, the unpriced requests inside it, retried or failed-over requests, failed requests, response-cache hits and misses, then the route, upstream model and caller breakdowns. The caller table names each key from the report itself, whichever project it is in, so a report across the whole organization names every caller's key; the API returns it as `key_name` on each `by_caller` row. Projects are named from the list the project picker uses. A key since deleted, or a project your account cannot read, shows as its id.
+- **Candidates.** One table per route and current model. Projected costs and savings are always a range from the optimistic to the pessimistic end; a saving's pessimistic end can be negative. The summary line above them gives the range for everything substitutable.
+- **Left out.** Requests the advisor did not re-price, by reason, and the pool models it could not consider for lack of a price. Each such model links to **Pricing Overrides** with `?model=<name>`, which opens the price form already named for it so you can set one (a role that cannot write prices sees the list narrowed to the model instead).
+
+## Asking for a report
+
+```bash
+curl -H "Authorization: Bearer $SESSION_TOKEN" \
+  "$ROLTER_URL/api/v1/analytics/savings?since=2026-10-01T00:00:00Z&route=chat"
+```
+
+Every parameter is optional.
+
+| Parameter               | Meaning                                                                                                                             |
+| ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `since`, `until`        | the [time window](/observability/logs-and-cost#time-windows); defaults to the last 7 days                                           |
+| `org`                   | one exact org id                                                                                                                    |
+| `project`               | one exact project id                                                                                                                |
+| `route`                 | one route, by its public model name                                                                                                 |
+| `key`                   | one exact virtual key id                                                                                                            |
+| `max_prompt_tokens`     | a request with a longer prompt is not counted as substitutable; defaults to `4000`                                                  |
+| `max_completion_tokens` | a request with a longer answer is not counted as substitutable; defaults to `1000`                                                  |
+| `output_margin`         | how much longer a candidate's answers are assumed to run at the pessimistic end of the range; defaults to `0.25`, clamped to `0..4` |
+
+You see the requests your roles reach and nothing else, exactly as on the Dashboard and **LLM Logs**: the scope parameters narrow inside what you may read and never widen it. The read is gated by its own `savings` capability (viewer and up by default), so a custom role can grant or withhold it separately from the other analytics.
+
+## Reading the answer
+
+All money is in the deployment's base `currency`, and like every other analytics figure it is scaled by the request log's [sampling weight](/observability/log-settings#sampling), so under sampling it is an estimate.
+
+### `spend`: where the money went
+
+Totals for the window, then the slices worth a second look:
+
+- `multi_attempt`: requests that took more than one upstream attempt (retries and failovers together; the log does not tell the two apart) and what they cost.
+- `failed`: requests that ended in an error, and what was spent on them anyway.
+- `cache`: response-cache hits, and the misses on routes that have the response cache switched on.
+- `by_route`, `by_model` (the upstream model that served the request) and `by_caller` (project and virtual key, the 50 most expensive, each with `key_name`, the name given to the key, `null` for a key with no name or one since deleted; never the key's prefix), costliest first.
+
+`unpriced_requests` sits beside every cost: those requests ran against a model with no price, so their recorded cost is not a cost.
+
+### `candidates`: what was substitutable
+
+One entry per route and current upstream model, biggest conservative saving first. A request is substitutable when it:
+
+- succeeded, was not a response-cache hit and reported its token usage
+- ran a model rather than a stored-response operation
+- stayed within `max_prompt_tokens` and `max_completion_tokens`
+- was priced
+
+Each entry lists the other models in the **same route's pool** (its targets, variants included) whose price is known and that would have cost less, each with:
+
+- `projected_cost_usd`: `{low, high}`. `low` is the same token counts and the same prompt-cache reuse at the candidate's price. `high` assumes answers `output_margin` longer and a cold prompt cache, since a provider's cache does not carry over to another model.
+- `savings_usd`: the recorded cost minus that projection, so `low` is the pessimistic saving and can be negative.
+
+`substitutable` adds it up: how many requests had at least one candidate, what they cost, and the saving range at the best candidate of each.
+
+### `excluded`: what was left out, and why
+
+`excluded.requests` counts every request that was not re-priced by reason: `unpriced`, `failed`, `cache_hit`, `usage_unknown`, `not_a_model_call`, `uses_tools` (it offered the model tools), `image_input`, `audio_input` (an input message carried an image or audio), `structured_output` (it asked for output that follows a JSON schema), `multi_turn` (it carried more than one user turn), `no_token_usage`, `prompt_too_large`, `output_too_large`, `route_not_configured` (the route has since been deleted or renamed) and `no_cheaper_candidate`. `excluded.unknown_candidate_prices` names the pool models that could not be considered because they have no price; add one in **Models** and they will be.
+
+## What it does not claim
+
+- **Quality.** Nothing here says a cheaper model is good enough. Test it.
+- **Request shape, before it was recorded.** The gateway records whether a request offered tools, sent an image or audio, carried several turns or asked for a structured-output schema, for both the OpenAI and the Anthropic dialects, and the advisor excludes such requests under the reasons above. The flags are columns added by `clickhouse/031_request_shape.sql`: until it is applied none is recorded, nothing is excluded for them and the report's `limits` say so, and a request logged before you applied it reads as having none of them, so it may still be listed.
+- **Models outside the route.** Only models you already configured on the same route are considered; the advisor never suggests a model your deployment does not route to.
+- **Unknown prices.** A request or a candidate without a price is counted, never priced at zero.

@@ -2,8 +2,9 @@
 
 **Maintenance only.** Keeps the deployment healthy, upgraded, backed up and
 observable; drains a node before a change and restores a database after one. Has
-no reason to read prompts, mint keys or change who may do what — but today the
-screens they need are all superadmin-only, so they hold superadmin anyway.
+no reason to read prompts, mint keys or change who may do what — which is why
+the `operator` deployment role (#1834) reaches the cluster, runtime policy, feature
+flags, alerting and connectors and nothing inside a tenant.
 
 **Goal:** "I know it is healthy, I can change it without an outage, and I can put
 it back if the change goes wrong."
@@ -16,9 +17,9 @@ D2–D4 run, and SigNoz `rolter · overview` for anything that got slower.
 
 ## D0 — the role
 
-| #    | step                                      | where | expect                                                                                            | status      |
-| ---- | ----------------------------------------- | ----- | ------------------------------------------------------------------------------------------------- | ----------- |
-| D0.1 | operate the deployment without superadmin | —     | an operator role: cluster, health, runtime policy, alerting, connectors; no tenant data or grants | gap — #1834 |
+| #    | step                                      | where | expect                                                                                            | status        |
+| ---- | ----------------------------------------- | ----- | ------------------------------------------------------------------------------------------------- | ------------- |
+| D0.1 | operate the deployment without superadmin | —     | an operator role: cluster, health, runtime policy, alerting, connectors; no tenant data or grants | works — #1834 |
 
 ## D1 — stand it up and upgrade it
 
@@ -31,12 +32,12 @@ D2–D4 run, and SigNoz `rolter · overview` for anything that got slower.
 
 ## D2 — know it is healthy
 
-| #    | step                                                  | where                                                                  | expect                                                                            | status                                        |
-| ---- | ----------------------------------------------------- | ---------------------------------------------------------------------- | --------------------------------------------------------------------------------- | --------------------------------------------- |
-| D2.1 | liveness and readiness                                | `/healthz`, `/readyz` on both planes                                   | liveness never depends on the database; readiness does                            | verified                                      |
-| D2.2 | every node on the current config                      | **Cluster Config**                                                     | each gateway live and converged; a lagging one is distinguishable from a dead one | verified                                      |
-| D2.3 | the fleet's own picture                               | **Circuit Breaker**, **Adaptive Routing → Telemetry**, provider health | breaker states, per-target latency, adaptive engagement                           | works; dogfood adaptive never engages — #1817 |
-| D2.4 | metrics and traces in the tools the team already uses | `/metrics`; **Connectors** for OTLP export                             | request rate, latency, errors, queue depth; traces in the team's backend          | verified (#1855)                              |
+| #    | step                                                  | where                                                                                 | expect                                                                                                       | status                                        |
+| ---- | ----------------------------------------------------- | ------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ | --------------------------------------------- |
+| D2.1 | liveness and readiness                                | `/healthz`, `/readyz` on both planes                                                  | liveness never depends on the database; readiness does                                                       | verified                                      |
+| D2.2 | every node on the current config                      | **Cluster Config**                                                                    | each gateway live and converged; a lagging one is distinguishable from a dead one                            | verified                                      |
+| D2.3 | the fleet's own picture                               | **Provider Health** (live breaker state per target), **Adaptive Routing → Telemetry** | breaker state per target and how many gateways hold it open (#2254), per-target latency, adaptive engagement | works; dogfood adaptive never engages — #1817 |
+| D2.4 | metrics and traces in the tools the team already uses | `/metrics`; **Connectors** for OTLP export                                            | request rate, latency, errors, queue depth; traces in the team's backend                                     | verified (#1855)                              |
 
 ## D3 — tune capacity
 
@@ -65,7 +66,7 @@ D2–D4 run, and SigNoz `rolter · overview` for anything that got slower.
 
 ## D6 — automate
 
-| #    | step                                                          | where                  | expect                                    | status                                         |
-| ---- | ------------------------------------------------------------- | ---------------------- | ----------------------------------------- | ---------------------------------------------- |
-| D6.1 | apply configuration from CI with a least-privilege credential | —                      | a scoped control-plane token              | gap — #1836 (the admin token is superadmin)    |
-| D6.2 | apply it from a file                                          | `rolter-seed --import` | desired state for the sections it imports | shipped — warns about skipped sections (#1818) |
+| #    | step                                                          | where                  | expect                                    | status                                                    |
+| ---- | ------------------------------------------------------------- | ---------------------- | ----------------------------------------- | --------------------------------------------------------- |
+| D6.1 | apply configuration from CI with a least-privilege credential | —                      | a scoped control-plane token              | works — #1836 (scoped API token; no dashboard screen yet) |
+| D6.2 | apply it from a file                                          | `rolter-seed --import` | desired state for the sections it imports | shipped — warns about skipped sections (#1818)            |

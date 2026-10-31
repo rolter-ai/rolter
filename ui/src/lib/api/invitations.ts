@@ -20,6 +20,15 @@ export interface Invitation {
   accepted_at: string | null;
   revoked_at: string | null;
   created_at: string;
+  /**
+   * How emailing the link went (#1828): `sent`, `failed`, or `not_configured`
+   * when the control plane has no mail relay. The link is returned to the admin
+   * whichever it is.
+   */
+  mail_status: "not_configured" | "sent" | "failed";
+  mail_attempted_at: string | null;
+  /** why a `failed` send failed, in words that are safe to show */
+  mail_error: string | null;
 }
 
 export interface CreatedInvitation {
@@ -47,6 +56,32 @@ export function createInvitation(
 
 export function revokeInvitation(id: string): Promise<Invitation> {
   return sendJson<Invitation>("DELETE", `/api/v1/invitations/${id}`);
+}
+
+/**
+ * Email a pending invitation's link again (#3304). It is the same link, so the
+ * earlier message still works. The answer is the invitation with its mail
+ * outcome updated; `409` is an invitation that is no longer pending, has no
+ * kept link, or a control plane with no relay.
+ */
+export function resendInvitation(id: string): Promise<Invitation> {
+  return sendJson<Invitation>("POST", `/api/v1/invitations/${id}/resend`);
+}
+
+/**
+ * What a relay check answers (#3304): `ok`, or the `stage` that failed and a
+ * `reason` that names no address or credential. `409` is a control plane with
+ * no mail relay, and `429` a check run again within a few seconds (#3394).
+ */
+export interface MailRelayCheck {
+  ok: boolean;
+  stage?: "connect" | "tls" | "auth" | "relay";
+  reason?: string;
+}
+
+/** connect to the relay, negotiate TLS and authenticate, sending nothing */
+export function checkMailRelay(orgId: string): Promise<MailRelayCheck> {
+  return sendJson<MailRelayCheck>("POST", `/api/v1/orgs/${orgId}/invitations/mail-check`);
 }
 
 export interface InvitationPreview {
@@ -103,5 +138,3 @@ export function acceptInvitation(
     password === undefined ? {} : { password },
   );
 }
-
-// --- users + memberships (crates/rolter-control/src/crud.rs, ROL-223) ---

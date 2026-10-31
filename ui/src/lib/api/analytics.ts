@@ -20,10 +20,13 @@ export async function getAnalytics<T>(
   // is a genuine not-found the caller should surface as such
   { notFoundIsUnavailable = true }: { notFoundIsUnavailable?: boolean } = {},
 ): Promise<T> {
-  // an analytics read never signs the session out: a 401 here is the caller's
-  // to show, as it always was
+  // a 401 on an analytics read made with a session token signs the session out
+  // like every other control-plane call (#3226): the dead token would otherwise
+  // stay attached while each screen shows its own error. the one 401 that does
+  // not mean an expired session is the coded `admin_token_required` a control
+  // plane with no database answers with (#1909); `noteUnauthorized` already
+  // exempts it, so the screen's LoadError explains the admin token instead
   return request<T>(url, {
-    expireSession: false,
     mapError: (res, err) =>
       res.status === 503 || (res.status === 404 && notFoundIsUnavailable)
         ? new AnalyticsUnavailableError(err.message)
@@ -90,8 +93,35 @@ export interface AnalyticsSummary {
   unpriced_requests: number | string;
   /** how many distinct models those requests hit */
   unpriced_models: number | string;
+  /** requests the provider billed but a guardrail or plugin refused to deliver (403) */
+  withheld_requests?: number | string;
+  /** what those requests were billed; included in `cost_usd` */
+  withheld_cost?: number | string;
+  /** successful requests whose upstream reported no usage, so their cost is unknown */
+  usage_unknown_requests?: number | string;
+  /** requests answered from a cache, weighted like `requests`; absent from an older control plane */
+  cache_hit_requests?: number | string;
+  /**
+   * prompt tokens the provider served from its own prompt cache, weighted like
+   * the other sums; the read share is this over `prompt_tokens` (#3356). Not
+   * rolter's response cache (`cache_hit_requests`). Zero when no provider in the
+   * window reports it; absent from an older control plane
+   */
+  cache_read_tokens?: number | string;
+  /**
+   * the prompt tokens of the requests whose provider stated its prompt-cache
+   * reads, zero included, weighted like the other sums: the read share's
+   * denominator, so a provider that does not report them does not dilute it
+   * (#3410). Absent from an older control plane, or one over a ClickHouse
+   * without the column, where the share is over `prompt_tokens`
+   */
+  cache_reported_prompt_tokens?: number | string;
+  /** requests with a prompt whose provider did not state its cache reads, so the share leaves them out (#3410) */
+  cache_unmeasured_requests?: number | string;
   errors: number | string;
   avg_latency_ms: number | string;
+  /** the 95th percentile over the whole window; absent from an older control plane */
+  p95_latency_ms?: number | string;
 }
 
 export interface AnalyticsTimeseriesPoint {
@@ -102,12 +132,22 @@ export interface AnalyticsTimeseriesPoint {
 }
 
 export interface AnalyticsByModelRow {
+  /**
+   * the organization whose traffic the row counts, `""` for a request no
+   * organization owns. A row is one organization's model (#3486): two
+   * organizations may each have a route of one name (#1857). Absent from a
+   * control plane that predates the split, which merged them
+   */
+  org_id?: string;
   model: string;
   requests: number | string;
   tokens: number | string;
   cost_usd: number | string;
   /** requests recorded with no price for this model; see AnalyticsSummary */
   unpriced_requests: number | string;
+  withheld_requests?: number | string;
+  withheld_cost?: number | string;
+  usage_unknown_requests?: number | string;
   errors: number | string;
   p50_latency_ms: number | string;
   p95_latency_ms: number | string;
@@ -141,6 +181,72 @@ export function fetchAnalyticsByModel(
 ): Promise<AnalyticsByModelRow[]> {
   return getAnalytics<DataEnvelope<AnalyticsByModelRow>>(
     `/api/v1/analytics/by-model${windowParams(window)}`,
+  ).then((r) => r.data);
+}
+
+/**
+ * One variant of a route over a window (#3342). `variant` is the empty string
+ * for requests the gateway served without one: the classic single pool, or
+ * traffic from before the route had variants.
+ */
+export interface AnalyticsByVariantRow {
+  /**
+   * The organization whose route this is (#3548), an empty string for a request
+   * no organization owns: two organizations may each have a route of one name,
+   * and their variants are two sets of rows. Absent from a control plane older
+   * than the field.
+   */
+  org_id?: string;
+  /** the route's public name */
+  model: string;
+  variant: string;
+  /** every request the variant answered, failovers included */
+  requests: number | string;
+  /**
+   * The part of `requests` served on the first attempt (#3409): those with no
+   * `fallback_reason`. `null` from a ClickHouse that has not applied
+   * `clickhouse/023`, which cannot tell the two apart; absent from a control
+   * plane older than the field.
+   */
+  first_attempt_requests?: number | string | null;
+  /**
+   * The requests the variant was dialled to first (#3505), so a request that
+   * failed over counts for the variant it was dialled to first and a variant that answered nothing still
+   * has a row (with `requests` at 0). A row from before `clickhouse/048`
+   * counts for the variant that answered it when it did not fail over, and for
+   * none otherwise. `null` from a ClickHouse without that file; absent from a
+   * control plane older than the field.
+   */
+  assigned_requests?: number | string | null;
+  /**
+   * The requests the weighted split sampled the variant for (#3547), before the
+   * gateway skipped a variant whose breaker is open or whose targets are
+   * parked or unhealthy: the share to compare with the configured weights. A
+   * variant row from before `clickhouse/050` counts for none. `null` from a
+   * ClickHouse without that file; absent from a control plane older than the
+   * field.
+   */
+  sampled_requests?: number | string | null;
+  tokens: number | string;
+  cost_usd: number | string;
+  /** requests recorded with no price for their model; see AnalyticsSummary */
+  unpriced_requests: number | string;
+  errors: number | string;
+  p50_latency_ms: number | string;
+  p95_latency_ms: number | string;
+}
+
+/**
+ * What each variant of the route `model` served over the window. A route name
+ * is unique per project only, so a caller who reads several projects passes
+ * the route's `project`; without it same-named routes are merged.
+ */
+export function fetchAnalyticsByVariant(
+  model: string,
+  window: AnalyticsWindow & AnalyticsRowFilters = {},
+): Promise<AnalyticsByVariantRow[]> {
+  return getAnalytics<DataEnvelope<AnalyticsByVariantRow>>(
+    `/api/v1/analytics/by-variant${windowParams({ ...window, model })}`,
   ).then((r) => r.data);
 }
 
@@ -259,6 +365,43 @@ export interface PluginOutcomes {
 export function fetchPluginOutcomes(window: AnalyticsWindow = {}): Promise<PluginOutcomes> {
   return getAnalytics<Partial<PluginOutcomes>>(
     `/api/v1/analytics/plugins${windowParams(window)}`,
+  ).then((r) => ({
+    data: Array.isArray(r.data) ? r.data : [],
+    recorded: r.recorded !== false,
+  }));
+}
+
+/**
+ * One request parameter dialect translation did not forward as sent, on one
+ * route and provider, over the window (#3323). `share` is `requests` over
+ * `route_requests`, the requests that route sent that provider in all; the
+ * numbers may arrive as strings, like every ClickHouse count.
+ */
+export interface ParamAdjustmentRow {
+  route: string;
+  provider: string;
+  /** `dropped`, `clamped` or `translated`; a newer gateway may add more */
+  disposition: string;
+  param: string;
+  requests: number | string;
+  route_requests: number | string;
+  share: number | string;
+}
+
+export interface ParamAdjustments {
+  data: ParamAdjustmentRow[];
+  /**
+   * `false` when the ClickHouse table lacks the column the adjustments are
+   * kept in (`clickhouse/022_param_adjustments.sql` not applied), so an empty
+   * `data` means "not recorded" and not "every parameter went through"
+   */
+  recorded: boolean;
+}
+
+/** the adjustment rollup; throws AnalyticsUnavailableError without ClickHouse */
+export function fetchParamAdjustments(window: AnalyticsWindow = {}): Promise<ParamAdjustments> {
+  return getAnalytics<Partial<ParamAdjustments>>(
+    `/api/v1/analytics/param-adjustments${windowParams(window)}`,
   ).then((r) => ({
     data: Array.isArray(r.data) ? r.data : [],
     recorded: r.recorded !== false,

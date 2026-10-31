@@ -147,3 +147,22 @@ export const AtMobile: Story = {
     await expectNoHorizontalOverflow();
   },
 };
+
+/**
+ * A switch that waits for Save says so beside the title (#2214): the panel's
+ * control moves at once, and nothing else tells the reader the gateways still
+ * run the old value.
+ */
+export const UnsavedSwitch: Story = {
+  args: {
+    title: "Queue",
+    description: "Hold requests when every provider is busy.",
+    unsaved: true,
+    action: <Switch checked aria-label="Enable queue" />,
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByText("Not saved")).toBeVisible();
+    await expect(canvas.getByRole("switch", { name: "Enable queue" })).toBeChecked();
+  },
+};

@@ -1,0 +1,76 @@
+---
+title: "Listing Every Virtual Key in an Organization"
+sidebarTitle: "Org virtual keys"
+description: "GET /api/v1/orgs/{org_id}/virtual-keys returns the virtual keys of every project in an organization that the caller may read, each row naming its project — one request instead of one per project."
+---
+
+Virtual keys live under projects, so `GET /api/v1/projects/{project_id}/virtual-keys`
+answers for one project at a time. A screen that has to name a key _anywhere_ in
+the organization — the picker in the MCP tool group dialog, for one — would
+otherwise list the projects and then issue one request per project. In an
+organization with hundreds of projects that is hundreds of requests to open one
+dialog.
+
+`GET /api/v1/orgs/{org_id}/virtual-keys` is that list in one request.
+
+## Request
+
+```http
+GET /api/v1/orgs/{org_id}/virtual-keys
+Authorization: Bearer <session or admin token>
+```
+
+```bash
+curl -s https://control.example.com/api/v1/orgs/$ORG_ID/virtual-keys \
+  -H "Authorization: Bearer $ROLTER_SESSION_TOKEN"
+```
+
+There are no query parameters. The organization id is the only input.
+
+## Response
+
+An array of virtual keys, oldest first. Each is the object
+`GET /api/v1/projects/{project_id}/virtual-keys` returns, without the
+`previous_*` fields of a rotation. Neither listing carries a digest of a secret.
+Each carries its `project_id`; join it to
+[`GET /api/v1/orgs/{org_id}/projects`](/api/org-projects) to name the project
+and its team.
+
+```json
+[
+  {
+    "id": "3f6c1d2e-7a41-4b8e-9c0d-5e2f8a1b4c77",
+    "project_id": "6d0f1f9c-6f0e-4d1a-9d3f-2a5d8f3a1b22",
+    "key_prefix": "sk-rolter-ab",
+    "name": "ci",
+    "models": [],
+    "providers": [],
+    "disabled": false,
+    "expires_at": null,
+    "cache_enabled": null,
+    "created_by": null,
+    "business_unit_id": null,
+    "customer_id": null,
+    "purpose": null,
+    "created_at": "2026-01-14T09:05:40.221Z"
+  }
+]
+```
+
+The secret is never part of a listing; it is shown once, when the key is minted.
+
+## Authorization
+
+The `virtual_key` capability's read action, the one the per-project list takes,
+decided for each key at its own project. The list holds exactly the keys the
+per-project list would show the caller, project by project, so asking for the
+whole organization widens nothing:
+
+- an organization reader gets every key of the organization;
+- a team reader gets the keys of that team's projects;
+- a project reader gets that project's keys;
+- an account with no role anywhere inside the organization is refused with
+  `403`, and an unauthenticated one with `401`. A caller with a role that
+  reaches no key gets an empty array.
+
+A superadmin or the deployment admin token reads every key.
