@@ -383,6 +383,37 @@ export const Labelled: Story = {
   },
 };
 
+/** #3555: a group label's value is read-only to a viewer and writable to its org admin. */
+export const LabelValueFollowsTheRowGate: Story = {
+  render: () => (
+    <Harness fetchStub={withLabels} role="viewer">
+      <ProviderGroups />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getByLabelText("tier=frontier, your label")).toBeVisible());
+    await userEvent.click(canvas.getByRole("button", { name: "Labels on frontier" }));
+    const panel = await within(document.body).findByRole("dialog");
+    await expectRefused(panel, "Value of tier", undefined, "textbox");
+  },
+};
+
+export const LabelValueIsAllowedToAnOrgAdmin: Story = {
+  render: () => (
+    <Harness fetchStub={withLabels} role="admin">
+      <ProviderGroups />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getByLabelText("tier=frontier, your label")).toBeVisible());
+    await userEvent.click(canvas.getByRole("button", { name: "Labels on frontier" }));
+    const panel = await within(document.body).findByRole("dialog");
+    await expectAllowed(panel, "Value of tier", "textbox");
+  },
+};
+
 // a label on a group that is not in the list — the shape a label left behind by
 // a deleted group, or one on a group another filter is hiding, actually has
 const ORPHAN_LABEL: LabelRow[] = [

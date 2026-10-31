@@ -497,6 +497,37 @@ export const AutoLabelsAreReadOnly: Story = {
   },
 };
 
+/** #3555: the value follows the same update decision as the row's other writes. */
+export const LabelValueIsRefusedToAViewer: Story = {
+  render: () => (
+    <Harness fetchStub={withLabels} role="viewer">
+      <Providers />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getAllByText("openai-prod").length).toBeGreaterThan(0));
+    await userEvent.click(canvas.getByRole("button", { name: "Labels on openai-prod" }));
+    const panel = await within(document.body).findByRole("dialog");
+    await expectRefused(panel, "Value of tier", undefined, "textbox");
+  },
+};
+
+export const LabelValueIsAllowedToAnOrgAdmin: Story = {
+  render: () => (
+    <Harness fetchStub={withLabels} role="admin">
+      <Providers />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getAllByText("openai-prod").length).toBeGreaterThan(0));
+    await userEvent.click(canvas.getByRole("button", { name: "Labels on openai-prod" }));
+    const panel = await within(document.body).findByRole("dialog");
+    await expectAllowed(panel, "Value of tier", "textbox");
+  },
+};
+
 /** the API's 409 is named before it is sent: that key is already set here */
 export const DuplicateKeyIsRefusedBeforeSending: Story = {
   render: () => (
