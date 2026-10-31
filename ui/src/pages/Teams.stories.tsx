@@ -2,7 +2,6 @@ import type { Meta, StoryObj } from "@storybook/react";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import Teams from "./Teams";
-import { resolveColorToken } from "@/lib/story-tokens";
 import {
   clickWhenEnabled,
   confirmDestructive,
@@ -24,6 +23,7 @@ import {
   type FetchStub,
 } from "./story-harness";
 import type { BudgetRow, MembershipRow, OrgProjectRow, TeamRow, UserRow } from "@/lib/api";
+import { resolveColorToken } from "@/lib/story-tokens";
 
 const TEAMS: TeamRow[] = [
   { id: "team-1", org_id: "org-1", name: "Platform", created_at: "2026-01-04T00:00:00Z" },
