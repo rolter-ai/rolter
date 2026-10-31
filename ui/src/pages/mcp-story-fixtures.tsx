@@ -27,7 +27,6 @@ export const PROJECT = {
 export const KEY = {
   id: "key-9",
   project_id: PROJECT.id,
-  key_hash: "hash",
   key_prefix: "sk-rl-ab",
   name: "ci runner",
   models: [],

@@ -15,6 +15,9 @@
 //! labels, and the deployment-wide ones it has not set a label of the same key
 //! over. A caller sees an organization's model labels only where they reach
 //! that organization, the rule `GET /api/v1/models` applies to the models.
+//! Writing one that names an organization is that organization's act, under
+//! its `label` capability; a deployment-wide one stays superadmin-only
+//! (`model_label`, #3520).
 
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
@@ -31,7 +34,7 @@ use crate::crud::{
     log_audit, name_taken, pool, publish_config_change, ApiError, ApiResult, SafeJson,
 };
 use crate::rbac::{authorize, Principal, ScopeChain};
-use crate::rbac_matrix::cap;
+use crate::rbac_matrix::{cap, Requirement};
 use crate::tenant_view::TenantView;
 use crate::ControlState;
 
@@ -373,10 +376,11 @@ async fn create_model_label(
     State(state): State<ControlState>,
     SafeJson(body): SafeJson<CreateModelLabel>,
 ) -> ApiResult<(StatusCode, Json<Label>)> {
-    authorize(
+    authorize_model_label(
         &state,
         &principal,
-        ScopeChain::default(),
+        body.org_id,
+        cap!("label", Create),
         cap!("model_label", Create),
     )
     .await?;
@@ -422,9 +426,27 @@ async fn create_model_label(
     created(row, &body.key)
 }
 
+/// Authorize a write to a model label (#3520). A label that names an
+/// organization touches only that organization's model, so it takes `org`,
+/// the org-scoped `label` capability its provider and route labels use, at
+/// that organization. A deployment-wide label takes `deployment`, the
+/// superadmin-only `model_label`.
+async fn authorize_model_label(
+    state: &ControlState,
+    principal: &Principal,
+    org_id: Option<Uuid>,
+    org: Requirement,
+    deployment: Requirement,
+) -> ApiResult<()> {
+    match org_id {
+        Some(org_id) => authorize(state, principal, ScopeChain::org(org_id), org).await,
+        None => authorize(state, principal, ScopeChain::default(), deployment).await,
+    }
+}
+
 /// Confirm the label is a model's before a model-scoped handler edits it: the
-/// two surfaces share a table, and superadmin authority over the catalog is
-/// not authority over an org's providers.
+/// two surfaces share a table, and authority over a model's labels is not
+/// authority over an org's providers.
 async fn model_label(state: &ControlState, id: Uuid) -> ApiResult<Label> {
     let label = LabelRepo(pool(state)).get(id).await?;
     if label.subject_type != "model" {
@@ -439,15 +461,17 @@ async fn update_model_label(
     Path(id): Path<Uuid>,
     SafeJson(body): SafeJson<UpdateLabel>,
 ) -> ApiResult<Json<Label>> {
-    authorize(
+    // the label's own org decides the check, so it is read first
+    let label = model_label(&state, id).await?;
+    authorize_model_label(
         &state,
         &principal,
-        ScopeChain::default(),
+        label.org_id,
+        cap!("label", Update),
         cap!("model_label", Update),
     )
     .await?;
     validate_value(body.value.as_deref())?;
-    model_label(&state, id).await?;
     let row = LabelRepo(pool(&state))
         .update_custom(id, body.value.as_deref())
         .await?;
@@ -470,14 +494,15 @@ async fn delete_model_label(
     State(state): State<ControlState>,
     Path(id): Path<Uuid>,
 ) -> ApiResult<StatusCode> {
-    authorize(
+    let label = model_label(&state, id).await?;
+    authorize_model_label(
         &state,
         &principal,
-        ScopeChain::default(),
+        label.org_id,
+        cap!("label", Delete),
         cap!("model_label", Delete),
     )
     .await?;
-    let label = model_label(&state, id).await?;
     LabelRepo(pool(&state)).delete_custom(id).await?;
     publish_config_change(&state).await?;
     log_audit(

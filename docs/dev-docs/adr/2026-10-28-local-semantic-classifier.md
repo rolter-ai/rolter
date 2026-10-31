@@ -88,19 +88,20 @@ answers a `ScoredDecision` with its categories and `allow`, so blocking is the
 policy's thresholds' job, exactly as for a pure webhook classifier. The text it
 classifies is every string in the body the stage judges, except a fixed set of
 structural fields (`model`, `role`, `type`, `id` and the like), bounded to
-`max_body_bytes`.
+`max_body_bytes` (since #3513, scored in overlapping `max_body_bytes` windows up
+to `max_scored_bytes`).
 
 **Budgets.**
 
-| Budget             | Limit                                                                                                                                                                                                                |
-| ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| model file         | at most 64 MiB on disk                                                                                                                                                                                               |
-| model in memory    | `buckets × categories` dense `f32` weights, at most 2²² of them (16 MiB); `buckets` ≤ 2²⁰, ≤ 32 categories                                                                                                           |
-| `ngrams`           | 1 to 3                                                                                                                                                                                                               |
-| text per call      | the provider's `max_body_bytes` (64 KiB by default)                                                                                                                                                                  |
-| latency per call   | well under a millisecond at the default 64 KiB; the provider's `timeout_ms` bounds it, queueing included                                                                                                             |
-| per request        | one call per local provider per stage, as for a webhook                                                                                                                                                              |
-| memory per gateway | the sum of the distinct models loaded (one copy per `sha256`, however many providers or paths share it), plus the previous apply's until the next; parsing a file peaks at roughly three times its size, transiently |
+| Budget             | Limit                                                                                                                                                                                                                                                                              |
+| ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| model file         | at most 64 MiB on disk                                                                                                                                                                                                                                                             |
+| model in memory    | `buckets × categories` dense `f32` weights, at most 2²² of them (16 MiB); `buckets` ≤ 2²⁰, ≤ 32 categories                                                                                                                                                                         |
+| `ngrams`           | 1 to 3                                                                                                                                                                                                                                                                             |
+| text per call      | the provider's `max_body_bytes` (64 KiB by default); since #3513 a longer text is scored in overlapping windows of that size up to `max_scored_bytes` (8 windows, 512 KiB, by default; at most 16 MiB and 64 windows)                                                              |
+| latency per call   | about 1 ms per 64 KiB window on one core (release build, the test fixture model; measured for #3513), so about 10 ms for a text that fills the default budget; the provider's `timeout_ms` bounds the whole call, queueing and every window included, and must cover a full budget |
+| per request        | one call per local provider per stage, as for a webhook                                                                                                                                                                                                                            |
+| memory per gateway | the sum of the distinct models loaded (one copy per `sha256`, however many providers or paths share it), plus the previous apply's until the next; parsing a file peaks at roughly three times its size, transiently                                                               |
 
 **Model shipping.** `model_path` is a path on the gateway's file system and
 `model_sha256` its required SHA-256 pin. The gateway never downloads a model.

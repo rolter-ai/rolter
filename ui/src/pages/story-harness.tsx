@@ -519,6 +519,8 @@ export function stubClipboard(writeText: (value: string) => Promise<void>): () =
 /** a file a stubbed save dialog handed out, as the page left it */
 export interface SavedFile {
   suggestedName?: string;
+  /** the file types the dialog was asked to offer, as `showSaveFilePicker` takes them */
+  types?: { description?: string; accept: Record<string, string[]> }[];
   /** what was written, in order */
   chunks: Uint8Array[];
   closed: boolean;
@@ -534,10 +536,11 @@ export interface SavedFile {
  */
 export function stubSavePicker(options: { reject?: boolean } = {}) {
   const files: SavedFile[] = [];
-  const picker = async (opts: { suggestedName?: string }) => {
+  const picker = async (opts: { suggestedName?: string; types?: SavedFile["types"] }) => {
     if (options.reject) throw new DOMException("closed", "AbortError");
     const file: SavedFile = {
       suggestedName: opts.suggestedName,
+      types: opts.types,
       chunks: [],
       closed: false,
       aborted: false,

@@ -53,6 +53,15 @@ async fn fixture() -> Fixture {
     }
 }
 
+/// The digest the row stores for a key, which no API response carries.
+async fn stored_hash(f: &Fixture, id: &str) -> String {
+    sqlx::query_scalar("select key_hash from virtual_keys where id = $1")
+        .bind(uuid::Uuid::parse_str(id).unwrap())
+        .fetch_one(&f.pool)
+        .await
+        .unwrap()
+}
+
 async fn snapshot_key(f: &Fixture, id: &str) -> Value {
     let snap: Value = reqwest::Client::new()
         .get(format!("{}/internal/snapshot", f.base))
@@ -93,7 +102,9 @@ async fn rotation_keeps_the_row_and_overlaps_the_old_secret_until_it_is_revoked(
         .await
         .unwrap();
     let id = created["id"].as_str().unwrap().to_string();
-    let old_hash = created["key_hash"].as_str().unwrap().to_string();
+    // no digest of the secret leaves the API (#3525): read it from the row
+    assert!(created.get("key_hash").is_none());
+    let old_hash = stored_hash(&f, &id).await;
     let old_key = created["key"].as_str().unwrap().to_string();
     let before = config_version(&f.pool).await;
 
@@ -113,7 +124,9 @@ async fn rotation_keeps_the_row_and_overlaps_the_old_secret_until_it_is_revoked(
     assert_eq!(rotated["providers"], json!(["edge"]));
     assert_eq!(rotated["cache_enabled"], true);
     assert_ne!(rotated["key"], old_key.as_str());
-    assert_ne!(rotated["key_hash"], old_hash.as_str());
+    assert!(rotated.get("key_hash").is_none());
+    let new_hash = stored_hash(&f, &id).await;
+    assert_ne!(new_hash, old_hash);
     assert_eq!(rotated["previous_key_prefix"], old_key[..12]);
     assert!(rotated["previous_expires_at"].is_string());
     // the digest of the retired secret never leaves the API
@@ -122,7 +135,7 @@ async fn rotation_keeps_the_row_and_overlaps_the_old_secret_until_it_is_revoked(
 
     // the gateway is told about the overlap by digest, and nothing else
     let in_snapshot = snapshot_key(&f, &id).await;
-    assert_eq!(in_snapshot["key_hash"], rotated["key_hash"]);
+    assert_eq!(in_snapshot["key_hash"], new_hash.as_str());
     assert_eq!(in_snapshot["previous"]["key_hash"], old_hash.as_str());
     assert!(in_snapshot["previous"]["valid_until"].is_string());
 
@@ -201,6 +214,7 @@ async fn rotation_needs_admin_and_bounds_the_overlap() {
         .await
         .unwrap();
     let id = created["id"].as_str().unwrap();
+    let before = stored_hash(&f, id).await;
 
     // a viewer can read the key but not rotate it or end an overlap
     let denied = client
@@ -231,12 +245,7 @@ async fn rotation_needs_admin_and_bounds_the_overlap() {
         .unwrap();
     assert_eq!(too_long.status(), 400);
     // and a refused rotation changed nothing
-    let key_hash: String = sqlx::query_scalar("select key_hash from virtual_keys where id = $1")
-        .bind(uuid::Uuid::parse_str(id).unwrap())
-        .fetch_one(&f.pool)
-        .await
-        .unwrap();
-    assert_eq!(created["key_hash"], key_hash.as_str());
+    assert_eq!(stored_hash(&f, id).await, before);
 }
 
 #[tokio::test]

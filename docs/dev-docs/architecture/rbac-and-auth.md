@@ -132,7 +132,10 @@ the global namespace. A key resolves a name in its own org first, then
 globally; a key with no org gets the global row, or the one org row when only
 one org has the name, and a name two orgs share is unknown to it. A route's
 targets, a variant's and a group's members resolve the same way from the row's
-own org, so a row never names another org's provider. Per-target state is kept
+own org, so a row never names another org's provider. An org's own row the key
+may not use (a `project_only` route, or a provider or group scoped to another
+project) is no match for it either: the name goes on to the global row, under
+that row's own tenancy check (#3546, ADR-0040 addendum). Per-target state is kept
 apart too: providers are keyed by a runtime id and routes by a namespace, each
 the bare name unless another org shares it, then `name@org`.
 
@@ -643,6 +646,16 @@ A read that fails after the headers went out ends the body with an I/O error
 rather than a clean close. The export is recorded as `audit_log.export` before
 the first byte, with the format and filters in `detail`; it adds no capability,
 since "can read the log" already means "can read all of it".
+
+A browser without the File System Access API downloads it through a single-use
+ticket (#3545, the audit addendum of
+[ADR-0041](../adr/2026-10-29-export-download-tickets.md)): `ExportKind` names
+both exports (`DeploymentAudit`, and `OrgAudit` with the org's id, stored as
+`org_audit_log:<id>`), the mint runs `audit_export::authorize_export` instead of
+the request log's reach, and the redemption hands the ticket to
+`audit_export::run_redeemed`, which runs the same check again for the
+re-resolved principal before it records the export and walks the log. The walk
+reports its rows to the ticket's status.
 
 ### Who an audit row names as the actor (#2844)
 

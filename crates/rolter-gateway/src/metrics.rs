@@ -28,6 +28,13 @@ const LABELLED_LOCAL_MODELS: &str = "rolter_local_classifier_models";
 const LABELLED_GUARD_DECISIONS: &str = "rolter_guardrail_policy_decisions_total";
 const LABELLED_GUARD_VIOLATIONS: &str = "rolter_guardrail_policy_violations_total";
 const GUARD_PROVIDER_LATENCY: &str = "rolter_guardrail_provider_latency_ms";
+const LABELLED_LOCAL_TRUNCATED: &str = "rolter_semantic_local_truncated_total";
+const LABELLED_MCP_UNREAD: &str = "rolter_mcp_unread_bodies_total";
+
+/// Why the MCP relay forwarded a body without reading it, the `reason` label
+/// of `rolter_mcp_unread_bodies_total` (#3528): `encoded` (a
+/// `Content-Encoding`) or `unparseable` (not JSON).
+pub const MCP_UNREAD_REASONS: [&str; 2] = ["encoded", "unparseable"];
 
 /// The labelled counter families, declared up front for the OTLP exporter. At
 /// install time the gateway has served nothing, so every family is
@@ -72,6 +79,14 @@ pub const LABELLED_FAMILIES: &[rolter_core::telemetry::LabelledFamily] = &[
     (
         LABELLED_GUARD_VIOLATIONS,
         "scored categories that crossed a semantic guardrail policy threshold, by policy, category and action",
+    ),
+    (
+        LABELLED_MCP_UNREAD,
+        "mcp request bodies forwarded to an ungoverned server without being read, so their calls are not itemised, by reason",
+    ),
+    (
+        LABELLED_LOCAL_TRUNCATED,
+        "local semantic guard calls whose text was longer than the provider's max_scored_bytes, so part of it was not read, by provider",
     ),
 ];
 
@@ -493,6 +508,9 @@ pub struct Metrics {
     /// requests refused before a key was resolved, keyed by reason (#1395).
     /// The reasons are a fixed set of literals, so the label set is bounded
     by_rejection: DashMap<&'static str, AtomicU64>,
+    /// MCP bodies forwarded unread, one counter per `MCP_UNREAD_REASONS` entry
+    /// in the same order (#3528)
+    mcp_unread: [AtomicU64; MCP_UNREAD_REASONS.len()],
     /// queue depth, in-flight count and queue wait per provider name. Names
     /// come from the configured providers, so the label set is bounded by the
     /// config
@@ -521,6 +539,9 @@ pub struct Metrics {
     /// how long each semantic guardrail provider took to answer, failures
     /// included, keyed by provider name
     by_guard_latency: DashMap<String, Histogram>,
+    /// local classifier calls that could not read all of their text, keyed
+    /// by provider name (#3513)
+    by_local_truncated: DashMap<String, AtomicU64>,
 }
 
 /// One scalar metric: its Prometheus type, name, help text, and current value.
@@ -648,6 +669,19 @@ impl Metrics {
             .fetch_add(1, Relaxed);
     }
 
+    /// Count one local classifier call whose text was longer than its
+    /// provider's `max_scored_bytes` (#3513).
+    pub fn observe_local_truncated(&self, provider: &str) {
+        if let Some(count) = self.by_local_truncated.get(provider) {
+            count.fetch_add(1, Relaxed);
+            return;
+        }
+        self.by_local_truncated
+            .entry(provider.to_string())
+            .or_default()
+            .fetch_add(1, Relaxed);
+    }
+
     /// Record how long one semantic guardrail provider call took.
     pub fn observe_guard_latency(&self, provider: &str, ms: u32) {
         if let Some(hist) = self.by_guard_latency.get(provider) {
@@ -666,6 +700,16 @@ impl Metrics {
             .entry((route.to_string(), kind))
             .or_default()
             .fetch_add(1, Relaxed);
+    }
+
+    /// Count an MCP request body forwarded to an ungoverned server without
+    /// being read, by one of `MCP_UNREAD_REASONS` (#3528). Its calls have no
+    /// rows of their own, so this is the only count of that traffic when the
+    /// MCP log is off.
+    pub fn observe_mcp_unread(&self, reason: &str) {
+        if let Some(index) = MCP_UNREAD_REASONS.iter().position(|r| *r == reason) {
+            self.mcp_unread[index].fetch_add(1, Relaxed);
+        }
     }
 
     /// Record a request refused before any key was resolved, by `reason`
@@ -1214,12 +1258,26 @@ impl Metrics {
                 entry.value().load(Relaxed),
             ));
         }
+        for entry in self.by_local_truncated.iter() {
+            out.push((
+                LABELLED_LOCAL_TRUNCATED,
+                vec![("provider", entry.key().clone())],
+                entry.value().load(Relaxed),
+            ));
+        }
         for entry in self.by_route_limit.iter() {
             let (route, kind) = entry.key();
             out.push((
                 LABELLED_ROUTE_LIMIT,
                 vec![("route", route.clone()), ("kind", (*kind).to_string())],
                 entry.value().load(Relaxed),
+            ));
+        }
+        for (reason, value) in MCP_UNREAD_REASONS.iter().zip(&self.mcp_unread) {
+            out.push((
+                LABELLED_MCP_UNREAD,
+                vec![("reason", (*reason).to_string())],
+                value.load(Relaxed),
             ));
         }
         for entry in self.by_rejection.iter() {
@@ -1395,6 +1453,7 @@ impl Metrics {
         self.render_route_limit_counters(&mut out);
         self.render_guard_series(&mut out);
         self.render_rejection_counters(&mut out);
+        self.render_mcp_unread(&mut out);
         self.render_provider_load(&mut out);
         self.render_redis(&mut out);
         self.render_snapshot_unknown(&mut out);
@@ -1552,6 +1611,17 @@ impl Metrics {
                 entry.value().load(Relaxed)
             );
         }
+        let name = LABELLED_LOCAL_TRUNCATED;
+        let _ = writeln!(out, "# HELP {name} {}", family_help(name));
+        let _ = writeln!(out, "# TYPE {name} counter");
+        for entry in self.by_local_truncated.iter() {
+            let _ = writeln!(
+                out,
+                "{name}{{provider=\"{}\"}} {}",
+                escape_label(entry.key()),
+                entry.value().load(Relaxed)
+            );
+        }
         let name = GUARD_PROVIDER_LATENCY;
         let _ = writeln!(
             out,
@@ -1578,6 +1648,18 @@ impl Metrics {
                 entry.key(),
                 entry.value().load(Relaxed)
             );
+        }
+    }
+
+    /// Append `rolter_mcp_unread_bodies_total{reason}`, every reason written
+    /// from the first scrape so a rate over it never starts from a gap.
+    fn render_mcp_unread(&self, out: &mut String) {
+        let name = LABELLED_MCP_UNREAD;
+        let help = family_help(name);
+        let _ = writeln!(out, "# HELP {name} {help}");
+        let _ = writeln!(out, "# TYPE {name} counter");
+        for (reason, value) in MCP_UNREAD_REASONS.iter().zip(&self.mcp_unread) {
+            let _ = writeln!(out, "{name}{{reason=\"{reason}\"}} {}", value.load(Relaxed));
         }
     }
 
@@ -1857,8 +1939,12 @@ mod tests {
         m.observe_rejection("missing_key");
 
         // one ok + one error per target, one per variant, one per complexity
-        // key, one per route cap that refused, one per rejection reason
-        assert_eq!(m.labelled_for_export().len(), 2 + 1 + 1 + 1 + 1);
+        // key, one per route cap that refused, one per rejection reason, and
+        // every reason an mcp body goes unread for, zeros included
+        assert_eq!(
+            m.labelled_for_export().len(),
+            2 + 1 + 1 + 1 + 1 + MCP_UNREAD_REASONS.len()
+        );
     }
 
     /// Every family the exporter registers must be one the gateway actually
@@ -1872,6 +1958,7 @@ mod tests {
         m.observe_route_limit("gpt-4o", "concurrency");
         m.observe_guard_decision("support", "toxicity", "post_call", "allow");
         m.observe_guard_violation("support", "violence", "block");
+        m.observe_local_truncated("injection");
         m.observe_rejection("missing_key");
         let _load = m.provider_load("vllm");
         watch_all_redis_consumers(&m);

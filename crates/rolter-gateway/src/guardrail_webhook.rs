@@ -37,6 +37,10 @@ pub enum CallFailure {
     /// the provider is of a kind this gateway does not know; unlike every
     /// other failure it blocks whatever the provider's failure mode says
     Unsupported,
+    /// a local provider's text was longer than its `max_scored_bytes` under
+    /// `on_truncated = "fail_closed"`; like `Unsupported` it blocks whatever
+    /// the provider's failure mode says (#3513)
+    Truncated,
 }
 
 impl CallFailure {
@@ -52,6 +56,7 @@ impl CallFailure {
             Self::Unparsable => "unparsable",
             Self::Model => "model",
             Self::Unsupported => "unsupported",
+            Self::Truncated => "truncated",
         }
     }
 

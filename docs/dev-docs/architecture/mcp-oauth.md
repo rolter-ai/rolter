@@ -199,8 +199,10 @@ after the caller is authenticated and before anything is forwarded.
   project and team and returns at once when nothing is assigned anywhere; with
   none the organization-wide set applies, otherwise the allowed tools on a
   governed server are the union of those groups' tools there, which is empty
-  when none names it. An assignment therefore only narrows, and an empty table
-  changes nothing. The same set drives the `tools/list` filter. API:
+  when none names it. The union stays within the organization's enabled groups,
+  but adding another assignment can grant an already-assigned caller more tools;
+  it is not a monotonic restriction. An empty table changes nothing. The same
+  set drives the `tools/list` filter. API:
   `GET /api/v1/orgs/{org_id}/mcp/tool-group-assignments` and
   `PUT /api/v1/mcp/tool-groups/{id}/assignments` (replaces the group's whole set
   in one transaction; a stored row whose subject is gone, which the `0200` sweep
@@ -720,6 +722,50 @@ The gateway records every proxied JSON-RPC `tools/call` in ClickHouse's
   column with the one that probes `error_scopes` (`McpColumns`) and selects
   `0` in its place until the migration is applied; `POST /api/v1/mcp/events`
   accepts `notification` and stores it only when true.
+- **Legacy `sse` replies (#3529).** A server on the legacy `sse` transport
+  answers each `POST` with `202 Accepted` and sends the JSON-RPC reply later on
+  the `GET` event stream the client holds open. A call answered that way with
+  no reply in the `202`'s body is recorded `status = success` with
+  `outcome = accepted` (`clickhouse/051_mcp_log_outcome.sql`,
+  `LowCardinality(String)`): the server took the call, and nothing says what the
+  tool did. A `202` whose body does carry the call's reply (a JSON-RPC error, as
+  some servers send) is judged by it like any other, and a streamable-HTTP
+  server, which owes the reply in its answer, still has a bare `202` recorded as
+  a transport error. The relay does not correlate the stream's replies with the
+  calls posted: that would need a bounded per-session table of pending calls
+  with eviction and a second write per call, for a transport the MCP
+  specification deprecates. `outcome` is a column of its own, not a new value
+  of the `status` enum, because ClickHouse refuses a whole insert that names an
+  enum value the table lacks; it is left out of every other row, so an
+  un-migrated ClickHouse records the call as an ordinary `success`.
+- **Bodies forwarded unread (#3528).** A server no rule governs is sent every
+  body verbatim (#3527). When the relay has not read one, because it carries a
+  `Content-Encoding` (it is then not parsed at all) or because the MCP log
+  parsed it and it is not JSON, the proxy counts it in
+  `rolter_mcp_unread_bodies_total{reason}` (`encoded`, `unparseable`;
+  `Metrics::observe_mcp_unread`, every reason rendered from the first scrape)
+  and, with the log on, adds one `PendingCall::unread` row: an empty `tool`,
+  `outcome = unread` once the upstream answers `2xx`, or the failure the HTTP
+  status reports. With the log off an ungoverned body is never parsed, so only
+  `encoded` can be counted then. Only a body actually forwarded is counted, so
+  a request refused for its session first is not.
+- **Calls not awaited (#3526).** A notification the upstream accepted
+  (`status = success`), an `unread` row and an `accepted` call say nothing
+  about whether the tool succeeded; a notification the HTTP layer refused or
+  failed was not delivered and counts as a failure. `GET /api/v1/mcp/logs` returns
+  `notification` and `outcome` beside `status`, and the dashboard marks such a
+  row "notification, no reply awaited" or "accepted, reply on the stream". The
+  summary (`summary_sql` in `crates/rolter-control/src/mcp_logs.rs`) counts
+  them in `not_awaited` and leaves them out of `successes`, `failures`,
+  `success_rate` and `failure_rate`, whose denominator is
+  `calls - not_awaited`; a window with no awaited call has `null` rates. The
+  list and the summary read the optional columns through the same
+  `McpColumns` probe as the detail, so a table without `047` or `051` counts
+  every call as awaited. `POST /api/v1/mcp/events` accepts an `outcome` from
+  `MCP_OUTCOMES` beside a `success` status, and an empty `tool` only on an
+  `unread` row.
+  `ui/scripts/mcp-log-vocabulary.test.ts` holds the dashboard's not-awaited
+  vocabulary and every catalog to the shared status and outcome names.
 - **Write path.** `McpEventSink` (`crates/rolter-gateway/src/mcp_log.rs`) is a
   bounded channel and a batch writer, built like the request-log and
   health-event writers and sharing their `[logging]` `batch_max`, `flush_ms`

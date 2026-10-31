@@ -121,8 +121,8 @@ export type {
   SavingsSpend,
   SavingsSpendRow,
 } from "./savings";
-export { fetchAuditLogPage, fetchDeploymentAuditLogPage, fetchAuditLogExport } from "./audit";
-export type { AuditLogEntry, AuditLogPage, AuditLogQuery, AuditLogExportFile } from "./audit";
+export { fetchAuditLogPage, fetchDeploymentAuditLogPage, auditLogExport } from "./audit";
+export type { AuditLogEntry, AuditLogPage, AuditLogQuery } from "./audit";
 export {
   challengeDeadline,
   isMfaChallenge,

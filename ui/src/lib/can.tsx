@@ -160,6 +160,12 @@ export function CapabilityProvider({ children }: { children: React.ReactNode }) 
 
 /** The chain a row is gated at, when that is not the chain the page is scoped to. */
 export interface RowScope {
+  /**
+   * the row's own org, where a screen lists rows of more than the one org the
+   * switcher holds (a model of another org in the Model Catalog, #3520);
+   * omitted, the page's org
+   */
+  orgId?: string | null;
   /** the row's own project, or `null` for a row above one */
   projectId: string | null;
   /** the team that owns `projectId`, or the team itself for a team row; the guard walks org + team + project */
@@ -194,14 +200,14 @@ export function RowCapabilityScope({
   const parent = useCapabilities();
   const scope = useScope();
   const chain = {
-    orgId: scope.orgId,
+    orgId: at?.orgId || scope.orgId,
     teamId: at?.teamId ?? undefined,
     projectId: at?.projectId ?? undefined,
   };
   const effective = useQuery({
     queryKey: ["rbac", "effective", chain.orgId, chain.teamId, chain.projectId],
     queryFn: () => fetchEffective(chain),
-    enabled: !!at && !!parent && !scope.isLoading && !!scope.orgId,
+    enabled: !!at && !!parent && !scope.isLoading && !!chain.orgId,
     staleTime: 60_000,
     retry: false,
   });
@@ -211,10 +217,10 @@ export function RowCapabilityScope({
         ? {
             effective: effective.data ?? null,
             matrix: parent.matrix,
-            resolved: !!scope.orgId && !effective.isPending,
+            resolved: !!chain.orgId && !effective.isPending,
           }
         : parent,
-    [parent, at, effective.data, effective.isPending, scope.orgId],
+    [parent, at, effective.data, effective.isPending, chain.orgId],
   );
   return <CapabilityContext.Provider value={value}>{children}</CapabilityContext.Provider>;
 }

@@ -481,6 +481,125 @@ impl QueueWaitRecorder {
 pub struct ControlHistograms {
     #[cfg(feature = "otlp")]
     inner: Option<std::sync::Arc<ControlHistogramSet>>,
+    /// held whether or not anything is exported, so the snapshot path writes
+    /// one place and a test can read back what it wrote
+    config_problems: std::sync::Arc<ConfigProblemGauge>,
+}
+
+/// One kind of config problem the control plane counts in
+/// `rolter_config_problems{kind}` (#3542).
+///
+/// The kinds follow where `GET /api/v1/config/problems` takes each line from,
+/// so a count never depends on the wording of a line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfigProblemKind {
+    /// an entry the snapshot leaves out whole and records in the endpoint's
+    /// `omitted` list: a provider, a route or a key from the file
+    Omitted,
+    /// every other line of the snapshot's sanitizer: a pruned target or
+    /// reference, a setting reset to its default, a store key left out
+    Sanitized,
+    /// a structural problem that makes the control plane refuse the snapshot
+    Invalid,
+    /// a stored row the loader could serve only by guessing, or left out
+    Misread,
+    /// an org's row that shadows a readonly row of the bootstrap file of the
+    /// same name for that org's keys (#3516)
+    BootstrapShadow,
+}
+
+impl ConfigProblemKind {
+    /// Every kind, in the order the gauge reports them.
+    pub const ALL: [Self; 5] = [
+        Self::Omitted,
+        Self::Sanitized,
+        Self::Invalid,
+        Self::Misread,
+        Self::BootstrapShadow,
+    ];
+
+    /// The `kind` label.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Omitted => "omitted",
+            Self::Sanitized => "sanitized",
+            Self::Invalid => "invalid",
+            Self::Misread => "misread",
+            Self::BootstrapShadow => "bootstrap_shadow",
+        }
+    }
+}
+
+/// How many config problems of each [`ConfigProblemKind`] one sample found.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ConfigProblemCounts([u64; ConfigProblemKind::ALL.len()]);
+
+impl ConfigProblemCounts {
+    /// Count `n` more problems of `kind`.
+    pub fn add(&mut self, kind: ConfigProblemKind, n: usize) {
+        let slot = &mut self.0[kind as usize];
+        *slot = slot.saturating_add(u64::try_from(n).unwrap_or(u64::MAX));
+    }
+
+    /// The problems of `kind`.
+    pub fn get(&self, kind: ConfigProblemKind) -> u64 {
+        self.0[kind as usize]
+    }
+}
+
+/// The control plane's config problems by kind, as last sampled.
+///
+/// Sampled when the control plane builds a snapshot for a config version it
+/// has not sampled yet, so the many gateways polling one version cost one
+/// sample. Labelled by kind only: a row's name or org would make a series per
+/// row and put tenant names into the metrics pipeline.
+#[derive(Debug, Default)]
+pub struct ConfigProblemGauge {
+    /// the highest version a sample was started for, so concurrent builds of
+    /// one version start one sample
+    claimed: std::sync::atomic::AtomicI64,
+    /// the version of the counts the gauge reports, `None` before the first
+    /// sample, when the gauge reports nothing rather than zero
+    sample: std::sync::Mutex<Option<(i64, ConfigProblemCounts)>>,
+}
+
+impl ConfigProblemGauge {
+    /// Whether the caller should sample `version`: true for the first caller
+    /// of a version newer than any claimed before.
+    pub fn claim(&self, version: i64) -> bool {
+        self.claimed.fetch_max(version, Ordering::AcqRel) < version
+    }
+
+    /// Give back a claim whose sample failed, so the next build of the same
+    /// version tries again. A newer claim is left alone.
+    pub fn release(&self, version: i64) {
+        let recorded = self.sampled().map_or(0, |(version, _)| version);
+        let _ =
+            self.claimed
+                .compare_exchange(version, recorded, Ordering::AcqRel, Ordering::Acquire);
+    }
+
+    /// Report `counts` for `version`, unless a sample of a newer version is
+    /// already reported.
+    pub fn record(&self, version: i64, counts: ConfigProblemCounts) {
+        // the guard only copies a few integers, so a poisoned lock holds a
+        // whole value and is read through rather than failing every sample
+        let mut sample = self
+            .sample
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if sample.is_none_or(|(held, _)| held <= version) {
+            *sample = Some((version, counts));
+        }
+    }
+
+    /// The version and counts the gauge reports.
+    pub fn sampled(&self) -> Option<(i64, ConfigProblemCounts)> {
+        *self
+            .sample
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
 }
 
 #[cfg(feature = "otlp")]
@@ -601,6 +720,12 @@ impl ControlHistograms {
         let _ = (stream, reason);
     }
 
+    /// The gauge of config problems by kind, `rolter_config_problems{kind}`
+    /// (#3542). Written whether or not anything is exported.
+    pub fn config_problems(&self) -> &ConfigProblemGauge {
+        &self.config_problems
+    }
+
     /// Whether anything is actually being recorded.
     #[must_use]
     pub fn is_active(&self) -> bool {
@@ -618,7 +743,30 @@ impl ControlHistograms {
     /// [`install_control_metrics_with_pool`] so a test can hand it an
     /// in-memory meter and read back what was recorded.
     fn from_meter(meter: &opentelemetry::metrics::Meter) -> Self {
+        let config_problems = std::sync::Arc::<ConfigProblemGauge>::default();
+        // observable, so the exporter reads the last sample on its interval
+        // and the snapshot path only stores one
+        let gauge = config_problems.clone();
+        meter
+            .u64_observable_gauge("rolter_config_problems")
+            .with_description(
+                "config problems the control plane found when it last built a snapshot, by kind \
+                 (omitted, sanitized, invalid, misread, bootstrap_shadow)",
+            )
+            .with_callback(move |observer| {
+                let Some((_, counts)) = gauge.sampled() else {
+                    return;
+                };
+                for kind in ConfigProblemKind::ALL {
+                    observer.observe(
+                        counts.get(kind),
+                        &[opentelemetry::KeyValue::new("kind", kind.label())],
+                    );
+                }
+            })
+            .build();
         ControlHistograms {
+            config_problems,
             inner: Some(std::sync::Arc::new(ControlHistogramSet {
                 snapshot_duration: meter
                     .u64_histogram("rolter_snapshot_build_ms")
@@ -769,6 +917,93 @@ mod ingest_failure_counter_tests {
         let metrics = ControlHistograms::default();
         assert!(!metrics.is_active());
         metrics.record_ingest_failure("ui_events", "insert");
+    }
+}
+
+/// `rolter_config_problems{kind}` is read back through a real meter: the
+/// exporter is the only consumer of the sample (#3542).
+#[cfg(all(test, feature = "otlp"))]
+mod config_problem_gauge_tests {
+    use opentelemetry::metrics::MeterProvider as _;
+    use opentelemetry_sdk::metrics::data::{AggregatedMetrics, MetricData};
+    use opentelemetry_sdk::metrics::{InMemoryMetricExporter, PeriodicReader, SdkMeterProvider};
+
+    use super::{ConfigProblemCounts, ConfigProblemKind, ControlHistograms};
+
+    /// Every `(kind, value)` point of the last export of the gauge.
+    fn points(exporter: &InMemoryMetricExporter) -> Vec<(String, u64)> {
+        let mut out = Vec::new();
+        let exports = exporter.get_finished_metrics().unwrap();
+        for resource in exports.last().into_iter() {
+            for scope in resource.scope_metrics() {
+                for metric in scope.metrics() {
+                    if metric.name() != "rolter_config_problems" {
+                        continue;
+                    }
+                    let AggregatedMetrics::U64(MetricData::Gauge(gauge)) = metric.data() else {
+                        panic!("the config-problem metric must be a u64 gauge");
+                    };
+                    for point in gauge.data_points() {
+                        let kind = point
+                            .attributes()
+                            .find(|kv| kv.key.as_str() == "kind")
+                            .map(|kv| kv.value.to_string())
+                            .unwrap_or_default();
+                        out.push((kind, point.value()));
+                    }
+                }
+            }
+        }
+        out.sort();
+        out
+    }
+
+    #[test]
+    fn the_gauge_reports_the_newest_sample_by_kind_alone() {
+        let exporter = InMemoryMetricExporter::default();
+        let provider = SdkMeterProvider::builder()
+            .with_reader(PeriodicReader::builder(exporter.clone()).build())
+            .build();
+        let metrics = ControlHistograms::from_meter(&provider.meter("test"));
+        let gauge = metrics.config_problems();
+
+        // nothing sampled yet is not the same as no problems
+        provider.force_flush().unwrap();
+        assert!(points(&exporter).is_empty());
+
+        let mut counts = ConfigProblemCounts::default();
+        counts.add(ConfigProblemKind::Omitted, 2);
+        counts.add(ConfigProblemKind::BootstrapShadow, 1);
+        assert!(gauge.claim(3));
+        assert!(!gauge.claim(3), "one sample per version");
+        gauge.record(3, counts);
+        // a slower sample of an older version does not overwrite it
+        gauge.record(2, ConfigProblemCounts::default());
+        provider.force_flush().unwrap();
+        assert_eq!(
+            points(&exporter),
+            [
+                ("bootstrap_shadow".to_string(), 1),
+                ("invalid".to_string(), 0),
+                ("misread".to_string(), 0),
+                ("omitted".to_string(), 2),
+                ("sanitized".to_string(), 0),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_released_claim_is_sampled_again() {
+        let metrics = ControlHistograms::default();
+        let gauge = metrics.config_problems();
+        assert!(gauge.claim(5));
+        gauge.release(5);
+        assert!(gauge.claim(5));
+        gauge.record(5, ConfigProblemCounts::default());
+        // a newer claim survives an older release
+        assert!(gauge.claim(6));
+        gauge.release(5);
+        assert!(!gauge.claim(6));
     }
 }
 

@@ -25,7 +25,7 @@ use crate::cache::{CachedResponse, ResponseCache};
 use crate::fake_llm;
 use crate::logging::RequestLog;
 use crate::rate_limits::TokenRecorder;
-use crate::state::{key_org, AppState, KeyMeta, Snapshot};
+use crate::state::{AppState, KeyMeta, Snapshot};
 use crate::trace::RequestId;
 use crate::upstream_failure::{self, StatusFailure};
 use rolter_core::failover::Failure;
@@ -209,9 +209,10 @@ pub async fn list_models(State(state): State<AppState>, headers: HeaderMap) -> R
         .iter()
         .filter(|(_, model, entry)| {
             // only the route this caller's name resolves to: another org's
-            // route of the same name is not this caller's (ADR-0040)
-            snap.routes
-                .get(key_org(vk.as_ref()), model)
+            // route of the same name is not this caller's (ADR-0040), and an
+            // org's route narrowed to another project gives way to the global
+            // one (#3546)
+            snap.named_route_for(model, vk.as_ref())
                 .is_some_and(|resolved| std::ptr::eq(resolved, *entry))
                 // the listing only narrows for an authenticated caller; the
                 // request path is what refuses an anonymous one
@@ -248,16 +249,20 @@ pub async fn list_models(State(state): State<AppState>, headers: HeaderMap) -> R
         rolter_core::Tenancy::admits_scoped(tenancy, key_org, key_project)
     };
     // another org's providers are neither addressable nor listed (#1844)
-    // nor is a slug this caller resolves to another provider (ADR-0040)
+    // nor is a slug this caller resolves to another provider (ADR-0040). an
+    // org's provider scoped to another project gives way to the global one of
+    // its slug, as `Snapshot::resolve_for` does (#3546)
     let name_to_slug: std::collections::HashMap<&str, &str> = snap
         .providers_by_slug
         .iter()
         .filter(|(_, slug, id)| {
-            snap.providers_by_slug.get(key_org, slug) == Some(*id)
-                && snap
-                    .providers
-                    .get(id.as_str())
-                    .is_none_or(|provider| admitted_scoped(provider.tenancy.as_ref()))
+            snap.providers_by_slug
+                .resolve_admitted(key_org, slug, |id| {
+                    snap.providers
+                        .get(id.as_str())
+                        .is_none_or(|provider| admitted_scoped(provider.tenancy.as_ref()))
+                })
+                .is_some_and(|(_, own)| std::ptr::eq(own, *id))
         })
         .map(|(_, slug, id)| (id.as_str(), slug))
         .collect();
@@ -325,9 +330,11 @@ pub async fn list_models(State(state): State<AppState>, headers: HeaderMap) -> R
         let group = &entry.config;
         let resolved = snap
             .groups_by_slug
-            .get(key_org, slug)
-            .is_some_and(|own| std::ptr::eq(own, entry));
-        if !resolved || !admitted_scoped(group.tenancy.as_ref()) {
+            .resolve_admitted(key_org, slug, |own| {
+                admitted_scoped(own.config.tenancy.as_ref())
+            })
+            .is_some_and(|(_, own)| std::ptr::eq(own, entry));
+        if !resolved {
             continue;
         }
         for member in &group.members {
@@ -2770,6 +2777,7 @@ async fn proxy(
         last_target,
         variant,
         first_variant,
+        sampled_variant,
         attempts,
         fallback_reason,
         inflight_guard,
@@ -2784,6 +2792,7 @@ async fn proxy(
         target: last_target,
         variant,
         first_variant,
+        sampled_variant,
         status,
         upstream_status: status,
         attempts,
@@ -3187,6 +3196,7 @@ fn unanswered(
         last_status,
         variant,
         first_variant,
+        sampled_variant,
         attempts,
         fallback_reason,
         ..
@@ -3248,6 +3258,7 @@ fn unanswered(
         },
         variant,
         first_variant,
+        sampled_variant,
         status,
         upstream_status,
         attempts,
@@ -3541,6 +3552,7 @@ async fn proxy_multipart(
         last_target,
         variant,
         first_variant,
+        sampled_variant,
         attempts,
         fallback_reason,
         inflight_guard,
@@ -3555,6 +3567,7 @@ async fn proxy_multipart(
         target: last_target,
         variant,
         first_variant,
+        sampled_variant,
         status,
         upstream_status: status,
         attempts,
@@ -3621,6 +3634,9 @@ struct ForwardOutcome {
     /// the variant the first attempt dialled; empty on the classic pool and
     /// when nothing was dialled (#3505)
     first_variant: String,
+    /// the variant the weighted split sampled as primary, before cooldown,
+    /// breaker and health skipping; empty on the classic pool (#3547)
+    sampled_variant: String,
     provider_key_fingerprint: Option<String>,
     /// upstream attempts made, the one that answered included. Saturates, so
     /// a retry budget past 255 cannot wrap the count to zero
@@ -3892,6 +3908,13 @@ async fn forward_variants(
     );
 
     let mut run = ForwardLoop::new(fwd, ForwardPool::Variants(&candidates));
+    // the split's own pick, which `next_candidate` may skip while its targets
+    // are parked, unhealthy or behind an open breaker (#3547). recorded on the
+    // variant path only, so a classic route allocates nothing for it
+    if let Some(sampled) = route.variants.get(primary) {
+        run.out.sampled_variant.clone_from(&sampled.name);
+        cancel.sampled(&sampled.name);
+    }
     for attempt in 0..=run.max_retries {
         let ci = match next_candidate(state, route, &candidates, &variant_keys, &run, cd_enabled) {
             Some(ci) => ci,
@@ -4417,6 +4440,7 @@ impl<'f> ForwardLoop<'f> {
                 inflight_guard: None,
                 variant: String::new(),
                 first_variant: String::new(),
+                sampled_variant: String::new(),
                 provider_key_fingerprint: None,
                 attempts: 0,
                 fallback_reason: String::new(),

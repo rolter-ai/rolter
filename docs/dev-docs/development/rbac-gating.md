@@ -145,6 +145,13 @@ business unit or customer cap, and a project the dashboard cannot place, keep
 the page's answer. A project admin therefore edits their project's caps and is
 refused the team's and the org's above it, as the guard does.
 
+Model labels (#3520) are the third. A label that names an organization is
+written under `label:*` at that org, and a deployment-wide one under
+`model_label:*`, so the Model Catalog wraps each row's label sheet in
+`RowCapabilityScope` with a `RowScope` carrying only the row's `orgId`. The sheet
+then asks the org chain for an org's model and keeps the page's deployment
+answer for a model from the config file.
+
 ## Three answers, not two
 
 `useCan()` returns `boolean | undefined`, and the third one is load-bearing:

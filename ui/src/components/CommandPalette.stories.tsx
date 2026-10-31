@@ -51,7 +51,6 @@ const NAV: NavDef[] = [
 const KEY = {
   id: "vk-1",
   project_id: "project-1",
-  key_hash: "hash",
   key_prefix: "rk_live_ac",
   name: "acme-production",
   models: [],

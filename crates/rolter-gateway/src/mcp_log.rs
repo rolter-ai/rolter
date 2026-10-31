@@ -83,6 +83,13 @@ pub struct McpEvent {
     /// migration `047` drops it under `input_format_skip_unknown_fields`
     #[serde(skip_serializing_if = "is_false", serialize_with = "as_u8")]
     pub notification: bool,
+    /// what refines `status` for a call whose result nothing judged, one of
+    /// [`rolter_core::mcp_log::MCP_OUTCOMES`], or empty (#3529). `status` beside
+    /// it is the HTTP layer's `success`, which is how a table that has not
+    /// applied migration `051` reads the row; the field is left out while
+    /// empty for the same reason as `error_scopes`
+    #[serde(skip_serializing_if = "str::is_empty")]
+    pub outcome: &'static str,
 }
 
 fn is_false(value: &bool) -> bool {
@@ -340,6 +347,9 @@ struct Outcome {
     /// the call was a notification: nothing answered it, so the status is the
     /// HTTP layer's
     notification: bool,
+    /// what refines `status` for a call whose result nothing judged
+    /// (`accepted`), or empty
+    refined: &'static str,
     /// a fixed category that replaces the one `status` implies
     error: Option<&'static str>,
     /// the JSON-RPC `result` or `error` object, when one was seen
@@ -353,6 +363,9 @@ pub(crate) struct PendingCall {
     ts: DateTime<Utc>,
     /// `Null` for a notification
     rpc_id: Value,
+    /// the row stands for a whole body the relay forwarded unread, not for one
+    /// call (#3528)
+    unread: bool,
     arguments: Option<Value>,
     event: McpEvent,
     capture_enabled: bool,
@@ -401,6 +414,7 @@ impl PendingCall {
             error: String::new(),
             error_scopes: Vec::new(),
             notification: false,
+            outcome: "",
         };
         let capturing = context.capture.enabled && context.capture.max_bytes > 0;
         Some(Self {
@@ -408,6 +422,7 @@ impl PendingCall {
             started: Instant::now(),
             ts,
             rpc_id,
+            unread: false,
             arguments: if capturing { arguments } else { None },
             event,
             capture_enabled: context.capture.enabled,
@@ -420,12 +435,26 @@ impl PendingCall {
         })
     }
 
+    /// A pending row for a body the relay forwards to an ungoverned server
+    /// without reading it, because it is encoded or is not JSON (#3528). The
+    /// calls it holds cannot be itemised, so the one row has no tool, and once
+    /// the server has answered `2xx` it is `unread`: nothing says what any tool
+    /// did. A failure the HTTP layer reports is recorded as that failure.
+    pub(crate) fn unread(sink: &McpEventSink, context: &CallContext<'_>) -> Option<Self> {
+        let mut request = serde_json::Map::new();
+        request.insert("params".to_string(), serde_json::json!({ "name": "" }));
+        let mut call = Self::from_request(sink, request, context)?;
+        call.unread = true;
+        Some(call)
+    }
+
     /// Record a call that never produced a response: a refusal before
     /// forwarding, or an upstream that could not be reached.
     pub(crate) fn fail(self, status: &'static str) {
         self.finish(Outcome {
             status,
             notification: false,
+            refined: "",
             error: None,
             payload: None,
         });
@@ -439,6 +468,7 @@ impl PendingCall {
         self.finish(Outcome {
             status: "auth_denied",
             notification: false,
+            refined: "",
             error: Some(INSUFFICIENT_SCOPE_ERROR),
             payload: None,
         });
@@ -459,22 +489,43 @@ impl PendingCall {
     /// the reply (a batch holding a `tools/list` is narrowed): the status is the
     /// HTTP layer's and no result is kept.
     pub(crate) fn finish_unobserved(self, http_status: u16) {
-        let outcome = by_http_status(http_status, true, self.notification());
+        let outcome = self.by_status_alone(http_status);
         self.finish(outcome);
     }
 
     fn notification(&self) -> bool {
-        self.rpc_id.is_null()
+        self.rpc_id.is_null() && !self.unread
+    }
+
+    /// The outcome of a call that has no reply to be read, by the HTTP status
+    /// alone: a notification, or a body forwarded unread
+    fn by_status_alone(&self, http_status: u16) -> Outcome {
+        let outcome = by_http_status(http_status, true, self.notification());
+        if self.unread && outcome.status == "success" {
+            Outcome {
+                refined: "unread",
+                ..outcome
+            }
+        } else {
+            outcome
+        }
+    }
+
+    /// No reply in the body answers this call
+    fn awaits_no_reply(&self) -> bool {
+        self.notification() || self.unread
     }
 
     fn finish(mut self, outcome: Outcome) {
         let Outcome {
             status,
             notification,
+            refined,
             error,
             payload,
         } = outcome;
         self.event.notification = notification;
+        self.event.outcome = refined;
         self.event.ts = self.ts;
         self.event.status = status;
         self.event.latency_ms =
@@ -568,13 +619,24 @@ fn by_http_status(http_status: u16, delivered: bool, notification: bool) -> Outc
     Outcome {
         status,
         notification,
+        refined: "",
         error: None,
         payload: None,
     }
 }
 
 /// What an awaited call amounts to, from the reply found for it, if any.
-fn outcome(reply: Option<Value>, overflow: bool, http_status: u16, stream_failed: bool) -> Outcome {
+/// `legacy_sse` is a call to a server on the legacy `sse` transport, which
+/// answers a `POST` `202 Accepted` and sends the reply on the stream the client
+/// holds open (#3529): a `202` without a reply in its body is `accepted`, while
+/// one whose body does carry a reply is judged by it like any other.
+fn outcome(
+    reply: Option<Value>,
+    overflow: bool,
+    http_status: u16,
+    stream_failed: bool,
+    legacy_sse: bool,
+) -> Outcome {
     if matches!(http_status, 401 | 403) {
         return by_http_status(http_status, false, false);
     }
@@ -583,6 +645,7 @@ fn outcome(reply: Option<Value>, overflow: bool, http_status: u16, stream_failed
             return Outcome {
                 status: "error",
                 notification: false,
+                refined: "",
                 error: None,
                 payload: Some(error),
             };
@@ -596,8 +659,17 @@ fn outcome(reply: Option<Value>, overflow: bool, http_status: u16, stream_failed
         return Outcome {
             status: if is_error { "error" } else { "success" },
             notification: false,
+            refined: "",
             error: None,
             payload: result,
+        };
+    }
+    // the relay does not correlate the stream's replies with the calls posted
+    // (#3529), so all the row can say is that the server took the call
+    if legacy_sse && http_status == 202 && !overflow && !stream_failed {
+        return Outcome {
+            refined: "accepted",
+            ..by_http_status(http_status, true, false)
         };
     }
     // a body too large to hold was still delivered: the call completed
@@ -612,6 +684,7 @@ impl Outcome {
             Self {
                 status: "transport_error",
                 notification: false,
+                refined: "",
                 error: None,
                 payload: None,
             }
@@ -633,7 +706,7 @@ pub(crate) fn observe<S>(
         inner,
         // a notification is answered by nothing, so a body that only they await
         // is not worth buffering
-        awaiting: calls.iter().any(|call| !call.notification()),
+        awaiting: calls.iter().any(|call| !call.awaits_no_reply()),
         calls,
         buf: Vec::new(),
         overflow: false,
@@ -669,13 +742,20 @@ impl<S> ObservedBody<S> {
             Replies::empty()
         };
         for call in calls {
-            let outcome = if call.notification() {
-                // headers came back, so the notification was delivered whatever
-                // happened to the body afterwards
-                by_http_status(self.http_status, true, true)
+            let outcome = if call.awaits_no_reply() {
+                // headers came back, so the notification (or the unread body)
+                // was delivered whatever happened to the body afterwards
+                call.by_status_alone(self.http_status)
             } else {
                 let reply = replies.take(&call.rpc_id);
-                outcome(reply, self.overflow, self.http_status, self.stream_failed)
+                let legacy_sse = call.event.transport == "sse";
+                outcome(
+                    reply,
+                    self.overflow,
+                    self.http_status,
+                    self.stream_failed,
+                    legacy_sse,
+                )
             };
             call.finish(outcome);
         }
@@ -791,7 +871,7 @@ mod tests {
         id: &Value,
     ) -> Outcome {
         let reply = Replies::of(buf, is_sse).take(id);
-        outcome(reply, overflow, http_status, stream_failed)
+        outcome(reply, overflow, http_status, stream_failed, false)
     }
 
     fn request(method: &str, id: Option<i64>) -> Vec<u8> {
@@ -942,6 +1022,34 @@ mod tests {
             "error",
         ] {
             assert!(rolter_core::mcp_log::MCP_STATUSES.contains(&status));
+        }
+    }
+
+    /// #3529: on the legacy `sse` transport a `202` with no reply in its body
+    /// is `accepted`; one carrying a JSON-RPC error is that error, and a body
+    /// that broke off is still a transport failure
+    #[test]
+    fn a_legacy_sse_202_is_accepted_unless_its_body_answers() {
+        let id = json!(4);
+        let judged = |buf: &[u8], stream_failed: bool| {
+            let reply = Replies::of(buf, false).take(&id);
+            outcome(reply, false, 202, stream_failed, true)
+        };
+        let accepted = judged(b"Accepted", false);
+        assert_eq!((accepted.status, accepted.refined), ("success", "accepted"));
+        let error = judged(
+            br#"{"jsonrpc":"2.0","id":4,"error":{"code":-32601}}"#,
+            false,
+        );
+        assert_eq!((error.status, error.refined), ("error", ""));
+        assert_eq!(error.payload, Some(json!({"code": -32601})));
+        let broken = judged(b"", true);
+        assert_eq!((broken.status, broken.refined), ("transport_error", ""));
+        // any other status on the legacy transport is judged as before
+        let refused = outcome(None, false, 502, false, true);
+        assert_eq!((refused.status, refused.refined), ("transport_error", ""));
+        for refined in ["accepted", "unread"] {
+            assert!(rolter_core::mcp_log::MCP_OUTCOMES.contains(&refined));
         }
     }
 
