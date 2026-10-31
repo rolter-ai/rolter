@@ -297,6 +297,7 @@ fn list_events_sql(columns: McpColumns) -> String {
     let cursor = keyset_predicate("event_id");
     let notification = notification_column(columns);
     let outcome = outcome_column(columns);
+    let not_awaited = not_awaited(columns);
     format!(
         "select ts, event_id, server, tool, transport, status, latency_ms, org_id, team_id, project_id, \
                 virtual_key_id, user_id, request_id, trace_id, error, {notification}, {outcome} \
@@ -305,7 +306,8 @@ fn list_events_sql(columns: McpColumns) -> String {
            and ({{server:String}} = '' or server = {{server:String}}) \
            and ({{tool:String}} = '' or tool = {{tool:String}}) \
            and ({{transport:String}} = '' or transport = {{transport:String}}) \
-           and ({{status:String}} = '' or status = {{status:String}}) \
+           and ({{status:String}} = '' or if({{status:String}} = 'not_awaited', {not_awaited}, \
+                status = {{status:String}} and ({{status:String}} != 'success' or not {not_awaited}))) \
            and ({{key:String}} = '' or virtual_key_id = {{key:String}}) \
            and ({{user:String}} = '' or user_id = {{user:String}}) \
            and {cursor} \

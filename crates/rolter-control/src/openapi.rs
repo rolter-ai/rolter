@@ -561,7 +561,7 @@ const MCP_LOGS_QUERY: &[QueryParam] = &[
     QueryParam::new(
         "status",
         "string",
-        "exact call status; omit for every status",
+        "call status, or `not_awaited` for accepted, unread and successful-notification rows; `success` means awaited success; omit for every status",
     ),
     QueryParam::new("key", "string", "exact virtual key id; omit for every key"),
     QueryParam::new("user", "string", "exact user id; omit for every user"),
@@ -962,7 +962,8 @@ const INVOCATIONS_QUERY: &[QueryParam] = &[
         "string",
         "only requests a guardrail acted on, named as the guardrails rollup does: \
          `blocked:<rule>`, `redacted:<rule>`, `annotated:<rule>`, `provider_blocked:<provider>`, \
-         `provider_transformed:<provider>` (the bare forms for unnamed rows); omit for every request",
+         `provider_transformed:<provider>` or `semantic_truncated:<provider>` (the bare forms for \
+         unnamed rows); omit for every request",
     ),
     QueryParam::new(
         "plugin",
@@ -2083,12 +2084,12 @@ fn operations() -> Vec<Op> {
             Op::post(
                 "/api/v1/guardrails/providers",
                 "createGuardrailProvider",
-                "Register a guardrail provider: a webhook, or a local classifier the gateways run in process",
+                "Register a guardrail provider: a webhook, or a local classifier the gateways run in process. A local provider accepts nullable `max_scored_bytes` (from `max_body_bytes` through 16 MiB) and `on_truncated` (`score` or `fail_closed`)",
             ),
             Op::put(
                 "/api/v1/guardrails/providers/{id}",
                 "updateGuardrailProvider",
-                "Update a guardrail provider",
+                "Update a guardrail provider, including a local provider's nullable `max_scored_bytes` and `on_truncated` (`score` or `fail_closed`)",
             ),
             Op::delete(
                 "/api/v1/guardrails/providers/{id}",
@@ -2629,9 +2630,9 @@ fn operations() -> Vec<Op> {
                 "getAnalyticsGuardrails",
                 "What each guardrail did to requests in the window: one row per `action` and `rule` \
                  with the number of `requests` it acted on. `action` is `blocked`, `redacted` or \
-                 `annotated` for a rule (named in `rule`), and `provider_blocked` or \
-                 `provider_transformed` for a guardrail provider, with its name in `rule` (empty \
-                 for rows written before the name was recorded). \
+                 `annotated` for a rule (named in `rule`), and `provider_blocked`, \
+                 `provider_transformed` or `semantic_truncated` for a guardrail provider, with its \
+                 name in `rule` (empty for rows written before the name was recorded). \
                  `recorded` is `false` when the ClickHouse table lacks \
                  `clickhouse/018_guardrail_events.sql`, in which case `data` is empty",
             )
@@ -4418,6 +4419,7 @@ fn virtual_key_schemas(p: &Prim) -> Value {
                 "created_by": nullable_uuid,
                 "business_unit_id": nullable_uuid,
                 "customer_id": nullable_uuid,
+                "purpose": {"type": ["string", "null"], "description": "why the key exists: playground for a short-lived dashboard-minted key, null for an operator-created key"},
                 "created_at": timestamp,
                 "previous_key_prefix": {"type": ["string", "null"], "description": "first characters of the secret an admin rotation replaced, while its overlap is open"},
                 "previous_expires_at": {"type": ["string", "null"], "format": "date-time", "description": "when the replaced secret stops authenticating; null when no overlap is running"}
@@ -4439,7 +4441,7 @@ fn virtual_key_schemas(p: &Prim) -> Value {
                 "created_by": nullable_uuid,
                 "business_unit_id": nullable_uuid,
                 "customer_id": nullable_uuid,
-                "purpose": {"type": ["string", "null"]},
+                "purpose": {"type": ["string", "null"], "description": "why the key exists: playground for a short-lived dashboard-minted key, null for an operator-created key"},
                 "created_at": timestamp
             }
         },
@@ -5020,6 +5022,18 @@ mod tests {
     }
 
     #[test]
+    fn guardrail_truncation_settings_and_outcome_are_documented() {
+        let doc = document().to_string();
+        for field in ["max_scored_bytes", "on_truncated"] {
+            assert!(doc.contains(field), "OpenAPI omits {field}");
+        }
+        assert!(
+            doc.contains("semantic_truncated"),
+            "OpenAPI omits the semantic truncation outcome"
+        );
+    }
+
+    #[test]
     fn every_registered_route_is_documented() {
         let documented = documented_routes();
         let mut missing: Vec<String> = registered_routes()
@@ -5350,6 +5364,55 @@ mod tests {
             .expect("cursor is documented");
         assert_eq!(cursor["in"], "query");
         assert_eq!(cursor["schema"]["type"], "string");
+    }
+
+    #[cfg(feature = "postgres")]
+    #[test]
+    fn the_virtual_key_schema_covers_every_serialized_field() {
+        let key = rolter_store::postgres::models::VirtualKey {
+            id: uuid::Uuid::nil(),
+            project_id: uuid::Uuid::nil(),
+            key_hash: String::new(),
+            key_prefix: String::new(),
+            name: None,
+            models: Vec::new(),
+            providers: Vec::new(),
+            disabled: false,
+            expires_at: None,
+            cache_enabled: None,
+            created_by: None,
+            business_unit_id: None,
+            customer_id: None,
+            purpose: None,
+            created_at: chrono::DateTime::<chrono::Utc>::UNIX_EPOCH,
+            previous_key_hash: None,
+            previous_key_prefix: None,
+            previous_expires_at: None,
+        };
+        let serialized = serde_json::to_value(key).unwrap();
+        let serialized_fields: BTreeSet<&str> = serialized
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        let schema = &document()["components"]["schemas"]["VirtualKey"];
+        let schema_fields: BTreeSet<&str> = schema["properties"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(schema_fields, serialized_fields);
+        assert_eq!(
+            schema["properties"]["purpose"]["type"],
+            json!(["string", "null"])
+        );
+        assert_eq!(
+            schema["properties"]["purpose"]["description"],
+            document()["components"]["schemas"]["OrgVirtualKey"]["properties"]["purpose"]
+                ["description"]
+        );
     }
 
     #[test]

@@ -5,6 +5,7 @@ import { useTranslation } from "react-i18next";
 
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { GatedButton } from "@/components/GatedButton";
+import { GatedInput } from "@/components/GatedInput";
 import { DeleteIconButton } from "@/components/ui/delete-icon-button";
 import { LoadError } from "@/components/LoadError";
 import { ListSkeleton } from "@/components/LoadingState";
@@ -127,6 +128,7 @@ function endpoints(subjectType: LabelSubject, orgId: string) {
       model ? updateModelLabel(id, value) : updateLabel(orgId, id, value),
     remove: (id: string) => (model ? deleteModelLabel(id) : deleteLabel(orgId, id)),
     createGate: `${gated}:create` as Capability,
+    updateGate: `${gated}:update` as Capability,
     deleteGate: `${gated}:delete` as Capability,
   };
 }
@@ -275,7 +277,9 @@ export function LabelSheet({
                   className="flex items-center gap-2 rounded-lg border border-[color:var(--border-default)] px-3 py-2"
                 >
                   <span className="w-40 flex-none truncate font-mono text-xs">{row.key}</span>
-                  <Input
+                  <GatedInput
+                    gate={api.updateGate}
+                    control="label-value"
                     aria-label={t("labels.valueOf", { key: row.key })}
                     defaultValue={row.value ?? ""}
                     placeholder={t("labels.valuePlaceholder")}

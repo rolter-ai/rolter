@@ -312,7 +312,8 @@ pub(crate) async fn discover(
     };
     let servers = metadata.authorization_servers;
     if servers.is_empty() {
-        return Err(DiscoveryError::NoAuthorizationServer(resource.to_string()));
+        let safe_resource = rolter_core::redact::redact_urls_in_text(&resource.to_string());
+        return Err(DiscoveryError::NoAuthorizationServer(safe_resource));
     }
     let mut last: Option<DiscoveryError> = None;
     for issuer in servers.iter().take(MAX_AUTHORIZATION_SERVERS) {
@@ -324,12 +325,14 @@ pub(crate) async fn discover(
                 })
             }
             Err(error) => {
-                tracing::debug!(%issuer, error = %error, "mcp oauth: authorization server metadata unusable");
+                let safe_issuer = rolter_core::redact::redact_urls_in_text(issuer);
+                tracing::debug!(issuer = %safe_issuer, error = %error, "mcp oauth: authorization server metadata unusable");
                 last = Some(error);
             }
         }
     }
-    Err(last.unwrap_or_else(|| DiscoveryError::NoAuthorizationServerMetadata(resource.to_string())))
+    let safe_resource = rolter_core::redact::redact_urls_in_text(&resource.to_string());
+    Err(last.unwrap_or(DiscoveryError::NoAuthorizationServerMetadata(safe_resource)))
 }
 
 /// Fetch and validate the protected resource metadata of `resource`.
@@ -352,15 +355,21 @@ async fn protected_resource_metadata(
         // authorization server for somebody else's resource
         match ResourceUri::parse(&metadata.resource) {
             Ok(declared) if declared == *resource => return Ok((metadata, challenge.scopes)),
-            _ => tracing::debug!(
-                %url,
-                declared = %metadata.resource,
-                expected = %resource,
-                "mcp oauth: protected resource metadata is about a different resource"
-            ),
+            _ => {
+                let safe_url = rolter_core::redact::redact_urls_in_text(&url);
+                let safe_declared = rolter_core::redact::redact_urls_in_text(&metadata.resource);
+                let safe_expected = rolter_core::redact::redact_urls_in_text(&resource.to_string());
+                tracing::debug!(
+                    url = %safe_url,
+                    declared = %safe_declared,
+                    expected = %safe_expected,
+                    "mcp oauth: protected resource metadata is about a different resource"
+                );
+            }
         }
     }
-    Err(DiscoveryError::NoResourceMetadata(resource.to_string()))
+    let safe_resource = rolter_core::redact::redact_urls_in_text(&resource.to_string());
+    Err(DiscoveryError::NoResourceMetadata(safe_resource))
 }
 
 /// What an unauthenticated request to the resource is challenged with: the
@@ -476,10 +485,13 @@ async fn authorization_server_metadata(
         // identical means identical — the same simple string comparison
         // RFC 9207 will make later against the same value
         if metadata.issuer != issuer {
+            let safe_url = rolter_core::redact::redact_urls_in_text(&url);
+            let safe_declared = rolter_core::redact::redact_urls_in_text(&metadata.issuer);
+            let safe_expected = rolter_core::redact::redact_urls_in_text(issuer);
             tracing::debug!(
-                %url,
-                declared = %metadata.issuer,
-                expected = %issuer,
+                url = %safe_url,
+                declared = %safe_declared,
+                expected = %safe_expected,
                 "mcp oauth: authorization server metadata claims a different issuer"
             );
             continue;
@@ -500,9 +512,8 @@ async fn authorization_server_metadata(
             scopes: DiscoveredScopes::default(),
         });
     }
-    Err(DiscoveryError::NoAuthorizationServerMetadata(
-        issuer.to_string(),
-    ))
+    let safe_issuer = rolter_core::redact::redact_urls_in_text(issuer);
+    Err(DiscoveryError::NoAuthorizationServerMetadata(safe_issuer))
 }
 
 /// `GET` one metadata document, with every guard applied.
@@ -511,21 +522,25 @@ async fn fetch_metadata<T: DeserializeOwned>(
     url: &str,
 ) -> Result<T, DiscoveryError> {
     guard_url(state, url)?;
+    let safe_url = rolter_core::redact::redact_urls_in_text(url);
     let response = client(state)?
         .get(url)
         .header(reqwest::header::ACCEPT, "application/json")
         .send()
         .await
-        .map_err(|e| DiscoveryError::Refused(format!("{url} is unreachable: {e}")))?;
+        .map_err(|e| {
+            let safe_e = rolter_core::redact::redact_urls_in_text(&e.to_string());
+            DiscoveryError::Refused(format!("{safe_url} is unreachable: {safe_e}"))
+        })?;
     if !response.status().is_success() {
         return Err(DiscoveryError::Refused(format!(
-            "{url} answered {}",
+            "{safe_url} answered {}",
             response.status().as_u16()
         )));
     }
     let body = read_capped(response, url).await?;
     serde_json::from_slice(&body)
-        .map_err(|e| DiscoveryError::Refused(format!("{url} is not valid metadata json: {e}")))
+        .map_err(|e| DiscoveryError::Refused(format!("{safe_url} is not valid metadata json: {e}")))
 }
 
 /// Read a response body, refusing one that runs past [`MAX_METADATA_BYTES`].
@@ -534,14 +549,15 @@ async fn read_capped(
     url: &str,
 ) -> Result<Vec<u8>, DiscoveryError> {
     let mut body = Vec::new();
+    let safe_url = rolter_core::redact::redact_urls_in_text(url);
     while let Some(chunk) = response
         .chunk()
         .await
-        .map_err(|e| DiscoveryError::Refused(format!("{url} stopped mid-body: {e}")))?
+        .map_err(|e| DiscoveryError::Refused(format!("{safe_url} stopped mid-body: {e}")))?
     {
         if body.len() + chunk.len() > MAX_METADATA_BYTES {
             return Err(DiscoveryError::Refused(format!(
-                "{url} returned more than {MAX_METADATA_BYTES} bytes of metadata"
+                "{safe_url} returned more than {MAX_METADATA_BYTES} bytes of metadata"
             )));
         }
         body.extend_from_slice(&chunk);
@@ -553,12 +569,13 @@ async fn read_capped(
 /// transport must be `https` (loopback excepted, for a local stub), and the
 /// deployment's egress policy must permit the host.
 fn guard_url(state: &ControlState, url: &str) -> Result<(), DiscoveryError> {
+    let safe_url = rolter_core::redact::redact_urls_in_text(url);
     crate::mcp_oauth_flow::require_https(url, "discovery url")
-        .map_err(|_| DiscoveryError::Refused(format!("{url} is not an https url")))?;
+        .map_err(|_| DiscoveryError::Refused(format!("{safe_url} is not an https url")))?;
     state
         .egress
         .check_url(url, "MCP OAuth discovery")
-        .map_err(DiscoveryError::Refused)
+        .map_err(|e| DiscoveryError::Refused(rolter_core::redact::redact_urls_in_text(&e)))
 }
 
 /// The client discovery fetches with. Separate from [`ControlState::http`]
@@ -647,6 +664,22 @@ mod tests {
         assert!(ResourceUri::parse("ftp://mcp.example.com").is_err());
         assert!(ResourceUri::parse("https://").is_err());
         assert!(ResourceUri::parse("https://user:pw@mcp.example.com").is_err());
+    }
+
+    #[test]
+    fn discovery_errors_redact_urls_and_credentials() {
+        let state = crate::tests::state_with_token(None);
+        let secret = "secret_token_12345";
+        let url = format!("http://mcp.example.com/mcp?token={secret}");
+        let err = guard_url(&state, &url).unwrap_err().to_string();
+        assert!(
+            !err.contains(secret),
+            "discovery error leaked secret token: {err}"
+        );
+        assert!(
+            err.contains("token=***"),
+            "discovery error missing redaction: {err}"
+        );
     }
 
     #[test]

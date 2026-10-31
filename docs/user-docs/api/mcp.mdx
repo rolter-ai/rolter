@@ -108,12 +108,13 @@ The MCP tool-call log reads a call's outcome from the JSON-RPC reply to it: a
 an `error`. Some calls have no reply for the proxy to read:
 
 - **A call to a legacy `sse` server.** Such a server answers the `POST` with
-  `202 Accepted` and sends the reply later on the event stream the client holds
-  open. The proxy does not match the stream's replies to the calls posted, so a
-  call answered that way is recorded as **accepted, reply on the stream**
-  (`outcome: accepted`). A `202` whose body does carry the call's reply, such as
-  a JSON-RPC error, is judged by that reply. A `streamable_http` server owes the
-  reply in its answer, so there a bare `202` is a `transport_error`.
+  `200 OK`, `202 Accepted` or `204 No Content` and sends the reply later on the
+  event stream the client holds open. The proxy does not match the stream's
+  replies to the calls posted, so an empty `2xx` answer is recorded as
+  **accepted, reply on the stream** (`outcome: accepted`). A `2xx` whose body
+  does carry the call's reply, such as a JSON-RPC error, is judged by that
+  reply. A `streamable_http` server owes the reply in its answer, so there a
+  bare `202` is a `transport_error`.
 
 - **A body forwarded unread.** A server no tool group or manifest governs is
   sent every request body as it came. A body with a `Content-Encoding`, or one
@@ -136,8 +137,15 @@ an `unread` row do not say whether a tool succeeded, so
 them out of `successes`, `failures`, `success_rate` and `failure_rate`: the
 rates are over `calls - not_awaited`, and `null` for a window with no awaited
 call. A notification the server refused or failed was not delivered, so it
-counts as a failure like any other call. The average and p95 latency are over
-every call. `outcome` needs
+counts as a failure like any other call and keeps `notification: 1`.
+
+The list's `status` filter follows the same categories: `success` returns only
+awaited successes, while `not_awaited` returns accepted, unread and successful
+notification rows. A failed notification remains under its failure status. On a
+ClickHouse without `051`, `not_awaited` matches no outcome rows because none
+were recorded.
+
+The average and p95 latency are over every call. `outcome` needs
 `clickhouse/051_mcp_log_outcome.sql` and `notification` needs
 `047_mcp_log_notification.sql`; until they are applied such calls are plain
 `success` rows and count as awaited.

@@ -954,6 +954,7 @@ export const AnOrgAdminWritesItsOwnOrgsModelLabels: Story = {
     // behind that again, so a one-shot assertion reads whichever landed first
     // (#1689, #1707)
     await expectAllowed(panel, "Remove tier=flagship");
+    await expectAllowed(panel, "Value of tier", "textbox");
   },
 };
 
@@ -980,6 +981,7 @@ export const AnOrgAdminCannotLabelAnotherOrgsModel: Story = {
     );
     let dialog = await within(document.body).findByRole("dialog");
     await expectAllowed(dialog, "Remove tier=gold");
+    await expectAllowed(dialog, "Value of tier", "textbox");
     await userEvent.keyboard("{Escape}");
     await expectSheetClosed();
     // and another org's: refused, naming the role it would take there
@@ -989,6 +991,7 @@ export const AnOrgAdminCannotLabelAnotherOrgsModel: Story = {
     dialog = await within(document.body).findByRole("dialog");
     await expectRefused(dialog, "Remove tier=bronze");
     await expectRefused(dialog, "Add label");
+    await expectRefused(dialog, "Value of tier", undefined, "textbox");
   },
 };
 
@@ -1020,6 +1023,7 @@ export const AnOrgAdminCannotWriteADeploymentWideLabel: Story = {
     // label` being disabled for its own reason, an empty key
     await expectRefused(panel, "Add label", NEEDS_SUPERADMIN);
     await expectRefused(panel, "Remove family=gpt", NEEDS_SUPERADMIN);
+    await expectRefused(panel, "Value of family", NEEDS_SUPERADMIN, "textbox");
   },
 };
 
@@ -1041,6 +1045,7 @@ export const SuperadminCanWriteAModelLabel: Story = {
     // control to assert on at all (#1689) — and the gate is a request behind
     // that again, which a bare `toBeEnabled` would never notice (#1707)
     await expectAllowed(dialog, "Remove tier=flagship");
+    await expectAllowed(dialog, "Value of tier", "textbox");
     // still no way to touch the observation, asked once the list is on screen —
     // before that the absence would be the skeleton's, not the rule's
     await expect(panel.queryByRole("button", { name: "Remove tier=priced" })).toBeNull();
@@ -1189,6 +1194,7 @@ export const AConfigFileModelsLabelsAreTheDeploymentsOnly: Story = {
     const dialog = await within(document.body).findByRole("dialog");
     const panel = within(dialog);
     await expectAllowed(dialog, "Remove family=gpt");
+    await expectAllowed(dialog, "Value of family", "textbox");
     await expect(panel.queryByRole("button", { name: "Remove tier=gold" })).toBeNull();
     await expect(panel.queryByRole("button", { name: "Remove tier=bronze" })).toBeNull();
     await expect(panel.queryByLabelText("tier=gold, your label")).toBeNull();

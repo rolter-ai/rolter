@@ -127,7 +127,7 @@ async fn rotation_keeps_the_row_and_overlaps_the_old_secret_until_it_is_revoked(
     assert!(rotated.get("key_hash").is_none());
     let new_hash = stored_hash(&f, &id).await;
     assert_ne!(new_hash, old_hash);
-    assert_eq!(rotated["previous_key_prefix"], old_key[..12]);
+    assert_eq!(rotated["previous_key_prefix"], old_key[..18]);
     assert!(rotated["previous_expires_at"].is_string());
     // the digest of the retired secret never leaves the API
     assert!(rotated.get("previous_key_hash").is_none());
@@ -191,8 +191,49 @@ async fn rotation_keeps_the_row_and_overlaps_the_old_secret_until_it_is_revoked(
             "virtual_key.rotate"
         ]
     );
-    assert_eq!(rows[0].1["previous_key_prefix"], old_key[..12]);
+    assert_eq!(rows[0].1["previous_key_prefix"], old_key[..18]);
     assert!(!rows.iter().any(|(_, d)| d.to_string().contains(&old_hash)));
+}
+
+#[tokio::test]
+async fn rotation_preserves_a_legacy_display_prefix() {
+    skip_without_db!();
+    let f = fixture().await;
+    let client = reqwest::Client::new();
+    let created: Value = client
+        .post(format!(
+            "{}/api/v1/projects/{}/virtual-keys",
+            f.base, f.project
+        ))
+        .bearer_auth(&f.admin)
+        .json(&json!({"name": "legacy"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let id = created["id"].as_str().unwrap();
+    let legacy = &created["key"].as_str().unwrap()[..12];
+    sqlx::query("update virtual_keys set key_prefix = $1 where id = $2")
+        .bind(legacy)
+        .bind(uuid::Uuid::parse_str(id).unwrap())
+        .execute(&f.pool)
+        .await
+        .unwrap();
+
+    let rotated: Value = client
+        .post(format!("{}/api/v1/virtual-keys/{id}/rotate", f.base))
+        .bearer_auth(&f.admin)
+        .json(&json!({"overlap_seconds": 3600}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(rotated["previous_key_prefix"], legacy);
+    assert_eq!(rotated["key_prefix"].as_str().unwrap().len(), 18);
 }
 
 #[tokio::test]

@@ -3354,6 +3354,7 @@ dependencies = [
  "criterion",
  "crossbeam-queue",
  "dashmap",
+ "fancy-regex",
  "flate2",
  "futures-util",
  "libc",

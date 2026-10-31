@@ -1,0 +1,26 @@
+[
+  {
+    "number": 42,
+    "title": "spec drift: pinned-spec",
+    "state": "OPEN",
+    "url": "https://example.test/issues/42"
+  },
+  {
+    "number": 43,
+    "title": "spec drift: dated-spec",
+    "state": "OPEN",
+    "url": "https://example.test/issues/43"
+  },
+  {
+    "number": 44,
+    "title": "spec drift: changelog-spec",
+    "state": "OPEN",
+    "url": "https://example.test/issues/44"
+  },
+  {
+    "number": 45,
+    "title": "spec drift: rfc-spec",
+    "state": "OPEN",
+    "url": "https://example.test/issues/45"
+  }
+]

@@ -222,7 +222,7 @@ Limits: the manifest and the tokenizer at most 64 MiB each, the ONNX model at mo
 
 **The runtime library.** The source build pins the release-candidate Rust binding `ort = 2.0.0-rc.15` and uses its CPU-only `api-21` path. ONNX Runtime 1.22.0 is tested; newer runtimes are not an unconditional compatibility promise. The ONNX shared library itself is not linked or downloaded at build time: it is loaded from `ORT_DYLIB_PATH` or the system library path. A missing library is checked before reading large model parts and remains retryable, so mounting it later does not require a gateway restart. A gateway that cannot load it logs `cannot load the ONNX Runtime library` and fails ONNX providers through their `failure_mode`; linear models are unaffected.
 
-The tokenizer uses a pure-Rust regex backend. Custom serialized `Regex` patterns must compile with Rust's linear regex engine: lookaround, backreferences and oversized patterns are refused when the model loads, rather than silently losing text at a runtime backtracking limit. This applies to Split and Replace patterns, including nested sequences. Built-in pre-tokenizers such as ByteLevel are supported. A tokenizer needing unsupported custom patterns must be adapted or served through a webhook classifier. Tokenizer failures follow `failure_mode`; they are not reported as benign classifications. CI's all-features nextest job installs the pinned 1.22.0 CPU runtime and requires native inference rather than allowing its tests to self-skip.
+The tokenizer uses a pure-Rust regex backend. Custom serialized `Regex` patterns, including lookaround and backreferences, compile with fancy-regex when the model loads. Split and Replace use an error-propagating path, including nested sequences: a runtime backtracking or resource-limit error follows `failure_mode` instead of silently losing text and returning a benign classification. Backtracking is capped per search and delegated compiled size is bounded, but tokenization is blocking and non-preemptible, so the provider deadline cannot cancel it. Built-in pre-tokenizers such as ByteLevel are supported. CI's all-features nextest job installs the pinned 1.22.0 CPU runtime and requires native inference rather than allowing its tests to self-skip.
 
 The prebuilt x86-64 ONNX Runtime releases assume a CPU with AVX. To run ONNX models in a container, build the image with the feature and add the library from an official [ONNX Runtime release](https://github.com/microsoft/onnxruntime/releases) to the distroless image, which already carries the C++ runtime the library needs:
 
@@ -239,9 +239,10 @@ ENV ORT_DYLIB_PATH=/usr/local/lib/libonnxruntime.so
 
 For the linear classifier, a text longer than `max_body_bytes` is read whole in **overlapping windows** of `max_body_bytes`, up to the provider's `max_scored_bytes`, which defaults to 8 × `max_body_bytes` (512 KiB with the default 64 KiB). Each window overlaps the next by an eighth of a window, and by at least 256 bytes, so a phrase that falls on a window boundary is still read whole. Every window is scored, and each category takes its **highest** score across them: an injection in the middle of one huge message counts as much as one at its end. Each window costs about a millisecond (see **CPU** above), so the default budget takes about 10 ms, and the provider's `timeout_ms` must cover it. ONNX models use the same byte budget, then their own token windows described above instead of nesting token windows inside byte windows.
 
-A text longer than `max_scored_bytes` is still cut. The classifier then reads the first quarter and the **last three quarters** of the budget (with the defaults, the first 128 KiB, holding the system prompt and the start of the conversation, and the last 384 KiB, holding the latest turns), and what lies between is not read. Such a request is flagged in three places:
+A text longer than `max_scored_bytes` is still cut. The classifier then reads the first quarter and the **last three quarters** of the budget (with the defaults, the first 128 KiB, holding the system prompt and the start of the conversation, and the last 384 KiB, holding the latest turns), and what lies between is not read. Such a request is flagged in four places:
 
 - on its request-log row, as `semantic_truncated:<provider>` in `guardrail_events`;
+- on the provider card's **Text truncated** count under **Guardrails → Providers**, which links to those log rows;
 - on the [`rolter_semantic_local_truncated_total{provider}`](/observability/metrics#rolter_semantic_local_truncated_total) counter;
 - on the `guardrails.local` span of the provider call, as `truncated = true`.
 
@@ -257,7 +258,7 @@ max_scored_bytes = 1048576  # 16 windows
 on_truncated = "fail_closed"
 ```
 
-Both settings are set in a configuration file. A provider created on the dashboard uses the defaults: it scores 8 windows and flags a cut without refusing it.
+Set both in the configuration file or on the dashboard's local-provider form. The defaults score 8 windows and flag a cut without refusing it.
 
 ## Streamed responses
 
