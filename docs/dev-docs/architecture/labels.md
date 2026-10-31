@@ -83,21 +83,26 @@ that name (`org_has_model`); `GET` takes `?org_id=` for the lookup, and hides an
 org's rows from a caller who does not reach that org (`TenantView`, the rule
 `GET /api/v1/models` applies). The Model Catalog keys its chips on `(org_id,
 model)` with the same fallback, and its label sheet writes to the row's org.
-Writes stay `model_label`, superadmin. The gateway reads no label, so the column
+A write to a label that names an org is authorized as that org's act, under
+`label` at `ScopeChain::org(org_id)` — the capability its provider and route
+labels use — so an org admin labels its own models (#3520); a deployment-wide
+label stays `model_label`, superadmin. `PUT` and `DELETE` read the label first
+to know which check applies. The gateway reads no label, so the column
 needed no new `config_version` trigger; `labels_bump_config_version` already
 fires on every write, the cascade from a deleted org included.
 
 ## Scopes and the two API surfaces
 
-| Surface                        | Subjects                           | Capability                                                                       |
-| ------------------------------ | ---------------------------------- | -------------------------------------------------------------------------------- |
-| `/api/v1/orgs/{org_id}/labels` | providers, provider groups, routes | `label` — org-scoped, read `viewer`, write `admin`                               |
-| `/api/v1/model-labels`         | models                             | `model_label` — deployment-wide, read any authenticated caller, write superadmin |
+| Surface                        | Subjects                           | Capability                                                                                                                                  |
+| ------------------------------ | ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `/api/v1/orgs/{org_id}/labels` | providers, provider groups, routes | `label` — org-scoped, read `viewer`, write `admin`                                                                                          |
+| `/api/v1/model-labels`         | models                             | `model_label` — deployment-wide, read any authenticated caller, write superadmin; a label naming an org is written under that org's `label` |
 
 The split follows where the subjects live. Providers, groups and routes belong
 to an org; models belong to the deployment-wide pricing catalog and to no org,
-so labelling one is a deployment-wide act and `model_label` mirrors
-`model_price` exactly.
+so a deployment-wide label on one is a deployment-wide act and `model_label`
+mirrors `model_price` exactly. A label on one org's model touches only that
+org, so it takes the org's `label` instead.
 
 `label` is its own capability rather than the subject's, so an operator role
 can be allowed to annotate a provider without being allowed to re-point it.

@@ -70,8 +70,9 @@ dev: _config
     ( cd ui && "$ui" run dev 2>&1 | sed 's/^/[ui]      /' ) &
     wait
 
-# run the data-plane gateway against rolter.toml
-gateway config="rolter.toml":
+# run the data-plane gateway against rolter.toml (created from the example when
+# missing: a named --config that does not exist refuses to start, #3511)
+gateway config="rolter.toml": _config
     cargo run -p rolter-gateway -- --config {{config}}
 
 # run the control plane + ui host

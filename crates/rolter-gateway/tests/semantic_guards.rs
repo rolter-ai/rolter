@@ -1076,6 +1076,52 @@ async fn a_local_classifier_policy_judges_both_stages_on_both_dialects() {
     }
 }
 
+/// A local provider that cannot read all of a long prompt leaves
+/// `semantic_truncated:<provider>` on the row, and under
+/// `on_truncated = "fail_closed"` refuses it (#3513).
+#[tokio::test]
+async fn a_cut_prompt_is_flagged_on_the_row_and_refused_when_asked() {
+    let upstream = Upstream::default();
+    let up = upstream.serve().await;
+    let rows = Rows::default();
+    let clickhouse = rows.serve().await;
+    let mut config = config(up, ProviderKind::OpenaiCompatible);
+    config.logging.clickhouse_url = Some(format!("http://{clickhouse}"));
+    config.logging.flush_ms = 20;
+    config.logging.batch_max = 1;
+    config.semantic_guards.providers = vec![GuardrailWebhookConfig {
+        max_body_bytes: 1_024,
+        max_scored_bytes: Some(4_096),
+        ..local_guard("injection", WebhookStage::PreCall, FailureMode::FailOpen)
+    }];
+    let mut all = policy("all", PolicyScope::Deployment, None, &["injection"]);
+    all.thresholds = [("prompt_injection".to_string(), 0.8)]
+        .into_iter()
+        .collect();
+    config.semantic_guards.policies = vec![all];
+    assert_eq!(config.validate(), Ok(()));
+    let long = "the quick brown fox jumps over the lazy dog ".repeat(500);
+
+    let delivered = send(&config, Dialect::OpenAi, &long, false, None).await;
+    assert_eq!(delivered.status, 200, "{}", delivered.body);
+    let row = rows.only_row().await;
+    assert_eq!(
+        row["guardrail_events"],
+        json!(["semantic_truncated:injection"]),
+        "{row}"
+    );
+
+    config.semantic_guards.providers[0].on_truncated = rolter_core::OnTruncated::FailClosed;
+    assert_eq!(config.validate(), Ok(()));
+    let refused = send(&config, Dialect::OpenAi, &long, false, None).await;
+    assert_ne!(refused.status, 200, "{}", refused.body);
+    assert_eq!(
+        upstream.calls.load(SeqCst),
+        1,
+        "a refused prompt never goes upstream"
+    );
+}
+
 #[tokio::test]
 async fn a_local_provider_whose_model_does_not_load_follows_its_failure_mode() {
     let upstream = Upstream::default();

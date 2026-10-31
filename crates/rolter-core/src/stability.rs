@@ -120,6 +120,13 @@ pub const SUBSYSTEMS: &[SubsystemStability] = &[
         nav_keys: &[],
     },
     SubsystemStability {
+        id: "semantic_onnx",
+        stability: Stability::Experimental,
+        note: "the onnx/1 manifest and runtime compatibility contract may change; \
+               source builds only, with a separately installed ONNX Runtime library",
+        nav_keys: &[],
+    },
+    SubsystemStability {
         id: "skills_repository",
         stability: Stability::Experimental,
         note: "a skill resolves only through the control-plane API; the gateway \

@@ -72,3 +72,7 @@
 
 **Learning:** `mcp_columns` in `crates/rolter-control/src/mcp_logs.rs` previously logged raw ClickHouse error strings (`error = %err`) using `tracing::warn!`. When a query fails, error strings (such as those from `reqwest` or ClickHouse exceptions) can contain userinfo or query parameters from the `CLICKHOUSE_URL`.
 **Prevention:** Always wrap error strings logged during store or HTTP query failures in `rolter_core::redact::redact_urls_in_text(&format!("{err:#}"))` to ensure sensitive credentials in URLs are masked in server log streams.
+## 2026-10-25 - Consistent 409 Conflict Errors for Config-Owned Provider Groups
+
+**Learning:** `require_group_not_config_owned` and `require_group_row_not_config_owned` in `crates/rolter-control/src/crud/provider_groups.rs` previously returned `ApiError::Core(Error::Config(...))` which rendered as HTTP 400 Bad Request, whereas mutating other config-owned resources (providers, routes, models) returned HTTP 409 Conflict.
+**Prevention:** Use shared `require_not_config_owned` and `require_row_not_config_owned` helpers across all CRUD handlers to ensure mutations targeting bootstrap config-owned entities consistently answer with HTTP 409 Conflict.

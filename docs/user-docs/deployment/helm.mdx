@@ -119,3 +119,5 @@ Both workloads run `image.tag`, which defaults to the chart's `appVersion`. `con
 `0` turns an export bound off. The concurrency counts are per control-plane pod. See [Dashboard analytics API](/api/dashboard-analytics) for what an export does past a bound.
 
 `control.updateCheck: false` stops the control plane, and the preflight init container, from asking GitHub for the latest release, for a cluster that must make no outbound call.
+
+`gateway.semanticModelRoot` sets `ROLTER_SEMANTIC_MODEL_ROOT` on every gateway pod: the directory every [local classifier](/security/semantic-guard-policies#local-classifier) model must resolve under, which is where the models' volume belongs. It takes precedence over a `[semantic_guards] model_root` in the chart's `rolter.toml`. Empty, the default, leaves that key to decide.

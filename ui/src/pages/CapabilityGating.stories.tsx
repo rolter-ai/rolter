@@ -80,7 +80,6 @@ async function expectOffered(canvasElement: HTMLElement, name: RegExp) {
 const KEY: VirtualKeyRow = {
   id: "vk-1",
   project_id: "project-1",
-  key_hash: "hash-1",
   key_prefix: "sk-rolter-backend",
   name: "backend service",
   models: [],

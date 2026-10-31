@@ -46,8 +46,8 @@ This is the half that gets misread, so it is stated positively:
   sit for several releases or be withdrawn instead. That is why the word is not
   "beta", which reads as a time-boxed pre-release.
 - **It is not "off".** Whether a subsystem runs is a different question
-  entirely; see the axes below. Every subsystem in the table is enabled and
-  usable in a default deployment.
+  entirely; see the axes below. Availability can require a source build and
+  extra runtime libraries, as with `semantic_onnx`.
 
 ## The third axis
 
@@ -84,6 +84,7 @@ impression.
 | ------------------- | -------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `labels`            | _(no screen; chips on Providers, Provider Groups and Routing Rules)_ | Display and filter only. A route cannot select its targets by label, and making labels selectable turns them into configuration the data plane consumes — a change in what a label _is_. Stated in [Labels](../architecture/labels.md#display-and-filter-only-for-now).                                                                                                                                                          |
 | `realtime`          | _(no screen; reachable from the Playground)_                         | Guardrails, the guardrail webhook and `pre_upstream` plugins run on `/v1/realtime` text events and function-call arguments ([Realtime metering](../architecture/realtime-metering.md)), but the PII sanitizer and `pre_route` / `post_response` plugins do not; a `fail_closed` PII sanitizer refuses the session, a `fail_open` one admits it unsanitized. Tracked in [#2489](https://github.com/rolter-ai/rolter/issues/2489). |
+| `semantic_onnx`     | _(no dedicated screen; Local classifier providers)_                  | The `onnx/1` manifest and native runtime compatibility contract may change. The format is source-build only and uses the pinned `ort` release candidate with a separately installed ONNX Runtime library. See [Semantic guards](../architecture/semantic-guards.md#the-onnx1-format-3443).                                                                                                                                       |
 | `skills_repository` | Skills Repository                                                    | A skill resolves only through the control-plane API; the gateway serves no skill surface, so how a client addresses and fetches one is not settled. Nothing outside the dashboard depends on the current shape yet.                                                                                                                                                                                                              |
 
 A subsystem not in that table is stable. The table is short deliberately: a

@@ -17,6 +17,16 @@ use serde::{Deserialize, Serialize};
 pub const DEFAULT_TIMEOUT_MS: u64 = 2_000;
 /// Default cap on the content bytes forwarded to the webhook.
 pub const DEFAULT_MAX_BODY_BYTES: usize = 64 * 1024;
+/// How many `max_body_bytes` windows a local provider scores at most when
+/// `max_scored_bytes` is unset (#3513).
+pub const DEFAULT_SCORED_WINDOWS: usize = 8;
+/// The largest `max_scored_bytes` a local provider may set.
+pub const MAX_SCORED_BYTES: usize = 16 * 1024 * 1024;
+/// The largest `max_scored_bytes` a local provider may set, in windows of
+/// its `max_body_bytes`, so a tiny window cannot turn the budget into
+/// millions of windows. Windows overlap by at most half a window, so this
+/// bounds a call to twice as many windows.
+pub const MAX_SCORED_WINDOWS: usize = 64;
 
 /// Stage at which the webhook is consulted.
 ///
@@ -49,6 +59,28 @@ pub enum FailureMode {
     /// [`FailureMode::FailClosed`]
     #[serde(other)]
     Unknown,
+}
+
+/// What a local provider does with a request whose text is longer than its
+/// `max_scored_bytes`, so that part of it is never read (#3513).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OnTruncated {
+    /// score what fits in the budget, and flag the cut
+    #[default]
+    Score,
+    /// refuse the request, whatever the provider's `failure_mode` says
+    FailClosed,
+    /// a value this build does not know (#3347); read as
+    /// [`OnTruncated::FailClosed`]
+    #[serde(other)]
+    Unknown,
+}
+
+impl OnTruncated {
+    fn is_score(&self) -> bool {
+        *self == Self::Score
+    }
 }
 
 /// Where a guardrail provider's verdict comes from (#3329, ADR-0039).
@@ -167,6 +199,15 @@ pub struct GuardrailWebhookConfig {
     /// cap on the content bytes forwarded; oversized content is truncated and flagged
     #[serde(default = "default_max_body_bytes")]
     pub max_body_bytes: usize,
+    /// a local provider's budget over the whole text, read in overlapping
+    /// `max_body_bytes` windows (#3513); unset means
+    /// [`DEFAULT_SCORED_WINDOWS`] × `max_body_bytes`
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_scored_bytes: Option<usize>,
+    /// what a local provider does with text longer than its
+    /// `max_scored_bytes` (#3513); a webhook ignores both
+    #[serde(default, skip_serializing_if = "OnTruncated::is_score")]
+    pub on_truncated: OnTruncated,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auth: Option<WebhookAuth>,
 }
@@ -193,12 +234,26 @@ impl Default for GuardrailWebhookConfig {
             max_retries: 0,
             failure_mode: FailureMode::default(),
             max_body_bytes: DEFAULT_MAX_BODY_BYTES,
+            max_scored_bytes: None,
+            on_truncated: OnTruncated::default(),
             auth: None,
         }
     }
 }
 
 impl GuardrailWebhookConfig {
+    /// The bytes of text a local provider scores at most: `max_scored_bytes`,
+    /// or [`DEFAULT_SCORED_WINDOWS`] windows of `max_body_bytes`, held to
+    /// [`MAX_SCORED_BYTES`] and [`MAX_SCORED_WINDOWS`] windows whichever way
+    /// it was set, and never less than one window.
+    pub fn scored_bytes(&self) -> usize {
+        self.max_scored_bytes
+            .unwrap_or_else(|| self.max_body_bytes.saturating_mul(DEFAULT_SCORED_WINDOWS))
+            .min(MAX_SCORED_BYTES)
+            .min(self.max_body_bytes.saturating_mul(MAX_SCORED_WINDOWS))
+            .max(self.max_body_bytes)
+    }
+
     /// Validate the webhook config. Returns human-readable problems for the
     /// aggregate config validator; an empty vec means it is safe to load. A
     /// disabled block is never a problem, even if other fields are unset.
@@ -266,6 +321,17 @@ impl GuardrailWebhookConfig {
         }
         if self.auth.is_some() {
             problems.push("guardrail_webhook.auth does not apply to a local provider".into());
+        }
+        if let Some(scored) = self.max_scored_bytes {
+            let most = MAX_SCORED_BYTES.min(self.max_body_bytes.saturating_mul(MAX_SCORED_WINDOWS));
+            if scored < self.max_body_bytes || scored > most {
+                problems.push(format!(
+                    "guardrail_webhook.max_scored_bytes must be at least max_body_bytes ({}) \
+                     and at most {most} ({MAX_SCORED_BYTES}, or {MAX_SCORED_WINDOWS} × \
+                     max_body_bytes when that is less)",
+                    self.max_body_bytes
+                ));
+            }
         }
         problems
     }
@@ -384,6 +450,62 @@ mod tests {
             ..GuardrailWebhookConfig::default()
         };
         assert!(webhook.validate().join("").contains("local provider only"));
+    }
+
+    #[test]
+    fn the_scored_budget_defaults_to_eight_windows_and_is_bounded() {
+        let mut provider = local();
+        assert_eq!(provider.scored_bytes(), 8 * DEFAULT_MAX_BODY_BYTES);
+        provider.max_scored_bytes = Some(DEFAULT_MAX_BODY_BYTES * 2);
+        assert_eq!(provider.scored_bytes(), DEFAULT_MAX_BODY_BYTES * 2);
+        assert!(provider.validate().is_empty(), "{:?}", provider.validate());
+        // a large window: the default budget is held to the cap too
+        provider.max_scored_bytes = None;
+        provider.max_body_bytes = 4 * 1024 * 1024;
+        assert_eq!(provider.scored_bytes(), MAX_SCORED_BYTES);
+        // a tiny window: the budget is held to MAX_SCORED_WINDOWS windows,
+        // and setting more is a problem
+        provider.max_body_bytes = 1;
+        provider.max_scored_bytes = Some(MAX_SCORED_BYTES);
+        assert_eq!(provider.scored_bytes(), MAX_SCORED_WINDOWS);
+        assert!(provider
+            .validate()
+            .join("")
+            .contains("max_scored_bytes must be"));
+        provider.max_body_bytes = DEFAULT_MAX_BODY_BYTES;
+        for bad in [DEFAULT_MAX_BODY_BYTES - 1, MAX_SCORED_BYTES + 1] {
+            provider.max_scored_bytes = Some(bad);
+            assert!(
+                provider
+                    .validate()
+                    .join("")
+                    .contains("max_scored_bytes must be"),
+                "{bad}"
+            );
+        }
+        // a webhook ignores both, rather than refuse a snapshot over them
+        let webhook = GuardrailWebhookConfig {
+            enabled: true,
+            url: "https://x".to_string(),
+            max_scored_bytes: Some(1),
+            on_truncated: OnTruncated::FailClosed,
+            ..GuardrailWebhookConfig::default()
+        };
+        assert!(webhook.validate().is_empty(), "{:?}", webhook.validate());
+    }
+
+    #[test]
+    fn on_truncated_parses_defaults_and_reads_an_unknown_value() {
+        let parsed: GuardrailWebhookConfig =
+            serde_json::from_value(serde_json::json!({"on_truncated": "fail_closed"})).unwrap();
+        assert_eq!(parsed.on_truncated, OnTruncated::FailClosed);
+        let parsed: GuardrailWebhookConfig =
+            serde_json::from_value(serde_json::json!({"on_truncated": "ask_a_human"})).unwrap();
+        assert_eq!(parsed.on_truncated, OnTruncated::Unknown);
+        // the default is not serialized, so a snapshot keeps its shape
+        let local = serde_json::to_value(local()).unwrap();
+        assert!(local.get("on_truncated").is_none());
+        assert!(local.get("max_scored_bytes").is_none());
     }
 
     #[test]

@@ -101,6 +101,47 @@ slug and the request id the response carries (in `x-request-id` unless the
 deployment configures another header), and the MCP tool-call log records it as
 a `timeout` or `transport_error`.
 
+### How a call's outcome is recorded
+
+The MCP tool-call log reads a call's outcome from the JSON-RPC reply to it: a
+`result` is a `success` (an `error` when it says `isError`), and an `error` is
+an `error`. Some calls have no reply for the proxy to read:
+
+- **A call to a legacy `sse` server.** Such a server answers the `POST` with
+  `202 Accepted` and sends the reply later on the event stream the client holds
+  open. The proxy does not match the stream's replies to the calls posted, so a
+  call answered that way is recorded as **accepted, reply on the stream**
+  (`outcome: accepted`). A `202` whose body does carry the call's reply, such as
+  a JSON-RPC error, is judged by that reply. A `streamable_http` server owes the
+  reply in its answer, so there a bare `202` is a `transport_error`.
+
+- **A body forwarded unread.** A server no tool group or manifest governs is
+  sent every request body as it came. A body with a `Content-Encoding`, or one
+  that is not valid JSON, is forwarded without being read, so the calls in it
+  are **not itemised**: the request is one row with no tool, recorded as
+  **body not read, calls not itemised** (`outcome: unread`) once the server
+  answers `2xx`, or as the failure the server's HTTP response reports. Such a
+  body is counted in `rolter_mcp_unread_bodies_total{reason}`: `encoded` always,
+  and `unparseable` only while the MCP log is on, since only then does the proxy
+  read an ungoverned body (one that mentions `tools/call`). Send such calls uncompressed, or govern the
+  server with a tool group, to have them itemised.
+- **A notification.** A `tools/call` sent without an `id` awaits no reply. Its
+  row has the status the server's HTTP response gave and `notification: 1`, and
+  reads **notification, no reply awaited**.
+
+`GET /api/v1/mcp/logs` and the event detail return both `notification` and
+`outcome`. A notification the server accepted (`2xx`), an `accepted` call and
+an `unread` row do not say whether a tool succeeded, so
+`GET /api/v1/mcp/logs/summary` counts them apart in `not_awaited` and leaves
+them out of `successes`, `failures`, `success_rate` and `failure_rate`: the
+rates are over `calls - not_awaited`, and `null` for a window with no awaited
+call. A notification the server refused or failed was not delivered, so it
+counts as a failure like any other call. The average and p95 latency are over
+every call. `outcome` needs
+`clickhouse/051_mcp_log_outcome.sql` and `notification` needs
+`047_mcp_log_notification.sql`; until they are applied such calls are plain
+`success` rows and count as awaited.
+
 ### Accepted values
 
 A registered server's `transport`, and an organization's

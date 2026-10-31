@@ -54,6 +54,7 @@ import { errorText } from "@/lib/error-copy";
 import { useFormat } from "@/lib/i18n/format";
 import { HEALTH_SLA, targetViews, type RouteTargetView } from "@/lib/route-targets";
 import { summarizeCacheReporting, type CacheReporting } from "@/lib/cache-reporting";
+import { RowCapabilityScope } from "@/lib/can";
 import { useScope } from "@/lib/scope";
 import { strategyHintKey } from "@/lib/strategies";
 import { useToast } from "@/lib/toast";
@@ -717,14 +718,21 @@ export default function Models() {
       </ListTable>
 
       {labelling && (
-        <LabelSheet
-          open
-          onOpenChange={(open) => !open && setLabelling(null)}
-          orgId={labelling.orgId}
-          subjectType="model"
-          subjectId={labelling.model}
-          subjectName={labelling.model}
-        />
+        // an organization's model is labelled under that organization's own
+        // `label` capability (#3520), so the sheet asks at the row's org rather
+        // than the switcher's; a deployment-wide one keeps the page's answer
+        <RowCapabilityScope
+          at={labelling.orgId ? { orgId: labelling.orgId, projectId: null } : undefined}
+        >
+          <LabelSheet
+            open
+            onOpenChange={(open) => !open && setLabelling(null)}
+            orgId={labelling.orgId}
+            subjectType="model"
+            subjectId={labelling.model}
+            subjectName={labelling.model}
+          />
+        </RowCapabilityScope>
       )}
 
       <ModelSheet

@@ -145,6 +145,7 @@ POST /v1/chat/completions
 ├─ auth
 ├─ route.select          strategy, candidates, route
 ├─ guardrails.pre        redacted, webhook
+├─ guardrails.local     provider, truncated (one per local classifier call, either stage)
 ├─ cache.lookup          hit, kind (exact | semantic)
 └─ upstream.request      attempt, gen_ai.system, gen_ai.request.model, status
    ├─ queue.wait         provider

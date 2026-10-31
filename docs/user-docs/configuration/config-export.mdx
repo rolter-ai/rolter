@@ -25,19 +25,20 @@ Exporting is read-only. It never writes to the database it reads.
 
 The export deliberately carries only the sections the importer consumes, so nothing in the file is dropped on the way back in.
 
-| Section                                                                             | Notes                                                                                               |
-| ----------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
-| `[[providers.readonly]]` and `[[providers.default]]`                                | name, slug, kind, `api_base`, `api_keys` (the variable name only), `egress_proxies`, in both tiers  |
-| `[[provider_groups.readonly]]` / `[[provider_groups.default]]` and their `.members` | group strategy and its weighted members                                                             |
-| `[[routes]]`, `[routes.params]`, `[routes.param_policy]`, `[[routes.targets]]`      | strategy, admin parameter defaults, the override policy, and the weighted upstream targets          |
-| `[[routes.variants]]`, `[routes.variants.params]`, `[[routes.variants.targets]]`    | weighted variants in fallback order, their parameter defaults and their ordered targets             |
-| `[[model_prices]]`                                                                  | input, output, cached-input and cache-write rates with their currency                               |
-| `[[budgets]]` and `[[rate_limits]]`                                                 | spend and rate caps, each naming its scope by a portable reference (below)                          |
-| `[[mcp_manifest_enforcement]]`                                                      | for each org that never saved MCP settings, whether it enforces its servers' tool manifests (below) |
-| `[[mcp_gateway_settings]]`                                                          | for each org that saved MCP settings, those settings (below)                                        |
-| `[prompt_templates]`                                                                | published templates with their variables, decorators and route bindings                             |
-| `[logging]` `ui_events`                                                             | whether the control plane records dashboard usage events                                            |
-| `[logging.payload_capture]`                                                         | the capture policy, its size cap and its redaction and model filters                                |
+| Section                                                                             | Notes                                                                                                 |
+| ----------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| `[[providers.readonly]]` and `[[providers.default]]`                                | name, slug, kind, `api_base`, `api_keys` (the variable name only), `egress_proxies`, in both tiers    |
+| `[[provider_groups.readonly]]` / `[[provider_groups.default]]` and their `.members` | group strategy and its weighted members                                                               |
+| `[[routes]]`, `[routes.params]`, `[routes.param_policy]`, `[[routes.targets]]`      | strategy, admin parameter defaults, the override policy, and the weighted upstream targets            |
+| `[[routes.variants]]`, `[routes.variants.params]`, `[[routes.variants.targets]]`    | weighted variants in fallback order, their parameter defaults and their ordered targets               |
+| `[[model_prices]]`                                                                  | input, output, cached-input and cache-write rates with their currency                                 |
+| `[[budgets]]` and `[[rate_limits]]`                                                 | spend and rate caps, each naming its scope by a portable reference (below)                            |
+| `[[mcp_manifest_enforcement]]`                                                      | for each org that never saved MCP settings, whether it enforces its servers' tool manifests (below)   |
+| `[[mcp_gateway_settings]]`                                                          | for each org that saved MCP settings, those settings (below)                                          |
+| `[[mcp_gateway_tool_groups]]`                                                       | each org's MCP tool groups, their tools and the teams, projects and keys they are assigned to (below) |
+| `[prompt_templates]`                                                                | published templates with their variables, decorators and route bindings                               |
+| `[logging]` `ui_events`                                                             | whether the control plane records dashboard usage events                                              |
+| `[logging.payload_capture]`                                                         | the capture policy, its size cap and its redaction and model filters                                  |
 
 A route's variants are the one place an import deletes what the file leaves out. A route whose entry declares `[[routes.variants]]` has its stored variants replaced by the file's, because an ordered, weighted split cannot be merged; the import warns with the names of the variants it removes. A route whose entry declares no variants keeps the stored ones, and the import warns when the entry gives the route `[[routes.targets]]`, since a route with variants does not use its targets.
 
@@ -53,7 +54,25 @@ The import never makes an existing organization stricter. The import is the desi
 
 An organization that saved its MCP settings (default transport, timeouts, retries, failure mode and whether unlisted tools are allowed) has them written as `[[mcp_gateway_settings]]` with the organization's `org` slug. Without it a round trip into a fresh database resets that organization to the new-organization defaults, which enforce tool manifests.
 
-This table is the desired state, not a marker. The import sets the organization it targets (`--org-slug`) to exactly the values of its entry, stricter or laxer than it had, and logs the previous and new values. An entry that already matches writes nothing. An entry for any other organization is skipped with a warning, so a file cannot reconfigure an organization it was not aimed at. A value outside what the MCP Settings screen accepts fails the import before it writes. The control plane never ships the table in the snapshot, so a `--config` file that holds it changes nothing until it is imported. Exporting, wiping, importing and exporting again gives the same bytes. Tool groups are not part of the table.
+This table is the desired state, not a marker. The import sets the organization it targets (`--org-slug`) to exactly the values of its entry, stricter or laxer than it had, and logs the previous and new values. An entry that already matches writes nothing. An entry for any other organization is skipped with a warning, so a file cannot reconfigure an organization it was not aimed at. A value outside what the MCP Settings screen accepts fails the import before it writes. The control plane never ships the table in the snapshot, so a `--config` file that holds it changes nothing until it is imported. Exporting, wiping, importing and exporting again gives the same bytes. Tool groups are not part of the table; they have their own, below.
+
+### MCP tool groups
+
+Each organization's MCP tool groups are written as `[[mcp_gateway_tool_groups]]`: the group's `org` slug, its `slug`, name, description and whether it is enabled, the `tools` it allows, and the `teams`, `projects` and `keys` it is assigned to. Without them a round trip would drop every tool restriction an organization configured, and its keys could then call every tool its servers expose. Nothing in the table is a database id, a key's secret or its digest:
+
+- a tool names its server by the server's slug in the organization;
+- a team is `org/team` and a project `org/team/project`, as the caps above name them;
+- a virtual key is `{ project = "org/team/project", name = "<key name>" }`, or, for a key with no name, `{ project = "…", prefix = "<prefix>" }` with the prefix the dashboard shows.
+
+The import is the desired state for the groups the file names, in the organization it targets (`--org-slug`) only, and logs each group it creates or updates. A group is matched on its slug; one the file does not name is left alone. An entry that already matches writes nothing, and an entry for any other organization is skipped with a warning.
+
+Virtual keys are never exported, so **a key assignment survives a round trip only where the key exists** on the receiving deployment. An assignment to a team, project or key that does not exist there is skipped with a warning that names it. The group is still created, so its team and project assignments still narrow their callers, and while an entry has such a reference the group's assignments are only added to, never removed. A tool on a server the organization does not have fails the whole import before anything is written, the organization's MCP settings included, and the error names the group, the server and the tool: a server created later under that slug would otherwise start without the restriction. Register the organization's MCP servers first, as servers are not exported.
+
+A key reference that matches more than one key of its project (two keys with the same name, or two unnamed keys with the same prefix) also refuses the whole import before any write. The error names the group, project and ambiguous reference. Give those keys distinct names before importing. The importer never assigns the group to every match: assigned groups are unioned, so an extra assignment can grant tools to a key that was already restricted.
+
+An assignment to a team or project whose name contains `/` or is empty, or to a key of such a project, has no name a file can carry, as with caps. The export leaves it out and logs a warning, and a re-import into the same deployment keeps it rather than removing it, so the team, project or key stays narrowed. A group that cannot be written fails the import rather than leaving the organization's keys without the restriction, and a malformed entry (a slug the store refuses, a tool listed twice, a key named by both or neither of `name` and `prefix`) fails it before anything is written.
+
+Exporting, wiping the groups, importing and exporting again gives the same bytes when the teams, projects and keys exist.
 
 ### Import warnings
 
@@ -137,7 +156,7 @@ rolter seed --org-slug acme --import acme.toml
 - the caps on the organization, its teams, projects, business units and customers, and on the keys minted in it (counted in the trailing comment, as keys are never exported);
 - a cap on a person when its `within` names the organization or one of its projects, or, with no `within`, when the person is a member of the organization (directly or through a team or project). With `--without-person-caps` none is written;
 - the payload-capture policy: kept as it is when it is not limited to keys. A policy limited to virtual keys spans organizations and cannot be split, so the file leaves `[logging.payload_capture]` out and says so in a comment; importing the file then leaves the deployment's capture policy as it is;
-- its `[[mcp_manifest_enforcement]]` or `[[mcp_gateway_settings]]` entry, whichever applies.
+- its `[[mcp_manifest_enforcement]]` or `[[mcp_gateway_settings]]` entry, whichever applies, and its `[[mcp_gateway_tool_groups]]`.
 
 Rows owned by no organization (those of the gateway's own config file) and the deployment-wide sections (model prices, currency, the rest of logging) are written as the whole-deployment export writes them, except a row the organization shadows: when the organization has a route, provider or provider group of the same name as a deployment-wide one, its own row wins (ADR-0040), so the file leaves the deployment-wide row out and names it in a comment (`# left out because this organization has a row of the same name`). Importing the file therefore reproduces the organization's view instead of refusing on the clash. There is no option for this. A route and a provider are matched by name, a provider group by slug.
 

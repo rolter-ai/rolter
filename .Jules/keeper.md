@@ -54,3 +54,8 @@
 
 **Learning:** Signal-specific OpenTelemetry environment variables (`OTEL_EXPORTER_OTLP_METRICS_ENDPOINT`, `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT`) read via `std::env::var` in `crates/rolter-core/src/telemetry.rs` can quietly drift from `docs/user-docs/configuration/environment-variables.mdx` if drift guard tests only explicitly list `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`.
 **Action:** Guard all OTLP signal-specific environment variable documentation completeness using `all_binary_cli_env_vars_are_documented_in_reference` in `crates/rolter/tests/env_var_names.rs`.
+
+## 2026-11-01 - Provider key environment variables drifting from reference docs
+
+**Learning:** Provider key environment variables such as `OPENROUTER_API_KEY` configured in default provider templates or `api_key_env` fields in `crates/rolter-core/src/config.rs` can quietly drift from `docs/user-docs/configuration/environment-variables.mdx` if drift guard tests do not explicitly require them in `all_binary_cli_env_vars_are_documented_in_reference`.
+**Action:** Include common provider key variables like `OPENROUTER_API_KEY` in `all_binary_cli_env_vars_are_documented_in_reference` inside `crates/rolter/tests/env_var_names.rs` to assert completeness in reference documentation.

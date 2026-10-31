@@ -200,6 +200,22 @@
       "allow_unlisted_tools": false
     }
   ],
+  "mcp_gateway_tool_groups": [
+    {
+      "org": "acme",
+      "slug": "read-only",
+      "name": "Read only",
+      "description": "no writes",
+      "enabled": true,
+      "tools": [{ "server": "github", "tool": "search_code" }],
+      "teams": ["acme/platform"],
+      "projects": ["acme/platform/gateway"],
+      "keys": [
+        { "project": "acme/platform/gateway", "name": "ci" },
+        { "project": "acme/platform/gateway", "prefix": "rk-ab" }
+      ]
+    }
+  ],
   "mcp_tool_groups": [
     {
       "id": "grp-1",
@@ -771,7 +787,9 @@
         "timeout_ms": 50,
         "max_retries": 0,
         "failure_mode": "fail_closed",
-        "max_body_bytes": 65536
+        "max_body_bytes": 65536,
+        "max_scored_bytes": 524288,
+        "on_truncated": "fail_closed"
       }
     ],
     "policies": [

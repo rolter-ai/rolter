@@ -379,8 +379,10 @@ response payload.
 - **Omitted:** no protocol-version negotiation: `MCP-Protocol-Version` is relayed, never read
 - **Omitted:** no validation of what an allowed message contains, and none of the server's replies
 - **Omitted:** the deprecated HTTP+SSE transport is relayed like any other request, not implemented
+- **Omitted:** the replies a deprecated HTTP+SSE server sends on its event stream are not matched to the calls posted: a POST it answers 202 with no reply in the body is logged `accepted`
+- **Omitted:** a body forwarded unread to a server no rule governs (encoded, or not JSON) has its calls not itemised: it is counted in `rolter_mcp_unread_bodies_total` and logged as one `unread` row
 - **Deviations:** a POST to a server the organization's tool groups or tool manifest govern, with a `Content-Encoding` other than `identity`, is refused with 415 `mcp_request_unreadable`: the relay decodes no body, so it could not apply the rules to it
-- **Evidence:** `crates/rolter-gateway/src/mcp_proxy.rs::proxy_replaces_client_auth_and_preserves_path_query_and_body`<br />`crates/rolter-gateway/src/mcp_policy.rs::a_governed_server_serves_only_the_tools_its_groups_list`<br />`crates/rolter-gateway/src/mcp_proxy.rs::insufficient_scope_from_an_oauth_server_is_the_step_up_answer`<br />`crates/rolter-gateway/tests/integration.rs::mcp_proxy_binds_virtual_key_owner_to_server_scopes_and_bearer`<br />`crates/rolter-gateway/tests/integration.rs::mcp_proxy_refuses_a_content_encoded_body_to_a_governed_server`
+- **Evidence:** `crates/rolter-gateway/src/mcp_proxy.rs::proxy_replaces_client_auth_and_preserves_path_query_and_body`<br />`crates/rolter-gateway/src/mcp_policy.rs::a_governed_server_serves_only_the_tools_its_groups_list`<br />`crates/rolter-gateway/src/mcp_proxy.rs::insufficient_scope_from_an_oauth_server_is_the_step_up_answer`<br />`crates/rolter-gateway/tests/integration.rs::mcp_proxy_binds_virtual_key_owner_to_server_scopes_and_bearer`<br />`crates/rolter-gateway/tests/integration.rs::mcp_proxy_refuses_a_content_encoded_body_to_a_governed_server`<br />`crates/rolter-gateway/src/mcp_proxy.rs::a_legacy_sse_call_answered_202_is_accepted_with_its_reply_on_the_stream`<br />`crates/rolter-gateway/src/mcp_proxy.rs::a_body_forwarded_unread_is_counted_and_recorded_as_unread`
 
 ### Identity
 

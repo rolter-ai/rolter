@@ -168,10 +168,26 @@ async fn proxy(
     } else {
         body
     };
-    let read = if is_post {
+    // an encoded body to an ungoverned server is forwarded as it came (#3475),
+    // so it is not parsed: its bytes are not the JSON-RPC the server reads
+    let encoded = is_post && is_encoded(&headers);
+    let read = if is_post && !encoded {
         crate::mcp_policy::Read::of(&body, rules.any(), state.mcp_events.enabled())
     } else {
         crate::mcp_policy::Read::Skipped
+    };
+    // a body forwarded to an ungoverned server without being read: its calls
+    // cannot be itemised, so it is counted, and recorded as one `unread` row
+    // (#3528). a body is read for an ungoverned server only when the MCP log
+    // wants its calls, so only then can one be found unparseable
+    let unread = if !is_post || rules.any() || body.is_empty() {
+        None
+    } else if encoded {
+        Some("encoded")
+    } else if matches!(read, crate::mcp_policy::Read::Unreadable) {
+        Some("unparseable")
+    } else {
+        None
     };
     // the calls the body holds are recorded in the MCP tool-call log (#2395):
     // by the refusal that stops the request, or by the reply once it is
@@ -338,7 +354,7 @@ async fn proxy(
     // the parsed body can be many times the size of the bytes, so what the
     // log needs is taken out of it and the rest is released before the wait on
     // the upstream
-    let calls = pending_calls(&state, read, keep_arguments, &context);
+    let mut calls = pending_calls(&state, read, keep_arguments, &context);
 
     let Some(url) = downstream_url(&server.url, tail.as_deref(), query) else {
         return error(
@@ -347,6 +363,10 @@ async fn proxy(
             "mcp_server_invalid",
         );
     };
+    if let Some(reason) = unread {
+        state.metrics.observe_mcp_unread(reason);
+        calls.extend(PendingCall::unread(&state.mcp_events, &context));
+    }
     let mut headers = end_to_end_headers(headers);
     if list_filter.is_some() {
         // a compressed reply cannot be narrowed
@@ -1029,7 +1049,19 @@ mod tests {
         reply: &'static str,
         body: &str,
     ) -> (StatusCode, Vec<crate::mcp_log::McpEvent>) {
+        recorded_on("streamable_http", tools, status, reply, body).await
+    }
+
+    /// [`recorded`] for a server on `transport`
+    async fn recorded_on(
+        transport: &str,
+        tools: &[&str],
+        status: u16,
+        reply: &'static str,
+        body: &str,
+    ) -> (StatusCode, Vec<crate::mcp_log::McpEvent>) {
         let mut config = with_group(tools);
+        config.mcp_servers[0].transport = transport.to_string();
         config.mcp_servers[0].url = replying(status, reply).await;
         let mut state = AppState::new(&config);
         let (sink, mut events) =
@@ -1201,6 +1233,102 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
     }
 
+    /// #3528: a body forwarded to an ungoverned server without being read is
+    /// counted by why, and with the MCP log on it is one `unread` row with no
+    /// tool; a failure the HTTP layer reports stays that failure
+    #[tokio::test]
+    async fn a_body_forwarded_unread_is_counted_and_recorded_as_unread() {
+        async fn send(
+            upstream: u16,
+            encoding: Option<&'static str>,
+            body: &'static [u8],
+            logging: bool,
+        ) -> (String, Vec<crate::mcp_log::McpEvent>) {
+            let mut config = config("user-1", &["tools:execute"]);
+            config.mcp_servers[0].url = replying(upstream, "{}").await;
+            let mut state = AppState::new(&config);
+            let metrics = state.metrics.clone();
+            let (sink, mut events) =
+                crate::mcp_log::McpEventSink::capturing(std::sync::Arc::new(Default::default()));
+            if logging {
+                state.mcp_events = sink;
+            }
+            let mut headers = bearer();
+            if let Some(encoding) = encoding {
+                headers.insert(header::CONTENT_ENCODING, HeaderValue::from_static(encoding));
+            }
+            let response = post_with(state, headers, Bytes::from_static(body)).await;
+            assert_eq!(response.status().as_u16(), upstream);
+            let _ = axum::body::to_bytes(response.into_body(), 4096).await;
+            let mut rows = Vec::new();
+            while let Ok(event) = events.try_recv() {
+                rows.push(event);
+            }
+            (metrics.render(), rows)
+        }
+        let counted = |text: &str, reason: &str| {
+            text.lines()
+                .find(|line| {
+                    line.starts_with(&format!(
+                        "rolter_mcp_unread_bodies_total{{reason=\"{reason}\"}} "
+                    ))
+                })
+                .and_then(|line| line.rsplit(' ').next())
+                .map(str::to_string)
+        };
+        let gzip: &[u8] = b"\x1f\x8b\x08\x00 compressed tools/call";
+        let (text, rows) = send(200, Some("gzip"), gzip, true).await;
+        assert_eq!(counted(&text, "encoded").as_deref(), Some("1"), "{text}");
+        assert_eq!(
+            counted(&text, "unparseable").as_deref(),
+            Some("0"),
+            "{text}"
+        );
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            (rows[0].tool.as_str(), rows[0].status, rows[0].outcome),
+            ("", "success", "unread")
+        );
+        assert!(!rows[0].notification);
+
+        let (text, rows) = send(200, None, b"{ nope tools/call", true).await;
+        assert_eq!(
+            counted(&text, "unparseable").as_deref(),
+            Some("1"),
+            "{text}"
+        );
+        assert_eq!((rows[0].status, rows[0].outcome), ("success", "unread"));
+
+        // with the log off an encoded body is still counted, and nothing reads
+        // one that is not JSON
+        let (text, rows) = send(200, Some("gzip"), gzip, false).await;
+        assert_eq!(counted(&text, "encoded").as_deref(), Some("1"), "{text}");
+        assert!(rows.is_empty());
+        let (text, _) = send(200, None, b"{ nope tools/call", false).await;
+        assert_eq!(
+            counted(&text, "unparseable").as_deref(),
+            Some("0"),
+            "{text}"
+        );
+
+        let (_, rows) = send(502, Some("gzip"), gzip, true).await;
+        assert_eq!((rows[0].status, rows[0].outcome), ("transport_error", ""));
+        // a body that is read and holds no call is neither counted nor a row
+        let (text, rows) = send(
+            200,
+            None,
+            br#"{"jsonrpc":"2.0","id":1,"method":"ping"}"#,
+            true,
+        )
+        .await;
+        assert_eq!(
+            counted(&text, "unparseable").as_deref(),
+            Some("0"),
+            "{text}"
+        );
+        assert!(rows.is_empty());
+    }
+
     /// #3466: one refused call refuses the batch whole. Only the refusal is a
     /// row: the allowed call beside it never reached the server, so there is no
     /// call to record.
@@ -1261,6 +1389,38 @@ mod tests {
             (rows[0].status, rows[0].notification),
             ("auth_denied", false)
         );
+    }
+
+    /// #3529: a legacy `sse` server answers the `POST` `202` and sends the reply
+    /// on its stream, so the call is `accepted`, not a transport error. A `202`
+    /// whose body does carry the reply is judged by it, and a streamable-HTTP
+    /// server owes the reply in its answer, so there a bare `202` stays a
+    /// failure.
+    #[tokio::test]
+    async fn a_legacy_sse_call_answered_202_is_accepted_with_its_reply_on_the_stream() {
+        let call =
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_issue"}}"#;
+        let (status, rows) = recorded_on("sse", &["get_issue"], 202, "Accepted", call).await;
+        assert_eq!(status, StatusCode::ACCEPTED);
+        assert_eq!(
+            (rows[0].status, rows[0].outcome, rows[0].notification),
+            ("success", "accepted", false)
+        );
+        let row = serde_json::to_value(&rows[0]).unwrap();
+        assert_eq!(
+            (&row["outcome"], &row["error"]),
+            (&serde_json::json!("accepted"), &serde_json::json!(""))
+        );
+
+        let rpc_error = r#"{"jsonrpc":"2.0","id":1,"error":{"code":-32602,"message":"bad"}}"#;
+        let (_, rows) = recorded_on("sse", &["get_issue"], 202, rpc_error, call).await;
+        assert_eq!((rows[0].status, rows[0].outcome), ("error", ""));
+
+        let (_, rows) = recorded_on("streamable_http", &["get_issue"], 202, "", call).await;
+        assert_eq!((rows[0].status, rows[0].outcome), ("transport_error", ""));
+        // every other row leaves the field out, for a table without `051`
+        let row = serde_json::to_value(&rows[0]).unwrap();
+        assert!(row.get("outcome").is_none(), "{row}");
     }
 
     /// #1403: a tool outside the organization's groups is refused before
