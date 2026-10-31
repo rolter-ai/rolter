@@ -34,6 +34,7 @@ arc-swap.workspace = true
 dashmap.workspace = true
 crossbeam-queue.workspace = true
 parking_lot.workspace = true
+rand.workspace = true
 zeromq.workspace = true
 rmpv.workspace = true
 anyhow.workspace = true
