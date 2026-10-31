@@ -108,7 +108,7 @@ redis = { version = "1.7", default-features = false, features = [
 async-trait = "0.1"
 arc-swap = "1"
 dashmap = "6"
-parking_lot = "0.12"
+parking_lot = "0.13"
 crossbeam-queue = "0.3"
 zeromq = "0.6"
 rmpv = "1.3"
