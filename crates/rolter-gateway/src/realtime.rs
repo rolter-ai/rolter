@@ -19,7 +19,7 @@
 // spec-ref: openai-realtime, websocket
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use axum::extract::{
     ws::{close_code, CloseFrame, Message, Utf8Bytes, WebSocket, WebSocketUpgrade},
@@ -28,6 +28,7 @@ use axum::extract::{
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use futures_util::{SinkExt, StreamExt};
+use rand::RngExt;
 use rolter_balancer::RouteContext;
 use serde::Deserialize;
 use tokio_tungstenite::{
@@ -483,7 +484,6 @@ impl<'w, 'a> CandidateWalk<'w, 'a> {
         context: &'w RouteContext<'w>,
         key_meta: Option<&'w crate::state::KeyMeta>,
     ) -> Self {
-        let started = Instant::now();
         let mut walk = Self {
             state,
             entry,
@@ -506,9 +506,13 @@ impl<'w, 'a> CandidateWalk<'w, 'a> {
             }
             return walk;
         }
+        // a session has no elapsed request time to draw from, as the HTTP
+        // path's `jitter` does: a few hundred nanoseconds after `Instant::now()`
+        // that would cluster near zero and favour the first variant, so the
+        // weighted pick takes a real uniform draw instead
         let primary = entry
             .route
-            .sample_variant(crate::handlers::jitter(started))
+            .sample_variant(rand::rng().random::<f64>())
             .unwrap_or(0);
         walk.sampled = entry
             .route

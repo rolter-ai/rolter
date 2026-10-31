@@ -80,12 +80,11 @@ async fn a_fifty_fifty_route_leads_with_both_variants_across_sessions() {
         client.close(None).await.unwrap();
     }
 
-    assert!(
-        stable_sessions.load(Ordering::SeqCst) > 0,
-        "stable never led a session"
-    );
-    assert!(
-        canary_sessions.load(Ordering::SeqCst) > 0,
-        "canary never led a session"
-    );
+    // a fair draw puts 32 of 64 on each side with a standard deviation of 4;
+    // 16 is four deviations out, so a pass is near-certain for a weighted pick
+    // and a draw biased toward the first variant fails it
+    let stable = stable_sessions.load(Ordering::SeqCst);
+    let canary = canary_sessions.load(Ordering::SeqCst);
+    assert!(stable >= 16, "stable led {stable} of 64 sessions");
+    assert!(canary >= 16, "canary led {canary} of 64 sessions");
 }

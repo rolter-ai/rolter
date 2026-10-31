@@ -112,6 +112,9 @@ impl Drop for ScratchDatabase {
     }
 }
 
+/// One forwarded request: its query pairs and its body.
+type Captured = (Vec<(String, String)>, String);
+
 /// Forward every request to `base` with `database` set, so the control plane's
 /// unqualified `from request_logs` reads the scratch database.
 #[derive(Clone)]
@@ -119,7 +122,7 @@ struct Target {
     base: String,
     database: String,
     client: reqwest::Client,
-    queries: Arc<Mutex<Vec<(Vec<(String, String)>, String)>>>,
+    queries: Arc<Mutex<Vec<Captured>>>,
 }
 
 /// The incoming query pairs are re-attached as query parameters of a request to
