@@ -477,7 +477,7 @@ connection-pool series it exports one gauge of its configuration's health:
     - `misread`: a stored row the control plane could read only by guessing, or left out, such as a budget period it does not know.
     - `bootstrap_shadow`: an organization's provider, route or provider group that shares a name with a readonly row of the control plane's config file, and so replaces the file's row for that organization's keys.
 
-    The label is the kind only, never a row's name or organization. The gauge reports nothing until the control plane has built its first snapshot, and a kind drops back to `0` from the first snapshot built after its last problem is fixed. Alert on a non-zero `invalid`, since configuration changes stop reaching the gateways; the other kinds name rows to look at in the dashboard's configuration problems.
+    The label is the kind only, never a row's name or organization. The gauge reports nothing until the control plane's first sample, which runs on the first snapshot build or the first `304` after startup, and a kind drops back to `0` from the first sample after its last problem is fixed. Samples are single-flight, a newer config version coalesces into the running one, and a failed store read retries after 30 seconds rather than on every gateway poll. Alert on a non-zero `invalid`, since configuration changes stop reaching the gateways; the other kinds name rows to look at in the dashboard's configuration problems.
 
   </Accordion>
 </AccordionGroup>
