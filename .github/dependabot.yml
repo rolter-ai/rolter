@@ -35,10 +35,16 @@ updates:
         update-types: [minor, patch]
     open-pull-requests-limit: 5
 
+  # every step that uses github/codeql-action must run the same version, or
+  # analyze refuses the config init wrote; ungrouped, dependabot bumps init,
+  # analyze and upload-sarif in three PRs that can each only fail
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
+    groups:
+      codeql-action:
+        patterns: ["github/codeql-action", "github/codeql-action/*"]
     open-pull-requests-limit: 5
 
   # `uvx` tools run in CI (zizmor, maturin) are pinned in this requirements file
