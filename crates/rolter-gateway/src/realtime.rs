@@ -28,6 +28,7 @@ use axum::extract::{
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use futures_util::{SinkExt, StreamExt};
+use rand::RngExt;
 use rolter_balancer::RouteContext;
 use serde::Deserialize;
 use tokio_tungstenite::{
@@ -505,7 +506,14 @@ impl<'w, 'a> CandidateWalk<'w, 'a> {
             }
             return walk;
         }
-        let primary = entry.route.sample_variant(0.0).unwrap_or(0);
+        // a session has no elapsed request time to draw from, as the HTTP
+        // path's `jitter` does: a few hundred nanoseconds after `Instant::now()`
+        // that would cluster near zero and favour the first variant, so the
+        // weighted pick takes a real uniform draw instead
+        let primary = entry
+            .route
+            .sample_variant(rand::rng().random::<f64>())
+            .unwrap_or(0);
         walk.sampled = entry
             .route
             .variants

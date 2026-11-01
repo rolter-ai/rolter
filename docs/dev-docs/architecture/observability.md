@@ -353,22 +353,23 @@ And the config problems, as an observable gauge (#3542):
 | `rolter_config_problems` | what `GET /api/v1/config/problems` lists for the deployment, by kind | `kind` (`omitted` / `sanitized` / `invalid` / `misread` / `bootstrap_shadow`) |
 
 `build_snapshot` samples it through `sample_config_problems`, once per
-`config_version`: the first build of a version claims it
-(`ConfigProblemGauge::claim`), so a fleet of gateways polling one version costs
-one sample, and a `304` costs none. The sample runs beside the snapshot, never
-in it, since it reads the store's records a second time. Each kind is counted
-from where its lines come from, never from their wording: `omitted` is the
-sanitizer's `OmittedEntry` records, `sanitized` its other lines, `invalid` the
-lines of `validate_snapshot`, all for the config as the store loaded it before
-any format's down-step; `misread` and `bootstrap_shadow` are the store's
-`ConfigProblem` records by their `kind`, `bootstrap_shadow` being the overlap
-`MergedConfigStore` reports (#3516). A store that refuses to load counts its
-records alone, as the endpoint lists them alone. A sample that cannot read the
-records gives its claim back (`release`), and a slower sample of an older version
-never overwrites a newer one. Nothing is reported before the first sample, so
-"not yet sampled" never reads as "no problems". The only label is the kind: a
-row's name or org would make a series per row and put tenant names into the
-metrics pipeline.
+`config_version`. `ConfigProblemSampler` allows one running sample and coalesces
+a newer version into it, so a fleet of gateways polling one version costs one
+sample. The first `304` after startup also loads the config for a sample, covering
+a restart while the fleet is already current; later `304`s cost no config read.
+The sample runs beside the snapshot, never in it, since it reads the store's
+records a second time. Each kind is counted from where its lines come from,
+never from their wording: `omitted` is the sanitizer's `OmittedEntry` records,
+`sanitized` its other lines, `invalid` the lines of `validate_snapshot`, all for
+the config as the store loaded it before any format's down-step; `misread` and
+`bootstrap_shadow` are the store's `ConfigProblem` records by their `kind`,
+`bootstrap_shadow` being the overlap `MergedConfigStore` reports (#3516). A store
+that refuses to load counts its records alone, as the endpoint lists them alone.
+A failed records read retries after 30 seconds, and a slower sample of an older
+version never overwrites a newer one. Nothing is reported before the first
+sample, so "not yet sampled" never reads as "no problems". The only label is the
+kind: a row's name or org would make a series per row and put tenant names into
+the metrics pipeline.
 
 One pool serves `/internal/snapshot`, the whole CRUD surface and every RBAC
 membership lookup, so a ceiling that is too low presents as "the control plane

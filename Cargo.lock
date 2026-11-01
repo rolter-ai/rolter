@@ -3360,6 +3360,7 @@ dependencies = [
  "libc",
  "ort",
  "parking_lot 0.13.0",
+ "rand 0.10.3",
  "redis",
  "regex",
  "reqwest",
