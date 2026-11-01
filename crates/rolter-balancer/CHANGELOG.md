@@ -6,6 +6,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+## [1.0.0](https://github.com/rolter-ai/rolter/compare/rolter-balancer-v0.1.0...rolter-balancer-v1.0.0) - 2026-11-01
+
+### Bug Fixes
+- *(core)* snapshot format follow-ups [#3347] ([#3438](https://github.com/rolter-ai/rolter/pull/3438)) by [@ormeilu](https://github.com/ormeilu)
+- *(gateway)* balance cache-aware routes and expose provider queues [#1851] ([#1863](https://github.com/rolter-ai/rolter/pull/1863)) by [@ormeilu](https://github.com/ormeilu)
+- *(balancer)* warm up unsampled targets so adaptive routing can engage [#1645] ([#1701](https://github.com/rolter-ai/rolter/pull/1701)) by [@ormeilu](https://github.com/ormeilu)
+
+### CI/CD
+- isolate the sso e2e journeys and run the examples tests [#3368] ([#3474](https://github.com/rolter-ai/rolter/pull/3474)) by [@ormeilu](https://github.com/ormeilu)
+
+### Documentation
+- consolidate both doc trees under docs/ as user-docs and dev-docs [#1516] ([#1517](https://github.com/rolter-ai/rolter/pull/1517)) by [@ormeilu](https://github.com/ormeilu)
+- record what 1.0.0 guarantees on each api surface ([#1427](https://github.com/rolter-ai/rolter/pull/1427)) by [@ormeilu](https://github.com/ormeilu)
+
+### Features
+- *(gateway)* record request outcomes, admit one breaker probe [#3307] ([#3402](https://github.com/rolter-ai/rolter/pull/3402)) by [@ormeilu](https://github.com/ormeilu)
+
+### Performance
+- *(gateway)* eligibility-aware picks, prompt-affinity skip and hot-path benches [#1942, #1929, #1054, #1932, #1933, #1969] ([#3255](https://github.com/rolter-ai/rolter/pull/3255)) by [@ormeilu](https://github.com/ormeilu)
 ## [0.0.11](https://github.com/rolter-ai/rolter/compare/rolter-balancer-v0.0.10...rolter-balancer-v0.0.11) - 2026-08-13
 
 ### Features
