@@ -336,12 +336,13 @@ sets beside the configured weights:
 
 The assigned and sampled counts need rows grouped by other keys than the
 answered ones, and a variant that only failed over (or was only ever skipped)
-has no answered row at all, so the select is a `union all` of the answered
-rollup, an assigned rollup and a sampled rollup over the same window and
-filters, summed per `(org_id, model, variant)`. The organization is
-part of every key (#3548), as in by-model since #3486: two organizations may
-each have a route of one name, and a caller who reads both gets each one's
-variants as their own rows. A row without
+has no answered row at all. One scan of `request_logs` therefore expands each
+row into the answered, assigned and sampled roles it can prove with `arrayJoin`;
+conditional aggregates fold those roles back into one row per
+`(org_id, model, variant)` (#3561). The organization is part of every key
+(#3548), as in by-model since #3486: two organizations may each have a route of
+one name, and a caller who reads both gets each one's variants as their own
+rows. A row without
 `first_variant` (written before `048`, or by an older gateway) counts for the
 variant that answered it when it has no `fallback_reason`, for no variant when
 it failed over, and a classic row counts under the empty variant. Without
@@ -349,7 +350,7 @@ it failed over, and a classic row counts under the empty variant. Without
 `048` the count is `null` and the sheet leaves its column out. The sampled
 count reads only rows that name their sample and classic rows: a variant row
 written before `050` could have been sampled for any variant, so it is left
-out, and without `050` the count is `null` and its half is not selected.
+out, and without `050` the count is `null` and its role is not selected.
 
 Realtime turn rows carry the same fields (#3543). A session walks its dial list
 one connect at a time (`CandidateWalk` in `realtime.rs`) and can fail over
@@ -358,10 +359,10 @@ the first dial, `CandidateWalk` the variant it led with, and both ride
 `SelectedSession` into `SessionMeter`, whose `base_row` writes them on every
 turn row of the session. A session assigned one variant and pinned to another
 therefore counts for the first in `assigned_requests` and for the second in
-`requests`, as an HTTP request that failed over does. The walk leads with
-`sample_variant(0.0)`, not a weighted draw, so a realtime session's sampled
-variant is the route's first variant with a non-zero weight (#3553 tracks
-sampling it by weight).
+`requests`, as an HTTP request that failed over does. The walk draws its
+primary once per session with `route.sample_variant` and the same jitter source
+as the HTTP forward loop (#3553), then keeps that sampled variant through any
+establishment failover and for every turn row.
 Tests: `by_variant_*` in `analytics.rs`; the `by_variant_*048*`,
 `by_variant_*050*`, `by_variant_counts_the_sampled_primary_*`,
 `by_variant_counts_a_failover_*` and `by_variant_lists_a_variant_*` cases of

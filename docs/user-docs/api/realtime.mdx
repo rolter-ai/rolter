@@ -20,7 +20,9 @@ description: "Connect to the OpenAI-compatible Realtime WebSocket relay at /v1/r
 `/v1/realtime` is a WebSocket relay compatible with the OpenAI Realtime API.
 Rolter authenticates the request and selects an upstream before accepting the
 client's WebSocket upgrade, then pins that upstream and its provider key for
-the life of the session.
+the life of the session. On a route with weighted variants, rolter draws the
+primary variant once per session using those weights; establishment failover
+can still pin the session to another variant, but it never draws again.
 
 ## Connect
 
