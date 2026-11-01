@@ -211,7 +211,10 @@ fn api_error_message(err: ApiError) -> String {
         ApiError::Core(e) => match &e {
             rolter_core::Error::NotFound(_) | rolter_core::Error::Config(_) => e.to_string(),
             _ => {
-                tracing::error!(error = %e, "sso error occurred");
+                tracing::error!(
+                    error = %rolter_core::redact::redact_urls_in_text(&e.to_string()),
+                    "sso error occurred"
+                );
                 crate::crud::INTERNAL_ERROR.to_string()
             }
         },
@@ -2178,6 +2181,60 @@ mod tests {
         assert_eq!(
             api_error_message(config_err),
             "config error: invalid client_id"
+        );
+    }
+
+    #[tokio::test]
+    async fn api_error_message_redacts_urls_in_tracing_logs() {
+        use parking_lot::Mutex;
+        use std::sync::Arc;
+        use tracing_subscriber::layer::SubscriberExt;
+
+        #[derive(Clone, Default)]
+        struct Captured(Arc<Mutex<Vec<String>>>);
+
+        impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Captured {
+            fn on_event(
+                &self,
+                event: &tracing::Event<'_>,
+                _: tracing_subscriber::layer::Context<'_, S>,
+            ) {
+                struct Fields(String);
+                impl tracing::field::Visit for Fields {
+                    fn record_debug(
+                        &mut self,
+                        field: &tracing::field::Field,
+                        value: &dyn std::fmt::Debug,
+                    ) {
+                        self.0.push_str(&format!("{}={value:?} ", field.name()));
+                    }
+                }
+                let mut fields = Fields(String::new());
+                event.record(&mut fields);
+                self.0.lock().push(fields.0);
+            }
+        }
+
+        let secret = format!("pw-{}", uuid::Uuid::new_v4().simple());
+        let store_err = ApiError::Core(rolter_core::Error::Store(format!(
+            "connection failed to postgres://user:{secret}@internal.db:5432/db"
+        )));
+
+        let captured = Captured::default();
+        let subscriber = tracing_subscriber::registry().with(captured.clone());
+
+        let _guard = tracing::subscriber::set_default(subscriber);
+        let _ = api_error_message(store_err);
+        drop(_guard);
+
+        let logs = captured.0.lock().join("\n");
+        assert!(
+            !logs.contains(&secret),
+            "sensitive credentials were leaked in sso error tracing logs: {logs}"
+        );
+        assert!(
+            logs.contains("***@internal.db"),
+            "sensitive URL was not redacted in sso error tracing logs: {logs}"
         );
     }
 }
