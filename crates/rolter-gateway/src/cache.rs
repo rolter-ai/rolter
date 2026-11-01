@@ -84,7 +84,7 @@ impl ResponseCache {
                 memory: None,
             },
             Err(err) => {
-                tracing::warn!(error = %err, "invalid redis url; response cache disabled");
+                tracing::warn!(error = %rolter_core::redact::redact_urls_in_text(&err.to_string()), "invalid redis url; response cache disabled");
                 Self::disabled()
             }
         }

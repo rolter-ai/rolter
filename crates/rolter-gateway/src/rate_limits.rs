@@ -238,7 +238,7 @@ impl RateLimiter {
         match ReconnectingRedis::new(redis_url, RedisConsumer::RateLimits.label()) {
             Ok(redis) => Self { redis: Some(redis) },
             Err(err) => {
-                tracing::warn!(error = %err, "invalid redis url; rate limiting disabled");
+                tracing::warn!(error = %rolter_core::redact::redact_urls_in_text(&err.to_string()), "invalid redis url; rate limiting disabled");
                 Self::disabled()
             }
         }
@@ -370,7 +370,7 @@ impl RateLimiter {
         let verdict: (usize, u8) = match invocation.invoke_async(&mut conn).await {
             Ok(verdict) => verdict,
             Err(err) => {
-                tracing::warn!(error = %err, "rate-limit admission failed; failing open");
+                tracing::warn!(error = %rolter_core::redact::redact_urls_in_text(&err.to_string()), "rate-limit admission failed; failing open");
                 redis.stats().on_fail_open();
                 return None;
             }
@@ -398,7 +398,7 @@ impl RateLimiter {
             .expire(&key, BUCKET_TTL_SECS as i64)
             .ignore();
         if let Err(err) = pipe.query_async::<()>(&mut conn).await {
-            tracing::warn!(error = %err, "failed to record route token rate-limit count");
+            tracing::warn!(error = %rolter_core::redact::redact_urls_in_text(&err.to_string()), "failed to record route token rate-limit count");
         }
     }
 
@@ -433,7 +433,7 @@ impl RateLimiter {
         }
         if has_tok {
             if let Err(err) = pipe.query_async::<()>(&mut conn).await {
-                tracing::warn!(error = %err, "failed to record token rate-limit count");
+                tracing::warn!(error = %rolter_core::redact::redact_urls_in_text(&err.to_string()), "failed to record token rate-limit count");
             }
         }
     }
@@ -521,6 +521,56 @@ mod tests {
     fn bucket_key_partitions_by_scope_kind_and_window() {
         let l = limit(BudgetScope::Key, "vk-9", Some(60), None);
         assert_eq!(bucket_key(&l, "req", 12345), "rolter:rl:key:vk-9:req:12345");
+    }
+
+    /// The startup warning for a redis url that fails to parse goes through
+    /// the redactor, so a password in the url never reaches the log
+    #[test]
+    fn an_invalid_redis_url_warning_keeps_the_password_out() {
+        use std::sync::Arc;
+        use tracing_subscriber::layer::SubscriberExt;
+
+        #[derive(Clone, Default)]
+        struct Captured(Arc<parking_lot::Mutex<Vec<String>>>);
+        impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Captured {
+            fn on_event(
+                &self,
+                event: &tracing::Event<'_>,
+                _: tracing_subscriber::layer::Context<'_, S>,
+            ) {
+                struct Fields(String);
+                impl tracing::field::Visit for Fields {
+                    fn record_debug(
+                        &mut self,
+                        field: &tracing::field::Field,
+                        value: &dyn std::fmt::Debug,
+                    ) {
+                        self.0.push_str(&format!("{}={value:?} ", field.name()));
+                    }
+                }
+                let mut fields = Fields(String::new());
+                event.record(&mut fields);
+                self.0.lock().push(fields.0);
+            }
+        }
+
+        // built at run time so no credential-shaped literal sits in the source
+        let secret = format!("pw{}", uuid::Uuid::new_v4().simple());
+        let captured = Captured::default();
+        let subscriber = tracing_subscriber::registry().with(captured.clone());
+        let limiter = tracing::subscriber::with_default(subscriber, || {
+            // a non-numeric port fails the parse, after the userinfo
+            RateLimiter::new(&format!("redis://user:{secret}@redis:notaport/0"))
+        });
+        assert!(
+            limiter.redis.is_none(),
+            "an unparsable url disables the limiter"
+        );
+        let seen = captured.0.lock().join("\n");
+        assert!(seen.contains("rate limiting disabled"), "{seen}");
+        // the message names neither the secret nor the line, so a failure
+        // cannot itself print the credential
+        assert!(!seen.contains(&secret), "a test credential reached the log");
     }
 
     #[tokio::test]

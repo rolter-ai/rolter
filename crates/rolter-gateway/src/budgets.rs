@@ -103,7 +103,7 @@ impl BudgetEnforcer {
         match ReconnectingRedis::new(redis_url, RedisConsumer::Budgets.label()) {
             Ok(redis) => Self { redis: Some(redis) },
             Err(err) => {
-                tracing::warn!(error = %err, "invalid redis url; budget enforcement disabled");
+                tracing::warn!(error = %rolter_core::redact::redact_urls_in_text(&err.to_string()), "invalid redis url; budget enforcement disabled");
                 Self::disabled()
             }
         }
