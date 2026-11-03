@@ -114,6 +114,10 @@ pub(crate) enum ApiError {
     /// parameters the endpoint takes (`limit=abc`, a malformed id), rendered with
     /// the stable code [`INVALID_QUERY`]
     InvalidQuery(String),
+    /// a 400 refusing the request as a whole rather than one field of it, with
+    /// a `code` a client can branch on (#3517). Same contract as
+    /// [`ApiError::CodedConflict`]: `code` is part of the API and never renamed
+    CodedBadRequest { code: &'static str, message: String },
     /// missing or invalid credentials (401)
     Unauthenticated,
     /// authenticated but lacking the required role at the scope (403)
@@ -147,6 +151,7 @@ impl IntoResponse for ApiError {
         };
         let code = match &self {
             Self::CodedConflict { code, .. }
+            | Self::CodedBadRequest { code, .. }
             | Self::CodedForbidden { code, .. }
             | Self::CodedInternal { code, .. }
             | Self::BadGateway { code, .. } => Some(*code),
@@ -201,7 +206,8 @@ impl IntoResponse for ApiError {
             Self::BadGateway { message, .. } => (StatusCode::BAD_GATEWAY, message),
             Self::InvalidField { message, .. }
             | Self::InvalidBody(message)
-            | Self::InvalidQuery(message) => (StatusCode::BAD_REQUEST, message),
+            | Self::InvalidQuery(message)
+            | Self::CodedBadRequest { message, .. } => (StatusCode::BAD_REQUEST, message),
             Self::Conflict(message) | Self::CodedConflict { message, .. } => {
                 (StatusCode::CONFLICT, message)
             }
@@ -1051,5 +1057,25 @@ mod error_body_tests {
             .as_str()
             .unwrap()
             .contains("team 42"));
+    }
+
+    /// #3517: a coded 400 renders the shared envelope, `message` and `code`
+    /// and nothing else, so a refusal that used to be built by hand cannot
+    /// drift from every other one.
+    #[tokio::test]
+    async fn a_coded_bad_request_is_a_400_with_its_code() {
+        let (status, body) = rendered(ApiError::CodedBadRequest {
+            code: "config_export_needs_org",
+            message: "export one organization".into(),
+        })
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            body,
+            serde_json::json!({"error": {
+                "code": "config_export_needs_org",
+                "message": "export one organization",
+            }})
+        );
     }
 }

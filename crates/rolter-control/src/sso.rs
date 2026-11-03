@@ -227,6 +227,7 @@ fn api_error_message(err: ApiError) -> String {
         | ApiError::KekUnavailable(msg)
         | ApiError::InvalidBody(msg)
         | ApiError::InvalidQuery(msg)
+        | ApiError::CodedBadRequest { message: msg, .. }
         | ApiError::CodedForbidden { message: msg, .. } => msg,
         ApiError::Unauthenticated => "unauthenticated".to_string(),
         ApiError::Forbidden => "forbidden".to_string(),

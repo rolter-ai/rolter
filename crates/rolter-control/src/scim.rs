@@ -913,7 +913,8 @@ impl From<ApiError> for ScimError {
             }
             ApiError::InvalidField { message, .. }
             | ApiError::InvalidBody(message)
-            | ApiError::InvalidQuery(message) => Self::invalid(message),
+            | ApiError::InvalidQuery(message)
+            | ApiError::CodedBadRequest { message, .. } => Self::invalid(message),
             ApiError::TooManyAttempts(_) => Self::new(
                 StatusCode::TOO_MANY_REQUESTS,
                 None,

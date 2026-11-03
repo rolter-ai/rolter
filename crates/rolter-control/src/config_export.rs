@@ -52,7 +52,7 @@ use axum::routing::get;
 use axum::Router;
 
 #[cfg(feature = "postgres")]
-use crate::crud::ApiResult;
+use crate::crud::{ApiError, ApiResult};
 #[cfg(feature = "postgres")]
 use crate::rbac::{authorize_superadmin, Principal};
 #[cfg(feature = "postgres")]
@@ -1670,17 +1670,6 @@ pub(crate) const CONFIG_EXPORT_NEEDS_ORG: &str = "config_export_needs_org";
 #[cfg(feature = "postgres")]
 pub(crate) const CONFIG_EXPORT_BINDING_SHADOWED: &str = "config_export_binding_shadowed";
 
-/// A 400 in the envelope every refusal renders, with a code a client can
-/// translate.
-#[cfg(feature = "postgres")]
-fn coded_refusal(code: &'static str, message: String) -> Response {
-    (
-        axum::http::StatusCode::BAD_REQUEST,
-        axum::Json(serde_json::json!({"error": {"code": code, "message": message}})),
-    )
-        .into_response()
-}
-
 /// Query of `GET /api/v1/config/export`.
 #[cfg(feature = "postgres")]
 #[derive(serde::Deserialize)]
@@ -1714,12 +1703,18 @@ async fn export_config(
     let document = match export_document_typed(crate::crud::pool(&state), &config, &options).await {
         Ok(document) => document,
         // the same envelope every refusal renders, with a code the dashboard
-        // can translate (#3480)
+        // can translate (#3480, #3517)
         Err(ExportError::NeedsOrganization(message)) => {
-            return Ok(coded_refusal(CONFIG_EXPORT_NEEDS_ORG, message));
+            return Err(ApiError::CodedBadRequest {
+                code: CONFIG_EXPORT_NEEDS_ORG,
+                message,
+            });
         }
         Err(ExportError::ShadowedBinding(message)) => {
-            return Ok(coded_refusal(CONFIG_EXPORT_BINDING_SHADOWED, message));
+            return Err(ApiError::CodedBadRequest {
+                code: CONFIG_EXPORT_BINDING_SHADOWED,
+                message,
+            });
         }
         Err(ExportError::Other(err)) => return Err(err.into()),
     };
