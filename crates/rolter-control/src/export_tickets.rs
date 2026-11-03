@@ -491,7 +491,7 @@ pub(crate) async fn sweep_expired(pool: &sqlx::PgPool, limit: i64) -> rolter_cor
     .bind(limit)
     .execute(pool)
     .await
-    .map_err(|e| rolter_core::Error::Store(e.to_string()))?;
+    .map_err(rolter_store::postgres::store_err)?;
     Ok(res.rows_affected())
 }
 
