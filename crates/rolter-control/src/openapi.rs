@@ -3473,7 +3473,7 @@ fn export_ticket_schemas(p: &Prim) -> Value {
             "required": ["id", "export", "expires_at", "done", "state"],
             "properties": {
                 "id": uuid,
-                "export": {"type": "string", "enum": ["attribution", "timeseries", "invocations", "audit_log", "org_audit_log"]},
+                "export": {"type": "string", "enum": crate::analytics_export::ExportKind::STATUS_NAMES},
                 "expires_at": timestamp,
                 "done": {"type": "boolean", "description": "the state can no longer change"},
                 "state": {
