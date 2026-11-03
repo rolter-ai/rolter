@@ -94,8 +94,11 @@ the docs say to run one replica in that mode or to keep each client on one
 replica (sticky sessions) at the ingress. The memory map lets a ticket go five
 minutes after it can change no more (expired unused, or its download ended),
 so its size follows the exports in flight rather than a day of mints.
-Rows are purged opportunistically, a day after expiry, by the next mint; there
-is no background task for it. The table is read by the control plane only, so
+Rows are purged a day after expiry by the control plane's periodic expiry
+sweep (`expiry_sweep.rs`), beside the other abandoned-flow tables. The first
+version purged on the next mint instead, which left a deployment that stopped
+minting with its last day of rows and charged the delete to a mint's request
+(#3544). The table is read by the control plane only, so
 it has no `bump_config_version()` trigger.
 
 **Never logged.** The secret is a path segment of a route whose request span
