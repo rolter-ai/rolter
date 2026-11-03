@@ -60,7 +60,10 @@ logging are deployment-wide and stay, with one exception: the importer applies
 a `[logging.payload_capture]` table to the whole deployment, so a capture
 limited to keys (which spans orgs) is left out of a per-org file with a
 comment (`scope_to_org` returns that, `render_document` omits it), and the
-re-import then leaves capture alone (`declares_payload_capture`). Anything read by name must be keyed by the org too:
+re-import then leaves capture alone (`declares_payload_capture`). A declared
+`[logging.payload_capture]` or `logging.ui_events` that the `logging_settings` row
+already holds writes nothing, so an unchanged re-import does not bump
+`config_version` (#3577). Anything read by name must be keyed by the org too:
 `with_stored_variants` keys by (project, model), because a model name alone
 hands one org the other's variants. The clash check then runs on what is
 left, so an unscoped export of such a deployment still refuses and names the
