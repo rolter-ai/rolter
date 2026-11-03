@@ -30,6 +30,7 @@ tracing.workspace = true
 tower.workspace = true
 
 [dev-dependencies]
+parking_lot.workspace = true
 criterion.workspace = true
 # aws-lc-rs, the one crypto provider rustls is built with in this workspace; a
 # second one makes every `ClientConfig::builder()` without an explicit provider

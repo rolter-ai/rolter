@@ -12,10 +12,21 @@
 
 use std::path::{Path, PathBuf};
 
-/// Every `.rs` file under the `src/` of the gateway and of `rolter-balancer`.
-/// The balancer runs inside the gateway's request path (every pick of a route
-/// reads it, every completed request writes it), so it is held to the same rule
-/// (#3388).
+/// The workspace crates the gateway binary links, beside the gateway itself.
+/// Each runs inside the request path or under it, so each is held to the same
+/// rule: the balancer is read on every pick and written on every completed
+/// request (#3388), and the proxy, auth and core crates forward, authenticate
+/// and configure every request (#3473). `the_guard_reads_every_linked_crate`
+/// checks this list against the gateway's own `Cargo.toml`.
+const LINKED_CRATES: &[&str] = &[
+    "rolter-auth",
+    "rolter-balancer",
+    "rolter-core",
+    "rolter-proxy",
+];
+
+/// Every `.rs` file under the `src/` of the gateway and of each crate in
+/// [`LINKED_CRATES`].
 fn sources() -> Vec<PathBuf> {
     fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
         for entry in std::fs::read_dir(dir).expect("src/ is readable") {
@@ -30,23 +41,54 @@ fn sources() -> Vec<PathBuf> {
     let mut out = Vec::new();
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
     walk(&manifest.join("src"), &mut out);
-    walk(&manifest.join("../rolter-balancer/src"), &mut out);
+    for name in LINKED_CRATES {
+        walk(&manifest.join("..").join(name).join("src"), &mut out);
+    }
     out.sort();
     out
 }
 
 #[test]
-fn the_guard_reads_the_balancer_as_well() {
+fn the_guard_reads_every_linked_crate() {
     let files = sources();
     for expected in [
+        "rolter-auth/src/lib.rs",
         "rolter-balancer/src/predictor.rs",
+        "rolter-core/src/config_lint.rs",
+        "rolter-core/src/telemetry.rs",
         "rolter-gateway/src/lib.rs",
+        "rolter-proxy/src/pool.rs",
     ] {
         assert!(
             files
                 .iter()
                 .any(|path| path.to_string_lossy().contains(expected)),
             "{expected} is not scanned"
+        );
+    }
+}
+
+/// A workspace crate the gateway starts to depend on is scanned too: every
+/// `rolter-*` dependency in the gateway's `Cargo.toml`, normal or dev, must be
+/// in [`LINKED_CRATES`].
+#[test]
+fn every_workspace_dependency_of_the_gateway_is_scanned() {
+    let manifest =
+        std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml"))
+            .expect("the gateway's Cargo.toml is readable");
+    let mut deps: Vec<&str> = manifest
+        .lines()
+        .map(str::trim)
+        .filter(|line| line.starts_with("rolter-"))
+        .filter_map(|line| line.split(['=', '.', ' ']).next())
+        .collect();
+    deps.sort_unstable();
+    deps.dedup();
+    assert!(!deps.is_empty(), "found no rolter-* dependency");
+    for dep in deps {
+        assert!(
+            LINKED_CRATES.contains(&dep),
+            "the gateway depends on {dep}, which the lock guard does not scan"
         );
     }
 }

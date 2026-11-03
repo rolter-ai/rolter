@@ -560,7 +560,7 @@ pub struct ConfigProblemGauge {
     claimed: std::sync::atomic::AtomicI64,
     /// the version of the counts the gauge reports, `None` before the first
     /// sample, when the gauge reports nothing rather than zero
-    sample: std::sync::Mutex<Option<(i64, ConfigProblemCounts)>>,
+    sample: parking_lot::Mutex<Option<(i64, ConfigProblemCounts)>>,
 }
 
 impl ConfigProblemGauge {
@@ -582,12 +582,8 @@ impl ConfigProblemGauge {
     /// Report `counts` for `version`, unless a sample of a newer version is
     /// already reported.
     pub fn record(&self, version: i64, counts: ConfigProblemCounts) {
-        // the guard only copies a few integers, so a poisoned lock holds a
-        // whole value and is read through rather than failing every sample
-        let mut sample = self
-            .sample
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // parking_lot, so a panic elsewhere cannot poison every later sample
+        let mut sample = self.sample.lock();
         if sample.is_none_or(|(held, _)| held <= version) {
             *sample = Some((version, counts));
         }
@@ -595,10 +591,7 @@ impl ConfigProblemGauge {
 
     /// The version and counts the gauge reports.
     pub fn sampled(&self) -> Option<(i64, ConfigProblemCounts)> {
-        *self
-            .sample
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        *self.sample.lock()
     }
 }
 
@@ -1481,9 +1474,7 @@ mod kill_switch_tests {
     /// `export_enabled` reads process-global env, so the cases that set it must
     /// not interleave with each other or with the pipeline tests.
     fn with_env(value: Option<&str>, f: impl FnOnce()) {
-        let _guard = super::pipeline_test_lock()
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let _guard = super::pipeline_test_lock().lock();
         match value {
             Some(v) => std::env::set_var(TELEMETRY_ENABLED_ENV, v),
             None => std::env::remove_var(TELEMETRY_ENABLED_ENV),
@@ -1522,9 +1513,7 @@ mod kill_switch_tests {
     fn the_switch_beats_a_configured_endpoint() {
         // the whole point of #812: "off" must not depend on remembering to
         // leave every per-signal endpoint unset
-        let _guard = super::pipeline_test_lock()
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let _guard = super::pipeline_test_lock().lock();
         std::env::set_var("OTEL_EXPORTER_OTLP_ENDPOINT", "http://127.0.0.1:4317");
         std::env::set_var(TELEMETRY_ENABLED_ENV, "false");
 
@@ -1623,9 +1612,7 @@ mod carrier_tests {
     fn the_no_otlp_path_extracts_and_injects_nothing() {
         // the bar the issue sets: with no pipeline installed, propagation is
         // inert and costs nothing beyond an atomic load
-        let _guard = super::pipeline_test_lock()
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let _guard = super::pipeline_test_lock().lock();
         assert!(!is_active());
         assert!(inject_current().is_empty());
         assert!(current_trace_id().is_none());
@@ -1636,9 +1623,9 @@ mod carrier_tests {
 /// ones that assert it is off, since cargo runs them on parallel threads in one
 /// process.
 #[cfg(test)]
-fn pipeline_test_lock() -> &'static std::sync::Mutex<()> {
-    static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
-    LOCK.get_or_init(|| std::sync::Mutex::new(()))
+fn pipeline_test_lock() -> &'static parking_lot::Mutex<()> {
+    static LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+    &LOCK
 }
 
 #[cfg(all(test, feature = "otlp"))]
@@ -1658,9 +1645,7 @@ mod propagation_tests {
     fn with_pipeline<T>(f: impl FnOnce() -> T) -> T {
         use opentelemetry::trace::TracerProvider as _;
 
-        let _guard = super::pipeline_test_lock()
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let _guard = super::pipeline_test_lock().lock();
         let provider = opentelemetry_sdk::trace::SdkTracerProvider::builder().build();
         let tracer = provider.tracer("test");
         opentelemetry::global::set_text_map_propagator(
@@ -1794,9 +1779,7 @@ mod log_correlation_tests {
 
     #[test]
     fn an_exported_log_record_names_the_span_it_came_from() {
-        let _guard = super::pipeline_test_lock()
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let _guard = super::pipeline_test_lock().lock();
 
         let exporter = InMemoryLogExporter::default();
         let logger_provider = SdkLoggerProvider::builder()
@@ -1851,9 +1834,7 @@ mod log_correlation_tests {
     fn no_endpoint_means_no_log_exporter() {
         // the same bar traces and metrics meet: with no OTLP endpoint nothing is
         // built, so the untraced deployment pays nothing
-        let _guard = super::pipeline_test_lock()
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let _guard = super::pipeline_test_lock().lock();
         std::env::remove_var("OTEL_EXPORTER_OTLP_ENDPOINT");
         std::env::remove_var("OTEL_EXPORTER_OTLP_LOGS_ENDPOINT");
         assert!(super::otlp::try_build_logger_provider().is_none());

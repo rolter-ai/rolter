@@ -125,12 +125,10 @@ mod tests {
     /// delta concurrently would see each other's increments. Serialising them
     /// is the whole fix; the counters themselves are correct under concurrency,
     /// which is the point of using atomics.
-    static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    static SERIAL: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
 
-    fn serially() -> std::sync::MutexGuard<'static, ()> {
-        SERIAL
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    fn serially() -> parking_lot::MutexGuard<'static, ()> {
+        SERIAL.lock()
     }
 
     /// A stand-in connector, so the counting is asserted without opening a
