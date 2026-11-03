@@ -1,1 +1,12 @@
-[]
+[
+  {
+    "id": "GHSA-3g3m-2fjr-6pw4",
+    "reason": "glob 13 reaches the lockfile only through storybook's @joshwooding/vite-plugin-react-docgen-typescript, whose every release asks ^13 and which calls globSync with no AbortSignal, so there is no cancellation to bypass",
+    "issue": "#3625"
+  },
+  {
+    "id": "GHSA-g3hv-75wg-m249",
+    "reason": "minimatch 10 arrives only through that glob 13, matching this repository's own tsconfig include and exclude globs at storybook build time, never an untrusted pattern",
+    "issue": "#3625"
+  }
+]
