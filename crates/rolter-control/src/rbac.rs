@@ -115,8 +115,13 @@ impl FromRequestParts<ControlState> for Principal {
 
         // otherwise the bearer must be a live session token or an API token
         let token = bearer_token(&parts.headers).ok_or(ApiError::Unauthenticated)?;
+        // a store-less control plane has no session or API token to look the
+        // bearer up in, so anything but the admin token is unauthenticated
+        // rather than a panic in `crud::pool` (#3540)
+        let Some(pool) = state.pool.as_ref() else {
+            return Err(ApiError::Unauthenticated);
+        };
         let token_hash = rolter_auth::hash_key(&session_pepper(), token);
-        let pool = pool(state);
         // the prefix only picks which table to ask: a session never starts
         // with it, and an API token that is not live is refused, never retried
         // as a session
@@ -1499,5 +1504,32 @@ mod tests {
             body,
             serde_json::json!({"error": {"message": "insufficient role for this resource"}}),
         );
+    }
+
+    /// #3540: a postgres build started without a database refuses a bearer
+    /// that is not the admin token with `401`, rather than panicking in
+    /// `crud::pool` on the way to the session table.
+    #[tokio::test]
+    async fn a_session_bearer_is_refused_without_a_database() {
+        let state = crate::tests::state_with_token(Some("the-admin-token"));
+        assert!(state.pool.is_none());
+        for bearer in [
+            "rolter_sess_not-a-session",
+            &format!("{}not-a-token", crate::api_tokens::TOKEN_PREFIX),
+        ] {
+            let (mut parts, ()) = axum::http::Request::get("/api/v1/orgs")
+                .header(
+                    axum::http::header::AUTHORIZATION,
+                    format!("Bearer {bearer}"),
+                )
+                .body(())
+                .expect("a valid request")
+                .into_parts();
+            let refused = Principal::from_request_parts(&mut parts, &state).await;
+            assert!(
+                matches!(refused, Err(ApiError::Unauthenticated)),
+                "{bearer} was not refused as unauthenticated"
+            );
+        }
     }
 }
