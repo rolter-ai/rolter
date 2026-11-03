@@ -3065,9 +3065,9 @@ dependencies = [
 
 [[package]]
 name = "redis"
-version = "1.8.0"
+version = "1.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7acd809e80afa754c63f586955699d8990efe1c4b6613183ee5f027a11fbc8b5"
+checksum = "db7f3d75b5a3301746bff39a767bf4c5c42506b08513527308b3875bfb64a031"
 dependencies = [
  "arcstr",
  "async-lock",
@@ -3623,9 +3623,9 @@ dependencies = [
 
 [[package]]
 name = "scalar_api_reference"
-version = "0.2.17"
+version = "0.2.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7e44245044cd30c983740eafa0d6c5328d484d3867f2167976014372c464b15b"
+checksum = "2e97d4b86981ddd115897875de9d325051274a8d41c50ba30da193f9b4688044"
 dependencies = [
  "rust-embed",
  "serde",
