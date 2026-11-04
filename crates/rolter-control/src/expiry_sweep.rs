@@ -1,5 +1,6 @@
 //! Periodic cleanup of what an abandoned flow leaves behind (#2414, #2616):
 //! mostly rows, and the sealed token of an invitation that expired (#3397).
+//! Export download tickets are purged here too, a day past expiry (#3544).
 //!
 //! A login abandoned at the identity provider, a consent never finished at an
 //! MCP authorization server, or a second-factor prompt never answered leaves a
@@ -62,13 +63,20 @@ pub(crate) async fn sweep_once(pool: &sqlx::PgPool) {
         invitations.sweep_expired_sealed_tokens(SSO_SWEEP_BATCH)
     })
     .await;
-    if states + codes + mcp_states + challenges + sealed > 0 {
+    let tickets = drain(
+        "export download tickets",
+        crate::export_tickets::SWEEP_BATCH,
+        || crate::export_tickets::sweep_expired(pool, crate::export_tickets::SWEEP_BATCH),
+    )
+    .await;
+    if states + codes + mcp_states + challenges + sealed + tickets > 0 {
         tracing::debug!(
             states,
             codes,
             mcp_states,
             challenges,
             sealed,
+            tickets,
             "swept expired flow state"
         );
     }

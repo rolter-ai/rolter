@@ -78,7 +78,7 @@ pub(crate) const TICKET_LIFETIME: Duration = Duration::from_secs(60);
 const PROGRESS_EVERY: Duration = Duration::from_secs(2);
 
 /// How long a ticket's row outlives its expiry, so its status can still be read
-/// after a long export, before the next mint purges it.
+/// after a long export, before the expiry sweep purges it.
 const RETAIN_PAST_EXPIRY: Duration = Duration::from_secs(24 * 60 * 60);
 
 /// How long the in-memory store keeps a ticket once it can change no more (it
@@ -310,7 +310,6 @@ struct TicketRecord {
 #[async_trait::async_trait]
 trait TicketStore: Send + Sync {
     /// Store `ticket`, expiring `lifetime` from now, and answer when that is.
-    /// Purges rows long past their expiry on the way.
     async fn insert(&self, ticket: NewTicket, lifetime: Duration) -> anyhow::Result<DateTime<Utc>>;
     /// Consume the unused, unexpired ticket whose secret hashes to `hash`, in
     /// one step: of two racing redemptions, one gets it.
@@ -473,22 +472,33 @@ impl PgTickets<'_> {
     }
 }
 
+/// Rows one sweep batch deletes.
+#[cfg(feature = "postgres")]
+pub(crate) const SWEEP_BATCH: i64 = 1000;
+
+/// Delete up to `limit` tickets a day ([`RETAIN_PAST_EXPIRY`]) past their
+/// expiry, oldest first, for the periodic expiry sweep (#3544). A row waiting
+/// for the next pass is inert: redemption checks `expires_at` itself.
+#[cfg(feature = "postgres")]
+pub(crate) async fn sweep_expired(pool: &sqlx::PgPool, limit: i64) -> rolter_core::Result<u64> {
+    let res = sqlx::query(
+        "delete from export_tickets where id in ( \
+             select id from export_tickets \
+             where expires_at < now() - $1::double precision * interval '1 second' \
+             order by expires_at limit $2 for update skip locked)",
+    )
+    .bind(RETAIN_PAST_EXPIRY.as_secs_f64())
+    .bind(limit)
+    .execute(pool)
+    .await
+    .map_err(rolter_store::postgres::store_err)?;
+    Ok(res.rows_affected())
+}
+
 #[cfg(feature = "postgres")]
 #[async_trait::async_trait]
 impl TicketStore for PgTickets<'_> {
     async fn insert(&self, ticket: NewTicket, lifetime: Duration) -> anyhow::Result<DateTime<Utc>> {
-        // opportunistic: the expiry index makes this a short range scan, and a
-        // failure here is no reason to refuse the mint
-        if let Err(error) = sqlx::query(
-            "delete from export_tickets \
-             where expires_at < now() - $1::double precision * interval '1 second'",
-        )
-        .bind(RETAIN_PAST_EXPIRY.as_secs_f64())
-        .execute(self.0)
-        .await
-        {
-            tracing::warn!(%error, "purging expired export download tickets failed");
-        }
         let (session, token, digest) = match &ticket.minter {
             Minter::Open => (None, None, None),
             Minter::Admin { digest } => (None, None, Some(digest.clone())),
@@ -2047,26 +2057,66 @@ mod tests {
             assert_eq!(statuses, [StatusCode::OK, StatusCode::GONE]);
         }
 
+        /// #3544: the expiry sweep deletes a ticket a day past its expiry and
+        /// keeps a live one and one expired for less than a day, whose status
+        /// may still be read. A mint no longer purges anything on its own
+        /// request path.
         #[tokio::test]
-        async fn an_expired_row_is_purged_by_a_later_mint() {
+        async fn the_expiry_sweep_purges_a_ticket_a_day_past_expiry() {
             let Some(db) = scratch().await else { return };
             let admin = admin_token();
             let app = pg_app(&db, &admin, TICKET_LIFETIME).await;
             let (old, _) = minted(&app, &admin, "").await;
-            sqlx::query(
-                "update export_tickets set expires_at = now() - interval '2 days' where id = $1",
-            )
-            .bind(old.parse::<Uuid>().unwrap())
-            .execute(db.pool())
-            .await
-            .unwrap();
-            let _ = minted(&app, &admin, "").await;
-            let left: i64 = sqlx::query_scalar("select count(*) from export_tickets where id = $1")
-                .bind(old.parse::<Uuid>().unwrap())
-                .fetch_one(db.pool())
-                .await
-                .unwrap();
-            assert_eq!(left, 0);
+            let (recent, _) = minted(&app, &admin, "").await;
+            let expire = |id: &str, ago: &'static str| {
+                let id = id.parse::<Uuid>().unwrap();
+                let pool = db.pool().clone();
+                async move {
+                    sqlx::query(
+                        "update export_tickets set expires_at = now() - $2::interval where id = $1",
+                    )
+                    .bind(id)
+                    .bind(ago)
+                    .execute(&pool)
+                    .await
+                    .unwrap();
+                }
+            };
+            expire(&old, "2 days").await;
+            expire(&recent, "1 hour").await;
+            let (fresh, _) = minted(&app, &admin, "").await;
+            let exists = |id: String| {
+                let pool = db.pool().clone();
+                async move {
+                    sqlx::query_scalar::<_, i64>(
+                        "select count(*) from export_tickets where id = $1",
+                    )
+                    .bind(id.parse::<Uuid>().unwrap())
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap()
+                        == 1
+                }
+            };
+            assert!(exists(old.clone()).await, "a mint purged a row by itself");
+
+            let swept = sweep_expired(db.pool(), SWEEP_BATCH).await.unwrap();
+            assert_eq!(swept, 1);
+            assert!(
+                !exists(old).await,
+                "the sweep kept a row two days past expiry"
+            );
+            assert!(
+                exists(recent).await,
+                "the sweep took a row inside its day of grace"
+            );
+            assert!(exists(fresh).await, "the sweep took a live ticket");
+
+            // the full pass reaches it too
+            let (again, _) = minted(&app, &admin, "").await;
+            expire(&again, "3 days").await;
+            crate::expiry_sweep::sweep_once(db.pool()).await;
+            assert!(!exists(again).await, "sweep_once left an old ticket");
         }
 
         /// A ClickHouse that answers three log rows to every page and keeps the
