@@ -1839,6 +1839,80 @@ fn escape_label(value: &str) -> String {
 }
 
 #[cfg(test)]
+mod exported_families_docs {
+    //! #3580: the metrics page's "What is exported" table lists the labelled
+    //! families by hand, and it had fallen behind `LABELLED_FAMILIES`. These
+    //! compare its two rows with the registries, both ways.
+
+    use std::collections::BTreeSet;
+
+    const PAGE: &str = "../../docs/user-docs/observability/metrics.mdx";
+
+    /// The backticked names in the table row whose first cell is `kind`.
+    fn row(page: &str, kind: &str) -> BTreeSet<String> {
+        let prefix = format!("| {kind} ");
+        let line = page
+            .lines()
+            .find(|line| line.starts_with(&prefix))
+            .unwrap_or_else(|| panic!("the metrics page has no `{kind}` row"));
+        let cells: Vec<&str> = line.split('|').collect();
+        cells[2]
+            .split('`')
+            .skip(1)
+            .step_by(2)
+            .map(str::to_string)
+            .collect()
+    }
+
+    fn names(families: &[rolter_core::telemetry::LabelledFamily]) -> BTreeSet<String> {
+        families.iter().map(|(name, _)| name.to_string()).collect()
+    }
+
+    fn page() -> String {
+        std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(PAGE))
+            .expect("the metrics page is readable")
+    }
+
+    #[test]
+    fn the_labelled_counters_row_lists_every_labelled_family() {
+        assert_eq!(
+            row(&page(), "Labelled counters"),
+            names(super::LABELLED_FAMILIES),
+            "docs/user-docs/observability/metrics.mdx's Labelled counters row and \
+             LABELLED_FAMILIES disagree"
+        );
+    }
+
+    #[test]
+    fn the_labelled_gauges_row_lists_every_labelled_gauge_family() {
+        assert_eq!(
+            row(&page(), "Labelled gauges"),
+            names(super::LABELLED_GAUGE_FAMILIES),
+            "docs/user-docs/observability/metrics.mdx's Labelled gauges row and \
+             LABELLED_GAUGE_FAMILIES disagree"
+        );
+    }
+
+    /// The row reader must see a name dropped from, or added to, a row.
+    #[test]
+    fn the_row_reader_sees_a_missing_or_extra_name() {
+        let table = "| Kind | Metrics | How |\n\
+                     | Labelled counters | `rolter_a_total`, `rolter_b_total` | observable |\n";
+        assert_eq!(
+            row(table, "Labelled counters"),
+            BTreeSet::from(["rolter_a_total".to_string(), "rolter_b_total".to_string()])
+        );
+        let real = row(&page(), "Labelled counters");
+        let mut dropped = real.clone();
+        dropped.pop_first();
+        assert_ne!(dropped, names(super::LABELLED_FAMILIES));
+        let mut extra = real;
+        extra.insert("rolter_not_a_family_total".to_string());
+        assert_ne!(extra, names(super::LABELLED_FAMILIES));
+    }
+}
+
+#[cfg(test)]
 mod tests {
     /// Every labelled series the Prometheus text carries must also be exported
     /// over OTLP, and with the same value.
