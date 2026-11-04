@@ -44,7 +44,7 @@
     "@opentelemetry/instrumentation-document-load": "^0.69.0",
     "@opentelemetry/instrumentation-fetch": "^0.300.0",
     "@opentelemetry/instrumentation-user-interaction": "^0.68.0",
-    "@opentelemetry/resources": "^2.12.0",
+    "@opentelemetry/resources": "^3.0.0",
     "@opentelemetry/sdk-trace-web": "^2.12.0",
     "@opentelemetry/semantic-conventions": "^1.44.0",
     "@tanstack/react-query": "^5.104.5",
