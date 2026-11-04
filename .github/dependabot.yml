@@ -10,6 +10,12 @@ updates:
     groups:
       cargo-minor-patch:
         update-types: [minor, patch]
+    # fancy-regex has to be the version tokenizers itself depends on:
+    # tokenizers implements its `Pattern` trait for that version's `Regex`, and
+    # rolter-gateway hands it one, so a bump of fancy-regex alone does not
+    # compile (#3607). it moves by hand, with tokenizers
+    ignore:
+      - dependency-name: fancy-regex
     open-pull-requests-limit: 5
 
   # the ui workspace is bun-managed, and dependabot speaks bun directly since
