@@ -599,6 +599,11 @@ fn declares_ui_events(path: &Path) -> anyhow::Result<bool> {
 async fn import_ui_events(pool: &PgPool, enabled: bool) -> anyhow::Result<()> {
     let repo = LoggingSettingsRepo(pool);
     let current = repo.get().await?;
+    // every write bumps `config_version`, so an unchanged opt-out writes
+    // nothing and wakes no gateway (#3577)
+    if current.ui_events == enabled {
+        return Ok(());
+    }
     repo.update(LoggingSettingsUpdate {
         sample_rate: current.sample_rate,
         payload_capture_enabled: current.payload_capture_enabled,
@@ -639,6 +644,11 @@ async fn import_payload_capture(
     let repo = LoggingSettingsRepo(pool);
     let current = repo.get().await?;
     let max_bytes = i32::try_from(capture.max_bytes).unwrap_or(i32::MAX);
+    // every write bumps `config_version`, so a policy the row already holds
+    // writes nothing and wakes no gateway (#3577)
+    if payload_capture_matches(&current, capture, max_bytes) {
+        return Ok(());
+    }
     repo.update(LoggingSettingsUpdate {
         sample_rate: current.sample_rate,
         payload_capture_enabled: capture.enabled,
@@ -659,6 +669,22 @@ async fn import_payload_capture(
         "imported payload capture policy"
     );
     Ok(())
+}
+
+/// Whether the stored `logging_settings` row already holds the file's
+/// payload-capture policy, every column [`import_payload_capture`] writes.
+fn payload_capture_matches(
+    current: &rolter_store::postgres::models::LoggingSettings,
+    capture: &rolter_core::PayloadCaptureConfig,
+    max_bytes: i32,
+) -> bool {
+    current.payload_capture_enabled == capture.enabled
+        && current.payload_capture_max_bytes == max_bytes
+        && current.payload_capture_redact_fields == capture.redact_fields
+        && current.payload_capture_redact_detectors == capture.redact_detectors
+        && current.payload_capture_redact_patterns.0 == capture.redact_patterns
+        && current.payload_capture_models == capture.models
+        && current.payload_capture_virtual_key_ids == capture.virtual_key_ids
 }
 
 /// Warn when a provider configures more keys than the store can hold.
@@ -3274,6 +3300,113 @@ sample_rate = 1.0
             !settings.get().await.unwrap().ui_events,
             "a file silent about ui_events switched the stream back on"
         );
+    }
+
+    /// #3577: re-importing an unchanged export wrote the `logging_settings`
+    /// row twice, once for capture and once for ui events, and each write
+    /// bumped `config_version` and woke every gateway. An unchanged file now
+    /// writes nothing, and an edited section still applies without touching
+    /// the columns the file has no opinion about.
+    #[tokio::test]
+    async fn re_importing_an_unchanged_export_leaves_the_config_version_alone() {
+        use rolter_store::ConfigStore;
+        let Some(db) = scratch_db().await else {
+            return;
+        };
+        let pool = db.pool().clone();
+        let (org_id, project_id) = bootstrap_org(&pool).await;
+        let settings = rolter_store::postgres::repo::LoggingSettingsRepo(&pool);
+        let version = || async {
+            sqlx::query_scalar::<_, i64>("select version from config_version where id = 1")
+                .fetch_one(&pool)
+                .await
+                .unwrap()
+        };
+        let dir = tempdir("logging-reimport");
+        let path = dir.join("rolter.toml");
+        std::fs::write(
+            &path,
+            r#"
+[logging]
+ui_events = false
+
+[logging.payload_capture]
+enabled = true
+max_bytes = 4096
+redact_fields = ["password"]
+models = ["gpt-4o"]
+
+[[providers]]
+name = "primary"
+kind = "openai"
+api_base = "https://api.openai.com"
+"#,
+        )
+        .unwrap();
+        import_bootstrap_toml(&pool, org_id, project_id, &path)
+            .await
+            .unwrap();
+
+        // an operational dial the file never writes, set from the dashboard
+        sqlx::query("update logging_settings set sample_rate = 0.25 where id = true")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let served = rolter_store::PostgresConfigStore::with_kek(pool.clone(), None)
+            .load()
+            .await
+            .unwrap();
+        let exported = crate::config_export::export_document(&pool, &served, &Default::default())
+            .await
+            .unwrap();
+        assert!(exported.contains("ui_events = false"), "{exported}");
+        assert!(exported.contains("[logging.payload_capture]"), "{exported}");
+        let export_path = dir.join("exported.toml");
+        std::fs::write(&export_path, &exported).unwrap();
+        import_bootstrap_toml(&pool, org_id, project_id, &export_path)
+            .await
+            .unwrap();
+
+        let before = version().await;
+        import_bootstrap_toml(&pool, org_id, project_id, &export_path)
+            .await
+            .unwrap();
+        assert_eq!(
+            version().await,
+            before,
+            "re-importing an unchanged export bumped the config version"
+        );
+
+        // an edited capture section still lands, and leaves the rest alone
+        std::fs::write(
+            &path,
+            "[logging]\nui_events = false\n[logging.payload_capture]\nenabled = false\n",
+        )
+        .unwrap();
+        import_bootstrap_toml(&pool, org_id, project_id, &path)
+            .await
+            .unwrap();
+        assert!(version().await > before, "an edited section wrote nothing");
+        let row = settings.get().await.unwrap();
+        assert!(!row.payload_capture_enabled);
+        assert!(!row.ui_events);
+        assert_eq!(row.sample_rate, 0.25, "the import clobbered sampling");
+
+        // and an edited ui events opt-out lands too
+        let before = version().await;
+        std::fs::write(&path, "[logging]\nui_events = true\n").unwrap();
+        import_bootstrap_toml(&pool, org_id, project_id, &path)
+            .await
+            .unwrap();
+        assert!(version().await > before, "an edited opt-out wrote nothing");
+        let row = settings.get().await.unwrap();
+        assert!(row.ui_events);
+        assert!(
+            !row.payload_capture_enabled,
+            "the opt-out clobbered capture"
+        );
+        assert_eq!(row.sample_rate, 0.25);
     }
 
     /// #1919: `project_scoped` scopes a provider or group to the project the
