@@ -483,11 +483,26 @@ const ORG_AUDIT_PREFIX: &str = "/api/v1/orgs/";
 const ORG_AUDIT_SUFFIX: &str = "/audit-log/export";
 #[cfg(feature = "postgres")]
 const DEPLOYMENT_AUDIT_PATH: &str = "/api/v1/audit-log/export";
-/// The stored name of an org's audit export starts with this, the org id after.
+/// The status name of an org's audit export, which its stored name starts
+/// with, the org id after.
+const ORG_AUDIT_STATUS_NAME: &str = "org_audit_log";
 #[cfg(feature = "postgres")]
-const ORG_AUDIT_NAME: &str = "org_audit_log";
+const ORG_AUDIT_NAME: &str = ORG_AUDIT_STATUS_NAME;
 
 impl ExportKind {
+    /// Every name [`ExportKind::as_str`] can report, in every build, which is
+    /// what the published `ExportTicketStatus.export` enum lists: the OpenAPI
+    /// document reads it from here rather than spelling it again (#3576). The
+    /// audit names are listed in a build without a database too, so the served
+    /// document is the same in every build.
+    pub(crate) const STATUS_NAMES: [&'static str; 5] = [
+        "attribution",
+        "timeseries",
+        "invocations",
+        "audit_log",
+        ORG_AUDIT_STATUS_NAME,
+    ];
+
     /// The analytics exports, whose bearer routes have fixed paths.
     pub(crate) const ANALYTICS: [ExportKind; 3] = [
         ExportKind::Attribution,
@@ -1489,6 +1504,77 @@ mod tests {
         ] {
             assert_eq!(ExportKind::parse(name), None, "{name}");
         }
+    }
+
+    /// Every kind this build has, one of each. The match has no wildcard, so
+    /// a new variant fails to compile here until it is listed, and then fails
+    /// [`the_published_export_names_are_the_runtime_names`] until
+    /// `STATUS_NAMES` carries its name.
+    fn every_kind() -> Vec<ExportKind> {
+        #[cfg(feature = "postgres")]
+        let org = uuid::Uuid::nil();
+        let kinds = vec![
+            ExportKind::Attribution,
+            ExportKind::Timeseries,
+            ExportKind::Invocations,
+            #[cfg(feature = "postgres")]
+            ExportKind::DeploymentAudit,
+            #[cfg(feature = "postgres")]
+            ExportKind::OrgAudit(org),
+        ];
+        for kind in &kinds {
+            match kind {
+                ExportKind::Attribution | ExportKind::Timeseries | ExportKind::Invocations => {}
+                #[cfg(feature = "postgres")]
+                ExportKind::DeploymentAudit | ExportKind::OrgAudit(_) => {}
+            }
+        }
+        kinds
+    }
+
+    /// #3576: the `ExportTicketStatus.export` enum the OpenAPI document
+    /// publishes is exactly the set of names a ticket's status can carry. A
+    /// renamed, omitted or added kind fails here rather than drifting from
+    /// the published schema.
+    #[test]
+    fn the_published_export_names_are_the_runtime_names() {
+        use std::collections::BTreeSet;
+        let published: BTreeSet<&str> = ExportKind::STATUS_NAMES.into_iter().collect();
+        assert_eq!(
+            published.len(),
+            ExportKind::STATUS_NAMES.len(),
+            "a name is listed twice"
+        );
+        let runtime: BTreeSet<&str> = every_kind().into_iter().map(ExportKind::as_str).collect();
+        // a build without a database has no audit kinds, but publishes the
+        // same document, so its runtime names are the analytics ones only
+        #[cfg(feature = "postgres")]
+        assert_eq!(runtime, published);
+        #[cfg(not(feature = "postgres"))]
+        {
+            assert!(
+                runtime.is_subset(&published),
+                "{runtime:?} not all in {published:?}"
+            );
+            let missing: BTreeSet<&str> = published.difference(&runtime).copied().collect();
+            assert_eq!(missing, BTreeSet::from(["audit_log", "org_audit_log"]));
+        }
+
+        let document = crate::openapi::document();
+        let served: BTreeSet<String> = document["components"]["schemas"]["ExportTicketStatus"]
+            ["properties"]["export"]["enum"]
+            .as_array()
+            .expect("the export enum is published")
+            .iter()
+            .map(|v| v.as_str().expect("a string").to_string())
+            .collect();
+        assert_eq!(
+            served,
+            published
+                .iter()
+                .map(|s| s.to_string())
+                .collect::<BTreeSet<_>>()
+        );
     }
 
     #[test]
