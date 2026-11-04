@@ -1807,8 +1807,9 @@ The msrv job runs `cargo +<version>` because `rust-toolchain.toml` pins `stable`
 and outranks the default a toolchain action sets, so a plain `cargo check` would
 test stable and never the declared version; the step prints `rustc --version`
 for that toolchain first, so the log shows which compiler ran. The declared
-version is 1.94: `sqlx` 0.9 declares it, above the 1.91 that our own code needs
-for `str::floor_char_boundary` (#2026) and the 1.89 that the rest of the lockfile
+version is 1.95: `parking_lot` 0.13 (with `lock_api` 0.5 and `parking_lot_core`
+0.10) declares it (#3602), above the 1.94 of `sqlx` 0.9 and the 1.91 that our
+own code needs for `str::floor_char_boundary` (#2026) and the 1.89 that the rest of the lockfile
 asks for (`uuid`; redis, tonic and icu declare 1.88). To find the floor again
 after a dependency bump or a newer std API, install the candidate with
 `rustup toolchain install <ver> --profile minimal` and run
