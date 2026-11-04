@@ -27,7 +27,9 @@
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
+use std::sync::OnceLock;
+
+use parking_lot::Mutex;
 
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -280,10 +282,9 @@ pub fn warn_unknown_keys_once(path: &Path, toml_src: &str) -> usize {
     let identity = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     let first_time = SEEN
         .get_or_init(Mutex::default)
+        // parking_lot: a lock that could poison would silence the warning
+        // for the rest of the process, the failure this module prevents
         .lock()
-        // a poisoned lock here would silence the warning for the rest of the
-        // process, which is the failure this whole module exists to prevent
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
         .insert(identity);
     if !first_time {
         return 0;
@@ -766,26 +767,17 @@ mod tests {
     /// Collects whatever a `tracing` subscriber formats, so the warnings can be
     /// read back as text rather than trusted from a return value alone.
     #[derive(Clone, Default)]
-    struct Capture(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+    struct Capture(std::sync::Arc<parking_lot::Mutex<Vec<u8>>>);
 
     impl Capture {
         fn text(&self) -> String {
-            String::from_utf8(
-                self.0
-                    .lock()
-                    .expect("no test panicked holding this")
-                    .clone(),
-            )
-            .expect("tracing writes utf-8")
+            String::from_utf8(self.0.lock().clone()).expect("tracing writes utf-8")
         }
     }
 
     impl std::io::Write for Capture {
         fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-            self.0
-                .lock()
-                .expect("no test panicked holding this")
-                .extend_from_slice(buf);
+            self.0.lock().extend_from_slice(buf);
             Ok(buf.len())
         }
 
