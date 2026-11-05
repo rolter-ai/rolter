@@ -54,7 +54,6 @@ use tokenizers::pre_tokenizers::PreTokenizerWrapper;
 use tokenizers::processors::PostProcessorWrapper;
 use tokenizers::{
     NormalizedString, Normalizer, PostProcessor, PreTokenizedString, PreTokenizer, TokenizerImpl,
-    TruncationParams,
 };
 use tokio::sync::Semaphore;
 
@@ -132,6 +131,11 @@ pub struct OnnxModel {
     labels: Vec<Option<String>>,
     activation: Activation,
     max_tokens: usize,
+    /// The content tokens one window holds: `max_tokens` less the special
+    /// tokens its post processor adds.
+    content_tokens: usize,
+    /// The tokens two neighbouring windows share.
+    stride: usize,
     /// Whether the model declares each optional input.
     attention_mask: bool,
     token_type_ids: bool,
@@ -514,14 +518,14 @@ impl OnnxModel {
             return Err(malformed("max_tokens must leave room after special tokens"));
         }
         let content_tokens = file.max_tokens - added;
-        // overflow encodings preserve context overlap and reapply special tokens
-        tokenizer
-            .with_truncation(Some(TruncationParams {
-                max_length: file.max_tokens,
-                stride: (content_tokens / 4).max(1).min(content_tokens - 1),
-                ..Default::default()
-            }))
-            .map_err(|error| malformed(format_args!("the tokenizer: {error}")))?;
+        // the tokenizer is left without truncation params on purpose: since
+        // tokenizers 0.23 a tokenizer that knows its truncation stops
+        // tokenizing once the first window is full, so the overflow windows
+        // this model scores would never be produced (`score` cuts the
+        // encoding itself, which keeps `stride` context overlap)
+        let stride = (content_tokens / 4)
+            .max(1)
+            .min(content_tokens.saturating_sub(1));
         tokenizer.with_padding(None);
         let (_, model) = read_pinned(
             &directory.join(&file.model.path),
@@ -595,6 +599,8 @@ impl OnnxModel {
             labels: file.labels,
             activation: file.activation,
             max_tokens: file.max_tokens,
+            content_tokens,
+            stride,
             attention_mask,
             token_type_ids,
             output,
@@ -629,11 +635,9 @@ impl OnnxModel {
             normalizer.clear_error();
         }
         // a tokenizer panic is a provider failure, never a benign classification
-        let encoded = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            self.tokenizer.encode(text, true)
-        }));
-        let encoding = match encoded {
-            Ok(Ok(encoding)) => encoding,
+        let encoded = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.windows(text)));
+        let windows = match encoded {
+            Ok(Ok(windows)) => windows,
             Ok(Err(error)) => {
                 return ModelScores {
                     categories: Err(failed(&error)),
@@ -658,16 +662,34 @@ impl OnnxModel {
                 truncated: false,
             };
         }
-        let truncated = encoding.get_overflowing().len() >= MAX_SCORED_WINDOWS;
+        let truncated = windows.get_overflowing().len() >= MAX_SCORED_WINDOWS;
         let categories = if truncated && on_truncated != OnTruncated::Score {
             Err(ScoreError::Truncated)
         } else {
-            self.score_encodings(&encoding, deadline)
+            self.score_encodings(&windows, deadline)
         };
         ModelScores {
             categories,
             truncated,
         }
+    }
+
+    /// The token windows `text` is scored in: the first `content_tokens`
+    /// tokens, then every following window overlapping the previous one by
+    /// `stride` tokens, each with the tokenizer's special tokens reapplied.
+    fn windows(
+        &self,
+        text: &str,
+    ) -> Result<tokenizers::Encoding, Box<dyn std::error::Error + Send + Sync>> {
+        let mut encoding = self.tokenizer.encode(text, false)?;
+        if encoding.get_ids().len() > self.content_tokens {
+            encoding.truncate(
+                self.content_tokens,
+                self.stride,
+                tokenizers::TruncationDirection::Right,
+            );
+        }
+        self.tokenizer.post_process(encoding, None, true)
     }
 
     fn score_encodings(
@@ -1333,7 +1355,10 @@ mod tests {
             "type": "Sequence",
             "normalizers": [
                 {"type": "Replace", "pattern": {"Regex": r"(o)\1"}, "content": ""},
-                {"type": "Replace", "pattern": {"Regex": r"(?:(a+)+(?=z))"}, "content": ""},
+                // fancy-regex 0.17 prefilters a bare nested quantifier away, so
+                // the alternative is what keeps this pattern on the backtracking
+                // path where the limit is observable
+                {"type": "Replace", "pattern": {"Regex": r"(?:(a+)+(?=z)|x)"}, "content": ""},
             ],
         });
         let tokenizer_bytes = serde_json::to_vec(&tokenizer).unwrap();

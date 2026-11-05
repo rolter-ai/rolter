@@ -56,10 +56,13 @@ ort = { version = "=2.0.0-rc.15", default-features = false, features = [
   "load-dynamic",
   "api-21",
 ], optional = true }
-tokenizers = { version = "0.22.2", default-features = false, features = [
+tokenizers = { version = "0.23.2", default-features = false, features = [
   "fancy-regex",
 ], optional = true }
-fancy-regex = { version = "0.14", optional = true }
+# the version tokenizers depends on: its `Pattern` trait is implemented for
+# that version's `Regex`, which local_onnx.rs hands it, so the two move together
+# (.github/dependabot.yml ignores fancy-regex on its own)
+fancy-regex = { version = "0.17", optional = true }
 regex = { workspace = true, optional = true }
 
 [features]
