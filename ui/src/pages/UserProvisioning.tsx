@@ -19,6 +19,7 @@ import { Input } from "@/components/ui/input";
 import { SecretValue, useSecretCloseGuard } from "@/components/ui/secret-reveal";
 import { Sheet, SheetActions, SheetBody, SheetFooter, SheetHeader } from "@/components/ui/sheet";
 import { Table, type TableColumn } from "@/components/ui/table";
+import { Tooltip } from "@/components/ui/tooltip";
 import {
   createScimGroupMapping,
   createScimToken,
@@ -58,9 +59,9 @@ function When({ fmt, iso }: { fmt: Formatters; iso: string }) {
   const day = fmt.date(iso);
   if (!day) return <>—</>;
   return (
-    <time dateTime={iso} title={stamp(fmt, iso)}>
-      {day}
-    </time>
+    <Tooltip content={stamp(fmt, iso)}>
+      <time dateTime={iso}>{day}</time>
+    </Tooltip>
   );
 }
 
@@ -179,7 +180,7 @@ export default function UserProvisioning() {
         row.revoked_at ? (
           <Badge
             tone="danger"
-            title={t("pages.userProvisioning.revokedAt", {
+            hint={t("pages.userProvisioning.revokedAt", {
               when: stamp(fmt, row.revoked_at),
             })}
           >

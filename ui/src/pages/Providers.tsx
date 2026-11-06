@@ -37,6 +37,7 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { CopyButton } from "@/components/CopyButton";
+import { Tooltip } from "@/components/ui/tooltip";
 import {
   deleteProvider,
   fetchConfig,
@@ -80,22 +81,22 @@ function CredentialSource({ provider }: { provider: ProviderRow }) {
   switch (credentialSource(provider)) {
     case "sealed":
       return (
-        <Badge tone="success" title={t("pages.providers.credentialSealedHint")}>
+        <Badge tone="success" hint={t("pages.providers.credentialSealedHint")}>
           {t("pages.providers.credentialSealed")}
         </Badge>
       );
     case "env":
       return (
-        <span
+        <Tooltip
           className="truncate font-mono text-xs text-muted-foreground"
-          title={t("pages.providers.credentialEnvHint", { name: provider.api_key_env })}
+          content={t("pages.providers.credentialEnvHint", { name: provider.api_key_env })}
         >
           {provider.api_key_env}
-        </span>
+        </Tooltip>
       );
     case "none":
       return (
-        <Badge tone="warning" title={t("pages.providers.credentialNoneHint")}>
+        <Badge tone="warning" hint={t("pages.providers.credentialNoneHint")}>
           {t("pages.providers.credentialNone")}
         </Badge>
       );

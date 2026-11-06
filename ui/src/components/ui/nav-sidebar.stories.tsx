@@ -465,7 +465,7 @@ export const ExperimentalItems: Story = {
     // 232px rail on it. the sidebar renders whatever it is handed; the shell
     // resolves it from the catalog (#1401)
     const badge = within(marked).getByText(en.shell.experimental);
-    await expect(badge).toHaveAttribute("title", EXPERIMENTAL_NOTE);
+    await expect(badge.closest("[title]")).toHaveAttribute("title", EXPERIMENTAL_NOTE);
     // an unmarked sibling is exactly as it was
     await expect(canvas.getByRole("button", { name: "Keys" })).toBeVisible();
     await expect(canvas.getAllByText(en.shell.experimental)).toHaveLength(1);
@@ -846,10 +846,9 @@ export const FoldedGroupFlyoutKeepsTheExperimentalMarker: Story = {
     const marked = within(flyout).getByRole("button", {
       name: `Tool groups ${en.shell.experimental}`,
     });
-    await expect(within(marked).getByText(en.shell.experimental)).toHaveAttribute(
-      "title",
-      EXPERIMENTAL_NOTE,
-    );
+    await expect(
+      within(marked).getByText(en.shell.experimental).closest("[title]"),
+    ).toHaveAttribute("title", EXPERIMENTAL_NOTE);
     await expect(within(flyout).getAllByText(en.shell.experimental)).toHaveLength(1);
   },
 };

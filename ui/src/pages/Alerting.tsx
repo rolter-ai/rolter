@@ -36,6 +36,7 @@ import { Field } from "@/components/ui/field";
 import { FieldLabel } from "@/components/ui/field-label";
 import { Input } from "@/components/ui/input";
 import { Segmented } from "@/components/ui/segmented";
+import { Tooltip } from "@/components/ui/tooltip";
 import {
   ALERT_COMPARISONS,
   ALERT_NO_DATA_POLICIES,
@@ -787,12 +788,11 @@ function AlertRulesScreen() {
                     r.last_evaluated_at ? (
                       // a clock time alone read the same a minute or three days
                       // on; the full stamp is on hover
-                      <time
-                        dateTime={r.last_evaluated_at}
-                        title={fmt.dateTime(r.last_evaluated_at)}
-                      >
-                        {fmt.relative(r.last_evaluated_at, now)}
-                      </time>
+                      <Tooltip content={fmt.dateTime(r.last_evaluated_at)}>
+                        <time dateTime={r.last_evaluated_at}>
+                          {fmt.relative(r.last_evaluated_at, now)}
+                        </time>
+                      </Tooltip>
                     ) : (
                       t("pages.alerting.rules.statNever")
                     )

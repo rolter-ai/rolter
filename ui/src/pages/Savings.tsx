@@ -26,6 +26,7 @@ import { Field } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { STAT_GRID, StatCard } from "@/components/ui/stat-card";
 import { SurfacePanel } from "@/components/ui/surface-panel";
+import { Tooltip } from "@/components/ui/tooltip";
 import {
   AnalyticsUnavailableError,
   fetchModels,
@@ -463,8 +464,10 @@ function CallerCell({
 }) {
   const name = given || names.get(id);
   return name ? (
-    <ListCell className="truncate text-sm" title={id}>
-      {name}
+    <ListCell className="grid min-w-0">
+      <Tooltip content={id} className="truncate text-sm">
+        {name}
+      </Tooltip>
     </ListCell>
   ) : (
     <ListCell className="truncate font-mono text-xs">{id || "—"}</ListCell>

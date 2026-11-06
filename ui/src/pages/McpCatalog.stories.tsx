@@ -35,10 +35,11 @@ import {
   Harness as GatedHarness,
   json,
   NEEDS_ADMIN,
-  recordUxEvents,
-  recording,
-  uxEvents,
+  noteOf,
   type Recorder,
+  recording,
+  recordUxEvents,
+  uxEvents,
 } from "./story-harness";
 import { Toaster } from "@/components/ui/toaster";
 import type {
@@ -1614,9 +1615,8 @@ export const DiscoveryFlagsStaleTools: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     const stale = await canvas.findByText("create_issue");
-    await expect(stale.closest("span")).toHaveAttribute(
-      "title",
-      expect.stringMatching(/kept so tool groups naming it keep working/),
+    await expect(noteOf(stale.closest("span"))).toMatch(
+      /kept so tool groups naming it keep working/,
     );
     await expect(canvas.getByText(/^1 tool was not returned by the last discovery/)).toBeVisible();
   },

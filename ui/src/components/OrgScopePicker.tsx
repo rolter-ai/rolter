@@ -240,7 +240,7 @@ export function OrgScopePill({
         color="var(--status-warning-text)"
         tint={tint}
         className={className}
-        title={t("scope.picker.unresolvedTitle", { id: resolved.id })}
+        hint={t("scope.picker.unresolvedTitle", { id: resolved.id })}
       >
         <AlertTriangle className="h-3 w-3" aria-hidden="true" />
         {label(t("scope.picker.unresolved"))}

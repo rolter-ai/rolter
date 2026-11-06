@@ -3,6 +3,7 @@ import * as React from "react";
 import { useTranslation } from "react-i18next";
 
 import { CodeBlock } from "@/components/ui/code-block";
+import { Tooltip } from "@/components/ui/tooltip";
 import type { MdBlock, MdInline } from "@/lib/markdown";
 import { cn } from "@/lib/utils";
 
@@ -231,14 +232,14 @@ function Inlines({ nodes }: { nodes: readonly MdInline[] }) {
             // never an image element: a remote fetch would break the air-gapped
             // guarantee and tell a third party the reply had been read
             return (
-              <span
+              <Tooltip
                 key={i}
-                title={t("markdown.imageBlocked")}
-                className="inline-flex items-center gap-1 rounded bg-[color:var(--surface-subtle)] px-1.5 py-0.5 text-[0.9em] text-[color:var(--text-muted)]"
+                content={t("markdown.imageBlocked")}
+                className="inline-flex items-center gap-1 rounded bg-[color:var(--surface-subtle)] px-1.5 py-0.5 text-[0.9em] text-[color:var(--text-muted)] no-underline"
               >
                 <ImageOff className="h-3 w-3 shrink-0" aria-hidden />
                 {node.alt || node.href}
-              </span>
+              </Tooltip>
             );
         }
       })}

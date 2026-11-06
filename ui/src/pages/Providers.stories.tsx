@@ -3,32 +3,33 @@ import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import Providers from "./Providers";
 import {
-  Harness,
   adminOfProject,
   cancelConfirmation,
   clickWhenEnabled,
   confirmDestructive,
-  expectEmptyState,
   expectAllowed,
+  expectEmptyState,
+  expectListStateInViewport,
+  expectListTable,
+  expectLoadError,
+  expectNoFalseEmpty,
   expectNoUxEvent,
   expectRefused,
   expectSheetClosed,
-  expectUxEvent,
-  expectLoadError,
-  expectListStateInViewport,
-  expectListTable,
-  expectNoFalseEmpty,
   expectSkeleton,
+  expectToast,
+  expectUxEvent,
+  Harness,
   json,
+  noteOf,
   pending,
-  recordUxEvents,
+  type Recorder,
   recording,
+  recordUxEvents,
   routes,
   scoped,
   Toasted,
-  expectToast,
   uxEvents,
-  type Recorder,
   withDocsBase,
 } from "./story-harness";
 import type {
@@ -1284,8 +1285,8 @@ export const CacheReportingShowsThreeStates: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     const reports = await (await rowOf(canvas, "openai-prod")).findByText(/^Reports cache/);
-    await expect(reports).toHaveAttribute("title", expect.stringContaining("Model: gpt-4o-mini"));
-    await expect(reports).toHaveAttribute("title", expect.stringContaining("Field: cached_tokens"));
+    await expect(noteOf(reports)).toContain("Model: gpt-4o-mini");
+    await expect(noteOf(reports)).toContain("Field: cached_tokens");
     await expect(
       await (await rowOf(canvas, "anthropic-eu")).findByText(/^No cache metrics/),
     ).toBeVisible();

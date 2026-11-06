@@ -1502,6 +1502,33 @@ const withFailedMail = (rows: Invitation[]): Invitation[] =>
   );
 
 /**
+ * Why the mail did not go is written in the invitation's row, under the address
+ * (#3655). It used to be a `title` on the badge, which only a mouse that waited
+ * ever read, and it is what the admin acts on.
+ */
+export const AFailedMailSaysWhyInTheRow: Story = {
+  render: () => (
+    <Harness fetchStub={invitationsApi({ rows: withFailedMail(INVITATIONS) })}>
+      <Users />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const section = within(await pendingSection(canvasElement));
+    const reason = await section.findByText("the mail server could not be reached");
+    await expect(reason).toBeVisible();
+    const row = within(reason.closest<HTMLElement>('[role="row"]')!);
+    await expect(row.getByText("newcomer@example.com")).toBeVisible();
+    await expect(row.getByText("Not emailed")).toBeVisible();
+    await expect(row.getByText("Not emailed")).not.toHaveAttribute("title");
+    // an invitation that was never mailed has nothing to explain
+    const other = within(
+      section.getByText("lead@example.com").closest<HTMLElement>('[role="row"]')!,
+    );
+    await expect(other.queryByText("the mail server could not be reached")).toBeNull();
+  },
+};
+
+/**
  * A pending invitation whose email failed can be mailed again from its row. The
  * request names the invitation, the row says it was emailed once the relay
  * took it, and a row that never went through a relay offers no resend at all.

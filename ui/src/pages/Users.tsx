@@ -244,7 +244,7 @@ function SecondFactorCell({
   if (read.isError) return <span className="text-xs text-muted-foreground">—</span>;
   if (!row) {
     return (
-      <Badge tone="neutral" title={t("pages.users.factorNotListedHint")}>
+      <Badge tone="neutral" hint={t("pages.users.factorNotListedHint")}>
         {t("pages.users.factorNotListed")}
       </Badge>
     );
@@ -253,12 +253,12 @@ function SecondFactorCell({
     <Badge
       dot
       tone="success"
-      title={t("pages.users.factorArmedHint", { count: row.recovery_codes_remaining })}
+      hint={t("pages.users.factorArmedHint", { count: row.recovery_codes_remaining })}
     >
       {t("pages.users.factorArmed")}
     </Badge>
   ) : (
-    <Badge tone="warning" title={t("pages.users.factorNoneHint")}>
+    <Badge tone="warning" hint={t("pages.users.factorNoneHint")}>
       {t("pages.users.factorNone")}
     </Badge>
   );
@@ -640,7 +640,7 @@ export default function Users() {
                       <Badge
                         tone="neutral"
                         className="flex-none"
-                        title={t("pages.users.deploymentRole.badgeHint")}
+                        hint={t("pages.users.deploymentRole.badgeHint")}
                       >
                         {t(DEPLOYMENT_ROLE_KEY[user.deployment_role])}
                       </Badge>
@@ -651,9 +651,7 @@ export default function Users() {
                   )}
                   {/* the bio says who to ask about what, so others can read it (V2.1) */}
                   {user.bio && (
-                    <p className="truncate text-xs text-muted-foreground" title={user.bio}>
-                      {user.bio}
-                    </p>
+                    <p className="break-words text-xs text-muted-foreground">{user.bio}</p>
                   )}
                 </div>
               </ListCell>
@@ -2292,14 +2290,21 @@ function PendingInvitations({
             const expired = isExpired(invitation);
             return (
               <ListRow key={invitation.id} grid={PENDING_GRID}>
-                <ListCell className="flex min-w-0 items-center gap-2">
-                  <span className="min-w-0 truncate font-mono text-sm">{invitation.email}</span>
-                  {invitation.mail_status === "sent" && (
-                    <Badge tone="success">{t("pages.users.invitations.mailSent")}</Badge>
-                  )}
-                  {invitation.mail_status === "failed" && (
-                    <span title={invitation.mail_error ?? undefined}>
+                <ListCell className="grid min-w-0 gap-1">
+                  <span className="flex min-w-0 items-center gap-2">
+                    <span className="min-w-0 truncate font-mono text-sm">{invitation.email}</span>
+                    {invitation.mail_status === "sent" && (
+                      <Badge tone="success">{t("pages.users.invitations.mailSent")}</Badge>
+                    )}
+                    {invitation.mail_status === "failed" && (
                       <Badge tone="warning">{t("pages.users.invitations.mailFailed")}</Badge>
+                    )}
+                  </span>
+                  {/* why the mail did not go is what the admin acts on, so it is
+                      in the row rather than behind the badge (#3655) */}
+                  {invitation.mail_status === "failed" && invitation.mail_error && (
+                    <span className="break-words text-xs text-[color:var(--status-warning-text)]">
+                      {invitation.mail_error}
                     </span>
                   )}
                 </ListCell>

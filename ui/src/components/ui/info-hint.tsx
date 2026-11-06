@@ -1,4 +1,4 @@
-import { Info } from "lucide-react";
+import { Info, type LucideIcon } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 
@@ -19,10 +19,13 @@ export interface InfoHintProps {
   text: React.ReactNode;
   // accessible label for the trigger; defaults to a generic phrasing
   label?: string;
+  // the glyph, for a mark that says what it explains (a lock beside a locked
+  // model); name it with `label`, since the generic phrasing no longer fits
+  icon?: LucideIcon;
   className?: string;
 }
 
-export function InfoHint({ text, label, className }: InfoHintProps) {
+export function InfoHint({ text, label, icon: Icon = Info, className }: InfoHintProps) {
   const { t } = useTranslation();
   const [open, setOpen] = React.useState(false);
   const [trigger, setTrigger] = React.useState<HTMLButtonElement | null>(null);
@@ -63,7 +66,7 @@ export function InfoHint({ text, label, className }: InfoHintProps) {
           className,
         )}
       >
-        <Info className="h-3.5 w-3.5" />
+        <Icon className="h-3.5 w-3.5" />
       </button>
       {open && trigger && (
         <AnchoredPanel

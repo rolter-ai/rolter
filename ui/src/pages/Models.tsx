@@ -34,10 +34,12 @@ import {
 import { Button } from "@/components/ui/button";
 import { DeleteIconButton } from "@/components/ui/delete-icon-button";
 import { EmptyState } from "@/components/ui/empty-state";
+import { InfoHint } from "@/components/ui/info-hint";
 import { Segmented } from "@/components/ui/segmented";
 import { BreakerBadge } from "@/components/BreakerBadge";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { LabelChips, LabelFilterSelect, LabelSheet, useModelLabels } from "@/components/Labels";
+import { Tooltip } from "@/components/ui/tooltip";
 import {
   deleteModel,
   fetchModelPrices,
@@ -492,38 +494,34 @@ export default function Models() {
                     <LabelChips labels={labels.forModel(r.entry.org_id ?? "", r.name)} />
                   </span>
                   {r.locked && (
-                    <span
-                      className="flex-none cursor-help text-[color:var(--text-subtle)]"
-                      title={t("pages.models.lockedHint")}
-                    >
-                      <Lock className="h-3 w-3" />
-                    </span>
+                    <InfoHint
+                      icon={Lock}
+                      label={t("pages.models.lockedLabel")}
+                      text={t("pages.models.lockedHint")}
+                      className="flex-none text-[color:var(--text-subtle)]"
+                    />
                   )}
                 </ListCell>
                 <ListCell className="flex min-w-0 flex-col items-start gap-1">
-                  <span
-                    className={cn(
-                      "max-w-full truncate font-mono text-xs text-[color:var(--text-secondary)]",
-                      r.providerNames.length > 1 && "cursor-help",
-                    )}
-                    title={r.providerNames.length > 1 ? r.providerNames.join(", ") : undefined}
+                  <Tooltip
+                    className="max-w-full truncate font-mono text-xs text-[color:var(--text-secondary)]"
+                    content={r.providerNames.length > 1 ? r.providerNames.join("\n") : undefined}
                   >
                     {r.providerName}
-                  </span>
+                  </Tooltip>
                   <CacheReportingBadge state={r.cache} />
                 </ListCell>
                 <ListCell className="flex min-w-0 flex-col items-start gap-0.5">
                   <StrategyBadge strategy={r.strategy} />
-                  {/* the caveat is written in the row rather than behind a
-                      tooltip, which the table's scroll frame clips on the last
-                      rows; the sentence opens with the targets below */}
+                  {/* the caveat's name is written in the row, and its sentence,
+                      which opens with the targets below, is its tooltip */}
                   {hintKey && (
-                    <span
+                    <Tooltip
                       className="truncate text-2xs text-[color:var(--status-warning)]"
-                      title={t(hintKey)}
+                      content={t(hintKey)}
                     >
                       {t(CAVEAT_LABEL[hintKey] ?? "pages.models.strategyCaveat.other")}
-                    </span>
+                    </Tooltip>
                   )}
                 </ListCell>
                 <ListCell className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5">

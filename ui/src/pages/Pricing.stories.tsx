@@ -3,37 +3,39 @@ import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import Pricing from "./Pricing";
 import {
-  Harness,
+  addressOf,
+  AddressProbe,
   cancelConfirmation,
   clickWhenEnabled,
   confirmDestructive,
   expectAllowed,
-  expectEmptyState,
-  expectRefused,
-  NEEDS_SUPERADMIN,
   expectAnalyticsUnavailable,
+  expectEmptyState,
   expectListTable,
   expectLoadError,
   expectNoFalseEmpty,
   expectNoUxEvent,
+  expectRefused,
   expectSheetClosed,
   expectSkeleton,
+  expectToast,
   expectUxEvent,
+  Harness,
   json,
+  NEEDS_SUPERADMIN,
+  noteOf,
   openOptions,
   pending,
   pickOption,
-  recordUxEvents,
+  type Recorder,
   recording,
+  recordUxEvents,
   routes,
   scoped,
   sheet,
   Toasted,
-  expectToast,
+  triggerWithNote,
   uxEvents,
-  type Recorder,
-  AddressProbe,
-  addressOf,
 } from "./story-harness";
 import type { CurrencySettings, ModelPriceRow, PriceCatalogue } from "@/lib/api";
 import ru from "@/lib/i18n/locales/ru.json";
@@ -1675,9 +1677,9 @@ export const ShowsWhereEachPriceCameFrom: Story = {
     const imported = await rowOf(canvasElement, "gpt-4o");
     const badge = await imported.findByText("Catalogue");
     // the badge states the source, the snapshot day and that it can change
-    await expect(badge).toHaveAttribute("title", expect.stringContaining("LiteLLM"));
-    await expect(badge).toHaveAttribute("title", expect.stringContaining("Oct 1, 2026"));
-    await expect(badge).toHaveAttribute("title", expect.stringContaining("subject to change"));
+    await expect(noteOf(badge)).toContain("LiteLLM");
+    await expect(noteOf(badge)).toContain("Oct 1, 2026");
+    await expect(noteOf(badge)).toContain("subject to change");
     const own = await rowOf(canvasElement, "mistral-large");
     await expect(own.getByText("Override")).toBeInTheDocument();
     await expect(own.queryByText("Catalogue")).toBeNull();
@@ -1713,7 +1715,7 @@ export const ImportSearchesTheCatalogue: Story = {
     await expect(within(list).getAllByRole("listitem")).toHaveLength(3);
     await expect(within(list).getByText(/input 2\.50 · output 10\.00/)).toBeInTheDocument();
     // the model the operator priced is marked as one the import keeps
-    await expect(within(list).getByTitle(/an import keeps it/)).toBeInTheDocument();
+    await expect(triggerWithNote(list, /an import keeps it/)).toBeInTheDocument();
 
     await userEvent.type(dialog.getByRole("searchbox"), "claude");
     await waitFor(() =>

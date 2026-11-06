@@ -3,7 +3,15 @@ import * as React from "react";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import { OrgScopePicker, OrgScopePill, useOrgScope, type ScopeTarget } from "./OrgScopePicker";
-import { Harness, ORG, json, openOptions, type FetchStub } from "@/pages/story-harness";
+import {
+  type FetchStub,
+  Harness,
+  json,
+  noteOf,
+  openOptions,
+  ORG,
+  triggerWithNote,
+} from "@/pages/story-harness";
 
 const NOW = "2026-01-01T00:00:00Z";
 
@@ -203,7 +211,7 @@ export const ScopeChipCannotResolve: Story = {
     await waitFor(() => expect(canvas.getByText("Unresolved scope")).toBeVisible());
     await expect(canvas.queryByText("team-2")).toBeNull();
     // the id stays quotable in a support conversation
-    const chip = canvas.getByTitle(/could not be matched/);
-    await expect(chip.getAttribute("title")).toContain("team-2");
+    const chip = triggerWithNote(canvasElement, /could not be matched/);
+    await expect(noteOf(chip)).toContain("team-2");
   },
 };

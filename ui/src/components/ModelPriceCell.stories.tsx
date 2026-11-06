@@ -4,6 +4,7 @@ import { expect } from "storybook/test";
 import { formattersFor } from "@/lib/i18n/format";
 
 import { ModelPriceCell } from "./ModelPriceCell";
+import { noteOf } from "@/pages/story-harness";
 
 // the cell renders prices the catalogue screen has already formatted, so the
 // sample args come from the same formatter that screen uses
@@ -36,7 +37,7 @@ export const Unpriced: Story = {
     // the dash must not be what says it: "nothing to show" and "we cannot
     // account for this traffic" are different claims
     await expect(canvas.queryByText(/— · —/)).toBeNull();
-    await expect(badge).toHaveAttribute("title", expect.stringContaining("unpriced"));
+    await expect(noteOf(badge)).toContain("unpriced");
   },
 };
 

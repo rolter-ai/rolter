@@ -490,13 +490,9 @@ function Shell() {
                   {initials}
                 </span>
                 <div className="min-w-0">
-                  <p className="truncate text-sm font-medium text-foreground" title={shownName}>
-                    {shownName}
-                  </p>
+                  <p className="break-words text-sm font-medium text-foreground">{shownName}</p>
                   {shownName !== email && (
-                    <p className="truncate text-xs text-muted-foreground" title={email}>
-                      {email}
-                    </p>
+                    <p className="break-words text-xs text-muted-foreground">{email}</p>
                   )}
                   <p className="text-xs text-muted-foreground">{roleLine}</p>
                 </div>

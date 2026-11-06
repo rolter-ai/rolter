@@ -5,6 +5,7 @@ import { Badge } from "@/components/ui/badge";
 import { Combobox } from "@/components/ui/combobox";
 import { Field } from "@/components/ui/field";
 import { FilterCheckList } from "@/components/ui/filter-panel";
+import { Tooltip } from "@/components/ui/tooltip";
 import type { BusinessUnitRow, CustomerRow, ProviderRow } from "@/lib/api";
 
 // where a key's spend is charged, and how far it can reach (#1193).
@@ -145,21 +146,21 @@ export function AttributionBadges({ unit, customer }: { unit?: string; customer?
   const { t } = useTranslation();
   if (!unit && !customer) {
     return (
-      <span className="text-[color:var(--text-subtle)]" title={t("keyMint.unattributed")}>
+      <Tooltip className="text-[color:var(--text-subtle)]" content={t("keyMint.unattributed")}>
         &mdash;
-      </span>
+      </Tooltip>
     );
   }
   return (
     <div className="flex min-w-0 flex-wrap gap-1">
       {unit && (
-        <Badge tone="outline" title={t("keyMint.businessUnit")}>
+        <Badge tone="outline" hint={t("keyMint.businessUnit")}>
           <Building2 className="h-3 w-3" />
           <span className="min-w-0 truncate">{unit}</span>
         </Badge>
       )}
       {customer && (
-        <Badge tone="accent" title={t("keyMint.customer")}>
+        <Badge tone="accent" hint={t("keyMint.customer")}>
           <WalletCards className="h-3 w-3" />
           <span className="min-w-0 truncate">{customer}</span>
         </Badge>

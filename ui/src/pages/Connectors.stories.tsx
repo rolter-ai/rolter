@@ -16,13 +16,14 @@ import {
   expectSheetClosed,
   expectSkeleton,
   expectToast,
+  type FetchStub,
   Harness as ScreenHarness,
   json,
+  noteOf,
   recording,
   sheet,
-  Toasted,
-  type FetchStub,
   type StoryRole,
+  Toasted,
 } from "./story-harness";
 import type { ConnectorRow, PublicUrl } from "@/lib/api";
 import { formattersFor } from "@/lib/i18n/format";
@@ -198,7 +199,7 @@ export const Loaded: Story = {
     const [checked] = canvas.getAllByText(/^checked /);
     await expect(checked.tagName).toBe("TIME");
     await expect(checked).toHaveAttribute("datetime", CHECKED_AT);
-    await expect(checked).toHaveAttribute("title", formattersFor("en").dateTime(CHECKED_AT));
+    await expect(noteOf(checked)).toBe(formattersFor("en").dateTime(CHECKED_AT));
     await expect(checked).toHaveTextContent(
       en.pages.connectors.checkedAt.replace("{{time}}", formattersFor("en").relative(CHECKED_AT)),
     );

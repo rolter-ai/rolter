@@ -36,6 +36,7 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { Field } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { SwitchRow } from "@/components/ui/switch-row";
+import { Tooltip } from "@/components/ui/tooltip";
 import {
   collectorConfigUrl,
   createConnector,
@@ -477,13 +478,14 @@ function ConnectorsScreen() {
                 {/* a probe from last week must not read as one from today, so the
                     row says how long ago and keeps the full stamp for the hover */}
                 {c.health_checked_at && (
-                  <time
-                    dateTime={c.health_checked_at}
-                    title={fmt.dateTime(c.health_checked_at)}
+                  <Tooltip
+                    content={fmt.dateTime(c.health_checked_at)}
                     className="text-2xs text-[color:var(--text-subtle)]"
                   >
-                    {t("pages.connectors.checkedAt", { time: fmt.relative(c.health_checked_at) })}
-                  </time>
+                    <time dateTime={c.health_checked_at}>
+                      {t("pages.connectors.checkedAt", { time: fmt.relative(c.health_checked_at) })}
+                    </time>
+                  </Tooltip>
                 )}
                 {/* both name the connector: a grid of cards each offering "Edit"
                     is N buttons a screen reader cannot tell apart */}

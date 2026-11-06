@@ -48,7 +48,7 @@ export function CacheReportingBadge({
     );
   }
   return (
-    <Badge tone={TONE[state.status]} className={className} title={lines.join("\n")}>
+    <Badge tone={TONE[state.status]} className={className} hint={lines.join("\n")}>
       {state.status === "unprobed"
         ? label
         : t("cacheReporting.withTime", { label, when: fmt.relative(state.probedAt) })}

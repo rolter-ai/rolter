@@ -14,24 +14,26 @@ import {
   expectNoUxEvent,
   expectRefused,
   expectSheetClosed,
-  expectUxEvent,
-  openOptions,
-  PROJECT,
-  TEAM,
   expectToast,
+  expectUxEvent,
+  type FetchStub,
   Harness,
   json,
   NEEDS_ADMIN,
+  noteOf,
+  openOptions,
   ORG,
   pending,
   pickOption,
-  recordUxEvents,
+  PROJECT,
+  type Recorder,
   recording,
+  recordUxEvents,
   scoped,
   sheet,
+  TEAM,
   Toasted,
-  type FetchStub,
-  type Recorder,
+  triggerWithNote,
 } from "./story-harness";
 import type { OrgAuthPolicy, PublicUrl, SsoGroupMappingRow, SsoProviderRow } from "@/lib/api";
 import en from "@/lib/i18n/locales/en.json";
@@ -2407,8 +2409,8 @@ export const ScopeThatCannotBeResolved: Story = {
     await waitFor(() => expect(within(row).getByText("Unresolved scope")).toBeVisible());
     await expect(within(row).queryByText(TEAM.id)).toBeNull();
     // the id stays quotable in a support conversation
-    const chip = within(row).getByTitle(/could not be matched/);
-    await expect(chip.getAttribute("title")).toContain(TEAM.id);
+    const chip = triggerWithNote(row, /could not be matched/);
+    await expect(noteOf(chip)).toContain(TEAM.id);
 
     // an org-wide mapping never had a scope to resolve, so it is untouched
     const orgRow = canvas.getByText("platform-engineering").closest("li");

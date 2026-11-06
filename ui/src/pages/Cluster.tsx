@@ -19,6 +19,7 @@ import {
   type ClusterNodeRow,
 } from "@/lib/api";
 import { RelativeTime } from "@/components/RelativeTime";
+import { Tooltip } from "@/components/ui/tooltip";
 import { errorText } from "@/lib/error-copy";
 import { useFormat } from "@/lib/i18n/format";
 import { useToast } from "@/lib/toast";
@@ -61,11 +62,11 @@ function FormatCell({ node }: { node: ClusterNodeRow }) {
       ? undefined
       : t("pages.cluster.formatReads", { min: node.formats_min, max: node.formats_max });
   return node.served_format === null ? (
-    <span title={reads}>
-      <Badge tone="danger">{t("pages.cluster.formatRefused")}</Badge>
-    </span>
+    <Badge tone="danger" hint={reads}>
+      {t("pages.cluster.formatRefused")}
+    </Badge>
   ) : (
-    <span title={reads}>{node.served_format}</span>
+    <Tooltip content={reads}>{node.served_format}</Tooltip>
   );
 }
 
@@ -167,9 +168,9 @@ function ClusterScreen() {
       width: "1%",
       align: "right",
       render: (_v, row) => (
-        <span title={fmt.dateTime(row.last_seen_at)}>
+        <Tooltip content={fmt.dateTime(row.last_seen_at)}>
           <RelativeTime at={row.last_seen_at} />
-        </span>
+        </Tooltip>
       ),
     },
     {

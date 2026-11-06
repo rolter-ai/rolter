@@ -130,9 +130,7 @@ export function TeamSheet({
   const grantRow = (grant: MembershipRow) => (
     <li key={grant.id} className="flex items-center gap-2 text-sm">
       <User className="size-3.5 flex-none text-muted-foreground" aria-hidden />
-      <span className="min-w-0 flex-1 truncate" title={nameOf(grant.user_id)}>
-        {nameOf(grant.user_id)}
-      </span>
+      <span className="min-w-0 flex-1 break-words">{nameOf(grant.user_id)}</span>
       <Pill color="var(--text-secondary)" tint="var(--surface-subtle)">
         {t(`shell.roles.${grant.role}`, { defaultValue: grant.role })}
       </Pill>

@@ -18,6 +18,7 @@ import { DeleteIconButton } from "@/components/ui/delete-icon-button";
 import { EmptyState, EmptyStateLink } from "@/components/ui/empty-state";
 import { Input } from "@/components/ui/input";
 import { Overline } from "@/components/ui/overline";
+import { Tooltip } from "@/components/ui/tooltip";
 import {
   disableRouteComplexity,
   fetchRouteComplexity,
@@ -146,14 +147,14 @@ export default function ComplexityRouter() {
             {unread.map(({ route }) => (
               // deliberately not a button: an editor seeded from a read that
               // failed would save a fresh draft over contents nobody has seen
-              <span
+              <Tooltip
                 key={route.id}
-                title={t("pages.complexityRouter.policyUnknownHint")}
-                className="flex items-center gap-2 rounded-[8px] border border-dashed border-[color:var(--border-subtle)] px-3 py-2 font-mono text-xs text-[color:var(--text-subtle)]"
+                content={t("pages.complexityRouter.policyUnknownHint")}
+                className="flex items-center gap-2 rounded-[8px] border border-dashed border-[color:var(--border-subtle)] px-3 py-2 font-mono text-xs text-[color:var(--text-subtle)] no-underline"
               >
                 {route.model}
                 <CircleHelp aria-hidden className="h-3 w-3" />
-              </span>
+              </Tooltip>
             ))}
           </div>
         </div>

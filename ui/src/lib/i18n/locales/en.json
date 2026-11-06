@@ -1019,6 +1019,7 @@
         "origin": "Origin",
         "price": "In · out /Mtok"
       },
+      "lockedLabel": "Parameters locked",
       "lockedHint": "Parameters locked — client overrides for the locked params are ignored; server-side values are enforced. Edit the model to unlock.",
       "strategyCaveat": {
         "needsTelemetry": "needs telemetry",

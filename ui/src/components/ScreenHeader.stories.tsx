@@ -8,15 +8,16 @@ import en from "@/lib/i18n/locales/en.json";
 import ru from "@/lib/i18n/locales/ru.json";
 import { atMobile, expectNoHorizontalOverflow } from "@/lib/story-viewport";
 import {
+  type FetchStub,
+  type FleetAnswer,
+  type GatewayAnswer,
   Harness,
   json,
+  noteOf,
   pending,
   recording,
   StaleSession,
   withGateway,
-  type FetchStub,
-  type FleetAnswer,
-  type GatewayAnswer,
 } from "@/pages/story-harness";
 
 // the pill's copy, read out of the catalog so rewording it cannot leave these
@@ -137,8 +138,8 @@ export const Default: Story = {
       { dot: "bg-[color:var(--status-success)]", label: MUTED },
       true,
     );
-    await expect(pill.getAttribute("title")).toContain(GATEWAY.detail.healthy);
-    await expect(pill.getAttribute("title")).toContain(CHECKED_AT);
+    await expect(noteOf(pill)).toContain(GATEWAY.detail.healthy);
+    await expect(noteOf(pill)).toContain(CHECKED_AT);
   },
 };
 
@@ -155,7 +156,7 @@ export const Draining: Story = {
       },
       false,
     );
-    await expect(pill.getAttribute("title")).toContain(GATEWAY.detail.degraded);
+    await expect(noteOf(pill)).toContain(GATEWAY.detail.degraded);
   },
 };
 
@@ -176,7 +177,7 @@ export const Unreachable: Story = {
       },
       false,
     );
-    await expect(pill.getAttribute("title")).toContain(GATEWAY.detail.down);
+    await expect(noteOf(pill)).toContain(GATEWAY.detail.down);
   },
 };
 
@@ -198,8 +199,8 @@ export const SnapshotFormatUnsupported: Story = {
       },
       false,
     );
-    await expect(pill.getAttribute("title")).toContain(GATEWAY.detail.snapshotFormatUnsupported);
-    await expect(pill.getAttribute("title")).toContain("/deployment/upgrading#upgrade-order");
+    await expect(noteOf(pill)).toContain(GATEWAY.detail.snapshotFormatUnsupported);
+    await expect(noteOf(pill)).toContain("/deployment/upgrading#upgrade-order");
     await expect(pill).not.toHaveTextContent(GATEWAY.down);
   },
 };
@@ -221,7 +222,7 @@ export const AwaitingSnapshot: Story = {
       },
       false,
     );
-    await expect(pill.getAttribute("title")).toContain(GATEWAY.detail.awaitingSnapshot);
+    await expect(noteOf(pill)).toContain(GATEWAY.detail.awaitingSnapshot);
   },
 };
 
@@ -239,7 +240,7 @@ export const Unknown: Story = {
       { dot: SUBTLE_DOT, label: MUTED },
       false,
     );
-    await expect(pill.getAttribute("title")).toBe(GATEWAY.detail.unknown);
+    await expect(noteOf(pill)).toBe(GATEWAY.detail.unknown);
   },
 };
 
@@ -281,10 +282,8 @@ export const FleetHealthy: Story = {
       HEALTHY,
       true,
     );
-    await expect(pill.getAttribute("title")).toContain(
-      fill(GATEWAY.detail.fleet.healthy_other, { count: 3 }),
-    );
-    await expect(pill.getAttribute("title")).toContain(CHECKED_AT);
+    await expect(noteOf(pill)).toContain(fill(GATEWAY.detail.fleet.healthy_other, { count: 3 }));
+    await expect(noteOf(pill)).toContain(CHECKED_AT);
   },
 };
 
@@ -298,7 +297,7 @@ export const FleetLagging: Story = {
       WARNING,
       false,
     );
-    await expect(pill.getAttribute("title")).toContain(
+    await expect(noteOf(pill)).toContain(
       fill(GATEWAY.detail.fleet.behind_one, { count: 1, live: 3 }),
     );
   },
@@ -314,9 +313,7 @@ export const FleetStale: Story = {
       WARNING,
       false,
     );
-    await expect(pill.getAttribute("title")).toContain(
-      fill(GATEWAY.detail.fleet.stale_one, { count: 1 }),
-    );
+    await expect(noteOf(pill)).toContain(fill(GATEWAY.detail.fleet.stale_one, { count: 1 }));
   },
 };
 
@@ -325,7 +322,7 @@ export const FleetNoneLive: Story = {
   render: (args) => <HeaderStory {...args} fleet={DOWN_FLEET} />,
   play: async ({ canvasElement }) => {
     const pill = await expectPill(canvasElement, GATEWAY.fleet.none, DANGER, false);
-    await expect(pill.getAttribute("title")).toContain(GATEWAY.detail.fleet.none);
+    await expect(noteOf(pill)).toContain(GATEWAY.detail.fleet.none);
   },
 };
 
@@ -454,7 +451,7 @@ export const Checking: Story = {
       { dot: SUBTLE_DOT, label: MUTED },
       false,
     );
-    await expect(pill.getAttribute("title")).toBe(GATEWAY.detail.checking);
+    await expect(noteOf(pill)).toBe(GATEWAY.detail.checking);
     // the probe is in flight now; give the fetch counter a moment to re-render
     // the header before reading the button, or "not busy" is only the state it
     // started in
@@ -506,7 +503,7 @@ export const HeldThroughOneFailedCheck: Story = {
       expect(canvas.getByRole("status").querySelector("[aria-hidden]")).not.toHaveClass("rl-pulse"),
     );
     const pill = await expectPill(canvasElement, GATEWAY.healthy, healthy, false);
-    await expect(pill.getAttribute("title")).toContain(LAST_ANSWER_AT);
+    await expect(noteOf(pill)).toContain(LAST_ANSWER_AT);
   },
 };
 

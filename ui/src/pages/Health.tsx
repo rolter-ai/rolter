@@ -10,6 +10,7 @@ import { CardGridSkeleton } from "@/components/LoadingState";
 import { PageBody } from "@/components/screen";
 import { Badge } from "@/components/ui/badge";
 import { EmptyState, EmptyStateLink } from "@/components/ui/empty-state";
+import { Tooltip } from "@/components/ui/tooltip";
 import {
   fetchHealthTimeline,
   fetchMttr,
@@ -188,6 +189,10 @@ function Timeline({
         {buckets.map((b) => {
           const down = b.errors + b.timeouts > 0;
           return (
+            // ui-primitives-allow: one bar of a strip of buckets. the strip is a
+            // group named with its totals, and a tab stop per bar would put one
+            // per bucket in every target's row, so the hover detail stays the
+            // browser's own
             <div
               key={b.bucket}
               aria-hidden="true"
@@ -272,10 +277,10 @@ function LastEvent({ at, now }: { at: number | undefined; now: number }) {
   const stale = now - at > STALE_AFTER_MS;
   const when = fmt.relative(at, now);
   return (
-    <span
+    <Tooltip
+      content={fmt.dateTime(at)}
       data-testid="health-last-event"
       data-stale={stale || undefined}
-      title={fmt.dateTime(at)}
       className={cn(
         "inline-flex items-center gap-1 text-xs",
         stale ? "text-[color:var(--status-warning-text)]" : "text-muted-foreground",
@@ -283,7 +288,7 @@ function LastEvent({ at, now }: { at: number | undefined; now: number }) {
     >
       {stale && <AlertTriangle aria-hidden className="h-3 w-3 flex-none" />}
       {t(stale ? "pages.health.lastEventStale" : "pages.health.lastEvent", { when })}
-    </span>
+    </Tooltip>
   );
 }
 

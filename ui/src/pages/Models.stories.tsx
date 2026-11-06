@@ -3,30 +3,32 @@ import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import Models from "./Models";
 import {
-  Harness,
   cancelConfirmation,
   confirmDestructive,
-  expectEmptyState,
-  expectLoadError,
   expectAllowed,
+  expectEmptyState,
+  expectListTable,
+  expectLoadError,
+  expectNoFalseEmpty,
   expectNoUxEvent,
   expectRefused,
   expectSheetClosed,
-  expectListTable,
-  expectNoFalseEmpty,
   expectSkeleton,
+  expectToast,
+  expectUxEvent,
+  Harness,
   json,
   NEEDS_SUPERADMIN,
+  noteOf,
   pending,
+  type Recorder,
   recording,
+  recordUxEvents,
   routes,
   scoped,
   Toasted,
-  expectToast,
-  expectUxEvent,
-  recordUxEvents,
+  triggerWithNote,
   uxEvents,
-  type Recorder,
 } from "./story-harness";
 import type {
   BreakerStateDto,
@@ -219,8 +221,8 @@ export const MultiProviderRoute: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await waitFor(() => expect(canvas.getByText("gpt-4o")).toBeVisible());
-    await waitFor(() => expect(canvas.getByTitle("sim-a, sim-b")).toBeVisible());
-    await expect(canvas.getByTitle("sim-a, sim-b")).toHaveTextContent("sim-a +1 more");
+    await waitFor(() => expect(triggerWithNote(canvasElement, "sim-a\nsim-b")).toBeVisible());
+    await expect(triggerWithNote(canvasElement, "sim-a\nsim-b")).toHaveTextContent("sim-a +1 more");
   },
 };
 
@@ -432,13 +434,10 @@ export const ConfigRouteCarriesItsCaveat: Story = {
     // written in the row, where the table's scroll frame cannot clip it
     const caveat = await canvas.findByText("needs telemetry");
     await expect(caveat).toBeVisible();
-    await expect(caveat).toHaveAttribute(
-      "title",
-      expect.stringMatching(/falls back to least-load/),
-    );
-    await expect(await canvas.findByTitle("vllm-a, vllm-b, vllm-c")).toHaveTextContent(
-      "vllm-a +2 more",
-    );
+    await expect(noteOf(caveat)).toMatch(/falls back to least-load/);
+    await expect(
+      await waitFor(() => triggerWithNote(canvasElement, "vllm-a\nvllm-b\nvllm-c")),
+    ).toHaveTextContent("vllm-a +2 more");
     // and the whole sentence opens with the targets
     await userEvent.click(canvas.getByRole("button", { name: "3 targets for llama-70b" }));
     await expect(await canvas.findByRole("note")).toHaveTextContent(/falls back to least-load/);
@@ -514,7 +513,7 @@ export const SameNameInTwoOrganizations: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await waitFor(() => expect(canvas.getAllByText("gpt-4o")).toHaveLength(2));
-    await expect(canvas.getByTitle("sim-a, sim-b")).toBeVisible();
+    await expect(triggerWithNote(canvasElement, "sim-a\nsim-b")).toBeVisible();
     await expect(canvas.getByText("other-edge")).toBeVisible();
     // opening one row opens that row only
     await userEvent.click(canvas.getByRole("button", { name: "1 target for gpt-4o" }));
@@ -1448,7 +1447,7 @@ export const CacheReportingOneSilentProviderMakesTheRouteSilent: Story = {
     const canvas = within(canvasElement);
     const badge = await (await rowOf(canvas, "gpt-4o")).findByText(/^No cache metrics/);
     await expect(badge).toBeVisible();
-    await expect(badge).toHaveAttribute("title", expect.stringContaining("1 of 2 providers"));
+    await expect(noteOf(badge)).toContain("1 of 2 providers");
   },
 };
 

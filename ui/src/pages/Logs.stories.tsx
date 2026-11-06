@@ -5,33 +5,36 @@ import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import Logs from "./Logs";
 import {
-  Harness,
-  LOADING_LABEL,
+  addressOf,
+  AddressProbe,
+  captureFollowedLinks,
   expectEmptyState,
   expectGateAnswered,
   expectLoadError,
   expectNoUxEvent,
   expectSkeleton,
-  expectUxEvent,
-  json,
-  Toasted,
   expectToast,
+  expectUxEvent,
+  type FetchStub,
+  Harness,
+  json,
+  LOADING_LABEL,
+  noteOf,
   pending,
-  recordUxEvents,
+  type Recorder,
   recording,
+  recordUxEvents,
   routes,
   savedText,
   scoped,
-  stubSavePicker,
-  uxEvents,
-  type FetchStub,
-  type Recorder,
-  withSampleRate,
-  AddressProbe,
-  addressOf,
-  captureFollowedLinks,
   STORY_DOWNLOAD_URL,
+  stubSavePicker,
+  Toasted,
+  triggersWithNote,
+  triggerWithNote,
+  uxEvents,
   withExportTickets,
+  withSampleRate,
 } from "./story-harness";
 import type { BusinessUnitRow, CustomerRow, InvocationRow, VirtualKeyRow } from "@/lib/api";
 import { formattersFor } from "@/lib/i18n/format";
@@ -336,7 +339,7 @@ export const EveryRowShowsItsOwnTimestamp: Story = {
     for (const stamp of stamps) await expect(stamp).toMatch(/^\d{2}:\d{2}:\d{2}\.\d{3}$/);
     const time = canvasElement.querySelector("tbody tr time");
     await expect(time).toHaveAttribute("datetime", BURST[0].ts);
-    await expect(time).toHaveAttribute("title", fmt.dateTimeMs(BURST[0].ts));
+    await expect(noteOf(time)).toBe(fmt.dateTimeMs(BURST[0].ts));
   },
 };
 
@@ -359,7 +362,7 @@ export const UnpricedRequestsAreNotFree: Story = {
     await expect(label).toBeVisible();
     await expect(label.closest("td")).toHaveTextContent(/^unpriced$/);
     await expect(getComputedStyle(label).fontFamily).toMatch(/mono/i);
-    await expect(label.getAttribute("title")).toMatch(/no price is configured/i);
+    await expect(noteOf(label)).toMatch(/no price is configured/i);
     // only the row with no price carries it: the other one shows its money
     await expect(canvas.getAllByText("unpriced")).toHaveLength(1);
     await expect(canvas.getByText(fmt.currency(0.0123, "USD"))).toBeVisible();
@@ -384,7 +387,7 @@ export const AZeroCostThatIsNotUnpricedReadsAsFree: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(await canvas.findByText(fmt.currency(0, "USD"))).toBeInTheDocument();
-    await expect(canvas.queryByTitle(/no price is configured/i)).toBeNull();
+    await expect(triggersWithNote(canvasElement, /no price is configured/i)).toHaveLength(0);
     await expect(canvas.queryByText("unpriced")).toBeNull();
   },
 };
@@ -2341,14 +2344,18 @@ export const TheStatusCellHintsAtTheUpstreamStatusWhenItDiffers: Story = {
     const hinted = within(statusCellOf(canvasElement, 0));
     await expect(hinted.getByText("503")).toBeVisible();
     await expect(hinted.getByText("500")).toBeVisible();
-    await expect(hinted.getByTitle("Upstream returned 500 after 3 attempts")).toBeVisible();
-    // a screen reader hears the sentence, not a bare second number
-    await expect(statusCellOf(canvasElement, 0)).toHaveTextContent(
+    await expect(
+      triggerWithNote(statusCellOf(canvasElement, 0), "Upstream returned 500 after 3 attempts"),
+    ).toBeVisible();
+    // a screen reader hears the sentence after the number, as its description
+    await expect(hinted.getByText("500")).toHaveAccessibleDescription(
       "Upstream returned 500 after 3 attempts",
     );
 
     for (const index of [1, 2, 3, 4, 5, 6]) {
-      await expect(statusCellOf(canvasElement, index).querySelector("[title]")).toBeNull();
+      await expect(
+        statusCellOf(canvasElement, index).querySelector("[aria-describedby]"),
+      ).toBeNull();
       await expect(statusCellOf(canvasElement, index)).not.toHaveTextContent(/Upstream/);
     }
     // the hint takes its room from the column, not from the row's other cells
@@ -2575,7 +2582,7 @@ export const TheUpstreamHintFitsAtMobileInRussian: Story = {
     const sentence = ru.pages.logs.detail.upstream.answered_few
       .replace("{{status}}", "500")
       .replace("{{count}}", "3");
-    await expect(within(shape.cells(0)[2]).getByTitle(sentence)).toBeVisible();
+    await expect(triggerWithNote(shape.cells(0)[2]!, sentence)).toBeVisible();
     await expectStackedRow(canvasElement, 0, EXHAUSTED.model);
   },
 };
@@ -2632,7 +2639,7 @@ export const AnUnpricedRequestSaysSoInTheDrawer: Story = {
     // the reason is a sentence in the row, read by anyone who reads the drawer
     const reason = within(cost as HTMLElement).getByText(/no price is configured/i);
     await expect(reason).toBeVisible();
-    await expect(reason.getAttribute("title")).toBeNull();
+    await expect(reason).not.toHaveAttribute("title");
     await expect(cost).not.toHaveTextContent(fmt.currency(0, "USD"));
   },
 };
@@ -3714,7 +3721,7 @@ export const ALifecycleCallNamesItsOperationBesideTheModel: Story = {
     await expect(called.getByText("gpt-4o")).toBeVisible();
     const badge = called.getByText("Retrieve");
     await expect(badge).toBeVisible();
-    await expect(badge).toHaveAttribute("title", "Call on a stored response: Retrieve");
+    await expect(noteOf(badge)).toBe("Call on a stored response: Retrieve");
 
     for (const [index, model] of [
       [1, "claude-haiku"],
@@ -3814,8 +3821,7 @@ export const TheLifecycleOperationIsTranslated: Story = {
       await expect(modelCellOf(canvasElement, index)).toHaveTextContent(words[operation]);
     }
     const badge = within(modelCellOf(canvasElement, 0)).getByText(words.retrieve);
-    await expect(badge).toHaveAttribute(
-      "title",
+    await expect(noteOf(badge)).toBe(
       ru.pages.logs.detail.lifecycle.title.replace("{{operation}}", words.retrieve),
     );
 
@@ -3973,7 +3979,7 @@ export const AWithheldResponseIsMarkedAndStillCostsMoney: Story = {
     const canvas = within(canvasElement);
     const mark = await canvas.findByText("withheld");
     await expect(mark).toBeVisible();
-    await expect(mark.getAttribute("title")).toMatch(/billed for this response/i);
+    await expect(noteOf(mark)).toMatch(/billed for this response/i);
     await expect(canvas.getByText(fmt.currency(0.0456, "USD"))).toBeVisible();
     await userEvent.click(
       await canvas.findByRole("button", { name: /Open request details for guarded-model/i }),
@@ -4009,7 +4015,11 @@ export const AUsageUnknownRequestIsNotShownAsZero: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    const unknown = await canvas.findAllByTitle(/reported no usage/i);
+    const unknown = await waitFor(() => {
+      const found = triggersWithNote(canvasElement, /reported no usage/i);
+      expect(found).toHaveLength(2);
+      return found;
+    });
     await expect(unknown).toHaveLength(2);
     await expect(canvas.queryByText(fmt.currency(0, "USD"))).toBeNull();
     await userEvent.click(

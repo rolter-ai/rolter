@@ -183,15 +183,14 @@ function ToolBadges({ tools, stale = [] }: { tools: string[]; stale?: string[] }
     );
   // the last discovery no longer returned these, but they are kept so a tool
   // group naming one keeps working. the warning tone is the only visual cue,
-  // so the explanation is also text a screen reader gets
+  // so the explanation is the badge's hint, its description to a screen reader
   const gone = new Set(stale);
   return (
     <div className="flex flex-wrap gap-1.5">
       {tools.map((tool) =>
         gone.has(tool) ? (
-          <Badge key={tool} tone="warning" title={t("pages.mcpCatalog.discovery.staleTitle")}>
+          <Badge key={tool} tone="warning" hint={t("pages.mcpCatalog.discovery.staleTitle")}>
             {tool}
-            <span className="sr-only"> {t("pages.mcpCatalog.discovery.staleTitle")}</span>
           </Badge>
         ) : (
           <Badge key={tool} tone="outline">

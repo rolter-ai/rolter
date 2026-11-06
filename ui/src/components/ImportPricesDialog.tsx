@@ -251,7 +251,7 @@ function CatalogueRow({
           </span>
         </span>
         {isOverride && (
-          <Badge tone="neutral" title={t("pages.pricing.import.overrideKept")}>
+          <Badge tone="neutral" hint={t("pages.pricing.import.overrideKept")}>
             {t("priceProvenance.override")}
           </Badge>
         )}

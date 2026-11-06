@@ -1416,3 +1416,42 @@ export function withDocsBase(base: string | undefined) {
     };
   };
 }
+
+/**
+ * The note a `Tooltip`, or a `Badge` or `Pill` given a `hint`, carries (#3655).
+ *
+ * Read whether the note is open or not: it is the element the trigger's
+ * `aria-describedby` names, which stays in the document, hidden, while closed.
+ * Empty when the trigger has no note. Opening it on hover, focus and tap is the
+ * primitive's own story (`components/ui/tooltip.stories.tsx`).
+ */
+export function noteOf(element: Element | null | undefined): string {
+  // the element a query found may be inside the trigger (a `<time>` in its
+  // `Tooltip`) or hold it (the gateway pill around its label), so the trigger
+  // is the nearest element with a description, up and then down
+  const trigger =
+    element?.closest("[aria-describedby]") ?? element?.querySelector("[aria-describedby]");
+  const id = trigger?.getAttribute("aria-describedby");
+  if (!trigger || !id) return "";
+  return trigger.ownerDocument.getElementById(id)?.textContent ?? "";
+}
+
+/**
+ * Every trigger inside `scope` whose note matches `says`, in document order:
+ * the `getAllByTitle` of a `Tooltip`.
+ */
+export function triggersWithNote(scope: HTMLElement, says: string | RegExp): HTMLElement[] {
+  const matches = (note: string) => (typeof says === "string" ? note === says : says.test(note));
+  return Array.from(scope.querySelectorAll<HTMLElement>("[aria-describedby]")).filter((el) =>
+    matches(noteOf(el)),
+  );
+}
+
+/** The one trigger inside `scope` whose note matches `says`; throws on none or several. */
+export function triggerWithNote(scope: HTMLElement, says: string | RegExp): HTMLElement {
+  const found = triggersWithNote(scope, says);
+  if (found.length !== 1) {
+    throw new Error(`expected one trigger with the note ${String(says)}, found ${found.length}`);
+  }
+  return found[0]!;
+}

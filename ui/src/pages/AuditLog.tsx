@@ -17,6 +17,7 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { Input } from "@/components/ui/input";
 import { Segmented } from "@/components/ui/segmented";
 import { Table, type TableColumn } from "@/components/ui/table";
+import { Tooltip, useTooltip } from "@/components/ui/tooltip";
 import {
   auditLogExport,
   fetchAuditLogPage,
@@ -277,15 +278,15 @@ export default function AuditLog() {
       render: (v, row) =>
         v ? (
           emailOf(String(v)) ? (
-            <span title={String(v)}>{emailOf(String(v))}</span>
+            <Tooltip content={String(v)}>{emailOf(String(v))}</Tooltip>
           ) : Array.isArray(people) ? (
             // the list answered and the account is not on it, so a prefix of its
             // id would only look like a name. the whole id is in the open entry
-            <Badge tone="outline" title={String(v)}>
+            <Badge tone="outline" hint={String(v)}>
               {t(deployment ? "pages.auditLog.actorUnknown" : "pages.auditLog.actorNotInOrg")}
             </Badge>
           ) : (
-            <span title={String(v)}>{String(v).slice(0, 8)}</span>
+            <Tooltip content={String(v)}>{String(v).slice(0, 8)}</Tooltip>
           )
         ) : deployment && row.action.startsWith("auth.") ? (
           // a sign-in attempt against an address nobody registered has no actor
@@ -302,7 +303,7 @@ export default function AuditLog() {
             mono: true,
             render: (v: unknown) =>
               v ? (
-                <span title={String(v)}>{String(v).slice(0, 8)}</span>
+                <Tooltip content={String(v)}>{String(v).slice(0, 8)}</Tooltip>
               ) : (
                 <Badge tone="outline">{t("pages.auditLog.noOrg")}</Badge>
               ),
@@ -319,25 +320,12 @@ export default function AuditLog() {
       header: t("pages.auditLog.columns.target"),
       render: (v, row) => {
         if (!v) return "—";
-        const path = TARGET_PATH[v as string];
-        const label = (
-          <span
-            className="font-mono text-xs"
-            title={row.target_id ? String(row.target_id) : undefined}
-          >
-            {v as string}
-            {row.target_id ? `/${String(row.target_id).slice(0, 8)}` : ""}
-          </span>
-        );
-        return path ? (
-          <Link
-            to={path}
-            className="text-muted-foreground underline underline-offset-2 hover:text-foreground"
-          >
-            {label}
-          </Link>
-        ) : (
-          <span className="text-muted-foreground">{label}</span>
+        return (
+          <AuditTarget
+            type={v as string}
+            id={row.target_id ? String(row.target_id) : undefined}
+            path={TARGET_PATH[v as string]}
+          />
         );
       },
     },
@@ -626,5 +614,40 @@ function EntryDetail({
         />
       )}
     </section>
+  );
+}
+
+/**
+ * A row's target as `type/prefix`, linked to the screen it lives on where there
+ * is one. The whole id is the link's tooltip (#3655): a link is already
+ * focusable, so it carries the note itself rather than holding a second
+ * focusable element inside it.
+ */
+function AuditTarget({ type, id, path }: { type: string; id?: string; path?: string }) {
+  const { triggerProps, note } = useTooltip<HTMLAnchorElement>(id);
+  const label = (
+    <>
+      {type}
+      {id ? `/${id.slice(0, 8)}` : ""}
+    </>
+  );
+  if (!path) {
+    return (
+      <Tooltip content={id} className="font-mono text-xs text-muted-foreground">
+        {label}
+      </Tooltip>
+    );
+  }
+  return (
+    <>
+      <Link
+        to={path}
+        {...(id ? triggerProps : {})}
+        className="font-mono text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground"
+      >
+        {label}
+      </Link>
+      {id && note}
+    </>
   );
 }

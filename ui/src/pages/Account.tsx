@@ -361,7 +361,7 @@ function KeyCard({
           {/* see Keys.tsx: a Playground-minted key says so, because it is the
               one kind of key here nobody created on purpose (#944) */}
           {keyRow.purpose === PLAYGROUND_PURPOSE && (
-            <Badge tone="info" title={t("account.keys.card.playgroundHint")}>
+            <Badge tone="info" hint={t("account.keys.card.playgroundHint")}>
               {t("account.keys.card.playground")}
             </Badge>
           )}

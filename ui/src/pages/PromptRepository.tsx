@@ -56,6 +56,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Field } from "@/components/ui/field";
 import { FieldDiff, TextDiff } from "@/components/ui/text-diff";
 import { Textarea } from "@/components/ui/textarea";
+import { Tooltip } from "@/components/ui/tooltip";
 import {
   createPromptTemplate,
   createPromptTemplateVersion,
@@ -1735,12 +1736,12 @@ function PromptMakeLiveDialog({
                     <span className="w-32 shrink-0 text-xs text-muted-foreground">
                       {t(SCOPE_TYPE_KEYS[scope.scope_type])}
                     </span>
-                    <span
+                    <Tooltip
+                      content={scope.scope_id}
                       className={cn("min-w-0 flex-1 truncate", mono && "font-mono text-xs")}
-                      title={scope.scope_id}
                     >
                       {name}
-                    </span>
+                    </Tooltip>
                     {fresh.has(scopeKey(scope)) && (
                       <Badge tone="warning">{t("pages.promptRepo.publish.newBadge")}</Badge>
                     )}
@@ -1881,7 +1882,7 @@ function VersionScopes({
   const names = (scopes.data ?? []).map((scope) => scopeName(scope, lists).name);
   return (
     <VersionMeta>
-      <span className="min-w-0 truncate" title={names.join(", ") || undefined}>
+      <Tooltip className="min-w-0 truncate" content={names.join("\n")}>
         {scopes.isLoading
           ? t("pages.promptRepo.scopesLoading")
           : scopes.isError
@@ -1889,7 +1890,7 @@ function VersionScopes({
             : names.length === 0
               ? t("pages.promptRepo.scopesNone")
               : t("pages.promptRepo.scopesList", { names: names.join(", ") })}
-      </span>
+      </Tooltip>
     </VersionMeta>
   );
 }

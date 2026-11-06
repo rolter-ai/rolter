@@ -119,6 +119,7 @@ export type RuleId =
   | "hand-rolled-switch-row"
   | "bare-animation"
   | "untyped-button"
+  | "raw-title"
   | "duplicated-shape";
 
 export interface Violation {
@@ -199,6 +200,13 @@ const ADVICE: Record<RuleId, string> = {
     "an editor sheet's `<form>` submits it (#1205 found four). Write " +
     '`type="button"` (or `type="submit"` where it should submit), or use ' +
     '`Button` from `@/components/ui/button`, which defaults to `type="button"`.',
+  "raw-title":
+    "a `title` on text is a note only a mouse that waits ever reads: a keyboard, " +
+    "a finger and most screen magnifiers never see it, so an id behind its " +
+    "prefix or the meaning of a badge is lost to them (#3655). Wrap the text in " +
+    "`Tooltip` from `@/components/ui/tooltip`, give a `Badge` or `Pill` a " +
+    "`hint`, or put the text in the row. A focusable control that already has " +
+    "a name keeps its `title`; this rule only reads text elements.",
   "duplicated-shape":
     "the same element and the same design-system classes, hand-written in three " +
     "or more files — a primitive that was never extracted, which is how #1658 " +
@@ -472,6 +480,9 @@ export function checkSource(
       record(index, "shadowed-primitive", (shadowed[1] ?? shadowed[2])!);
     }
   });
+  for (const { index, tag } of rawTitles(masked)) {
+    record(index, "raw-title", `<${tag} title>`);
+  }
   for (const index of handRolledSwitchRows(masked)) {
     record(index, "hand-rolled-switch-row", "<Switch> in a hand-built row");
   }
@@ -518,6 +529,32 @@ export interface Shape {
 /** `p-[22px]`, `text-[color:var(--x)]`, `[grid-template-columns:…]` */
 function isArbitrary(token: string): boolean {
   return token.includes("[");
+}
+
+/**
+ * The text elements that carry a `title` (#3655), by the line the tag opens on,
+ * which is where a waiver goes.
+ *
+ * Text only: a `button`, `a` or `input` is focusable and named, so its `title`
+ * repeats a name a keyboard already hears (the gated buttons print the role
+ * they need under the label), and an `iframe` needs one to be named at all.
+ * `ListCell` is the one component on the list: it renders a `div` and passes
+ * the attribute through. `Badge` and `Pill` take a `hint` and have no `title`
+ * in their types, so the compiler holds those.
+ */
+const TEXT_TAGS =
+  /<(span|div|p|time|li|td|th|dd|dt|code|strong|em|small|section|ListCell)(?=[\s/>]|$)/g;
+
+export function rawTitles(masked: string): { index: number; tag: string }[] {
+  const found: { index: number; tag: string }[] = [];
+  for (const hit of masked.matchAll(TEXT_TAGS)) {
+    const start = hit.index;
+    const tag = masked.slice(start, endOfTag(masked, start));
+    // `data-title=` and `aria-title=` are not the attribute
+    if (!/(?<![\w-])title\s*=(?!=)/.test(tag)) continue;
+    found.push({ index: masked.slice(0, start).split("\n").length - 1, tag: hit[1]! });
+  }
+  return found;
 }
 
 /**
