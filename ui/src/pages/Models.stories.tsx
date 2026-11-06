@@ -120,7 +120,12 @@ export const Loaded: Story = {
     // a config-file route names its provider and its targets, which it used to
     // leave as dashes (#1979)
     await waitFor(() => expect(canvas.getByText("anthropic")).toBeVisible());
-    await expect(canvas.getByRole("button", { name: "1 target for claude-sonnet" })).toBeVisible();
+    await expect(canvas.getByText("1 target")).toBeVisible();
+    await expect(
+      canvas.getByRole("button", { name: "Route details for claude-sonnet" }),
+    ).toBeVisible();
+    // the tally counts routes, which is what a row is (#3685)
+    await expect(canvas.getByText(/^2 routes · /)).toBeVisible();
     // the strategy column sorts, like the columns beside it
     const strategy = canvas.getByRole("columnheader", { name: "Strategy" });
     await userEvent.click(within(strategy).getByRole("button"));
@@ -132,7 +137,7 @@ export const Loaded: Story = {
     // origin filter using Segmented radiogroup
     const originFilter = canvas.getByRole("radiogroup", { name: "Filter by origin" });
     await expect(originFilter).toBeInTheDocument();
-    const configRadio = within(originFilter).getByRole("radio", { name: "Config 1" });
+    const configRadio = within(originFilter).getByRole("radio", { name: "Config file 1" });
     await userEvent.click(configRadio);
     await expect(canvas.queryByText("gpt-4o")).toBeNull();
     await expect(canvas.getByText("claude-sonnet")).toBeVisible();
@@ -147,7 +152,7 @@ export const Loading: Story = {
   ),
   play: async ({ canvasElement }) => {
     await expectSkeleton(canvasElement);
-    await expectNoFalseEmpty(canvasElement, /No models yet/);
+    await expectNoFalseEmpty(canvasElement, /No routes yet/);
   },
 };
 
@@ -159,7 +164,7 @@ export const Empty: Story = {
     </Harness>
   ),
   play: async ({ canvasElement }) => {
-    await expectEmptyState(canvasElement, /No models yet/, /Add route/);
+    await expectEmptyState(canvasElement, /No routes yet/, /Add route/);
   },
 };
 
@@ -174,7 +179,7 @@ export const NoFilterMatch: Story = {
     const canvas = within(canvasElement);
     await waitFor(() => expect(canvas.getByText("gpt-4o")).toBeVisible());
     await userEvent.type(canvas.getByLabelText("Search models"), "nonexistent");
-    await waitFor(() => expect(canvas.getByText(/No models match/)).toBeVisible());
+    await waitFor(() => expect(canvas.getByText(/No routes match/)).toBeVisible());
     await expect(canvas.getByRole("button", { name: /Clear filters/i })).toBeInTheDocument();
   },
 };
@@ -188,7 +193,7 @@ export const Error_: Story = {
   ),
   play: async ({ canvasElement }) => {
     await expectLoadError(canvasElement, /failed to return models/i);
-    await expectNoFalseEmpty(canvasElement, /No models yet/);
+    await expectNoFalseEmpty(canvasElement, /No routes yet/);
   },
 };
 
@@ -200,7 +205,7 @@ export const Forbidden: Story = {
   ),
   play: async ({ canvasElement }) => {
     await expectLoadError(canvasElement, /You do not have access to models/);
-    await expectNoFalseEmpty(canvasElement, /No models yet/);
+    await expectNoFalseEmpty(canvasElement, /No routes yet/);
   },
 };
 
@@ -314,7 +319,9 @@ export const TargetSlaAtRisk: Story = {
     const canvas = within(canvasElement);
     await waitFor(() => expect(canvas.getByText("1 SLA at risk")).toBeVisible());
     await expect(canvas.queryByText(/below SLA/)).toBeNull();
-    await userEvent.click(await canvas.findByRole("button", { name: "3 targets for llama-70b" }));
+    await userEvent.click(
+      await canvas.findByRole("button", { name: "Route details for llama-70b" }),
+    );
     const list = await canvas.findByRole("list", { name: "Targets of llama-70b" });
     const lines = within(list).getAllByRole("listitem");
     await expect(lines[0]).toHaveTextContent(/99\.95% uptime$/);
@@ -354,7 +361,7 @@ export const CacheAwareMultiTargetRoute: Story = {
     await expect(getComputedStyle(strategy).textTransform).toBe("none");
     await expect(strategy.closest("span.font-mono")).not.toBeNull();
 
-    const toggle = await canvas.findByRole("button", { name: "3 targets for llama-70b" });
+    const toggle = await canvas.findByRole("button", { name: "Route details for llama-70b" });
     await expect(toggle).toHaveAttribute("aria-expanded", "false");
     await waitFor(() => expect(canvas.getByText("1 below SLA")).toBeVisible());
     // the weight column is gone: the first target's weight stood in for three
@@ -402,7 +409,7 @@ export const WeightedRouteSplitsByWeight: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await userEvent.click(await canvas.findByRole("button", { name: "2 targets for gpt-4o" }));
+    await userEvent.click(await canvas.findByRole("button", { name: "Route details for gpt-4o" }));
     const list = within(await canvas.findByRole("list", { name: "Targets of gpt-4o" }));
     const lines = list.getAllByRole("listitem");
     await expect(lines[0]).toHaveTextContent(/sim-a.*weight 3.*75% of traffic/);
@@ -442,7 +449,7 @@ export const ConfigRouteCarriesItsCaveat: Story = {
       await waitFor(() => triggerWithNote(canvasElement, "vllm-a\nvllm-b\nvllm-c")),
     ).toHaveTextContent("vllm-a +2 more");
     // and the whole sentence opens with the targets
-    await userEvent.click(canvas.getByRole("button", { name: "3 targets for llama-70b" }));
+    await userEvent.click(canvas.getByRole("button", { name: "Route details for llama-70b" }));
     await expect(await canvas.findByRole("note")).toHaveTextContent(/falls back to least-load/);
 
     // the read-only sheet lists the same targets instead of a blank draft
@@ -519,7 +526,8 @@ export const SameNameInTwoOrganizations: Story = {
     await expect(triggerWithNote(canvasElement, "sim-a\nsim-b")).toBeVisible();
     await expect(canvas.getByText("other-edge")).toBeVisible();
     // opening one row opens that row only
-    await userEvent.click(canvas.getByRole("button", { name: "1 target for gpt-4o" }));
+    const other = canvas.getByText("other-edge").closest('[role="row"]') as HTMLElement;
+    await userEvent.click(within(other).getByRole("button", { name: "Route details for gpt-4o" }));
     await expect(await canvas.findAllByRole("list", { name: "Targets of gpt-4o" })).toHaveLength(1);
   },
 };
@@ -623,6 +631,9 @@ export const SameNameDeletesOnlyThatOrganizationsModel: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await waitFor(() => expect(canvas.getAllByText("gpt-4o")).toHaveLength(2));
+    // the scope's own row is deleted as its route, the other organization's as
+    // its model (#3685)
+    await expect(await canvas.findByRole("button", { name: "Delete route gpt-4o" })).toBeVisible();
     const other = canvas.getByText("other-edge").closest('[role="row"]') as HTMLElement;
     await userEvent.click(within(other).getByRole("button", { name: "Delete model gpt-4o" }));
     await confirmDestructive(/every route and target/i, "Delete model");
@@ -631,7 +642,10 @@ export const SameNameDeletesOnlyThatOrganizationsModel: Story = {
   },
 };
 
-/** A route with no target has nowhere to send a request, and the row says so. */
+/**
+ * A route with no target has nowhere to send a request: the row says so, and
+ * so does the route beneath it.
+ */
 export const RouteWithNoTargets: Story = {
   render: () => (
     <Harness
@@ -650,17 +664,31 @@ export const RouteWithNoTargets: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await waitFor(() => expect(canvas.getByText("no targets")).toBeVisible());
-    await expect(canvas.queryByRole("button", { name: /targets for/ })).toBeNull();
+    await userEvent.click(canvas.getByRole("button", { name: /^Route details for / }));
+    await expect(await canvas.findByText("No targets yet.")).toBeVisible();
   },
 };
 
 // a catalog with one db-backed row that has a route behind it, so the edit
-// control is enabled for anyone the gate allows
+// control is enabled for anyone the gate allows, and one of another
+// organization's projects. the scope project's row is deleted as its route;
+// the other is not the scope's route to delete, so it takes the
+// deployment-wide model delete (#3685)
+const OTHER_ORG_MODEL: EffectiveModelDto = {
+  model: "gpt-4o-mini",
+  strategy: "round_robin",
+  targets: 1,
+  route_targets: [{ provider: "other-edge", model: null, weight: 1 }],
+  org_id: "org-2",
+  project_id: "project-9",
+  source: "db",
+};
+
 const oneRoutedModel = routes([
   ["/model-prices", () => []],
   ["/currency", () => ({ base: "USD", rates: {} })],
   ["/health/uptime", () => ({ data: [] })],
-  ["/models", () => [MODELS[0]]],
+  ["/models", () => [MODELS[0], OTHER_ORG_MODEL]],
   ["/providers", () => FANOUT_PROVIDERS],
   ["/routes", () => [FANOUT_ROUTE]],
 ]);
@@ -678,7 +706,7 @@ export const DeleteRejectedByTheServer: Story = {
     <Harness
       fetchStub={scoped(async (input, init) =>
         init?.method === "DELETE"
-          ? json({ error: { message: "gpt-4o is still referenced by 2 virtual keys" } }, 409)
+          ? json({ error: { message: "gpt-4o-mini is still referenced by 2 virtual keys" } }, 409)
           : oneRoutedModel(input, init),
       )}
     >
@@ -691,7 +719,7 @@ export const DeleteRejectedByTheServer: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await userEvent.click(await canvas.findByRole("button", { name: "Delete model gpt-4o" }));
+    await userEvent.click(await canvas.findByRole("button", { name: "Delete model gpt-4o-mini" }));
     const dialog = within(await within(document.body).findByRole("dialog"));
     await userEvent.click(dialog.getByRole("button", { name: "Delete model" }));
     // the stub refuses in the same tick, which ConfirmDialog used to miss
@@ -734,10 +762,10 @@ export const DeleteIsConfirmedAndReported: Story = {
   },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    const remove = await canvas.findByRole("button", { name: "Delete model gpt-4o" });
+    const remove = await canvas.findByRole("button", { name: "Delete model gpt-4o-mini" });
     await userEvent.click(remove);
     await expect(
-      await within(document.body).findByRole("heading", { name: "Delete model gpt-4o?" }),
+      await within(document.body).findByRole("heading", { name: "Delete model gpt-4o-mini?" }),
     ).toBeInTheDocument();
     await cancelConfirmation();
     modelDeletes.expectNotSent("DELETE", "/models/");
@@ -748,7 +776,7 @@ export const DeleteIsConfirmedAndReported: Story = {
 
     await userEvent.click(remove);
     await confirmDestructive(/every route and target/i, "Delete model");
-    await modelDeletes.expectSent("DELETE", "/models/gpt-4o");
+    await modelDeletes.expectSent("DELETE", "/models/gpt-4o-mini?org_id=org-2");
     await expectSheetClosed();
     const submit = await expectUxEvent("form_submit", "model-delete");
     await expect(submit.outcome).toBe("ok");
@@ -756,12 +784,13 @@ export const DeleteIsConfirmedAndReported: Story = {
   },
 };
 
-// The two gates on this screen take different authorities (#1606).
+// The gates on this screen take different authorities (#1606).
 //
-// Adding a model creates a *route*, which is admin, while deleting one is the
+// Adding a model creates a *route*, which is admin, and so is deleting the
+// scope project's route, while forgetting another organization's model is the
 // deployment-wide `model:delete` a superadmin alone holds — so an admin is
-// refused the delete and offered the create, and a story that asserted one
-// sentence for both would pass against either gate keyed to the other.
+// refused that delete and offered the rest, and a story that asserted one
+// sentence for all would pass against any gate keyed to another.
 export const RefusedToAViewer: Story = {
   render: () => (
     <Harness fetchStub={oneRoutedModel} role="viewer">
@@ -771,7 +800,8 @@ export const RefusedToAViewer: Story = {
   play: async ({ canvasElement }) => {
     await expectRefused(canvasElement, /add route/i);
     await expectRefused(canvasElement, "Edit gpt-4o");
-    await expectRefused(canvasElement, "Delete model gpt-4o", NEEDS_SUPERADMIN);
+    await expectRefused(canvasElement, "Delete route gpt-4o");
+    await expectRefused(canvasElement, "Delete model gpt-4o-mini", NEEDS_SUPERADMIN);
   },
 };
 
@@ -789,11 +819,17 @@ export const RefusedRowRecordsTheReach: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expectRefused(canvasElement, "Delete model gpt-4o", NEEDS_SUPERADMIN);
-    await userEvent.click(canvas.getByRole("button", { name: "Delete model gpt-4o" }), {
+    await expectRefused(canvasElement, "Delete model gpt-4o-mini", NEEDS_SUPERADMIN);
+    await userEvent.click(canvas.getByRole("button", { name: "Delete model gpt-4o-mini" }), {
       pointerEventsCheck: 0,
     });
     await expectUxEvent("refused_click", "model-delete:model:delete");
+
+    await expectRefused(canvasElement, "Delete route gpt-4o");
+    await userEvent.click(canvas.getByRole("button", { name: "Delete route gpt-4o" }), {
+      pointerEventsCheck: 0,
+    });
+    await expectUxEvent("refused_click", "route-delete:route:delete");
 
     await expectRefused(canvasElement, "Edit gpt-4o");
     await userEvent.click(canvas.getByRole("button", { name: "Edit gpt-4o" }), {
@@ -810,10 +846,11 @@ export const DeleteRefusedToAnAdmin: Story = {
     </Harness>
   ),
   play: async ({ canvasElement }) => {
-    await expectRefused(canvasElement, "Delete model gpt-4o", NEEDS_SUPERADMIN);
+    await expectRefused(canvasElement, "Delete model gpt-4o-mini", NEEDS_SUPERADMIN);
     // the route half of the screen is still theirs, read after the gate has
     // answered rather than before it (#1707)
     await expectAllowed(canvasElement, "Edit gpt-4o");
+    await expectAllowed(canvasElement, "Delete route gpt-4o");
   },
 };
 
@@ -928,7 +965,7 @@ export const NoLabelMatch: Story = {
     await userEvent.click(
       await within(document.body).findByRole("option", { name: "tier=legacy" }),
     );
-    await waitFor(() => expect(canvas.getByText(/No models match/i)).toBeVisible());
+    await waitFor(() => expect(canvas.getByText(/No routes match/i)).toBeVisible());
     await userEvent.click(canvas.getByRole("button", { name: /Clear filters/i }));
     await waitFor(() => expect(canvas.getByText("gpt-4o")).toBeVisible());
   },
@@ -1271,7 +1308,7 @@ export const BreakerOpenAndProbing: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    const toggle = await canvas.findByRole("button", { name: "3 targets for llama-70b" });
+    const toggle = await canvas.findByRole("button", { name: "Route details for llama-70b" });
     await waitFor(() => expect(canvas.getByText("Breaker open on 2 gateways")).toBeVisible());
     await userEvent.click(toggle);
     const list = await canvas.findByRole("list", { name: "Targets of llama-70b" });
@@ -1333,11 +1370,13 @@ export const SameNameInTwoOrganizationsKeepsItsOwnHealth: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await waitFor(() =>
-      expect(canvas.getAllByRole("button", { name: "1 target for llama-70b" })).toHaveLength(2),
+      expect(canvas.getAllByRole("button", { name: "Route details for llama-70b" })).toHaveLength(
+        2,
+      ),
     );
     // the row-level badge is on one row only
     await waitFor(() => expect(canvas.getAllByText("Breaker open on 2 gateways")).toHaveLength(1));
-    for (const toggle of canvas.getAllByRole("button", { name: "1 target for llama-70b" })) {
+    for (const toggle of canvas.getAllByRole("button", { name: "Route details for llama-70b" })) {
       await userEvent.click(toggle);
     }
     const lists = await canvas.findAllByRole("list", { name: "Targets of llama-70b" });
@@ -1364,7 +1403,7 @@ export const BreakerClosedShowsNothing: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await canvas.findByRole("button", { name: "3 targets for llama-70b" });
+    await canvas.findByRole("button", { name: "Route details for llama-70b" });
     await waitFor(() => expect(canvas.getByText("1 below SLA")).toBeVisible());
     await expect(canvas.queryByTestId("breaker-badge")).toBeNull();
   },
@@ -1379,7 +1418,7 @@ export const BreakerStateUnavailable: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await canvas.findByRole("button", { name: "3 targets for llama-70b" });
+    await canvas.findByRole("button", { name: "Route details for llama-70b" });
     await waitFor(() => expect(canvas.getByText("1 below SLA")).toBeVisible());
     await expect(canvas.queryByTestId("breaker-badge")).toBeNull();
     await expect(canvas.queryByRole("alert")).toBeNull();
@@ -1524,7 +1563,7 @@ export const ARowSaysOnlyWhatIsWrong: Story = {
       (await rowOf(canvas, "claude-sonnet")).queryByText(en.pages.models.disabled),
     ).toBeNull();
     // the origin is a word, not "db" in the success green
-    const origin = off.getByText(en.pages.models.origin.db);
+    const origin = off.getByText(en.pages.models.where.project);
     await expect(getComputedStyle(origin).color).not.toBe(
       resolveColorToken("--status-success-text"),
     );

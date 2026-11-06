@@ -1,16 +1,28 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { StrategyBadge } from "@/components/StrategyBadge";
-import { Boxes, ChevronRight, Lock, Tag } from "lucide-react";
+import { Boxes, ChevronRight, Lock, Pencil, Play, Tag } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 import { Link } from "react-router";
 
+import { AnalyticsUnavailable } from "@/components/AnalyticsUnavailable";
 import { CacheReportingBadge } from "@/components/CacheReportingBadge";
+import { CopyButton } from "@/components/CopyButton";
 import { GatedButton } from "@/components/GatedButton";
 import { LoadError } from "@/components/LoadError";
 import { ListSkeleton } from "@/components/LoadingState";
 import { ModelPriceCell } from "@/components/ModelPriceCell";
 import { ModelSheet, type ModelSheetMode } from "@/components/ModelSheet";
+import {
+  GatewayConfigNote,
+  gatewayConvergence,
+  RouteTrafficCell,
+  RouteVariants,
+  TRAFFIC_WINDOW_HOURS,
+  trafficFor,
+  type RouteTraffic,
+} from "@/components/RouteDetail";
+import { RouteSheet } from "@/components/RouteSheet";
 import { RouteTargetList } from "@/components/RouteTargetList";
 import { StrategyHint } from "@/components/StrategyHint";
 import {
@@ -33,17 +45,27 @@ import {
   primaryColumn,
 } from "@/components/screen";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { DeleteIconButton } from "@/components/ui/delete-icon-button";
 import { EmptyState } from "@/components/ui/empty-state";
 import { InfoHint } from "@/components/ui/info-hint";
 import { Segmented } from "@/components/ui/segmented";
 import { BreakerBadge } from "@/components/BreakerBadge";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
-import { LabelChips, LabelFilterSelect, LabelSheet, useModelLabels } from "@/components/Labels";
+import {
+  LabelChips,
+  LabelFilterSelect,
+  LabelSheet,
+  useModelLabels,
+  useSubjectLabels,
+} from "@/components/Labels";
 import { Tooltip } from "@/components/ui/tooltip";
 import {
+  AnalyticsUnavailableError,
   deleteModel,
+  deleteRoute,
+  fetchAnalyticsByModel,
+  fetchClusterNodes,
   fetchModelPrices,
   fetchModels,
   fetchProviders,
@@ -53,6 +75,7 @@ import {
   useBreakerState,
   type EffectiveModelDto,
   type RouteRow,
+  type RouteVariantRow,
 } from "@/lib/api";
 import { errorText } from "@/lib/error-copy";
 import { useFormat } from "@/lib/i18n/format";
@@ -66,14 +89,25 @@ import { cn } from "@/lib/utils";
 import { useProviderCacheProbes } from "@/lib/use-provider-cache-probes";
 import { useScreenReady } from "@/lib/ux-react";
 
-// model · provider · strategy · targets · origin · price · actions. strategy
-// is sized for `precise_cache_aware`, the longest identifier it has to hold,
-// and the actions for a db row's three buttons in russian, the longer catalog:
-// at 108px they spilled over the price cell, which the weight column beside it
-// used to hide
-const GRID = `${primaryColumn(1.25)} 0.8fr 1.05fr 0.85fr 1fr 0.95fr 168px`;
+// model · provider · strategy · targets · traffic · origin · price · actions.
+// strategy is sized for `precise_cache_aware`, the longest identifier it has
+// to hold, and the actions for a db row's three buttons in russian, the longer
+// catalog: at 108px they spilled over the price cell, which the weight column
+// beside it used to hide
+const GRID = `${primaryColumn(1.25)} 0.8fr 1fr 0.8fr 0.9fr 0.85fr 0.95fr 168px`;
 
-type Origin = "all" | "config" | "db";
+/** how often the gateway list is asked again while one has not caught up */
+const NODES_POLL_MS = 10_000;
+
+/**
+ * Where a route is defined, which is what the catalog's count and its filter
+ * are about: the scope's project, another project the caller can see, or the
+ * gateway's config file. The catalog lists them all; Routing Rules listed the
+ * first only, which is why the two counted differently (#3685).
+ */
+type Where = "project" | "other" | "config";
+
+type WhereFilter = "all" | Where;
 
 // the few words a row has room for, per caveat `strategyHintKey` can name
 const CAVEAT_LABEL: Record<string, string> = {
@@ -86,6 +120,11 @@ interface CatalogRow {
   id: string;
   name: string;
   entry: EffectiveModelDto;
+  /**
+   * the stored route behind the row, read with its targets and variants. Only
+   * the scope project's routes have one, since that is the list the scope can
+   * read; it is what the route's edit, delete and labels act on
+   */
   route: RouteRow | null;
   providerName: string;
   /**
@@ -109,8 +148,14 @@ interface CatalogRow {
    */
   targets: RouteTargetView[] | null;
   targetCount: number;
+  /**
+   * the weighted variants the route routes through instead of its own targets
+   * (#3343). Known for the scope project's routes only, the ones read with them
+   */
+  variants: RouteVariantRow[];
   strategy: string;
   origin: "config" | "db";
+  where: Where;
   locked: boolean;
   enabled: boolean;
   inPrice: string;
@@ -123,11 +168,15 @@ interface CatalogRow {
    * it only knows the former.
    */
   priced: boolean | null;
+  /** requests over the window, for sorting; `null` where the rollup has no figure for the row */
+  traffic: RouteTraffic | null;
 }
 
-// model catalog: search + origin chips over a
-// sortable grid table with modality/origin pills, the param-lock tooltip, and
-// the unified add/edit/view model sheet
+// model catalog: every route the gateway serves that the caller can see, one
+// row per route, with search, a where-defined filter and sortable columns.
+// a row opens beneath itself into the route: its targets or variants, health,
+// labels and the ways to try or re-point it. Routing Rules used to show the
+// same routes as cards; the two became this one screen (#3685)
 export default function Models() {
   const { t } = useTranslation();
   const toast = useToast();
@@ -146,8 +195,11 @@ export default function Models() {
   useScreenReady(!models.isLoading);
 
   const routes = useQuery({
-    queryKey: ["routes", scope.projectId],
-    queryFn: () => fetchRoutes(scope.projectId as string),
+    // the targets and variants ride along, so the project's routes cost one
+    // request however many there are (#3031, #3343). the key sits under
+    // ["routes", project], which every route mutation already invalidates
+    queryKey: ["routes", scope.projectId, "targets"],
+    queryFn: () => fetchRoutes(scope.projectId as string, ["targets", "variants"]),
     enabled: !!scope.projectId,
   });
   const providers = useQuery({
@@ -160,6 +212,9 @@ export default function Models() {
   // org's provider list does not hold (or a list not read yet) maps to no id,
   // which is "never probed" once the verdicts themselves have been read
   const providerIdByName = new Map((providers.data ?? []).map((p) => [p.name, p.id]));
+  // a variant's target names its provider by id
+  const providerName = (id: string) =>
+    providers.data?.find((p) => p.id === id)?.name ?? id.slice(0, 8);
   const prices = useQuery({
     queryKey: ["model-prices"],
     queryFn: fetchModelPrices,
@@ -170,6 +225,9 @@ export default function Models() {
   // name: two organizations that both serve a `gpt-4o` are two entries, each
   // with its own targets
   const hasModels = (models.data?.length ?? 0) > 0;
+  const inProject = (entry: EffectiveModelDto) =>
+    !!entry.project_id && entry.project_id === scope.projectId;
+  const hasProjectRoutes = (models.data ?? []).some(inProject);
   // health is shown where it is known: the uptime rollup needs ClickHouse and
   // analytics access, and without either the targets simply carry no health.
   // the key is the Health screen's, so the two share an answer
@@ -188,14 +246,39 @@ export default function Models() {
     enabled: hasModels && healthKnown,
     retry: false,
   });
+  // requests and errors per public model over the last day, for the scope's
+  // project. it needs ClickHouse, which a deployment may run without: that is
+  // an answer the screen states once, never a zero on every row
+  const traffic = useQuery({
+    queryKey: ["route-traffic", scope.projectId, TRAFFIC_WINDOW_HOURS],
+    queryFn: async () => {
+      const since = new Date(Date.now() - TRAFFIC_WINDOW_HOURS * 3_600_000).toISOString();
+      const rows = await fetchAnalyticsByModel({ since, project: scope.projectId as string });
+      return Array.isArray(rows) ? rows : [];
+    },
+    enabled: hasProjectRoutes,
+    retry: false,
+  });
+  // whether the gateways have picked a change up: the cluster inventory
+  // Cluster reads, under its key. only a gateway that is behind is polled
+  const nodes = useQuery({
+    queryKey: ["cluster-nodes"],
+    queryFn: fetchClusterNodes,
+    enabled: hasModels,
+    retry: false,
+    refetchInterval: (query) =>
+      Array.isArray(query.state.data) && gatewayConvergence(query.state.data).lagging > 0
+        ? NODES_POLL_MS
+        : false,
+  });
   // the gateways' live breakers, drawn beside each target's health where one is
   // tripped; a failed read leaves the rows as they were
   const breakers = useBreakerState();
   const [expanded, setExpanded] = React.useState<ReadonlySet<string>>(() => new Set());
-  const toggleTargets = (model: string) =>
+  const toggleDetail = (id: string) =>
     setExpanded((open) => {
       const next = new Set(open);
-      if (!next.delete(model)) next.add(model);
+      if (!next.delete(id)) next.add(id);
       return next;
     });
   const detailPrefix = React.useId();
@@ -208,16 +291,29 @@ export default function Models() {
   // a model label is keyed by the model's name, not by a row id: the catalog is
   // deployment-wide and has no row of its own to point at
   const labels = useModelLabels();
-  const [origin, setOrigin] = React.useState<Origin>("all");
+  // a route's own labels are a second set, keyed by the route's row id and
+  // owned by its organization. they stay readable on the route's detail until
+  // the two kinds are folded into one (#3685)
+  const routeLabels = useSubjectLabels(scope.orgId, "route");
+  const [labellingRoute, setLabellingRoute] = React.useState<RouteRow | null>(null);
+  const [where, setWhere] = React.useState<WhereFilter>("all");
   const [unpricedOnly, setUnpricedOnly] = React.useState(false);
-  const { sort, cycle, apply } = useSort<"name" | "provider" | "strategy" | "targets" | "origin">();
+  const { sort, cycle, apply } = useSort<
+    "name" | "provider" | "strategy" | "targets" | "traffic" | "origin"
+  >();
   const [sheet, setSheet] = React.useState<{
     mode: ModelSheetMode;
     route?: RouteRow | null;
     configModel?: EffectiveModelDto | null;
     configTargets?: RouteTargetView[] | null;
   } | null>(null);
+  // the route whose strategy, enabled flag, targets and variants are being
+  // edited in the route sheet (#2134, #391)
+  const [editingRoute, setEditingRoute] = React.useState<RouteRow | null>(null);
   const [deleteTarget, setDeleteTarget] = React.useState<EffectiveModelDto | null>(null);
+  // a route is the public name clients call; deleting one breaks them silently,
+  // so it is confirmed by name before anything leaves (#1179)
+  const [deleteRouteTarget, setDeleteRouteTarget] = React.useState<RouteRow | null>(null);
 
   const routeByModel = React.useMemo(() => {
     const map = new Map<string, RouteRow>();
@@ -233,10 +329,7 @@ export default function Models() {
   const rows: CatalogRow[] = (models.data ?? []).map((entry) => {
     // the scope's routes are one project's, and another organization may
     // serve the same name (#1857): only an entry of that project is its row
-    const route =
-      entry.project_id && entry.project_id === scope.projectId
-        ? (routeByModel.get(entry.model) ?? null)
-        : null;
+    const route = inProject(entry) ? (routeByModel.get(entry.model) ?? null) : null;
     // likewise the provider ids are the scope organization's: another
     // organization's row is not judged on them (a config-file row, which has
     // no organization, reads as not probed, as before)
@@ -258,6 +351,7 @@ export default function Models() {
     const price = prices.data?.find((p) => p.model === entry.model);
     const policy = route?.param_policy as Record<string, unknown> | undefined;
     const deny = Array.isArray(policy?.deny) ? (policy.deny as unknown[]) : [];
+    const origin = entry.source === "config" ? "config" : "db";
     return {
       // the model name is shared across organizations, so it cannot key a row
       id: `${entry.org_id ?? ""}/${entry.model}`,
@@ -284,8 +378,10 @@ export default function Models() {
           : null,
       targets,
       targetCount: targets?.length ?? entry.targets,
+      variants: route?.variants ?? [],
       strategy: entry.strategy,
-      origin: entry.source === "config" ? "config" : "db",
+      origin,
+      where: origin === "config" ? "config" : inProject(entry) ? "project" : "other",
       locked: policy?.mode === "deny" || deny.length > 0,
       enabled: route?.enabled ?? true,
       // a price row carries the currency it was written in, so the cell says
@@ -293,13 +389,14 @@ export default function Models() {
       inPrice: price ? fmt.currency(Number(price.input_per_mtok), price.currency) : "—",
       outPrice: price ? fmt.currency(Number(price.output_per_mtok), price.currency) : "—",
       priced: pricesKnown ? !!price : null,
+      traffic: inProject(entry) && traffic.isSuccess ? trafficFor(traffic.data, entry.model) : null,
     };
   });
 
   const q = search.trim().toLowerCase();
   const filtered = rows.filter(
     (r) =>
-      (origin === "all" || r.origin === origin) &&
+      (where === "all" || r.where === where) &&
       (!unpricedOnly || r.priced === false) &&
       labels.matches(r.entry.org_id ?? "", r.name, labelFilter) &&
       (!q ||
@@ -311,13 +408,15 @@ export default function Models() {
     provider: (r) => r.providerName,
     strategy: (r) => r.strategy,
     targets: (r) => r.targetCount,
-    origin: (r) => r.origin,
+    traffic: (r) => r.traffic?.requests ?? -1,
+    origin: (r) => r.where,
   });
 
-  const counts = {
+  const counts: Record<WhereFilter, number> = {
     all: rows.length,
-    config: rows.filter((r) => r.origin === "config").length,
-    db: rows.filter((r) => r.origin === "db").length,
+    project: rows.filter((r) => r.where === "project").length,
+    other: rows.filter((r) => r.where === "other").length,
+    config: rows.filter((r) => r.where === "config").length,
   };
 
   const providerCount = new Set(rows.flatMap((r) => r.providerNames)).size;
@@ -326,18 +425,24 @@ export default function Models() {
   const invalidate = () => {
     queryClient.invalidateQueries({ queryKey: ["models"] });
     queryClient.invalidateQueries({ queryKey: ["routes", scope.projectId] });
+    queryClient.invalidateQueries({ queryKey: ["config"] });
+    queryClient.invalidateQueries({ queryKey: ["cluster-nodes"] });
   };
 
   const removeModel = useMutation({
     mutationFn: (entry: EffectiveModelDto) => deleteModel(entry.model, entry.org_id),
     onSuccess: invalidate,
   });
+  const removeRoute = useMutation({
+    mutationFn: (id: string) => deleteRoute(id),
+    onSuccess: invalidate,
+  });
 
   const scopeBlocked = !scope.isLoading && !!scope.errorKey;
-  const filtersActive = !!q || origin !== "all" || unpricedOnly || !!labelFilter;
+  const filtersActive = !!q || where !== "all" || unpricedOnly || !!labelFilter;
   const clearFilters = () => {
     setSearch("");
-    setOrigin("all");
+    setWhere("all");
     setUnpricedOnly(false);
     setLabelFilter("");
   };
@@ -355,11 +460,14 @@ export default function Models() {
         />
         <LabelFilterSelect value={labelFilter} onChange={setLabelFilter} options={labels.options} />
         {/* the tally waits for the catalog, which names each target's provider:
-            unread, it would print a zero it has no evidence for (#1980) */}
+            unread, it would print a zero it has no evidence for (#1980). it
+            counts routes, which is what a row is: one model name may be served
+            by two organizations, and Routing Rules counted only this project's
+            (#3685) */}
         <ListSummary data={models.data}>
           {() => (
             <>
-              {t("pages.models.modelTally", { count: rows.length })}
+              {t("pages.models.routeTally", { count: rows.length })}
               {" · "}
               {t("pages.models.providerTally", { count: providerCount })}
             </>
@@ -380,20 +488,20 @@ export default function Models() {
       </Toolbar>
 
       <div className="flex flex-wrap items-center gap-2.5">
-        <Segmented<Origin>
+        {/* a segment with nothing in it is not offered, apart from All: a
+            project with no routes of its own still lists the config file's */}
+        <Segmented<WhereFilter>
           ariaLabel={t("pages.models.originFilterAria")}
-          value={origin}
-          onChange={setOrigin}
-          options={(
-            [
-              ["all", t("pages.models.origin.all")],
-              ["db", t("pages.models.origin.db")],
-              ...(counts.config > 0 ? [["config", t("pages.models.origin.config")]] : []),
-            ] as [Origin, string][]
-          ).map(([key, label]) => ({
-            value: key,
-            label: models.data ? `${label} ${counts[key]}` : label,
-          }))}
+          value={where}
+          onChange={setWhere}
+          options={(["all", "project", "other", "config"] as const)
+            .filter((key) => key === "all" || key === where || counts[key] > 0)
+            .map((key) => ({
+              value: key,
+              label: models.data
+                ? `${t(`pages.models.origin.${key}`)} ${counts[key]}`
+                : t(`pages.models.origin.${key}`),
+            }))}
         />
         {unpricedCount > 0 && (
           <button
@@ -440,6 +548,40 @@ export default function Models() {
           </Link>
         </p>
       )}
+      {nodes.isSuccess && Array.isArray(nodes.data) && <GatewayConfigNote nodes={nodes.data} />}
+      {traffic.error instanceof AnalyticsUnavailableError && (
+        <AnalyticsUnavailable error={traffic.error} i18nKey="pages.models.noAnalytics" />
+      )}
+      {traffic.isError && !(traffic.error instanceof AnalyticsUnavailableError) && (
+        <p
+          role="status"
+          className="max-w-[72ch] text-xs leading-snug text-muted-foreground"
+          data-testid="traffic-unavailable"
+        >
+          {t("pages.models.traffic.unavailable")}
+          {traffic.error && (
+            <span className="ml-1 font-mono text-[color:var(--text-subtle)]">
+              {errorText(traffic.error, t)}
+            </span>
+          )}
+        </p>
+      )}
+      {uptime.isError && (
+        // one note for the whole screen, not "no health data" on every row; the
+        // cause (no ClickHouse, a 403) is in the control plane's own words
+        <p
+          role="status"
+          className="max-w-[72ch] text-xs leading-snug text-muted-foreground"
+          data-testid="health-unavailable"
+        >
+          {t("pages.models.healthUnavailable")}
+          {uptime.error && (
+            <span className="ml-1 font-mono text-[color:var(--text-subtle)]">
+              {errorText(uptime.error, t)}
+            </span>
+          )}
+        </p>
+      )}
       {models.error && (
         <LoadError
           error={models.error}
@@ -448,13 +590,24 @@ export default function Models() {
           target="models"
         />
       )}
+      {/* the project's own routes are what its rows are edited, re-pointed
+          and deleted through; unread, those rows still list but cannot act */}
+      {routes.error && (
+        // load-error-allow: the route list only adds edit and delete to the catalog's rows, whose own read pairs as models
+        <LoadError
+          error={routes.error}
+          resource={t("errors.resources.routes")}
+          onRetry={() => void routes.refetch()}
+          target="routes"
+        />
+      )}
       {scopeBlocked && (
         <p className="text-sm text-muted-foreground">
           {t("common.scopeReadOnly", { reason: scopeMessage })}
         </p>
       )}
 
-      <ListTable label={t("screens.model-catalog.title")} minWidth={940}>
+      <ListTable label={t("screens.model-catalog.title")} minWidth={1040}>
         <ListHeader grid={GRID}>
           <SortLabel
             label={t("pages.models.columns.model")}
@@ -481,6 +634,12 @@ export default function Models() {
             onCycle={(c) => cycle(c as never)}
           />
           <SortLabel
+            label={t("pages.models.columns.traffic", { hours: TRAFFIC_WINDOW_HOURS })}
+            col="traffic"
+            sort={sort}
+            onCycle={(c) => cycle(c as never)}
+          />
+          <SortLabel
             label={t("pages.models.columns.origin")}
             col="origin"
             sort={sort}
@@ -493,7 +652,7 @@ export default function Models() {
           <ListSkeleton rows={5} className="p-3" />
         </ListLoadingRow>
         {sorted.map((r) => {
-          const open = expanded.has(r.id) && !!r.targets?.length;
+          const open = expanded.has(r.id);
           const detailId = `${detailPrefix}-${r.id}`;
           const hintKey = strategyHintKey(r.strategy);
           const withHealth = (r.targets ?? []).filter((tg) => tg.health);
@@ -501,10 +660,26 @@ export default function Models() {
           const atRisk = withHealth.filter((tg) => tg.health?.state === "atRisk").length;
           const tripped = (r.targets ?? []).filter((tg) => tg.breaker);
           const openBreaker = tripped.find((tg) => tg.breaker?.state === "open")?.breaker;
+          const viaVariants = r.variants.length > 0;
           return (
             <React.Fragment key={r.id}>
               <ListRow grid={GRID} className={open ? "border-b-0" : undefined}>
-                <ListCell className="flex min-w-0 items-center gap-2">
+                <ListCell className="flex min-w-0 items-center gap-1.5">
+                  {/* the row opens into the route beneath it, rather than a
+                      popover the table's scroll frame would clip */}
+                  <button
+                    type="button"
+                    aria-expanded={open}
+                    aria-controls={open ? detailId : undefined}
+                    aria-label={t("pages.models.detail.toggleAria", { model: r.name })}
+                    onClick={() => toggleDetail(r.id)}
+                    className="-ml-1 inline-flex h-6 w-6 flex-none items-center justify-center rounded-sm text-[color:var(--text-subtle)] transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                  >
+                    <ChevronRight
+                      aria-hidden="true"
+                      className={cn("h-3.5 w-3.5 transition-transform", open && "rotate-90")}
+                    />
+                  </button>
                   {/* health is the targets column's to say; this cell only
                       marks a model that is switched off (#3659) */}
                   <span className="flex min-w-0 flex-col gap-1">
@@ -552,64 +727,60 @@ export default function Models() {
                   )}
                 </ListCell>
                 <ListCell className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5">
-                  {r.targets && r.targets.length > 0 ? (
-                    <button
-                      type="button"
-                      aria-expanded={open}
-                      aria-controls={open ? detailId : undefined}
-                      aria-label={t("pages.models.targets.toggleAria", {
-                        targets: t("routeTargets.count", { count: r.targetCount }),
-                        model: r.name,
-                      })}
-                      onClick={() => toggleTargets(r.id)}
-                      className="inline-flex items-center gap-1 rounded-sm font-mono text-xs text-[color:var(--text-secondary)] transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                    >
-                      <ChevronRight
-                        aria-hidden="true"
+                  {/* a route with variants routes through them and not its own
+                      targets, so the count is theirs and the targets' health
+                      is not the route's to report */}
+                  {viaVariants ? (
+                    <span className="font-mono text-xs text-[color:var(--text-secondary)]">
+                      {t("pages.models.variants.count", { count: r.variants.length })}
+                    </span>
+                  ) : (
+                    <>
+                      <span
                         className={cn(
-                          "h-3 w-3 flex-none transition-transform",
-                          open && "rotate-90",
+                          "font-mono text-xs",
+                          r.targetCount === 0
+                            ? "text-[color:var(--status-warning)]"
+                            : "text-[color:var(--text-secondary)]",
                         )}
-                      />
-                      {t("routeTargets.count", { count: r.targetCount })}
-                    </button>
-                  ) : (
-                    <span
-                      className={cn(
-                        "font-mono text-xs",
-                        r.targetCount === 0
-                          ? "text-[color:var(--status-warning)]"
-                          : "text-[color:var(--text-secondary)]",
-                      )}
-                    >
-                      {r.targetCount === 0
-                        ? t("pages.models.targets.none")
-                        : t("routeTargets.count", { count: r.targetCount })}
-                    </span>
-                  )}
-                  {/* health where the rollup has it: a failing target is named in
-                  the row, a clean bill is a dot, and no data says nothing */}
-                  {tripped.length > 0 && (
-                    <BreakerBadge breaker={openBreaker ?? tripped[0].breaker} />
-                  )}
-                  {failing > 0 ? (
-                    <span className="inline-flex items-center gap-1 text-2xs text-[color:var(--status-danger-text)]">
-                      <StatusDot color="var(--status-danger)" className="h-1.5 w-1.5" />
-                      {t("pages.models.targets.failing", { count: failing })}
-                    </span>
-                  ) : atRisk > 0 ? (
-                    <span className="inline-flex items-center gap-1 text-2xs text-[color:var(--status-warning-text)]">
-                      <StatusDot color="var(--status-warning)" className="h-1.5 w-1.5" />
-                      {t("pages.models.targets.atRisk", { count: atRisk })}
-                    </span>
-                  ) : (
-                    withHealth.length > 0 && (
-                      <span className="inline-flex items-center">
-                        <StatusDot color="var(--status-success)" className="h-1.5 w-1.5" />
-                        <span className="sr-only">{t("pages.models.targets.healthy")}</span>
+                      >
+                        {r.targetCount === 0
+                          ? t("pages.models.targets.none")
+                          : t("routeTargets.count", { count: r.targetCount })}
                       </span>
-                    )
+                      {/* health where the rollup has it: a failing target is
+                          named in the row, a clean bill is a dot, and no data
+                          says nothing */}
+                      {tripped.length > 0 && (
+                        <BreakerBadge breaker={openBreaker ?? tripped[0].breaker} />
+                      )}
+                      {failing > 0 ? (
+                        <span className="inline-flex items-center gap-1 text-2xs text-[color:var(--status-danger-text)]">
+                          <StatusDot color="var(--status-danger)" className="h-1.5 w-1.5" />
+                          {t("pages.models.targets.failing", { count: failing })}
+                        </span>
+                      ) : atRisk > 0 ? (
+                        <span className="inline-flex items-center gap-1 text-2xs text-[color:var(--status-warning-text)]">
+                          <StatusDot color="var(--status-warning)" className="h-1.5 w-1.5" />
+                          {t("pages.models.targets.atRisk", { count: atRisk })}
+                        </span>
+                      ) : (
+                        withHealth.length > 0 && (
+                          <span className="inline-flex items-center">
+                            <StatusDot color="var(--status-success)" className="h-1.5 w-1.5" />
+                            <span className="sr-only">{t("pages.models.targets.healthy")}</span>
+                          </span>
+                        )
+                      )}
+                    </>
                   )}
+                </ListCell>
+                <ListCell className="grid">
+                  <RouteTrafficCell
+                    traffic={traffic}
+                    inProject={r.where === "project"}
+                    model={r.name}
+                  />
                 </ListCell>
                 <ListCell>
                   {r.origin === "config" ? (
@@ -623,13 +794,16 @@ export default function Models() {
                     </Pill>
                   ) : (
                     // where the row is stored is not a status, so it takes no
-                    // status hue, and it reads in the dashboard's language
+                    // status hue, and it reads in the dashboard's language. it
+                    // stays on one line, widening its column rather than
+                    // breaking "this project" in two at the table's floor
                     <Pill
                       color="var(--text-secondary)"
                       tint="var(--surface-subtle)"
                       border="var(--border-default)"
+                      className="whitespace-nowrap"
                     >
-                      {t("pages.models.origin.db")}
+                      {t(`pages.models.where.${r.where}`)}
                     </Pill>
                   )}
                 </ListCell>
@@ -674,40 +848,134 @@ export default function Models() {
                   >
                     <Tag className="h-3.5 w-3.5" />
                   </Button>
-                  {/* a db-backed row's edit is its route, but forgetting a model
-                  outright is deployment-wide: two capabilities on one row (#1258) */}
-                  {r.origin === "db" && (
+                  {/* the scope project's route is deleted as that route, the
+                  same admin capability adding one is; another project's
+                  stored model is forgotten outright, which is
+                  deployment-wide (#1258). a project row whose route was not
+                  read offers neither */}
+                  {r.route ? (
                     <DeleteIconButton
-                      gate="model:delete"
-                      control="model-delete"
-                      label={t("pages.models.deleteAria", { model: r.name })}
-                      pending={removeModel.isPending && deleteTarget === r.entry}
+                      gate="route:delete"
+                      control="route-delete"
+                      label={t("pages.models.deleteRouteAria", { model: r.name })}
+                      pending={removeRoute.isPending && removeRoute.variables === r.route.id}
                       onClick={() => {
-                        removeModel.reset();
-                        setDeleteTarget(r.entry);
+                        removeRoute.reset();
+                        setDeleteRouteTarget(r.route);
                       }}
                     />
+                  ) : (
+                    r.where === "other" && (
+                      <DeleteIconButton
+                        gate="model:delete"
+                        control="model-delete"
+                        label={t("pages.models.deleteAria", { model: r.name })}
+                        pending={removeModel.isPending && deleteTarget === r.entry}
+                        onClick={() => {
+                          removeModel.reset();
+                          setDeleteTarget(r.entry);
+                        }}
+                      />
+                    )
                   )}
                 </ListCell>
               </ListRow>
-              {/* weights on demand: the row's own disclosure opens a row beneath
-              it, one line per target, rather than a popover the table's
-              scroll frame would clip */}
-              {open && r.targets && (
+              {open && (
                 <div
                   role="row"
-                  className="border-b border-[color:var(--border-subtle)] pb-3.5 pl-[31px] pr-4 last:border-b-0"
+                  className="border-b border-[color:var(--border-subtle)] pb-4 pl-[44px] pr-4 last:border-b-0"
                 >
-                  <div role="cell" id={detailId}>
+                  <div role="cell" id={detailId} className="flex flex-col gap-3">
                     <StrategyHint strategy={r.strategy} />
-                    <RouteTargetList
-                      label={t("routeTargets.listLabel", { model: r.name })}
-                      strategy={r.strategy}
-                      targets={r.targets}
-                      // a column of "no health data" says nothing a missing
-                      // column does not, so it shows once any target has data
-                      health={withHealth.length > 0}
-                    />
+                    {viaVariants && r.route ? (
+                      <RouteVariants
+                        route={r.route}
+                        variants={r.variants}
+                        unusedTargets={r.route.targets?.length ?? 0}
+                        providerName={providerName}
+                      />
+                    ) : r.targets === null ? (
+                      <p className="text-xs text-[color:var(--text-subtle)]">
+                        {t("pages.models.detail.targetsUnread")}
+                      </p>
+                    ) : r.targets.length === 0 ? (
+                      <EmptyState
+                        inline
+                        uxTarget="route-targets"
+                        description={t("pages.models.detail.noTargets")}
+                      />
+                    ) : (
+                      <RouteTargetList
+                        label={t("routeTargets.listLabel", { model: r.name })}
+                        strategy={r.strategy}
+                        targets={r.targets}
+                        // a column of "no health data" says nothing a missing
+                        // column does not, so it shows once any target has data
+                        health={withHealth.length > 0}
+                      />
+                    )}
+                    {r.route && <LabelChips labels={routeLabels.bySubject(r.route.id)} />}
+                    {/* the actions are one cluster that wraps as a whole: one
+                        by one, the last button fell onto its own line in
+                        Russian (#3660) */}
+                    <div className="flex flex-wrap items-center gap-2">
+                      {/* the Playground opens on this model. a disabled route
+                          is not served, and another project's route is not
+                          the scope's key's to call, so neither offers it */}
+                      {r.enabled && r.where !== "other" && (
+                        <Link
+                          to={`/playground?model=${encodeURIComponent(r.name)}`}
+                          aria-label={t("pages.models.detail.tryRoute", { model: r.name })}
+                          className={cn(
+                            buttonVariants({ variant: "outline", size: "sm" }),
+                            "h-[30px] gap-1.5",
+                          )}
+                        >
+                          <Play className="h-3.5 w-3.5" />
+                          {t("pages.models.detail.tryIt")}
+                        </Link>
+                      )}
+                      <CopyButton
+                        value={r.name}
+                        label={t("pages.models.detail.copyModel")}
+                        className="h-[30px] px-2"
+                      />
+                      {r.route && (
+                        <>
+                          {/* the label names the route, so a list of open rows
+                              does not expose buttons a screen reader cannot
+                              tell apart (#1214) */}
+                          <GatedButton
+                            gate="route:update"
+                            control="route-edit"
+                            size="sm"
+                            variant="outline"
+                            className="h-[30px]"
+                            aria-label={t("pages.models.detail.editRoutingAria", {
+                              model: r.name,
+                            })}
+                            onClick={() => setEditingRoute(r.route)}
+                          >
+                            <Pencil className="h-3.5 w-3.5" />
+                            {t("pages.models.detail.editRouting")}
+                          </GatedButton>
+                          {scope.orgId && (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="h-[30px] gap-1.5"
+                              aria-label={t("pages.models.detail.routeLabelsAria", {
+                                model: r.name,
+                              })}
+                              onClick={() => setLabellingRoute(r.route)}
+                            >
+                              <Tag className="h-3.5 w-3.5" />
+                              {t("pages.models.detail.routeLabels")}
+                            </Button>
+                          )}
+                        </>
+                      )}
+                    </div>
                   </div>
                 </div>
               )}
@@ -715,7 +983,7 @@ export default function Models() {
           );
         })}
         {/* "no rows" and "nothing matched the filters" are different answers:
-            one wants a model created, the other wants the filter cleared */}
+            one wants a route created, the other wants the filter cleared */}
         <ListEmptyRow read={models} rows={sorted.length}>
           <EmptyState
             thread
@@ -763,6 +1031,18 @@ export default function Models() {
         </RowCapabilityScope>
       )}
 
+      {/* routes are project-scoped rows, but a label lives on the org that owns them */}
+      {scope.orgId && labellingRoute && (
+        <LabelSheet
+          open
+          onOpenChange={(open) => !open && setLabellingRoute(null)}
+          orgId={scope.orgId}
+          subjectType="route"
+          subjectId={labellingRoute.id}
+          subjectName={labellingRoute.model}
+        />
+      )}
+
       <ModelSheet
         open={!!sheet}
         mode={sheet?.mode ?? "add"}
@@ -775,6 +1055,25 @@ export default function Models() {
         configTargets={sheet?.configTargets ?? null}
         models={models.data ?? []}
         routes={routes.data ?? []}
+        onDone={invalidate}
+        // the variants are edited in the route sheet, so a save refused for
+        // them hands the route over to it
+        onEditVariants={
+          sheet?.route
+            ? () => {
+                const route = sheet.route ?? null;
+                setSheet(null);
+                setEditingRoute(route);
+              }
+            : undefined
+        }
+      />
+
+      <RouteSheet
+        open={!!editingRoute}
+        onOpenChange={(open) => !open && setEditingRoute(null)}
+        route={editingRoute}
+        providers={providers.data ?? []}
         onDone={invalidate}
       />
 
@@ -798,6 +1097,39 @@ export default function Models() {
           removeModel.mutate(deleteTarget, {
             onSuccess: () => {
               setDeleteTarget(null);
+              toast.push({ tone: "success", title: t("toast.deleted", { what }) });
+            },
+            onError: (error) => {
+              toast.push({
+                tone: "error",
+                title: t("toast.deleteFailed", { what }),
+                detail: errorText(error, t),
+              });
+            },
+          });
+        }}
+      />
+
+      <ConfirmDialog
+        name="route-delete"
+        open={!!deleteRouteTarget}
+        onOpenChange={(open) => {
+          if (!open) {
+            removeRoute.reset();
+            setDeleteRouteTarget(null);
+          }
+        }}
+        title={t("pages.models.confirm.routeTitle", { model: deleteRouteTarget?.model ?? "" })}
+        description={t("pages.models.confirm.routeBody")}
+        confirmLabel={t("pages.models.confirm.routeConfirm")}
+        pending={removeRoute.isPending}
+        error={removeRoute.error}
+        onConfirm={() => {
+          if (!deleteRouteTarget) return;
+          const what = deleteRouteTarget.model;
+          removeRoute.mutate(deleteRouteTarget.id, {
+            onSuccess: () => {
+              setDeleteRouteTarget(null);
               toast.push({ tone: "success", title: t("toast.deleted", { what }) });
             },
             onError: (error) => {

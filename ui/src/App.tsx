@@ -100,7 +100,6 @@ export const SCREENS: Record<string, React.ReactNode> = {
   providers: screen(() => import("@/pages/Providers")),
   "provider-groups": screen(() => import("@/pages/ProviderGroups")),
   budgets: screen(() => import("@/pages/Limits")),
-  "routing-rules": screen(() => import("@/pages/RoutingRules")),
   "complexity-router": screen(() => import("@/pages/ComplexityRouter")),
   "circuit-breaker": screen(() => import("@/pages/Health")),
   "pricing-overrides": screen(() => import("@/pages/Pricing")),
@@ -160,6 +159,9 @@ const LEGACY: Record<string, string> = {
   "audit-log": "audit-logs",
   account: "api-keys",
   models: "model-catalog",
+  // Routing Rules showed the routes the catalog lists, as cards; the two became
+  // one screen (#3685)
+  "routing-rules": "model-catalog",
 };
 
 // every routed screen: the rail's leaves and the account's own screens, which

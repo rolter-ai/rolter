@@ -701,10 +701,10 @@ function SessionKeyBar({
               <>
                 {" "}
                 <Link
-                  to="/routing-rules"
+                  to="/model-catalog"
                   className="rounded-sm font-medium text-foreground underline decoration-[color:var(--border-strong)] underline-offset-4 transition-colors hover:decoration-current focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 >
-                  {t("playground.key.routelessLink", { screen: t("nav.routing-rules") })}
+                  {t("playground.key.routelessLink", { screen: t("nav.model-catalog") })}
                 </Link>
               </>
             )}

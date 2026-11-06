@@ -178,6 +178,10 @@ const backing: FetchStub = async (input) => {
 /** the recorder the story under way installed, read back by its play function */
 let calls: ReturnType<typeof recording>;
 
+// how often the sheet handed its route to the route sheet, where the variants
+// are edited; the catalog opens that sheet in its place (#3685)
+let variantsHandedOver = 0;
+
 function Stage({
   mode,
   route,
@@ -228,6 +232,9 @@ function Stage({
           models={models}
           routes={[ROUTE, FLEET_ROUTE]}
           onDone={() => {}}
+          onEditVariants={() => {
+            variantsHandedOver += 1;
+          }}
         />
       </Toasting>
     </Harness>
@@ -1367,12 +1374,17 @@ export const FallbackOnlyVariantsOverAnOrdinaryListAreRefused: Story = {
     await userEvent.click(dialog.getByRole("button", { name: "Save route" }));
     // the variants strand it, so the message sits beside them rather than under
     // the list, and focus moves to where they are edited (#3510)
-    const edit = dialog.getByRole("link", { name: "Edit the variants on Routing Rules" });
+    const edit = dialog.getByRole("button", { name: "Edit the variants" });
     await waitFor(() => expect(edit).toHaveFocus());
     await expect(edit).toHaveAccessibleDescription(/Variants.*every one of this route's/);
     await expect(dialog.getAllByText(/Every target is a fallback/)).toHaveLength(1);
     await expect(dialog.getByLabelText("Target 1 weight")).toBeValid();
     calls.expectNotSent("PUT", "/routes/route-1");
+    // the way there hands the route to the route sheet, which the catalog
+    // opens in this one's place
+    const before = variantsHandedOver;
+    await userEvent.click(edit);
+    await expect(variantsHandedOver).toBe(before + 1);
   },
 };
 

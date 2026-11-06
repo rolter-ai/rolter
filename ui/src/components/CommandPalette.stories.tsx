@@ -38,7 +38,7 @@ const NAV: NavDef[] = [
     icon: null,
     children: [
       { key: "providers", icon: null },
-      { key: "routing-rules", icon: null },
+      { key: "model-catalog", icon: null },
     ],
   },
   {
@@ -186,7 +186,7 @@ export const Default: Story = {
     // and every leaf is offered below them, hinted with the group it sits in
     const screens = body().getByRole("group", { name: palette.sections.screens });
     await expect(
-      within(screens).getByRole("option", { name: new RegExp(nav["routing-rules"], "i") }),
+      within(screens).getByRole("option", { name: new RegExp(nav["model-catalog"], "i") }),
     ).toBeVisible();
     // the first entry is selected already, so Enter opens something
     await expect(options()[0]).toHaveAttribute("aria-selected", "true");
@@ -194,16 +194,15 @@ export const Default: Story = {
 };
 
 /**
- * A half-remembered name still lands: "rr" is not a substring of anything, and
- * it reaches Routing Rules ahead of the screens that merely contain both
- * letters.
+ * A half-remembered name still lands: "mc" is not a substring of anything, and
+ * it reaches Model Catalog by its initials.
  */
 export const FuzzyQuery: Story = {
   render: () => <Palette />,
   play: async () => {
-    await userEvent.type(await input(), "rr");
-    await waitFor(() => expect(options()[0].textContent).toContain(nav["routing-rules"]));
-    await selected(nav["routing-rules"]);
+    await userEvent.type(await input(), "mc");
+    await waitFor(() => expect(options()[0].textContent).toContain(nav["model-catalog"]));
+    await selected(nav["model-catalog"]);
     // and the entries that do not match are gone, not merely ranked lower
     await expect(
       body().queryByRole("option", { name: new RegExp(nav.playground, "i") }),
@@ -406,7 +405,7 @@ export const APastedTraceparentOffersTheTrace: Story = {
 /**
  * The offer is for an id, never for a name. A route called `gpt-4o-mini` has a
  * digit and eleven characters, like an id does, and Enter on it still opens
- * Routing Rules. A word with no digit, and a word too short to be an id, are
+ * Model Catalog, where routes live. A word with no digit, and a word too short to be an id, are
  * searched as names and offered nothing.
  */
 export const ANameIsNotOfferedAsAnId: Story = {
@@ -418,7 +417,7 @@ export const ANameIsNotOfferedAsAnId: Story = {
     await body().findByRole("option", { name: /gpt-4o-mini/ });
     await expect(body().queryByRole("group", { name: palette.sections.lookup })).toBeNull();
     await userEvent.keyboard("{Enter}");
-    await waitFor(() => expect(canvas.getByTestId("went")).toHaveTextContent("routing-rules"));
+    await waitFor(() => expect(canvas.getByTestId("went")).toHaveTextContent("model-catalog"));
 
     await userEvent.click(canvas.getByRole("button", { name: /open the palette/i }));
     const again = await focused();

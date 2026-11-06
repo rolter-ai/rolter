@@ -292,7 +292,7 @@ export function GettingStarted({ requests }: GettingStartedProps) {
     {
       key: "route",
       done: hasRoute,
-      to: "/routing-rules",
+      to: "/model-catalog",
       gate: SETUP_GATES.route,
     },
     {

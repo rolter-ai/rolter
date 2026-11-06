@@ -664,7 +664,7 @@ export const RefusedStepsNameTheirRole: Story = {
     const canvas = within(canvasElement);
     await expectRefused(canvasElement, en.pages.gettingStarted.steps.provider.action);
     for (const [step, href] of [
-      ["route", "/routing-rules"],
+      ["route", "/model-catalog"],
       ["key", "/virtual-keys"],
       // the Playground needs no capability at all, so that one is always a link
       ["call", "/playground"],
@@ -753,7 +753,7 @@ export const AdminSeesEveryCta: Story = {
     const canvas = within(canvasElement);
     for (const [step, href] of [
       ["provider", "/providers"],
-      ["route", "/routing-rules"],
+      ["route", "/model-catalog"],
       ["key", "/virtual-keys"],
     ] as const) {
       const action = en.pages.gettingStarted.steps[step].action;

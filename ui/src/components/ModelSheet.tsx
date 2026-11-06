@@ -1139,6 +1139,12 @@ export interface ModelSheetProps {
   models: EffectiveModelDto[];
   routes: RouteRow[];
   onDone: () => void;
+  /**
+   * Open the route sheet on this route, which is where its variants are
+   * edited. The model sheet points there when a save is refused for the
+   * variants; without it the way there is not offered.
+   */
+  onEditVariants?: () => void;
 }
 
 export function ModelSheet({
@@ -1154,6 +1160,7 @@ export function ModelSheet({
   models,
   routes,
   onDone,
+  onEditVariants,
 }: ModelSheetProps) {
   const queryClient = useQueryClient();
   const readonly = mode === "view";
@@ -2195,14 +2202,17 @@ export function ModelSheet({
               <FieldError id={ids.variantsErr} error={variantsMessage} />
               {/* the variants are edited in the route sheet, so the way there
                   is what takes focus when the save is refused for them */}
-              <Link
-                to="/routing-rules"
-                data-error-anchor="true"
-                aria-describedby={describedBy(ids.variantsLabel, ids.variantsErr)}
-                className="text-xs text-foreground underline underline-offset-2 hover:no-underline focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-              >
-                {t("modelSheet.routing.editVariants")}
-              </Link>
+              {onEditVariants && (
+                <button
+                  type="button"
+                  onClick={onEditVariants}
+                  data-error-anchor="true"
+                  aria-describedby={describedBy(ids.variantsLabel, ids.variantsErr)}
+                  className="self-start text-xs text-foreground underline underline-offset-2 hover:no-underline focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                >
+                  {t("modelSheet.routing.editVariants")}
+                </button>
+              )}
             </div>
           )}
         </FormSection>

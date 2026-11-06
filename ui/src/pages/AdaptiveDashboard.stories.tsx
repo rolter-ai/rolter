@@ -219,9 +219,9 @@ export const Empty: Story = {
     // a gateway with no node id is dropped by the control plane, which looked
     // exactly like a gateway that never reported (#1644)
     await expect(canvas.getByText(/without a node id is dropped/)).toBeVisible();
-    await expect(canvas.getByRole("link", { name: "Review routing rules" })).toHaveAttribute(
+    await expect(canvas.getByRole("link", { name: "Open Model Catalog" })).toHaveAttribute(
       "href",
-      "/routing-rules",
+      "/model-catalog",
     );
   },
 };
@@ -239,7 +239,7 @@ export const SwitchedOff: Story = {
     await expect(canvas.queryByText("No fresh adaptive routing telemetry")).toBeNull();
     await expect(canvas.getByText("1 route is held back:")).toBeVisible();
     await expect(canvas.getByText("deepseek-r1")).toBeVisible();
-    // and the CTA goes where the switch is, not to the routing rules
+    // and the CTA goes where the switch is, not to the routes
     await expect(
       canvas.getByRole("link", { name: "Open adaptive routing settings" }),
     ).toHaveAttribute("href", "/adaptive-settings");

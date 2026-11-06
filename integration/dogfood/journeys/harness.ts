@@ -298,7 +298,7 @@ export async function railLabels(page: Page): Promise<string[]> {
   return await page.locator("nav button").evaluateAll((els) => els.map((e) => (e.textContent ?? "").trim()).filter(Boolean));
 }
 
-export const LEAVES = "playground dashboard logs mcp-logs connectors logs-settings model-catalog providers provider-groups budgets routing-rules complexity-router circuit-breaker pricing-overrides model-settings mcp-catalog mcp-library tool-groups auth-sessions oauth-grants mcp-settings plugins alerting-channels alerting-rules alerting-history virtual-keys gov-users gov-teams business-units customers user-provisioning sso rbac access-profiles audit-logs guardrail-rules guardrail-providers cluster adaptive-dashboard adaptive-settings prompt-repo skills-repo client-settings compatibility effective-config security api-keys performance feature-flags".split(" ");
+export const LEAVES = "playground dashboard logs mcp-logs connectors logs-settings model-catalog providers provider-groups budgets complexity-router circuit-breaker pricing-overrides model-settings mcp-catalog mcp-library tool-groups auth-sessions oauth-grants mcp-settings plugins alerting-channels alerting-rules alerting-history virtual-keys gov-users gov-teams business-units customers user-provisioning sso rbac access-profiles audit-logs guardrail-rules guardrail-providers cluster adaptive-dashboard adaptive-settings prompt-repo skills-repo client-settings compatibility effective-config security api-keys performance feature-flags".split(" ");
 
 /** RFC 6238 TOTP (SHA-1, 30 s, 6 digits) from a base32 secret */
 export function totp(secretB32: string, at = Date.now()): string {

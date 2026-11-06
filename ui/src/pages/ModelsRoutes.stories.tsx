@@ -1,7 +1,7 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 
-import RoutingRules from "./RoutingRules";
+import Models from "./Models";
 import {
   cancelConfirmation,
   confirmDestructive,
@@ -27,6 +27,7 @@ import {
   scoped,
   stubClipboard,
   Toasted,
+  triggerWithNote,
 } from "./story-harness";
 import { atMobile, atWide, expectNoHorizontalOverflow } from "@/lib/story-viewport";
 import { onlyRestrictedDialled } from "@/lib/failure-classes";
@@ -34,6 +35,7 @@ import en from "@/lib/i18n/locales/en.json";
 import ru from "@/lib/i18n/locales/ru.json";
 import type {
   AnalyticsByModelRow,
+  EffectiveModelDto,
   BreakerStateDto,
   BreakerTargetDto,
   ClusterNodeRow,
@@ -150,10 +152,26 @@ const CACHE_AWARE: RouteRow = {
   created_at: "2026-05-03T00:00:00Z",
 };
 
-// a route's name is also the upstream model a target without one forwards, and
-// the targets are on the card from the first paint now (#3031), so the name is
-// found by its own span
-const ROUTE_NAME = { selector: "span.font-semibold" };
+/**
+ * Open a route's row onto its detail, where its targets or variants, its route
+ * labels and its actions are. A row opened already stays open.
+ */
+const expand = async (model: string) => {
+  const toggle = await within(document.body).findByRole("button", {
+    name: `Route details for ${model}`,
+  });
+  if (toggle.getAttribute("aria-expanded") !== "true") await userEvent.click(toggle);
+};
+
+/** a list in a route's detail: its targets unless `name` says otherwise */
+const routeList = async (
+  canvas: ReturnType<typeof within>,
+  model: string,
+  name = `Targets of ${model}`,
+) => {
+  await expand(model);
+  return canvas.findByRole("list", { name });
+};
 
 const trafficRow = (model: string, requests: number, errors: number): AnalyticsByModelRow => ({
   model,
@@ -183,15 +201,51 @@ const node = (id: string, over: Partial<ClusterNodeRow> = {}): ClusterNodeRow =>
   ...over,
 });
 
+/**
+ * The catalog's own entry for each route, as `GET /api/v1/models` gives it:
+ * the targets by provider name rather than id (#2210), in this project of
+ * org-1, which is the scope's.
+ */
+const catalogEntries = (
+  routes: RouteRow[],
+  targets: Record<string, RouteTargetRow[]>,
+): EffectiveModelDto[] =>
+  routes.map((r) => ({
+    model: r.model,
+    strategy: r.strategy,
+    targets: (targets[r.id] ?? []).length,
+    route_targets: (targets[r.id] ?? []).map((tg) => ({
+      provider: PROVIDERS.find((p) => p.id === tg.provider_id)?.name ?? tg.provider_id,
+      model: tg.upstream_model,
+      weight: tg.weight,
+      ...(tg.takes_over ? { takes_over: tg.takes_over } : {}),
+    })),
+    org_id: "org-1",
+    project_id: r.project_id,
+    source: "db",
+  }));
+
 const answer = (
   routes: RouteRow[],
   status = 200,
   labels: LabelRow[] = [],
   // the variants each route embeds when the list asks for them (#3343)
   variants: Record<string, RouteVariantRow[]> = {},
+  // each route's stored targets, which the catalog entry and the route list
+  // both carry
+  targets: Record<string, RouteTargetRow[]> = TARGETS,
 ): FetchStub =>
   scoped(async (input) => {
     const url = String(input);
+    // the catalog's list of routes, every one the caller can see
+    if (/\/api\/v1\/models(\?|$)/.test(url)) {
+      return json(
+        status === 200 ? catalogEntries(routes, targets) : { error: { message: "forbidden" } },
+        status,
+      );
+    }
+    if (url.includes("/model-prices") || url.includes("/model-labels")) return json([]);
+    if (url.includes("/currency")) return json({ base: "USD", rates: {} });
     if (url.includes("/providers")) return json(PROVIDERS);
     if (url.includes("/analytics/by-model")) return json({ data: TRAFFIC });
     // the route sheet reads what each saved variant served (#3342); none, unless a story says
@@ -203,8 +257,8 @@ const answer = (
       const subject = new URL(url, "http://localhost").searchParams.get("subject_id");
       return json(subject ? labels.filter((l) => l.subject_id === subject) : labels);
     }
-    const targets = /\/routes\/([^/]+)\/targets/.exec(url);
-    if (targets) return json(TARGETS[targets[1]] ?? []);
+    const stored = /\/routes\/([^/]+)\/targets/.exec(url);
+    if (stored) return json(targets[stored[1]] ?? []);
     // the route sheet reads the variants beside the targets (#391)
     if (/\/routes\/[^/]+\/variants/.test(url)) return json([]);
     // the route list embeds each route's targets when it is asked to, which
@@ -213,7 +267,7 @@ const answer = (
       return json(
         routes.map((r) => ({
           ...r,
-          targets: TARGETS[r.id] ?? [],
+          targets: targets[r.id] ?? [],
           ...(url.includes("variants") ? { variants: variants[r.id] ?? [] } : {}),
         })),
       );
@@ -221,11 +275,14 @@ const answer = (
     return json(status === 200 ? routes : { error: { message: "forbidden" } }, status);
   });
 
+// Routing Rules showed the project's routes as cards until it folded into the
+// Model Catalog (#3685). Its stories came along: each route is a catalog row
+// now, and what its card held opens beneath the row
 const meta = {
-  title: "Screens/RoutingRules",
-  component: RoutingRules,
+  title: "Screens/Models/Routes",
+  component: Models,
   parameters: { layout: "fullscreen" },
-} satisfies Meta<typeof RoutingRules>;
+} satisfies Meta<typeof Models>;
 
 export default meta;
 type Story = StoryObj<typeof meta>;
@@ -233,28 +290,28 @@ type Story = StoryObj<typeof meta>;
 export const Loaded: Story = {
   render: () => (
     <Harness fetchStub={answer(ROUTES)}>
-      <RoutingRules />
+      <Models />
     </Harness>
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expect(await canvas.findByText("gpt-4o", ROUTE_NAME)).toBeInTheDocument();
+    await expect(
+      await canvas.findByRole("button", { name: "Route details for gpt-4o" }),
+    ).toBeInTheDocument();
     // gpt-4o is `weighted`, so its weights are shares of the route's total and
     // 80/100 is 80%
-    const targets = within(await canvas.findByRole("list", { name: "Targets of gpt-4o" }));
-    await expect(targets.getByText("80%")).toBeInTheDocument();
-    await expect(targets.getByText("20%")).toBeInTheDocument();
+    const targets = within(await routeList(canvas, "gpt-4o"));
+    await expect(targets.getByText("80% of traffic")).toBeInTheDocument();
+    await expect(targets.getByText("20% of traffic")).toBeInTheDocument();
     await expect(targets.getAllByTestId("target-share")).toHaveLength(2);
-    await expect(canvas.getByText("disabled")).toBeInTheDocument();
-    // the count arrives with the list it counts
-    await expect(canvas.getByText(/^2 routes/)).toBeInTheDocument();
+    await expect(canvas.getByText("Disabled")).toBeInTheDocument();
+    // the count arrives with the list it counts, and counts routes (#3685)
+    await expect(canvas.getByText(/^2 routes · /)).toBeInTheDocument();
     // a route is named verbatim and never in capitals (#2139)
     await expect(canvas.getByText("weighted")).toBeVisible();
     await expect(canvas.queryByText("WEIGHTED")).toBeNull();
     // the target bars take the categorical tokens, not the ornament red
-    const fills = within(
-      await canvas.findByRole("list", { name: "Targets of gpt-4o" }),
-    ).getAllByTestId("target-share");
+    const fills = within(await routeList(canvas, "gpt-4o")).getAllByTestId("target-share");
     await expect(fills[0].firstElementChild?.getAttribute("style")).toContain("var(--chart-1)");
     await expect(fills[1].firstElementChild?.getAttribute("style")).toContain("var(--chart-2)");
   },
@@ -264,20 +321,33 @@ export const Loaded: Story = {
 
 let trafficReads: Recorder;
 
-const card = async (canvas: ReturnType<typeof within>, model: string) =>
-  within((await canvas.findByText(model, ROUTE_NAME)).closest("div.flex-col") as HTMLElement);
+/** a route's row in the catalog, where its traffic is a column */
+const rowOf = async (canvas: ReturnType<typeof within>, model: string) =>
+  within(
+    (await canvas.findByRole("button", { name: `Route details for ${model}` })).closest(
+      '[role="row"]',
+    ) as HTMLElement,
+  );
+
+/** a route's detail, opened beneath its row, where its card's content went */
+const card = async (canvas: ReturnType<typeof within>, model: string) => {
+  await expand(model);
+  const toggle = canvas.getByRole("button", { name: `Route details for ${model}` });
+  return within(document.getElementById(toggle.getAttribute("aria-controls")!)!);
+};
 
 /**
  * A route with traffic says how many requests it served over the last day and
- * what share failed; one that took none says so in words, since the rollup
- * answered. Each enabled route links the Playground with its model selected.
+ * what share failed, in its row; one that took none says so in words, since
+ * the rollup answered. Each enabled route links the Playground with its model
+ * selected.
  */
 export const RouteTraffic: Story = {
   render: () => {
     trafficReads = recording(answer(ROUTES));
     return (
       <Harness fetchStub={trafficReads.stub}>
-        <RoutingRules />
+        <Models />
       </Harness>
     );
   },
@@ -289,14 +359,20 @@ export const RouteTraffic: Story = {
     await expect(new URL(read.url, "http://localhost").searchParams.get("project")).toBe(
       PROJECT.id,
     );
+    const traffic = await (await rowOf(canvas, "gpt-4o")).findByTestId("route-traffic");
+    await expect(traffic).toHaveTextContent(/^1,240/);
+    await expect(traffic).toHaveTextContent(/2\.5% errors$/);
+    await expect(
+      await (await rowOf(canvas, "claude-sonnet")).findByTestId("route-traffic"),
+    ).toHaveTextContent("No requests");
+    // the column is the one the rows sort by
+    const header = canvas.getByRole("columnheader", { name: "Requests · 24 h" });
+    await userEvent.click(within(header).getByRole("button"));
+    await userEvent.click(within(header).getByRole("button"));
+    await expect(header).toHaveAttribute("aria-sort", "descending");
+    await expect(canvas.getAllByRole("row")[1]).toHaveTextContent("gpt-4o");
     const gpt = await card(canvas, "gpt-4o");
-    await expect(await gpt.findByTestId("route-traffic")).toHaveTextContent(
-      "1,240 requests for this model name in this project in the last 24 h · 2.5% errors",
-    );
     const claude = await card(canvas, "claude-sonnet");
-    await expect(await claude.findByTestId("route-traffic")).toHaveTextContent(
-      "No requests for this model name in this project in the last 24 h",
-    );
     const tryIt = gpt.getByRole("link", { name: "Try it: gpt-4o in the Playground" });
     await expect(tryIt).toHaveAttribute("href", "/playground?model=gpt-4o");
     // a disabled route is not served, so there is nothing to try
@@ -304,7 +380,7 @@ export const RouteTraffic: Story = {
   },
 };
 
-/** The rollup still out: each card holds a skeleton, not a zero. */
+/** The rollup still out: each row holds a skeleton, not a zero. */
 export const TrafficLoading: Story = {
   render: () => (
     <Harness
@@ -314,21 +390,23 @@ export const TrafficLoading: Story = {
           : answer(ROUTES)(input, init),
       )}
     >
-      <RoutingRules />
+      <Models />
     </Harness>
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expect(await canvas.findByText("gpt-4o", ROUTE_NAME)).toBeInTheDocument();
+    await expect(
+      await canvas.findByRole("button", { name: "Route details for gpt-4o" }),
+    ).toBeInTheDocument();
     await expect((await canvas.findAllByTestId("route-traffic-loading")).length).toBe(2);
     await expect(canvas.queryByTestId("route-traffic")).toBeNull();
-    await expect(canvas.queryByText(/No requests for this model name/)).toBeNull();
+    await expect(canvas.queryByText("No requests")).toBeNull();
   },
 };
 
 /**
  * A deployment without ClickHouse answers the rollup with a 503: the screen
- * says so once, calmly, and no card claims "no requests" about traffic nobody
+ * says so once, calmly, and no row claims "no requests" about traffic nobody
  * could count.
  */
 export const TrafficNeedsClickHouse: Story = {
@@ -340,19 +418,20 @@ export const TrafficNeedsClickHouse: Story = {
           : answer(ROUTES)(input, init),
       )}
     >
-      <RoutingRules />
+      <Models />
     </Harness>
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expectAnalyticsUnavailable(
       canvasElement,
-      en.pages.routing.noAnalytics.title,
+      en.pages.models.noAnalytics.title,
       "analytics store not configured",
     );
     await expect(canvas.queryAllByTestId("route-traffic")).toHaveLength(0);
-    await expect(canvas.queryByText(/No requests for this model name/)).toBeNull();
-    // the cards still render, and the playground link does not need analytics
+    await expect(canvas.queryByText("No requests")).toBeNull();
+    // the routes still render, and the playground link does not need analytics
+    await expand("gpt-4o");
     await expect(
       canvas.getByRole("link", { name: "Try it: gpt-4o in the Playground" }),
     ).toBeInTheDocument();
@@ -369,7 +448,7 @@ export const TrafficReadFails: Story = {
           : answer(ROUTES)(input, init),
       )}
     >
-      <RoutingRules />
+      <Models />
     </Harness>
   ),
   play: async ({ canvasElement }) => {
@@ -381,11 +460,60 @@ export const TrafficReadFails: Story = {
   },
 };
 
+/**
+ * The rollup is read for the scope's project, so a route of another project or
+ * of the config file has no figure of its own; its cell says why rather than
+ * showing this project's requests to a namesake, or a zero (#3685).
+ */
+export const TrafficIsCountedForThisProjectOnly: Story = {
+  render: () => (
+    <Harness
+      fetchStub={scoped(async (input, init) => {
+        const url = String(input);
+        if (/\/api\/v1\/models(\?|$)/.test(url)) {
+          return json([
+            ...catalogEntries(ROUTES, TARGETS),
+            { ...catalogEntries([CACHE_AWARE], TARGETS)[0], project_id: "project-9" },
+            { ...catalogEntries([CACHE_AWARE], TARGETS)[0], model: "local-llm", source: "config" },
+          ]);
+        }
+        return answer(ROUTES)(input, init);
+      })}
+    >
+      <Models />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(
+      await (await rowOf(canvas, "gpt-4o")).findByTestId("route-traffic"),
+    ).toBeInTheDocument();
+    for (const model of ["qwen-coder", "local-llm"]) {
+      const toggle = await canvas.findByRole("button", { name: `Route details for ${model}` });
+      const row = toggle.closest('[role="row"]') as HTMLElement;
+      await expect(within(row).queryByTestId("route-traffic")).toBeNull();
+      await expect(
+        triggerWithNote(row, "Requests are counted for this project's routes only."),
+      ).toHaveTextContent("—");
+    }
+    // and the where filter says how many are this project's (#3685)
+    const where = canvas.getByRole("radiogroup", { name: "Filter by origin" });
+    await expect(within(where).getByRole("radio", { name: "This project 2" })).toBeVisible();
+    await expect(within(where).getByRole("radio", { name: "Other projects 1" })).toBeVisible();
+    await expect(within(where).getByRole("radio", { name: "Config file 1" })).toBeVisible();
+    await expect(canvas.getByText(/^4 routes · /)).toBeVisible();
+    await userEvent.click(within(where).getByRole("radio", { name: "This project 2" }));
+    await waitFor(() => expect(canvas.queryByText("local-llm")).toBeNull());
+    await expect(canvas.queryByText("qwen-coder")).toBeNull();
+    await expect(canvas.getByText("gpt-4o")).toBeVisible();
+  },
+};
+
 /** Every live gateway on the latest config: the screen says so and links Cluster. */
 export const GatewaysCurrent: Story = {
   render: () => (
     <Harness fetchStub={answer(ROUTES)}>
-      <RoutingRules />
+      <Models />
     </Harness>
   ),
   play: async ({ canvasElement }) => {
@@ -415,7 +543,7 @@ export const GatewayBehind: Story = {
           : answer(ROUTES)(input, init),
       )}
     >
-      <RoutingRules />
+      <Models />
     </Harness>
   ),
   play: async ({ canvasElement }) => {
@@ -436,12 +564,14 @@ export const NoGatewayNote: Story = {
           : answer(ROUTES)(input, init),
       )}
     >
-      <RoutingRules />
+      <Models />
     </Harness>
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expect(await canvas.findByText("gpt-4o", ROUTE_NAME)).toBeInTheDocument();
+    await expect(
+      await canvas.findByRole("button", { name: "Route details for gpt-4o" }),
+    ).toBeInTheDocument();
     await expect((await canvas.findAllByTestId("route-traffic")).length).toBeGreaterThan(0);
     await expect(canvas.queryByTestId("gateway-config")).toBeNull();
   },
@@ -457,11 +587,12 @@ export const CopiesTheModelName: Story = {
   },
   render: () => (
     <Harness fetchStub={answer(ROUTES)}>
-      <RoutingRules />
+      <Models />
     </Harness>
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
+    await expand("gpt-4o");
     await userEvent.click(await canvas.findByRole("button", { name: /Copy model name.*gpt-4o/ }));
     await waitFor(() => expect(copied).toEqual(["gpt-4o"]));
   },
@@ -469,23 +600,25 @@ export const CopiesTheModelName: Story = {
 let copied: string[] = [];
 
 /**
- * At 375 px in Russian the strategy and the labels wrap under the route name
- * instead of squeezing it to an ellipsis (#2139).
+ * At 375 px in Russian the route name keeps its whole width rather than being
+ * squeezed to an ellipsis (#2139); the table scrolls sideways instead.
  */
 export const NarrowRussianKeepsTheNameWhole: Story = {
   ...atMobile,
   globals: { locale: "ru" },
   render: () => (
     <Harness fetchStub={answer(ROUTES)}>
-      <RoutingRules />
+      <Models />
     </Harness>
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     const name = await canvas.findByText("claude-sonnet");
-    await waitFor(() => expect(canvas.getByText(ru.pages.routing.disabledBadge)).toBeVisible());
+    await waitFor(() => expect(canvas.getByText(ru.pages.models.disabled)).toBeVisible());
     await expect(name.scrollWidth).toBeLessThanOrEqual(name.clientWidth);
-    await expect(canvas.getByRole("button", { name: ru.pages.routing.add })).toBeInTheDocument();
+    await expect(
+      canvas.getByRole("button", { name: new RegExp(ru.pages.models.emptyAction) }),
+    ).toBeInTheDocument();
   },
 };
 
@@ -493,13 +626,16 @@ export const NarrowRussianKeepsTheNameWhole: Story = {
 export const EditSheetOffersAdaptive: Story = {
   render: () => (
     <Harness fetchStub={answer(ROUTES)} role="admin">
-      <RoutingRules />
+      <Models />
     </Harness>
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expectAllowed(canvasElement, "Edit route gpt-4o");
-    await userEvent.click(await canvas.findByRole("button", { name: "Edit route gpt-4o" }));
+    await expand("gpt-4o");
+    await expectAllowed(canvasElement, "Edit targets and variants of gpt-4o");
+    await userEvent.click(
+      await canvas.findByRole("button", { name: "Edit targets and variants of gpt-4o" }),
+    );
     const dialog = within(await within(document.body).findByRole("dialog"));
     const picker = await dialog.findByLabelText("Strategy");
     const listbox = within(await openOptions(picker));
@@ -515,11 +651,12 @@ export const EditSheetOffersAdaptive: Story = {
 };
 
 /**
- * "Add route" opens the route sheet, the same one Model Catalog opens (#1979).
- * The two screens used to create the same route through two forms that asked
- * for different things; a route now gets its strategy, its targets and the
- * rest of its settings in one place, whichever screen it starts from. The
- * sheet is called what the button was: a route (#2810).
+ * "Add route" opens the route sheet (#1979). Model Catalog and Routing Rules
+ * used to create the same route through two forms that asked for different
+ * things, and then through two buttons; a route now gets its strategy, its
+ * targets and the rest of its settings in one place, from the one screen
+ * routes live on (#3685). The sheet is called what the button was: a route
+ * (#2810).
  */
 let creates: Recorder;
 export const AddRouteOpensTheRouteSheet: Story = {
@@ -531,14 +668,13 @@ export const AddRouteOpensTheRouteSheet: Story = {
           return json({ ...ROUTES[0], id: "route-new", model: "llama-70b" });
         }
         if (init?.method === "POST") return json({ id: "rt-new" });
-        if (url.includes("/models")) return json([]);
         if (url.includes("/currency")) return json({ settlement: "USD", codes: ["USD"] });
         return answer(ROUTES)(input, init);
       }),
     );
     return (
       <Harness fetchStub={creates.stub}>
-        <RoutingRules />
+        <Models />
       </Harness>
     );
   },
@@ -570,7 +706,7 @@ export const AddRouteOpensTheRouteSheet: Story = {
 export const Loading: Story = {
   render: () => (
     <Harness fetchStub={pending}>
-      <RoutingRules />
+      <Models />
     </Harness>
   ),
   play: async ({ canvasElement }) => {
@@ -584,7 +720,7 @@ export const Loading: Story = {
 export const Empty: Story = {
   render: () => (
     <Harness fetchStub={answer([])}>
-      <RoutingRules />
+      <Models />
     </Harness>
   ),
   play: async ({ canvasElement }) => {
@@ -595,7 +731,7 @@ export const Empty: Story = {
 export const Forbidden: Story = {
   render: () => (
     <Harness fetchStub={answer([], 403)}>
-      <RoutingRules />
+      <Models />
     </Harness>
   ),
   play: async ({ canvasElement }) => {
@@ -625,7 +761,7 @@ export const ServerError: Story = {
           return answer(ROUTES)(input, init);
         })}
       >
-        <RoutingRules />
+        <Models />
       </Harness>
     );
   },
@@ -634,10 +770,16 @@ export const ServerError: Story = {
     await expectLoadError(canvasElement, /routes/);
     await expect(canvas.getByText(/connection refused/)).toBeInTheDocument();
     await expectNoFalseEmpty(canvasElement, /No routes yet/);
+    // the catalog still lists the project's routes, but they are edited and
+    // deleted through the list that failed, so neither is offered yet
+    const edit = canvas.getByRole("button", { name: "Edit gpt-4o" });
+    // story-wait-allow: no role is mounted, and the failed list leaves the row nothing to edit
+    await expect(edit).toBeDisabled();
+    await expect(canvas.queryByRole("button", { name: "Delete route gpt-4o" })).toBeNull();
     routesDown = false;
     await userEvent.click(canvas.getByRole("button", { name: /Try again/ }));
-    await expect(await canvas.findByText("gpt-4o", ROUTE_NAME)).toBeInTheDocument();
     await waitFor(() => expect(canvas.queryByRole("alert")).toBeNull());
+    await waitFor(() => expect(edit).toBeEnabled());
   },
 };
 
@@ -647,24 +789,29 @@ let reads: Recorder;
 
 /**
  * The targets come with the route list, so a project of N routes costs one
- * request and none per route. Each route's targets are the ones its own row
- * carried; claude-sonnet really has none, so that copy appears exactly once.
+ * request and none per route. Each route's targets are the ones its own entry
+ * carried; claude-sonnet really has none, so its row and its detail say so,
+ * once each.
  */
 export const TargetsComeWithTheRoutes: Story = {
   render: () => {
     reads = recording(answer(ROUTES));
     return (
       <Harness fetchStub={reads.stub}>
-        <RoutingRules />
+        <Models />
       </Harness>
     );
   },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expect(await canvas.findByText("gpt-4o", ROUTE_NAME)).toBeInTheDocument();
+    await expect(
+      await canvas.findByRole("button", { name: "Route details for gpt-4o" }),
+    ).toBeInTheDocument();
+    await expand("gpt-4o");
+    await expand("claude-sonnet");
     await expect(await canvas.findByText("No targets yet.")).toBeInTheDocument();
     await expect(canvas.getAllByText("No targets yet.")).toHaveLength(1);
-    await expect(canvas.getAllByText("0 targets")).toHaveLength(1);
+    await expect(canvas.getAllByText("no targets")).toHaveLength(1);
     await expect(canvas.getByText("2 targets")).toBeInTheDocument();
     // one list read asks for the targets, and no route is read for them again
     const listReads = reads.calls.filter((c) => /\/projects\/[^/]+\/routes/.test(c.url));
@@ -677,28 +824,39 @@ export const TargetsComeWithTheRoutes: Story = {
 };
 
 /**
- * A control plane that predates the embedded targets returns routes without
- * them. That is not a route with no targets, so the card says it could not
- * read them rather than "No targets yet." or "0 targets" (#2133).
+ * A control plane that predates the embedded targets lists each route with
+ * only a count. That is not a route with no targets, so the detail says the
+ * targets are not listed rather than "No targets yet.", and the row keeps the
+ * count it was given (#2133, #2210).
  */
 export const TargetsUnreadFromAnOlderControlPlane: Story = {
   render: () => (
     <Harness
       fetchStub={scoped(async (input, init) => {
         const url = String(input);
-        if (/\/projects\/[^/]+\/routes/.test(url)) return json(ROUTES);
+        if (/\/api\/v1\/models(\?|$)/.test(url)) {
+          return json(
+            catalogEntries(ROUTES, TARGETS).map(({ route_targets: _, ...entry }) => entry),
+          );
+        }
         return answer(ROUTES)(input, init);
       })}
     >
-      <RoutingRules />
+      <Models />
     </Harness>
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expect(await canvas.findByText("gpt-4o", ROUTE_NAME)).toBeInTheDocument();
-    await expect(canvas.getAllByText("Targets could not be read.")).toHaveLength(2);
+    await expect(
+      await canvas.findByRole("button", { name: "Route details for gpt-4o" }),
+    ).toBeInTheDocument();
+    await expect(canvas.getByText("2 targets")).toBeVisible();
+    await expand("gpt-4o");
+    await expect(
+      await canvas.findByText("This control plane does not list the route's targets."),
+    ).toBeVisible();
     await expect(canvas.queryByText("No targets yet.")).toBeNull();
-    await expect(canvas.queryByText("0 targets")).toBeNull();
+    await expect(canvas.queryByRole("list", { name: "Targets of gpt-4o" })).toBeNull();
   },
 };
 
@@ -710,12 +868,12 @@ export const TargetsUnreadFromAnOlderControlPlane: Story = {
 export const CacheAwareDrawsNoShare: Story = {
   render: () => (
     <Harness fetchStub={answer([ROUTES[0], CACHE_AWARE])}>
-      <RoutingRules />
+      <Models />
     </Harness>
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    const cacheAware = within(await canvas.findByRole("list", { name: "Targets of qwen-coder" }));
+    const cacheAware = within(await routeList(canvas, "qwen-coder"));
     await expect(cacheAware.getByText("qwen-coder-32b")).toBeInTheDocument();
     await expect(cacheAware.getByText("azure-west")).toBeInTheDocument();
     await expect(cacheAware.queryByText(/%/)).toBeNull();
@@ -723,8 +881,8 @@ export const CacheAwareDrawsNoShare: Story = {
     await expect(canvas.getByText(/does not read weights/)).toHaveTextContent(/cache_aware/);
 
     // the weighted route beside it still draws its split
-    const weighted = within(canvas.getByRole("list", { name: "Targets of gpt-4o" }));
-    await expect(weighted.getByText("80%")).toBeInTheDocument();
+    const weighted = within(await routeList(canvas, "gpt-4o"));
+    await expect(weighted.getByText("80% of traffic")).toBeInTheDocument();
     await expect(weighted.getAllByTestId("target-share")).toHaveLength(2);
   },
 };
@@ -778,16 +936,18 @@ const withHealth = (uptime: () => Response | Promise<Response>, routes = ROUTES)
 export const TargetHealthStates: Story = {
   render: () => (
     <Harness fetchStub={withHealth(() => json({ data: HEALTH_UPTIME }), [ROUTES[0], CACHE_AWARE])}>
-      <RoutingRules />
+      <Models />
     </Harness>
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    const gpt = within(await canvas.findByRole("list", { name: "Targets of gpt-4o" }));
+    const gpt = within(await routeList(canvas, "gpt-4o"));
     await expect(await gpt.findByText("99.95% uptime")).toBeInTheDocument();
     await expect(gpt.getByText("97.00% uptime, below SLA")).toBeInTheDocument();
-    const qwen = within(canvas.getByRole("list", { name: "Targets of qwen-coder" }));
-    await expect(qwen.getAllByText("no health data")).toHaveLength(2);
+    // nothing observed qwen-coder's targets, so its list draws no health
+    // column rather than a column of "no health data"
+    const qwen = within(await routeList(canvas, "qwen-coder"));
+    await expect(qwen.queryByText(/uptime|no health data/)).toBeNull();
     await expect(canvas.queryByTestId("health-unavailable")).toBeNull();
   },
 };
@@ -819,11 +979,14 @@ export const TargetHealthAtRisk: Story = {
         return answer([ROUTES[0]])(input, init);
       })}
     >
-      <RoutingRules />
+      <Models />
     </Harness>
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
+    // the row names the state, and the route's detail says it per target
+    await expect(await canvas.findByText("1 SLA at risk")).toBeVisible();
+    await expand("gpt-4o");
     await expect(await canvas.findByText("99.70% uptime, SLA at risk")).toBeInTheDocument();
   },
 };
@@ -840,7 +1003,7 @@ export const TargetHealthUnavailable: Story = {
         json({ error: { message: "analytics store not configured" } }, 503),
       )}
     >
-      <RoutingRules />
+      <Models />
     </Harness>
   ),
   play: async ({ canvasElement }) => {
@@ -849,8 +1012,8 @@ export const TargetHealthUnavailable: Story = {
     await expect(note).toHaveTextContent(/Target health is unavailable/);
     await expect(note).toHaveTextContent(/The control plane hit an error/);
     await expect(canvas.getAllByTestId("health-unavailable")).toHaveLength(1);
-    const targets = within(await canvas.findByRole("list", { name: "Targets of gpt-4o" }));
-    await expect(targets.getByText("80%")).toBeInTheDocument();
+    const targets = within(await routeList(canvas, "gpt-4o"));
+    await expect(targets.getByText("80% of traffic")).toBeInTheDocument();
     await expect(canvas.queryByText(/no health data|uptime/)).toBeNull();
   },
 };
@@ -868,16 +1031,18 @@ export const ConfirmsBeforeDeletingARoute: Story = {
   render: () => (
     <Harness fetchStub={deletes.stub}>
       <Toasted>
-        <RoutingRules />
+        <Models />
       </Toasted>
     </Harness>
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expect(await canvas.findByText("gpt-4o", ROUTE_NAME)).toBeInTheDocument();
+    await expect(
+      await canvas.findByRole("button", { name: "Route details for gpt-4o" }),
+    ).toBeInTheDocument();
     // by name, not by index: every row control names the route it acts on,
     // so the story asserts on the control it means (#1214)
-    const button = canvas.getByRole("button", { name: "Delete route gpt-4o" });
+    const button = await canvas.findByRole("button", { name: "Delete route gpt-4o" });
 
     // cancelling must leave the route alone — the half a manual click-through
     // never checks
@@ -904,13 +1069,15 @@ const hangs = scoped(async (input, init) => {
 export const DeletingARoute: Story = {
   render: () => (
     <Harness fetchStub={hangs}>
-      <RoutingRules />
+      <Models />
     </Harness>
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expect(await canvas.findByText("gpt-4o", ROUTE_NAME)).toBeInTheDocument();
-    const trigger = canvas.getByRole("button", { name: "Delete route gpt-4o" });
+    await expect(
+      await canvas.findByRole("button", { name: "Route details for gpt-4o" }),
+    ).toBeInTheDocument();
+    const trigger = await canvas.findByRole("button", { name: "Delete route gpt-4o" });
     await userEvent.click(trigger);
     await confirmDestructive(/gpt-4o/, /delete route/i);
     const dialog = within(document.body).getByRole("dialog");
@@ -938,13 +1105,15 @@ export const DeleteFails: Story = {
         return answer(ROUTES)(input, init);
       })}
     >
-      <RoutingRules />
+      <Models />
     </Harness>
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expect(await canvas.findByText("gpt-4o", ROUTE_NAME)).toBeInTheDocument();
-    await userEvent.click(canvas.getByRole("button", { name: "Delete route gpt-4o" }));
+    await expect(
+      await canvas.findByRole("button", { name: "Route details for gpt-4o" }),
+    ).toBeInTheDocument();
+    await userEvent.click(await canvas.findByRole("button", { name: "Delete route gpt-4o" }));
     await confirmDestructive(/gpt-4o/, /delete route/i);
 
     const dialog = within(document.body).getByRole("dialog");
@@ -960,26 +1129,28 @@ export const DeleteFails: Story = {
 export const RefusedToAViewer: Story = {
   render: () => (
     <Harness fetchStub={answer(ROUTES)} role="viewer">
-      <RoutingRules />
+      <Models />
     </Harness>
   ),
   play: async ({ canvasElement }) => {
     await expectRefused(canvasElement, /add route/i);
     await expectRefused(canvasElement, "Delete route gpt-4o");
-    await expectRefused(canvasElement, "Edit route gpt-4o");
+    await expand("gpt-4o");
+    await expectRefused(canvasElement, "Edit targets and variants of gpt-4o");
   },
 };
 
 export const RefusedToAMember: Story = {
   render: () => (
     <Harness fetchStub={answer(ROUTES)} role="member">
-      <RoutingRules />
+      <Models />
     </Harness>
   ),
   play: async ({ canvasElement }) => {
     await expectRefused(canvasElement, /add route/i);
     await expectRefused(canvasElement, "Delete route claude-sonnet");
-    await expectRefused(canvasElement, "Edit route claude-sonnet");
+    await expand("claude-sonnet");
+    await expectRefused(canvasElement, "Edit targets and variants of claude-sonnet");
   },
 };
 
@@ -1017,15 +1188,18 @@ export const EditsATwoTargetRoute: Story = {
     return (
       <Harness fetchStub={edits.stub} role="admin">
         <Toasted>
-          <RoutingRules />
+          <Models />
         </Toasted>
       </Harness>
     );
   },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expectAllowed(canvasElement, "Edit route gpt-4o");
-    await userEvent.click(await canvas.findByRole("button", { name: "Edit route gpt-4o" }));
+    await expand("gpt-4o");
+    await expectAllowed(canvasElement, "Edit targets and variants of gpt-4o");
+    await userEvent.click(
+      await canvas.findByRole("button", { name: "Edit targets and variants of gpt-4o" }),
+    );
     const dialog = within(await within(document.body).findByRole("dialog"));
     await waitFor(() => expect(dialog.getByRole("heading", { name: "Edit route" })).toBeVisible());
     await expect(await dialog.findByLabelText("Target 1 upstream model")).toHaveValue(
@@ -1065,14 +1239,17 @@ export const KeepsAnUpstreamModelEqualToTheRouteName: Story = {
     ]);
     return (
       <Harness fetchStub={keeps.stub} role="admin">
-        <RoutingRules />
+        <Models />
       </Harness>
     );
   },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expectAllowed(canvasElement, "Edit route gpt-4o");
-    await userEvent.click(await canvas.findByRole("button", { name: "Edit route gpt-4o" }));
+    await expand("gpt-4o");
+    await expectAllowed(canvasElement, "Edit targets and variants of gpt-4o");
+    await userEvent.click(
+      await canvas.findByRole("button", { name: "Edit targets and variants of gpt-4o" }),
+    );
     const dialog = within(await within(document.body).findByRole("dialog"));
     const weight = await dialog.findByLabelText("Target 1 weight");
     await userEvent.clear(weight);
@@ -1097,14 +1274,17 @@ export const AddsAndRemovesATarget: Story = {
     reshapes = updating();
     return (
       <Harness fetchStub={reshapes.stub} role="admin">
-        <RoutingRules />
+        <Models />
       </Harness>
     );
   },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expectAllowed(canvasElement, "Edit route gpt-4o");
-    await userEvent.click(await canvas.findByRole("button", { name: "Edit route gpt-4o" }));
+    await expand("gpt-4o");
+    await expectAllowed(canvasElement, "Edit targets and variants of gpt-4o");
+    await userEvent.click(
+      await canvas.findByRole("button", { name: "Edit targets and variants of gpt-4o" }),
+    );
     const dialog = within(await within(document.body).findByRole("dialog"));
     await userEvent.click(await dialog.findByRole("button", { name: "Remove target 1" }));
     await userEvent.click(dialog.getByRole("button", { name: "Add target" }));
@@ -1146,13 +1326,16 @@ export const RejectedSave: Story = {
         return answer(ROUTES)(input, init);
       })}
     >
-      <RoutingRules />
+      <Models />
     </Harness>
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expectAllowed(canvasElement, "Edit route gpt-4o");
-    await userEvent.click(await canvas.findByRole("button", { name: "Edit route gpt-4o" }));
+    await expand("gpt-4o");
+    await expectAllowed(canvasElement, "Edit targets and variants of gpt-4o");
+    await userEvent.click(
+      await canvas.findByRole("button", { name: "Edit targets and variants of gpt-4o" }),
+    );
     const dialog = within(await within(document.body).findByRole("dialog"));
     const weight = await dialog.findByLabelText("Target 2 weight");
     await userEvent.clear(weight);
@@ -1228,8 +1411,11 @@ const withVariants = (stored: RouteVariantRow[], put?: () => Response) =>
 
 async function openRouteSheet(canvasElement: HTMLElement) {
   const canvas = within(canvasElement);
-  await expectAllowed(canvasElement, "Edit route gpt-4o");
-  await userEvent.click(await canvas.findByRole("button", { name: "Edit route gpt-4o" }));
+  await expand("gpt-4o");
+  await expectAllowed(canvasElement, "Edit targets and variants of gpt-4o");
+  await userEvent.click(
+    await canvas.findByRole("button", { name: "Edit targets and variants of gpt-4o" }),
+  );
   const dialog = within(await within(document.body).findByRole("dialog"));
   await waitFor(() => expect(dialog.getByRole("heading", { name: "Edit route" })).toBeVisible());
   return dialog;
@@ -1251,7 +1437,7 @@ export const EditsAVariantSplit: Story = {
     return (
       <Harness fetchStub={splits.stub} role="admin">
         <Toasted>
-          <RoutingRules />
+          <Models />
         </Toasted>
       </Harness>
     );
@@ -1325,7 +1511,7 @@ export const AcceptsAZeroVariantWeight: Story = {
     return (
       <Harness fetchStub={splits.stub} role="admin">
         <Toasted>
-          <RoutingRules />
+          <Models />
         </Toasted>
       </Harness>
     );
@@ -1375,15 +1561,15 @@ const variantRoutes = recording(
 export const CardsShowTheVariantsTheyRouteThrough: Story = {
   render: () => (
     <Harness fetchStub={variantRoutes.stub}>
-      <RoutingRules />
+      <Models />
     </Harness>
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expect(await canvas.findByText("gpt-4o", ROUTE_NAME)).toBeInTheDocument();
-    const list = within(
-      await canvas.findByRole("list", { name: "Variants of gpt-4o, in fallback order" }),
-    );
+    await expect(
+      await canvas.findByRole("button", { name: "Route details for gpt-4o" }),
+    ).toBeInTheDocument();
+    const list = within(await routeList(canvas, "gpt-4o", "Variants of gpt-4o, in fallback order"));
     // declared order is the fallback order, whatever the order the API listed them in
     const names = list.getAllByRole("listitem").map((li) => li.textContent);
     await expect(names[0]).toContain("stable");
@@ -1445,7 +1631,7 @@ export const ShowsTheObservedShareBesideTheConfiguredSplit: Story = {
   render: () => (
     <Harness fetchStub={observed.stub} role="admin">
       <Toasted>
-        <RoutingRules />
+        <Models />
       </Toasted>
     </Harness>
   ),
@@ -1483,7 +1669,7 @@ export const ChangingTheChartZoneReadsVariantTrafficAgain: Story = {
   render: () => (
     <Harness fetchStub={zonedVariantTraffic.stub} role="admin">
       <Toasted>
-        <RoutingRules />
+        <Models />
       </Toasted>
     </Harness>
   ),
@@ -1532,7 +1718,7 @@ export const FirstAttemptsAreComparedWithTheConfiguredSplit: Story = {
   render: () => (
     <Harness fetchStub={failingOver.stub} role="admin">
       <Toasted>
-        <RoutingRules />
+        <Models />
       </Toasted>
     </Harness>
   ),
@@ -1575,7 +1761,7 @@ export const NoFirstAttemptColumnWhenTheSplitIsUnknown: Story = {
   render: () => (
     <Harness fetchStub={unsplit.stub} role="admin">
       <Toasted>
-        <RoutingRules />
+        <Models />
       </Toasted>
     </Harness>
   ),
@@ -1606,7 +1792,7 @@ export const AssignedSharesAreComparedWithTheConfiguredSplit: Story = {
   render: () => (
     <Harness fetchStub={assigned.stub} role="admin">
       <Toasted>
-        <RoutingRules />
+        <Models />
       </Toasted>
     </Harness>
   ),
@@ -1644,7 +1830,7 @@ export const AVariantThatAnsweredNothingKeepsItsAssignedShare: Story = {
   render: () => (
     <Harness fetchStub={answeredNothing.stub} role="admin">
       <Toasted>
-        <RoutingRules />
+        <Models />
       </Toasted>
     </Harness>
   ),
@@ -1685,7 +1871,7 @@ export const SampledSharesShowTheTrafficRoutedAroundAVariant: Story = {
   render: () => (
     <Harness fetchStub={routedAround.stub} role="admin">
       <Toasted>
-        <RoutingRules />
+        <Models />
       </Toasted>
     </Harness>
   ),
@@ -1723,7 +1909,7 @@ export const NoSampledColumnWithoutTheSampledVariant: Story = {
   render: () => (
     <Harness fetchStub={unsampled.stub} role="admin">
       <Toasted>
-        <RoutingRules />
+        <Models />
       </Toasted>
     </Harness>
   ),
@@ -1753,7 +1939,7 @@ export const AnotherOrganizationsVariantsOfOneNameStayApart: Story = {
   render: () => (
     <Harness fetchStub={twoOrgs.stub} role="admin">
       <Toasted>
-        <RoutingRules />
+        <Models />
       </Toasted>
     </Harness>
   ),
@@ -1776,7 +1962,7 @@ export const ObservedTrafficIsEmptyBeforeTheRouteIsCalled: Story = {
   render: () => (
     <Harness fetchStub={observing([]).stub} role="admin">
       <Toasted>
-        <RoutingRules />
+        <Models />
       </Toasted>
     </Harness>
   ),
@@ -1793,7 +1979,7 @@ export const ObservedTrafficNeedsClickHouse: Story = {
   render: () => (
     <Harness fetchStub={observing([], 503).stub} role="admin">
       <Toasted>
-        <RoutingRules />
+        <Models />
       </Toasted>
     </Harness>
   ),
@@ -1809,7 +1995,7 @@ export const ObservedTrafficReadFails: Story = {
   render: () => (
     <Harness fetchStub={observing([], 500).stub} role="admin">
       <Toasted>
-        <RoutingRules />
+        <Models />
       </Toasted>
     </Harness>
   ),
@@ -1827,7 +2013,7 @@ export const AddsAVariant: Story = {
     adds = withVariants([]);
     return (
       <Harness fetchStub={adds.stub} role="admin">
-        <RoutingRules />
+        <Models />
       </Harness>
     );
   },
@@ -1869,7 +2055,7 @@ export const RefusesASplitTheGatewayCannotRoute: Story = {
     refusesSplit = withVariants(SPLIT);
     return (
       <Harness fetchStub={refusesSplit.stub} role="admin">
-        <RoutingRules />
+        <Models />
       </Harness>
     );
   },
@@ -1931,7 +2117,7 @@ export const VariantRefusedByTheControlPlane: Story = {
         ).stub
       }
     >
-      <RoutingRules />
+      <Models />
     </Harness>
   ),
   play: async ({ canvasElement }) => {
@@ -1973,7 +2159,7 @@ export const VariantSetRefusedByTheControlPlane: Story = {
         ).stub
       }
     >
-      <RoutingRules />
+      <Models />
     </Harness>
   ),
   play: async ({ canvasElement }) => {
@@ -2003,7 +2189,7 @@ export const VariantsWithoutProviders: Story = {
         return answer(ROUTES)(input, init);
       })}
     >
-      <RoutingRules />
+      <Models />
     </Harness>
   ),
   play: async ({ canvasElement }) => {
@@ -2022,7 +2208,7 @@ export const VariantsWithoutProviders: Story = {
 export const SaysWhenVariantTargetWeightsAreIgnored: Story = {
   render: () => (
     <Harness role="admin" fetchStub={withVariants(SPLIT).stub}>
-      <RoutingRules />
+      <Models />
     </Harness>
   ),
   play: async ({ canvasElement }) => {
@@ -2044,7 +2230,7 @@ export const VariantsLoading: Story = {
         return answer(ROUTES)(input, init);
       })}
     >
-      <RoutingRules />
+      <Models />
     </Harness>
   ),
   play: async ({ canvasElement }) => {
@@ -2068,7 +2254,7 @@ export const VariantsLoadFailed: Story = {
         return answer(ROUTES)(input, init);
       })}
     >
-      <RoutingRules />
+      <Models />
     </Harness>
   ),
   play: async ({ canvasElement }) => {
@@ -2088,12 +2274,13 @@ export const VariantEditorRefusedToAViewer: Story = {
     viewerReads = withVariants(SPLIT);
     return (
       <Harness fetchStub={viewerReads.stub} role="viewer">
-        <RoutingRules />
+        <Models />
       </Harness>
     );
   },
   play: async ({ canvasElement }) => {
-    await expectRefused(canvasElement, "Edit route gpt-4o");
+    await expand("gpt-4o");
+    await expectRefused(canvasElement, "Edit targets and variants of gpt-4o");
     viewerReads.expectNotSent("GET", "/variants");
     viewerReads.expectNotSent("PUT", "/variants");
   },
@@ -2128,62 +2315,22 @@ const ROUTE_LABELS: LabelRow[] = [
 
 const labelled = answer(ROUTES, 200, ROUTE_LABELS);
 
-/** the chips ride on the route card, both sources distinguishable */
+/**
+ * A route's own labels ride on its detail, both sources distinguishable. They
+ * are a second set beside the model's labels the row carries, until the two
+ * are one (#3685).
+ */
 export const Labelled: Story = {
   render: () => (
     <Harness fetchStub={labelled}>
-      <RoutingRules />
+      <Models />
     </Harness>
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
+    await expand("gpt-4o");
     await waitFor(() => expect(canvas.getByLabelText("tier=gold, your label")).toBeVisible());
     await expect(canvas.getByLabelText("tier=observed-gold, automatic label")).toBeVisible();
-  },
-};
-
-/** filtering narrows the grid to the routes carrying the label */
-export const FilteredByLabel: Story = {
-  render: () => (
-    <Harness fetchStub={labelled}>
-      <RoutingRules />
-    </Harness>
-  ),
-  play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement);
-    await waitFor(() => expect(canvas.getAllByText("claude-sonnet").length).toBeGreaterThan(0));
-    await userEvent.click(canvas.getByRole("combobox", { name: /Filter by label/i }));
-    await userEvent.click(await within(document.body).findByRole("option", { name: "tier=gold" }));
-    await waitFor(() => expect(canvas.queryByText("claude-sonnet")).toBeNull());
-    await expect(canvas.getAllByText("gpt-4o").length).toBeGreaterThan(0);
-  },
-};
-
-/**
- * A filter that matches nothing is not a project with no routes: the copy
- * blames the narrowing and offers to clear it rather than offering to add the
- * first route to a project that already has two.
- */
-export const NoLabelMatch: Story = {
-  render: () => (
-    <Harness
-      fetchStub={answer(ROUTES, 200, [
-        { ...ROUTE_LABELS[0], id: "rl-3", subject_id: "route-missing", value: "silver" },
-      ])}
-    >
-      <RoutingRules />
-    </Harness>
-  ),
-  play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement);
-    await waitFor(() => expect(canvas.getAllByText("gpt-4o").length).toBeGreaterThan(0));
-    await userEvent.click(canvas.getByRole("combobox", { name: /Filter by label/i }));
-    await userEvent.click(
-      await within(document.body).findByRole("option", { name: "tier=silver" }),
-    );
-    await waitFor(() => expect(canvas.getByText(/No routes match/i)).toBeVisible());
-    await userEvent.click(canvas.getByRole("button", { name: /Clear filters/i }));
-    await waitFor(() => expect(canvas.getAllByText("gpt-4o").length).toBeGreaterThan(0));
   },
 };
 
@@ -2191,13 +2338,13 @@ export const NoLabelMatch: Story = {
 export const LabelPanel: Story = {
   render: () => (
     <Harness fetchStub={labelled}>
-      <RoutingRules />
+      <Models />
     </Harness>
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await waitFor(() => expect(canvas.getAllByText("gpt-4o").length).toBeGreaterThan(0));
-    await userEvent.click(canvas.getByRole("button", { name: "Labels on gpt-4o" }));
+    await expand("gpt-4o");
+    await userEvent.click(await canvas.findByRole("button", { name: "Route labels on gpt-4o" }));
     const panel = within(await within(document.body).findByRole("dialog"));
     await waitFor(() => expect(panel.getByText(/priced on every target/)).toBeVisible());
     await expect(panel.getByRole("button", { name: "Remove tier=gold" })).toBeVisible();
@@ -2254,12 +2401,12 @@ export const TargetBreakerOpen: Story = {
         ),
       )}
     >
-      <RoutingRules />
+      <Models />
     </Harness>
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    const list = within(await canvas.findByRole("list", { name: "Targets of gpt-4o" }));
+    const list = within(await routeList(canvas, "gpt-4o"));
     const badge = await list.findByText("Breaker open on 2 gateways");
     await expect(badge).toBeVisible();
     await expect(list.getAllByTestId("breaker-badge")).toHaveLength(1);
@@ -2283,12 +2430,12 @@ export const TargetBreakerProbing: Story = {
         ),
       )}
     >
-      <RoutingRules />
+      <Models />
     </Harness>
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    const list = within(await canvas.findByRole("list", { name: "Targets of gpt-4o" }));
+    const list = within(await routeList(canvas, "gpt-4o"));
     const badge = await list.findByText("Probing on 1 gateway");
     await expect(badge.closest("li")).toHaveTextContent(/azure-west/);
   },
@@ -2335,12 +2482,12 @@ export const TwoOrgsShareARouteName: Story = {
         return answer(ROUTES)(input, init);
       })}
     >
-      <RoutingRules />
+      <Models />
     </Harness>
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    const list = within(await canvas.findByRole("list", { name: "Targets of gpt-4o" }));
+    const list = within(await routeList(canvas, "gpt-4o"));
     const badge = await list.findByText("Probing on 1 gateway");
     await expect(badge.closest("li")).toHaveTextContent(/openai-prod/);
     await expect(list.queryByText("Breaker open on 2 gateways")).toBeNull();
@@ -2353,12 +2500,12 @@ export const TwoOrgsShareARouteName: Story = {
 export const BreakerStateUnavailable: Story = {
   render: () => (
     <Harness fetchStub={withBreakers(() => json({ error: { message: "no store" } }, 404))}>
-      <RoutingRules />
+      <Models />
     </Harness>
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await canvas.findByRole("list", { name: "Targets of gpt-4o" });
+    await routeList(canvas, "gpt-4o");
     await expect(canvas.queryByTestId("breaker-badge")).toBeNull();
     await expect(canvas.queryByRole("alert")).toBeNull();
   },
@@ -2383,16 +2530,7 @@ const withFallback = (stored: RouteTargetRow[] = WITH_FALLBACK, put?: () => Resp
       if (init?.method === "PUT" && /\/routes\/route-1$/.test(url)) {
         return put ? put() : json(ROUTES[0]);
       }
-      if (/\/routes\/route-1\/targets/.test(url)) return json(stored);
-      if (url.includes("include=targets")) {
-        return json(
-          ROUTES.map((r) => ({
-            ...r,
-            targets: r.id === "route-1" ? stored : (TARGETS[r.id] ?? []),
-          })),
-        );
-      }
-      return answer(ROUTES)(input, init);
+      return answer(ROUTES, 200, [], {}, { ...TARGETS, "route-1": stored })(input, init);
     }),
   );
 
@@ -2408,14 +2546,14 @@ const fallbackOf = (dialog: ReturnType<typeof within>, name: string) =>
 export const FallbackTargetHasNoShare: Story = {
   render: () => (
     <Harness fetchStub={withFallback().stub}>
-      <RoutingRules />
+      <Models />
     </Harness>
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    const targets = within(await canvas.findByRole("list", { name: "Targets of gpt-4o" }));
-    await expect(targets.getByText("100%")).toBeInTheDocument();
-    await expect(targets.queryByText("20%")).toBeNull();
+    const targets = within(await routeList(canvas, "gpt-4o"));
+    await expect(targets.getByText("100% of traffic")).toBeInTheDocument();
+    await expect(targets.queryByText("20% of traffic")).toBeNull();
     await expect(targets.getAllByTestId("target-share")).toHaveLength(1);
     const badge = targets.getByTestId("fallback-badge");
     await expect(badge).toHaveTextContent("fallback");
@@ -2435,7 +2573,7 @@ export const EditsAFallbackSet: Story = {
     return (
       <Harness fetchStub={fallbackEdits.stub} role="admin">
         <Toasted>
-          <RoutingRules />
+          <Models />
         </Toasted>
       </Harness>
     );
@@ -2488,7 +2626,7 @@ export const RefusesARouteOfOnlyFallbacks: Story = {
     onlyFallbacks = withFallback();
     return (
       <Harness fetchStub={onlyFallbacks.stub} role="admin">
-        <RoutingRules />
+        <Models />
       </Harness>
     );
   },
@@ -2527,7 +2665,7 @@ export const FallbackSetRefusedByTheControlPlane: Story = {
         ).stub
       }
     >
-      <RoutingRules />
+      <Models />
     </Harness>
   ),
   play: async ({ canvasElement }) => {
@@ -2550,7 +2688,7 @@ export const FallbackSetRefusedByTheControlPlane: Story = {
 export const RejectsABadRefusalCategory: Story = {
   render: () => (
     <Harness fetchStub={withFallback().stub} role="admin">
-      <RoutingRules />
+      <Models />
     </Harness>
   ),
   play: async ({ canvasElement }) => {
@@ -2590,7 +2728,7 @@ export const FallbackEditorOnMobile: Story = {
       }
       role="admin"
     >
-      <RoutingRules />
+      <Models />
     </Harness>
   ),
   play: async ({ canvasElement }) => {
@@ -2617,7 +2755,7 @@ export const EditsAVariantTargetsFallbackSet: Story = {
     return (
       <Harness fetchStub={variantFallback.stub} role="admin">
         <Toasted>
-          <RoutingRules />
+          <Models />
         </Toasted>
       </Harness>
     );
@@ -2652,7 +2790,7 @@ export const RefusesFallbackOnlyVariantsOverAnOrdinaryList: Story = {
     fallbackVariants = withVariants(SPLIT);
     return (
       <Harness fetchStub={fallbackVariants.stub} role="admin">
-        <RoutingRules />
+        <Models />
       </Harness>
     );
   },
@@ -2687,7 +2825,7 @@ export const AcceptsAFallbackOnlyListUnderOrdinaryVariants: Story = {
     return (
       <Harness fetchStub={fallbackList.stub} role="admin">
         <Toasted>
-          <RoutingRules />
+          <Models />
         </Toasted>
       </Harness>
     );
@@ -2784,7 +2922,7 @@ export const RepairsFallbackOnlyVariantsInOneSave: Story = {
     return (
       <Harness fetchStub={repair.stub} role="admin">
         <Toasted>
-          <RoutingRules />
+          <Models />
         </Toasted>
       </Harness>
     );
@@ -2824,7 +2962,7 @@ export const RepairsByRemovingFallbackOnlyVariantsInOneSave: Story = {
     return (
       <Harness fetchStub={removal.stub} role="admin">
         <Toasted>
-          <RoutingRules />
+          <Models />
         </Toasted>
       </Harness>
     );
@@ -2862,7 +3000,7 @@ export const FocusMovesToTheStrandedVariants: Story = {
     strandedFocus = strandedRoute();
     return (
       <Harness fetchStub={strandedFocus.stub} role="admin">
-        <RoutingRules />
+        <Models />
       </Harness>
     );
   },
@@ -2879,26 +3017,31 @@ export const FocusMovesToTheStrandedVariants: Story = {
 };
 
 /**
- * At 1440 px in Russian a card's actions are one cluster: the delete button
- * no longer falls onto a line of its own under the others (#3660).
+ * At 1440 px in Russian a route's actions are one cluster: the last button no
+ * longer falls onto a line of its own under the others (#3660).
  */
 export const TheActionsStayTogetherInRussian: Story = {
   ...atWide,
   globals: { ...atWide.globals, locale: "ru" },
   render: () => (
     <Harness fetchStub={answer(ROUTES)}>
-      <RoutingRules />
+      <Models />
     </Harness>
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await canvas.findByText("claude-sonnet");
     for (const model of ["gpt-4o", "claude-sonnet"]) {
+      await userEvent.click(
+        await canvas.findByRole("button", {
+          name: ru.pages.models.detail.toggleAria.replace("{{model}}", model),
+        }),
+      );
       const edit = await canvas.findByRole("button", {
-        name: ru.pages.routing.editRoute.replace("{{model}}", model),
+        name: ru.pages.models.detail.editRoutingAria.replace("{{model}}", model),
       });
       const remove = canvas.getByRole("button", {
-        name: ru.pages.routing.deleteRoute.replace("{{model}}", model),
+        name: ru.pages.models.detail.routeLabelsAria.replace("{{model}}", model),
       });
       // the same line: their centres within a couple of pixels
       const middle = (el: HTMLElement) => {

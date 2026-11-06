@@ -134,7 +134,7 @@ export default function ComplexityRouter() {
           title={t("pages.complexityRouter.emptyTitle")}
           description={t("pages.complexityRouter.emptyBody")}
           actions={
-            <EmptyStateLink to="/routing-rules">
+            <EmptyStateLink to="/model-catalog">
               {t("pages.complexityRouter.emptyAction")}
             </EmptyStateLink>
           }
