@@ -25,6 +25,7 @@ import type { AccessProfileDetail, CustomRoleRow, MembershipRow, RbacMatrix } fr
 import { contrastRatio, parseRgb } from "@/lib/contrast";
 import { resolveColorToken } from "@/lib/story-tokens";
 import { UxScreenProvider } from "@/lib/ux-react";
+import ru from "@/lib/i18n/locales/ru.json";
 
 // a slice of the real CAPABILITIES table, chosen for the four things a cell can
 // say: a plain minimum role, a superadmin-only deployment setting, an action
@@ -219,6 +220,7 @@ export const ARowAScopedRoleOrAnOperatorReachesIsDecidedByTheRoleColumns: Story 
   ),
   play: async ({ canvasElement }) => {
     await within(canvasElement).findByText("alert_rule");
+    await openFoldedGroups(canvasElement);
     // an admin at the scope reaches it, a member does not: the deployment role
     // does not turn the row into a superadmin's
     await expect(matrixCell(canvasElement, "alert_rule", "admin")).toHaveAccessibleName(
@@ -400,11 +402,22 @@ function matrixCell(canvasElement: HTMLElement, resource: string, role: string):
   const table = within(canvasElement).getByRole("table", { name: "Permission matrix" });
   const headers = within(table).getAllByRole("columnheader");
   const column = headers.findIndex((h) => h.textContent?.toLowerCase().startsWith(role));
-  const row = within(table).getByRole("rowheader", { name: resource }).closest("tr");
+  // a row header is the resource's name with its id under it (#3664)
+  const row = within(table)
+    .getByRole("rowheader", { name: new RegExp(`(^| )${resource}$`) })
+    .closest("tr");
   if (!row || column < 1) throw new Error(`no ${resource} × ${role} cell`);
   // the row header takes the first column, so a role's cell sits one to the left
   // of its header among the row's data cells
   return within(row).getAllByRole("cell")[column - 1];
+}
+
+/** open every group folded to its superadmin-only line, so its rows can be read */
+async function openFoldedGroups(canvasElement: HTMLElement): Promise<void> {
+  const table = within(canvasElement).getByRole("table", { name: "Permission matrix" });
+  for (const button of within(table).queryAllByRole("button", { name: "Show" })) {
+    await userEvent.click(button);
+  }
 }
 
 const meta = {
@@ -425,8 +438,9 @@ export const Loaded: Story = {
     const canvas = within(canvasElement);
 
     // resources come from the server's table, grouped by the scope they live in
-    await expect(await canvas.findByText("runtime_settings")).toBeVisible();
-    await expect(canvas.getByText("virtual_key")).toBeVisible();
+    await expect(await canvas.findByText("virtual_key")).toBeVisible();
+    await openFoldedGroups(canvasElement);
+    await expect(canvas.getByText("runtime_settings")).toBeVisible();
     await expect(canvas.getByText("Deployment-wide")).toBeVisible();
     await expect(canvas.getByText("Project")).toBeVisible();
     await expect(canvas.getByText("7 resources")).toBeVisible();
@@ -435,15 +449,18 @@ export const Loaded: Story = {
     // the counts are a second request, so they are awaited rather than assumed
     // to have landed with the matrix (#1266)
     await expect(canvas.getByText("Admin")).toBeVisible();
-    await expect(await canvas.findByText("2 members at any scope")).toBeVisible();
-    await expect(await canvas.findByText("1 member at any scope")).toBeVisible();
-    await expect(await canvas.findByText("0 members at any scope")).toBeVisible();
+    await expect(await canvas.findByText("2 members in this org")).toBeVisible();
+    await expect(await canvas.findByText("1 member in this org")).toBeVisible();
+    await expect(await canvas.findByText("0 members in this org")).toBeVisible();
 
     // a real table (#2081): the roles are column headers and the resources row
     // headers, so a screen reader announces both with every cell
     const table = canvas.getByRole("table", { name: "Permission matrix" });
     await expect(within(table).getByRole("columnheader", { name: /^Member/ })).toBeVisible();
-    await expect(within(table).getByRole("rowheader", { name: "provider" })).toBeVisible();
+    // the row header is the resource's name, with the id under it (#3664)
+    await expect(
+      within(table).getByRole("rowheader", { name: "Model providers provider" }),
+    ).toBeVisible();
 
     // each cell states its value in words, not only in a tint. a member may read
     // providers but not create them, and nobody's org role reaches runtime settings
@@ -489,6 +506,7 @@ export const MarksNotApplicableAndSuperadmin: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await canvas.findByText("audit_log");
+    await openFoldedGroups(canvasElement);
 
     // counted by the text a screen reader reads out, which is the same string
     // the mark shows on hover
@@ -771,17 +789,74 @@ export const FiltersTheMatrixByResource: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await canvas.findByText("runtime_settings");
+    await canvas.findByText("virtual_key");
     const filter = canvas.getByRole("textbox", { name: "Filter resources" });
+    // a filter opens a group folded to its superadmin-only line
+    await userEvent.type(filter, "runtime");
+    await expect(await canvas.findByText("runtime_settings")).toBeVisible();
+    await userEvent.clear(filter);
     await userEvent.type(filter, "virtual");
     await waitFor(() => expect(canvas.queryByText("runtime_settings")).toBeNull());
     await expect(canvas.getByText("virtual_key")).toBeVisible();
+    // a resource is found by its name as well as its id (#3664)
+    await userEvent.clear(filter);
+    await userEvent.type(filter, "model providers");
+    await expect(await canvas.findByText("provider")).toBeVisible();
+    await expect(canvas.queryByText("virtual_key")).toBeNull();
     // a filter that matches nothing says so rather than drawing an empty table
     await userEvent.clear(filter);
     await userEvent.type(filter, "no-such-resource");
     await expect(await canvas.findByText("No resource matches that filter.")).toBeVisible();
     await userEvent.clear(filter);
-    await expect(await canvas.findByText("runtime_settings")).toBeVisible();
+    await expect(await canvas.findByText("virtual_key")).toBeVisible();
+  },
+};
+
+/**
+ * A scope group in which every role's every cell is the superadmin lock says
+ * one thing about many rows, so it folds to that one line and opens on demand
+ * (#3664). A group where some role can act stays open.
+ */
+export const ASuperadminOnlyGroupFoldsToOneLine: Story = {
+  render: () => (
+    <Harness fetchStub={stub(MATRIX)}>
+      <Rbac />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByText("virtual_key");
+    const table = canvas.getByRole("table", { name: "Permission matrix" });
+    const show = within(table).getByRole("button", { name: "Show" });
+    await expect(show).toHaveAttribute("aria-expanded", "false");
+    await expect(within(table).getByText(/resources?, superadmin only$/)).toBeVisible();
+    await expect(canvas.queryByText("runtime_settings")).toBeNull();
+    await userEvent.click(show);
+    await expect(canvas.getByText("runtime_settings")).toBeVisible();
+    const hide = within(table).getByRole("button", { name: "Hide" });
+    await expect(hide).toHaveAttribute("aria-expanded", "true");
+    await userEvent.click(hide);
+    await expect(canvas.queryByText("runtime_settings")).toBeNull();
+    // the project group, where roles differ, is never folded
+    await expect(canvas.getByText("virtual_key")).toBeVisible();
+  },
+};
+
+/** In Russian the rows are Russian names, with the id under each (#3664). */
+export const NamesResourcesInRussian: Story = {
+  globals: { locale: "ru" },
+  render: () => (
+    <Harness fetchStub={stub(MATRIX)}>
+      <Rbac />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByText(ru.pages.rbac.resources.virtual_key)).toBeVisible();
+    await expect(canvas.getByText("virtual_key")).toBeVisible();
+    await expect(canvas.getByText(ru.pages.rbac.resources.provider)).toBeVisible();
+    await expect(canvas.getByText(ru.pages.rbac.intro)).toBeVisible();
+    await expect(canvas.queryByText(/resource:action|control plane/)).toBeNull();
   },
 };
 

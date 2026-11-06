@@ -6,6 +6,7 @@ import { expect, userEvent, waitFor, within } from "storybook/test";
 import { ProviderSheet } from "./ProviderSheet";
 import { Toaster } from "./ui/toaster";
 import type { ProviderRow, ProviderTestResult } from "@/lib/api";
+import en from "@/lib/i18n/locales/en.json";
 import ru from "@/lib/i18n/locales/ru.json";
 import { atMobile, expectInViewport } from "@/lib/story-viewport";
 import { ToastProvider } from "@/lib/toast";
@@ -434,6 +435,29 @@ export const StrippingKindWantsV1InTheBase: Story = {
       await canvas.findByText("https://api.mistral.ai/v1/chat/completions"),
     ).toBeVisible();
     await expect(canvas.queryByText(/remove the trailing/i)).not.toBeInTheDocument();
+  },
+};
+
+/**
+ * A kind's base field speaks of the kind by its display name, never its stored
+ * slug, and offers the kind's own address from the example config as its
+ * placeholder rather than one `api.example.com` for every kind (#3666).
+ */
+export const TheBaseFieldNamesTheKindAndItsAddress: Story = {
+  render: () => (
+    <Harness
+      fetchStub={stub(async () => json(result()))}
+      provider={{ ...PROVIDER, kind: "mistral", api_base: "" }}
+    />
+  ),
+  play: async () => {
+    const canvas = screen();
+    const base = await canvas.findByRole("textbox", { name: en.providerSheet.fields.apiBase });
+    await waitFor(() => expect(base).toHaveAttribute("placeholder", "https://api.mistral.ai/v1"));
+    await expect(base).toHaveAccessibleDescription(
+      en.providerSheet.apiBase.includesV1.replace("{{kind}}", en.providerSheet.kinds.mistral.name),
+    );
+    await expect(base).not.toHaveAccessibleDescription(/\bmistral\b/);
   },
 };
 

@@ -8,6 +8,20 @@
  * published one, so a reason added there fails the build until it is listed
  * here and worded in every catalog (#3423).
  */
+/**
+ * The codes of what the report says about itself, as the control plane names
+ * them (`LIMITS` and `NO_SHAPE_LIMIT` in `crates/rolter-control/src/savings.rs`),
+ * each worded in every catalog as `pages.savings.limitNotes.<code>` (#3647).
+ * `ui/scripts/savings-reasons.test.ts` holds this list to the published one.
+ */
+export const LIMIT_CODES = [
+  "shortlist_not_recommendation",
+  "same_route_pool",
+  "unknown_price_excluded",
+  "sampled_estimates",
+  "request_shape_unrecorded",
+] as const;
+
 export const EXCLUDED_REASONS = [
   "unpriced",
   "failed",

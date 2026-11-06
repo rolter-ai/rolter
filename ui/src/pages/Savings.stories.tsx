@@ -27,7 +27,7 @@ import type { SavingsReport } from "@/lib/api";
 import { setChartTimeZone } from "@/lib/i18n/format";
 import en from "@/lib/i18n/locales/en.json";
 import ru from "@/lib/i18n/locales/ru.json";
-import { atMobile, expectNoHorizontalOverflow } from "@/lib/story-viewport";
+import { atMobile, atWide, expectNoHorizontalOverflow } from "@/lib/story-viewport";
 
 const REPORT: SavingsReport = {
   currency: "USD",
@@ -35,6 +35,7 @@ const REPORT: SavingsReport = {
     "This report re-prices recorded traffic at another model's price. It does not evaluate whether that model answers as well, so it is a shortlist to test, never a recommendation to switch.",
     "Only models already configured in the same route's pool are considered.",
   ],
+  limit_codes: ["shortlist_not_recommendation", "same_route_pool"],
   assumptions: { max_prompt_tokens: 4000, max_completion_tokens: 1000, output_margin: 0.25 },
   spend: {
     requests: 12000,
@@ -176,6 +177,98 @@ export const PopulatedInRussian: Story = {
     const canvas = within(canvasElement);
     await expect(await canvas.findByText(ru.pages.savings.limitsTitle)).toBeVisible();
     await expect(canvas.getByText(ru.pages.savings.reasons.prompt_too_large)).toBeVisible();
+    // the caveats are the catalog's, not the control plane's English (#3647)
+    const limits = canvas.getByTestId("savings-limits");
+    await expect(
+      within(limits).getByText(ru.pages.savings.limitNotes.shortlist_not_recommendation),
+    ).toBeVisible();
+    await expect(
+      within(limits).getByText(ru.pages.savings.limitNotes.same_route_pool),
+    ).toBeVisible();
+    await expect(limits).not.toHaveTextContent(/re-prices|pool are considered/);
+  },
+};
+
+/**
+ * A control plane older than the codes, or a code this build has never heard
+ * of, is quoted in the English it was sent in rather than dropped (#3647).
+ */
+export const AnUnknownLimitIsQuotedAsSent: Story = {
+  globals: { locale: "ru" },
+  render: () => (
+    <Harness
+      fetchStub={withReport({
+        ...REPORT,
+        limits: [...REPORT.limits, "A caveat from a newer control plane."],
+        limit_codes: [...REPORT.limit_codes!, "from_the_future"],
+      })}
+    >
+      <Savings />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const limits = await within(canvasElement).findByTestId("savings-limits");
+    await expect(within(limits).getByText("A caveat from a newer control plane.")).toBeVisible();
+    await expect(
+      within(limits).getByText(ru.pages.savings.limitNotes.same_route_pool),
+    ).toBeVisible();
+    await expect(within(limits).getAllByRole("listitem")).toHaveLength(3);
+  },
+};
+
+/**
+ * A request that never resolved a model (refused before routing) is counted
+ * under an empty name; the row says so instead of an empty cell (#3647).
+ */
+export const ARequestWithNoModelIsNamed: Story = {
+  render: () => (
+    <Harness
+      fetchStub={withReport({
+        ...REPORT,
+        spend: {
+          ...REPORT.spend,
+          by_model: [
+            { model: "", requests: 3, cost_usd: 0, unpriced_requests: 3 },
+            ...REPORT.spend.by_model,
+          ],
+        },
+      })}
+    >
+      <Savings />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const table = await within(canvasElement).findByRole("table", {
+      name: en.pages.savings.byModel,
+    });
+    const [first] = within(table).getAllByRole("row").slice(1);
+    await expect(within(first!).getAllByRole("cell")[0]).toHaveTextContent(
+      en.pages.savings.noModel,
+    );
+  },
+};
+
+/**
+ * The three thresholds share a row in Russian at 1440 px, where two of their
+ * labels wrap and the third does not (#3647): the inputs line up whatever the
+ * labels and hints above and below them do.
+ */
+export const ThresholdInputsShareABaselineInRussian: Story = {
+  ...atWide,
+  globals: { ...atWide.globals, locale: "ru" },
+  render: () => (
+    <Harness fetchStub={withReport(REPORT)}>
+      <Savings />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const form = await within(canvasElement).findByRole("form", {
+      name: ru.pages.savings.thresholdsTitle,
+    });
+    const inputs = within(form).getAllByRole("textbox");
+    await expect(inputs).toHaveLength(3);
+    const tops = inputs.map((input) => Math.round(input.getBoundingClientRect().top));
+    await expect(new Set(tops).size).toBe(1);
   },
 };
 

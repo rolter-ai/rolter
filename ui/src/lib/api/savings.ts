@@ -57,8 +57,14 @@ export interface SavingsCandidate {
 export interface SavingsReport {
   /** the base currency every money figure is in */
   currency: string;
-  /** what the report says about itself; the control plane's own words */
+  /** what the report says about itself, in the control plane's English */
   limits: string[];
+  /**
+   * a stable code for each entry of `limits`, at the same index (#3647); the
+   * screen words a code it knows in the dashboard's language. Absent from a
+   * control plane older than the codes
+   */
+  limit_codes?: string[];
   assumptions: {
     max_prompt_tokens: number;
     max_completion_tokens: number;

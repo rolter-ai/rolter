@@ -1001,6 +1001,10 @@ function TargetRow({
           // it grows leftward from the field's edge on the sheet, and fills the
           // line below it on a phone, where the field is a third of the width
           listClassName="sm:right-0 sm:w-96 max-sm:w-[calc(100vw-4.5rem)]"
+          // ids that share a prefix differ at the end, so the end is what stays
+          // (#3666); the closed field names the whole id to the pointer
+          truncate="middle"
+          title={target.upstream || undefined}
           value={target.upstream}
           placeholder={publicName || t("modelSheet.targets.upstreamPlaceholder")}
           emptyText={nothingToOffer}

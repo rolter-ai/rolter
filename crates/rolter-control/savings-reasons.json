@@ -1,5 +1,12 @@
 {
-  "$comment": "written by the rolter-control test suite from EXCLUSION_REASONS in src/savings.rs (`just gen-savings-reasons`) - do not edit by hand",
+  "$comment": "written by the rolter-control test suite from EXCLUSION_REASONS and the limit codes in src/savings.rs (`just gen-savings-reasons`) - do not edit by hand",
+  "limits": [
+    "shortlist_not_recommendation",
+    "same_route_pool",
+    "unknown_price_excluded",
+    "sampled_estimates",
+    "request_shape_unrecorded"
+  ],
   "reasons": [
     "unpriced",
     "failed",

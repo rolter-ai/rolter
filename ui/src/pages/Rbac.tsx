@@ -194,6 +194,38 @@ function CellMark({
 }
 
 /** Group resources by scope, widest scope first, keeping table order within. */
+/**
+ * A resource as a reader finds it: its translated name, with the id an
+ * operator greps for under it (#3664). An id this build has no name for (a
+ * newer control plane's) is shown alone.
+ */
+function ResourceName({ id }: { id: string }) {
+  const { t } = useTranslation();
+  const name = t(`pages.rbac.resources.${id}`, { defaultValue: "" });
+  return (
+    <>
+      <span className="block truncate text-xs text-foreground">{name || id}</span>
+      {name && (
+        <span className="block truncate font-mono text-2xs text-[color:var(--text-subtle)]">
+          {id}
+        </span>
+      )}
+    </>
+  );
+}
+
+/** a filter matches a resource by its id or by its name in the dashboard's language */
+function useResourceFilter(resources: RbacResourceView[], filter: string): RbacResourceView[] {
+  const { t } = useTranslation();
+  const needle = filter.trim().toLowerCase();
+  if (!needle) return resources;
+  return resources.filter(
+    (r) =>
+      r.resource.toLowerCase().includes(needle) ||
+      t(`pages.rbac.resources.${r.resource}`, { defaultValue: "" }).toLowerCase().includes(needle),
+  );
+}
+
 function byScope(resources: RbacResourceView[]): [string, RbacResourceView[]][] {
   const groups = new Map<string, RbacResourceView[]>();
   for (const resource of resources) {
@@ -316,11 +348,21 @@ function MatrixTab({
   const resourceShare = `${(1.6 / (1.6 + cols.length)) * 100}%`;
   const minWidth = Math.max(720, 212 + cols.length * 144);
   const unknown = matrix.custom_roles.flatMap((r) => r.unknown_grants);
-  // about 53 resources in a real build: finding one means typing, not scrolling
-  const needle = filter.trim().toLowerCase();
-  const shown = needle
-    ? matrix.resources.filter((r) => r.resource.toLowerCase().includes(needle))
-    : matrix.resources;
+  // about 77 resources in a real build: finding one means typing, not scrolling
+  const shown = useResourceFilter(matrix.resources, filter);
+  const filtering = filter.trim() !== "";
+  // a group in which every role's every cell is the superadmin lock says one
+  // thing about 25 rows (#3664), so it folds to one line until it is opened
+  const [opened, setOpened] = React.useState<ReadonlySet<string>>(new Set());
+  const superadminOnly = (resources: RbacResourceView[]) =>
+    resources.every((resource) =>
+      ACTIONS.every((action) =>
+        cols.every((col) => {
+          const state = cellState(resource, action, col);
+          return state === "superadmin" || state === "na";
+        }),
+      ),
+    );
 
   return (
     <>
@@ -396,56 +438,84 @@ function MatrixTab({
             </tr>
           </thead>
 
-          {byScope(shown).map(([scopeKey, resources]) => (
-            <tbody key={scopeKey}>
-              <tr className="border-b border-[color:var(--border-subtle)] bg-[color:var(--surface-subtle)]/40">
-                <th
-                  scope="rowgroup"
-                  colSpan={cols.length + 1}
-                  className="px-4 py-2 text-2xs font-normal uppercase tracking-[0.07em] text-[color:var(--text-subtle)]"
-                >
-                  {t(`pages.rbac.scopes.${scopeKey}`, { defaultValue: scopeKey })}
-                </th>
-              </tr>
-              {resources.map((resource) => (
-                <tr
-                  key={resource.resource}
-                  className="border-b border-[color:var(--border-subtle)] last:border-b-0"
-                >
+          {byScope(shown).map(([scopeKey, resources]) => {
+            const foldable = !filtering && superadminOnly(resources);
+            const folded = foldable && !opened.has(scopeKey);
+            const toggle = () =>
+              setOpened((current) => {
+                const next = new Set(current);
+                if (next.has(scopeKey)) next.delete(scopeKey);
+                else next.add(scopeKey);
+                return next;
+              });
+            return (
+              <tbody key={scopeKey}>
+                <tr className="border-b border-[color:var(--border-subtle)] bg-[color:var(--surface-subtle)]/40">
                   <th
-                    scope="row"
-                    className="truncate px-1.5 py-[11px] font-mono text-xs font-normal text-[color:var(--text-secondary)] first:pl-4 last:pr-4"
+                    scope="rowgroup"
+                    colSpan={cols.length + 1}
+                    className="px-4 py-2 text-2xs font-normal uppercase tracking-[0.07em] text-[color:var(--text-subtle)]"
                   >
-                    {resource.resource}
+                    <span className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                      {t(`pages.rbac.scopes.${scopeKey}`, { defaultValue: scopeKey })}
+                      {foldable && (
+                        <>
+                          <span className="normal-case tracking-normal">
+                            {t("pages.rbac.superadminGroup", { count: resources.length })}
+                          </span>
+                          <button
+                            type="button"
+                            aria-expanded={!folded}
+                            onClick={toggle}
+                            className="rounded-sm normal-case tracking-normal text-[color:var(--text-secondary)] underline underline-offset-2 hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                          >
+                            {t(folded ? "pages.rbac.showResources" : "pages.rbac.hideResources", {
+                              count: resources.length,
+                            })}
+                          </button>
+                        </>
+                      )}
+                    </span>
                   </th>
-                  {cols.map((col) => (
-                    <td key={col.key} className="px-1.5 py-[11px] first:pl-4 last:pr-4">
-                      <div className="flex flex-wrap gap-1">
-                        {ACTIONS.map((action) => {
-                          const state = cellState(resource, action, col);
-                          const label = t("pages.rbac.cellLabel", {
-                            action: t(`pages.rbac.actions.${action}`),
-                            state: t(`pages.rbac.states.${state}`),
-                          });
-                          return (
-                            <React.Fragment key={action}>
-                              <CellMark
-                                state={state}
-                                action={action}
-                                title={label}
-                                className="h-5 w-[22px]"
-                              />
-                              <span className="sr-only">{label}</span>
-                            </React.Fragment>
-                          );
-                        })}
-                      </div>
-                    </td>
-                  ))}
                 </tr>
-              ))}
-            </tbody>
-          ))}
+                {!folded &&
+                  resources.map((resource) => (
+                    <tr
+                      key={resource.resource}
+                      className="border-b border-[color:var(--border-subtle)] last:border-b-0"
+                    >
+                      <th scope="row" className="px-1.5 py-[11px] font-normal first:pl-4 last:pr-4">
+                        <ResourceName id={resource.resource} />
+                      </th>
+                      {cols.map((col) => (
+                        <td key={col.key} className="px-1.5 py-[11px] first:pl-4 last:pr-4">
+                          <div className="flex flex-wrap gap-1">
+                            {ACTIONS.map((action) => {
+                              const state = cellState(resource, action, col);
+                              const label = t("pages.rbac.cellLabel", {
+                                action: t(`pages.rbac.actions.${action}`),
+                                state: t(`pages.rbac.states.${state}`),
+                              });
+                              return (
+                                <React.Fragment key={action}>
+                                  <CellMark
+                                    state={state}
+                                    action={action}
+                                    title={label}
+                                    className="h-5 w-[22px]"
+                                  />
+                                  <span className="sr-only">{label}</span>
+                                </React.Fragment>
+                              );
+                            })}
+                          </div>
+                        </td>
+                      ))}
+                    </tr>
+                  ))}
+              </tbody>
+            );
+          })}
         </table>
       </div>
       {shown.length === 0 && (
@@ -958,10 +1028,7 @@ function GrantGrid({
   const { t } = useTranslation();
   const [filter, setFilter] = React.useState("");
 
-  const needle = filter.trim().toLowerCase();
-  const matching = needle
-    ? resources.filter((r) => r.resource.toLowerCase().includes(needle))
-    : resources;
+  const matching = useResourceFilter(resources, filter);
 
   return (
     <fieldset className="space-y-2">
@@ -1001,8 +1068,8 @@ function GrantGrid({
                 key={resource.resource}
                 className="flex items-center gap-3 border-b border-[color:var(--border-subtle)] px-3.5 py-2 last:border-b-0"
               >
-                <span className="flex-1 truncate font-mono text-xs text-[color:var(--text-secondary)]">
-                  {resource.resource}
+                <span className="min-w-0 flex-1">
+                  <ResourceName id={resource.resource} />
                 </span>
                 {ACTIONS.map((action) => {
                   const view = resource.actions.find((a) => a.action === action);
