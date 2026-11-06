@@ -129,7 +129,10 @@ export function describeGatewayError(
   if (error.code && knownGateway.has(error.code)) {
     return { message: t(`errors.gateway.codes.${error.code}`), detail, requestId };
   }
-  if (error.status === 401 || error.status === 403) {
+  // a 401 that is not rolter refusing the key is the provider refusing
+  // rolter's credentials. a 403 is not read the same way: rolter itself
+  // answers one when the key may not use a model, so it names its status
+  if (error.status === 401) {
     return {
       message: t("errors.gateway.upstreamAuth", { status: error.status }),
       detail,

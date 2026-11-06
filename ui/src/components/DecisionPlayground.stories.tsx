@@ -349,6 +349,9 @@ export const Refused: Story = {
       expect(canvas.getByRole("button", { name: en.pages.playground.decisions.run })).toBeEnabled(),
     );
     await userEvent.click(canvas.getByRole("button", { name: en.pages.playground.decisions.run }));
-    await expect(await canvas.findByRole("alert")).toHaveTextContent(en.errors.api.generic);
+    // a gateway refusal names its status, never a control-plane session (#3643)
+    await expect(await canvas.findByRole("alert")).toHaveTextContent(
+      en.errors.gateway.failed.replace("{{status}}", "403"),
+    );
   },
 };
