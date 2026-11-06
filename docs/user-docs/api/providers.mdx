@@ -95,6 +95,8 @@ nothing about its cache reporting, so `recorded` is `false` and the earlier
 verdict is left alone. Bedrock, Vertex, Azure OpenAI, native Gemini and the
 embedding and decision servers cannot be probed this way and answer `400`.
 
+`GET /api/v1/orgs/{org_id}/provider-checks` answers, per provider the caller may see, what the control plane knows without calling it: `env_set`, whether the variable named in `api_key_env` is set in the control plane's environment (absent for a provider with no variable, and for a name that holds a control-plane secret), and `last_test`, the last `POST /api/v1/providers/{id}/test` result (`reachable`, `status`, `latency_ms`, `credential`, `models_found`, `error`, `tested_at`; absent for a provider never tested). Each test replaces the previous one.
+
 `GET /api/v1/orgs/{org_id}/provider-cache-probes` lists the stored verdicts. A
 provider with no entry was **never probed**, which is not the same as "does not
 report". The dashboard shows the three apart on Providers, Models and Provider

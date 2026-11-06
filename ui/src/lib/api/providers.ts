@@ -337,6 +337,40 @@ export function fetchProviderCacheProbes(orgId: string): Promise<ProviderCacheVe
   return getJson<ProviderCacheVerdict[]>(`/api/v1/orgs/${orgId}/provider-cache-probes`);
 }
 
+/** What the last "Test connection" of a provider found (#3649). */
+export interface ProviderConnectionTest {
+  provider_id: string;
+  /** the probe demonstrated a working provider API */
+  reachable: boolean;
+  /** the upstream's HTTP status; null when the request never completed */
+  status: number | null;
+  latency_ms: number;
+  /** how the credential was resolved: `stored`, `env`, `env (unset)`, `none`, … */
+  credential: string;
+  models_found: number | null;
+  /** the test's own explanation of a failure */
+  error: string | null;
+  tested_at: string;
+}
+
+/**
+ * What the control plane knows about a provider without calling it (#3649):
+ * whether the variable its key is read from is set, as the control plane sees
+ * it (the gateway reads its own environment), and how its last test went.
+ */
+export interface ProviderCheck {
+  provider_id: string;
+  /** absent for a provider with no `api_key_env`, or one naming a control-plane secret */
+  env_set?: boolean;
+  /** absent for a provider never tested */
+  last_test?: ProviderConnectionTest;
+}
+
+/** The checks of every provider of an org the caller may see. */
+export function fetchProviderChecks(orgId: string): Promise<ProviderCheck[]> {
+  return getJson<ProviderCheck[]>(`/api/v1/orgs/${orgId}/provider-checks`);
+}
+
 /**
  * Probe whether a provider reports prompt-cache metrics. This sends a real
  * one-token completion to the upstream, so it costs a request.

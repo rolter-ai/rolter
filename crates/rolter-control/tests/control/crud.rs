@@ -1877,6 +1877,45 @@ async fn provider_test_sends_the_anthropic_key_as_x_api_key() {
     assert_eq!(tested["credential"], "stored", "{tested}");
     assert_eq!(tested["models_found"], 1, "{tested}");
     assert!(!tested.to_string().contains(&sealed_secret), "leaked key");
+
+    // #3649: the provider list reads how the test went without testing again
+    let checks: Value = client
+        .get(format!("{base}/api/v1/orgs/{org_id}/provider-checks"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let check = checks
+        .as_array()
+        .and_then(|rows| rows.iter().find(|row| row["provider_id"] == provider_id))
+        .unwrap_or_else(|| panic!("no check for the provider: {checks}"));
+    let last = &check["last_test"];
+    assert_eq!(last["reachable"], true, "{check}");
+    assert_eq!(last["status"], 200, "{check}");
+    assert_eq!(last["credential"], "stored", "{check}");
+    assert_eq!(last["models_found"], 1, "{check}");
+    assert!(last["tested_at"].is_string(), "{check}");
+    // a sealed key is not read from the environment, so there is nothing to say
+    assert!(check.get("env_set").is_none(), "{check}");
+    assert!(!checks.to_string().contains(&sealed_secret), "leaked key");
+
+    // a second test replaces the first rather than adding a row
+    client
+        .post(format!("{base}/api/v1/providers/{provider_id}/test"))
+        .send()
+        .await
+        .unwrap();
+    let again: Value = client
+        .get(format!("{base}/api/v1/orgs/{org_id}/provider-checks"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(again.as_array().map(Vec::len), Some(1), "{again}");
 }
 
 /// #2008: the provider test, given a model name, says listed, not listed, or
