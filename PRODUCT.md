@@ -71,7 +71,7 @@ routing, keys or limits and see the change take effect without a restart, and an
 
 ## Capabilities and Constraints
 
-- Screens cover routing (providers, routes, provider groups, routing rules, complexity router),
+- Screens cover routing (providers, routes in the model catalog, provider groups, complexity router),
   access (virtual keys, users, teams, RBAC, access profiles, SSO, SCIM provisioning), money
   (budgets, limits, pricing, cost attribution), observability (dashboard, logs, performance,
   health, cluster, alerting, audit log), MCP (catalog, management, OAuth, logs), guardrails,

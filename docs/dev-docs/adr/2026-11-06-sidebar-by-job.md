@@ -86,3 +86,46 @@ working. A group's key only names its label.
 - **A flat, searchable list of every screen.** The palette and the rail's
   search already serve someone who knows the name; the groups are for someone
   who knows the job.
+
+## Addendum (6 Nov 2026): routes folded into the Model Catalog ([#3685](https://github.com/rolter-ai/rolter/issues/3685))
+
+Routing Rules is gone from the rail. The Model Catalog is the one screen that
+lists, adds, edits and deletes routes, so Traffic holds eight leaves:
+Playground, Model Catalog, Model Providers, Provider Groups, Complexity Router,
+Adaptive Routing, Adaptive Policy and Provider Health.
+
+- **A row opens into its route.** The catalog keeps its table, and a row opens
+  beneath itself into what a Routing Rules card held: the targets with their
+  share bars, health and breakers, or the weighted variants in fallback order;
+  the route's own labels; **Try it**, a copy button, and **Edit targets and
+  variants**, which opens the route sheet. A **Requests · 24 h** column carries
+  the card's traffic line and sorts. The gateway propagation note and the
+  analytics and health notes sit once above the table.
+- **The count says routes.** The catalog lists every route the caller can see:
+  the bootstrap file's, the selected project's, and those of other projects it
+  can read. Routing Rules listed the selected project's only, which is why the
+  live stack counted 15 on one screen and 10 on the other. The tally names
+  routes, and the origin filter says where a route is defined: This project,
+  Other projects, Config file.
+- **Delete follows the row.** A route of the selected project is deleted as
+  that route (`route:delete`, admin), as it was on Routing Rules. Another
+  project's stored model keeps the deployment-wide model delete
+  (`model:delete`, superadmin).
+- **One URL changes.** `/routing-rules` redirects to `/model-catalog` through
+  `LEGACY` in `ui/src/App.tsx`. The links that pointed there (the audit log's
+  target column, the Complexity Router and Adaptive Routing empty states, the
+  Playground's routeless band, the effective config's empty route table, the
+  getting-started checklist and the command palette's route records) open the
+  catalog.
+
+A route still has two kinds of labels: the model's, on the row and in the
+filter, and the route's own, in the opened row behind a **Route labels**
+button. Folding them into one is
+[#3687](https://github.com/rolter-ai/rolter/issues/3687).
+
+Rejected:
+
+- **A detail sheet per route.** It costs a click per route and stacks the edit
+  sheet on top of it.
+- **A table and cards switch.** Two layouts to maintain and test, and the cards
+  covered only the selected project's routes.

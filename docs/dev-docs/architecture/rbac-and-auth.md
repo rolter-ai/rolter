@@ -433,7 +433,7 @@ retry can clear. The automatic call waits for `my_virtual_key:create` from
 `/api/v1/rbac/effective` and is not made on an explicit refusal, so a viewer is
 not sent into a `403` on arrival. A minted key whose `models` is exactly
 `["fake-llm"]` is the routeless project's: the Playground keeps Send live, says
-the key reaches the built-in only and links Routing Rules, since a route added
+the key reaches the built-in only and links Model Catalog, since a route added
 later is outside that key's reach until **Renew key** mints a wider one
 (#2061, #2300). With no key and
 no mint due, the Playground asks `GET /gw/v1/models` once without a key; a
