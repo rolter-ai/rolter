@@ -23,7 +23,7 @@ Budgets and rate limits stored in the database are managed through the control p
 
 `scope_type` is one of `org`, `team`, `project`, `virtual_key`, `business_unit`, `customer` or `user`. Both list routes require both query parameters and answer `400` without them.
 
-The organization-wide lists answer "which caps exist here?" in one request. They return every budget (or rate limit) set at the organization or at anything inside it: its teams, projects and virtual keys, and its business units and customers. Each row carries its own `scope_type` and `scope_id`. The rows are the ones the per-scope read would have returned: a caller who holds a role only on one project gets that project's caps, its team's and the organization's, and nothing from a sibling project. A caller with no role anywhere in the organization gets `403`; one with a role below it gets the rows they may read, which can be none. The dashboard's Budgets & Limits screen reads these when no single scope is picked.
+The organization-wide lists answer "which caps exist here?" in one request. They return every budget (or rate limit) set at the organization or at anything inside it: its teams, projects and virtual keys, and its business units and customers. Each row carries its own `scope_type` and `scope_id`. The rows are the ones the per-scope read would have returned: a caller who holds a role only on one project gets that project's caps, its team's and the organization's, and nothing from a sibling project. A caller with no role anywhere in the organization gets `403`; one with a role below it gets the rows they may read, which can be none. The dashboard's Budgets & Limits screen reads these for its whole list and filters them in the browser.
 
 ## Budgets
 

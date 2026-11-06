@@ -13,6 +13,7 @@ import {
   confirmation,
   expectAllowed,
   expectClosesWithoutPrompting,
+  expectListTable,
   expectLoadError,
   expectNoFalseEmpty,
   expectNoUxEvent,
@@ -167,28 +168,9 @@ export const Loaded: Story = {
       <Limits />
     </Harness>
   ),
-};
-
-// a link from another screen, such as a team's detail sheet, opens the page on
-// the scope it names rather than on the sidebar's project
-const linked = recording(
-  routes([
-    ["/virtual-keys", () => KEYS],
-    ["/budgets/spend", () => spendFor([])],
-    ["/budgets", () => []],
-    ["/rate-limits", () => []],
-  ]),
-);
-export const OpensOnTheScopeALinkNames: Story = {
-  render: () => (
-    <Harness fetchStub={linked.stub} route="/budgets?scope_type=team&scope_id=team-7">
-      <Limits />
-    </Harness>
-  ),
-  play: async () => {
-    await linked.expectSent("GET", "/budgets?scope_type=team&scope_id=team-7");
-    await linked.expectSent("GET", "/rate-limits?scope_type=team&scope_id=team-7");
-    linked.expectNotSent("GET", "scope_type=project");
+  play: async ({ canvasElement }) => {
+    await expectListTable(canvasElement, en.pages.limits.budgetsTitle);
+    await expectListTable(canvasElement, en.pages.limits.rateLimitsTitle);
   },
 };
 
@@ -295,8 +277,11 @@ export const Empty: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expect(await canvas.findByText(/no budgets for this scope/i)).toBeInTheDocument();
-    await expect(canvas.getByText(/no rate limits for this scope/i)).toBeInTheDocument();
+    await expect(await canvas.findByText("No budgets in this organization")).toBeVisible();
+    await expect(canvas.getByText("No rate limits in this organization")).toBeVisible();
+    // a new cap picks its scope in the sheet, so the empty state offers one (#3665)
+    await expect(canvas.getAllByRole("button", { name: "Add budget" })).toHaveLength(2);
+    await expect(canvas.getAllByRole("button", { name: "Add rate limit" })).toHaveLength(2);
     // both are sections of one screen, so neither draws the вышивка thread
     // DESIGN.md keeps for a screen-level placeholder (#3658)
     await expect(canvasElement.querySelectorAll(".vyshivka-rule")).toHaveLength(0);
@@ -323,16 +308,86 @@ export const Forbidden: Story = {
   },
 };
 
+const createsBudgets = () =>
+  recording(
+    scoped(async (input, init) => {
+      const url = String(input);
+      if (init?.method === "POST") return json(BUDGETS[0], 201);
+      if (url.includes("/virtual-keys")) return json(KEYS);
+      if (url.includes("/budgets")) return budgetRead(url, BUDGETS);
+      return json(RATE_LIMITS);
+    }),
+  );
+
+let createsBudget: Recorder;
+/** A new budget opens on the sidebar's project, which is the scope it is sent with. */
 export const CreatesABudget: Story = {
+  render: () => {
+    createsBudget = createsBudgets();
+    return (
+      <Harness fetchStub={createsBudget.stub}>
+        <Limits />
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    await clickWhenEnabled(canvasElement, /add budget/i);
+    const form = sheet();
+    await waitFor(() => expect(within(form).getByLabelText("Scope")).toHaveValue("Gateway"));
+    await waitFor(() =>
+      expect(within(form).getByText("Spend cap for Project Gateway")).toBeVisible(),
+    );
+    const limit = within(form).getByLabelText("Limit (USD)");
+    await userEvent.clear(limit);
+    await userEvent.type(limit, "250");
+    await userEvent.click(within(form).getByRole("button", { name: "Create" }));
+    await expectSheetClosed();
+    await expect(
+      await createsBudget.expectSentBody<Record<string, unknown>>("POST", "/api/v1/budgets"),
+    ).toMatchObject({ scope_type: "project", scope_id: "project-1", limit_usd: "250" });
+  },
+};
+
+let picksAScope: Recorder;
+/**
+ * #3665: the page holds no scope of its own, so the sheet asks for one: a type,
+ * then a scope of it by name. A type the dashboard cannot list is a uuid box.
+ */
+export const ABudgetPicksItsScopeInTheSheet: Story = {
+  render: () => {
+    picksAScope = createsBudgets();
+    return (
+      <Harness fetchStub={picksAScope.stub}>
+        <Limits />
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    await clickWhenEnabled(canvasElement, /add budget/i);
+    const form = sheet();
+    await pickOption(within(form).getByLabelText("Scope type"), "Team");
+    await pickOption(await within(form).findByLabelText("Scope"), "Platform");
+    await waitFor(() =>
+      expect(within(form).getByText("Spend cap for Team Platform")).toBeVisible(),
+    );
+    await userEvent.click(within(form).getByRole("button", { name: "Create" }));
+    await expectSheetClosed();
+    await expect(
+      await picksAScope.expectSentBody<Record<string, unknown>>("POST", "/api/v1/budgets"),
+    ).toMatchObject({ scope_type: "team", scope_id: "team-1" });
+  },
+};
+
+/** A scope left blank cannot be created on: the sheet names the missing field. */
+export const ABudgetNeedsAScope: Story = {
   render: () => (
     <Harness
-      fetchStub={scoped(async (input, init) => {
-        const url = String(input);
-        if (init?.method === "POST") return json(BUDGETS[0], 201);
-        if (url.includes("/virtual-keys")) return json(KEYS);
-        if (url.includes("/budgets")) return budgetRead(url, BUDGETS);
-        return json(RATE_LIMITS);
-      })}
+      fetchStub={routes([
+        ["/customers", () => [{ id: "customer-1", name: "Acme", slug: "acme" }]],
+        ["/budgets/spend", () => SPEND],
+        ["/budgets", () => BUDGETS],
+        ["/rate-limits", () => RATE_LIMITS],
+      ])}
     >
       <Limits />
     </Harness>
@@ -340,11 +395,18 @@ export const CreatesABudget: Story = {
   play: async ({ canvasElement }) => {
     await clickWhenEnabled(canvasElement, /add budget/i);
     const form = sheet();
-    const limit = within(form).getByLabelText("Limit (USD)");
-    await userEvent.clear(limit);
-    await userEvent.type(limit, "250");
-    await userEvent.click(within(form).getByRole("button", { name: "Create" }));
-    await expectSheetClosed();
+    // the sidebar names no customer, so a customer cap opens on none picked
+    await pickOption(within(form).getByLabelText("Scope type"), "Customer");
+    await expect(await within(form).findByRole("combobox", { name: "Scope" })).toHaveValue("");
+    await waitFor(() =>
+      expect(
+        within(form).getByText("A spend cap on one scope, counted over a period"),
+      ).toBeVisible(),
+    );
+    await expect(within(form).getByRole("button", { name: "Create" })).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
   },
 };
 
@@ -729,7 +791,10 @@ function explainsEveryField(locale: "en" | "ru"): Story {
       const open = locale === "ru" ? /добавить бюджет/i : /add budget/i;
       const openRate = locale === "ru" ? /добавить лимит скорости/i : /add rate limit/i;
       await clickWhenEnabled(canvasElement, open);
+      // a new cap asks for its scope in the sheet, so the scope type's note is
+      // there rather than on the page (#3665)
       await expectFieldHints(sheet(), catalog.common.aboutField, [
+        [p.scopeTypeLabel, p.scopeTypeInfo],
         [
           p.budgetLimitLabel.replace("{{currency}}", "USD"),
           p.budgetLimitInfo.replace("{{currency}}", "USD"),
@@ -737,11 +802,9 @@ function explainsEveryField(locale: "en" | "ru"): Story {
       ]);
       await userEvent.keyboard("{Escape}");
       await expectSheetClosed();
-      await expectFieldHints(canvasElement, catalog.common.aboutField, [
-        [p.scopeTypeLabel, p.scopeTypeInfo],
-      ]);
       await clickWhenEnabled(canvasElement, openRate);
       await expectFieldHints(sheet(), catalog.common.aboutField, [
+        [p.scopeTypeLabel, p.scopeTypeInfo],
         [p.rpmLabel, p.rpmInfo],
         [p.tpmLabel, p.tpmInfo],
       ]);
@@ -1138,24 +1201,17 @@ export const ARefusedBudgetDeleteKeepsTheDialogOpen: Story = {
 };
 
 /**
- * A card's controls, measured from the top of the card that holds them.
- *
- * Measured against the card rather than the page so the same read holds when
- * the grid is one column wide. The card is the nearest column-flex ancestor,
- * which is how `LimitCard` lays itself out.
+ * Each table's edit controls stand in its last column, one above the other,
+ * whatever a row holds beside them: an unpriced override or a period warning
+ * makes a row taller, never moves its buttons sideways (#2095).
  */
-const offsetInCard = (control: HTMLElement) => {
-  const card = control.closest("div.flex-col") as HTMLElement;
-  return control.getBoundingClientRect().top - card.getBoundingClientRect().top;
-};
-
-/** The edit controls of two cards sit at the same height, whatever else wraps. */
-async function expectControlsShareAHeight(canvasElement: HTMLElement) {
+async function expectControlsInOneColumn(canvasElement: HTMLElement) {
   const canvas = within(canvasElement);
   const edits = (name: RegExp) => canvas.getAllByRole("button", { name });
   for (const group of [edits(/^Edit the .* budget of /), edits(/^Edit the .* rate limit/)]) {
     await expect(group).toHaveLength(2);
-    await expect(Math.abs(offsetInCard(group[0]) - offsetInCard(group[1]))).toBeLessThan(1);
+    const [first, second] = group.map((button) => button.getBoundingClientRect().left);
+    await expect(Math.abs(first - second)).toBeLessThan(1);
   }
 }
 
@@ -1203,12 +1259,12 @@ export const TheScopeIsNamedNotShownAsAnId: Story = {
     const canvas = within(canvasElement);
     await expect(
       await canvas.findByRole("button", {
-        name: "Delete the monthly budget of $500.00 for Gateway",
+        name: "Delete the monthly budget of $500.00 for Project Gateway",
       }),
     ).toBeInTheDocument();
     await expect(
       canvas.getByRole("button", {
-        name: "Delete the 600 rpm · 150,000 tpm rate limit for Gateway",
+        name: "Delete the 600 rpm · 150,000 tpm rate limit for Project Gateway",
       }),
     ).toBeInTheDocument();
     await expect(canvas.queryByText("project")).toBeNull();
@@ -1216,14 +1272,24 @@ export const TheScopeIsNamedNotShownAsAnId: Story = {
 
     // the forms call the scope the same thing, not `project:project-1`
     await clickWhenEnabled(canvasElement, /add budget/i);
-    await expect(await within(sheet()).findByText("Spend cap for Gateway")).toBeInTheDocument();
+    await expect(
+      await within(sheet()).findByText("Spend cap for Project Gateway"),
+    ).toBeInTheDocument();
     await expectClosesWithoutPrompting();
     await clickWhenEnabled(canvasElement, /add rate limit/i);
     await expect(
-      await within(sheet()).findByText(/^Throughput caps for Gateway/),
+      await within(sheet()).findByText(/^Throughput caps for Project Gateway/),
     ).toBeInTheDocument();
     await expect(within(sheet()).queryByText(/project:/)).toBeNull();
   },
+};
+
+// a key's cap with no `scope_name` on the row, so its name has to come from the key list
+const KEY_BUDGET: BudgetRow = {
+  ...BUDGETS[0],
+  id: "budget-vk",
+  scope_type: "virtual_key",
+  scope_id: "vk-1",
 };
 
 /**
@@ -1232,17 +1298,21 @@ export const TheScopeIsNamedNotShownAsAnId: Story = {
  */
 export const AVirtualKeyScopeIsNamedByItsKeyName: Story = {
   render: () => (
-    <Harness fetchStub={loaded}>
+    <Harness
+      fetchStub={routes([
+        ["/virtual-keys", () => KEYS],
+        ["/budgets/spend", () => spendFor([KEY_BUDGET])],
+        ["/budgets", () => [KEY_BUDGET]],
+        ["/rate-limits", () => []],
+      ])}
+    >
       <Limits />
     </Harness>
   ),
   play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement);
-    await pickOption(await canvas.findByLabelText("Scope type"), "Virtual key");
-    await pickOption(await canvas.findByLabelText("Scope"), "backend service");
     await clickWhenEnabled(
       canvasElement,
-      "Delete the monthly budget of $500.00 for backend service",
+      "Delete the monthly budget of $500.00 for Virtual key backend service",
     );
     await waitFor(() =>
       expect(
@@ -1254,6 +1324,14 @@ export const AVirtualKeyScopeIsNamedByItsKeyName: Story = {
 };
 
 const KEY_READ_FAILED = { error: { message: "store unavailable" } };
+
+/** opens the budget sheet and picks a scope type in it, where a new cap's scope is chosen (#3665) */
+async function sheetOnType(canvasElement: HTMLElement, type: string): Promise<HTMLElement> {
+  await clickWhenEnabled(canvasElement, /add budget/i);
+  const form = sheet();
+  await pickOption(within(form).getByLabelText("Scope type"), type);
+  return form;
+}
 // the key read fails until `keyReadsFail` is cleared, and counts every attempt
 let keyReads = 0;
 let keyReadsFail = true;
@@ -1293,17 +1371,17 @@ export const AFailedKeyReadSaysSoBesideThePicker: Story = {
     await expect(await canvas.findByText("$500.00")).toBeVisible();
     await expect(canvas.queryAllByRole("alert")).toHaveLength(0);
 
-    await pickOption(await canvas.findByLabelText("Scope type"), "Virtual key");
-    await expectLoadError(canvasElement, /failed to return virtual keys/i);
-    await expect(canvas.getByText("store unavailable")).toBeVisible();
+    const form = await sheetOnType(canvasElement, "Virtual key");
+    await expectLoadError(form, /failed to return virtual keys/i);
+    await expect(within(form).getByText("store unavailable")).toBeVisible();
     const failed = await expectUxEvent("error_state", "scope-virtual-keys");
     await expect(failed.screen).toBe("limits");
     await expect(uxEvents().filter((e) => e.action === "error_state")).toHaveLength(1);
 
     keyReadsFail = false;
-    await userEvent.click(canvas.getByRole("button", { name: "Try again" }));
-    await waitFor(() => expect(canvas.queryAllByRole("alert")).toHaveLength(0));
-    await pickOption(await canvas.findByLabelText("Scope"), "backend service");
+    await userEvent.click(within(form).getByRole("button", { name: "Try again" }));
+    await waitFor(() => expect(within(form).queryAllByRole("alert")).toHaveLength(0));
+    await pickOption(await within(form).findByLabelText("Scope"), "backend service");
     await expect(keyReads).toBe(2);
     // the read that answered is not a second incident
     await expect(uxEvents().filter((e) => e.action === "error_state")).toHaveLength(1);
@@ -1326,14 +1404,12 @@ export const AFailedKeyReadLeavesWithTheKeyScope: Story = {
     );
   },
   play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement);
-    const scopeType = await canvas.findByLabelText("Scope type");
-    await pickOption(scopeType, "Virtual key");
-    await expectLoadError(canvasElement, /failed to return virtual keys/i);
+    const form = await sheetOnType(canvasElement, "Virtual key");
+    await expectLoadError(form, /failed to return virtual keys/i);
 
-    await pickOption(scopeType, "Team");
-    await waitFor(() => expect(canvas.queryAllByRole("alert")).toHaveLength(0));
-    await expect(await canvas.findByLabelText("Scope")).toBeVisible();
+    await pickOption(within(form).getByLabelText("Scope type"), "Team");
+    await waitFor(() => expect(within(form).queryAllByRole("alert")).toHaveLength(0));
+    await expect(await within(form).findByLabelText("Scope")).toBeVisible();
     await expect(keyReads).toBe(1);
   },
 };
@@ -1364,11 +1440,10 @@ const failedPickerRead = (i: number): Story => ({
     </Harness>
   ),
   play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement);
-    await pickOption(await canvas.findByLabelText("Scope type"), PICKER_READS[i].type);
-    await expectLoadError(canvasElement, PICKER_READS[i].noun);
-    await expect(canvas.getByText("store unavailable")).toBeVisible();
-    await expect(canvas.getByRole("button", { name: "Try again" })).toBeVisible();
+    const form = await sheetOnType(canvasElement, PICKER_READS[i].type);
+    await expectLoadError(form, PICKER_READS[i].noun);
+    await expect(within(form).getByText("store unavailable")).toBeVisible();
+    await expect(within(form).getByRole("button", { name: "Try again" })).toBeVisible();
   },
 });
 
@@ -1379,12 +1454,11 @@ const pendingPickerRead = (i: number): Story => ({
     </Harness>
   ),
   play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement);
-    await pickOption(await canvas.findByLabelText("Scope type"), PICKER_READS[i].type);
-    await expectSkeleton(canvasElement);
+    const form = await sheetOnType(canvasElement, PICKER_READS[i].type);
+    await expectSkeleton(form);
     // a read that has not answered is not an empty one (#2211)
-    await expect(canvas.queryByText(/none are available to pick/i)).toBeNull();
-    await expect(canvas.queryByPlaceholderText(/00000000-0000/)).toBeNull();
+    await expect(within(form).queryByText(/none are available to pick/i)).toBeNull();
+    await expect(within(form).queryByPlaceholderText(/00000000-0000/)).toBeNull();
   },
 });
 
@@ -1443,11 +1517,11 @@ export const PeriodsAreNamedAndAnUnknownOneIsKeptAsStored: Story = {
 };
 
 /**
- * #2095: the caps were 10px badge text, below the detector's floor, on the card
- * whose whole point is those numbers. They are set the way the budget's amount
- * is, and they group digits through the dashboard's locale.
+ * #2095: the caps were 10px badge text, below the detector's floor. Each has a
+ * column of its own now, set the way a budget's amount is, with digits grouped
+ * through the dashboard's locale, and a measure left uncapped says so in words.
  */
-export const RateLimitCapsAreTheFigureOfTheCard: Story = {
+export const RateLimitCapsHaveAColumnEach: Story = {
   render: () => (
     <Harness fetchStub={loaded}>
       <Limits />
@@ -1464,18 +1538,22 @@ export const RateLimitCapsAreTheFigureOfTheCard: Story = {
     await expect(type(cap)).toEqual(type(amount));
     await expect(parseFloat(type(cap).fontSize)).toBeGreaterThan(11);
     await expect(canvas.queryByText(/150000/)).toBeNull();
-    // the unit stays beside its number, once per cap that is set
-    await expect(canvas.getAllByText("tpm")).toHaveLength(2);
-    await expect(canvas.getAllByText("rpm")).toHaveLength(1);
+    const table = canvas.getByRole("table", { name: "Rate limits" });
+    await expect(
+      within(table)
+        .getAllByRole("columnheader")
+        .map((cell) => cell.textContent),
+    ).toEqual(["Scope", "Requests / min", "Tokens / min", "Row actions"]);
+    // the second limit caps tokens only
+    await expect(within(table).getAllByText("unlimited")).toHaveLength(1);
   },
 };
 
 /**
  * #2095: a budget with an unpriced override wrapped its edit and delete buttons
- * onto a second line, so two cards side by side had their controls at
- * different heights. The controls have a line of their own now.
+ * onto a second line. In the table they keep the last column on every row.
  */
-export const CardControlsShareOneHeight: Story = {
+export const EveryRowKeepsItsControlsInTheLastColumn: Story = {
   render: () => (
     <Harness fetchStub={loaded}>
       <Limits />
@@ -1486,7 +1564,7 @@ export const CardControlsShareOneHeight: Story = {
     await canvas.findByRole("button", { name: /^Edit the daily budget/ });
     // exactly one of the two budgets carries the badge that used to push them down
     await expect(canvas.getAllByText(/^unpriced: /)).toHaveLength(1);
-    await expectControlsShareAHeight(canvasElement);
+    await expectControlsInOneColumn(canvasElement);
   },
 };
 
@@ -1565,7 +1643,10 @@ export const ReadsInRussianWithNoRawEnglishEnum: Story = {
     await expect(canvas.queryByText("project")).toBeNull();
     await expect(canvas.getByText(/^150\s000$/)).toBeVisible();
 
-    await clickWhenEnabled(canvasElement, /^Удалить бюджет .*\(ежемесячно\) для Gateway$/);
+    await clickWhenEnabled(
+      canvasElement,
+      /^Удалить бюджет .*\(ежемесячно\), область: Проект Gateway$/,
+    );
     await waitFor(() =>
       expect(
         within(document.body).getByRole("heading", {
@@ -1585,7 +1666,9 @@ export const ReadsInRussianWithNoRawEnglishEnum: Story = {
 
     await clickWhenEnabled(canvasElement, /добавить бюджет/i);
     await expect(await within(sheet()).findByLabelText("Лимит (USD)")).toBeInTheDocument();
-    await expect(within(sheet()).getByText("Лимит расходов для Gateway")).toBeInTheDocument();
+    await expect(
+      within(sheet()).getByText("Лимит расходов, область: Проект Gateway"),
+    ).toBeInTheDocument();
     await expect(within(sheet()).queryByText(/project/)).toBeNull();
     // the period picker reads in Russian too: its value and every window it offers
     const picker = within(sheet()).getByRole("combobox", { name: "Период" });
@@ -1636,7 +1719,7 @@ export const AFailedReadCanBeRetried: Story = {
     const canvas = within(canvasElement);
     await expectLoadError(canvasElement, /budgets/i);
     // a read that failed holds no rows, and the screen claims nothing about them
-    await expectNoFalseEmpty(canvasElement, /no budgets for this scope/i);
+    await expectNoFalseEmpty(canvasElement, /no budgets in this organization/i);
     await expect(canvas.getByText("the budget store is unavailable")).toBeVisible();
 
     const reads = () =>
@@ -1661,8 +1744,11 @@ export const Mobile: Story = {
     const canvas = within(canvasElement);
     await canvas.findByRole("button", { name: /add budget/i });
     await expectNoHorizontalOverflow();
-    await canvas.findByRole("button", { name: /^Edit the daily budget/ });
-    await expectControlsShareAHeight(canvasElement);
+    const edit = await canvas.findByRole("button", { name: /^Edit the daily budget/ });
+    await expectControlsInOneColumn(canvasElement);
+    // the tables scroll sideways inside their own frame, with the buttons
+    // pinned to its right edge rather than a scroll away (#2004)
+    await expect(edit.getBoundingClientRect().right).toBeLessThanOrEqual(window.innerWidth);
   },
 };
 
@@ -1829,47 +1915,81 @@ const orgWide = (
     ["/rate-limits", () => RATE_LIMITS],
   ]);
 
+/** the first cell of every body row in one of the screen's tables, the scope it caps */
+const scopeColumn = (canvasElement: HTMLElement, table: string) =>
+  within(within(canvasElement).getByRole("table", { name: table }))
+    .getAllByRole("row")
+    .slice(1)
+    .map((row) => within(row).getAllByRole("cell")[0].textContent);
+
 /**
- * #2093: with "All scopes" picked the screen lists every cap the caller may
- * read across the org, grouped under the scope each belongs to and named, not
- * shown as a uuid. Scope types come in the picker's order, so the org leads.
+ * #3665: the screen lists every cap the caller may read across the org, one
+ * row each with the scope as its first column, named rather than shown as a
+ * uuid. Scope types come in the filter's order, so the org leads.
  */
 export const EveryCapAcrossTheOrgIsListedByScope: Story = {
   render: () => (
-    <Harness fetchStub={orgWide(ORG_BUDGETS, ORG_RATE_LIMITS)}>
+    <Harness fetchStub={orgWide(ORG_BUDGETS, ORG_RATE_LIMITS)} role="admin">
       <Limits />
     </Harness>
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expect(await canvas.findByText("$500.00")).toBeVisible();
-    await pickOption(await canvas.findByLabelText("Scope type"), "All scopes");
     await expect(await canvas.findByText("$2,000.00")).toBeVisible();
-    const headings = canvas.getAllByRole("heading", { level: 3 }).map((h) => h.textContent);
-    await expect(headings).toEqual([
-      "Organization Rolter",
-      "Team Platform",
-      "Project Gateway",
-      "Virtual key ci runner",
-      "Business unit Support",
-      "Organization Rolter",
-      "Team Platform",
-      "Project Gateway",
+    await waitFor(() =>
+      expect(scopeColumn(canvasElement, "Budgets")).toEqual([
+        "RolterOrganization",
+        "PlatformTeam",
+        "GatewayProject",
+        "GatewayProject",
+        "ci runnerVirtual key",
+        "SupportBusiness unit",
+      ]),
+    );
+    await expect(scopeColumn(canvasElement, "Rate limits")).toEqual([
+      "RolterOrganization",
+      "PlatformTeam",
+      "GatewayProject",
+      "GatewayProject",
     ]);
     await expect(canvas.queryByText("org-1")).toBeNull();
     await expect(canvas.queryByText("team-1")).toBeNull();
     await expect(canvas.queryByText("abcdef01")).toBeNull();
-    // every card carries the counter the one org-wide read answered (#3128)
+    // every row carries the counter the one org-wide read answered (#3128)
     await expect(canvas.queryByText(/spend so far is unavailable/i)).toBeNull();
     await expect(canvas.getAllByRole("progressbar")).toHaveLength(ORG_BUDGETS.length);
-    // creating a cap still needs a scope to hang it off
-    await expect(canvas.getByRole("button", { name: /add budget/i })).toBeDisabled();
-    // each card names its own scope for a screen reader
+    // a new cap picks its scope in the sheet, so it needs none picked here
+    await expectAllowed(canvasElement, "Add budget");
+    // each row names its own scope for a screen reader
     await expect(
       canvas.getByRole("button", {
         name: "Delete the monthly budget of $900.00 for Team Platform",
       }),
     ).toBeInTheDocument();
+  },
+};
+
+const linked = recording(orgWide(ORG_BUDGETS, ORG_RATE_LIMITS));
+/**
+ * A link from another screen, such as a team's detail sheet, opens the page
+ * filtered to the scope it names. The read is still the org-wide one.
+ */
+export const OpensOnTheScopeALinkNames: Story = {
+  render: () => (
+    <Harness fetchStub={linked.stub} route="/budgets?scope_type=team&scope_id=team-1">
+      <Limits />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByText("$900.00")).toBeVisible();
+    await expect(canvas.queryByText("$500.00")).toBeNull();
+    await expect(canvas.getByRole("combobox", { name: "Scope type" })).toHaveValue("Team");
+    await waitFor(() =>
+      expect(canvas.getByRole("combobox", { name: "Scope" })).toHaveValue("Platform"),
+    );
+    await linked.expectSent("GET", "/orgs/org-1/budgets");
+    linked.expectNotSent("GET", "scope_type=");
   },
 };
 
@@ -1891,8 +2011,6 @@ export const OrgWideSpendUnavailableIsUnknown: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expect(await canvas.findByText("$500.00")).toBeVisible();
-    await pickOption(await canvas.findByLabelText("Scope type"), "All scopes");
     await expect(await canvas.findByText("$2,000.00")).toBeVisible();
     await expect(await canvas.findAllByText(/spend so far is unavailable/i)).toHaveLength(
       ORG_BUDGETS.length,
@@ -1901,7 +2019,10 @@ export const OrgWideSpendUnavailableIsUnknown: Story = {
   },
 };
 
-/** The picked type narrows the org-wide list, and a picked scope narrows it to one scope. */
+/**
+ * The filter narrows both tables by type and then to one scope of it, and a
+ * new cap opens on the scope the filter names (#3665).
+ */
 export const PickingATypeAndThenAScopeNarrowsTheList: Story = {
   render: () => (
     <Harness fetchStub={orgWide(ORG_BUDGETS, ORG_RATE_LIMITS)}>
@@ -1910,34 +2031,49 @@ export const PickingATypeAndThenAScopeNarrowsTheList: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expect(await canvas.findByText("$500.00")).toBeVisible();
-    await pickOption(await canvas.findByLabelText("Scope type"), "Team");
+    await expect(await canvas.findByText("$2,000.00")).toBeVisible();
+    await pickOption(canvas.getByLabelText("Scope type"), "Team");
     await expect(await canvas.findByText("$900.00")).toBeVisible();
     await expect(canvas.queryByText("$2,000.00")).toBeNull();
     await expect(canvas.queryByText("$500.00")).toBeNull();
-    await expect(canvas.getByText(/Showing every Team cap in the organization/)).toBeVisible();
+    await expect(scopeColumn(canvasElement, "Rate limits")).toEqual(["PlatformTeam"]);
 
-    // a scope narrows to the per-scope read again, where a cap can be added
-    await pickOption(await canvas.findByLabelText("Scope"), "Platform");
-    await waitFor(() => expect(canvas.getByRole("button", { name: /add budget/i })).toBeEnabled());
+    await pickOption(canvas.getByLabelText("Scope"), "Platform");
+    await expect(canvas.getByText("$900.00")).toBeVisible();
+    await clickWhenEnabled(canvasElement, /add rate limit/i);
+    const form = sheet();
+    await expect(within(form).getByLabelText("Scope type")).toHaveValue("Team");
+    await expect(within(form).getByLabelText("Scope")).toHaveValue("Platform");
+    await waitFor(() =>
+      expect(within(form).getByText(/^Throughput caps for Team Platform/)).toBeVisible(),
+    );
+    await expectClosesWithoutPrompting();
+
+    // another type starts over on every scope of it
+    await pickOption(canvas.getByLabelText("Scope type"), "Project");
+    await expect(canvas.getByLabelText("Scope")).toHaveValue("Every scope of this type");
+    await expect(await canvas.findByText("$500.00")).toBeVisible();
+    await expect(canvas.getByText("$50.00")).toBeVisible();
   },
 };
 
-/** Nothing in the org is capped: the empty copy says so and offers no add, which needs a scope. */
+/** Nothing in the org is capped: the empty copy says so, and offers the first cap. */
 export const AnOrgWithNoCapsSaysSo: Story = {
   render: () => (
-    <Harness fetchStub={orgWide([], [])}>
+    <Harness fetchStub={orgWide([], [])} role="admin">
       <Limits />
     </Harness>
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await pickOption(await canvas.findByLabelText("Scope type"), "All scopes");
     await expect(await canvas.findByText("No budgets in this organization")).toBeVisible();
     await expect(canvas.getByText("No rate limits in this organization")).toBeVisible();
     await expect(
-      canvas.queryByRole("button", { name: "Add budget", hidden: false }),
-    ).toBeDisabled();
+      canvas.getByText(
+        "Nothing is capped yet, or none of the budgets that exist are ones you can read. Add one and pick the scope it caps.",
+      ),
+    ).toBeVisible();
+    await expectAllowed(canvasElement, "Add budget");
   },
 };
 
@@ -1957,29 +2093,41 @@ export const ATypeWithNoCapsNamesTheFilter: Story = {
   },
 };
 
+let orgWideReads: Recorder;
 /** The org-wide read failing is said where the list would be, and retries. */
 export const AFailedOrgWideReadSaysSoAndRetries: Story = {
-  render: () => (
-    <Harness
-      fetchStub={scoped(async (input) => {
+  render: () => {
+    let attempts = 0;
+    orgWideReads = recording(
+      scoped(async (input) => {
         const url = String(input);
-        if (url.includes("/orgs/org-1/budgets"))
-          return json({ error: { message: "store unavailable" } }, 500);
-        if (url.includes("/budgets/spend")) return json(spendFor(BUDGETS));
-        if (url.includes("/budgets")) return json(BUDGETS);
+        if (url.includes("/orgs/org-1/budgets/spend")) return json(spendFor(BUDGETS));
+        if (url.includes("/orgs/org-1/budgets")) {
+          attempts += 1;
+          return attempts === 1
+            ? json({ error: { message: "store unavailable" } }, 500)
+            : json(BUDGETS);
+        }
         if (url.includes("/virtual-keys")) return json(KEYS);
         return json(url.includes("/rate-limits") ? RATE_LIMITS : []);
-      })}
-    >
-      <Limits />
-    </Harness>
-  ),
+      }),
+    );
+    return (
+      <Harness fetchStub={orgWideReads.stub}>
+        <Limits />
+      </Harness>
+    );
+  },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expect(await canvas.findByText("$500.00")).toBeVisible();
-    await pickOption(await canvas.findByLabelText("Scope type"), "All scopes");
     await expectLoadError(canvasElement, /failed to return budgets/i);
     await expectNoFalseEmpty(canvasElement, /no budgets/i);
+    // the rate limits are their own read and stay on screen
+    await expect(await canvas.findByText("150,000")).toBeVisible();
+    await userEvent.click(canvas.getByRole("button", { name: en.errors.load.retry }));
+    await expect(await canvas.findByText("$500.00")).toBeVisible();
+    await expect(canvas.queryByRole("alert")).toBeNull();
+    orgWideReads.expectNotSent("GET", "scope_type=");
   },
 };
 
@@ -2070,11 +2218,15 @@ export const UserRowsNameThePerson: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await pickOption(await canvas.findByLabelText("Scope type"), "All scopes");
+    await expect(await canvas.findByText("Ada Lovelace")).toBeVisible();
+    await expect(canvas.getByText("User · keys they minted in one organization")).toBeVisible();
+    await expect(canvas.getByText("grace@example.com")).toBeVisible();
+    await expect(canvas.getByText("User · every key they minted")).toBeVisible();
     await expect(
-      await canvas.findByText("User Ada Lovelace (keys they minted in one organization)"),
-    ).toBeVisible();
-    await expect(canvas.getByText("User grace@example.com (every key they minted)")).toBeVisible();
+      canvas.getByRole("button", {
+        name: "Delete the monthly budget of $40.00 for User Ada Lovelace (keys they minted in one organization)",
+      }),
+    ).toBeInTheDocument();
     await expect(canvas.queryByText(/user-1/)).not.toBeInTheDocument();
   },
 };
