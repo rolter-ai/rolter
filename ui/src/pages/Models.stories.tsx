@@ -41,6 +41,8 @@ import type {
   UptimeRow,
 } from "@/lib/api";
 import en from "@/lib/i18n/locales/en.json";
+import ru from "@/lib/i18n/locales/ru.json";
+import { atMobile } from "@/lib/story-viewport";
 import { UxScreenProvider } from "@/lib/ux-react";
 
 // each entry carries its own targets (#2210): provider names, not row ids
@@ -1485,5 +1487,36 @@ export const CacheReportingFailedReadShowsNothing: Story = {
     await waitFor(() => expect(canvas.getByText("gpt-4o")).toBeVisible());
     await waitFor(() => expect(canvas.getByText("sim-a +1 more")).toBeVisible());
     await expect(canvas.queryByText(/Not probed yet|Reports cache|No cache metrics/)).toBeNull();
+  },
+};
+
+/**
+ * At 390 px in Russian the provider's cache badge stays inside its column
+ * instead of running over the strategy beside it, and the search keeps the
+ * toolbar's width rather than a few characters (#3660).
+ */
+export const TheCatalogFitsAPhoneInRussian: Story = {
+  ...atMobile,
+  globals: { ...atMobile.globals, locale: "ru" },
+  render: () => (
+    <Harness fetchStub={withCache(() => [verdict("prov-a", true), verdict("prov-b", true)])}>
+      <Models />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const row = await rowOf(canvas, "gpt-4o");
+    const badge = await row.findByText(new RegExp(`^${ru.cacheReporting.reports}`));
+    const cells = row.getAllByRole("cell");
+    const provider = cells.find((cell) => cell.contains(badge))!;
+    const strategy = cells[cells.indexOf(provider) + 1]!;
+    await expect(
+      badge.closest<HTMLElement>(".max-w-full")!.getBoundingClientRect().right,
+    ).toBeLessThanOrEqual(strategy.getBoundingClientRect().left + 1);
+    // the field spans the toolbar's row on a phone, not a few characters of it
+    const search = canvas.getByPlaceholderText(ru.pages.models.searchPlaceholder);
+    await expect(search.getBoundingClientRect().width).toBeGreaterThanOrEqual(
+      window.innerWidth * 0.6,
+    );
   },
 };

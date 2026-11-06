@@ -32,3 +32,20 @@ function hash(id: string): number {
 export function avatarColor(id: string): string {
   return AVATAR_TOKENS[hash(id) % AVATAR_TOKENS.length];
 }
+
+/**
+ * The letters on a person's chip, one rule for every surface that draws one
+ * (#3660): the table read "AD" for `admin@…` while the rail's chip read "A".
+ *
+ * Two words give their first letters ("Ada Lovelace" is "AL"); one word, or an
+ * email, gives its first letter alone ("admin@rolter.local" is "A"). An email
+ * counts only its local part, so the domain never lends a second letter.
+ */
+export function initialsOf(name: string): string {
+  const local = name.trim().split("@")[0] ?? "";
+  const words = local.split(/[\s._-]+/u).filter(Boolean);
+  const letters = (name.includes("@") ? words.slice(0, 1) : words.slice(0, 2)).map(
+    (word) => Array.from(word)[0] ?? "",
+  );
+  return letters.join("").toUpperCase() || "?";
+}

@@ -28,7 +28,7 @@ import {
   stubClipboard,
   Toasted,
 } from "./story-harness";
-import { atMobile, expectNoHorizontalOverflow } from "@/lib/story-viewport";
+import { atMobile, atWide, expectNoHorizontalOverflow } from "@/lib/story-viewport";
 import { onlyRestrictedDialled } from "@/lib/failure-classes";
 import en from "@/lib/i18n/locales/en.json";
 import ru from "@/lib/i18n/locales/ru.json";
@@ -2875,5 +2875,37 @@ export const FocusMovesToTheStrandedVariants: Story = {
     await expect(add).toHaveAccessibleDescription(/a route with variants dials only/);
     await expect(dialog.getAllByText(/Every target is a fallback/)).toHaveLength(1);
     strandedFocus.expectNotSent("PUT", "/api/v1/routes/route-1");
+  },
+};
+
+/**
+ * At 1440 px in Russian a card's actions are one cluster: the delete button
+ * no longer falls onto a line of its own under the others (#3660).
+ */
+export const TheActionsStayTogetherInRussian: Story = {
+  ...atWide,
+  globals: { ...atWide.globals, locale: "ru" },
+  render: () => (
+    <Harness fetchStub={answer(ROUTES)}>
+      <RoutingRules />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByText("claude-sonnet");
+    for (const model of ["gpt-4o", "claude-sonnet"]) {
+      const edit = await canvas.findByRole("button", {
+        name: ru.pages.routing.editRoute.replace("{{model}}", model),
+      });
+      const remove = canvas.getByRole("button", {
+        name: ru.pages.routing.deleteRoute.replace("{{model}}", model),
+      });
+      // the same line: their centres within a couple of pixels
+      const middle = (el: HTMLElement) => {
+        const box = el.getBoundingClientRect();
+        return box.top + box.height / 2;
+      };
+      await expect(Math.abs(middle(remove) - middle(edit))).toBeLessThanOrEqual(2);
+    }
   },
 };

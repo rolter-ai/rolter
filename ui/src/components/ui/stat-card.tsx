@@ -1,5 +1,6 @@
 import * as React from "react";
 
+import { useFormat } from "@/lib/i18n/format";
 import { cn } from "@/lib/utils";
 
 /** which way a figure moved against the earlier window it was compared with */
@@ -9,12 +10,13 @@ export type StatTrend = "up" | "down" | "flat";
 export type StatTone = "good" | "warning" | "bad" | "neutral";
 
 /**
- * The grid a strip of stat cards sits in: one column on a phone, two from `sm`,
- * four from `xl`. `StatGridSkeleton` stands in for the strip with this same
+ * The grid a strip of stat cards sits in: two columns on a phone, where eight
+ * full-width cards took several screens before anything else (#3660), and four
+ * from `xl`. `StatGridSkeleton` stands in for the strip with this same
  * grid, so the tiles do not change columns, and the page does not jump, when
  * the figures land (#1994).
  */
-export const STAT_GRID = "grid grid-cols-1 gap-3.5 sm:grid-cols-2 xl:grid-cols-4";
+export const STAT_GRID = "grid grid-cols-2 gap-2.5 sm:gap-3.5 xl:grid-cols-4";
 
 // metric tile: label, big mono value, optional unit + delta
 //
@@ -72,18 +74,28 @@ export function StatCard({
   ...props
 }: StatCardProps) {
   const deltaTone = tone ?? (trend ? TONE_OF_TREND[trend] : "neutral");
+  const fmt = useFormat();
+  // a unit is set apart by a no-break space, as the tables write "873 ms";
+  // a percent sign follows the locale, glued in English and spaced in Russian,
+  // which is what the locale's own percent format does (#3660)
+  const gap = unit === "%" ? (/\s%$/u.test(fmt.percent(0.5, 0)) ? "\u00a0" : "") : "\u00a0";
   return (
     <div
       className={cn(
-        "flex flex-col gap-1.5 rounded-lg border border-[color:var(--border-default)] bg-card p-4",
+        "flex min-w-0 flex-col gap-1.5 rounded-lg border border-[color:var(--border-default)] bg-card p-3 sm:p-4",
         className,
       )}
       {...props}
     >
       <span className="flex items-center gap-1.5 text-xs text-muted-foreground">{label}</span>
-      <span className="font-mono text-figure font-medium leading-none tracking-tight text-foreground">
+      <span className="break-words font-mono text-2xl font-medium leading-none tracking-tight text-foreground sm:text-figure">
         {value}
-        {unit && <span className="ml-0.5 text-base text-muted-foreground">{unit}</span>}
+        {unit && (
+          <span className="whitespace-nowrap text-base text-muted-foreground">
+            {gap}
+            {unit}
+          </span>
+        )}
       </span>
       {delta != null && (
         <span className={cn("inline-flex items-center gap-1 text-xs", TONE_CLASS[deltaTone])}>

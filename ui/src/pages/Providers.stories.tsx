@@ -44,6 +44,7 @@ import en from "@/lib/i18n/locales/en.json";
 import ru from "@/lib/i18n/locales/ru.json";
 import {
   atMobile,
+  atWide,
   atTablet,
   expectInFrame,
   expectNoHorizontalOverflow,
@@ -1466,5 +1467,35 @@ export const ProbeCacheIsOfferedOnlyForProbeableKindsAndGated: Story = {
       canvas.queryByRole("button", { name: "Probe cache reporting of bedrock-us" }),
     ).toBeNull();
     await expectRefused(canvasElement, "Probe cache reporting of openai-prod");
+  },
+};
+
+/**
+ * At 1440 px in Russian the row's actions fit their own column: "Изменить",
+ * the labels and the delete button ran left over "Вся организация" (#3660).
+ */
+export const TheScopeIsNotUnderTheActionsInRussian: Story = {
+  ...atWide,
+  globals: { ...atWide.globals, locale: "ru" },
+  render: () => (
+    <Harness fetchStub={routes([["/providers", () => PROVIDERS]])}>
+      <Providers />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const [scope] = await canvas.findAllByText(ru.projectScope.orgWide);
+    const row = scope!.closest<HTMLElement>('[role="row"]')!;
+    const cells = within(row).getAllByRole("cell");
+    const actions = cells[cells.length - 1]!;
+    await expect(scope!.getBoundingClientRect().right).toBeLessThanOrEqual(
+      actions.getBoundingClientRect().left + 1,
+    );
+    // and the actions are inside their own cell
+    for (const control of within(actions).getAllByRole("button")) {
+      await expect(control.getBoundingClientRect().left).toBeGreaterThanOrEqual(
+        actions.getBoundingClientRect().left - 1,
+      );
+    }
   },
 };

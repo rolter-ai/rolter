@@ -1,6 +1,7 @@
 import { useTranslation } from "react-i18next";
 
 import { Badge, type BadgeTone } from "@/components/ui/badge";
+import { cn } from "@/lib/utils";
 import type { CacheReporting } from "@/lib/cache-reporting";
 import { useFormat } from "@/lib/i18n/format";
 
@@ -48,10 +49,18 @@ export function CacheReportingBadge({
     );
   }
   return (
-    <Badge tone={TONE[state.status]} className={className} hint={lines.join("\n")}>
-      {state.status === "unprobed"
-        ? label
-        : t("cacheReporting.withTime", { label, when: fmt.relative(state.probedAt) })}
+    // never wider than its cell: a phone's narrow provider column let the
+    // badge run over the strategy beside it (#3660)
+    <Badge
+      tone={TONE[state.status]}
+      className={cn("max-w-full", className)}
+      hint={lines.join("\n")}
+    >
+      <span className="min-w-0 truncate">
+        {state.status === "unprobed"
+          ? label
+          : t("cacheReporting.withTime", { label, when: fmt.relative(state.probedAt) })}
+      </span>
     </Badge>
   );
 }

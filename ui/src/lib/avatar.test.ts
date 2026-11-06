@@ -1,6 +1,6 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, it, test } from "bun:test";
 
-import { avatarColor } from "./avatar";
+import { avatarColor, initialsOf } from "./avatar";
 
 const PALETTE = [1, 2, 3, 4, 5, 6].map((n) => `var(--avatar-${n})`);
 
@@ -38,5 +38,24 @@ describe("avatarColor", () => {
       seen.add(avatarColor(`${i.toString(16).padStart(8, "0")}-6f0e-4d0c-9c3a-1a2b3c4d5e6f`));
     }
     expect([...seen].sort()).toEqual(PALETTE);
+  });
+});
+
+describe("initialsOf", () => {
+  it("takes the first letters of a two-word name", () => {
+    expect(initialsOf("Ada Lovelace")).toBe("AL");
+    expect(initialsOf("  grace  brewster hopper ")).toBe("GB");
+  });
+
+  it("takes one letter from one word or from an email's local part", () => {
+    expect(initialsOf("admin@rolter.local")).toBe("A");
+    expect(initialsOf("ada.lovelace@example.com")).toBe("A");
+    expect(initialsOf("operator")).toBe("O");
+  });
+
+  it("reads letters beyond ASCII, and never returns nothing", () => {
+    expect(initialsOf("Илья Лубенец")).toBe("ИЛ");
+    expect(initialsOf("")).toBe("?");
+    expect(initialsOf("@")).toBe("?");
   });
 });
