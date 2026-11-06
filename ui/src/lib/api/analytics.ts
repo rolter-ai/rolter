@@ -119,6 +119,12 @@ export interface AnalyticsSummary {
   /** requests with a prompt whose provider did not state its cache reads, so the share leaves them out (#3410) */
   cache_unmeasured_requests?: number | string;
   errors: number | string;
+  /**
+   * the errors that failed on the deployment's side, a 5xx or status 0, by the
+   * `error_rate` alert's rule (#3661); the rest of `errors` are the callers'
+   * own 4xx. Absent from an older control plane
+   */
+  failures?: number | string;
   avg_latency_ms: number | string;
   /** the 95th percentile over the whole window; absent from an older control plane */
   p95_latency_ms?: number | string;

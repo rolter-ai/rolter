@@ -153,7 +153,9 @@ export const Loaded: Story = {
     await expect(within(dead).getByText("2 targets")).toBeVisible();
     // the headline is the provider-grain row, and it names what fed it
     await expect(within(dead).getByText("probed · probes, status page")).toBeVisible();
-    await expect(within(dead).getByText("uptime · 200 events")).toBeVisible();
+    await expect(within(dead).getByText("probes · 200 checks")).toBeVisible();
+    // its targets' traffic is shown beside the probes, not hidden behind them (#3648)
+    await expect(within(dead).getByTestId("health-traffic")).toBeVisible();
 
     // #2116: the strip names its range, its legend and its values as text
     const strip = within(dead).getAllByTestId("health-timeline")[0];
@@ -773,3 +775,126 @@ export const TwoOrgsShareAProviderName: Story = {
     await expect(within(card(ACME.id)).queryByTestId("breaker-badge")).toBeNull();
   },
 };
+
+// ------------------------------------------- the live endpoint's wire shape (#3641, #3648)
+
+/**
+ * What `GET /api/v1/health/uptime` answers on a live stack: ClickHouse quotes
+ * 64-bit integers, so the counters are strings beside numeric ratios. `openai`
+ * has no credential: every probe of its models endpoint passes while every
+ * real request is refused, in one hourly bucket.
+ */
+const WIRE_UPTIME = [
+  {
+    provider: "openai",
+    target_id: "openai",
+    grain: "provider",
+    sources: ["probe"],
+    events: "120",
+    ok: "120",
+    errors: "0",
+    timeouts: "0",
+    uptime: 1,
+    failure_rate: 0,
+    error_budget_burn: 0,
+    sla_breached: "0",
+    last_event: "2026-08-06 11:59:30.000",
+  },
+  {
+    provider: "openai",
+    target_id: "gpt://b1g2folder/qwen3.6-35b-a3b/latest",
+    grain: "target",
+    sources: ["passive"],
+    events: "4",
+    ok: "0",
+    errors: "4",
+    timeouts: "0",
+    uptime: 0,
+    failure_rate: 1,
+    error_budget_burn: 100,
+    sla_breached: "1",
+    last_event: "2026-08-06 11:59:30.000",
+  },
+  {
+    provider: "openai",
+    target_id: "gpt://b1g2folder/yandexgpt-5-lite/latest",
+    grain: "target",
+    sources: ["passive"],
+    events: "1",
+    ok: "0",
+    errors: "1",
+    timeouts: "0",
+    uptime: 0,
+    failure_rate: 1,
+    error_budget_burn: 100,
+    sla_breached: "1",
+    last_event: "2026-08-06 11:59:30.000",
+  },
+] as unknown as UptimeRow[];
+
+const WIRE_TIMELINE = [
+  {
+    bucket: hour(11),
+    provider: "openai",
+    target_id: "gpt://b1g2folder/qwen3.6-35b-a3b/latest",
+    grain: "target",
+    events: "4",
+    ok: "0",
+    errors: "4",
+    timeouts: "0",
+  },
+] as unknown as TimelineRow[];
+
+const wire = routes([
+  ["/health/uptime", () => ({ data: WIRE_UPTIME })],
+  ["/health/mttr", () => ({ data: [] })],
+  ["/health/timeline", () => ({ data: WIRE_TIMELINE })],
+]);
+
+const probesPassTrafficFails = (locale: "en" | "ru"): Story => ({
+  globals: { locale },
+  render: () => (
+    <Harness fetchStub={wire}>
+      <Health />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const card = await waitFor(() => canvas.getByTestId("health-card-openai"));
+    const ru = locale === "ru";
+    // a string count reached i18next as "40" and printed the raw key (#3641)
+    await expect(canvasElement.textContent).not.toMatch(/pages\.health\./);
+    const rows = within(card).getAllByTestId("health-target-failures");
+    await expect(rows.map((r) => r.textContent)).toEqual(
+      ru ? ["4 отказа", "1 отказ"] : ["4 failures", "1 failure"],
+    );
+    await expect(within(card).getByText(ru ? "Отказы" : "Failures")).toBeVisible();
+    // the probes pass, the traffic fails, and the card says so (#3648)
+    await expect(within(card).getByTestId("health-sla-state")).toHaveTextContent(
+      ru ? "ниже SLA" : "below SLA",
+    );
+    await expect(within(card).getByTestId("health-traffic")).toHaveTextContent(
+      ru ? /0,00\s?%/ : "0.00%",
+    );
+    // a burn of 100x the budget reads as a multiple, not "10 000 %"
+    await expect(within(card).getByTestId("health-burn")).toHaveTextContent(
+      ru ? "исчерпан · ×100" : "exhausted · ×100",
+    );
+    // the two targets differ only in their tail, and both tails stay on screen
+    await expect(within(card).getByText(/qwen3\.6-35b-a3b\/latest$/)).toBeVisible();
+    await expect(within(card).getByText(/yandexgpt-5-lite\/latest$/)).toBeVisible();
+    for (const row of within(card).getAllByTestId(/^health-target-gpt/)) {
+      await expect(row.scrollWidth).toBeLessThanOrEqual(row.clientWidth);
+    }
+    // one bucket is one bar, not a slab across the card
+    const qwen = within(card).getByTestId("health-target-gpt://b1g2folder/qwen3.6-35b-a3b/latest");
+    const strip = within(qwen).getByTestId("health-timeline");
+    const bar = strip.querySelector<HTMLElement>(":scope > div[aria-hidden]")!;
+    await expect(bar.getBoundingClientRect().width).toBeLessThanOrEqual(8);
+    // a bucket is labelled with its clock, not a full date with seconds and zone
+    await expect(card.textContent).not.toMatch(/GMT|UTC|:00:00/);
+  },
+});
+
+export const ProbesPassTrafficFails: Story = probesPassTrafficFails("en");
+export const ProbesPassTrafficFailsInRussian: Story = probesPassTrafficFails("ru");

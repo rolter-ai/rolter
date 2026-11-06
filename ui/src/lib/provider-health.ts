@@ -48,35 +48,35 @@ export interface Headline {
   /** true when there is no provider-grain row and the numbers are a roll-up */
   derived: boolean;
   sources: string[];
+  /**
+   * The targets' own roll-up beside a provider-grain row. Probes ask the
+   * provider whether it answers; real traffic asks whether it answers this
+   * deployment's requests, and the two disagree whenever a credential is
+   * missing or a model is gone: every probe passes while every request fails
+   * (#3648). The card shows both figures and `breached` counts either.
+   * Undefined on a rolled-up card, whose headline already is this figure.
+   */
+  traffic: TrafficFigures | undefined;
+}
+
+export interface TrafficFigures {
+  uptime: number | undefined;
+  events: number;
+  failures: number;
 }
 
 /**
- * The card's top-line numbers. A provider-grain row is used verbatim when one
- * exists. Without one, the target rows are disjoint views of the same provider
- * — every request went through exactly one of them — so summing them is the
- * honest roll-up; `derived` says so and the card labels it.
+ * The targets of one provider summed: they are disjoint views of it — every
+ * request went through exactly one of them — so the sum is the honest roll-up.
  */
-export function headline(group: ProviderGroup): Headline {
-  const row = group.overall;
-  if (row) {
-    return {
-      uptime: row.events === 0 ? undefined : row.uptime,
-      lastEvent: eventAt(row),
-      events: row.events,
-      failures: row.errors + row.timeouts,
-      burn: row.error_budget_burn,
-      breached: row.sla_breached === 1,
-      derived: false,
-      sources: row.sources ?? [],
-    };
-  }
+function rollUpTargets(targets: UptimeRow[]) {
   let events = 0;
   let ok = 0;
   let failures = 0;
   let burn = 0;
   let lastEvent: number | undefined;
   const sources = new Set<string>();
-  for (const t of group.targets) {
+  for (const t of targets) {
     events += t.events;
     ok += t.ok;
     failures += t.errors + t.timeouts;
@@ -94,10 +94,38 @@ export function headline(group: ProviderGroup): Headline {
     events,
     failures,
     burn,
-    breached: group.targets.some((t) => t.sla_breached === 1),
-    derived: true,
+    breached: targets.some((t) => t.sla_breached === 1),
     sources: [...sources].sort(),
   };
+}
+
+/**
+ * The card's top-line numbers. A provider-grain row is used verbatim when one
+ * exists, with the targets' roll-up beside it as `traffic`; the card is in
+ * breach when either is. Without one, the roll-up is the headline, and
+ * `derived` says so for the card to label it.
+ */
+export function headline(group: ProviderGroup): Headline {
+  const row = group.overall;
+  const targets = rollUpTargets(group.targets);
+  if (row) {
+    return {
+      uptime: row.events === 0 ? undefined : row.uptime,
+      lastEvent: eventAt(row),
+      events: row.events,
+      failures: row.errors + row.timeouts,
+      // the worst budget on the card, probes or traffic, as for a rolled-up card
+      burn: Math.max(row.error_budget_burn, targets.burn),
+      breached: row.sla_breached === 1 || targets.breached,
+      derived: false,
+      sources: row.sources ?? [],
+      traffic:
+        group.targets.length === 0
+          ? undefined
+          : { uptime: targets.uptime, events: targets.events, failures: targets.failures },
+    };
+  }
+  return { ...targets, derived: true, traffic: undefined };
 }
 
 /** a provider's identity across organizations, for a map key or a React key */

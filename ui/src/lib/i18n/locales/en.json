@@ -884,6 +884,10 @@
       "withChange": "{{detail}} · {{change}}",
       "errors_one": "{{count}} error",
       "errors_other": "{{count}} errors",
+      "failures_one": "{{count}} failure",
+      "failures_other": "{{count}} failures",
+      "rejected_one": "{{count}} rejected (4xx)",
+      "rejected_other": "{{count}} rejected (4xx)",
       "cacheHits_one": "{{count}} response served from the cache",
       "cacheHits_other": "{{count}} responses served from the cache",
       "cacheHitsNone": "No response came from the response cache",
@@ -3816,6 +3820,10 @@
       "breakerModels": "Models: {{models}}",
       "breakerTarget": "{{model}} (target {{index}}) via {{upstream}}",
       "uptimeMeta": "uptime · {{events}} events",
+      "failuresSplit": "{{probes}} probes · {{requests}} requests",
+      "probeMeta": "probes · {{events}} checks",
+      "trafficMeta": "traffic · {{events}} requests",
+      "budgetExhausted": "exhausted · ×{{multiple}}",
       "bucketTitle": "{{bucket}}: {{ok}} ok, {{errors}} error, {{timeouts}} timeout"
     },
     "limits": {

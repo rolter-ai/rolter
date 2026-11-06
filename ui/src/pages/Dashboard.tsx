@@ -469,10 +469,16 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
             {(s) => {
               const requests = num(s?.requests);
               const errors = num(s?.errors);
+              // the rate counts the deployment's own failures, by the rule the
+              // `error_rate` alert uses; a caller's typo or rejected key is a
+              // 4xx, counted under it rather than in it (#3661). an older
+              // control plane sends no `failures`, and every error counts
+              const failures = s?.failures != null ? num(s.failures) : errors;
+              const rejected = Math.max(0, errors - failures);
               // an average and a rate over no requests are undefined, not zero:
               // "0 ms" and "0.00 %" read as a measurement of a quiet deployment
               const measured = requests > 0;
-              const errorRate = measured ? (errors / requests) * 100 : undefined;
+              const errorRate = measured ? (failures / requests) * 100 : undefined;
               const unmeasured = t("pages.dashboard.notMeasured");
               const why = t("pages.dashboard.noRequestsInWindow");
               // the window before, when it answered and held any traffic: a
@@ -554,7 +560,11 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
                 hitRate: compare(hitRate, prevHitRate),
                 errorRate: compare(
                   errorRate,
-                  before ? (num(before.errors) / prevRequests) * 100 : undefined,
+                  before
+                    ? (num(before.failures != null ? before.failures : before.errors) /
+                        prevRequests) *
+                        100
+                    : undefined,
                 ),
               };
               const said = (c: Comparison) =>
@@ -565,6 +575,15 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
                     maximumFractionDigits: 1,
                   }),
                 });
+              // what the rate counts, then what it leaves out: "3 failures ·
+              // 11 rejected (4xx)"; russian needs four plural forms for each
+              const errorDetail =
+                [
+                  failures > 0 ? t("pages.dashboard.failures", { count: failures }) : "",
+                  rejected > 0 ? t("pages.dashboard.rejected", { count: rejected }) : "",
+                ]
+                  .filter(Boolean)
+                  .join(" · ") || undefined;
               // the percentage tiles show one decimal at most
               const percent = (v: number) =>
                 fmt.number(v, { minimumFractionDigits: 1, maximumFractionDigits: 1 });
@@ -605,16 +624,13 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
                     delta={
                       errorRate === undefined
                         ? why
-                        : errors > 0 && changes.errorRate
+                        : errorDetail && changes.errorRate
                           ? t("pages.dashboard.withChange", {
-                              detail: t("pages.dashboard.errors", { count: errors }),
+                              detail: errorDetail,
                               change: said(changes.errorRate),
                             })
-                          : errors > 0
-                            ? t("pages.dashboard.errors", { count: errors })
-                            : changes.errorRate
-                              ? said(changes.errorRate)
-                              : undefined
+                          : (errorDetail ??
+                            (changes.errorRate ? said(changes.errorRate) : undefined))
                     }
                   />
                   <StatCard

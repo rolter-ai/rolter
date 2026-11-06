@@ -1607,8 +1607,12 @@ fn metric_sql_scoped(signal: &str, window_secs: i32, column: Option<&str>) -> Ap
         // real requests, so a rate change inside the window cannot skew it
         // server-side failures: 5xx plus status 0, a request that never got an
         // answer (#3294). 4xx stays out, it is the caller's own mistake and a
-        // rule on it would page on a client bug
-        "error_rate" => "if(sum(sample_weight) = 0, 0, sumIf(sample_weight, status = 0 or status >= 500) / sum(sample_weight))".to_string(),
+        // rule on it would page on a client bug. the dashboard's error rate is
+        // the same predicate, so the tile and the alert agree (#3661)
+        "error_rate" => format!(
+            "if(sum(sample_weight) = 0, 0, sumIf(sample_weight, {}) / sum(sample_weight))",
+            crate::analytics::FAILURE_STATUS
+        ),
         // weighted by the row's sample weight like the other signals (#3355)
         "p95_latency_ms" => format!("if(count() = 0, 0, {})", crate::analytics::P95_LATENCY),
         "spend_velocity" => format!("sum(cost_usd * sample_weight) * 3600 / {window}"),

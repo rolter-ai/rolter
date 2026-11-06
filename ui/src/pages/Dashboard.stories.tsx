@@ -130,8 +130,11 @@ const MOBILE_ROWS = [
   recentRow("req-m3", "gpt-4o", 30 * 60, { latency_ms: 842 }),
 ];
 
-/** the error-rate tile's delta line, as `t("pages.dashboard.errors")` renders it */
-const errorCount = (n: number) => en.pages.dashboard.errors_other.replace("{{count}}", String(n));
+/**
+ * the error-rate tile's delta line, as `t("pages.dashboard.failures")` renders
+ * it: a summary with no `failures` counts every error as one, as before #3661
+ */
+const errorCount = (n: number) => en.pages.dashboard.failures_other.replace("{{count}}", String(n));
 
 // the first-run checklist the screen now opens with links to four screens, so
 // the dashboard's stories need a router around them (#1585)
@@ -210,12 +213,32 @@ export const Loaded: Story = {
 };
 
 /**
+ * #3661: a caller's typo (`no-such-model`, a 404) and a rejected key (a 401)
+ * are not the fleet failing. 46 requests with 14 errors, 3 of them failures on
+ * the deployment's side: the rate is 3 in 46, the 11 rejected are named after
+ * it, and the tile does not read 30%.
+ */
+export const CallerMistakesAreNotFailures: Story = {
+  render: () => render(loadedWith({ ...SUMMARY, requests: 46, errors: 14, failures: 3 })),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const d = en.pages.dashboard;
+    const rate = await waitFor(() => tile(canvas, d.statErrorRate));
+    await expect(rate).toHaveTextContent("6.52");
+    await expect(rate).not.toHaveTextContent("30.43");
+    await expect(rate).toHaveTextContent(
+      `${errorCount(3)} · ${d.rejected_other.replace("{{count}}", "11")}`,
+    );
+  },
+};
+
+/**
  * Errors under the 1% line are reported, not flagged: 3 in 1,000 requests
  * keeps its count in the same muted grey as the tile's label. Red is kept for
  * the case that needs a look.
  */
 export const ErrorsBelowThreshold: Story = {
-  render: () => render(loadedWith({ ...SUMMARY, requests: 1000, errors: 3 })),
+  render: () => render(loadedWith({ ...SUMMARY, requests: 1000, errors: 3, failures: 3 })),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     const errors = await canvas.findByText(errorCount(3));
@@ -590,6 +613,7 @@ export const ComparesWithThePreviousWindow: Story = {
         ...SUMMARY,
         requests: 100,
         errors: 2,
+        failures: 2,
         p95_latency_ms: 1200,
         cost_usd: 30,
       }),
@@ -2454,7 +2478,7 @@ export const PickingACustomRangeWritesItToTheAddress: Story = {
 const noMatch = filterable((path, init) => {
   void init;
   if (path === "/api/v1/analytics/summary")
-    return json({ data: [{ ...SUMMARY, requests: 0, errors: 0, cost_usd: 0 }] });
+    return json({ data: [{ ...SUMMARY, requests: 0, errors: 0, failures: 0, cost_usd: 0 }] });
   if (
     path === "/api/v1/analytics/timeseries" ||
     path === "/api/v1/analytics/by-model" ||

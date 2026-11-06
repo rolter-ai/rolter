@@ -90,6 +90,32 @@ function mttrLabel(fmt: Formatters, seconds: number | undefined): string {
   return seconds === undefined ? "—" : fmt.duration(seconds);
 }
 
+/**
+ * A bucket's start as a person scans a strip of them: the clock, and the day
+ * only when it is not today. The full date with seconds and zone is what the
+ * rollup stores, not what anyone reads under a bar (#3648).
+ */
+function bucketLabel(fmt: Formatters, bucket: string): string {
+  const at = bucketStart(bucket);
+  return [fmt.dayUnlessToday(at), fmt.timeShort(at)].filter(Boolean).join(" ");
+}
+
+/**
+ * The error-budget burn as a share up to 100 %, and past it as how many times
+ * over the budget the window ran: "10 000 %" says the same as "×100" and reads
+ * as a number nobody can act on (#3648).
+ */
+function useBurnLabel(): (burn: number) => string {
+  const { t } = useTranslation();
+  const fmt = useFormat();
+  return (burn) =>
+    burn > 1
+      ? t("pages.health.budgetExhausted", {
+          multiple: fmt.number(burn, { maximumFractionDigits: burn >= 10 ? 0 : 1 }),
+        })
+      : fmt.percent(burn, 0);
+}
+
 /** Merge timeline rows that share a bucket, for a card's roll-up strip. */
 function mergeBuckets(rows: TimelineRow[]): TimelineRow[] {
   const byBucket = new Map<string, TimelineRow>();
@@ -140,7 +166,7 @@ function Timeline({
   if (buckets.length === 0) {
     return <span className="text-xs text-muted-foreground">{t("pages.health.noTimeline")}</span>;
   }
-  const at = (b: TimelineRow) => fmt.dateTime(new Date(bucketStart(b.bucket)));
+  const at = (b: TimelineRow) => bucketLabel(fmt, b.bucket);
   const first = at(buckets[0]);
   const last = at(buckets[buckets.length - 1]);
   const events = buckets.reduce((n, b) => n + b.events, 0);
@@ -172,7 +198,9 @@ function Timeline({
                 timeouts: b.timeouts,
               })}
               data-down={down || undefined}
-              className="w-1.5 flex-1 rounded-sm"
+              // a bar is at most a bucket wide, so a timeline of one bucket is a
+              // bar and not a slab the width of the card (#3648)
+              className="max-w-2 flex-1 rounded-sm"
               style={{
                 height: `${barHeight(b)}%`,
                 backgroundColor: down
@@ -423,6 +451,18 @@ function BreakerNodes({ nodes }: { nodes: BreakerTargetDto["nodes"] }) {
   );
 }
 
+/** a card's headline figure with what it was measured from under it */
+function Figure({ value, caption, testId }: { value: string; caption: string; testId?: string }) {
+  return (
+    <div className="flex flex-col gap-1" data-testid={testId}>
+      <span className="font-mono text-2xl font-medium leading-none">{value}</span>
+      <span className="text-2xs uppercase tracking-[0.06em] text-[color:var(--text-subtle)]">
+        {caption}
+      </span>
+    </div>
+  );
+}
+
 function Stat({ label, value }: { label: string; value: string }) {
   return (
     <div>
@@ -450,36 +490,40 @@ function TargetRow({
   const fmt = useFormat();
   const label = useSlaLabel();
   return (
-    <div
-      className="flex flex-wrap items-center gap-x-3 gap-y-1.5 py-2"
-      data-testid={`health-target-${row.target_id}`}
-    >
-      <span
-        className="h-1.5 w-1.5 flex-none rounded-full"
-        style={{ background: SLA_FILL[state] }}
-      />
-      {/* the dot is the row's only state marker, so its meaning is also text */}
-      <span className="sr-only">{label(state)}</span>
-      {/* a full row of its own below sm, so the four fixed-width figures wrap
-          under the name instead of squeezing it to "gp…" (#2004) */}
-      <span className="min-w-0 flex-[1_1_100%] truncate font-mono text-xs sm:flex-1">
-        {row.target_id}
-      </span>
-      <Timeline buckets={buckets} className="h-4 w-20 flex-none" />
-      <span className="w-16 flex-none text-right font-mono text-xs">
-        <span className="sr-only">{t("pages.health.uptimeShort")} </span>
-        {pct(fmt, row.events === 0 ? undefined : row.uptime)}
-      </span>
-      <span className="w-24 flex-none text-right font-mono text-xs text-[color:var(--text-subtle)]">
-        {t("pages.health.failuresShort", { count: row.errors + row.timeouts })}
-      </span>
-      {/* a bare "42s" says nothing, so the figure names itself */}
-      <span className="w-28 flex-none text-right font-mono text-xs text-[color:var(--text-subtle)]">
-        {t("pages.health.mttr")} {mttrLabel(fmt, mttr?.mttr_seconds)}
-      </span>
-      <span className="w-40 flex-none text-right">
-        <LastEvent at={eventAt(row)} now={now} />
-      </span>
+    <div className="flex flex-col gap-1 py-2" data-testid={`health-target-${row.target_id}`}>
+      <div className="flex items-baseline gap-2">
+        <span
+          className="h-1.5 w-1.5 flex-none -translate-y-px rounded-full"
+          style={{ background: SLA_FILL[state] }}
+        />
+        {/* the dot is the row's only state marker, so its meaning is also text */}
+        <span className="sr-only">{label(state)}</span>
+        {/* the id wraps rather than truncates: two Yandex targets differ only
+            in their tail (`…/qwen3.6-35b-a3b/latest`), so cutting either end
+            makes them read the same (#3641) */}
+        <span className="min-w-0 flex-1 font-mono text-xs [overflow-wrap:anywhere]">
+          {row.target_id}
+        </span>
+        <span className="flex-none font-mono text-xs">
+          <span className="sr-only">{t("pages.health.uptimeShort")} </span>
+          {pct(fmt, row.events === 0 ? undefined : row.uptime)}
+        </span>
+      </div>
+      {/* the figures wrap under each other in a narrow card instead of running
+          past its edge (#3641) */}
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 pl-3.5 font-mono text-xs text-[color:var(--text-subtle)]">
+        <Timeline buckets={buckets} className="h-4 w-20 flex-none" />
+        <span data-testid="health-target-failures">
+          {t("pages.health.failuresShort", { count: row.errors + row.timeouts })}
+        </span>
+        {/* a bare "42s" says nothing, so the figure names itself */}
+        <span>
+          {t("pages.health.mttr")} {mttrLabel(fmt, mttr?.mttr_seconds)}
+        </span>
+        <span className="ml-auto font-sans">
+          <LastEvent at={eventAt(row)} now={now} />
+        </span>
+      </div>
     </div>
   );
 }
@@ -487,6 +531,7 @@ function TargetRow({
 export default function Health() {
   const { t } = useTranslation();
   const fmt = useFormat();
+  const burnLabel = useBurnLabel();
   const uptime = useQuery({
     queryKey: ["health-uptime", SLA],
     queryFn: () => fetchUptime(SLA),
@@ -605,11 +650,13 @@ export default function Health() {
               row.sla_breached === 1,
               recentBurn(timelineByTarget.get(at(row.target_id)) ?? [], since),
             );
-          // a probed provider is judged on its own row, like its headline; a
-          // rolled-up card takes its worst target, as `headline` does for a breach
+          // a card takes the worst of what it shows: a probed provider is judged
+          // on its own row and on its targets' traffic too, since probes pass
+          // while a provider with no credential fails every request (#3648)
+          const targetStates = group.targets.map(targetState);
           const state = group.overall
-            ? slaState(head.breached, recentBurn(headBuckets, since))
-            : worstState(group.targets.map(targetState));
+            ? worstState([slaState(head.breached, recentBurn(headBuckets, since)), ...targetStates])
+            : worstState(targetStates);
           return (
             <div
               key={providerKey(group.org_id, group.provider)}
@@ -636,22 +683,42 @@ export default function Health() {
                 <BreakerBadge breaker={cardBreaker(group, breakersByName, cards)} />
                 <SlaPill state={state} />
               </div>
-              <div className="flex items-end gap-3">
-                <div className="flex flex-col gap-px">
-                  <span className={cn("font-mono text-2xl font-medium leading-none")}>
-                    {pct(fmt, head.uptime)}
-                  </span>
-                  <span className="text-2xs uppercase tracking-[0.06em] text-[color:var(--text-subtle)]">
-                    {t("pages.health.uptimeMeta", { events: fmt.number(head.events) })}
-                  </span>
-                </div>
-                <div className="min-w-0 flex-1">
-                  <Timeline buckets={headBuckets} detail />
-                </div>
+              {/* the figure leads the card, and the strip under it takes the
+                  card's width; side by side, the figure sat bottom-left under
+                  an empty corner (#3648) */}
+              <div className="flex flex-wrap items-baseline gap-x-6 gap-y-2">
+                <Figure
+                  value={pct(fmt, head.uptime)}
+                  caption={t(head.derived ? "pages.health.uptimeMeta" : "pages.health.probeMeta", {
+                    events: fmt.number(head.events),
+                  })}
+                />
+                {head.traffic && (
+                  <Figure
+                    testId="health-traffic"
+                    value={pct(fmt, head.traffic.uptime)}
+                    caption={t("pages.health.trafficMeta", {
+                      events: fmt.number(head.traffic.events),
+                    })}
+                  />
+                )}
               </div>
+              <Timeline buckets={headBuckets} detail />
               <LastEvent at={head.lastEvent} now={now} />
               <div className="grid grid-cols-1 gap-2.5 border-t sm:grid-cols-3 border-[color:var(--border-subtle)] pt-3">
-                <Stat label={t("pages.health.failures")} value={fmt.number(head.failures)} />
+                <Stat
+                  label={t("pages.health.failures")}
+                  // probes and requests count different things, so a card fed
+                  // by both names each count rather than adding them up
+                  value={
+                    head.traffic
+                      ? t("pages.health.failuresSplit", {
+                          probes: fmt.number(head.failures),
+                          requests: fmt.number(head.traffic.failures),
+                        })
+                      : fmt.number(head.failures)
+                  }
+                />
                 <Stat
                   label={t("pages.health.mttr")}
                   value={mttrLabel(fmt, providerMttr?.mttr_seconds)}
@@ -683,8 +750,11 @@ export default function Health() {
                 <span className="text-xs text-muted-foreground">
                   {t("pages.health.errorBudget")}
                 </span>
-                <span className="ml-auto font-mono text-xs text-[color:var(--text-secondary)]">
-                  {fmt.percent(head.burn, 0)}
+                <span
+                  data-testid="health-burn"
+                  className="ml-auto font-mono text-xs text-[color:var(--text-secondary)]"
+                >
+                  {burnLabel(head.burn)}
                 </span>
               </div>
             </div>
