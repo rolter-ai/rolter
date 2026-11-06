@@ -222,7 +222,11 @@ export default function UserProvisioning() {
           control="scim-token-revoke"
           variant="outline"
           size="sm"
-          aria-label={t("pages.userProvisioning.revokeAria", { name: row.name })}
+          // a revoked token's button reads "Revoked" and does nothing, so its
+          // words are its name (WCAG 2.5.3)
+          aria-label={
+            row.revoked_at ? undefined : t("pages.userProvisioning.revokeAria", { name: row.name })
+          }
           disabled={!!row.revoked_at || revoke.isPending}
           onClick={() => {
             revoke.reset();

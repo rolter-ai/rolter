@@ -125,7 +125,7 @@ export const OffersLocalePickerAndToggles: Story = {
     const canvas = within(canvasElement);
     await canvas.findByLabelText(/^New password/);
     await expect(canvas.getAllByRole("button", { name: /show password/i })).toHaveLength(2);
-    await expect(canvas.getByRole("button", { name: "Change language" })).toBeVisible();
+    await expect(canvas.getByRole("button", { name: /change language/i })).toBeVisible();
   },
 };
 

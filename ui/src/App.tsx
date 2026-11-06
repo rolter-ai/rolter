@@ -436,6 +436,8 @@ function Shell() {
           brand="rolter"
           activeKey={activeKey}
           onNavigate={(k) => navigate(`/${k}`)}
+          // the router has no basename, so a screen's address is its key
+          hrefFor={(k) => `/${k}`}
           open={navOpen}
           onOpenChange={setNavOpen}
           searchable

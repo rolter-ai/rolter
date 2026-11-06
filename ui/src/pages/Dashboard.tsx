@@ -1031,10 +1031,12 @@ function RequestTime({ ts, requestId, model }: { ts: string; requestId: string; 
     <Link
       to={`/logs?request_id=${encodeURIComponent(requestId)}`}
       title={stamp}
-      aria-label={t("pages.dashboard.openRequest", { model, time: stamp })}
       className="rounded-sm hover:underline focus-visible:outline-none focus-visible:after:ring-1 focus-visible:after:ring-inset focus-visible:after:ring-ring after:absolute after:inset-0"
     >
       {when}
+      {/* the link is named by the time it shows, then what it opens, so the
+          name holds the visible text (WCAG 2.5.3) */}
+      <span className="sr-only">, {t("pages.dashboard.openRequest", { model })}</span>
     </Link>
   );
 }

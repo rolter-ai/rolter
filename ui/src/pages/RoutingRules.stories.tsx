@@ -297,7 +297,7 @@ export const RouteTraffic: Story = {
     await expect(await claude.findByTestId("route-traffic")).toHaveTextContent(
       "No requests for this model name in this project in the last 24 h",
     );
-    const tryIt = gpt.getByRole("link", { name: "Try gpt-4o in the Playground" });
+    const tryIt = gpt.getByRole("link", { name: "Try it: gpt-4o in the Playground" });
     await expect(tryIt).toHaveAttribute("href", "/playground?model=gpt-4o");
     // a disabled route is not served, so there is nothing to try
     await expect(claude.queryByRole("link", { name: /Try claude-sonnet/ })).toBeNull();
@@ -354,7 +354,7 @@ export const TrafficNeedsClickHouse: Story = {
     await expect(canvas.queryByText(/No requests for this model name/)).toBeNull();
     // the cards still render, and the playground link does not need analytics
     await expect(
-      canvas.getByRole("link", { name: "Try gpt-4o in the Playground" }),
+      canvas.getByRole("link", { name: "Try it: gpt-4o in the Playground" }),
     ).toBeInTheDocument();
   },
 };

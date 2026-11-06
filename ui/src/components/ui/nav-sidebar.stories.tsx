@@ -262,7 +262,8 @@ export const CollapsedHasNoSplitter: Story = {
 // offline, current. the accessible name carries the version and what the link
 // opens, and it leaves the dashboard in a new tab without a referrer
 const update = { latest: "0.2.0", url: "https://github.com/rolter-ai/rolter/releases/tag/v0.2.0" };
-const hintName = /rolter v0\.2\.0 is available/i;
+// the name starts with the pill's own words, so it holds what is drawn (WCAG 2.5.3)
+const hintName = /^v0\.2\.0 available: open the rolter release notes$/i;
 
 const expectReleaseLink = async (link: HTMLElement) => {
   await expect(link).toHaveAttribute("href", update.url);
@@ -1152,11 +1153,12 @@ export const HeaderSlotFollowsTheFold: Story = {
   },
 };
 
-// a rail entry too long for the rail ends in an ellipsis; the rail names the
-// label it has cut, in the full rail and in a folded group's flyout, and
-// leaves one that fits alone (#2830)
+// a rail entry too long for the rail wraps onto a second line (#3657), and one
+// too long for two is clamped there; the rail names the label it has cut, in
+// the full rail and in a folded group's flyout, and leaves one that fits alone
+// (#2830)
 const LONG_LABEL =
-  "A navigation entry named far longer than any rail or flyout is wide, on purpose";
+  "A navigation entry named far longer than any rail or flyout is wide, on purpose, so that even the two lines a long name wraps onto cannot hold it whole";
 
 const withLongLabels = {
   groups: [
@@ -1179,14 +1181,14 @@ const withLongLabels = {
 };
 
 const labelOf = (scope: HTMLElement, text: string) =>
-  within(scope).getByText(text, { selector: "button span" });
+  within(scope).getByText(text, { selector: "button span, a span" });
 
 export const ClippedRailLabelNamesItself: Story = {
   args: { ...withLongLabels, activeKey: "playground" },
   play: async ({ canvasElement }) => {
     const long = labelOf(canvasElement, LONG_LABEL);
-    // the label really is cut, or the rest proves nothing
-    await expect(long.scrollWidth).toBeGreaterThan(long.clientWidth + 1);
+    // the label really is cut, past its two lines, or the rest proves nothing
+    await expect(long.scrollHeight).toBeGreaterThan(long.clientHeight + 1);
     await expect(long).not.toHaveAttribute("title");
     await userEvent.hover(long);
     await expect(long).toHaveAttribute("title", LONG_LABEL);
@@ -1200,7 +1202,7 @@ export const ClippedRailLabelNamesItself: Story = {
     const nav = canvasElement.querySelector("nav") as HTMLElement;
     nav.style.width = "2000px";
     // the rail animates its width, so wait for the room to arrive
-    await waitFor(() => expect(long.scrollWidth).toBeLessThanOrEqual(long.clientWidth + 1));
+    await waitFor(() => expect(long.scrollHeight).toBeLessThanOrEqual(long.clientHeight + 1));
     await userEvent.unhover(long);
     await userEvent.hover(long);
     await expect(long).not.toHaveAttribute("title");
@@ -1215,7 +1217,7 @@ export const ClippedLabelInAFlyoutNamesItself: Story = {
     const { flyout } = await openGroup(canvasElement);
 
     const long = labelOf(flyout, LONG_LABEL);
-    await expect(long.scrollWidth).toBeGreaterThan(long.clientWidth + 1);
+    await expect(long.scrollHeight).toBeGreaterThan(long.clientHeight + 1);
     await userEvent.hover(long);
     await expect(long).toHaveAttribute("title", LONG_LABEL);
 
@@ -1364,7 +1366,7 @@ export const UpdatePillThatFitsNamesNothing: Story = {
 // rail takes: above the button on the full rail, beside the strip once folded,
 // and inside the drawer, where it owns Escape while it is up (#2822)
 const picker = (collapsed: boolean) => <LocalePicker collapsed={collapsed} />;
-const CHANGE = en.locale.change;
+const CHANGE = new RegExp(en.locale.change, "i");
 const LANGUAGE = en.locale.label;
 
 export const LocalePickerOpensAboveTheFullRail: Story = {
@@ -1437,5 +1439,76 @@ export const LocalePickerInsideTheDrawerOwnsEscape: Story = {
     // and only the second closes the drawer
     await userEvent.keyboard("{Escape}");
     await waitFor(() => expect(canvas.queryByRole("dialog")).toBeNull());
+  },
+};
+
+/**
+ * Click `link` with `init`, and report whether the rail took the click for its
+ * own navigation (it calls `preventDefault`) or left it to the browser. A
+ * listener on the document runs after React's, reads the verdict and then
+ * cancels the click itself, so the story never leaves the page.
+ */
+function clickTaken(link: HTMLElement, init: MouseEventInit = {}): boolean {
+  let taken = false;
+  const read = (e: Event) => {
+    taken = e.defaultPrevented;
+    e.preventDefault();
+  };
+  document.addEventListener("click", read);
+  link.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, ...init }));
+  document.removeEventListener("click", read);
+  return taken;
+}
+
+/**
+ * #3653: a screen is a link, so a modified click opens it in a new tab, hovering
+ * shows its address and a screen reader hears a link. A plain click is still
+ * the dashboard's own navigation; a group, which only opens, stays a button.
+ */
+export const ScreensAreLinks: Story = {
+  args: { hrefFor: (key: string) => `/${key}`, onNavigate: fn(), activeKey: "usage" },
+  play: async ({ canvasElement, args }) => {
+    const canvas = within(canvasElement);
+    const models = canvas.getByRole("link", { name: "Models" });
+    await expect(models).toHaveAttribute("href", "/models");
+    await expect(canvas.getByRole("link", { name: "Usage" })).toHaveAttribute(
+      "aria-current",
+      "page",
+    );
+    await expect(canvas.getByRole("button", { name: "Analytics" })).toHaveAttribute(
+      "aria-expanded",
+      "true",
+    );
+    await expect(canvas.queryByRole("button", { name: "Models" })).toBeNull();
+
+    await expect(clickTaken(models)).toBe(true);
+    await expect(args.onNavigate).toHaveBeenCalledWith("models");
+    for (const modifier of ["metaKey", "ctrlKey", "shiftKey"] as const) {
+      await expect(clickTaken(models, { [modifier]: true })).toBe(false);
+    }
+    await expect(args.onNavigate).toHaveBeenCalledTimes(1);
+  },
+};
+
+// the folded rail's flyout lists the same links
+export const FlyoutScreensAreLinks: Story = {
+  args: {
+    hrefFor: (key: string) => `/${key}`,
+    onNavigate: fn(),
+    defaultCollapsed: true,
+    activeKey: "costs",
+  },
+  play: async ({ canvasElement, args }) => {
+    const { flyout } = await openGroup(canvasElement);
+    const inside = within(flyout);
+    const costs = inside.getByRole("link", { name: "Costs" });
+    await expect(costs).toHaveAttribute("href", "/costs");
+    await expect(costs).toHaveAttribute("aria-current", "page");
+    // keyboard focus lands on the screen you are on, as it does for buttons
+    await waitFor(() => expect(costs).toHaveFocus());
+    await userEvent.keyboard("{ArrowUp}");
+    await expect(inside.getByRole("link", { name: "Usage" })).toHaveFocus();
+    await expect(clickTaken(inside.getByRole("link", { name: "Usage" }))).toBe(true);
+    await expect(args.onNavigate).toHaveBeenCalledWith("usage");
   },
 };

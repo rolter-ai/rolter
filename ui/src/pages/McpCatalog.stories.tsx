@@ -421,7 +421,7 @@ export const ConnectStartsConsent: Story = {
     }) as typeof window.open;
     try {
       await userEvent.click(
-        await canvas.findByRole("button", { name: "Start the consent flow for Linear" }),
+        await canvas.findByRole("button", { name: "Connect: start the consent flow for Linear" }),
       );
       await connects.sent("POST", "/mcp-servers/server-linear/oauth/authorize");
       await waitFor(() => expect(opened).toEqual([AUTHORIZE_STARTED.authorization_url]));
@@ -549,7 +549,7 @@ export const ConnectOnlyOnOAuthServers: Story = {
     await canvas.findByRole("heading", { name: "Linear" });
     await expect(canvas.getAllByRole("button", { name: /consent flow|Reconnect/ })).toHaveLength(1);
     await expect(
-      canvas.getByRole("button", { name: "Start the consent flow for Linear" }),
+      canvas.getByRole("button", { name: "Connect: start the consent flow for Linear" }),
     ).toBeEnabled();
     await expect(canvas.queryByText(/Register an OAuth client/)).toBeNull();
   },
@@ -568,7 +568,7 @@ export const ConnectNeedsAClient: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     const connect = await canvas.findByRole("button", {
-      name: "Start the consent flow for GitHub",
+      name: "Connect: start the consent flow for GitHub",
     });
     await expect(connect).toBeDisabled();
     await expect(connect).not.toHaveAttribute("title");
@@ -625,7 +625,7 @@ export const ConnectStatusHiddenWhenSessionsUnreadable: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(
-      await canvas.findByRole("button", { name: "Start the consent flow for Linear" }),
+      await canvas.findByRole("button", { name: "Connect: start the consent flow for Linear" }),
     ).toBeEnabled();
     await expect(canvas.queryByText(/Not connected|Connected until|Session expired/)).toBeNull();
   },
@@ -1109,7 +1109,7 @@ export const GatedForViewer: Story = {
   play: async ({ canvasElement }) => {
     await expectRefused(canvasElement, "Register server");
     await expectRefused(canvasElement, "Configure server Context7");
-    await expectRefused(canvasElement, "Discover tools of server Context7");
+    await expectRefused(canvasElement, "Discover now: tools of server Context7");
   },
 };
 
@@ -1182,7 +1182,7 @@ export const OAuthDiscoveryShowsWhatItFound: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(
-      await canvas.findByRole("button", { name: "Start the consent flow for Notion" }),
+      await canvas.findByRole("button", { name: "Connect: start the consent flow for Notion" }),
     ).toBeEnabled();
     const dialog = await openConfigure(canvasElement, "Notion");
     await expect(dialog.getByRole("radio", { name: /^Discover automatically/ })).toBeChecked();
@@ -1649,7 +1649,9 @@ export const DiscoverNow: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(await canvas.findByText(/^Not discovered yet\./)).toBeVisible();
-    await userEvent.click(canvas.getByRole("button", { name: "Discover tools of server GitHub" }));
+    await userEvent.click(
+      canvas.getByRole("button", { name: "Discover now: tools of server GitHub" }),
+    );
     await discoverNow.expectSent("POST", "/mcp-servers/server-github/discover");
     await waitFor(() => expect(canvas.getByText("open_pr")).toBeVisible());
     await expect(canvas.getByText(/^Last discovered /)).toBeVisible();
@@ -1674,7 +1676,7 @@ export const DiscoverNowFails: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await userEvent.click(
-      await canvas.findByRole("button", { name: "Discover tools of server GitHub" }),
+      await canvas.findByRole("button", { name: "Discover now: tools of server GitHub" }),
     );
     await waitFor(() =>
       expect(within(document.body).getByText("Could not discover tools of GitHub")).toBeVisible(),
@@ -1855,9 +1857,7 @@ export const TestConnection: Story = {
     const canvas = within(canvasElement);
     const status = await health(canvas);
     await expect(status.getByText("Not checked yet")).toBeVisible();
-    await userEvent.click(
-      canvas.getByRole("button", { name: "Test the connection of server GitHub" }),
-    );
+    await userEvent.click(canvas.getByRole("button", { name: "Test connection: server GitHub" }));
     await testing.stub.expectSent("POST", "/mcp-servers/server-github/test");
     const result = within(await canvas.findByRole("status", { name: "Connection test of GitHub" }));
     await expect(result.getByText("Reachable", { selector: "span" })).toBeVisible();
@@ -1901,7 +1901,7 @@ export const TestConnectionNeedsASession: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await userEvent.click(
-      await canvas.findByRole("button", { name: "Test the connection of server GitHub" }),
+      await canvas.findByRole("button", { name: "Test connection: server GitHub" }),
     );
     const result = within(await canvas.findByRole("status", { name: "Connection test of GitHub" }));
     await expect(result.getByText("Needs a session")).toBeVisible();
@@ -1915,7 +1915,7 @@ export const TestConnectionCredentialUnavailable: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await userEvent.click(
-      await canvas.findByRole("button", { name: "Test the connection of server GitHub" }),
+      await canvas.findByRole("button", { name: "Test connection: server GitHub" }),
     );
     const result = within(await canvas.findByRole("status", { name: "Connection test of GitHub" }));
     await expect(result.getByText("Credential unavailable")).toBeVisible();
@@ -1932,7 +1932,7 @@ export const TestConnectionRequestFails: Story = {
   play: async ({ canvasElement }) => {
     await userEvent.click(
       await within(canvasElement).findByRole("button", {
-        name: "Test the connection of server GitHub",
+        name: "Test connection: server GitHub",
       }),
     );
     await waitFor(() =>
@@ -1949,13 +1949,10 @@ export const TestConnectionPending: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await userEvent.click(
-      await canvas.findByRole("button", { name: "Test the connection of server GitHub" }),
+      await canvas.findByRole("button", { name: "Test connection: server GitHub" }),
     );
-    await waitFor(() =>
-      expect(
-        canvas.getByRole("button", { name: "Test the connection of server GitHub" }),
-      ).toBeDisabled(),
-    );
+    // while it runs, the button's words are its name (WCAG 2.5.3)
+    await waitFor(() => expect(canvas.getByRole("button", { name: "Testing…" })).toBeDisabled());
     await expect(canvas.getByText("Testing…")).toBeVisible();
   },
 };
@@ -1963,7 +1960,7 @@ export const TestConnectionPending: Story = {
 const openTools = async (canvasElement: HTMLElement, name = "GitHub") => {
   await userEvent.click(
     await within(canvasElement).findByRole("button", {
-      name: `Browse the tools of server ${name} and try them`,
+      name: `Tools & try it: server ${name}`,
     }),
   );
   return within(await within(document.body).findByRole("dialog"));
@@ -2050,7 +2047,7 @@ export const TryItSucceeds: Story = {
     await userEvent.click(args);
     await userEvent.paste('{"query":"retry"}');
     await userEvent.click(
-      sheet.getByRole("button", { name: "Run the selected tool on server GitHub" }),
+      sheet.getByRole("button", { name: "Run tool: the selected one on server GitHub" }),
     );
     expect(
       await tryOk.stub.expectSentBody("POST", "/mcp-servers/server-github/tools/call"),
@@ -2079,7 +2076,7 @@ export const TryItToolErrored: Story = {
     const sheet = await openTools(canvasElement);
     await pickTool(sheet, "search_code");
     await userEvent.click(
-      sheet.getByRole("button", { name: "Run the selected tool on server GitHub" }),
+      sheet.getByRole("button", { name: "Run tool: the selected one on server GitHub" }),
     );
     const outcome = within(await sheet.findByRole("status", { name: "Result" }));
     await expect(outcome.getByText("Tool reported an error")).toBeVisible();
@@ -2107,7 +2104,7 @@ export const TryItUnreachable: Story = {
     const sheet = await openTools(canvasElement);
     await pickTool(sheet, "search_code");
     await userEvent.click(
-      sheet.getByRole("button", { name: "Run the selected tool on server GitHub" }),
+      sheet.getByRole("button", { name: "Run tool: the selected one on server GitHub" }),
     );
     const outcome = within(await sheet.findByRole("status", { name: "Result" }));
     await expect(outcome.getByText("Unreachable")).toBeVisible();
@@ -2129,7 +2126,7 @@ export const TryItTruncatedResponse: Story = {
     const sheet = await openTools(canvasElement);
     await pickTool(sheet, "search_code");
     await userEvent.click(
-      sheet.getByRole("button", { name: "Run the selected tool on server GitHub" }),
+      sheet.getByRole("button", { name: "Run tool: the selected one on server GitHub" }),
     );
     await expect(await sheet.findByText(/too large to keep in full.*2,097,152 B/)).toBeVisible();
   },
@@ -2142,7 +2139,7 @@ export const TryItBlocksInvalidArguments: Story = {
   play: async ({ canvasElement }) => {
     const sheet = await openTools(canvasElement);
     await pickTool(sheet, "search_code");
-    const run = sheet.getByRole("button", { name: "Run the selected tool on server GitHub" });
+    const run = sheet.getByRole("button", { name: "Run tool: the selected one on server GitHub" });
     const args = sheet.getByRole("textbox", { name: "Arguments (JSON object)" });
     await userEvent.clear(args);
     await userEvent.click(args);
@@ -2167,7 +2164,7 @@ export const TryItNeedsAToolFirst: Story = {
     const sheet = await openTools(canvasElement);
     await sheet.findByRole("combobox", { name: "Tool" });
     await expect(
-      sheet.getByRole("button", { name: "Run the selected tool on server GitHub" }),
+      sheet.getByRole("button", { name: "Run tool: the selected one on server GitHub" }),
     ).toBeDisabled();
   },
 };
@@ -2183,7 +2180,7 @@ export const TryItRefusedByTheApi: Story = {
     const sheet = await openTools(canvasElement);
     await pickTool(sheet, "search_code");
     await userEvent.click(
-      sheet.getByRole("button", { name: "Run the selected tool on server GitHub" }),
+      sheet.getByRole("button", { name: "Run tool: the selected one on server GitHub" }),
     );
     const alert = await sheet.findByRole("alert");
     await expect(alert).toHaveTextContent("Could not run the tool");
@@ -2199,12 +2196,11 @@ export const TryItPending: Story = {
     const sheet = await openTools(canvasElement);
     await pickTool(sheet, "search_code");
     await userEvent.click(
-      sheet.getByRole("button", { name: "Run the selected tool on server GitHub" }),
+      sheet.getByRole("button", { name: "Run tool: the selected one on server GitHub" }),
     );
     await waitFor(() => expect(sheet.getByText("Running…")).toBeVisible());
-    await expect(
-      sheet.getByRole("button", { name: "Run the selected tool on server GitHub" }),
-    ).toBeDisabled();
+    // while it runs, the button's words are its name (WCAG 2.5.3)
+    await expect(sheet.getByRole("button", { name: "Running…" })).toBeDisabled();
   },
 };
 
@@ -2216,11 +2212,11 @@ export const ProbeGatedForViewer: Story = {
     </GatedHarness>
   ),
   play: async ({ canvasElement }) => {
-    await expectRefused(canvasElement, "Test the connection of server GitHub");
+    await expectRefused(canvasElement, "Test connection: server GitHub");
     const sheet = await openTools(canvasElement);
     await sheet.findByRole("list", { name: "Tools" });
     await pickTool(sheet, "search_code");
-    await expectRefused(document.body, "Run the selected tool on server GitHub");
+    await expectRefused(document.body, "Run tool: the selected one on server GitHub");
   },
 };
 
@@ -2228,7 +2224,7 @@ export const ViewLogsLinksToTheServersCalls: Story = {
   render: probeStory().render,
   play: async ({ canvasElement }) => {
     const link = await within(canvasElement).findByRole("link", {
-      name: "View the MCP call logs of server GitHub",
+      name: "View logs: MCP calls of server GitHub",
     });
     await expect(link).toHaveAttribute("href", "/mcp-logs?server=github");
   },

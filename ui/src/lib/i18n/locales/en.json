@@ -419,6 +419,7 @@
   "locale": {
     "label": "Language",
     "change": "Change language",
+    "changeFrom": "{{code}}, change language",
     "en": "English",
     "ru": "Русский"
   },
@@ -932,7 +933,7 @@
       "colModel": "Model",
       "colStatus": "Status",
       "colMs": "ms",
-      "openRequest": "Open the {{model}} request from {{time}} in LLM Logs",
+      "openRequest": "open the {{model}} request in LLM Logs",
       "unpriced": {
         "title_one": "{{count}} request in this window is unpriced.",
         "title_other": "{{count}} requests in this window are unpriced.",
@@ -1227,7 +1228,7 @@
       "add": "+ Add route",
       "copyModel": "Copy model name",
       "tryIt": "Try it",
-      "tryRoute": "Try {{model}} in the Playground",
+      "tryRoute": "Try it: {{model}} in the Playground",
       "traffic_one": "{{requests}} request for this model name in this project in the last {{hours}} h · {{errors}} errors",
       "traffic_other": "{{requests}} requests for this model name in this project in the last {{hours}} h · {{errors}} errors",
       "noTraffic": "No requests for this model name in this project in the last {{hours}} h",
@@ -1325,7 +1326,7 @@
         "body": "Seen in the last 7 days. Their spend is missing from totals and budgets until a price is set.",
         "tableLabel": "Models with unpriced traffic",
         "requests": "Unpriced requests",
-        "addAria": "Add a price for {{model}}"
+        "addAria": "Add price for {{model}}"
       },
       "noAnalytics": {
         "title": "Unpriced traffic needs ClickHouse",
@@ -1821,7 +1822,7 @@
       "rotateKey": "Rotate key {{name}}",
       "previousSecret": "old secret {{prefix}}… valid until {{date}}",
       "revokePrevious": "Revoke now",
-      "revokePreviousAria": "Revoke the old secret of {{name}} now",
+      "revokePreviousAria": "Revoke now: the old secret of {{name}}",
       "rotatedTitle": "Key rotated",
       "rotatedBody": "This is the only time the new key is shown. Copy it now. The old secret stopped authenticating immediately.",
       "rotatedBodyOverlap": "This is the only time the new key is shown. Copy it now. The old secret keeps working until {{date}}, or until you revoke it."
@@ -1926,7 +1927,7 @@
         "reportedReading": "It read {{value}} against a threshold of {{threshold}}.",
         "deleteAria": "Delete rule {{name}}",
         "editAria": "Edit rule {{name}}",
-        "evaluateAria": "Evaluate rule {{name}} now",
+        "evaluateAria": "Evaluate now: rule {{name}}",
         "statSignal": "Signal",
         "statThreshold": "Threshold",
         "statWindow": "Window",
@@ -2308,7 +2309,7 @@
       },
       "connect": {
         "action": "Connect",
-        "ready": "Start the consent flow for {{name}}",
+        "ready": "Connect: start the consent flow for {{name}}",
         "unconfigured": "Register an OAuth client on this server before connecting.",
         "started": "Consent started for {{name}}",
         "startedDetail": "Finish the approval in the new tab. It ends on Auth Sessions, and this card shows the new session once it completes.",
@@ -2436,7 +2437,7 @@
       "discovery": {
         "discover": "Discover now",
         "discovering": "Discovering…",
-        "discoverAria": "Discover tools of server {{name}}",
+        "discoverAria": "Discover now: tools of server {{name}}",
         "running": "Discovering tools…",
         "pending": "Not discovered yet. The tools shown are the catalog's list, not the server's.",
         "pendingWhy": "Not discovered yet: {{reason}}.",
@@ -2499,7 +2500,7 @@
       "test": {
         "action": "Test connection",
         "running": "Testing…",
-        "aria": "Test the connection of server {{name}}",
+        "aria": "Test connection: server {{name}}",
         "failedToast": "Could not test the connection of {{name}}",
         "title": "Connection test of {{name}}",
         "status": "Status",
@@ -2517,7 +2518,7 @@
       },
       "tools": {
         "open": "Tools & try it",
-        "openAria": "Browse the tools of server {{name}} and try them",
+        "openAria": "Tools & try it: server {{name}}",
         "title": "Tools of {{name}}",
         "stale": "Not returned by the last discovery",
         "noDescription": "No description.",
@@ -2543,7 +2544,7 @@
         "notObject": "Arguments must be a JSON object, not an array or a single value.",
         "run": "Run tool",
         "running": "Running…",
-        "runAria": "Run the selected tool on server {{name}}",
+        "runAria": "Run tool: the selected one on server {{name}}",
         "failed": "Could not run the tool",
         "result": "Result",
         "outcome": "Outcome",
@@ -2557,7 +2558,7 @@
       },
       "logs": {
         "link": "View logs",
-        "aria": "View the MCP call logs of server {{name}}"
+        "aria": "View logs: MCP calls of server {{name}}"
       }
     },
     "mcpOAuth": {
@@ -2687,7 +2688,7 @@
       "emptyTitle": "No nodes have reported in",
       "emptyBody": "Nodes appear here once a gateway identifies itself on its snapshot poll. A gateway sends its identity only when ROLTER_NODE_ID or HOSTNAME is set in its environment — containers always have HOSTNAME; a bare-metal or native run needs ROLTER_NODE_ID set explicitly.",
       "drainAria": "Drain node {{node}}",
-      "returnAria": "Return node {{node}} to service",
+      "returnAria": "Return to service: node {{node}}",
       "forgetAria": "Forget node {{node}}",
       "stillPolling": "node is still polling; it would reappear on its next snapshot poll",
       "columns": {
@@ -3497,7 +3498,7 @@
         "title": "Group mappings",
         "empty": "No group is mapped and there is no default role, so every sign-in through this provider is refused until you map one.",
         "emptyWithDefault": "No group is mapped yet, so everyone signing in through this provider gets {{role}}.",
-        "addNamed": "Map a group in {{provider}}",
+        "addNamed": "Map group in {{provider}}",
         "grantTiming": "Each member gets it at their next sign-in.",
         "removeBody": "Members of that group stop being granted {{role}} on {{scope}} at their next sign-in. Roles they already hold are not withdrawn."
       }
@@ -3586,7 +3587,7 @@
         "emptyWithDefault": "No group is mapped yet, so every directory user signs in as {{role}}.",
         "grantTiming": "A mapping grants its role the next time each member signs in.",
         "removeBody": "Members of the group lose {{role}} on {{scope}} the next time they sign in, unless another mapping grants it.",
-        "addNamed": "Map a group in {{directory}}"
+        "addNamed": "Map group in {{directory}}"
       },
       "clearPassword": {
         "title": "Remove the stored bind password of {{name}}?",
@@ -3672,7 +3673,7 @@
     },
     "mcpStepUp": {
       "action": "Reconnect with more access",
-      "actionNamed": "Reconnect {{name}} with more access",
+      "actionNamed": "Reconnect with more access: {{name}}",
       "missing_one": "Your connection lacks the scope {{scopes}} that this server requires.",
       "missing_other": "Your connection lacks the scopes {{scopes}} that this server requires.",
       "asked_one": "{{scopes}} is the scope this server asked for.",
@@ -3720,7 +3721,7 @@
       "allTargets": "All targets",
       "page": "page {{page}}",
       "totalSuffix": " · {{total}} total",
-      "prev": "Prev",
+      "prev": "Previous",
       "next": "Next",
       "ranges": {
         "last24h": "Last 24h",
@@ -3779,7 +3780,7 @@
       "emptyAction": "Open routing rules",
       "noPolicyYet": "No policy yet",
       "tierRouteAria": "Route for tier {{n}}",
-      "editPolicyAria": "Edit the complexity policy for {{model}}",
+      "editPolicyAria": "Edit policy for {{model}}",
       "addPolicyAria": "Add a complexity policy for {{model}}",
       "removeTierAria": "Remove tier {{name}}",
       "summary_one": "{{configured}} of {{count}} route has a complexity policy · requests are measured by input bytes and routed to the matching tier",
@@ -6034,7 +6035,7 @@
     "githubRepo": "GitHub repository",
     "reportBug": "Report a bug",
     "updateAvailable": "v{{latest}} available",
-    "updateAvailableHint": "rolter v{{latest}} is available — open the release notes",
+    "updateAvailableHint": "v{{latest}} available: open the rolter release notes",
     "role": "Admin",
     "superadmin": "Superadmin",
     "roleLine": {
@@ -6442,7 +6443,7 @@
       "refused": "The control plane refused the download (HTTP {{status}}). If you signed out or your session ended, sign in again; otherwise try again.",
       "notStarted": "The browser did not start the download before its link expired. Try again, and allow downloads from this page if the browser asks.",
       "stopWatching": "Stop watching",
-      "stopWatchingLabel": "Stop following the {{what}}; the browser's download carries on",
+      "stopWatchingLabel": "Stop watching the {{what}}; the browser's download carries on",
       "unwatched": "Stopped following the export. The browser's download carries on: check its download list for the file.",
       "stopped": "The download stopped in the browser before its end, so the file it left is not whole. Start the export again if you still need it.",
       "stalled": "The export has reported no progress for five minutes, so the page stopped following it. Check the browser's download list; if the file is not there or is incomplete, start the export again."

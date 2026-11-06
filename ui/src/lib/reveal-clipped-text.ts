@@ -23,8 +23,13 @@ export function revealClippedText(e: React.PointerEvent<HTMLElement>) {
   for (let el = e.target as HTMLElement | null; el && el !== container; el = el.parentElement) {
     const mine = el.hasAttribute(REVEALED);
     if (el.hasAttribute("title") && !mine) continue;
+    const style = getComputedStyle(el);
+    // cut short on one line with an ellipsis, or clamped to a number of lines
     const clipped =
-      el.scrollWidth > el.clientWidth + 1 && getComputedStyle(el).textOverflow === "ellipsis";
+      (el.scrollWidth > el.clientWidth + 1 && style.textOverflow === "ellipsis") ||
+      (el.scrollHeight > el.clientHeight + 1 &&
+        style.webkitLineClamp !== "" &&
+        style.webkitLineClamp !== "none");
     if (clipped && el.textContent) {
       el.setAttribute("title", el.textContent);
       el.setAttribute(REVEALED, "");

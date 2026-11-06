@@ -2302,7 +2302,7 @@ export const RefusedToAMember: Story = {
     // #1234: writing a mapping at a narrower scope is the same capability as
     // writing an org-wide one, so the new scope select must not come with a
     // create button that only fails on submit
-    await expectRefused(canvasElement, "Map a group in Acme Okta");
+    await expectRefused(canvasElement, "Map group in Acme Okta");
     // #2084: the card's switch and pencil are updates, the same capability as
     // clearing the secret beside them, and were live for a member
     await expectRefused(canvasElement, "Enable provider Acme Okta", NEEDS_ADMIN, "switch");
@@ -2446,7 +2446,7 @@ export const MapsAGroupToATeam: Story = {
     await userEvent.click(within(listbox).getByRole("option", { name: TEAM.name }));
 
     await userEvent.type(canvas.getByLabelText("IdP group"), "gateway-oncall");
-    await clickWhenEnabled(canvasElement, "Map a group in Acme Okta");
+    await clickWhenEnabled(canvasElement, "Map group in Acme Okta");
 
     const body = await teamScoped.expectSentBody<Record<string, unknown>>(
       "POST",
@@ -2483,7 +2483,7 @@ export const MapsAGroupToAProject: Story = {
     const picker = await canvas.findByLabelText("Where the role applies");
     await pickOption(picker, PROJECT.name);
     await userEvent.type(canvas.getByLabelText("IdP group"), "gateway-deployers");
-    await clickWhenEnabled(canvasElement, "Map a group in Acme Okta");
+    await clickWhenEnabled(canvasElement, "Map group in Acme Okta");
 
     const body = await projectScoped.expectSentBody<Record<string, unknown>>(
       "POST",
@@ -2614,7 +2614,7 @@ export const AdminGrantAsksFirst: Story = {
     await userEvent.type(group, "gateway-deployers");
     await pickOption(await canvas.findByLabelText("Where the role applies"), TEAM.name);
     await pickOption(canvas.getByLabelText("Role to grant"), "Admin");
-    await clickWhenEnabled(canvasElement, "Map a group in Acme Okta");
+    await clickWhenEnabled(canvasElement, "Map group in Acme Okta");
 
     const dialogElement = await confirmation();
     // the dialog animates in, so visibility is polled rather than read once (#2287)
@@ -2638,7 +2638,7 @@ export const AdminGrantAsksFirst: Story = {
     await expect(group).toHaveValue("gateway-deployers");
     await expect(canvas.getByLabelText("Role to grant")).toHaveValue("Admin");
 
-    await clickWhenEnabled(canvasElement, "Map a group in Acme Okta");
+    await clickWhenEnabled(canvasElement, "Map group in Acme Okta");
     await confirmDestructive("Map gateway-deployers to Admin?", "Map group");
     await expect(await sent.expectSentBody<Posted>("POST", GROUP_MAPPINGS_URL)).toEqual({
       group_name: "gateway-deployers",
@@ -2682,7 +2682,7 @@ export const WholeOrgGrantAsksFirst: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await userEvent.type(await canvas.findByLabelText("IdP group"), "ops-readers");
-    await clickWhenEnabled(canvasElement, "Map a group in Acme Okta");
+    await clickWhenEnabled(canvasElement, "Map group in Acme Okta");
 
     const dialog = within(await confirmation());
     await expect(dialog.getByText("Map ops-readers to Viewer?")).toBeVisible();
@@ -2693,7 +2693,7 @@ export const WholeOrgGrantAsksFirst: Story = {
     await cancelConfirmation();
     sent.expectNotSent("POST", GROUP_MAPPINGS_URL);
 
-    await clickWhenEnabled(canvasElement, "Map a group in Acme Okta");
+    await clickWhenEnabled(canvasElement, "Map group in Acme Okta");
     await confirmDestructive("Map ops-readers to Viewer?", "Map group");
     // an org-wide grant names no scope at all, rather than an empty one
     await expect(await sent.expectSentBody<Posted>("POST", GROUP_MAPPINGS_URL)).toEqual({
@@ -2718,7 +2718,7 @@ export const AdminOnTheWholeOrgNamesBothReasons: Story = {
     const canvas = within(canvasElement);
     await userEvent.type(await canvas.findByLabelText("IdP group"), "platform-admins");
     await pickOption(canvas.getByLabelText("Role to grant"), "Admin");
-    await clickWhenEnabled(canvasElement, "Map a group in Acme Okta");
+    await clickWhenEnabled(canvasElement, "Map group in Acme Okta");
 
     const dialog = within(await confirmation());
     await expect(dialog.getByText(/gets Admin on the whole organization\./)).toBeVisible();
@@ -2753,7 +2753,7 @@ export const MapGroupRefusedInsideTheConfirmation: Story = {
     const group = await canvas.findByLabelText("IdP group");
     await userEvent.type(group, "platform-admins");
     await pickOption(canvas.getByLabelText("Role to grant"), "Admin");
-    await clickWhenEnabled(canvasElement, "Map a group in Acme Okta");
+    await clickWhenEnabled(canvasElement, "Map group in Acme Okta");
     await confirmDestructive("Map platform-admins to Admin?", "Map group");
 
     const dialog = within(await confirmation());

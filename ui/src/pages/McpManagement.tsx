@@ -949,7 +949,13 @@ export function McpCatalog() {
                     variant="outline"
                     disabled={discovering === server.id}
                     aria-describedby={`mcp-discovery-${server.id}`}
-                    aria-label={t("pages.mcpCatalog.discovery.discoverAria", { name: server.name })}
+                    // the name starts with the button's words (WCAG 2.5.3); while
+                    // it reads "Discovering…" those words are the name
+                    aria-label={
+                      discovering === server.id
+                        ? undefined
+                        : t("pages.mcpCatalog.discovery.discoverAria", { name: server.name })
+                    }
                     onClick={() => discover.mutate(server)}
                   >
                     {discovering === server.id && (
@@ -964,7 +970,11 @@ export function McpCatalog() {
                     control="mcp-server-test"
                     variant="outline"
                     disabled={testing === server.id}
-                    aria-label={t("pages.mcpCatalog.test.aria", { name: server.name })}
+                    aria-label={
+                      testing === server.id
+                        ? undefined
+                        : t("pages.mcpCatalog.test.aria", { name: server.name })
+                    }
                     onClick={() => testConnection.mutate(server)}
                   >
                     {testing === server.id && (

@@ -34,7 +34,7 @@ export const Collapsed: Story = {
   args: { collapsed: true },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    const trigger = canvas.getByRole("button", { name: "Change language" });
+    const trigger = canvas.getByRole("button", { name: /change language/i });
     await expect(trigger).not.toHaveTextContent("EN");
   },
 };
@@ -43,7 +43,7 @@ export const MenuOpen: Story = {
   args: { collapsed: false },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await userEvent.click(canvas.getByRole("button", { name: "Change language" }));
+    await userEvent.click(canvas.getByRole("button", { name: /change language/i }));
 
     const list = await canvas.findByRole("menu");
     await expect(list).toBeVisible();
@@ -65,20 +65,25 @@ export const SwitchesLanguage: Story = {
   args: { collapsed: false },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expect(canvas.getByRole("button", { name: "Change language" })).toHaveTextContent("EN");
+    await expect(canvas.getByRole("button", { name: /change language/i })).toHaveTextContent("EN");
+    // label in name (WCAG 2.5.3, #3654): the accessible name holds what is drawn
+    await expect(canvas.getByRole("button", { name: /change language/i })).toHaveAccessibleName(
+      "EN, change language",
+    );
 
-    await userEvent.click(canvas.getByRole("button", { name: "Change language" }));
+    await userEvent.click(canvas.getByRole("button", { name: /change language/i }));
     await userEvent.click(canvas.getByRole("menuitemradio", { name: "Русский" }));
 
     await waitFor(async () => {
       // the trigger's own label is translated too, so it changes name
-      await expect(canvas.getByRole("button", { name: "Сменить язык" })).toHaveTextContent("RU");
+      await expect(canvas.getByRole("button", { name: /сменить язык/i })).toHaveTextContent("RU");
     });
     await expect(canvas.queryByRole("menu")).toBeNull();
   },
 };
 
-const CHANGE = en.locale.change;
+// the trigger is named "EN, change language": the visible code, then the verb
+const CHANGE = new RegExp(en.locale.change, "i");
 const MENU = en.locale.label;
 
 // the panel is the shared `AnchoredPanel`, so it carries the shared elevation:
@@ -183,7 +188,7 @@ export const ChoosingFromTheKeyboard: Story = {
     await userEvent.keyboard("{Enter}");
 
     await waitFor(() => expect(canvas.queryByRole("menu")).toBeNull());
-    const trigger = await canvas.findByRole("button", { name: "Сменить язык" });
+    const trigger = await canvas.findByRole("button", { name: /сменить язык/i });
     await expect(trigger).toHaveTextContent("RU");
     await waitFor(() => expect(trigger).toHaveFocus());
   },

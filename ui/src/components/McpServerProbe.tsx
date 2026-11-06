@@ -377,7 +377,11 @@ function TryIt({ server }: { server: McpServerRow }) {
           gate="mcp_server:update"
           control="mcp-server-try"
           disabled={!tool || !parsed.ok || run.isPending}
-          aria-label={t("pages.mcpCatalog.try.runAria", { name: server.name })}
+          // the name starts with the button's words (WCAG 2.5.3); while it reads
+          // "Running…" those words are the name
+          aria-label={
+            run.isPending ? undefined : t("pages.mcpCatalog.try.runAria", { name: server.name })
+          }
           onClick={() => run.mutate()}
         >
           {run.isPending && (

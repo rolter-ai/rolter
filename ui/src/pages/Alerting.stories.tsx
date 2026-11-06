@@ -1068,7 +1068,7 @@ export const EvaluateReportsAFailedDelivery: Story = {
     </Harness>
   ),
   play: async ({ canvasElement }) => {
-    await clickWhenEnabled(canvasElement, "Evaluate rule high error rate now");
+    await clickWhenEnabled(canvasElement, "Evaluate now: rule high error rate");
     await expectToast(
       canvasElement,
       /Reported firing, but delivery failed: HTTP 500\. It is retried/,
@@ -1131,7 +1131,7 @@ export const EvaluateFailureRefreshesTheRuleCard: Story = {
   },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await clickWhenEnabled(canvasElement, "Evaluate rule high error rate now");
+    await clickWhenEnabled(canvasElement, "Evaluate now: rule high error rate");
     await expectToast(canvasElement, /The control plane hit an error/, "error");
     // on the card as well as in the toast, without a reload
     await waitFor(() =>
@@ -1172,7 +1172,7 @@ export const EvaluateReportsADelivery: Story = {
     </Harness>
   ),
   play: async ({ canvasElement }) => {
-    await clickWhenEnabled(canvasElement, "Evaluate rule high error rate now");
+    await clickWhenEnabled(canvasElement, "Evaluate now: rule high error rate");
     await expectToast(canvasElement, /the channel accepted it \(HTTP 204\)/);
   },
 };
@@ -1253,7 +1253,7 @@ export const EvaluatesARule: Story = {
     const canvas = within(canvasElement);
     await expect(await canvas.findByText("high error rate")).toBeInTheDocument();
     const button = canvas.getByRole("button", {
-      name: "Evaluate rule high error rate now",
+      name: "Evaluate now: rule high error rate",
     });
 
     await userEvent.click(button);
@@ -2001,7 +2001,7 @@ export const EvaluateToastShowsTheReadingAndTheCodedDetail: Story = {
     </Harness>
   ),
   play: async ({ canvasElement }) => {
-    await clickWhenEnabled(canvasElement, "Evaluate rule high error rate now");
+    await clickWhenEnabled(canvasElement, "Evaluate now: rule high error rate");
     await expectToast(
       canvasElement,
       /delivery failed: HTTP 503\..*It read 11% against a threshold of 5%\./,
@@ -2049,7 +2049,7 @@ export const EvaluateFailureIsTranslatedFromItsCode: Story = {
     </Harness>
   ),
   play: async ({ canvasElement }) => {
-    await clickWhenEnabled(canvasElement, "Evaluate rule high error rate now");
+    await clickWhenEnabled(canvasElement, "Evaluate now: rule high error rate");
     await expectToast(canvasElement, /alert evaluation requires CLICKHOUSE_URL/, "error");
     await expect(within(canvasElement).queryByText(/english fallback/)).toBeNull();
   },

@@ -1154,13 +1154,15 @@ export const AKeyInOverlapNamesTheOldSecretAndRevokesItEarly: Story = {
     const canvas = within(canvasElement);
     await expect(await canvas.findByText(/old secret sk-rolter-oldold… valid until/)).toBeVisible();
     // only the key mid-overlap offers it
-    await expect(canvas.getAllByRole("button", { name: /Revoke the old secret/ })).toHaveLength(1);
+    await expect(
+      canvas.getAllByRole("button", { name: /Revoke now: the old secret/ }),
+    ).toHaveLength(1);
 
-    await clickWhenEnabled(canvasElement, "Revoke the old secret of backend service now");
+    await clickWhenEnabled(canvasElement, "Revoke now: the old secret of backend service");
     await cancelConfirmation();
     revokes.expectNotSent("DELETE", "/previous-secret");
 
-    await clickWhenEnabled(canvasElement, "Revoke the old secret of backend service now");
+    await clickWhenEnabled(canvasElement, "Revoke now: the old secret of backend service");
     await confirmDestructive(/sk-rolter-oldold/, "Revoke old secret");
     await revokes.expectSent("DELETE", "/virtual-keys/vk-1/previous-secret");
     await expectSheetClosed();
@@ -1409,6 +1411,6 @@ export const AnOverlapThatHasEndedIsNotShown: Story = {
     const canvas = within(canvasElement);
     await canvas.findByText("backend service");
     await expect(canvas.queryByText(/old secret/)).toBeNull();
-    await expect(canvas.queryByRole("button", { name: /Revoke the old secret/ })).toBeNull();
+    await expect(canvas.queryByRole("button", { name: /Revoke now: the old secret/ })).toBeNull();
   },
 };

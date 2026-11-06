@@ -58,7 +58,7 @@ have written a third and fourth copy. They are one now:
   [combobox.md](combobox.md#fuzzy-filtering).
   `header` renders above the `menu` element rather than inside it, since a menu
   may own entries, groups and separators and an identity block is none of those.
-- `GroupFlyout` stays a disclosure of navigation buttons, not a menu, and keeps
+- `GroupFlyout` stays a disclosure of navigation links, not a menu, and keeps
   its own keyboard on top of `AnchoredPanel`'s placement and dismissal.
 
 ### The language picker
@@ -243,7 +243,7 @@ group did nothing at all. Folded, a group opens a flyout (`GroupFlyout` in
   above), shared with the account menu and the scope popover.
 - **A disclosure, not an ARIA menu.** The icon is a button with
   `aria-expanded`, the flyout a `role="group"` named by its heading, and the
-  entries are the same navigation buttons the full rail has, so they sit in the
+  entries are the same navigation links the full rail has, so they sit in the
   tab order right after the icon and `aria-current="page"` marks the screen
   you are on.
 - **Keyboard.** Enter or Space (the button's click), or the right or down
@@ -266,18 +266,33 @@ experimental marker, following the list's scroll), `NavAsViewerFlyout` and
 `FoldedRailOpensAGroup` and `FoldedRailFlyoutLeavesOutRefusedScreens` in
 `App.stories.tsx` for the assembled shell.
 
+## Screens are links
+
+Every screen in the rail, the folded flyout and the drawer is an `<a href>`
+(`NavSidebar`'s `hrefFor`, which the shell sets to `/<key>`), and a group, which
+only opens and closes, stays a button (#3653). A modified click (⌘, Ctrl or
+Shift) or a middle click is left to the browser, so a screen opens in a new tab
+or window, hovering shows its address and "copy link" works; a plain left click
+is the dashboard's own navigation, through `onNavigate` and without a page
+load. A screen reader hears links, with `aria-current="page"` on the screen you
+are on. Stories: `ScreensAreLinks` and `FlyoutScreensAreLinks` in
+`nav-sidebar.stories.tsx`.
+
 ## A label the rail cuts
 
-A label wider than the rail ends in an ellipsis. The `ru` catalog runs a third
-longer than `en`, so at the default 232px "Адаптивная маршрутизация" read
-"Адаптивная маршрут…" with the rest of it nowhere on screen (#2830). The folded
-rail already names each icon through `title`; the full rail now does the same for
-the label it has cut, and only for that one:
+A label wider than the rail wraps onto a second line (#3657). The `ru` catalog
+runs a third longer than `en`, and at the default 232px eight screens read like
+"Адаптивная маршрут…" with the rest of the name nowhere on screen; wrapped, every
+`ru` label is whole at that width (`RailLabelsAreWholeInRussian` in
+`App.stories.tsx`). A label too long for two lines, at the narrowest rail, is
+clamped there. The folded rail names each icon through `title`; the full rail
+does the same for a label it has clamped, and only for that one (#2830):
 
 - The rail's list and the group flyout both hand `revealClippedText`
   (`ui/src/lib/reveal-clipped-text.ts`, the function `ListTable` uses for its cells)
   to `onPointerOver`. On pointer over, the label under the pointer gets its full
-  text as a `title` if, and only if, it is cut by an ellipsis; one that fits gets
+  text as a `title` if, and only if, it is cut, by an ellipsis on one line or by
+  a line clamp; one that fits gets
   nothing, and a label that has since been given room (a wider rail, a longer
   window) loses the title it was given. The text is in the document in full either
   way, so the accessible name never depended on it.
@@ -410,7 +425,10 @@ container drops the `listbox` role while there is nothing in it, since a
 The record half is deliberately cheap: virtual keys, providers and routes, read
 with the same endpoints their screens use, only once the palette is open and
 only for a caller whose capabilities do not say no. There is no search
-endpoint, and the palette must not grow one without one being built first.
+endpoint, and the palette must not grow one without one being built first. Every
+record is matched against the query, and only the listing is capped, at six
+matches of each kind in rank order: a cap applied before matching left the
+seventh route unfindable by its own name (#3642).
 
 The one thing the palette looks up rather than lists is a pasted request or trace
 id (#1861). `pastedIdLookup` in `ui/src/lib/command-palette.ts` reads the query
