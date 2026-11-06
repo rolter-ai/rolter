@@ -39,6 +39,8 @@ Configuring a provider is otherwise a write with no feedback. The row saves whet
 
 **Test connection** on a saved provider closes that loop. In the dashboard it is one click from the create: **Create provider** leaves the sheet open on the new provider, says it is not tested yet, and puts focus on **Test connection** beside the save buttons. The test does not run by itself, since it is a call to the upstream. **Done** closes the sheet.
 
+The control plane keeps the result of each test, one per provider, so the provider list shows it in its **Last test** column without testing again: **Reachable** with the latency, **Failed** with the upstream's status and the test's reason as the note, or **Not tested**, with when it ran. The **Key** column also warns when a provider's key is read from an environment variable the control plane cannot see: the variable's name in the warning tone with **Not set** beside it. That is the control plane's view; the gateway reads its own environment, as the paragraph above says.
+
 The same call is available to a script:
 
 ```bash

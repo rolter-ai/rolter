@@ -367,6 +367,25 @@ pub struct ProviderCacheProbe {
     pub probed_at: DateTime<Utc>,
 }
 
+/// What the last connection test of a provider found (#3649). A provider with
+/// no row has never been tested.
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+pub struct ProviderConnectionTest {
+    pub provider_id: Uuid,
+    /// the probe demonstrated a working provider API
+    pub reachable: bool,
+    /// the upstream's HTTP status; absent when the request never completed
+    pub status: Option<i32>,
+    pub latency_ms: i64,
+    /// how the credential was resolved (`stored`, `env`, `env (unset)`, ...)
+    pub credential: String,
+    /// how many models the upstream listed, when it answered with a catalogue
+    pub models_found: Option<i32>,
+    /// the test's own explanation of a failure
+    pub error: Option<String>,
+    pub tested_at: DateTime<Utc>,
+}
+
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
 pub struct VirtualKey {
     pub id: Uuid,

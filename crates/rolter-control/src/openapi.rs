@@ -1548,6 +1548,12 @@ fn operations() -> Vec<Op> {
             )
             .ok(Payload::Open),
             Op::get(
+                "/api/v1/orgs/{org_id}/provider-checks",
+                "listProviderChecks",
+                "List, per visible provider, whether its key variable is set in the control plane's environment (`env_set`) and how its last connection test went (`last_test`, absent if never tested)",
+            )
+            .ok(Payload::Open),
+            Op::get(
                 "/api/v1/providers/{id}/models",
                 "listProviderModels",
                 "List the models a provider's upstream serves (needs provider:update, like the test)",

@@ -990,6 +990,9 @@
       "unpriced": {
         "filter": "Unpriced",
         "badge": "no price set",
+        "summary_one": "{{count}} model has no price, so its traffic is recorded as unpriced and left out of spend and budgets.",
+        "summary_other": "{{count}} models have no price, so their traffic is recorded as unpriced and left out of spend and budgets.",
+        "setPrices": "Set prices",
         "hint": "This model has no price row, so its traffic is recorded as unpriced rather than free. Its spend is missing from totals and budgets until a price is set."
       },
       "emptyTitle": "No models yet",
@@ -1022,6 +1025,7 @@
       },
       "lockedLabel": "Parameters locked",
       "lockedHint": "Parameters locked — client overrides for the locked params are ignored; server-side values are enforced. Edit the model to unlock.",
+      "disabled": "Disabled",
       "strategyCaveat": {
         "needsTelemetry": "needs telemetry",
         "deploymentWide": "set deployment-wide",
@@ -1061,6 +1065,17 @@
       "credentialEnvHint": "Read from the environment variable {{name}}",
       "credentialNone": "None",
       "credentialNoneHint": "No key is stored and no environment variable is named",
+      "credentialEnvUnset": "Not set",
+      "credentialEnvUnsetHint": "The control plane does not see {{name}} in its environment, so a connection test goes out with no key. The gateway reads its own environment: set the variable there too.",
+      "colLastTest": "Last test",
+      "lastTest": {
+        "never": "Not tested",
+        "reachable": "Reachable · {{ms}} ms",
+        "failedStatus": "Failed · {{status}}",
+        "failed": "Failed",
+        "models_one": "{{count}} model listed",
+        "models_other": "{{count}} models listed"
+      },
       "copyPrefix": "Copy address prefix",
       "edit": "Edit",
       "deleteTitle": "Delete provider",

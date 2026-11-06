@@ -5,7 +5,9 @@ use uuid::Uuid;
 
 use rolter_core::{Error, Result};
 
-use super::super::models::{Provider, ProviderCacheProbe, ProviderGroup, ProviderGroupMember};
+use super::super::models::{
+    Provider, ProviderCacheProbe, ProviderConnectionTest, ProviderGroup, ProviderGroupMember,
+};
 use super::support::{
     fetch_optional_or_not_found, fetch_scalar_or_not_found, require_affected, store_err,
 };
@@ -516,6 +518,74 @@ impl ProviderCacheProbeRepo<'_> {
         sqlx::query_as(
             "select c.provider_id, c.reports, c.spelling, c.model, c.probed_at
              from provider_cache_probes c join providers p on p.id = c.provider_id
+             where p.org_id = $1 order by p.name",
+        )
+        .bind(org_id)
+        .fetch_all(self.0)
+        .await
+        .map_err(store_err)
+    }
+}
+
+/// What the last connection test of each provider found (#3649), written by
+/// the control plane's "Test connection" and read by the dashboard's provider
+/// list. The gateway does not read it.
+pub struct ProviderConnectionTestRepo<'a>(pub &'a PgPool);
+
+/// A finished connection test, as [`ProviderConnectionTestRepo::record`] takes it.
+pub struct ConnectionTestOutcome<'a> {
+    pub reachable: bool,
+    pub status: Option<u16>,
+    pub latency_ms: u64,
+    pub credential: &'a str,
+    pub models_found: Option<usize>,
+    pub error: Option<&'a str>,
+}
+
+impl ProviderConnectionTestRepo<'_> {
+    /// Record what a test of `provider_id` found, replacing the previous one and
+    /// stamping the time.
+    pub async fn record(
+        &self,
+        provider_id: Uuid,
+        outcome: &ConnectionTestOutcome<'_>,
+    ) -> Result<ProviderConnectionTest> {
+        sqlx::query_as(
+            "insert into provider_connection_tests
+                 (provider_id, reachable, status, latency_ms, credential, models_found, error,
+                  tested_at)
+             values ($1, $2, $3, $4, $5, $6, $7, now())
+             on conflict (provider_id) do update
+             set reachable = excluded.reachable, status = excluded.status,
+                 latency_ms = excluded.latency_ms, credential = excluded.credential,
+                 models_found = excluded.models_found, error = excluded.error,
+                 tested_at = excluded.tested_at
+             returning provider_id, reachable, status, latency_ms, credential, models_found,
+                       error, tested_at",
+        )
+        .bind(provider_id)
+        .bind(outcome.reachable)
+        .bind(outcome.status.map(i32::from))
+        .bind(i64::try_from(outcome.latency_ms).unwrap_or(i64::MAX))
+        .bind(outcome.credential)
+        .bind(
+            outcome
+                .models_found
+                .map(|n| i32::try_from(n).unwrap_or(i32::MAX)),
+        )
+        .bind(outcome.error)
+        .fetch_one(self.0)
+        .await
+        .map_err(store_err)
+    }
+
+    /// The last tests of the providers of `org_id`; a provider never tested has
+    /// no entry.
+    pub async fn list(&self, org_id: Uuid) -> Result<Vec<ProviderConnectionTest>> {
+        sqlx::query_as(
+            "select t.provider_id, t.reachable, t.status, t.latency_ms, t.credential,
+                    t.models_found, t.error, t.tested_at
+             from provider_connection_tests t join providers p on p.id = t.provider_id
              where p.org_id = $1 order by p.name",
         )
         .bind(org_id)

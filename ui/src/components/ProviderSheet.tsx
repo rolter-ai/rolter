@@ -1,4 +1,4 @@
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 
@@ -37,6 +37,7 @@ import { errorText } from "@/lib/error-copy";
 import { slugify } from "@/lib/slug";
 import { useToast } from "@/lib/toast";
 import { providerKindDescription, providerKindName } from "@/lib/provider-kinds";
+import { PROVIDER_CHECKS_KEY } from "@/lib/use-provider-checks";
 import { useFormTelemetry } from "@/lib/ux-react";
 import {
   apiBaseDoublesV1,
@@ -256,7 +257,12 @@ export function ProviderSheet({
     return keys.some((k) => was[k] !== draft.tel[k]);
   };
 
-  const test = useMutation({ mutationFn: () => testProvider(stored!.id) });
+  const queryClient = useQueryClient();
+  // the control plane keeps each test's result, so the list reads it next
+  const test = useMutation({
+    mutationFn: () => testProvider(stored!.id),
+    onSettled: () => queryClient.invalidateQueries({ queryKey: [PROVIDER_CHECKS_KEY] }),
+  });
 
   const save = useMutation({
     mutationFn: () => {

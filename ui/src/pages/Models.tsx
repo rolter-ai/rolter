@@ -3,6 +3,7 @@ import { StrategyBadge } from "@/components/StrategyBadge";
 import { Boxes, ChevronRight, Lock, Tag } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
+import { Link } from "react-router";
 
 import { CacheReportingBadge } from "@/components/CacheReportingBadge";
 import { GatedButton } from "@/components/GatedButton";
@@ -31,6 +32,7 @@ import {
   Toolbar,
   primaryColumn,
 } from "@/components/screen";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { DeleteIconButton } from "@/components/ui/delete-icon-button";
 import { EmptyState } from "@/components/ui/empty-state";
@@ -423,6 +425,18 @@ export default function Models() {
         )}
       </div>
 
+      {/* one line for what every unpriced row used to badge on its own (#3659) */}
+      {unpricedCount > 0 && (
+        <p className="text-xs text-muted-foreground">
+          {t("pages.models.unpriced.summary", { count: unpricedCount })}{" "}
+          <Link
+            to="/pricing-overrides"
+            className="text-[color:var(--text-secondary)] underline underline-offset-2 hover:text-foreground"
+          >
+            {t("pages.models.unpriced.setPrices")}
+          </Link>
+        </p>
+      )}
       {models.error && (
         <LoadError
           error={models.error}
@@ -488,10 +502,16 @@ export default function Models() {
             <React.Fragment key={r.id}>
               <ListRow grid={GRID} className={open ? "border-b-0" : undefined}>
                 <ListCell className="flex min-w-0 items-center gap-2">
-                  <StatusDot color={r.enabled ? "var(--status-success)" : "var(--text-subtle)"} />
+                  {/* health is the targets column's to say; this cell only
+                      marks a model that is switched off (#3659) */}
                   <span className="flex min-w-0 flex-col gap-1">
                     <span className="truncate font-mono text-sm">{r.name}</span>
                     <LabelChips labels={labels.forModel(r.entry.org_id ?? "", r.name)} />
+                    {!r.enabled && (
+                      <Badge tone="outline" className="self-start">
+                        {t("pages.models.disabled")}
+                      </Badge>
+                    )}
                   </span>
                   {r.locked && (
                     <InfoHint
@@ -509,7 +529,11 @@ export default function Models() {
                   >
                     {r.providerName}
                   </Tooltip>
-                  <CacheReportingBadge state={r.cache} />
+                  {/* a verdict once one exists; "not probed yet" on every row
+                      said nothing about the provider (#3659) */}
+                  {r.cache && r.cache.status !== "unprobed" && (
+                    <CacheReportingBadge state={r.cache} />
+                  )}
                 </ListCell>
                 <ListCell className="flex min-w-0 flex-col items-start gap-0.5">
                   <StrategyBadge strategy={r.strategy} />
@@ -595,11 +619,14 @@ export default function Models() {
                       {t("pages.models.readOnlyPill")}
                     </Pill>
                   ) : (
+                    // where the row is stored is not a status, so it takes no
+                    // status hue, and it reads in the dashboard's language
                     <Pill
-                      tone="success"
-                      border="color-mix(in srgb, var(--status-success) 32%, transparent)"
+                      color="var(--text-secondary)"
+                      tint="var(--surface-subtle)"
+                      border="var(--border-default)"
                     >
-                      db
+                      {t("pages.models.origin.db")}
                     </Pill>
                   )}
                 </ListCell>

@@ -488,6 +488,7 @@ export {
   testProvider,
   fetchProviderModels,
   fetchProviderCacheProbes,
+  fetchProviderChecks,
   probeProviderCache,
   canProbeCache,
   fetchProviderGroups,
@@ -496,6 +497,8 @@ export {
   deleteProviderGroup,
 } from "./providers";
 export type {
+  ProviderCheck,
+  ProviderConnectionTest,
   ProviderKindInfo,
   KvEventsConfig,
   LmCacheConfig,

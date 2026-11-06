@@ -1,6 +1,6 @@
 import { useTranslation } from "react-i18next";
 
-import { Pill } from "@/components/screen";
+import { Tooltip } from "@/components/ui/tooltip";
 
 /**
  * The per-Mtok price cell in the model catalogue (#969).
@@ -29,17 +29,18 @@ export function ModelPriceCell({
 }) {
   const { t } = useTranslation();
 
+  // a muted dash with the reason as its note: the screen states the count once
+  // above the table, so a warning badge on every row repeated it (#3659)
   if (priced === false) {
     return (
       <div className="flex justify-end">
-        <Pill
-          hint={t("pages.models.unpriced.hint")}
-          color="var(--status-warning-text)"
-          tint="var(--red-tint)"
-          border="color-mix(in srgb, var(--status-warning) 32%, transparent)"
+        <Tooltip
+          className="font-mono text-xs text-[color:var(--text-subtle)]"
+          content={t("pages.models.unpriced.hint")}
         >
-          {t("pages.models.unpriced.badge")}
-        </Pill>
+          <span aria-hidden>—</span>
+          <span className="sr-only">{t("pages.models.unpriced.badge")}</span>
+        </Tooltip>
       </div>
     );
   }
