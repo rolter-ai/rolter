@@ -10,11 +10,7 @@ import { cn } from "@/lib/utils";
  */
 export function StrategyBadge({ strategy, className }: { strategy: string; className?: string }) {
   return (
-    <Badge
-      tone="neutral"
-      className={cn("min-w-0 max-w-full font-mono", className)}
-      title={strategy}
-    >
+    <Badge tone="neutral" className={cn("min-w-0 max-w-full font-mono", className)}>
       <span className="truncate">{strategy}</span>
     </Badge>
   );

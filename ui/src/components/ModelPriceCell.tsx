@@ -33,12 +33,12 @@ export function ModelPriceCell({
     return (
       <div className="flex justify-end">
         <Pill
-          className="cursor-help"
+          hint={t("pages.models.unpriced.hint")}
           color="var(--status-warning-text)"
           tint="var(--red-tint)"
           border="color-mix(in srgb, var(--status-warning) 32%, transparent)"
         >
-          <span title={t("pages.models.unpriced.hint")}>{t("pages.models.unpriced.badge")}</span>
+          {t("pages.models.unpriced.badge")}
         </Pill>
       </div>
     );

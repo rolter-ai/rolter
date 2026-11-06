@@ -36,6 +36,7 @@ import { Input } from "@/components/ui/input";
 import { Segmented } from "@/components/ui/segmented";
 import { Table, type TableColumn } from "@/components/ui/table";
 import { Sheet, SheetBody, SheetHeader } from "@/components/ui/sheet";
+import { Tooltip } from "@/components/ui/tooltip";
 import {
   AnalyticsUnavailableError,
   invocationsExport,
@@ -663,9 +664,9 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
       stackedClassName:
         "@max-[479px]:col-start-1 @max-[479px]:row-start-2 @max-[479px]:text-[color:var(--text-secondary)]",
       render: (_, r) => (
-        <time dateTime={r.ts} title={fmt.dateTimeMs(r.ts)}>
-          {fmt.timeMs(r.ts)}
-        </time>
+        <Tooltip content={fmt.dateTimeMs(r.ts)}>
+          <time dateTime={r.ts}>{fmt.timeMs(r.ts)}</time>
+        </Tooltip>
       ),
     },
     {
@@ -735,9 +736,9 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
       cellClassName: "text-[color:var(--text-secondary)]",
       render: (_, r) =>
         isUsageUnknown(r) ? (
-          <span title={t("analytics.usageUnknownHint")}>
+          <Tooltip content={t("analytics.usageUnknownHint")}>
             <Absent />
-          </span>
+          </Tooltip>
         ) : (
           fmt.number(num(r.total_tokens))
         ),
@@ -752,9 +753,9 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
       render: (_, r) =>
         cost(r) ??
         (isUsageUnknown(r) ? (
-          <span title={t("analytics.usageUnknownHint")}>
+          <Tooltip content={t("analytics.usageUnknownHint")}>
             <Absent />
-          </span>
+          </Tooltip>
         ) : (
           <Unpriced titled />
         )),
@@ -1697,7 +1698,8 @@ function UpstreamSentence({ row }: { row: InvocationRow }) {
 /**
  * The upstream's status beside the caller's in the table, when they differ:
  * a 503 the gateway made after the provider's 429. The number is the glance;
- * the sentence is the title and what a screen reader hears (#2837).
+ * the sentence is its tooltip, and what a screen reader hears after the
+ * number (#2837, #3655).
  */
 function UpstreamHint({ row }: { row: InvocationRow }) {
   const { t } = useTranslation();
@@ -1707,14 +1709,13 @@ function UpstreamHint({ row }: { row: InvocationRow }) {
   if (upstream === null || note === null) return null;
   const sentence = upstreamSentence(t, note);
   return (
-    <span
-      title={sentence}
+    <Tooltip
+      content={sentence}
       className="inline-flex items-center gap-0.5 font-mono text-2xs text-[color:var(--text-subtle)]"
     >
       <ArrowLeft aria-hidden className="h-3 w-3 flex-none" />
-      <span aria-hidden>{upstream}</span>
-      <span className="sr-only">{sentence}</span>
-    </span>
+      {upstream}
+    </Tooltip>
   );
 }
 
@@ -1731,7 +1732,7 @@ function LifecycleBadge({ label }: { label: string }) {
     <Badge
       tone="outline"
       className="flex-none font-sans"
-      title={t("pages.logs.detail.lifecycle.title", { operation: label })}
+      hint={t("pages.logs.detail.lifecycle.title", { operation: label })}
     >
       {label}
     </Badge>
@@ -1825,7 +1826,7 @@ function Unpriced({ titled = false }: { titled?: boolean }) {
     <Badge
       tone="neutral"
       className="font-mono"
-      title={titled ? t("analytics.unpricedHint") : undefined}
+      hint={titled ? t("analytics.unpricedHint") : undefined}
     >
       {t("analytics.unpriced")}
     </Badge>
@@ -1840,7 +1841,7 @@ function Unpriced({ titled = false }: { titled?: boolean }) {
 function Withheld({ titled = false }: { titled?: boolean }) {
   const { t } = useTranslation();
   return (
-    <Badge tone="warning" title={titled ? t("analytics.withheldHint") : undefined}>
+    <Badge tone="warning" hint={titled ? t("analytics.withheldHint") : undefined}>
       {t("analytics.withheld")}
     </Badge>
   );

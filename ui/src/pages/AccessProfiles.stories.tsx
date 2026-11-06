@@ -4,36 +4,38 @@ import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import AccessProfiles from "./AccessProfiles";
 import {
+  adminOfProject,
   cancelConfirmation,
   clickWhenEnabled,
-  adminOfProject,
   confirmation,
   confirmDestructive,
   expectAllowed,
+  expectClosesWithoutPrompting,
   expectEmptyState,
   expectLoadError,
-  expectRefused,
-  expectClosesWithoutPrompting,
   expectNoFalseEmpty,
   expectNoUxEvent,
+  expectRefused,
   expectSheetClosed,
   expectSkeleton,
+  expectToast,
   expectUxEvent,
+  type FetchStub,
   Harness,
   json,
+  noteOf,
   openOptions,
   pending,
   pickOption,
   PROJECT,
-  recordUxEvents,
   recording,
+  recordUxEvents,
   scoped,
   sheet,
   TEAM,
   Toasted,
-  expectToast,
+  triggerWithNote,
   uxEvents,
-  type FetchStub,
 } from "./story-harness";
 import type {
   AccessProfileAssignmentRow,
@@ -677,8 +679,8 @@ export const ScopeThatCannotBeResolved: Story = {
     await waitFor(() => expect(canvas.getByText("Deploy admin on Unresolved scope")).toBeVisible());
     await expect(canvas.queryByText(PROJECT.id)).not.toBeInTheDocument();
     // the id stays quotable in a support conversation
-    const chip = canvas.getByTitle(/could not be matched/);
-    await expect(chip.getAttribute("title")).toContain(PROJECT.id);
+    const chip = triggerWithNote(canvasElement, /could not be matched/);
+    await expect(noteOf(chip)).toContain(PROJECT.id);
   },
 };
 

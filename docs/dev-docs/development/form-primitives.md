@@ -108,6 +108,38 @@ laying a second copy out by hand.
   (whole, not clipped) and moves away. Cover the second locale where the copy is
   long.
 
+## The note behind a short value
+
+A row often shows less than it knows: the first eight characters of an id,
+"Ana +2" for three admins, "3 min ago" for a timestamp, one word on a badge.
+The rest used to be a `title`, which shows only to a mouse that waits; a
+keyboard, a finger and a screen magnifier never saw it (#3655). It is a
+`Tooltip` now (`ui/src/components/ui/tooltip.tsx`):
+
+- **`<Tooltip content={…}>short value</Tooltip>`** makes the value a focusable
+  span with a dotted underline. The note opens on hover, focus and tap, stays
+  open while the pointer crosses onto it, and closes on Escape without closing
+  the sheet around it. It is an `AnchoredPanel`, so no scroll frame clips it.
+  `content` with `\n` in it shows one entry a line (a list of names). Empty or
+  absent `content` renders the children as plain text, so a note that is only
+  sometimes there needs no branch.
+- **A `Badge` or `Pill` takes the note as `hint`.** The badge itself becomes the
+  trigger. Neither has a `title` in its props any more, so the compiler stops a
+  new one.
+- **A control that is already focusable** (a link, say) uses `useTooltip` and
+  spreads `triggerProps` onto itself, then renders the `note` beside it, so
+  there is never one focusable element inside another. The Audit Log's target
+  link is the model.
+- **The note is the trigger's description** whether it is open or not, so a
+  screen reader is told the whole id. A story reads it with `noteOf(element)`
+  from `ui/src/pages/story-harness.tsx`, and finds a trigger by its note with
+  `triggerWithNote` / `triggersWithNote`.
+- **Text that only repeats what is clipped** needs no note at all. A `ListTable`
+  and a `Table` name a cell cut short with an ellipsis on hover
+  (`revealClippedText`), and a name in a sheet's list wraps instead of
+  truncating. **Text the reader acts on** goes in the row: an invitation's mail
+  failure is written under the address, not hidden behind the badge.
+
 ## What they already guarantee
 
 Each primitive owns an accessibility detail that is invisible on screen and
@@ -310,7 +342,7 @@ screen's wording stays in the screen's namespace and arrives as a prop.
 
 `bun run check:primitives` (`ui/scripts/check-ui-primitives.ts`) is what keeps
 this page from being advice. It runs in the `ui, storybook, docs` job and fails on
-eleven things: a native `<button>` with no `type` and no props spread (a
+twelve things: a native `<button>` with no `type` and no props spread (a
 button defaults to submit, so one inside an editor sheet submits the form, #3241), a bare `<select>`, a hand-written `role="listbox"` / `"option"` /
 `"combobox"` (#3058), a native `<input type="checkbox">` outside
 `checkbox.tsx` (#2223), a raw `<pre>`, a `window.confirm`/`alert`/
@@ -320,7 +352,8 @@ exports, the same element markup hand-written in three or more files, and a
 assembled by hand rather than taken from `ConfirmDialog` (see
 [destructive actions](destructive-actions.md)), and a bare `animate-spin` /
 `animate-pulse`, which must be `motion-safe:` so `prefers-reduced-motion` stops
-it (#2006), and a bare `<Switch>` in a hand-built row (below). The fourth is this page's rule
+it (#2006), a bare `<Switch>` in a hand-built row (below), and a `title` on a
+text element (below). The fourth is this page's rule
 — #1044 sat undiscovered for months because nothing looked, and seven
 primitives stayed trapped in one sheet's file.
 
@@ -342,6 +375,18 @@ It deliberately leaves alone `GatedSwitch` (a different tag), a switch in a
 `<label><Switch>` with no `justify-between`. When a row genuinely is not a
 `SwitchRow`, waive it with `ui-primitives-allow: <reason>` in the comment
 directly above the `<Switch>` line, as with the other element rules.
+
+### Raw titles
+
+`raw-title` (#3655) catches a `title` on a text element (`span`, `div`, `p`,
+`time`, `li`, `td` and the like, plus `ListCell`, which passes it through)
+outside `src/components/ui/`. It reports the line the tag opens on. A
+`button`, `a` or `input` is left alone: it is focusable and named, so its
+`title` repeats a name a keyboard already hears. Use `Tooltip`, a `hint`, or
+the row itself (above). A text element that genuinely cannot be a tab stop, such
+as one bar of the Health screen's bucket strip or one mark of the RBAC matrix,
+both of which state the same thing in text beside them, is waived with
+`ui-primitives-allow: <reason>` above the tag.
 
 ### Inline two-step confirmations
 

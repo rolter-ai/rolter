@@ -1,6 +1,7 @@
 import { cva, type VariantProps } from "class-variance-authority";
 import * as React from "react";
 
+import { useTooltip } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 
 // 7 tones + optional leading dot.
@@ -39,16 +40,54 @@ const badgeVariants = cva(
 );
 
 export interface BadgeProps
-  extends React.HTMLAttributes<HTMLSpanElement>, VariantProps<typeof badgeVariants> {
+  extends Omit<React.HTMLAttributes<HTMLSpanElement>, "title">, VariantProps<typeof badgeVariants> {
   dot?: boolean;
+  /**
+   * What the badge means, or the detail behind its one word, as a `Tooltip`
+   * (#3655): the badge becomes focusable and shows it on hover, focus and tap.
+   * There is no `title`, which only a waiting mouse ever reads.
+   */
+  hint?: React.ReactNode;
 }
 
-export function Badge({ tone, dot = false, className, children, ...props }: BadgeProps) {
+export function Badge({ hint, ...props }: BadgeProps) {
+  return hint == null || hint === "" ? (
+    <BadgeBody {...props} />
+  ) : (
+    <HintedBadge hint={hint} {...props} />
+  );
+}
+
+function BadgeBody({
+  tone,
+  dot = false,
+  className,
+  children,
+  ...props
+}: Omit<BadgeProps, "hint"> & { ref?: React.Ref<HTMLSpanElement> }) {
   return (
     <span className={cn(badgeVariants({ tone, className }))} {...props}>
       {dot && <span className="h-1.5 w-1.5 rounded-full bg-current" />}
       {children}
     </span>
+  );
+}
+
+function HintedBadge({ hint, className, ...props }: BadgeProps) {
+  const { triggerProps, note } = useTooltip<HTMLSpanElement>(hint);
+  return (
+    <>
+      <BadgeBody
+        {...props}
+        {...triggerProps}
+        tabIndex={0}
+        className={cn(
+          "cursor-help focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+          className,
+        )}
+      />
+      {note}
+    </>
   );
 }
 

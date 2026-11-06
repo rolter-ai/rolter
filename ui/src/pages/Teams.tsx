@@ -18,6 +18,7 @@ import { ListSummary, PageBody, Toolbar } from "@/components/screen";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Field } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
+import { Tooltip } from "@/components/ui/tooltip";
 import {
   AssignSubjectProfileSheet,
   SubjectProfiles,
@@ -320,11 +321,17 @@ export default function Teams() {
                     {people.admins.length === 0 ? (
                       t("pages.teams.noAdmin")
                     ) : (
-                      <span title={people.admins.map(nameOf).join(", ")}>
+                      <Tooltip
+                        content={
+                          people.admins.length > 1
+                            ? people.admins.map(nameOf).join("\n")
+                            : undefined
+                        }
+                      >
                         {nameOf(people.admins[0])}
                         {people.admins.length > 1 &&
                           ` ${t("pages.teams.adminMore", { count: people.admins.length - 1 })}`}
-                      </span>
+                      </Tooltip>
                     )}
                   </span>
                 </div>

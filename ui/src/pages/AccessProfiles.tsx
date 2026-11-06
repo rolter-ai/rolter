@@ -157,9 +157,7 @@ function ProfileCard({
                     ) : (
                       <User className="size-3.5 flex-none text-muted-foreground" aria-hidden />
                     )}
-                    <span className="min-w-0 flex-1 truncate" title={name}>
-                      {name}
-                    </span>
+                    <span className="min-w-0 flex-1 break-words">{name}</span>
                     <span className="flex-none text-xs text-muted-foreground">
                       {a.team_id
                         ? t("pages.accessProfiles.assign.kindTeam")

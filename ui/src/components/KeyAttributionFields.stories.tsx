@@ -9,7 +9,7 @@ import {
   UNATTRIBUTED,
 } from "./KeyAttributionFields";
 import type { BusinessUnitRow, CustomerRow, ProviderRow } from "@/lib/api";
-import { openOptions, pickOption } from "@/pages/story-harness";
+import { openOptions, pickOption, triggerWithNote } from "@/pages/story-harness";
 
 const unit = (id: string, name: string, retired = false): BusinessUnitRow => ({
   id,
@@ -236,6 +236,6 @@ export const BadgesOnARow: Story = {
     const canvas = within(canvasElement);
     await expect(canvas.getAllByText("Platform")).toHaveLength(2);
     await expect(canvas.getByText("Acme")).toBeVisible();
-    await expect(canvas.getByTitle("Unattributed")).toBeVisible();
+    await expect(triggerWithNote(canvasElement, "Unattributed")).toBeVisible();
   },
 };

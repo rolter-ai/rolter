@@ -168,6 +168,9 @@ function CellMark({
 }) {
   const { t } = useTranslation();
   return (
+    // ui-primitives-allow: one mark of a matrix that holds hundreds. the same
+    // words are in the text beside each mark and in the legend, and a tab stop
+    // per mark would bury the grid, so the hover stays the browser's own
     <span
       aria-hidden
       title={title}
@@ -1010,12 +1013,14 @@ function GrantGrid({
                   });
                   if (!view) {
                     return (
+                      // a dash under the action's column, and the words for a
+                      // screen reader, which cannot see the column it sits in
                       <span
                         key={action}
                         className="w-6 text-center font-mono text-xs text-[color:var(--text-subtle)]"
-                        title={t("pages.rbac.states.na")}
                       >
-                        –
+                        <span aria-hidden>–</span>
+                        <span className="sr-only">{t("pages.rbac.states.na")}</span>
                       </span>
                     );
                   }

@@ -13,6 +13,7 @@ import { Badge } from "@/components/ui/badge";
 import { EmptyState, EmptyStateLink } from "@/components/ui/empty-state";
 import { Table, type TableColumn } from "@/components/ui/table";
 import { STAT_GRID, StatCard } from "@/components/ui/stat-card";
+import { Tooltip } from "@/components/ui/tooltip";
 import {
   fetchAdaptiveRoutingPolicy,
   fetchAdaptiveRoutingTelemetry,
@@ -270,9 +271,11 @@ function AdaptiveDashboardScreen() {
         </p>
         {view && (
           <p className="text-xs tabular-nums text-muted-foreground">
-            <time dateTime={view.generated_at} title={fmt.dateTime(view.generated_at)}>
-              {t("pages.adaptiveDashboard.updated", { time: fmt.time(view.generated_at) })}
-            </time>{" "}
+            <Tooltip content={fmt.dateTime(view.generated_at)}>
+              <time dateTime={view.generated_at}>
+                {t("pages.adaptiveDashboard.updated", { time: fmt.time(view.generated_at) })}
+              </time>
+            </Tooltip>{" "}
             {t("pages.adaptiveDashboard.reportsExpire", {
               seconds: fmt.number(view.fresh_window_secs),
             })}
@@ -428,15 +431,16 @@ function AdaptiveDashboardScreen() {
                             <p className="max-w-[65ch] text-xs leading-relaxed text-muted-foreground">
                               {policySummary(t, fmt, node)}
                             </p>
-                            <time
-                              dateTime={node.reported_at}
-                              title={fmt.dateTime(node.reported_at)}
+                            <Tooltip
+                              content={fmt.dateTime(node.reported_at)}
                               className="text-xs tabular-nums text-muted-foreground"
                             >
-                              {t("pages.adaptiveDashboard.reported", {
-                                time: fmt.time(node.reported_at),
-                              })}
-                            </time>
+                              <time dateTime={node.reported_at}>
+                                {t("pages.adaptiveDashboard.reported", {
+                                  time: fmt.time(node.reported_at),
+                                })}
+                              </time>
+                            </Tooltip>
                           </div>
 
                           <div

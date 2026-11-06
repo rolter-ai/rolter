@@ -4,6 +4,7 @@ import { useState } from "react";
 import type { TFunction } from "i18next";
 import { useTranslation } from "react-i18next";
 
+import { Tooltip } from "@/components/ui/tooltip";
 import {
   GATEWAY_HEALTH_KEY,
   useGatewayHealth,
@@ -86,7 +87,6 @@ function GatewayPill() {
   return (
     <span
       role="status"
-      title={detail}
       className="inline-flex items-center gap-[7px] whitespace-nowrap rounded-full border border-[color:var(--border-subtle)] px-2.5 py-[5px] text-xs"
     >
       <span
@@ -97,7 +97,9 @@ function GatewayPill() {
           health === "healthy" && live && "rl-pulse",
         )}
       />
-      <span className={tone.label}>{phrases?.label ?? t(`shell.gateway.${key}`)}</span>
+      <Tooltip content={detail} className={cn(tone.label, "no-underline")}>
+        {phrases?.label ?? t(`shell.gateway.${key}`)}
+      </Tooltip>
     </span>
   );
 }

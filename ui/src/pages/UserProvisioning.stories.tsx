@@ -14,16 +14,18 @@ import {
   expectSkeleton,
   expectTableStateInFrame,
   expectToast,
+  type FetchStub,
   Harness as ScreenHarness,
   json,
+  noteOf,
   openOptions,
   pickOption,
+  type Recorder,
   recording,
+  type StoryRole,
   stubClipboard,
   Toasted,
-  type FetchStub,
-  type Recorder,
-  type StoryRole,
+  triggerWithNote,
 } from "./story-harness";
 import type { PublicUrl, ScimGroupMappingRow, ScimTokenRow } from "@/lib/api";
 import { formattersFor } from "@/lib/i18n/format";
@@ -207,8 +209,7 @@ export const Loaded: Story = {
     await expect(live.textContent).toBe(copy.statusActive);
     const [, revoked] = await cellsOf(canvasElement, "Okta legacy");
     await expect(revoked.textContent).toBe(copy.statusRevoked);
-    await expect(within(revoked).getByText(copy.statusRevoked)).toHaveAttribute(
-      "title",
+    await expect(noteOf(within(revoked).getByText(copy.statusRevoked))).toBe(
       copy.revokedAt.replace("{{when}}", formattersFor("en").dateTime(TOKENS[2].revoked_at!)),
     );
   },
@@ -232,14 +233,10 @@ export const DatesShareOneStyle: Story = {
       await expect(cell.textContent).toMatch(/^[A-Za-z]{3,} \d{1,2}, \d{4}$/);
     }
     // and the clock is one hover away, on the moment itself
-    await expect(within(lastSync).getByText(fmt.date(lastUsed))).toHaveAttribute(
-      "title",
+    await expect(noteOf(within(lastSync).getByText(fmt.date(lastUsed)))).toBe(
       fmt.dateTime(lastUsed),
     );
-    await expect(within(created).getByText(fmt.date(NOW))).toHaveAttribute(
-      "title",
-      fmt.dateTime(NOW),
-    );
+    await expect(noteOf(within(created).getByText(fmt.date(NOW)))).toBe(fmt.dateTime(NOW));
     // a token never presented has no date to style
     const [, , never] = await cellsOf(canvasElement, "Entra staging");
     await expect(never.textContent).toBe(en.pages.userProvisioning.neverUsed);
@@ -263,8 +260,7 @@ export const ReadsInRussian: Story = {
     });
     const [, revoked] = await cellsOf(canvasElement, "Okta legacy");
     await expect(revoked.textContent).toBe(copy.statusRevoked);
-    await expect(within(revoked).getByText(copy.statusRevoked)).toHaveAttribute(
-      "title",
+    await expect(noteOf(within(revoked).getByText(copy.statusRevoked))).toBe(
       copy.revokedAt.replace("{{when}}", formattersFor("ru").dateTime(TOKENS[2].revoked_at!)),
     );
     // no English status anywhere on the screen, in either case
@@ -756,9 +752,9 @@ export const GroupMappingScopeUnresolved: Story = {
     await waitFor(() => expect(row).toHaveTextContent("Unresolved scope"));
     await expect(row).not.toHaveTextContent("team-1");
     // and the id is still quotable, in the tooltip
-    const chip = within(row).getByTitle(/could not be matched/);
+    const chip = triggerWithNote(row, /could not be matched/);
     await expect(chip).toHaveTextContent("Unresolved scope");
-    await expect(chip.getAttribute("title")).toContain("team-1");
+    await expect(noteOf(chip)).toContain("team-1");
     // an org-wide mapping is untouched: it never had a scope to resolve
     await expect(canvas.getByText("platform-engineering").closest("li")).toHaveTextContent(
       "Whole organization",

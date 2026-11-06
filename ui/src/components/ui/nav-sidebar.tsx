@@ -206,9 +206,12 @@ function NavLabel({ item }: { item: NavItem }) {
   return (
     <span className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-1">
       <span className="min-w-0 break-words">{item.label}</span>
-      <Badge tone="warning" title={item.experimentalNote} className="flex-none">
-        {t("shell.experimental")}
-      </Badge>
+      {/* the marker sits inside the entry's button, where a focusable tooltip
+          would nest one control in another, so the note stays the browser's
+          hover title here: the screen it opens leads with the same note */}
+      <span title={item.experimentalNote} className="flex-none">
+        <Badge tone="warning">{t("shell.experimental")}</Badge>
+      </span>
     </span>
   );
 }

@@ -28,7 +28,7 @@ export function FallbackBadge({ takesOver }: { takesOver: readonly string[] }) {
     <Badge
       tone="info"
       data-testid="fallback-badge"
-      title={t("fallbackTargets.badgeTitle", { classes: takesOver.join(", ") })}
+      hint={t("fallbackTargets.badgeTitle", { classes: takesOver.join(", ") })}
     >
       {t("fallbackTargets.badge")}
     </Badge>

@@ -1,6 +1,7 @@
 import * as React from "react";
 
 import { isEmptyAnswer, type ReadState } from "@/lib/read-state";
+import { revealClippedText } from "@/lib/reveal-clipped-text";
 import { cn } from "@/lib/utils";
 
 // data-driven table: pass columns + rows (mono/align/render column options,
@@ -159,6 +160,8 @@ export function Table<T extends object>({
     : "px-4 py-2 text-[color:var(--text-secondary)]";
   const table = (
     <table
+      // a cell cut short with an ellipsis is named on hover, as a list table's is
+      onPointerOver={revealClippedText}
       className={cn(
         "w-full border-collapse text-sm",
         stacked && STACKED_TABLE,

@@ -4,30 +4,31 @@ import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import { AlertChannels, AlertHistory, AlertRules } from "./Alerting";
 import {
+  answerDiscardPrompt,
   cancelConfirmation,
   clickWhenEnabled,
   confirmDestructive,
   expectAllowed,
   expectClosesWithoutPrompting,
-  openOptions,
-  expectSheetClosed,
   expectListTable,
   expectLoadError,
   expectNoFalseEmpty,
+  expectSheetClosed,
   expectSkeleton,
   expectToast,
+  failingThenRecovering,
+  type FetchStub,
   Harness,
   json,
+  noteOf,
+  openOptions,
   pending,
   pickOption,
   recording,
   routes,
-  failingThenRecovering,
   scoped,
   sheet,
   Toasted,
-  answerDiscardPrompt,
-  type FetchStub,
 } from "./story-harness";
 import type { AlertChannelRow, AlertNotificationRow, AlertRuleRow } from "@/lib/api";
 import { formattersFor } from "@/lib/i18n/format";
@@ -1433,8 +1434,8 @@ export const EvaluatedSaysHowLongAgo: Story = {
     await expect(stat(old, "Evaluated")).toHaveTextContent(/^3 days ago$/);
     // the exact stamp, with its date, is on hover
     const when = within(old).getByText("3 days ago");
-    await expect(when).toHaveAttribute("title", fmt.dateTime(when.getAttribute("datetime")!));
-    await expect(when.getAttribute("title")).not.toBe(fmt.time(when.getAttribute("datetime")!));
+    await expect(noteOf(when)).toBe(fmt.dateTime(when.getAttribute("datetime")!));
+    await expect(noteOf(when)).not.toBe(fmt.time(when.getAttribute("datetime")!));
     // a rule never evaluated has nothing to be relative to
     const never = canvas.getByRole("article", { name: "spend spike" });
     await expect(stat(never, "Evaluated")).toHaveTextContent(/^never$/);

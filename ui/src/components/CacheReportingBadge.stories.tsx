@@ -2,6 +2,7 @@ import type { Meta, StoryObj } from "@storybook/react";
 import { expect, within } from "storybook/test";
 
 import { CacheReportingBadge } from "./CacheReportingBadge";
+import { noteOf } from "@/pages/story-harness";
 
 const meta = {
   title: "Components/CacheReportingBadge",
@@ -52,8 +53,8 @@ export const ThreeStates: Story = {
     await expect(reports.className).toContain("status-success");
     await expect(none.className).toContain("status-warning");
     await expect(unprobed.className).not.toContain("status-warning");
-    await expect(reports).toHaveAttribute("title", expect.stringContaining("Model: gpt-4o-mini"));
-    await expect(reports).toHaveAttribute("title", expect.stringContaining("Field: cached_tokens"));
+    await expect(noteOf(reports)).toContain("Model: gpt-4o-mini");
+    await expect(noteOf(reports)).toContain("Field: cached_tokens");
   },
 };
 
@@ -63,9 +64,8 @@ export const CoversSeveralProviders: Story = {
     state: { status: "none", probedAt: "2026-09-01T10:00:00Z", count: 1, total: 3 },
   },
   play: async ({ canvasElement }) => {
-    await expect(within(canvasElement).getByText(/^No cache metrics/)).toHaveAttribute(
-      "title",
-      expect.stringContaining("1 of 3 providers"),
+    await expect(noteOf(within(canvasElement).getByText(/^No cache metrics/))).toContain(
+      "1 of 3 providers",
     );
   },
 };

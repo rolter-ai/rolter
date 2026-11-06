@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 
 import { TONE_CLASSES, type BadgeTone } from "@/components/ui/badge";
 import { RefusalWrap } from "@/components/ui/refusal-wrap";
+import { useTooltip } from "@/components/ui/tooltip";
 import { useGate, type Capability } from "@/lib/can";
 import { isAwaiting, isEmptyAnswer, type ReadState } from "@/lib/read-state";
 import { revealClippedText } from "@/lib/reveal-clipped-text";
@@ -93,7 +94,7 @@ export function Pill({
   tint,
   border,
   className,
-  title,
+  hint,
   children,
 }: {
   /** show the content as stored: an identifier that is copied back into config or an API call */
@@ -110,27 +111,37 @@ export function Pill({
   tint?: string;
   border?: string;
   className?: string;
-  /** hover text, for a pill whose label is shorter than what it stands for */
-  title?: string;
+  /**
+   * what the pill stands for, where its label is shorter, as a `Tooltip`
+   * (#3655): the pill becomes focusable and shows it on hover, focus and tap
+   */
+  hint?: string;
   children: React.ReactNode;
 }) {
+  const { triggerProps, note } = useTooltip<HTMLSpanElement>(hint);
+  const hinted = !!hint;
   return (
-    <span
-      title={title}
-      className={cn(
-        "inline-flex items-center gap-1 rounded-sm px-2 py-0.5 font-mono text-2xs tracking-[0.03em]",
-        verbatim ? "normal-case" : "uppercase",
-        tone && TONE_CLASSES[tone],
-        className,
-      )}
-      style={{
-        color,
-        background: tint,
-        border: border ? `1px solid ${border}` : undefined,
-      }}
-    >
-      {children}
-    </span>
+    <>
+      <span
+        {...(hinted ? { ...triggerProps, tabIndex: 0 } : {})}
+        className={cn(
+          hinted &&
+            "cursor-help focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+          "inline-flex items-center gap-1 rounded-sm px-2 py-0.5 font-mono text-2xs tracking-[0.03em]",
+          verbatim ? "normal-case" : "uppercase",
+          tone && TONE_CLASSES[tone],
+          className,
+        )}
+        style={{
+          color,
+          background: tint,
+          border: border ? `1px solid ${border}` : undefined,
+        }}
+      >
+        {children}
+      </span>
+      {hinted && note}
+    </>
   );
 }
 

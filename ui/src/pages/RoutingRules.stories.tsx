@@ -3,29 +3,30 @@ import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import RoutingRules from "./RoutingRules";
 import {
-  Harness,
-  Toasted,
   cancelConfirmation,
   confirmDestructive,
   expectAllowed,
-  expectRefused,
+  expectAnalyticsUnavailable,
+  expectEmptyState,
+  expectForbidden,
   expectLoadError,
+  expectNoFalseEmpty,
+  expectRefused,
   expectSkeleton,
   expectToast,
+  type FetchStub,
+  Harness,
   json,
+  noteOf,
+  openOptions,
   pending,
   pickOption,
   PROJECT,
+  type Recorder,
   recording,
   scoped,
-  type FetchStub,
-  type Recorder,
-  expectEmptyState,
-  expectForbidden,
-  expectAnalyticsUnavailable,
-  expectNoFalseEmpty,
-  openOptions,
   stubClipboard,
+  Toasted,
 } from "./story-harness";
 import { atMobile, expectNoHorizontalOverflow } from "@/lib/story-viewport";
 import { onlyRestrictedDialled } from "@/lib/failure-classes";
@@ -2418,7 +2419,7 @@ export const FallbackTargetHasNoShare: Story = {
     await expect(targets.getAllByTestId("target-share")).toHaveLength(1);
     const badge = targets.getByTestId("fallback-badge");
     await expect(badge).toHaveTextContent("fallback");
-    await expect(badge.getAttribute("title")).toContain("throttled");
+    await expect(noteOf(badge)).toContain("throttled");
   },
 };
 

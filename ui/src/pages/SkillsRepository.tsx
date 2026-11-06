@@ -837,10 +837,7 @@ function SkillWorkbench({
           <span className="text-muted-foreground">
             {t("pages.skillsRepo.minimumRoleMeta", { role: skillRoleLabel(skill.minimum_role, t) })}
           </span>
-          <span
-            className="max-w-full truncate text-muted-foreground"
-            title={teamNames.length ? teamNames.join(", ") : undefined}
-          >
+          <span className="max-w-full break-words text-muted-foreground">
             {teamNames.length
               ? t("pages.skillsRepo.teamsMeta", { names: teamNames.join(", ") })
               : t("pages.skillsRepo.allOrgTeams")}

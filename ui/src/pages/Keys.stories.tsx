@@ -3,33 +3,35 @@ import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import Keys from "./Keys";
 import {
-  Harness,
+  answerDiscardPrompt,
   answerSecretClosePrompt,
   cancelConfirmation,
   clickWhenEnabled,
   confirmDestructive,
   expectClosesWithoutPrompting,
+  expectEmptyState,
+  expectListTable,
+  expectNoFalseEmpty,
   expectNoUxEvent,
   expectSheetClosed,
-  expectListTable,
   expectSkeleton,
   expectUxEvent,
+  type FetchStub,
+  Harness,
   json,
   openOptions,
   pending,
   pickOption,
-  recordUxEvents,
+  type Recorder,
   recording,
+  recordUxEvents,
   scoped,
   secretClosePrompt,
-  StaleSession,
   sheet,
+  StaleSession,
   stubClipboard,
-  type FetchStub,
-  type Recorder,
-  answerDiscardPrompt,
-  expectEmptyState,
-  expectNoFalseEmpty,
+  triggersWithNote,
+  triggerWithNote,
   uxEvents,
   withDocsBase,
 } from "./story-harness";
@@ -271,7 +273,7 @@ export const PlaygroundKeyIsLabelled: Story = {
     // #3651: the Playground's keys are hidden behind a count until asked for,
     // so the keys an operator made are what the list opens on
     await canvas.findByText("backend service");
-    await expect(canvas.queryByTitle(/expires on its own/)).toBeNull();
+    await expect(triggersWithNote(canvasElement, /expires on its own/)).toHaveLength(0);
     const toggle = canvas.getByRole("button", { name: "Show 1 playground key" });
     await expect(toggle).toHaveAttribute("aria-pressed", "false");
     await userEvent.click(toggle);
@@ -281,11 +283,11 @@ export const PlaygroundKeyIsLabelled: Story = {
     );
     // by its explanation, not its text: the control plane names the key itself
     // "Playground" too, so matching on the word alone finds the name as well
-    const badge = await canvas.findByTitle(/expires on its own/);
+    const badge = await waitFor(() => triggerWithNote(canvasElement, /expires on its own/));
     await expect(badge).toHaveTextContent("Playground");
 
     // and only that row carries it: a badge on every key would say nothing
-    await expect(canvas.getAllByTitle(/expires on its own/)).toHaveLength(1);
+    await expect(triggersWithNote(canvasElement, /expires on its own/)).toHaveLength(1);
     // the expiry the badge is explaining is on the row itself, in the house
     // short date rather than the raw timestamp
     const row = badge.closest('[style*="grid-template-columns"]');

@@ -3,8 +3,7 @@ import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import Account from "./Account";
 import {
-  Harness,
-  NEEDS_MEMBER,
+  answerDiscardPrompt,
   answerSecretClosePrompt,
   cancelConfirmation,
   clickWhenEnabled,
@@ -12,30 +11,33 @@ import {
   expectAllowed,
   expectAnalyticsUnavailable,
   expectClosesWithoutPrompting,
+  expectEmptyState,
+  expectInStatusRegion,
   expectLoadError,
+  expectNoFalseEmpty,
+  expectNoUxEvent,
   expectRefused,
+  expectSheetClosed,
+  expectSkeleton,
+  expectUxEvent,
+  type FetchStub,
+  Harness,
   json,
+  NEEDS_MEMBER,
   pending,
   pickOption,
+  type Recorder,
   recording,
+  recordUxEvents,
   scoped,
   secretClosePrompt,
   sheet,
   StaleSession,
   stubClipboard,
-  answerDiscardPrompt,
-  type FetchStub,
   Toasted,
-  expectEmptyState,
-  expectInStatusRegion,
-  expectNoFalseEmpty,
-  expectNoUxEvent,
-  expectSheetClosed,
-  expectSkeleton,
-  expectUxEvent,
-  recordUxEvents,
+  triggersWithNote,
+  triggerWithNote,
   uxEvents,
-  type Recorder,
   withDocsBase,
 } from "./story-harness";
 import type {
@@ -383,13 +385,12 @@ export const PlaygroundKeyIsLabelled: Story = {
     </Harness>
   ),
   play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement);
     // by its explanation rather than its text: the control plane names the key
     // "Playground" as well, so the word alone matches the card title too
-    const badge = await canvas.findByTitle(/expires on its own/);
+    const badge = await waitFor(() => triggerWithNote(canvasElement, /expires on its own/));
     await expect(badge).toHaveTextContent("Playground");
     // only the key that carries the purpose is labelled
-    await expect(canvas.getAllByTitle(/expires on its own/)).toHaveLength(1);
+    await expect(triggersWithNote(canvasElement, /expires on its own/)).toHaveLength(1);
   },
 };
 

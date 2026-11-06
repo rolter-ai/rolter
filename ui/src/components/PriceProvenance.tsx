@@ -43,7 +43,7 @@ export function PriceProvenanceBadge({
   if (!provenance) return null;
   if (provenance.kind === "override") {
     return (
-      <Badge tone="neutral" className={className} title={t("priceProvenance.overrideHint")}>
+      <Badge tone="neutral" className={className} hint={t("priceProvenance.overrideHint")}>
         {t("priceProvenance.override")}
       </Badge>
     );
@@ -55,7 +55,7 @@ export function PriceProvenanceBadge({
     t("priceProvenance.catalogueHint"),
   ].filter((line): line is string => !!line);
   return (
-    <Badge tone="info" className={className} title={lines.join("\n")}>
+    <Badge tone="info" className={className} hint={lines.join("\n")}>
       {t("priceProvenance.catalogue")}
     </Badge>
   );

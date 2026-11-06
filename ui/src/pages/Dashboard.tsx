@@ -851,9 +851,7 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
                                 className="h-2 w-2 flex-none rounded-[2px]"
                                 style={{ background: row.color as string }}
                               />
-                              <span className="truncate" title={v as string}>
-                                {v as string}
-                              </span>
+                              <span className="truncate">{v as string}</span>
                               {row.shared ? <OwnerOrgPill orgId={row.orgId as string} /> : null}
                             </span>
                           ),
@@ -963,7 +961,7 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
                         key: "model",
                         header: t("pages.dashboard.colModel"),
                         mono: true,
-                        render: (v) => <span title={v as string}>{v as string}</span>,
+                        render: (v) => <span>{v as string}</span>,
                       },
                       {
                         key: "status",

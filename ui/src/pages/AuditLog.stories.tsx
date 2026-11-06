@@ -5,16 +5,18 @@ import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import AuditLog from "./AuditLog";
 import {
-  Harness,
   captureFollowedLinks,
   expectEmptyState,
-  expectToast,
   expectGateAnswered,
   expectLoadError,
   expectNoFalseEmpty,
   expectSkeleton,
   expectTableStateInFrame,
+  expectToast,
+  type FetchStub,
+  Harness,
   json,
+  noteOf,
   openOptions,
   pending,
   pickOption,
@@ -25,9 +27,9 @@ import {
   STORY_DOWNLOAD_URL,
   stubSavePicker,
   Toasted,
+  triggerWithNote,
   withCapabilities,
   withExportTickets,
-  type FetchStub,
 } from "./story-harness";
 import type { AuditLogEntry, UserRow } from "@/lib/api";
 import { AuthProvider } from "@/lib/auth";
@@ -509,9 +511,9 @@ export const NamesASuperadminWithNoMembership: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     const operator = await canvas.findByText("root@example.com");
-    await expect(operator).toHaveAttribute("title", OPERATOR.id);
-    await expect(canvas.getByText("ada@example.com")).toHaveAttribute("title", MEMBER.id);
-    await expect(canvas.getByText("Not in this org")).toHaveAttribute("title", STRANGER);
+    await expect(noteOf(operator)).toBe(OPERATOR.id);
+    await expect(noteOf(canvas.getByText("ada@example.com"))).toBe(MEMBER.id);
+    await expect(noteOf(canvas.getByText("Not in this org"))).toBe(STRANGER);
     await orgScope.expectSent("GET", "/orgs/org-1/users?include_unassigned=true");
     // the deployment's account list is for the other scope, not asked here
     await expectGateAnswered();
@@ -547,8 +549,8 @@ export const NamesASuperadminWithNoMembershipInTheWholeDeployment: Story = {
     await deploymentScope.expectSent("GET", "/api/v1/audit-log?");
     await deploymentScope.expectSent("GET", "/api/v1/users");
     const operator = await canvas.findByText("root@example.com");
-    await expect(operator).toHaveAttribute("title", OPERATOR.id);
-    await expect(canvas.getByText("Unknown account")).toHaveAttribute("title", STRANGER);
+    await expect(noteOf(operator)).toBe(OPERATOR.id);
+    await expect(noteOf(canvas.getByText("Unknown account"))).toBe(STRANGER);
 
     const filter = canvas.getByRole("combobox", { name: "Filter by actor" });
     const listbox = await openOptions(filter);
@@ -614,11 +616,11 @@ export const NamesAnActorFromAnotherOrgInTheWholeDeployment: Story = {
     await acrossOrgs.expectSent("GET", "/api/v1/users");
 
     const grace = await canvas.findByText("grace@other.example");
-    await expect(grace).toHaveAttribute("title", ELSEWHERE.id);
+    await expect(noteOf(grace)).toBe(ELSEWHERE.id);
     await expect(canvas.getByText("budget.update")).toBeVisible();
-    await expect(canvas.getByText("ada@example.com")).toHaveAttribute("title", MEMBER.id);
-    await expect(canvas.getByText("root@example.com")).toHaveAttribute("title", OPERATOR.id);
-    await expect(canvas.getByText("Unknown account")).toHaveAttribute("title", STRANGER);
+    await expect(noteOf(canvas.getByText("ada@example.com"))).toBe(MEMBER.id);
+    await expect(noteOf(canvas.getByText("root@example.com"))).toBe(OPERATOR.id);
+    await expect(noteOf(canvas.getByText("Unknown account"))).toBe(STRANGER);
     await expect(canvas.queryByText("44444444")).toBeNull();
 
     const filter = canvas.getByRole("combobox", { name: "Filter by actor" });
@@ -660,9 +662,9 @@ export const AFailedDeploymentListFallsBackToTheOrgsPeople: Story = {
     await listFails.expectSent("GET", "/api/v1/users");
 
     await expect(await canvas.findByText("budget.update")).toBeVisible();
-    await expect(canvas.getByText("root@example.com")).toHaveAttribute("title", OPERATOR.id);
-    await expect(canvas.getByText("ada@example.com")).toHaveAttribute("title", MEMBER.id);
-    await expect(canvas.getByTitle(ELSEWHERE.id)).toHaveTextContent("Unknown account");
+    await expect(noteOf(canvas.getByText("root@example.com"))).toBe(OPERATOR.id);
+    await expect(noteOf(canvas.getByText("ada@example.com"))).toBe(MEMBER.id);
+    await expect(triggerWithNote(canvasElement, ELSEWHERE.id)).toHaveTextContent("Unknown account");
     await expect(canvas.queryByText("grace@other.example")).toBeNull();
     await expect(canvas.queryByRole("alert")).toBeNull();
     const listbox = await openOptions(canvas.getByRole("combobox", { name: "Filter by actor" }));
@@ -690,7 +692,7 @@ export const TheOrgsPeopleStayNamedWhileTheDeploymentListLoads: Story = {
     await expect(await canvas.findByText("budget.update")).toBeVisible();
     await expect(canvas.getByText("root@example.com")).toBeVisible();
     await expect(canvas.getByText("ada@example.com")).toBeVisible();
-    await expect(canvas.getByTitle(ELSEWHERE.id)).toHaveTextContent("Unknown account");
+    await expect(triggerWithNote(canvasElement, ELSEWHERE.id)).toHaveTextContent("Unknown account");
     await expect(canvas.getByRole("combobox", { name: "Filter by actor" })).toBeVisible();
   },
 };
@@ -707,7 +709,7 @@ export const AnAdminDoesNotAskForUnassignedAccounts: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(await canvas.findByText("ada@example.com")).toBeVisible();
-    await expect(canvas.getByTitle(OPERATOR.id)).toHaveTextContent("Not in this org");
+    await expect(triggerWithNote(canvasElement, OPERATOR.id)).toHaveTextContent("Not in this org");
     await expect(canvas.queryByText("root@example.com")).toBeNull();
     await expectGateAnswered();
     await expect(asAdmin.calls.filter((c) => c.url.includes("include_unassigned"))).toHaveLength(0);

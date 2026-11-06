@@ -375,7 +375,7 @@ export default function Keys() {
                     which the row says rather than leaving a reader to infer it
                     from a short expiry (#944) */}
                 {key.purpose === PLAYGROUND_PURPOSE && (
-                  <Badge tone="info" title={t("pages.virtualKeys.playgroundHint")}>
+                  <Badge tone="info" hint={t("pages.virtualKeys.playgroundHint")}>
                     {t("pages.virtualKeys.playground")}
                   </Badge>
                 )}

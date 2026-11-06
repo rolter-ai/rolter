@@ -8,6 +8,7 @@ import {
   handRolledSwitchRows,
   duplicatedShapes,
   importedPrimitives,
+  rawTitles,
   readPrimitiveNames,
   staleShapes,
   stripComments,
@@ -97,6 +98,52 @@ describe("the untyped-button rule", () => {
     for (const source of sources) {
       expect(checkSource(source, SCREEN).violations).toEqual([]);
     }
+  });
+});
+
+describe("the raw-title rule", () => {
+  it("fails a title on a text element, reported where its tag opens", () => {
+    const source = `const f = () => (\n  <span\n    className="x"\n    title={row.id}\n  >\n    {row.id.slice(0, 8)}\n  </span>\n);`;
+    const [violation] = checkSource(source, SCREEN).violations;
+    expect(violation).toMatchObject({ rule: "raw-title", line: 2, found: "<span title>" });
+    expect(describeViolation(violation!)).toContain("Tooltip");
+  });
+
+  it("reads every text element the screens use, and ListCell", () => {
+    for (const tag of ["div", "p", "time", "li", "td", "code", "ListCell"]) {
+      expect(rawTitles(`<${tag} title="x">y</${tag}>`)).toEqual([{ index: 0, tag }]);
+    }
+  });
+
+  it("leaves named controls, other components and look-alike attributes alone", () => {
+    const sources = [
+      `<button type="button" title="Delete">x</button>`,
+      `<a href="/docs" title="Documentation">x</a>`,
+      `<iframe title="Preview" src={url} />`,
+      `<EmptyState title={t("x")} />`,
+      `<SheetHeader title={team.name} />`,
+      `<span data-title="x" aria-title="y">z</span>`,
+      `<Tooltip content={row.id}>{row.id.slice(0, 8)}</Tooltip>`,
+      `<spans title="x" />`,
+    ];
+    for (const source of sources) {
+      expect(checkSource(source, SCREEN).violations).toEqual([]);
+    }
+  });
+
+  it("does not stop at a > inside a handler before the title", () => {
+    const source = `<span onClick={() => a > b} title="x">y</span>`;
+    expect(checkSource(source, SCREEN).violations.map((v) => v.rule)).toEqual(["raw-title"]);
+  });
+
+  it("is waived by a reason above the tag, and exempts the primitives", () => {
+    const waived = `// ui-primitives-allow: one bar of a strip\n<div\n  title="x"\n/>`;
+    const { violations, waivers } = checkSource(waived, SCREEN);
+    expect(violations).toEqual([]);
+    expect(waivers).toMatchObject([{ rule: "raw-title", line: 2 }]);
+    expect(checkSource(`<span title="x">y</span>`, "src/components/ui/x.tsx").violations).toEqual(
+      [],
+    );
   });
 });
 

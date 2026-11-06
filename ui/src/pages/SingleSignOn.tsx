@@ -690,7 +690,7 @@ function ProviderCard({
                 exchange; without this badge the first symptom is a failed
                 login, long after whoever registered it has moved on (#1231) */}
             {!provider.has_client_secret && (
-              <Badge tone="warning" title={t("pages.sso.providers.noSecretHint")}>
+              <Badge tone="warning" hint={t("pages.sso.providers.noSecretHint")}>
                 {t("pages.sso.providers.noSecret")}
               </Badge>
             )}

@@ -2,6 +2,7 @@ import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, within } from "storybook/test";
 
 import { RouteTargetList } from "./RouteTargetList";
+import { noteOf } from "@/pages/story-harness";
 
 const FLEET = [
   { provider: "vllm-a", upstream: "meta-llama/Llama-3.1-70B", weight: 1 },
@@ -59,7 +60,7 @@ export const WithAFallbackTarget: Story = {
     await expect(lines[1]).toHaveTextContent(/vllm-c.*67% of traffic/);
     await expect(lines[2]).toHaveTextContent(/openai-burst.*fallback/);
     await expect(lines[2]).not.toHaveTextContent(/of traffic/);
-    await expect(within(lines[2]).getByTestId("fallback-badge").getAttribute("title")).toContain(
+    await expect(noteOf(within(lines[2]).getByTestId("fallback-badge"))).toContain(
       "throttled, timeout",
     );
   },

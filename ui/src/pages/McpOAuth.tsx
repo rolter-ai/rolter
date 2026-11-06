@@ -457,10 +457,7 @@ export function OAuthGrants() {
                     <ListCell className="grid">
                       <Scopes scopes={g.scopes} />
                     </ListCell>
-                    <ListCell
-                      className="whitespace-nowrap font-mono text-xs text-[color:var(--text-secondary)]"
-                      title={g.granted_at}
-                    >
+                    <ListCell className="whitespace-nowrap font-mono text-xs text-[color:var(--text-secondary)]">
                       {fmt.dateTime(g.granted_at)}
                     </ListCell>
                     <ListCell className="text-xs text-[color:var(--text-secondary)]">
@@ -937,10 +934,7 @@ export function AuthSessions() {
                         ? fmt.relative(s.last_used_at, now)
                         : t("pages.mcpOAuth.never")}
                     </ListCell>
-                    <ListCell
-                      className="whitespace-nowrap font-mono text-xs text-[color:var(--text-secondary)]"
-                      title={s.expires_at}
-                    >
+                    <ListCell className="whitespace-nowrap font-mono text-xs text-[color:var(--text-secondary)]">
                       {fmt.dateTime(s.expires_at)}
                     </ListCell>
                     <ListCell className="flex flex-wrap items-center gap-1.5">

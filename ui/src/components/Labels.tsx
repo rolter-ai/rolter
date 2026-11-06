@@ -68,7 +68,7 @@ export function LabelChip({ label }: { label: LabelRow }) {
       data-testid={`label-${label.source}`}
       // an observation is only true of the moment it was made, so the tooltip
       // says when and what rather than presenting it as a standing fact
-      title={
+      hint={
         auto
           ? [label.observation, observed].filter(Boolean).join(" · ") || t("labels.autoTitle")
           : undefined

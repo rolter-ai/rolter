@@ -382,7 +382,7 @@ function DirectoryCard({
               <Badge tone="neutral">{t("pages.ldap.directory.disabled")}</Badge>
             )}
             {!directory.require_tls && (
-              <Badge tone="warning" title={t("pages.ldap.directory.noTlsHint")}>
+              <Badge tone="warning" hint={t("pages.ldap.directory.noTlsHint")}>
                 {t("pages.ldap.directory.noTls")}
               </Badge>
             )}

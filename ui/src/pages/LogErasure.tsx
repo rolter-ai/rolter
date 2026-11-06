@@ -345,16 +345,11 @@ function LogErasureScreen() {
               </ListCell>
               <ListCell className="min-w-0">
                 <div className="text-sm">{t(SCOPE_KEY[row.scope_kind])}</div>
-                <div
-                  className="truncate font-mono text-xs text-muted-foreground"
-                  title={row.scope_id}
-                >
+                <div className="truncate font-mono text-xs text-muted-foreground">
                   {row.scope_id}
                 </div>
               </ListCell>
-              <ListCell className="min-w-0 truncate text-sm" title={row.reason}>
-                {row.reason}
-              </ListCell>
+              <ListCell className="min-w-0 truncate text-sm">{row.reason}</ListCell>
               <ListCell className="text-xs text-muted-foreground">
                 {row.include_logs
                   ? t("pages.logErasure.removesAll")

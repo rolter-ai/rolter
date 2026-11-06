@@ -9,16 +9,17 @@ import {
   shellStubWithStability,
 } from "./pages/shell-harness";
 import {
-  ORG,
-  PROJECT,
-  TEAM,
   confirmation,
   expectForbidden,
-  json,
-  pickOption,
-  recording,
-  withCapabilities,
   type FetchStub,
+  json,
+  ORG,
+  pickOption,
+  PROJECT,
+  recording,
+  TEAM,
+  triggerWithNote,
+  withCapabilities,
 } from "./pages/story-harness";
 import type { InvocationRow, ProviderRow, SubsystemStability, VirtualKeyRow } from "@/lib/api";
 import { DEFAULT_LOCALE, LOCALE_NAMES, setLocale } from "@/lib/i18n";
@@ -743,7 +744,10 @@ export const ExperimentalMarker: Story = {
     await expect(badge).toBeVisible();
     // its note is the catalog's copy for the subsystem id, not the English
     // prose the stub sent on the wire (#1401)
-    await expect(badge).toHaveAttribute("title", en.stability.notes.skills_repository);
+    await expect(badge.closest("[title]")).toHaveAttribute(
+      "title",
+      en.stability.notes.skills_repository,
+    );
     // and the marker is the exception it claims to be: a sibling the answer
     // did not name carries nothing
     const plain = within(rail).getByRole("button", { name: nav.playground });
@@ -768,8 +772,14 @@ export const ExperimentalMarkerTranslated: Story = {
       name: `${ru.nav["skills-repo"]} ${ru.shell.experimental}`,
     });
     const badge = within(marked).getByText(ru.shell.experimental);
-    await expect(badge).toHaveAttribute("title", ru.stability.notes.skills_repository);
-    await expect(badge).not.toHaveAttribute("title", EXPERIMENTAL_SUBSYSTEM.note);
+    await expect(badge.closest("[title]")).toHaveAttribute(
+      "title",
+      ru.stability.notes.skills_repository,
+    );
+    await expect(badge.closest("[title]")).not.toHaveAttribute(
+      "title",
+      EXPERIMENTAL_SUBSYSTEM.note,
+    );
   },
 };
 
@@ -792,7 +802,7 @@ export const ExperimentalMarkerWithoutNote: Story = {
     });
     const badge = within(marked).getByText(en.shell.experimental);
     await expect(badge).toBeVisible();
-    await expect(badge).not.toHaveAttribute("title");
+    await expect(badge.closest("[title]")).toBeNull();
   },
 };
 
@@ -1069,7 +1079,7 @@ function keysKeepTheirNames(locale: "en" | "ru") {
         IDENTIFYING_FLOOR - 1,
       );
       // the badge is beside the name or under it, and inside the column either way
-      await expectInFrame(within(row).getByTitle(cat.pages.virtualKeys.playgroundHint), cell);
+      await expectInFrame(triggerWithNote(row, cat.pages.virtualKeys.playgroundHint), cell);
       const longName = "ci-nightly-regression-runner-eu-west";
       const long = within(table).getByText(longName);
       await userEvent.hover(long);

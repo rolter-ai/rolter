@@ -11,12 +11,14 @@ import {
   expectSkeleton,
   expectTableStateInFrame,
   expectToast,
+  type FetchStub,
   Harness as ScreenHarness,
   json,
+  noteOf,
   recording,
-  Toasted,
-  type FetchStub,
   type StoryRole,
+  Toasted,
+  triggerWithNote,
 } from "./story-harness";
 import type { ClusterNodeRow } from "@/lib/api";
 import ru from "@/lib/i18n/locales/ru.json";
@@ -121,8 +123,10 @@ export const SnapshotFormats: Story = {
     const refused = canvas.getByText("Refused");
     await expect(refused).toBeVisible();
     await expect(getComputedStyle(refused).color).toBe(resolveColorToken("--status-danger-text"));
-    await expect(refused.parentElement).toHaveAttribute("title", "Reads snapshot formats 3 to 3");
-    await expect(canvas.getByTitle("Reads snapshot formats 1 to 1")).toHaveTextContent("1");
+    await expect(noteOf(refused)).toBe("Reads snapshot formats 3 to 3");
+    await expect(triggerWithNote(canvasElement, "Reads snapshot formats 1 to 1")).toHaveTextContent(
+      "1",
+    );
   },
 };
 
