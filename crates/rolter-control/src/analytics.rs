@@ -838,6 +838,7 @@ async fn summary(
                 {USAGE_UNKNOWN} as usage_unknown_requests, \
                 {CACHE_HITS} as cache_hit_requests, \
                 {ERRORS} as errors, \
+                {FAILURES} as failures, \
                 {AVG_LATENCY} as avg_latency_ms, \
                 {P95_LATENCY} as p95_latency_ms \
          from request_logs where {WHERE_WINDOW} and {ROW_VISIBLE} and {ROW_FILTERS} \
@@ -956,6 +957,18 @@ pub(crate) const CACHE_HITS: &str = "round(sumIf(sample_weight, cache_hit = 1))"
 /// filter ([`ERROR_STATUS`]): status `0` counts, so a request that never got an
 /// answer is in the error totals and rates (#3294).
 pub(crate) const ERRORS: &str = "round(sumIf(sample_weight, (status = 0 or status >= 400)))";
+/// Requests that failed on the deployment's side: a `5xx`, or status `0`, a
+/// request that never got an answer. One spelling for the `error_rate` alert
+/// signal and the dashboard's error rate, so an alert on it and the tile agree
+/// (#3661). A `4xx` is in [`ERRORS`] and not here: it is the caller's own
+/// mistake (an unknown model, a rejected key, a rate limit), and counting it
+/// made a typo in a client look like a failing fleet. Parenthesised because it
+/// is spliced after `and`.
+// the alert signal is its only caller outside the tests
+#[cfg(any(feature = "postgres", test))]
+pub(crate) const FAILURE_STATUS: &str = "(status = 0 or status >= 500)";
+/// The requests of [`FAILURE_STATUS`], scaled by the sampling weight.
+pub(crate) const FAILURES: &str = "round(sumIf(sample_weight, (status = 0 or status >= 500)))";
 
 /// Per-bucket time series of requests, tokens and cost.
 async fn timeseries(
@@ -1908,6 +1921,24 @@ pub(crate) mod testing {
 
 #[cfg(test)]
 mod tests {
+    // the dashboard's error rate and the `error_rate` alert are one predicate,
+    // and a 4xx is in the error total but never a failure (#3661)
+    #[test]
+    fn failures_are_the_alert_signal_predicate() {
+        assert!(FAILURES.contains(FAILURE_STATUS), "{FAILURES}");
+        assert!(!FAILURE_STATUS.contains("400"), "{FAILURE_STATUS}");
+        assert!(ERRORS.contains("status >= 400"), "{ERRORS}");
+        let src = include_str!("analytics.rs");
+        let summary = &src
+            [src.find("async fn summary(").unwrap()..src.find("fn cache_measured_terms").unwrap()];
+        assert!(
+            summary.contains("{FAILURES} as failures"),
+            "the summary sends no failures"
+        );
+        let alerting = include_str!("alerting.rs");
+        assert!(alerting.contains("crate::analytics::FAILURE_STATUS"));
+    }
+
     use super::*;
     use std::collections::BTreeSet;
     use std::time::Duration;
@@ -2061,6 +2092,7 @@ mod tests {
             COST,
             UNPRICED,
             ERRORS,
+            FAILURES,
         ] {
             assert!(expr.contains("sample_weight"), "{expr}");
         }

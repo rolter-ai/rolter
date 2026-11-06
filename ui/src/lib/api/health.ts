@@ -56,16 +56,52 @@ export interface TimelineRow {
   timeouts: number;
 }
 
+/**
+ * ClickHouse quotes 64-bit integers in its JSON output, so the rollups' counters
+ * arrive as strings (`"errors":"2"`) beside ratios that arrive as numbers. Every
+ * figure is read through `Number` here, once, so `errors + timeouts` adds
+ * rather than concatenates and `sla_breached === 1` holds for `"1"` (#3641).
+ */
+function numeric<T>(rows: T[] | undefined, keys: readonly (keyof T)[]): T[] {
+  return (rows ?? []).map((row) => {
+    const out = { ...row };
+    for (const k of keys) out[k] = Number(row[k] ?? 0) as T[typeof k];
+    return out;
+  });
+}
+
+const UPTIME_FIGURES = [
+  "events",
+  "ok",
+  "errors",
+  "timeouts",
+  "uptime",
+  "failure_rate",
+  "error_budget_burn",
+  "sla_breached",
+] as const satisfies readonly (keyof UptimeRow)[];
+const MTTR_FIGURES = ["mttr_seconds", "incidents"] as const satisfies readonly (keyof MttrRow)[];
+const TIMELINE_FIGURES = [
+  "events",
+  "ok",
+  "errors",
+  "timeouts",
+] as const satisfies readonly (keyof TimelineRow)[];
+
 export function fetchUptime(sla = 0.99): Promise<UptimeRow[]> {
-  return getJson<DataEnvelope<UptimeRow>>(`/api/v1/health/uptime?sla=${sla}`).then((r) => r.data);
+  return getJson<DataEnvelope<UptimeRow>>(`/api/v1/health/uptime?sla=${sla}`).then((r) =>
+    numeric(r.data, UPTIME_FIGURES),
+  );
 }
 
 export function fetchMttr(): Promise<MttrRow[]> {
-  return getJson<DataEnvelope<MttrRow>>("/api/v1/health/mttr").then((r) => r.data);
+  return getJson<DataEnvelope<MttrRow>>("/api/v1/health/mttr").then((r) =>
+    numeric(r.data, MTTR_FIGURES),
+  );
 }
 
 export function fetchHealthTimeline(bucket = "hour"): Promise<TimelineRow[]> {
-  return getJson<DataEnvelope<TimelineRow>>(`/api/v1/health/timeline?bucket=${bucket}`).then(
-    (r) => r.data,
+  return getJson<DataEnvelope<TimelineRow>>(`/api/v1/health/timeline?bucket=${bucket}`).then((r) =>
+    numeric(r.data, TIMELINE_FIGURES),
   );
 }

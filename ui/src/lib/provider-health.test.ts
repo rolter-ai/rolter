@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 
 import type { UptimeRow } from "@/lib/api";
-import { groupByProvider, rollUpProviders } from "./provider-health";
+import { groupByProvider, headline, rollUpProviders } from "./provider-health";
 
 const row = (provider: string, uptime: number, over: Partial<UptimeRow> = {}): UptimeRow => ({
   provider,
@@ -76,5 +76,42 @@ describe("two organizations sharing a provider name", () => {
       ["org-b", "openai", 1],
     ]);
     expect(rollUpProviders(groups.flatMap((g) => (g.overall ? [g.overall] : []))).total).toBe(2);
+  });
+});
+
+// probes ask whether the provider answers, traffic whether it answers this
+// deployment's requests; with no credential every probe passes and every
+// request fails, and the card must not read "within SLA" (#3648)
+describe("a provider whose probes pass while its traffic fails", () => {
+  const rows = [
+    row("openai", 1),
+    row("openai", 0, {
+      grain: "target",
+      target_id: "gpt-4o",
+      sources: ["passive"],
+      events: 4,
+      ok: 0,
+      errors: 4,
+      sla_breached: 1,
+    }),
+  ];
+
+  it("keeps the probe figure and reports the traffic beside it", () => {
+    const [group] = groupByProvider(rows);
+    const head = headline(group);
+    expect(head.uptime).toBe(1);
+    expect(head.derived).toBe(false);
+    expect(head.traffic).toEqual({ uptime: 0, events: 4, failures: 4 });
+  });
+
+  it("is in breach, and not counted as up", () => {
+    const [group] = groupByProvider(rows);
+    expect(headline(group).breached).toBe(true);
+    expect(rollUpProviders(rows)).toMatchObject({ total: 1, up: 0, breaching: ["openai"] });
+  });
+
+  it("has no traffic figure when only probes report", () => {
+    const [group] = groupByProvider([row("openai", 1)]);
+    expect(headline(group).traffic).toBeUndefined();
   });
 });

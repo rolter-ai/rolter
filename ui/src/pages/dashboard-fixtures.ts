@@ -24,6 +24,8 @@ export const SUMMARY = {
   // a quarter of the requests were answered from a cache
   cache_hit_requests: 33,
   errors: 7,
+  // every error failed on the deployment's side; a caller's 4xx is in `errors` only (#3661)
+  failures: 7,
   avg_latency_ms: 214.6,
   p50_latency_ms: 210,
   p95_latency_ms: 980,

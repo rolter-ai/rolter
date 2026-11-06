@@ -172,13 +172,13 @@ Each card, and each target inside it, is in one of three states:
 | SLA at risk | The 7 days still meet the SLA, but more than 1% of events in the last two hours failed, so the error budget is being spent faster than the SLA allows. |
 | within SLA  | The 7 days meet the SLA, and so do the last two hours.                                                                                                 |
 
-The last two hours are the two newest hourly buckets in the timeline. A probed provider is judged on its own probes and status-page polls. A provider with no probes has no events of its own, so its card is rolled up from its targets and shows the worst of their states.
+The last two hours are the two newest hourly buckets in the timeline. A probed provider is judged on its own probes and status-page polls **and** on the traffic through its targets, and takes the worse of the two: a probe of a provider's models endpoint passes even when the provider has no usable key and refuses every real request, so a card that went by its probes alone read "within SLA" through an outage. Such a card shows both figures, the probes' uptime first and the traffic's beside it, and its **Failures** line counts each apart, since a probe and a request are not the same unit. A provider with no probes has no events of its own, so its card is rolled up from its targets and shows the worst of their states.
 
 **Models** reads the same three states for the targets of each route: the catalog row counts the targets below SLA, or at risk when none are below, and the expanded list says "SLA at risk" in words beside the uptime. Where the timeline cannot be read, a target is judged on the 7-day rollup alone.
 
 **Routing Rules** puts the same state under each target on its cards.
 
-**Error budget burn** is the 7-day failure rate as a share of the 1% the SLA allows. Above 100% is a breach.
+**Error budget burn** is the 7-day failure rate as a share of the 1% the SLA allows, for the worst of the card's sources. Above 100% is a breach, and the card says the budget is exhausted and by how many times over, such as _exhausted · ×100_, rather than printing 10 000 %. Each bar of the timeline is one hourly bucket, captioned with its clock time (and its day when it is not today), so a provider seen in one hour only has a single bar rather than one stretched across the card.
 
 ## Gateway liveness endpoint
 
