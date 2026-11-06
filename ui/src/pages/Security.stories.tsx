@@ -1009,7 +1009,13 @@ export const EmptyListsSayNotSet: Story = {
       const field = await canvas.findByLabelText(label);
       await expect(field).toHaveValue("");
       await expect(field).toHaveAttribute("placeholder", "Not set");
-      await expect(field).toHaveAccessibleDescription(new RegExp(`For example: ${example}`));
+      // the description holds the example as text: read it from the elements
+      // the field names, rather than building a pattern out of a hostname
+      const described = (field.getAttribute("aria-describedby") ?? "")
+        .split(/\s+/)
+        .map((id) => document.getElementById(id)?.textContent ?? "")
+        .join(" ");
+      await expect(described).toContain(`For example: ${example}`);
     }
   },
 };
