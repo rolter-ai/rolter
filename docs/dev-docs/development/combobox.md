@@ -176,8 +176,8 @@ two keystrokes, and the plain path is the one every other story exercises.
 
 What is typed is matched as a subsequence, not a substring, and the matches are
 ranked best first (#3058). The scorer is `fuzzyMatch` in `ui/src/lib/fuzzy.ts`,
-the same one the command palette uses, so `oai` finds `openai` and `rr` finds
-`Routing Rules`:
+the same one the command palette uses, so `oai` finds `openai` and `mc` finds
+`Model Catalog`:
 
 - a hit at the head of the label, or on a word boundary (`-`, `_`, `/`, `.`,
   space), beats one inside a word

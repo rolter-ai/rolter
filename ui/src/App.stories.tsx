@@ -484,11 +484,11 @@ export const FoldedRailOpensAGroup: Story = {
       "aria-current",
       "page",
     );
-    await userEvent.click(flyout.getByRole("link", { name: nav["routing-rules"] }));
+    await userEvent.click(flyout.getByRole("link", { name: nav["model-catalog"] }));
 
     await waitFor(() =>
       expect(
-        canvas.getByRole("heading", { level: 1, name: screens["routing-rules"].title }),
+        canvas.getByRole("heading", { level: 1, name: screens["model-catalog"].title }),
       ).toBeVisible(),
     );
     await waitFor(() =>

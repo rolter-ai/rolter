@@ -1,7 +1,7 @@
 ---
 title: "Circuit-Breaker State API for the Rolter Gateway Fleet"
 sidebarTitle: "Breaker state"
-description: "GET /api/v1/breaker-state reports which targets have an open or half-open circuit breaker on which gateways — the live fleet view the dashboard shows on Provider Health, Models and Routing Rules."
+description: "GET /api/v1/breaker-state reports which targets have an open or half-open circuit breaker on which gateways — the live fleet view the dashboard shows on Provider Health and Model Catalog."
 ---
 
 Each rolter gateway keeps its own circuit breakers in memory, one set per replica
@@ -9,8 +9,8 @@ Each rolter gateway keeps its own circuit breakers in memory, one set per replic
 plane's picture of all of them at once: for every `(model, target)` that some gateway holds a
 breaker entry for, the state it is in and how many gateways agree.
 
-The dashboard reads it for the **Provider Health** screen and for the target rows of **Models** and
-**Routing Rules**. It is a different signal from the 7-day SLA verdict on Provider Health, which
+The dashboard reads it for the **Provider Health** screen and for the target rows of **Model Catalog**.
+It is a different signal from the 7-day SLA verdict on Provider Health, which
 comes from request history: this one is what the gateways are doing _right now_.
 
 ## How the control plane learns it

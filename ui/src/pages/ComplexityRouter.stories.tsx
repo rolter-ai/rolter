@@ -210,7 +210,7 @@ export const Empty: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expectEmptyState(canvasElement, /No routes to give a policy/);
-    await expect(canvas.getByRole("link", { name: /Open routing rules/ })).toBeInTheDocument();
+    await expect(canvas.getByRole("link", { name: /Open Model Catalog/ })).toBeInTheDocument();
   },
 };
 

@@ -453,7 +453,7 @@ function RoutesTable({
               <GatedButton
                 gate="route:create"
                 control="config-routes-empty"
-                onClick={() => navigate("/routing-rules")}
+                onClick={() => navigate("/model-catalog")}
               >
                 {t("pages.config.tables.addRoute")}
               </GatedButton>

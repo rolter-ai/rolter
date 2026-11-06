@@ -24,12 +24,11 @@ await step("T1.2", "the team's traffic and bodies, nothing of other teams'", asy
   return ["pass", `${rows.length} rows, all team default, ${withBodies} with bodies; LLM Logs screen: ${s.state}`];
 }, page);
 
-await step("T1.3", "Model Catalog and Routing Rules show the team's routes", async () => {
+await step("T1.3", "Model Catalog shows the team's routes", async () => {
   const api200 = (await api("GET", `/api/v1/projects/${t.project.id}/routes`, token)).status;
   const cat = await screenState(page, "model-catalog");
-  const rr = await screenState(page, "routing-rules");
-  if (rr.state !== "ok") return ["bug", `API routes → ${api200}; Model Catalog ${cat.state}; Routing Rules ${rr.state} — no project in scope (#1846)`];
-  return ["pass", `catalog ${cat.state}, routing rules ${rr.state}`];
+  if (cat.state !== "ok") return ["bug", `API routes → ${api200}; Model Catalog ${cat.state} — no project in scope (#1846)`];
+  return ["pass", `catalog ${cat.state}`];
 }, page);
 
 let projectId = "";

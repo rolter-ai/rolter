@@ -59,8 +59,8 @@ const RANGES = [
 // column; scope-level types (org/team/project) have no dedicated page
 const TARGET_PATH: Record<string, string> = {
   provider: "/providers",
-  route: "/routing-rules",
-  route_target: "/routing-rules",
+  route: "/model-catalog",
+  route_target: "/model-catalog",
   virtual_key: "/virtual-keys",
   user: "/gov-users",
   membership: "/gov-users",

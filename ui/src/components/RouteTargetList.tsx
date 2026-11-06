@@ -7,6 +7,7 @@ import { healthPresentation } from "@/components/target-health";
 import { useFormat } from "@/lib/i18n/format";
 import { HEALTH_SLA, type RouteTargetView } from "@/lib/route-targets";
 import { isRestricted } from "@/lib/failure-classes";
+import { shareBarColor } from "@/lib/share-bars";
 import { usesWeights } from "@/lib/strategies";
 import { cn } from "@/lib/utils";
 
@@ -14,8 +15,9 @@ import { cn } from "@/lib/utils";
  * Where a route's traffic goes, one line per target (#1979).
  *
  * A weight is shown as a share of traffic only under a strategy that reads
- * weights. Under any other strategy the gateway never consults them, so the
- * list says so once instead of printing a split that does not happen.
+ * weights, as a figure and a bar. Under any other strategy the gateway never
+ * consults them, so the list says so once instead of printing a split that
+ * does not happen.
  */
 export function RouteTargetList({
   id,
@@ -52,6 +54,7 @@ export function RouteTargetList({
     "minmax(0,1.5fr)",
     "5.5rem",
     weighted && "7.5rem",
+    weighted && "6rem",
     health && "12.5rem",
     breakers && "max-content",
   ]
@@ -95,6 +98,27 @@ export function RouteTargetList({
                   {t("routeTargets.share", {
                     share: fmt.percent(Math.max(tg.weight, 0) / total, 0),
                   })}
+                </span>
+              ))}
+            {/* a fallback takes no ordinary traffic, so it draws no bar */}
+            {weighted &&
+              (isRestricted(tg.takesOver) ? (
+                <span />
+              ) : (
+                <span
+                  data-testid="target-share"
+                  className="h-[5px] overflow-hidden rounded-full bg-[color:var(--surface-subtle)]"
+                >
+                  <span
+                    className="block h-full rounded-full"
+                    style={{
+                      // a CSS length, never a localized percentage
+                      width: `${Math.round((Math.max(tg.weight, 0) / total) * 100)}%`,
+                      // the nth target takes the nth categorical token, so no
+                      // route is red by default (#2139, #3658)
+                      background: shareBarColor(i),
+                    }}
+                  />
                 </span>
               ))}
             {health && (

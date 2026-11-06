@@ -71,7 +71,7 @@ open_secs = 60
 Every gateway replica keeps its own breakers, so one replica can have a target open while another still
 sends it traffic. When the gateways run against a control plane, each one reports its breaker state
 every 10 seconds, and the dashboard shows the fleet's picture on **Provider Health** and on the target
-rows of **Models** and **Routing Rules**: a target is marked when it is open or probing on at least one
+rows of **Model Catalog**: a target is marked when it is open or probing on at least one
 gateway, with how many. The same data is served by [`GET /api/v1/breaker-state`](/api/breaker-state).
 A target the view does not list is closed everywhere.
 

@@ -478,7 +478,7 @@
     "routing": {
       "strategy": "Strategy",
       "strategyInfo": "How the gateway picks a target for each request. The load-balancing docs describe what each strategy does.",
-      "editVariants": "Edit the variants on Routing Rules"
+      "editVariants": "Edit the variants"
     },
     "targets": {
       "title": "Targets",
@@ -741,7 +741,7 @@
       "category": "A category is 1 to 64 lowercase letters, digits, _ or -.",
       "allRestricted": "Every target is a fallback, so the route could never dial anything. Leave at least one target ordinary.",
       "variantsAllRestricted": "Every target is a fallback: a route with variants dials only the variants' targets, so this one could never dial anything. Leave at least one variant target ordinary.",
-      "variantsAllRestrictedElsewhere": "Every target is a fallback: a route with variants dials only the variants' targets, and every one of this route's is a fallback, so it could never dial anything. Give a variant an ordinary target on Routing Rules.",
+      "variantsAllRestrictedElsewhere": "Every target is a fallback: a route with variants dials only the variants' targets, and every one of this route's is a fallback, so it could never dial anything. Give a variant an ordinary target under Edit targets and variants.",
       "refused": "The control plane refused this set: a class it does not know, or one listed twice."
     }
   },
@@ -777,7 +777,6 @@
     "providers": "Model Providers",
     "provider-groups": "Provider Groups",
     "budgets": "Budgets & Limits",
-    "routing-rules": "Routing Rules",
     "complexity-router": "Complexity Router",
     "circuit-breaker": "Provider Health",
     "pricing-overrides": "Model Prices",
@@ -995,25 +994,24 @@
         "setPrices": "Set prices",
         "hint": "This model has no price row, so its traffic is recorded as unpriced rather than free. Its spend is missing from totals and budgets until a price is set."
       },
-      "emptyTitle": "No models yet",
-      "emptyBody": "A model is the public name clients call. Add one and point it at a provider, or ship it in the config file.",
+      "emptyTitle": "No routes yet",
+      "emptyBody": "A route is the public model name clients call, resolved to one or more upstream targets by its strategy. Add one here, or ship it in the config file.",
       "emptyAction": "Add route",
-      "noMatchTitle": "No models match",
-      "noMatchBody": "Nothing matched the search and origin filters you have on.",
+      "noMatchTitle": "No routes match",
+      "noMatchBody": "Nothing matched the search and filters you have on.",
       "providerCount_one": "{{first}} +{{count}} more",
       "providerCount_other": "{{first}} +{{count}} more",
       "viewAria": "View {{model}}",
       "editAria": "Edit {{model}}",
       "deleteAria": "Delete model {{model}}",
       "searchPlaceholder": "Search models",
-      "modelTally_one": "{{count}} model",
-      "modelTally_other": "{{count}} models",
       "providerTally_one": "{{count}} provider",
       "providerTally_other": "{{count}} providers",
       "origin": {
         "all": "All",
-        "db": "DB-managed",
-        "config": "Config"
+        "config": "Config file",
+        "project": "This project",
+        "other": "Other projects"
       },
       "configLegend": "shipped in config · immutable",
       "columns": {
@@ -1021,7 +1019,8 @@
         "strategy": "Strategy",
         "targets": "Targets",
         "origin": "Origin",
-        "price": "In · out /Mtok"
+        "price": "In · out /Mtok",
+        "traffic": "Requests · {{hours}} h"
       },
       "lockedLabel": "Parameters locked",
       "lockedHint": "Parameters locked — client overrides for the locked params are ignored; server-side values are enforced. Edit the model to unlock.",
@@ -1032,7 +1031,6 @@
         "other": "has a caveat"
       },
       "targets": {
-        "toggleAria": "{{targets}} for {{model}}",
         "none": "no targets",
         "failing_one": "{{count}} below SLA",
         "failing_other": "{{count}} below SLA",
@@ -1046,9 +1044,54 @@
       "confirm": {
         "deleteTitle": "Delete model {{model}}?",
         "deleteBody": "Every route and target for it in its organization is removed. This cannot be undone.",
-        "deleteConfirm": "Delete model"
+        "deleteConfirm": "Delete model",
+        "routeTitle": "Delete route {{model}}?",
+        "routeBody": "Clients calling this model name stop resolving to any provider the moment the route is gone.",
+        "routeConfirm": "Delete route"
       },
-      "originFilterAria": "Filter by origin"
+      "originFilterAria": "Filter by origin",
+      "routeTally_one": "{{count}} route",
+      "routeTally_other": "{{count}} routes",
+      "where": {
+        "project": "This project",
+        "other": "Another project"
+      },
+      "deleteRouteAria": "Delete route {{model}}",
+      "traffic": {
+        "none": "No requests",
+        "errors": "{{share}} errors",
+        "outsideProject": "Requests are counted for this project's routes only.",
+        "unavailable": "Request counts are unavailable here, so the traffic column shows none."
+      },
+      "noAnalytics": {
+        "title": "Route traffic needs ClickHouse",
+        "body": "This control plane runs without <0>CLICKHOUSE_URL</0>, or is older than the endpoint this screen reads, so it has no requests to count. The routes below work as usual. Set <0>CLICKHOUSE_URL</0> and restart the control plane: every request served after that is counted against its route."
+      },
+      "healthUnavailable": "Target health is unavailable here, so the routes show none. It needs the analytics store and analytics access.",
+      "gatewaysBehind_one": "{{count}} of {{live}} live gateways has not picked up the latest config yet.",
+      "gatewaysBehind_other": "{{count}} of {{live}} live gateways have not picked up the latest config yet.",
+      "gatewaysCurrent_one": "The live gateway runs the latest config.",
+      "gatewaysCurrent_other": "All {{count}} live gateways run the latest config.",
+      "gatewaysLink": "Open Cluster",
+      "variants": {
+        "count_one": "{{count}} variant",
+        "count_other": "{{count}} variants",
+        "label": "Variants of {{model}}, in fallback order",
+        "targetsUnused_one": "This route has variants, so its own {{count}} target is not used.",
+        "targetsUnused_other": "This route has variants, so its own {{count}} targets are not used."
+      },
+      "detail": {
+        "toggleAria": "Route details for {{model}}",
+        "targetsUnread": "This control plane does not list the route's targets.",
+        "noTargets": "No targets yet.",
+        "tryIt": "Try it",
+        "tryRoute": "Try it: {{model}} in the Playground",
+        "copyModel": "Copy model name",
+        "editRouting": "Edit targets and variants",
+        "editRoutingAria": "Edit targets and variants of {{model}}",
+        "routeLabels": "Route labels",
+        "routeLabelsAria": "Route labels on {{model}}"
+      }
     },
     "providers": {
       "search": "Search providers",
@@ -1213,50 +1256,7 @@
         "needsTelemetry": "Needs a cache-telemetry source (KV events or an LMCache controller) on the target providers. Set it in each provider's sheet, or in rolter.toml. Without one, this strategy quietly falls back to least-load.",
         "deploymentWide": "The deployment-wide adaptive-routing policy sets the blend and the kill switch for every route on this strategy. The route only opts in.",
         "policyLink": "Adaptive Routing settings"
-      },
-      "confirm": {
-        "title": "Delete route {{model}}?",
-        "body": "Clients calling this model name stop resolving to any provider the moment the route is gone.",
-        "confirm": "Delete route"
-      },
-      "healthUnavailable": "Target health is unavailable here, so the cards show none. It needs the analytics store and analytics access.",
-      "targetCount_one": "{{count}} target",
-      "targetCount_other": "{{count}} targets",
-      "variantCount_one": "{{count}} variant",
-      "variantCount_other": "{{count}} variants",
-      "variantsLabel": "Variants of {{model}}, in fallback order",
-      "targetsUnused_one": "This route has variants, so its own {{count}} target is not used.",
-      "targetsUnused_other": "This route has variants, so its own {{count}} targets are not used.",
-      "emptyTitle": "No routes yet",
-      "emptyBody": "A route is the public model name clients call, resolved to one or more upstream targets by its strategy.",
-      "noMatchTitle": "No routes match",
-      "noMatchBody": "No route in this project carries that label. Clear the filter to see them all.",
-      "emptyAction": "Add route",
-      "deleteRoute": "Delete route {{model}}",
-      "summary_one": "{{count}} route · public model names clients call, resolved to upstream targets",
-      "summary_other": "{{count}} routes · public model names clients call, resolved to upstream targets",
-      "noTargets": "No targets yet.",
-      "targetsUnread": "Targets could not be read.",
-      "disabledBadge": "disabled",
-      "edit": "Edit",
-      "editRoute": "Edit route {{model}}",
-      "add": "+ Add route",
-      "copyModel": "Copy model name",
-      "tryIt": "Try it",
-      "tryRoute": "Try it: {{model}} in the Playground",
-      "traffic_one": "{{requests}} request for this model name in this project in the last {{hours}} h · {{errors}} errors",
-      "traffic_other": "{{requests}} requests for this model name in this project in the last {{hours}} h · {{errors}} errors",
-      "noTraffic": "No requests for this model name in this project in the last {{hours}} h",
-      "trafficUnavailable": "Request counts are unavailable here, so the cards show none.",
-      "noAnalytics": {
-        "title": "Route traffic needs ClickHouse",
-        "body": "This control plane runs without <0>CLICKHOUSE_URL</0>, or is older than the endpoint this screen reads, so it has no requests to count. The routes below work as usual. Set <0>CLICKHOUSE_URL</0> and restart the control plane: every request served from then on is counted on its route's card."
-      },
-      "gatewaysBehind_one": "{{count}} of {{live}} live gateways has not picked up the latest config yet.",
-      "gatewaysBehind_other": "{{count}} of {{live}} live gateways have not picked up the latest config yet.",
-      "gatewaysCurrent_one": "The live gateway runs the latest config.",
-      "gatewaysCurrent_other": "All {{count}} live gateways run the latest config.",
-      "gatewaysLink": "Open Cluster"
+      }
     },
     "pricing": {
       "unconvertible": "Priced in {{code}}, which has no conversion rate — this model's spend is missing from {{base}} totals and budgets.",
@@ -3172,7 +3172,7 @@
       "reportingGateways_other": "{{count}} reporting gateways",
       "emptyTitle": "No fresh adaptive routing telemetry",
       "emptyBody": "A gateway appears here after it serves a route on the adaptive strategy and reports to the control plane. Reports older than {{seconds}} seconds are hidden, and a gateway that reports without a node id is dropped before it gets here.",
-      "emptyAction": "Review routing rules",
+      "emptyAction": "Open Model Catalog",
       "disabledTitle": "Adaptive routing is switched off",
       "disabledBody": "The deployment-wide kill switch is off — the shipped default — so no gateway blends on the adaptive strategy and none of them report here.",
       "disabledRoutes_one": "{{count}} route is held back:",
@@ -3254,7 +3254,7 @@
         "provider_health": "Provider health",
         "label": "Labels",
         "model_label": "Model labels",
-        "route": "Routing rules",
+        "route": "Routes",
         "virtual_key": "Virtual keys",
         "my_virtual_key": "Own virtual keys",
         "analytics": "Analytics",
@@ -3875,7 +3875,7 @@
       "disableBody": "Requests will use the original route instead of complexity tiers. Other route settings are preserved. You can configure a new policy later.",
       "emptyTitle": "No routes to give a policy",
       "emptyBody": "A complexity policy hangs off a route, so create a route first — its input-size tiers are set from here afterwards.",
-      "emptyAction": "Open routing rules",
+      "emptyAction": "Open Model Catalog",
       "noPolicyYet": "No policy yet",
       "tierRouteAria": "Route for tier {{n}}",
       "editPolicyAria": "Edit policy for {{model}}",
@@ -4834,7 +4834,7 @@
         "addProvider": "Go to Providers",
         "emptyRoutesTitle": "No routes configured",
         "emptyRoutesBody": "Add a routing rule to expose a model name through the gateway.",
-        "addRoute": "Go to Routing Rules"
+        "addRoute": "Go to Model Catalog"
       }
     },
     "mcpSettings": {
@@ -5922,7 +5922,7 @@
     },
     "model-catalog": {
       "title": "Model Catalog",
-      "subtitle": "Every model reachable through rolter."
+      "subtitle": "Every route the gateway serves, with its targets, traffic, health and price."
     },
     "providers": {
       "title": "Model Providers",
@@ -5935,10 +5935,6 @@
     "budgets": {
       "title": "Budgets & Limits",
       "subtitle": "Spend caps and rate limits by organization, team, project, or key."
-    },
-    "routing-rules": {
-      "title": "Routing Rules",
-      "subtitle": "Weighted, cache-aware, and fallback routing across providers."
     },
     "complexity-router": {
       "title": "Complexity Router",

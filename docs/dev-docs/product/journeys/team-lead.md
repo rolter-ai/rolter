@@ -17,11 +17,11 @@ offered, even when the refusal is correct.
 
 ## T1 — arrive
 
-| #    | step                               | where                                          | expect                                                                                              | status   |
-| ---- | ---------------------------------- | ---------------------------------------------- | --------------------------------------------------------------------------------------------------- | -------- |
-| T1.1 | sign in (SSO or password)          | login screen                                   | the dashboard, scoped to team `default`                                                             | verified |
-| T1.2 | see what the team is already doing | **Observability → Dashboard**, **LLM Logs**    | the team's traffic and spend, with captured bodies (admin at the team), and nothing of other teams' | verified |
-| T1.3 | see what the team may call         | **Traffic → Model Catalog**, **Routing Rules** | the routes of the team's projects                                                                   | verified |
+| #    | step                               | where                                       | expect                                                                                              | status   |
+| ---- | ---------------------------------- | ------------------------------------------- | --------------------------------------------------------------------------------------------------- | -------- |
+| T1.1 | sign in (SSO or password)          | login screen                                | the dashboard, scoped to team `default`                                                             | verified |
+| T1.2 | see what the team is already doing | **Observability → Dashboard**, **LLM Logs** | the team's traffic and spend, with captured bodies (admin at the team), and nothing of other teams' | verified |
+| T1.3 | see what the team may call         | **Traffic → Model Catalog**                 | the routes of the team's projects                                                                   | verified |
 
 ## T2 — bring the team in
 
@@ -36,7 +36,7 @@ offered, even when the refusal is correct.
 
 | #    | step                                              | where                                   | expect                                                                                 | status               |
 | ---- | ------------------------------------------------- | --------------------------------------- | -------------------------------------------------------------------------------------- | -------------------- |
-| T3.1 | route a public model name to an existing provider | **Routing Rules** in the team's project | allowed: routes are project-scoped and the lead is admin above the project             | verified             |
+| T3.1 | route a public model name to an existing provider | **Model Catalog** in the team's project | allowed: routes are project-scoped and the lead is admin above the project             | verified             |
 | T3.2 | add a new provider                                | **Model Providers → + Add provider**    | refused, naming the Admin role at the org — a request to the platform team             | verified (by design) |
 | T3.3 | mint a shared key for the team's service          | **Access → Virtual Keys**               | as [platform-admin A4.2](platform-admin.md#a4--give-access-to-people-and-applications) | verified             |
 

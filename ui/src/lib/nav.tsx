@@ -36,7 +36,6 @@ import {
   ShieldCheck,
   Shuffle,
   SlidersHorizontal,
-  Split,
   TrendingUp,
   UserCheck,
   UserCog,
@@ -89,7 +88,6 @@ export const NAV: NavDef[] = [
     children: [
       { key: "playground", icon: <Play /> },
       { key: "model-catalog", icon: <LayoutGrid />, resource: "model" },
-      { key: "routing-rules", icon: <Split />, resource: "route" },
       { key: "providers", icon: <Boxes />, resource: "provider" },
       { key: "provider-groups", icon: <Layers />, resource: "provider_group" },
       { key: "complexity-router", icon: <ArrowLeftRight />, resource: "route" },

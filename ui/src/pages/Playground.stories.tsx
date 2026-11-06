@@ -330,7 +330,7 @@ function openKeyWindow() {
  *
  * `role` mounts the screen under the capability gate as that role; left out,
  * no gate is mounted and every control renders enabled. The router is for the
- * routeless project's link to Routing Rules.
+ * routeless project's link to the Model Catalog.
  */
 function Screen({
   fetchStub,
@@ -427,7 +427,7 @@ export const MintsAKeyOnOpen: Story = {
 };
 
 /**
- * A link from Routing Rules opens the screen on that route's model (`?model=`,
+ * A route's Try it in the Model Catalog opens the screen on its model (`?model=`,
  * #2138), where the catalog confirms the gateway serves it. A name it does not
  * serve is ignored rather than selected, so the first message cannot fail on it.
  */
@@ -509,8 +509,8 @@ export const RoutelessProjectReachesTheBuiltin: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await canvas.findByText(/This project has no routes yet/);
-    const link = canvas.getByRole("link", { name: "Open Routing Rules" });
-    await expect(link).toHaveAttribute("href", "/routing-rules");
+    const link = canvas.getByRole("link", { name: "Open Model Catalog" });
+    await expect(link).toHaveAttribute("href", "/model-catalog");
     await expect(canvas.getByText("Active")).toBeVisible();
 
     // a working key, not a failure: no alert, and nothing to paste instead

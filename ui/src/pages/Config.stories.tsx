@@ -256,7 +256,7 @@ export const Empty: Story = {
   render: () => <Stage fetchStub={withCapabilities("superadmin", empty)} role="superadmin" />,
   play: async ({ canvasElement }) => {
     await expectEmptyState(canvasElement, /No providers configured/, /Go to Providers/);
-    await expectEmptyState(canvasElement, /No routes configured/, /Go to Routing Rules/);
+    await expectEmptyState(canvasElement, /No routes configured/, /Go to Model Catalog/);
     await expectListTable(canvasElement, "Providers");
     await expectListTable(canvasElement, "Routes");
     await expect(within(canvasElement).queryByRole("table", { name: /Virtual keys/ })).toBeNull();

@@ -327,7 +327,7 @@ function AdaptiveDashboardScreen() {
               seconds: view?.fresh_window_secs ?? 60,
             })}
             actions={
-              <EmptyStateLink to="/routing-rules">
+              <EmptyStateLink to="/model-catalog">
                 {t("pages.adaptiveDashboard.emptyAction")}
               </EmptyStateLink>
             }

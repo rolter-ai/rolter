@@ -169,7 +169,7 @@ export function CommandPalette({
     for (const route of routes.data ?? []) {
       out.push({
         id: `route:${route.id}`,
-        screen: "routing-rules",
+        screen: "model-catalog",
         label: route.model,
         hint: t("shell.palette.kinds.route"),
       });

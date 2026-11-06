@@ -288,7 +288,8 @@ Keep the four states apart and let each one say what it is:
   over contents nobody has seen;
 - **configured** and **unconfigured** — the two real answers.
 
-Routing Rules made the same mistake with its target reads (#2133):
+Routing Rules, before it folded into Model Catalog (#3685), made the same
+mistake with its target reads (#2133):
 `targetQueries[i]?.data ?? []` drew a route whose targets were still loading, or
 had failed, as "No targets yet." and "0 targets". It resolves the failure
 inside the row, not in a group. The route's name, strategy and labels are

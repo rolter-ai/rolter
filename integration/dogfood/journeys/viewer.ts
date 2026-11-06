@@ -90,9 +90,9 @@ await step("V3.1", "switch the dashboard language; is it remembered elsewhere?",
     : ["partial", "switches instantly, but a second browser opens in English: localStorage only (#1824)"];
 }, page);
 
-await step("V4.1", "routing rules readable, every mutation refused with the role named", async () => {
-  const st = await screenState(page, "routing-rules");
-  if (!scoped && st.state !== "ok") return ["bug", `Routing Rules: ${st.state} — no project in scope (#1846)`];
+await step("V4.1", "routes readable, every mutation refused with the role named", async () => {
+  const st = await screenState(page, "model-catalog");
+  if (!scoped && st.state !== "ok") return ["bug", `Model Catalog: ${st.state} — no project in scope (#1846)`];
   const add = page.getByRole("button", { name: /add route|new route/i }).first();
   await add.waitFor({ timeout: 8000 });
   await until(async () => await add.isDisabled(), 8000);
