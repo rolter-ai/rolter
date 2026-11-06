@@ -57,7 +57,7 @@ granted and adds the scopes, then the next call works. Until then every such
 call fails the same way. A server with a static credential has no consent to
 repeat, so its `403` is passed through unchanged.
 
-In the dashboard, the server's card on **MCP → MCP Catalog** names the scopes the server declares that your connection lacks, with a **Reconnect with more access** button that sends that `step_up_scopes` request. The detail of an `auth_denied` call in **MCP Logs** offers the same to the key's owner. The log records the scopes the upstream asked for, and the action adds those; a row written before the ClickHouse migration `042` records none, and then it offers the scopes the server declares that the connection lacks, or, when the connection already holds everything the server declares, the owner names the scope to add.
+In the dashboard, the server's card on **MCP Gateway → MCP Catalog** names the scopes the server declares that your connection lacks, with a **Reconnect with more access** button that sends that `step_up_scopes` request. The detail of an `auth_denied` call in **MCP Logs** offers the same to the key's owner. The log records the scopes the upstream asked for, and the action adds those; a row written before the ClickHouse migration `042` records none, and then it offers the scopes the server declares that the connection lacks, or, when the connection already holds everything the server declares, the owner names the scope to add.
 
 ### Which scopes a consent asks for
 

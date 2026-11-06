@@ -25,7 +25,14 @@ import {
 import { readRecentScreens, rememberScreen } from "@/lib/command-palette";
 import { useDocumentTitle } from "@/lib/document-title";
 import { chordText, dispatchShortcut, shortcutChord, type ShortcutHandlers } from "@/lib/shortcuts";
-import { findLeaf, leafKeys, useScreenMeta, visibleNav, type NavDef } from "@/lib/nav";
+import {
+  ACCOUNT_SCREENS,
+  findLeaf,
+  screenKeys,
+  useScreenMeta,
+  visibleNav,
+  type NavDef,
+} from "@/lib/nav";
 import { accountRole, accountRoleLine, accountRoleName } from "@/lib/account-role";
 import { logout } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
@@ -155,7 +162,9 @@ const LEGACY: Record<string, string> = {
   models: "model-catalog",
 };
 
-const LEAVES = new Set(leafKeys());
+// every routed screen: the rail's leaves and the account's own screens, which
+// the user menu opens (#3656)
+const LEAVES = new Set(screenKeys());
 
 /** the scroll container the skip link jumps over the rail to (#1198) */
 const MAIN_CONTENT_ID = "main-content";
@@ -421,7 +430,9 @@ function Shell() {
       <CommandPalette
         open={paletteOpen}
         onOpenChange={setPaletteOpen}
-        nav={visible}
+        // the account's screens are found by name like any other, though the
+        // rail leaves them to the user menu
+        nav={[...visible, ...ACCOUNT_SCREENS]}
         recent={recent}
         onNavigate={(k, search) => navigate(`/${k}${search ?? ""}`)}
       />

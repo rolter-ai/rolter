@@ -12,16 +12,16 @@ Rolter records the cost of every request it serves, attributes it to the key, pr
 
 <Steps>
   <Step title="Price every model that costs money">
-    A model with no price row is logged at a cost of **zero**, which is indistinguishable from free. Add prices under **Models → Model Prices** (or `[[model_prices]]` in the config file), in any currency your rate table knows. See [Budgets & rate limits](/security/budgets-and-rate-limits).
+    A model with no price row is logged at a cost of **zero**, which is indistinguishable from free. Add prices under **Spend → Model Prices** (or `[[model_prices]]` in the config file), in any currency your rate table knows. See [Budgets & rate limits](/security/budgets-and-rate-limits).
   </Step>
   <Step title="Find what is still unpriced">
     **Observability → Dashboard** shows how much of the window's traffic was unpriced, and **LLM Logs** flags each such row, so a partial total is never read as a final one. Price what shows up, or decide per budget whether unpriced traffic counts as zero or is refused.
   </Step>
   <Step title="Attribute spend to the people you bill">
-    Create **business units** and name the **customers** you serve under **Governance → Business Units** and **Governance → Customers**, then point each virtual key at a unit and a customer. Every request the key serves is recorded against both, and the same screens roll the spend up. See [Cost attribution](/security/cost-attribution).
+    Create **business units** and name the **customers** you serve under **Spend → Business Units** and **Spend → Customers**, then point each virtual key at a unit and a customer. Every request the key serves is recorded against both, and the same screens roll the spend up. See [Cost attribution](/security/cost-attribution).
   </Step>
   <Step title="Set the limits">
-    **Models → Budgets & Limits** at the org, team, project, key, business unit or customer:
+    **Spend → Budgets & Limits** at the org, team, project, key, business unit or customer:
 
     - a **budget** caps spend over a day, a month or for good; the next request past it gets HTTP 402, and nothing reaches the upstream;
     - a **rate limit** caps requests and tokens per minute; past it, HTTP 429 with `Retry-After`.
@@ -30,7 +30,7 @@ Rolter records the cost of every request it serves, attributes it to the key, pr
 
   </Step>
   <Step title="Get alerted on runaway spend">
-    **Alerting → Alert Rules** with the `spend_velocity` metric sends a webhook when spend per hour crosses the line you set, alongside error-rate and latency rules.
+    **Observability → Alert Rules** with the `spend_velocity` metric sends a webhook when spend per hour crosses the line you set, alongside error-rate and latency rules.
   </Step>
 </Steps>
 

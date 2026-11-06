@@ -318,8 +318,8 @@ const fields = useFieldErrors<FieldKey>({
   `role="status"`, which is polite. A story that needs one specific message picks it by its text, not
   by a bare `getByRole("alert")`. Use `Field` for a screen row and `FieldError` where the input is not wrapped.
 
-Used by Performance Tuning, Model Settings, Compatibility, Client Settings, Logs Settings, Adaptive
-Routing settings, the Plugins dialog and Pricing (which takes only the server mapping).
+Used by Performance Tuning, Model Defaults, Compatibility, Client Settings, Logging, Adaptive
+Policy, the Plugins dialog and Pricing (which takes only the server mapping).
 
 ### Showing a failed call
 
@@ -489,8 +489,8 @@ React test renderer. The Security screen was the first consumer. The shared fiel
 
 `useSettingsForm` (`ui/src/lib/use-settings-form.ts`, #2214) is `useDraft`, `useFieldErrors` and the
 leave guard (`useLeaveGuard`) as one hook, and `SettingsSaveBar` (`ui/src/components/SettingsSaveBar.tsx`)
-is the footer that reads it. Adaptive Routing, Model Settings, Performance, Client Settings, Logs
-Settings, Compatibility and Feature Flags use them; a new deployment-settings screen does too.
+is the footer that reads it. Adaptive Policy, Model Defaults, Performance, Client Settings, Logging,
+Compatibility and Feature Flags use them; a new deployment-settings screen does too.
 
 ```tsx
 const source = React.useMemo(() => (query.data ? fromDto(query.data) : undefined), [query.data]);

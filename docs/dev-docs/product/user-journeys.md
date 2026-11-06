@@ -62,7 +62,7 @@ of them.
    state), and read the live state back with `rolter config export`. What the
    file cannot carry — keys, budgets, SSO, policy — stays in the dashboard or the
    API. ([platform-admin A3-d](journeys/platform-admin.md#a3--connect-models))
-4. **An engineer's first call.** Sign in, **Settings → Account & keys → Generate virtual key**,
+4. **An engineer's first call.** Sign in, **user menu → Account & keys → Generate virtual key**,
    point the OpenAI or Anthropic SDK (or a coding agent) at the gateway with that
    key. ([engineer E1–E4](journeys/engineer.md)) A project invitation is enough:
    the scope switcher, the personal key and the Playground work for someone with
@@ -175,7 +175,7 @@ struggle is the finding.
 | ------------------------- | ------------------------------------------------------ | --------------------------------------------------------------- |
 | screen views and struggle | ClickHouse `ui_events`, `just dogfood-watch`           | which screen, how long to interactive, refused clicks, abandons |
 | requests                  | ClickHouse `request_logs`, **LLM Logs**                | what reached the gateway, the status, the target, the cost      |
-| who did what              | Postgres `audit_log`, **Governance → Audit Logs**      | every mutation a step claims to make                            |
+| who did what              | Postgres `audit_log`, **Access → Audit Logs**          | every mutation a step claims to make                            |
 | traces                    | SigNoz, `rolter · overview`                            | where a slow step spent its time                                |
 | the gateway's own view    | `GET :4000/metrics`, **Cluster**, **Adaptive Routing** | config version, breaker state, queue, adaptive engagement       |
 

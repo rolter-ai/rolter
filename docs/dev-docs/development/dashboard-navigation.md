@@ -100,9 +100,10 @@ when two are equally strong). Each shape is one catalog string,
 as its grammar wants. The card itself says the role in a word.
 
 The entries are **Account & keys** (`/api-keys`), **Preferences** (`/preferences`),
-a separator and **Sign out**, in the danger tone. The two screens are named with
-the rail's own labels (`nav.api-keys`, `nav.preferences`), so one noun stands for
-one place. There is no theme toggle (the dashboard is dark-only, see `DESIGN.md`),
+a separator and **Sign out**, in the danger tone. The menu is the only home of
+those two screens: they are `ACCOUNT_SCREENS` in `ui/src/lib/nav.tsx`, routed like
+any leaf and found by the command palette, but kept out of the rail, which is
+about the deployment (#3656, ADR-0042). There is no theme toggle (the dashboard is dark-only, see `DESIGN.md`),
 and language and shortcuts stay in the rail footer.
 
 The menu opens above the card at the card's width on the full rail, and beside the
@@ -466,12 +467,26 @@ loading, error and empty states; `SearchMatchesGroupLabel` and
 every child out of it, and a query matching nothing used to empty the rail
 rather than say so.
 
+## The groups
+
+The rail is seven groups named for the job a visitor came to do, with nothing at
+the top level beside them: Observability, Traffic, Spend, Access, Safety, MCP
+Gateway and Platform ([ADR-0042](../adr/2026-11-06-sidebar-by-job.md), #3656).
+`NAV` is the record and its order is the rail's. A leaf's label says what it is
+without its group, since the folded rail, the palette and a screen reader do not
+say the group: Alert Channels, not Channels. `ui/src/lib/nav.test.ts` holds the
+rail to two levels and keeps the account's screens out of it.
+
+A group's key only names its label. A leaf's key is its path, so moving a screen
+between groups changes no URL.
+
 ## Every leaf is a screen
 
-`NAV` in `ui/src/lib/nav.tsx` names the entries; `SCREENS` in `ui/src/App.tsx`
-maps each navigable leaf key to the element rendered at `/<key>`. The two are
-one list written twice, and `ui/src/lib/nav.test.ts` holds them to each other:
-a nav entry with no screen, or a screen no entry reaches, fails there.
+`NAV` in `ui/src/lib/nav.tsx` names the rail's entries and `ACCOUNT_SCREENS` the
+user menu's; `SCREENS` in `ui/src/App.tsx` maps each of their keys to the element
+rendered at `/<key>`. The two are one list written twice, and
+`ui/src/lib/nav.test.ts` holds them to each other: a nav entry with no screen, or
+a screen no entry reaches, fails there.
 
 Until #1201 that invariant was assumed rather than checked. `App` looked the key
 up in a `BUILT` set and fell back to a branded `Stub` screen ("TODO — we'll come

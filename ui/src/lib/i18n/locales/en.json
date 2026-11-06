@@ -761,14 +761,18 @@
   "nav": {
     "playground": "Playground",
     "observability": "Observability",
+    "traffic": "Traffic",
+    "spend": "Spend",
+    "access": "Access",
+    "safety": "Safety",
+    "platform": "Platform",
     "dashboard": "Dashboard",
     "logs": "LLM Logs",
     "mcp-logs": "MCP Logs",
     "savings": "Savings",
     "connectors": "Connectors",
-    "logs-settings": "Logs Settings",
+    "logs-settings": "Logging",
     "log-erasure": "Log Erasure",
-    "models": "Models",
     "model-catalog": "Model Catalog",
     "providers": "Model Providers",
     "provider-groups": "Provider Groups",
@@ -777,7 +781,7 @@
     "complexity-router": "Complexity Router",
     "circuit-breaker": "Provider Health",
     "pricing-overrides": "Model Prices",
-    "model-settings": "Model Settings",
+    "model-settings": "Model Defaults",
     "mcp": "MCP Gateway",
     "mcp-catalog": "MCP Catalog",
     "mcp-library": "MCP Library",
@@ -786,11 +790,9 @@
     "oauth-grants": "OAuth Grants",
     "mcp-settings": "MCP Settings",
     "plugins": "Plugins",
-    "alerting": "Alerting",
-    "alerting-channels": "Channels",
+    "alerting-channels": "Alert Channels",
     "alerting-rules": "Alert Rules",
-    "alerting-history": "History",
-    "governance": "Governance",
+    "alerting-history": "Alert History",
     "virtual-keys": "Virtual Keys",
     "gov-users": "Users",
     "gov-teams": "Teams",
@@ -803,16 +805,13 @@
     "rbac": "Roles & Permissions",
     "access-profiles": "Access Profiles",
     "audit-logs": "Audit Logs",
-    "guardrails": "Guardrails",
     "guardrail-rules": "Guardrail Rules",
-    "guardrail-providers": "Providers",
+    "guardrail-providers": "Guardrail Providers",
     "cluster": "Cluster Config",
-    "adaptive-routing": "Adaptive Routing",
-    "adaptive-dashboard": "Telemetry",
-    "adaptive-settings": "Settings",
+    "adaptive-dashboard": "Adaptive Routing",
+    "adaptive-settings": "Adaptive Policy",
     "prompt-repo": "Prompt Repository",
     "skills-repo": "Skills Repository",
-    "settings": "Settings",
     "client-settings": "Client Settings",
     "compatibility": "Compatibility",
     "effective-config": "Effective config",
@@ -821,7 +820,7 @@
     "performance": "Performance Tuning",
     "feature-flags": "Feature Flags",
     "preferences": "Preferences",
-    "guardrail-policies": "Policies"
+    "guardrail-policies": "Guardrail Policies"
   },
   "pages": {
     "gettingStarted": {
@@ -4792,7 +4791,7 @@
           "desc": "Base URL, forwarded and injected headers, request correlation."
         },
         "modelSettings": {
-          "title": "Model settings",
+          "title": "Model defaults",
           "desc": "Deployment-wide defaults for sampling parameters and the model."
         },
         "performance": {
@@ -5914,7 +5913,7 @@
       "subtitle": "Export traces, metrics and logs over OTLP to your collector."
     },
     "logs-settings": {
-      "title": "Logs Settings",
+      "title": "Logging",
       "subtitle": "Retention, sampling, and PII redaction for request logs."
     },
     "log-erasure": {
@@ -5954,7 +5953,7 @@
       "subtitle": "Deployment-wide per-model prices for cost tracking."
     },
     "model-settings": {
-      "title": "Model Settings",
+      "title": "Model Defaults",
       "subtitle": "Deployment-wide defaults for sampling parameters and the model."
     },
     "mcp": {
@@ -5994,7 +5993,7 @@
       "subtitle": "Channels, rules, and delivery history for operational alerts."
     },
     "alerting-channels": {
-      "title": "Channels",
+      "title": "Alert Channels",
       "subtitle": "Webhook endpoints that alert state changes are POSTed to."
     },
     "alerting-rules": {
@@ -6082,7 +6081,7 @@
       "subtitle": "Metrics for the adaptive router."
     },
     "adaptive-settings": {
-      "title": "Adaptive Routing Settings",
+      "title": "Adaptive Policy",
       "subtitle": "Tune the adaptive routing objective."
     },
     "prompt-repo": {

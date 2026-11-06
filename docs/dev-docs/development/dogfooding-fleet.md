@@ -157,8 +157,8 @@ chart on their own defaults.
   does not write it (#1818), so `just dogfood` flips it on through
   `PUT /api/v1/adaptive-routing-policy` once the control plane answers (#1817).
   The route engages after `min_samples` picks, 50 by default. To compare against
-  the fallback stack, run `just dogfood-adaptive off` or use **Adaptive Routing →
-  Settings**. Either change survives a control-plane restart, and the next
+  the fallback stack, run `just dogfood-adaptive off` or use **Traffic →
+  Adaptive Policy**. Either change survives a control-plane restart, and the next
   `just dogfood` turns the switch back on. Only `enabled` changes: blend weights
   set on the Settings screen stay as they are.
 - **ClickHouse wants 262144 open files, and some runtimes cannot grant it.**

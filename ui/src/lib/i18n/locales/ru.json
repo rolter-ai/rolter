@@ -797,14 +797,18 @@
   "nav": {
     "playground": "Песочница",
     "observability": "Наблюдаемость",
+    "traffic": "Трафик",
+    "spend": "Расходы",
+    "access": "Доступ",
+    "safety": "Защита",
+    "platform": "Платформа",
     "dashboard": "Обзор",
     "logs": "Логи LLM",
     "mcp-logs": "Логи MCP",
     "savings": "Экономия",
     "connectors": "Коннекторы",
-    "logs-settings": "Настройки логов",
+    "logs-settings": "Логирование",
     "log-erasure": "Стирание логов",
-    "models": "Модели",
     "model-catalog": "Каталог моделей",
     "providers": "Провайдеры моделей",
     "provider-groups": "Группы провайдеров",
@@ -813,7 +817,7 @@
     "complexity-router": "Маршрутизация по сложности",
     "circuit-breaker": "Состояние провайдеров",
     "pricing-overrides": "Цены моделей",
-    "model-settings": "Настройки моделей",
+    "model-settings": "Параметры моделей",
     "mcp": "Шлюз MCP",
     "mcp-catalog": "Каталог MCP",
     "mcp-library": "Библиотека MCP",
@@ -822,11 +826,9 @@
     "oauth-grants": "Разрешения OAuth",
     "mcp-settings": "Настройки MCP",
     "plugins": "Плагины",
-    "alerting": "Оповещения",
-    "alerting-channels": "Каналы",
+    "alerting-channels": "Каналы оповещений",
     "alerting-rules": "Правила оповещений",
-    "alerting-history": "История",
-    "governance": "Управление доступом",
+    "alerting-history": "История оповещений",
     "virtual-keys": "Виртуальные ключи",
     "gov-users": "Пользователи",
     "gov-teams": "Команды",
@@ -839,16 +841,13 @@
     "rbac": "Роли и права",
     "access-profiles": "Профили доступа",
     "audit-logs": "Журнал аудита",
-    "guardrails": "Защитные фильтры",
     "guardrail-rules": "Правила фильтров",
-    "guardrail-providers": "Провайдеры",
+    "guardrail-providers": "Провайдеры фильтров",
     "cluster": "Узлы кластера",
-    "adaptive-routing": "Адаптивная маршрутизация",
-    "adaptive-dashboard": "Телеметрия",
-    "adaptive-settings": "Настройки",
+    "adaptive-dashboard": "Адаптивная маршрутизация",
+    "adaptive-settings": "Адаптивная политика",
     "prompt-repo": "Репозиторий промптов",
     "skills-repo": "Репозиторий навыков",
-    "settings": "Настройки",
     "client-settings": "Настройки клиента",
     "compatibility": "Совместимость",
     "effective-config": "Действующая конфигурация",
@@ -857,7 +856,7 @@
     "performance": "Настройка производительности",
     "feature-flags": "Флаги функций",
     "preferences": "Мои настройки",
-    "guardrail-policies": "Политики"
+    "guardrail-policies": "Политики фильтров"
   },
   "pages": {
     "gettingStarted": {
@@ -5082,7 +5081,7 @@
           "desc": "Базовый URL, пересылаемые и добавляемые заголовки, корреляция запросов."
         },
         "modelSettings": {
-          "title": "Настройки моделей",
+          "title": "Параметры моделей",
           "desc": "Значения по умолчанию для параметров сэмплирования и модели во всей установке."
         },
         "performance": {
@@ -6226,7 +6225,7 @@
       "subtitle": "Экспорт трасс, метрик и логов по OTLP в ваш коллектор."
     },
     "logs-settings": {
-      "title": "Настройки логов",
+      "title": "Логирование",
       "subtitle": "Хранение, сэмплирование и удаление персональных данных из логов запросов."
     },
     "log-erasure": {
@@ -6266,7 +6265,7 @@
       "subtitle": "Цены моделей для учёта расходов, общие для всей установки."
     },
     "model-settings": {
-      "title": "Настройки моделей",
+      "title": "Параметры моделей",
       "subtitle": "Значения по умолчанию для параметров сэмплирования и модели во всей установке."
     },
     "mcp": {
@@ -6306,7 +6305,7 @@
       "subtitle": "Каналы, правила и история доставки операционных оповещений."
     },
     "alerting-channels": {
-      "title": "Каналы",
+      "title": "Каналы оповещений",
       "subtitle": "Вебхуки, на которые методом POST отправляются смены состояния оповещений."
     },
     "alerting-rules": {
@@ -6394,7 +6393,7 @@
       "subtitle": "Метрики адаптивного маршрутизатора."
     },
     "adaptive-settings": {
-      "title": "Настройки адаптивной маршрутизации",
+      "title": "Адаптивная политика",
       "subtitle": "Настройка цели адаптивной маршрутизации."
     },
     "prompt-repo": {

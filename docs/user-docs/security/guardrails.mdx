@@ -3,7 +3,7 @@ title: "Guardrails"
 description: "Manage in-gateway inspection rules and external guardrail services without restarting gateways."
 ---
 
-Rolter can inspect request or response content with built-in detectors, custom regular expressions, and a self-hosted HTTP guardrail service. Open **Guardrails → Guardrail Rules** or **Guardrails → Providers** in the dashboard. These screens require superadmin access.
+Rolter can inspect request or response content with built-in detectors, custom regular expressions, and a self-hosted HTTP guardrail service. Open **Safety → Guardrail Rules** or **Safety → Guardrail Providers** in the dashboard. These screens require superadmin access.
 
 ## Inspection rules
 
@@ -55,7 +55,7 @@ A transcription asked for with `stream=true` (a form field, on a model that stre
 
 When more than one of these settings would refuse the same request, it gets the answer a chat request gets, because the checks run in the same order on both: the response rules (`guardrail_streaming_unsupported`), the semantic guard policy (`guardrail_streaming_unsupported`), the PII sanitizer (`pii_streaming_unsupported`), the `post_response` plugins (`plugin_streaming_unsupported`), then the [unpriced-traffic policy](/security/budgets-and-rate-limits#unpriced-traffic) (`402 model_unpriced`). The first refusal is the answer and what the request log records. Before this release an upload asked the unpriced policy first and the plugins before the sanitizer.
 
-The deployment-wide `guardrails` feature flag remains the kill switch. Turning it off pauses every built-in and custom rule, and every config-file rule, without deleting the registry. While it is off, **Guardrails → Guardrail Rules** shows a banner saying no rule inspects traffic, with a link to **Feature Flags**, and every rule's card says **not enforced** instead of **enforced**.
+The deployment-wide `guardrails` feature flag remains the kill switch. Turning it off pauses every built-in and custom rule, and every config-file rule, without deleting the registry. While it is off, **Safety → Guardrail Rules** shows a banner saying no rule inspects traffic, with a link to **Feature Flags**, and every rule's card says **not enforced** instead of **enforced**.
 
 ### Redaction tokens
 
@@ -89,7 +89,7 @@ The effective configuration does not say where each rule came from, so the scree
 
 ### What each rule did
 
-Every request a guardrail acts on leaves its outcome on the request's row in **LLM Logs**: the rule's name and what it did, never the text it matched. A rule's card on **Guardrails → Rules** counts them over the last seven days.
+Every request a guardrail acts on leaves its outcome on the request's row in **LLM Logs**: the rule's name and what it did, never the text it matched. A rule's card on **Safety → Guardrail Rules** counts them over the last seven days.
 
 | Outcome     | When                                                                                                                             |
 | ----------- | -------------------------------------------------------------------------------------------------------------------------------- |
@@ -97,7 +97,7 @@ Every request a guardrail acts on leaves its outcome on the request's row in **L
 | `redacted`  | a `redact` rule rewrote the request before it went upstream                                                                      |
 | `annotated` | an `annotate` rule matched; the request was forwarded unchanged, and this is the only trace it leaves                            |
 
-A request counts once per rule however many times the rule matched in it. Each non-zero count on a card links to the **LLM Logs** rows behind it (the log's **Guardrail** filter, `guardrail=blocked:<rule name>` in the address). A rule that has not matched says **No matches in the last 7 days**. The active provider's card on **Guardrails → Providers** counts the requests the provider blocked, the ones it replaced the content of, and the ones whose text a local provider could not score in full (`provider_blocked:<provider name>`, `provider_transformed:<provider name>`, `semantic_truncated:<provider name>`); a provider that is not the one the gateway calls shows nothing. Each entry carries the name the provider had when it acted, so after you switch providers the old one's history stays out of the new one's card (renaming a provider starts its count over). Requests recorded before the name was added, and those of a config-file `[guardrail_webhook]` that sets no `name`, have the bare form; the enforced provider's card lists them apart under **Recorded without a provider name**. A pre-call block keeps the `redacted:<rule>` entries of the rules that ran before it, so the redaction counts include requests that were refused afterwards.
+A request counts once per rule however many times the rule matched in it. Each non-zero count on a card links to the **LLM Logs** rows behind it (the log's **Guardrail** filter, `guardrail=blocked:<rule name>` in the address). A rule that has not matched says **No matches in the last 7 days**. The active provider's card on **Safety → Guardrail Providers** counts the requests the provider blocked, the ones it replaced the content of, and the ones whose text a local provider could not score in full (`provider_blocked:<provider name>`, `provider_transformed:<provider name>`, `semantic_truncated:<provider name>`); a provider that is not the one the gateway calls shows nothing. Each entry carries the name the provider had when it acted, so after you switch providers the old one's history stays out of the new one's card (renaming a provider starts its count over). Requests recorded before the name was added, and those of a config-file `[guardrail_webhook]` that sets no `name`, have the bare form; the enforced provider's card lists them apart under **Recorded without a provider name**. A pre-call block keeps the `redacted:<rule>` entries of the rules that ran before it, so the redaction counts include requests that were refused afterwards.
 
 The counts are read from ClickHouse. Without `CLICKHOUSE_URL` the screens say so once, and with ClickHouse but without `clickhouse/018_guardrail_events.sql` applied they say the counts are not being kept (see [Upgrading](/deployment/upgrading)); neither is shown as "no matches". Output rules are counted on every response they act on: a response a rule redacted or annotated has the `redacted:<rule>` or `annotated:<rule>` entry on its row, and one it withheld has `blocked:<rule>`. A guardrail provider that gave no verdict leaves `provider_error:<provider name>`.
 
@@ -119,7 +119,7 @@ disable = ["Redact customer email"]
 
 Rules are matched by their exact name. For a config-file route, set the lists in `rolter.toml` as above. For a route created in the dashboard, open its model sheet and use the Guardrails section: one list of rules to switch off on the route and one of rules to force on, picked from the rules in force. A stored name that matches no rule stays in the list, marked, so you can remove it. The sheet shows a config-file route's lists read-only. Without the dashboard, send them in the `advanced` object of `PUT /api/v1/routes/{id}/advanced`. A name that no rule has fails config validation, so a typo in `disable` cannot read as "this rule is off here" while the rule keeps running. Take a rule out of every route's lists before you pause, rename or delete it: until [#2306](https://github.com/rolter-ai/rolter/issues/2306) is fixed, a route that still names it stops config changes from reaching gateways.
 
-**Guardrails → Guardrail Rules** shows each exception on the rule's card, for dashboard and config-file rules alike. The card keeps its status, since the rule still runs on every other route, and adds a line such as **Off for traffic on 2 routes** with the route names under it. Past three routes the names fold behind that line; select it to list them. The routes are read from the same effective configuration as the rest of the screen. A paused card lists no routes, since its rule is not in the policy. Neither does a card the config file overrides: the override names a rule, and the rule under that name is the file's, so its card lists the routes. An override that names a rule the policy no longer has appears on no card.
+**Safety → Guardrail Rules** shows each exception on the rule's card, for dashboard and config-file rules alike. The card keeps its status, since the rule still runs on every other route, and adds a line such as **Off for traffic on 2 routes** with the route names under it. Past three routes the names fold behind that line; select it to list them. The routes are read from the same effective configuration as the rest of the screen. A paused card lists no routes, since its rule is not in the policy. Neither does a card the config file overrides: the override names a rule, and the rule under that name is the file's, so its card lists the routes. An override that names a rule the policy no longer has appears on no card.
 
 ## External providers
 
@@ -156,7 +156,7 @@ Rolter stores only an environment variable name for bearer or shared-secret auth
 
 Both stages run: **Before upstream** (`pre_call`) judges the request and **Before response** (`post_call`) the response. A `post_call` provider on a streamed response is refused or buffered, never skipped; see [streamed responses](/security/semantic-guard-policies#streamed-responses).
 
-The banner at the top of **Guardrails → Providers** reports the providers the control plane hands to gateways, read from `GET /api/v1/guardrails/effective`, not which registry rows are switched on. It names every running provider, from the registry or the config file, and which of them are unattached, and shows the status as unknown when the effective configuration cannot be read.
+The banner at the top of **Safety → Guardrail Providers** reports the providers the control plane hands to gateways, read from `GET /api/v1/guardrails/effective`, not which registry rows are switched on. It names every running provider, from the registry or the config file, and which of them are unattached, and shows the status as unknown when the effective configuration cannot be read.
 
 ## Hot reload and config files
 

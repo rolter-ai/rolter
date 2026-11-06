@@ -31,15 +31,15 @@ is the finding.
 | #    | step                       | where                          | expect                                                                                   | status   |
 | ---- | -------------------------- | ------------------------------ | ---------------------------------------------------------------------------------------- | -------- |
 | E1.1 | sign in                    | login screen (password or SSO) | the dashboard, scope `default/default`; admin-only controls disabled with the role named | verified |
-| E1.2 | find out what models exist | **Models → Model Catalog**     | the project's routes: `gpt-4o`, `llama-3.1-8b`, … with their capabilities                | verified |
+| E1.2 | find out what models exist | **Traffic → Model Catalog**    | the project's routes: `gpt-4o`, `llama-3.1-8b`, … with their capabilities                | verified |
 
 ## E2 — get a key
 
-| #    | step                                  | where                                                                                               | expect                                                     | status   |
-| ---- | ------------------------------------- | --------------------------------------------------------------------------------------------------- | ---------------------------------------------------------- | -------- |
-| E2.1 | mint a personal key                   | **Settings → Account & keys → Generate virtual key** · `POST /api/v1/me/projects/{id}/virtual-keys` | the key once, a name, an expiry; a viewer would be refused | verified |
-| E2.2 | narrow it to the models the job needs | the mint form's model list                                                                          | `/v1/models` with that key lists only those                | verified |
-| E2.3 | rotate or delete it                   | the key card · `POST /api/v1/me/virtual-keys/{id}/rotate`                                           | a new secret; the old one refused                          | verified |
+| #    | step                                  | where                                                                                                | expect                                                     | status   |
+| ---- | ------------------------------------- | ---------------------------------------------------------------------------------------------------- | ---------------------------------------------------------- | -------- |
+| E2.1 | mint a personal key                   | **user menu → Account & keys → Generate virtual key** · `POST /api/v1/me/projects/{id}/virtual-keys` | the key once, a name, an expiry; a viewer would be refused | verified |
+| E2.2 | narrow it to the models the job needs | the mint form's model list                                                                           | `/v1/models` with that key lists only those                | verified |
+| E2.3 | rotate or delete it                   | the key card · `POST /api/v1/me/virtual-keys/{id}/rotate`                                            | a new secret; the old one refused                          | verified |
 
 ## E3 — make the first call
 
@@ -93,17 +93,17 @@ The debugging loop, in the order an engineer should be able to walk it.
 
 ## E9 — "what have I spent?"
 
-| #    | step                             | where                                              | expect                              | status      |
-| ---- | -------------------------------- | -------------------------------------------------- | ----------------------------------- | ----------- |
-| E9.1 | usage per key over the last week | **Settings → Account & keys** (`/api/v1/me/usage`) | requests and cost per key           | verified    |
-| E9.2 | how much of my allowance is left | —                                                  | a personal budget and its remainder | gap — #1830 |
+| #    | step                             | where                                               | expect                              | status      |
+| ---- | -------------------------------- | --------------------------------------------------- | ----------------------------------- | ----------- |
+| E9.1 | usage per key over the last week | **user menu → Account & keys** (`/api/v1/me/usage`) | requests and cost per key           | verified    |
+| E9.2 | how much of my allowance is left | —                                                   | a personal budget and its remainder | gap — #1830 |
 
 ## E10 — make the dashboard mine
 
-| #     | step                                        | where                                                                   | expect                                                                                                                                                                                                              | status                                 |
-| ----- | ------------------------------------------- | ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------- |
-| E10.1 | set a display name and a short bio          | **Settings → Account & keys → Profile** · `PATCH /api/v1/me/profile`    | other people see the name instead of an e-mail                                                                                                                                                                      | verified (#1823, #2433; V2.1 walks it) |
-| E10.2 | language, default project, Playground model | **Settings → Preferences**; the language picker; the scope switcher     | kept on the server, so a new browser opens on the same language, scope and model — and on the same chart time zone                                                                                                  | done (#2448)                           |
-| E10.3 | save "my errors this week" as a view        | **LLM Logs → Saved views** · `POST /api/v1/me/saved-views`              | a named filter on LLM Logs                                                                                                                                                                                          | verified (#1825, #2451; V5.1 walks it) |
-| E10.4 | protect the account with a second factor    | **Settings → Account & keys → Two-factor authentication**               | TOTP and recovery codes                                                                                                                                                                                             | verified                               |
-| E10.5 | change my password                          | **Settings → Account & keys → Password** · `POST /api/v1/auth/password` | the form asks for the current password and the new one twice; a wrong current password is shown on its field and throttled like a sign-in; on success the other sessions are signed out and the panel says how many | works (#2804)                          |
+| #     | step                                        | where                                                                    | expect                                                                                                                                                                                                              | status                                 |
+| ----- | ------------------------------------------- | ------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------- |
+| E10.1 | set a display name and a short bio          | **user menu → Account & keys → Profile** · `PATCH /api/v1/me/profile`    | other people see the name instead of an e-mail                                                                                                                                                                      | verified (#1823, #2433; V2.1 walks it) |
+| E10.2 | language, default project, Playground model | **user menu → Preferences**; the language picker; the scope switcher     | kept on the server, so a new browser opens on the same language, scope and model — and on the same chart time zone                                                                                                  | done (#2448)                           |
+| E10.3 | save "my errors this week" as a view        | **LLM Logs → Saved views** · `POST /api/v1/me/saved-views`               | a named filter on LLM Logs                                                                                                                                                                                          | verified (#1825, #2451; V5.1 walks it) |
+| E10.4 | protect the account with a second factor    | **user menu → Account & keys → Two-factor authentication**               | TOTP and recovery codes                                                                                                                                                                                             | verified                               |
+| E10.5 | change my password                          | **user menu → Account & keys → Password** · `POST /api/v1/auth/password` | the form asks for the current password and the new one twice; a wrong current password is shown on its field and throttled like a sign-in; on success the other sessions are signed out and the panel says how many | works (#2804)                          |

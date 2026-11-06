@@ -67,13 +67,13 @@ rolter check --config rolter.toml --strict
 
 | Table in `rolter.toml`                                     | Edited in the dashboard under | Page                                                  |
 | ---------------------------------------------------------- | ----------------------------- | ----------------------------------------------------- |
-| `[compatibility]`                                          | Settings → Compatibility      | [Compatibility](/configuration/compatibility)         |
-| `[client]`                                                 | Settings → Client Settings    | [Client settings](/configuration/client-settings)     |
-| `[model_defaults]`                                         | Settings → Model Settings     | [Model settings](/configuration/model-settings)       |
-| `[adaptive_routing]`                                       | Adaptive Routing → Settings   | [Adaptive routing](/concepts/adaptive-routing)        |
-| `[logging]`: `sample_rate`, `payload_capture`, `ui_events` | Observability → Logs Settings | [Log settings](/observability/log-settings)           |
-| `[retry]`, `[timeouts]`, `[queue]`                         | Settings → Performance Tuning | [Performance tuning](/reliability/performance-tuning) |
-| `[feature_flags]`                                          | Settings → Feature Flags      | [Feature flags](/configuration/feature-flags)         |
+| `[compatibility]`                                          | Platform → Compatibility      | [Compatibility](/configuration/compatibility)         |
+| `[client]`                                                 | Platform → Client Settings    | [Client settings](/configuration/client-settings)     |
+| `[model_defaults]`                                         | Platform → Model Defaults     | [Model settings](/configuration/model-settings)       |
+| `[adaptive_routing]`                                       | Traffic → Adaptive Policy     | [Adaptive routing](/concepts/adaptive-routing)        |
+| `[logging]`: `sample_rate`, `payload_capture`, `ui_events` | Platform → Logging            | [Log settings](/observability/log-settings)           |
+| `[retry]`, `[timeouts]`, `[queue]`                         | Platform → Performance Tuning | [Performance tuning](/reliability/performance-tuning) |
+| `[feature_flags]`                                          | Platform → Feature Flags      | [Feature flags](/configuration/feature-flags)         |
 | `[security]`                                               | the Security screen           |                                                       |
 
 `rolter-seed --import` does not carry these tables into the database. The only parts of them it reads from the file are `[logging.payload_capture]` and `ui_events`, and only when the file writes them. So in a database-backed deployment a value written in `rolter.toml` changes nothing for these tables, and each of them takes effect from the file only for a gateway that reads it directly. The exception is a control plane that loads the file itself, described under the list. The sections for these tables repeat the caveat.
@@ -1105,7 +1105,7 @@ tpm = 150000
 
 On a transient upstream failure (HTTP 408, 429, 5xx, or a connection error), Rolter re-picks a different target and retries. Retries only happen before any response bytes have been streamed to the client, so no partial response is ever duplicated.
 
-In a database-backed deployment the store owns this table: the snapshot carries what is saved under **Settings → Performance Tuning**, see [Performance tuning](/reliability/performance-tuning). It takes effect from the file for a gateway that reads `rolter.toml` itself.
+In a database-backed deployment the store owns this table: the snapshot carries what is saved under **Platform → Performance Tuning**, see [Performance tuning](/reliability/performance-tuning). It takes effect from the file for a gateway that reads `rolter.toml` itself.
 
 <ParamField path="max_retries" default="2" type="u32">
   Extra attempts after the first. Set to `0` to disable retries entirely.
@@ -1204,7 +1204,7 @@ registry_max_entries = 100000
 
 Timeouts bound how long the gateway waits for an upstream before treating the request as a transient failure and feeding it into the retry and cooldown machinery. `request_secs` applies to time-to-response-headers only, so legitimately long SSE streams are never cut short.
 
-In a database-backed deployment the store owns this table: the snapshot carries what is saved under **Settings → Performance Tuning**, see [Performance tuning](/reliability/performance-tuning). It takes effect from the file for a gateway that reads `rolter.toml` itself.
+In a database-backed deployment the store owns this table: the snapshot carries what is saved under **Platform → Performance Tuning**, see [Performance tuning](/reliability/performance-tuning). It takes effect from the file for a gateway that reads `rolter.toml` itself.
 
 <ParamField path="connect_secs" default="10" type="u64">
   The connection-establishment timeout in seconds. Set to `0` to disable.
@@ -1241,7 +1241,7 @@ default_max_tokens = 1024
 ```
 
 <Note>
-  **Database-backed deployments.** Behind a control plane with a database, the compatibility policy is owned by the store: the snapshot carries what is saved under **Settings → Compatibility**, and `rolter-seed --import` does not read this table from the file. Edit it there, see [Compatibility](/configuration/compatibility). This table takes effect for a gateway that reads `rolter.toml` itself.
+  **Database-backed deployments.** Behind a control plane with a database, the compatibility policy is owned by the store: the snapshot carries what is saved under **Platform → Compatibility**, and `rolter-seed --import` does not read this table from the file. Edit it there, see [Compatibility](/configuration/compatibility). This table takes effect for a gateway that reads `rolter.toml` itself.
 </Note>
 
 ---
@@ -1275,7 +1275,7 @@ request_id_header = "x-request-id"
 ```
 
 <Note>
-  **Database-backed deployments.** A control plane with a database owns this table: the snapshot carries what is saved under **Settings → Client Settings**, and `rolter-seed --import` does not read it from the file. See [Client settings](/configuration/client-settings). The table takes effect for a gateway that reads `rolter.toml` itself. A control plane started with `--config` as well as a database serves the file's table until something other than the defaults is saved on the screen, and the saved one after that.
+  **Database-backed deployments.** A control plane with a database owns this table: the snapshot carries what is saved under **Platform → Client Settings**, and `rolter-seed --import` does not read it from the file. See [Client settings](/configuration/client-settings). The table takes effect for a gateway that reads `rolter.toml` itself. A control plane started with `--config` as well as a database serves the file's table until something other than the defaults is saved on the screen, and the saved one after that.
 </Note>
 
 ---
@@ -1315,7 +1315,7 @@ max_tokens = 2048
 ```
 
 <Note>
-  **Database-backed deployments.** A control plane with a database owns this table: the snapshot carries what is saved under **Settings → Model Settings**, and `rolter-seed --import` does not read it from the file. See [Model settings](/configuration/model-settings), whose API names the fields `default_temperature`, `default_top_p` and `default_max_tokens`. The table takes effect for a gateway that reads `rolter.toml` itself. A control plane started with `--config` as well as a database serves the file's table until something other than the defaults is saved on the screen, and the saved one after that.
+  **Database-backed deployments.** A control plane with a database owns this table: the snapshot carries what is saved under **Platform → Model Defaults**, and `rolter-seed --import` does not read it from the file. See [Model settings](/configuration/model-settings), whose API names the fields `default_temperature`, `default_top_p` and `default_max_tokens`. The table takes effect for a gateway that reads `rolter.toml` itself. A control plane started with `--config` as well as a database serves the file's table until something other than the defaults is saved on the screen, and the saved one after that.
 </Note>
 
 ---
@@ -1361,7 +1361,7 @@ min_samples = 50
 ```
 
 <Note>
-  **Database-backed deployments.** A control plane with a database owns this table: the snapshot carries what is saved under **Adaptive Routing → Settings**, and `rolter-seed --import` does not read it from the file. The table takes effect for a gateway that reads `rolter.toml` itself.
+  **Database-backed deployments.** A control plane with a database owns this table: the snapshot carries what is saved under **Traffic → Adaptive Policy**, and `rolter-seed --import` does not read it from the file. The table takes effect for a gateway that reads `rolter.toml` itself.
 </Note>
 
 ---
@@ -1375,7 +1375,7 @@ headers arrive, response bodies (including SSE) stream directly to the caller.
 The settings are applied to subsequent requests immediately after a config
 snapshot reload.
 
-In a database-backed deployment the store owns this table: the snapshot carries what is saved under **Settings → Performance Tuning**, see [Performance tuning](/reliability/performance-tuning). It takes effect from the file for a gateway that reads `rolter.toml` itself.
+In a database-backed deployment the store owns this table: the snapshot carries what is saved under **Platform → Performance Tuning**, see [Performance tuning](/reliability/performance-tuning). It takes effect from the file for a gateway that reads `rolter.toml` itself.
 
 <ParamField path="enabled" default="true" type="boolean">
   Set to `false` to bypass queues and forward directly.
@@ -1694,14 +1694,14 @@ pattern = 'EMP-\d{6}'
 ```
 
 <Note>
-  **Database-backed deployments.** Behind a control plane with a database, `sample_rate`, `payload_capture` and `ui_events` are owned by the store: the snapshot carries what is saved under **Observability → Logs Settings**, see [Log settings](/observability/log-settings). `rolter-seed --import` copies `[logging.payload_capture]` and `ui_events` into the database when the file writes them, and does not read `sample_rate`. All three take effect from the file only for a gateway that reads `rolter.toml` itself. `clickhouse_url` follows a different rule: a gateway that names none inherits the control plane's own ClickHouse URL from the snapshot, and one that names its own keeps it.
+  **Database-backed deployments.** Behind a control plane with a database, `sample_rate`, `payload_capture` and `ui_events` are owned by the store: the snapshot carries what is saved under **Platform → Logging**, see [Log settings](/observability/log-settings). `rolter-seed --import` copies `[logging.payload_capture]` and `ui_events` into the database when the file writes them, and does not read `sample_rate`. All three take effect from the file only for a gateway that reads `rolter.toml` itself. `clickhouse_url` follows a different rule: a gateway that names none inherits the control plane's own ClickHouse URL from the snapshot, and one that names its own keeps it.
 </Note>
 
 ---
 
 ### \[feature_flags\]
 
-Deployment-wide switches for the subsystems that are safe to turn on and off at runtime. They belong to the control plane: an admin edits them under **Settings → Feature Flags**, the control plane stores them and applies them to the snapshot every gateway polls, and a gateway picks the change up without a restart. A gateway that reads `rolter.toml` itself does not apply this table, so writing it there does nothing. See [Feature flags](/configuration/feature-flags) for what each flag gates and when one is reported unavailable.
+Deployment-wide switches for the subsystems that are safe to turn on and off at runtime. They belong to the control plane: an admin edits them under **Platform → Feature Flags**, the control plane stores them and applies them to the snapshot every gateway polls, and a gateway picks the change up without a restart. A gateway that reads `rolter.toml` itself does not apply this table, so writing it there does nothing. See [Feature flags](/configuration/feature-flags) for what each flag gates and when one is reported unavailable.
 
 All six default to `true`.
 
@@ -1929,7 +1929,7 @@ auth = { bearer = { token_env = "GUARD_TOKEN" } }
 
 ### \[semantic_guards\]
 
-Several guardrail providers side by side, and the scoped policies that pick which of them judge a request (#459). Empty by default. [Semantic guard policies](/security/semantic-guard-policies) explains the precedence, thresholds, failure handling and streaming in full. The dashboard's **Guardrails → Providers** and **Guardrails → Policies** add to what the file sets; the file wins a name, and an enabled file policy wins its scope.
+Several guardrail providers side by side, and the scoped policies that pick which of them judge a request (#459). Empty by default. [Semantic guard policies](/security/semantic-guard-policies) explains the precedence, thresholds, failure handling and streaming in full. The dashboard's **Safety → Guardrail Providers** and **Safety → Guardrail Policies** add to what the file sets; the file wins a name, and an enabled file policy wins its scope.
 
 <ParamField path="providers" type="array of tables">
   The providers, each a `[[semantic_guards.providers]]` table below.

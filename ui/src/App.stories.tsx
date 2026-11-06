@@ -86,7 +86,7 @@ export const Desktop: Story = {
 
     // labels, not icons: this is the full rail, not the tablet strip
     await expect(within(rail).getByText("rolter")).toBeVisible();
-    await expect(within(rail).getByRole("link", { name: nav.playground })).toBeVisible();
+    await expect(within(rail).getByRole("link", { name: nav.dashboard })).toBeVisible();
     // the splitter belongs to this width and only this width
     await expect(
       within(rail).getByRole("separator", { name: en.shell.resizeSidebar }),
@@ -179,20 +179,21 @@ export const AccountMenuFallsBackToTheEmail: Story = {
 
 /**
  * What the menu holds, and what it no longer does: the entries are the person's
- * own screens and Sign out, in that order, named the way the rail names them —
- * and no scope pickers, no creating or deleting an org beside Sign out.
+ * own screens and Sign out, in that order — and no scope pickers, no creating
+ * or deleting an org beside Sign out. The menu is the only home of those
+ * screens: the rail is about the deployment (#3656).
  */
 export const AccountMenuHoldsThePersonOnly: Story = {
   render: () => <AppShell route="/dashboard" />,
   play: async ({ canvasElement }) => {
     const rail = await railOf(canvasElement);
-    // the rail's own leaves, found through its search box, which opens a group
+    // the rail's search finds neither: they are not its leaves
     const search = within(rail).getByRole("textbox", { name: en.shell.searchNav });
     await userEvent.type(search, "account");
-    await expect(within(rail).getByRole("link", { name: nav["api-keys"] })).toBeVisible();
+    await expect(within(rail).queryByRole("link", { name: nav["api-keys"] })).toBeNull();
     await userEvent.clear(search);
     await userEvent.type(search, "preferences");
-    await expect(within(rail).getByRole("link", { name: nav.preferences })).toBeVisible();
+    await expect(within(rail).queryByRole("link", { name: nav.preferences })).toBeNull();
     await userEvent.clear(search);
 
     const { menu } = await openAccountMenu(rail, /anya@acme.co/);
@@ -216,10 +217,8 @@ export const AccountMenuEntriesNavigate: Story = {
     const { card, menu } = await openAccountMenu(rail, /anya@acme.co/);
     await userEvent.click(within(menu).getByRole("menuitem", { name: nav["api-keys"] }));
     await canvas.findByRole("heading", { level: 1, name: screens["api-keys"].title });
-    await expect(within(rail).getByRole("link", { name: nav["api-keys"] })).toHaveAttribute(
-      "aria-current",
-      "page",
-    );
+    // the screen is the account's, so no rail entry claims it
+    await expect(within(rail).queryByRole("link", { current: "page" })).toBeNull();
     await waitFor(() => expect(within(rail).queryByRole("menu")).toBeNull());
     await waitFor(() => expect(card).toHaveFocus());
 
@@ -475,12 +474,12 @@ export const FoldedRailOpensAGroup: Story = {
     const canvas = within(canvasElement);
     const rail = await railOf(canvasElement);
     await waitFor(() => expect(rail.getBoundingClientRect().width).toBe(52));
-    const group = await within(rail).findByRole("button", { name: nav.models });
+    const group = await within(rail).findByRole("button", { name: nav.traffic });
     // the screen is out of sight on the folded rail, so its group says so
     await expect(group).toHaveAttribute("aria-current", "true");
 
     await userEvent.click(group);
-    const flyout = within(await within(rail).findByRole("group", { name: nav.models }));
+    const flyout = within(await within(rail).findByRole("group", { name: nav.traffic }));
     await expect(flyout.getByRole("link", { name: nav.providers })).toHaveAttribute(
       "aria-current",
       "page",
@@ -492,7 +491,9 @@ export const FoldedRailOpensAGroup: Story = {
         canvas.getByRole("heading", { level: 1, name: screens["routing-rules"].title }),
       ).toBeVisible(),
     );
-    await waitFor(() => expect(within(rail).queryByRole("group", { name: nav.models })).toBeNull());
+    await waitFor(() =>
+      expect(within(rail).queryByRole("group", { name: nav.traffic })).toBeNull(),
+    );
     await waitFor(() => expect(group).toHaveFocus());
     await expect(group).toHaveAttribute("aria-current", "true");
     await expectNoHorizontalOverflow();
@@ -510,10 +511,10 @@ export const FoldedRailFlyoutLeavesOutRefusedScreens: Story = {
     const rail = await railOf(canvasElement);
     await waitFor(() => expect(rail.getBoundingClientRect().width).toBe(52));
     await waitFor(() =>
-      expect(within(rail).queryByRole("button", { name: nav.alerting })).toBeNull(),
+      expect(within(rail).queryByRole("button", { name: nav.safety })).toBeNull(),
     );
-    await userEvent.click(within(rail).getByRole("button", { name: nav.governance }));
-    const flyout = within(await within(rail).findByRole("group", { name: nav.governance }));
+    await userEvent.click(within(rail).getByRole("button", { name: nav.access }));
+    const flyout = within(await within(rail).findByRole("group", { name: nav.access }));
     await expect(flyout.getByRole("link", { name: nav["gov-teams"] })).toBeVisible();
     await expect(flyout.queryByRole("link", { name: nav["audit-logs"] })).toBeNull();
     await expect(flyout.queryByRole("link", { name: nav.sso })).toBeNull();
@@ -703,15 +704,13 @@ export const Mobile: Story = {
     const drawer = await canvas.findByRole("dialog", { name: NAV_LABEL });
     await expectNoHorizontalOverflow();
 
-    // a top-level leaf, so the assertion is about the drawer and not about
-    // expanding a parent on the way to a child
-    await userEvent.click(await within(drawer).findByRole("link", { name: nav.playground }));
+    // a screen of the group already open around the current one, so the
+    // assertion is about the drawer and not about expanding a parent first
+    await userEvent.click(await within(drawer).findByRole("link", { name: nav.logs }));
 
     // navigated…
     await waitFor(() =>
-      expect(
-        canvas.getByRole("heading", { level: 1, name: screens.playground.title }),
-      ).toBeVisible(),
+      expect(canvas.getByRole("heading", { level: 1, name: screens.logs.title })).toBeVisible(),
     );
     // …and closed behind itself
     await waitFor(() => expect(canvas.queryByRole("dialog")).toBeNull());
@@ -735,6 +734,7 @@ export const ExperimentalMarker: Story = {
   ),
   play: async ({ canvasElement }) => {
     const rail = await railOf(canvasElement);
+    await userEvent.click(within(rail).getByRole("button", { name: nav.platform }));
     const marked = await within(rail).findByRole("link", {
       name: `${nav["skills-repo"]} ${en.shell.experimental}`,
     });
@@ -750,7 +750,7 @@ export const ExperimentalMarker: Story = {
     );
     // and the marker is the exception it claims to be: a sibling the answer
     // did not name carries nothing
-    const plain = within(rail).getByRole("link", { name: nav.playground });
+    const plain = within(rail).getByRole("link", { name: nav["prompt-repo"] });
     await expect(within(plain).queryByText(en.shell.experimental)).toBeNull();
   },
 };
@@ -768,6 +768,7 @@ export const ExperimentalMarkerTranslated: Story = {
   ),
   play: async ({ canvasElement }) => {
     const rail = await railOf(canvasElement, ru.shell.navLabel);
+    await userEvent.click(within(rail).getByRole("button", { name: ru.nav.platform }));
     const marked = await within(rail).findByRole("link", {
       name: `${ru.nav["skills-repo"]} ${ru.shell.experimental}`,
     });
@@ -797,6 +798,7 @@ export const ExperimentalMarkerWithoutNote: Story = {
   ),
   play: async ({ canvasElement }) => {
     const rail = await railOf(canvasElement);
+    await userEvent.click(within(rail).getByRole("button", { name: nav.platform }));
     const marked = await within(rail).findByRole("link", {
       name: `${nav["skills-repo"]} ${en.shell.experimental}`,
     });
@@ -808,8 +810,9 @@ export const ExperimentalMarkerWithoutNote: Story = {
 
 /**
  * Folded to icons there is no room for a word, so the marker becomes a dot on
- * the corner of the entry's icon and the name it lost moves into the tooltip —
- * which, on a button with no text, is also its accessible name.
+ * the corner of an icon. Every screen sits in a group (#3656), so the dot is on
+ * the group holding the experimental screen, and the screen's flyout entry
+ * carries the word.
  */
 export const ExperimentalMarkerOnIconRail: Story = {
   ...atTablet,
@@ -819,12 +822,19 @@ export const ExperimentalMarkerOnIconRail: Story = {
   play: async ({ canvasElement }) => {
     const rail = await railOf(canvasElement);
     await waitFor(() => expect(rail.getBoundingClientRect().width).toBe(52));
-    const marked = await within(rail).findByRole("link", {
-      name: en.shell.experimentalItem.replace("{{label}}", nav["skills-repo"]),
-    });
-    await expect(marked).toBeVisible();
-    // the word itself is not painted at this width
+    const group = await within(rail).findByRole("button", { name: nav.platform });
+    const dot = () => group.querySelector(".rounded-full");
+    await waitFor(() => expect(dot()).not.toBeNull());
+    // the word itself is not painted on the strip
     await expect(within(rail).queryByText(en.shell.experimental)).toBeNull();
+    // a group with nothing experimental in it carries no dot
+    const plain = within(rail).getByRole("button", { name: nav.access });
+    await expect(plain.querySelector(".rounded-full")).toBeNull();
+    await userEvent.click(group);
+    const flyout = within(await within(rail).findByRole("group", { name: nav.platform }));
+    await expect(
+      flyout.getByRole("link", { name: `${nav["skills-repo"]} ${en.shell.experimental}` }),
+    ).toBeVisible();
     await expectNoHorizontalOverflow();
   },
 };
@@ -835,7 +845,7 @@ export const ExperimentalMarkerOnIconRail: Story = {
 // "Pl…". These stories mount the whole shell at that width, in both locales,
 // since the Russian copy runs a third longer than the English.
 
-/** the three entries that sit in the rail's tightest places: top level, nested, a short one */
+/** three experimental entries in two groups, a long name and a short one among them */
 const SPLIT_SUBSYSTEMS: SubsystemStability[] = [
   {
     id: "skills_repository",
@@ -882,12 +892,13 @@ function entriesStayWhole(locale: "en" | "ru") {
         await expect(badge).toBeVisible();
       };
 
-      // a top-level entry
+      // the longest experimental name
+      await userEvent.click(within(rail).getByRole("button", { name: labels.platform }));
       const skills = await within(rail).findByRole("link", {
         name: `${labels["skills-repo"]} ${word}`,
       });
       await whole(skills, labels["skills-repo"]);
-      // one nested under its group, which has the least room of all
+      // and one in another group
       await userEvent.click(within(rail).getByRole("button", { name: labels.mcp }));
       const settings = await within(rail).findByRole("link", {
         name: `${labels["mcp-settings"]} ${word}`,
@@ -1154,21 +1165,40 @@ export const RailLabelsAreWholeInRussian: Story = {
   render: () => <AppShell route="/dashboard" />,
   play: async ({ canvasElement }) => {
     const rail = await railOf(canvasElement, ru.shell.navLabel);
-    await within(rail).findByRole("link", { name: ru.nav.playground });
-    // a group opens in place, so the next closed one is looked up afresh
-    const closedGroup = () => rail.querySelector('button[aria-expanded="false"]');
-    for (let group = closedGroup(), opened = 0; group && opened < 30; opened++) {
-      await userEvent.click(group);
-      group = closedGroup();
+    await within(rail).findByRole("link", { name: ru.nav.dashboard });
+    // one group open at a time: each is opened in turn and its screens read
+    const cut: string[] = [];
+    let read = 0;
+    for (const key of [
+      "observability",
+      "traffic",
+      "spend",
+      "access",
+      "safety",
+      "mcp",
+      "platform",
+    ]) {
+      const group = within(rail).queryByRole("button", {
+        name: ru.nav[key as keyof typeof ru.nav],
+      });
+      if (!group) continue;
+      if (group.getAttribute("aria-expanded") === "false") await userEvent.click(group);
+      const labels = Array.from(rail.querySelectorAll<HTMLElement>("a > span, button > span"));
+      read += labels.length;
+      cut.push(
+        ...labels
+          .filter(
+            (el) => el.scrollWidth > el.clientWidth + 1 || el.scrollHeight > el.clientHeight + 1,
+          )
+          .map((el) => el.textContent ?? ""),
+      );
     }
-    const labels = Array.from(rail.querySelectorAll<HTMLElement>("a > span, button > span"));
-    await expect(labels.length).toBeGreaterThan(20);
-    const cut = labels.filter(
-      (el) => el.scrollWidth > el.clientWidth + 1 || el.scrollHeight > el.clientHeight + 1,
+    await expect(read).toBeGreaterThan(40);
+    await expect([...new Set(cut)]).toEqual([]);
+    // the longest entry wraps rather than ending in "…"
+    const adaptive = Array.from(rail.querySelectorAll<HTMLElement>("a > span")).find(
+      (el) => el.textContent === ru.nav.performance,
     );
-    await expect(cut.map((el) => el.textContent)).toEqual([]);
-    // the entry the livetest could not read wraps rather than ending in "…"
-    const adaptive = labels.find((el) => el.textContent === ru.nav["adaptive-routing"]);
     await expect(adaptive).toBeDefined();
     const line = parseFloat(getComputedStyle(adaptive!).lineHeight);
     await expect(adaptive!.getBoundingClientRect().height).toBeGreaterThan(line * 1.5);

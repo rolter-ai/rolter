@@ -328,12 +328,13 @@ export const NavAsViewer: Story = {
     // a group whose every leaf is deployment-scoped is gone, not disabled: a
     // rail full of entries that all open the same refusal is a worse map of
     // the product than a shorter rail
-    await waitFor(() => expect(canvas.queryByText("Alerting")).toBeNull());
-    await expect(canvas.queryByText("Guardrails")).toBeNull();
+    await waitFor(() => expect(canvas.queryByText("Safety")).toBeNull());
     await expect(canvas.queryByText("Cluster Config")).toBeNull();
+    await expect(canvas.queryByText("Alert Rules")).toBeNull();
     // what a viewer may read is still there
-    await expect(canvas.getByText("Governance")).toBeVisible();
-    await expect(canvas.getByText("Playground")).toBeVisible();
+    await expect(canvas.getByText("Access")).toBeVisible();
+    await expect(canvas.getByText("Traffic")).toBeVisible();
+    await expect(canvas.getByText("Dashboard")).toBeVisible();
   },
 };
 
@@ -345,8 +346,8 @@ export const NavAsSuperadmin: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await waitFor(() => expect(canvas.getByText("Alerting")).toBeVisible());
-    await expect(canvas.getByText("Guardrails")).toBeVisible();
+    await waitFor(() => expect(canvas.getByText("Safety")).toBeVisible());
+    await expect(canvas.getByText("Alert Rules")).toBeVisible();
     await expect(canvas.getByText("Cluster Config")).toBeVisible();
   },
 };
@@ -361,7 +362,9 @@ export const NavUngated: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expect(canvas.getByText("Alerting")).toBeVisible();
+    // the group every role below superadmin loses is still drawn
+    await expect(canvas.getByText("Safety")).toBeVisible();
+    await expect(canvas.getByText("Alert Rules")).toBeVisible();
   },
 };
 
@@ -567,9 +570,9 @@ export const NavAsViewerFlyout: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await waitFor(() => expect(canvas.queryByRole("button", { name: nav.alerting })).toBeNull());
-    await userEvent.click(canvas.getByRole("button", { name: nav.governance }));
-    const flyout = within(await canvas.findByRole("group", { name: nav.governance }));
+    await waitFor(() => expect(canvas.queryByRole("button", { name: nav.safety })).toBeNull());
+    await userEvent.click(canvas.getByRole("button", { name: nav.access }));
+    const flyout = within(await canvas.findByRole("group", { name: nav.access }));
     await expect(flyout.getByRole("button", { name: nav["gov-teams"] })).toBeVisible();
     await expect(flyout.getByRole("button", { name: nav["virtual-keys"] })).toBeVisible();
     // admin-only screens, the same ones the expanded rail leaves out
@@ -587,9 +590,9 @@ export const NavAsSuperadminFlyout: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await waitFor(() => expect(canvas.getByRole("button", { name: nav.alerting })).toBeVisible());
-    await userEvent.click(canvas.getByRole("button", { name: nav.governance }));
-    const flyout = within(await canvas.findByRole("group", { name: nav.governance }));
+    await waitFor(() => expect(canvas.getByRole("button", { name: nav.safety })).toBeVisible());
+    await userEvent.click(canvas.getByRole("button", { name: nav.access }));
+    const flyout = within(await canvas.findByRole("group", { name: nav.access }));
     await expect(flyout.getByRole("button", { name: nav["user-provisioning"] })).toBeVisible();
     await expect(flyout.getByRole("button", { name: nav["audit-logs"] })).toBeVisible();
     await expect(flyout.getByRole("button", { name: nav.sso })).toBeVisible();

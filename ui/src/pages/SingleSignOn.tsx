@@ -1098,7 +1098,7 @@ function ProviderSheet({
 }
 
 /**
- * Governance › Single sign-on (#1185).
+ * Access › Single sign-on (#1185).
  *
  * The control plane has carried OIDC SSO and a per-org sign-in policy since
  * #240, but nothing in the dashboard could register a provider: the login

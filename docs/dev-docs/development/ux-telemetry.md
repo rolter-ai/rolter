@@ -548,7 +548,7 @@ resumes by itself once the store is back. The logic lives in
 
 The last row is the only deliberate one. In a Postgres-backed deployment it is
 the `ui_events` column on the `logging_settings` singleton (migration `0073`,
-#1748): the **Dashboard usage events** switch on **Logs Settings**, or
+#1748): the **Dashboard usage events** switch on **Logging**, or
 `ui_events` in the `PUT /api/v1/logging-settings` body. `PostgresConfigStore`
 projects it into `logging.ui_events`, which is what the handler reads, so the
 switch takes effect on the next batch with no restart. `rolter-seed --import`

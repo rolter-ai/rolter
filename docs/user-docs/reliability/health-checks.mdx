@@ -160,7 +160,7 @@ status_page_interval_secs = 60
 
 ## Provider health in the dashboard
 
-**Models → Provider Health** reads `provider_health_events` over the last 7 days (probes, status-page polls and real traffic) and measures each provider against a 99% SLA. One card per provider, with the targets that carried its traffic listed inside it.
+**Traffic → Provider Health** reads `provider_health_events` over the last 7 days (probes, status-page polls and real traffic) and measures each provider against a 99% SLA. One card per provider, with the targets that carried its traffic listed inside it.
 
 The screen does not show circuit-breaker state. The gateway keeps its breakers in memory and does not report them to the control plane; trips are counted as `rolter_breaker_trip_total` in [`/metrics`](/observability/metrics). See [Circuit breakers](/reliability/circuit-breakers).
 

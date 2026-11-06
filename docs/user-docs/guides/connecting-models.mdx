@@ -24,13 +24,13 @@ Rolter connects models in two moves: a **provider** says how to reach an upstrea
 
 <Steps>
   <Step title="Add the provider">
-    **Models → Model Providers → + Add provider**: pick the kind (OpenAI, Anthropic, Gemini, Mistral, OpenRouter, a self-hosted vLLM, Ollama or llama.cpp, and many more), the base URL, and the API key. The key is sealed with the deployment's key-encryption key and never shown again.
+    **Traffic → Model Providers → + Add provider**: pick the kind (OpenAI, Anthropic, Gemini, Mistral, OpenRouter, a self-hosted vLLM, Ollama or llama.cpp, and many more), the base URL, and the API key. The key is sealed with the deployment's key-encryption key and never shown again.
   </Step>
   <Step title="Test the connection">
     **Test connection** asks the upstream for its model list and says so if it gets anything else. Fix a wrong key or URL here, not after a client fails.
   </Step>
   <Step title="Add a route">
-    **Models → Routing Rules → + Add route** (**Model Catalog** has the same button and opens the same sheet): the public name clients will send (say `gpt-4o`), a strategy, and the provider target it lands on. Pick the provider yourself when you have more than one; the **Upstream model** field then suggests what that provider lists, and takes any id you type. The magnifier button beside it checks that the provider lists the id (it needs the same permission as **Test connection**), and says plainly when the provider has no model list to check against. It appears in **Model Catalog**, and in `GET /v1/models` for every key allowed to reach it.
+    **Traffic → Routing Rules → + Add route** (**Model Catalog** has the same button and opens the same sheet): the public name clients will send (say `gpt-4o`), a strategy, and the provider target it lands on. Pick the provider yourself when you have more than one; the **Upstream model** field then suggests what that provider lists, and takes any id you type. The magnifier button beside it checks that the provider lists the id (it needs the same permission as **Test connection**), and says plainly when the provider has no model list to check against. It appears in **Model Catalog**, and in `GET /v1/models` for every key allowed to reach it.
   </Step>
   <Step title="Try it">
     Send a message from the **Playground**, then find the request in **Observability → LLM Logs** with its provider, latency and cost.
@@ -43,31 +43,31 @@ Give a route two targets that serve the same model — two regions of one vendor
 
 To split a route's traffic between groups of targets instead, for an A/B test or a canary, use the route sheet's **Variants** section: each variant has a name, a weight and its own targets in the order they are tried, and the sheet previews the resulting split as you type. See [Variants](/concepts/providers-and-routes#variants).
 
-- Retries, backoff and timeouts: **Settings → Performance Tuning**, and [Retries & cooldowns](/reliability/retries-and-cooldowns).
-- Uptime and SLA state per provider and target: **Models → Provider Health**, and [Provider health in the dashboard](/reliability/health-checks#provider-health-in-the-dashboard). Breaker trips are counted in `/metrics`; see [Circuit breakers](/reliability/circuit-breakers).
+- Retries, backoff and timeouts: **Platform → Performance Tuning**, and [Retries & cooldowns](/reliability/retries-and-cooldowns).
+- Uptime and SLA state per provider and target: **Traffic → Provider Health**, and [Provider health in the dashboard](/reliability/health-checks#provider-health-in-the-dashboard). Breaker trips are counted in `/metrics`; see [Circuit breakers](/reliability/circuit-breakers).
 - Probe targets before a request fails: [Health checks](/reliability/health-checks).
 
 ## Several vendors
 
 One provider per vendor, one route per public model name. Clients ask for `gpt-4o` or `claude-sonnet-4` and never learn which vendor answered — the OpenAI and Anthropic dialects are both served, and requests are translated between them when a route crosses over.
 
-On each route you can pin **parameter defaults** (a default `temperature`, a capped `max_tokens`) and a **parameter policy** deciding which of them callers may override. Deployment-wide fallbacks for anything a caller omits live under **Models → Model Settings**. See [Model settings](/configuration/model-settings).
+On each route you can pin **parameter defaults** (a default `temperature`, a capped `max_tokens`) and a **parameter policy** deciding which of them callers may override. Deployment-wide fallbacks for anything a caller omits live under **Platform → Model Defaults**. See [Model settings](/configuration/model-settings).
 
 ## A fleet
 
 For many replicas of self-hosted engines (vLLM, SGLang, TGI):
 
-- **Provider groups** name a set of providers once, and `group/model` addresses the whole set — **Models → Provider Groups**.
+- **Provider groups** name a set of providers once, and `group/model` addresses the whole set — **Traffic → Provider Groups**.
 - **Pick a strategy per route**, matched to the workload. It is chosen when the route is created, in the route sheet or in `rolter.toml`. To change it later, along with the route's targets and weights, use [`PUT /api/v1/routes/{id}`](/api/routes) or re-import `rolter.toml`; the route sheet cannot change it yet ([#2134](https://github.com/rolter-ai/rolter/issues/2134)).
 
-| workload                                   | strategy                                                      |
-| ------------------------------------------ | ------------------------------------------------------------- |
-| identical replicas, nothing special        | `round_robin`                                                 |
-| a canary or an uneven fleet                | `weighted`                                                    |
-| latency matters most                       | `fastest`, `predicted_latency`                                |
-| multi-turn chat or long shared prefixes    | `cache_aware` (keeps KV caches warm)                          |
-| spread load with little coordination       | `power_of_two`                                                |
-| let observed latency, cost and load decide | `adaptive` (turn it on under **Adaptive Routing → Settings**) |
+| workload                                   | strategy                                                    |
+| ------------------------------------------ | ----------------------------------------------------------- |
+| identical replicas, nothing special        | `round_robin`                                               |
+| a canary or an uneven fleet                | `weighted`                                                  |
+| latency matters most                       | `fastest`, `predicted_latency`                              |
+| multi-turn chat or long shared prefixes    | `cache_aware` (keeps KV caches warm)                        |
+| spread load with little coordination       | `power_of_two`                                              |
+| let observed latency, cost and load decide | `adaptive` (turn it on under **Traffic → Adaptive Policy**) |
 
 See [Load balancing](/concepts/load-balancing), [Cache-aware routing](/concepts/cache-aware-routing) and [Adaptive routing](/concepts/adaptive-routing).
 

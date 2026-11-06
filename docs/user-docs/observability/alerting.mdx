@@ -10,8 +10,8 @@ and `firing`. A **channel** is the webhook a rule reports to: each change of
 state is POSTed to it as JSON. The **history** records each change and whether
 it was delivered.
 
-In the dashboard it is the **Alerting** group, with one screen for each:
-**Channels**, **Alert Rules** and **History**. The API is `/api/v1/alert-channels`,
+In the dashboard each has a screen under **Observability**: **Alert Channels**,
+**Alert Rules** and **Alert History**. The API is `/api/v1/alert-channels`,
 `/api/v1/alert-rules` and `/api/v1/alert-notifications`.
 
 ## Requirements
@@ -509,7 +509,7 @@ A channel update takes `name`, `endpoint`, `enabled` and, only to replace it,
 
 ## History
 
-**Alerting → History** lists the rows 100 at a time, newest first, with the
+**Observability → Alert History** lists the rows 100 at a time, newest first, with the
 state (`firing` or `resolved`), delivery status, time, rule, reading and detail.
 The state and delivery columns come first so they stay in view on a phone. Every
 change of state has a row, including those of rules with no channel.

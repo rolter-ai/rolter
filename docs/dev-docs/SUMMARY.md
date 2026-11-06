@@ -62,6 +62,7 @@
   - [ADR-0039 — An in-process local classifier for semantic guard policies](adr/2026-10-28-local-semantic-classifier.md)
   - [ADR-0040 — Per-org namespaces for routes, providers and provider groups](adr/2026-10-28-per-org-namespaces.md)
   - [ADR-0041 — Single-use download tickets for the analytics CSV exports](adr/2026-10-29-export-download-tickets.md)
+  - [ADR-0042 — The dashboard sidebar is grouped by job](adr/2026-11-06-sidebar-by-job.md)
 
 # API
 

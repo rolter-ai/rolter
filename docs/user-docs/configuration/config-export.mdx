@@ -220,7 +220,7 @@ Identity is always a slug or a public model name, never a database id, which is 
 
 ### From the dashboard
 
-**Settings → Effective Config** carries an **Export rolter.toml** button beside the header. It opens a dialog with an organization picker, which starts on all organizations, and a switch that leaves caps on a person out. It calls the same endpoint with what was chosen and saves the document as `rolter-config-YYYY-MM-DD.toml`, or `rolter-config-<slug>-YYYY-MM-DD.toml` for one organization, dated so successive exports sit side by side instead of overwriting each other.
+**Platform → Effective config** carries an **Export rolter.toml** button beside the header. It opens a dialog with an organization picker, which starts on all organizations, and a switch that leaves caps on a person out. It calls the same endpoint with what was chosen and saves the document as `rolter-config-YYYY-MM-DD.toml`, or `rolter-config-<slug>-YYYY-MM-DD.toml` for one organization, dated so successive exports sit side by side instead of overwriting each other.
 
 When the control plane refuses the whole-deployment export with `config_export_needs_org`, the dialog tells the user to pick an organization, takes "All organizations" off the list and keeps it off until the screen is left. The picker lists the organizations the caller holds a role in; a security auditor may hold none, so the field also takes an organization's slug typed in.
 

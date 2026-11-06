@@ -1,6 +1,5 @@
 import {
   ArrowLeftRight,
-  BellRing,
   BookOpen,
   BookUser,
   Boxes,
@@ -65,34 +64,86 @@ export interface NavDef {
   resource?: string;
 }
 
+// grouped by the job a visitor came to do rather than by the subsystem that
+// implements it (#3656, ADR-0042): what traffic is doing, how it is routed,
+// what it costs, who may send it, what keeps it safe, the MCP gateway, and the
+// deployment's own settings. the account's own screens are not here: they
+// live in the user menu, see `ACCOUNT_SCREENS`
 export const NAV: NavDef[] = [
-  { key: "playground", icon: <Play /> },
   {
     key: "observability",
     icon: <Eye />,
     children: [
       { key: "dashboard", icon: <ChartColumn /> },
       { key: "logs", icon: <FileText /> },
-      { key: "savings", icon: <Scale />, resource: "savings" },
       { key: "mcp-logs", icon: <Waypoints />, resource: "mcp_log" },
-      { key: "connectors", icon: <Cable />, resource: "connector" },
-      { key: "logs-settings", icon: <Settings />, resource: "logging_settings" },
-      { key: "log-erasure", icon: <Eraser />, resource: "log_erasure" },
+      { key: "alerting-rules", icon: <Gavel />, resource: "alert_rule" },
+      { key: "alerting-channels", icon: <Megaphone />, resource: "alert_channel" },
+      { key: "alerting-history", icon: <History />, resource: "alert_history" },
+      { key: "cluster", icon: <Network />, resource: "cluster_node" },
     ],
   },
   {
-    key: "models",
-    icon: <Layers />,
+    key: "traffic",
+    icon: <Shuffle />,
     children: [
+      { key: "playground", icon: <Play /> },
       { key: "model-catalog", icon: <LayoutGrid />, resource: "model" },
+      { key: "routing-rules", icon: <Split />, resource: "route" },
       { key: "providers", icon: <Boxes />, resource: "provider" },
       { key: "provider-groups", icon: <Layers />, resource: "provider_group" },
-      { key: "budgets", icon: <Wallet />, resource: "budget" },
-      { key: "routing-rules", icon: <Split />, resource: "route" },
       { key: "complexity-router", icon: <ArrowLeftRight />, resource: "route" },
+      {
+        key: "adaptive-dashboard",
+        icon: <ChartColumn />,
+        resource: "adaptive_routing_telemetry",
+      },
+      {
+        key: "adaptive-settings",
+        icon: <SlidersHorizontal />,
+        resource: "adaptive_routing_policy",
+      },
       { key: "circuit-breaker", icon: <CircuitBoard /> },
+    ],
+  },
+  {
+    key: "spend",
+    icon: <Wallet />,
+    children: [
+      { key: "budgets", icon: <Wallet />, resource: "budget" },
       { key: "pricing-overrides", icon: <SlidersHorizontal />, resource: "model_price" },
-      { key: "model-settings", icon: <Settings />, resource: "model_defaults" },
+      { key: "savings", icon: <Scale />, resource: "savings" },
+      { key: "business-units", icon: <Building2 />, resource: "business_unit" },
+      { key: "customers", icon: <WalletCards />, resource: "customer" },
+    ],
+  },
+  {
+    key: "access",
+    icon: <Landmark />,
+    children: [
+      { key: "virtual-keys", icon: <KeyRound />, resource: "virtual_key" },
+      { key: "gov-users", icon: <Users />, resource: "user" },
+      { key: "gov-teams", icon: <Building />, resource: "team" },
+      { key: "access-profiles", icon: <Shield />, resource: "access_profile" },
+      /* no resource: the role matrix describes what roles can do, not anyone's
+         data, so every signed-in role reads it (#2527). the org's custom roles
+         on it stay behind the server's own check */
+      { key: "rbac", icon: <UserCheck /> },
+      { key: "api-tokens", icon: <Bot />, resource: "api_token" },
+      { key: "sso", icon: <Fingerprint />, resource: "sso_provider" },
+      { key: "ldap", icon: <FolderTree />, resource: "ldap_directory" },
+      { key: "user-provisioning", icon: <BookUser />, resource: "scim_token" },
+      { key: "audit-logs", icon: <ScrollText />, resource: "audit_log" },
+    ],
+  },
+  {
+    key: "safety",
+    icon: <ShieldCheck />,
+    children: [
+      { key: "guardrail-rules", icon: <Gavel />, resource: "guardrail_rule" },
+      { key: "guardrail-policies", icon: <ListChecks />, resource: "guardrail_policy" },
+      { key: "guardrail-providers", icon: <Boxes />, resource: "guardrail_provider" },
+      { key: "log-erasure", icon: <Eraser />, resource: "log_erasure" },
     ],
   },
   {
@@ -107,82 +158,42 @@ export const NAV: NavDef[] = [
       { key: "mcp-settings", icon: <Settings />, resource: "mcp_settings" },
     ],
   },
-  { key: "plugins", icon: <Puzzle />, resource: "plugin" },
   {
-    key: "alerting",
-    icon: <BellRing />,
-    children: [
-      { key: "alerting-channels", icon: <Megaphone />, resource: "alert_channel" },
-      { key: "alerting-rules", icon: <Gavel />, resource: "alert_rule" },
-      { key: "alerting-history", icon: <History />, resource: "alert_history" },
-    ],
-  },
-  {
-    key: "governance",
-    icon: <Landmark />,
-    children: [
-      { key: "virtual-keys", icon: <KeyRound />, resource: "virtual_key" },
-      { key: "gov-users", icon: <Users />, resource: "user" },
-      { key: "gov-teams", icon: <Building />, resource: "team" },
-      { key: "business-units", icon: <Building2 />, resource: "business_unit" },
-      { key: "customers", icon: <WalletCards />, resource: "customer" },
-      { key: "user-provisioning", icon: <BookUser />, resource: "scim_token" },
-      { key: "sso", icon: <Fingerprint />, resource: "sso_provider" },
-      { key: "ldap", icon: <FolderTree />, resource: "ldap_directory" },
-      { key: "api-tokens", icon: <Bot />, resource: "api_token" },
-      /* no resource: the role matrix describes what roles can do, not anyone's
-         data, so every signed-in role reads it (#2527). the org's custom roles
-         on it stay behind the server's own check */
-      { key: "rbac", icon: <UserCheck /> },
-      { key: "access-profiles", icon: <Shield />, resource: "access_profile" },
-      { key: "audit-logs", icon: <ScrollText />, resource: "audit_log" },
-    ],
-  },
-  {
-    key: "guardrails",
-    icon: <ShieldCheck />,
-    children: [
-      { key: "guardrail-rules", icon: <Gavel />, resource: "guardrail_rule" },
-      { key: "guardrail-providers", icon: <Boxes />, resource: "guardrail_provider" },
-      { key: "guardrail-policies", icon: <ListChecks />, resource: "guardrail_policy" },
-    ],
-  },
-  { key: "cluster", icon: <Network />, resource: "cluster_node" },
-  {
-    key: "adaptive-routing",
-    icon: <Shuffle />,
-    children: [
-      {
-        key: "adaptive-dashboard",
-        icon: <ChartColumn />,
-        resource: "adaptive_routing_telemetry",
-      },
-      {
-        key: "adaptive-settings",
-        icon: <Settings />,
-        resource: "adaptive_routing_policy",
-      },
-    ],
-  },
-  { key: "prompt-repo", icon: <FolderGit2 />, resource: "prompt_template" },
-  { key: "skills-repo", icon: <BookOpen />, resource: "skill" },
-  {
-    key: "settings",
+    key: "platform",
     icon: <Settings />,
     children: [
       { key: "client-settings", icon: <SlidersHorizontal />, resource: "client_settings" },
       { key: "compatibility", icon: <Plug />, resource: "compatibility_policy" },
-      { key: "effective-config", icon: <Database /> },
-      { key: "security", icon: <Shield />, resource: "security_settings" },
-      // the account's own keys and profile: self-service, so no role gates it
-      { key: "api-keys", icon: <KeyRound /> },
-      // the account's own language, default scope, Playground model and zone
-      { key: "preferences", icon: <UserCog /> },
       { key: "performance", icon: <TrendingUp />, resource: "runtime_policy" },
+      { key: "security", icon: <Shield />, resource: "security_settings" },
       { key: "feature-flags", icon: <Flag />, resource: "feature_flags" },
+      { key: "effective-config", icon: <Database /> },
+      { key: "logs-settings", icon: <Settings />, resource: "logging_settings" },
+      { key: "model-settings", icon: <Settings />, resource: "model_defaults" },
+      { key: "connectors", icon: <Cable />, resource: "connector" },
+      { key: "plugins", icon: <Puzzle />, resource: "plugin" },
+      { key: "prompt-repo", icon: <FolderGit2 />, resource: "prompt_template" },
+      { key: "skills-repo", icon: <BookOpen />, resource: "skill" },
     ],
   },
 ];
+
+/**
+ * The signed-in account's own screens: its keys and profile, and its
+ * preferences. The user menu holds them rather than the rail, which is about
+ * the deployment (#3656). Self-service, so no role gates either. They route
+ * like any leaf.
+ */
+export const ACCOUNT_SCREENS: NavDef[] = [
+  { key: "api-keys", icon: <KeyRound /> },
+  // the account's own language, default scope, Playground model and zone
+  { key: "preferences", icon: <UserCog /> },
+];
+
+/** every key that resolves to a route: the rail's leaves and the account's screens */
+export function screenKeys(): string[] {
+  return [...leafKeys(), ...ACCOUNT_SCREENS.map((def) => def.key)];
+}
 
 // every navigable leaf key (parents with children are toggles, not screens)
 export function leafKeys(defs: NavDef[] = NAV): string[] {
