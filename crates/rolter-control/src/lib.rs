@@ -2336,7 +2336,7 @@ impl IntoResponse for StoreReadError {
 async fn get_config(
     session: session_guard::AnySession,
     State(state): State<ControlState>,
-) -> Result<Json<GatewayConfig>, StoreReadError> {
+) -> Result<Json<Value>, StoreReadError> {
     // a failed load is a 5xx, never an empty config: defaults would read as a
     // deployment with no providers or routes. `ApiError` redacts driver text
     let mut config = load_for_read(&state).await?;
@@ -2355,8 +2355,31 @@ async fn get_config(
     }
     #[cfg(not(feature = "postgres"))]
     let _ = session;
+    // whether each row is deployment-wide or an organization's, read before
+    // the redaction strips the tenancy: an org's row of the same name as a
+    // deployment row shadows it for that org's keys (#3516), and the two read
+    // the same without this (#3645). which organization stays the gateway's
+    // business (#1844), so it is not said
+    let scope = |tenancy: Option<&rolter_core::Tenancy>| match tenancy {
+        Some(t) if !t.org_id.is_empty() => "organization",
+        _ => "deployment",
+    };
+    let origins = json!({
+        "providers": config.providers.iter().map(|p| scope(p.tenancy.as_ref())).collect::<Vec<_>>(),
+        "routes": config.routes.iter().map(|r| scope(r.tenancy.as_ref())).collect::<Vec<_>>(),
+        "provider_groups": config
+            .provider_groups
+            .iter()
+            .map(|g| scope(g.tenancy.as_ref()))
+            .collect::<Vec<_>>(),
+    });
     redact_config_for_dashboard(&mut config);
-    Ok(Json(config))
+    let mut body = serde_json::to_value(&config).map_err(|err| {
+        tracing::error!(%err, "could not serialize the config for the dashboard");
+        StoreReadError
+    })?;
+    body["origins"] = origins;
+    Ok(Json(body))
 }
 
 /// Strip everything a caller of the dashboard's config view must not learn.
@@ -2582,7 +2605,7 @@ async fn get_config_problems(
         visibility.retain(&mut seen);
         snapshot_problems(&state, &mut seen).0
     });
-    let (mut problems, omitted) = snapshot_problems(&state, &mut config);
+    let (mut problems, omitted, invalid) = snapshot_problems(&state, &mut config);
     #[cfg(feature = "postgres")]
     let omitted = visibility.renumber(omitted);
     #[cfg(feature = "postgres")]
@@ -2594,14 +2617,69 @@ async fn get_config_problems(
     // rows the loader could only serve by guessing, such as a budget period it
     // does not recognise and enforces as monthly (#1902). the snapshot carries
     // the guess, not the row, so only the store can say where one was made
-    match state.store.load_problem_records().await {
+    let records = match state.store.load_problem_records().await {
         #[cfg(feature = "postgres")]
-        Ok(guessed) => problems.extend(view.visible_problems(&state, guessed).await),
+        Ok(guessed) => view.visible_problem_records(&state, guessed).await,
         #[cfg(not(feature = "postgres"))]
-        Ok(guessed) => problems.extend(guessed.into_iter().map(|p| p.message)),
-        Err(error) => tracing::warn!(%error, "could not list rows the config loader misread"),
-    }
-    Ok(Json(json!({ "problems": problems, "omitted": omitted })))
+        Ok(guessed) => guessed,
+        Err(error) => {
+            tracing::warn!(%error, "could not list rows the config loader misread");
+            Vec::new()
+        }
+    };
+    // every line again with its kind and, where it names one, its row and
+    // the org that owns it: the dashboard groups and translates by these and
+    // never reads a line (#3646). `problems` stays for older dashboards
+    let mut findings: Vec<Value> = problems
+        .iter()
+        .map(
+            |line| json!({ "kind": snapshot_line_kind(line, &omitted, &invalid), "message": line }),
+        )
+        .collect();
+    findings.extend(records.iter().map(problem_finding));
+    problems.extend(records.into_iter().map(|p| p.message));
+    Ok(Json(
+        json!({ "problems": problems, "omitted": omitted, "findings": findings }),
+    ))
+}
+
+/// The kind of one line the snapshot computed: a line for an entry it left out
+/// whole, a structural problem that stops the snapshot, or any other
+/// sanitizer line. The same kinds as `rolter_config_problems{kind}` (#3542).
+fn snapshot_line_kind(
+    line: &str,
+    omitted: &[rolter_core::OmittedEntry],
+    invalid: &[String],
+) -> &'static str {
+    use rolter_core::telemetry::ConfigProblemKind;
+    let kind = if invalid.iter().any(|fatal| fatal == line) {
+        ConfigProblemKind::Invalid
+    } else if omitted
+        .iter()
+        .any(|entry| line.contains(&format!("'{}' omitted from the snapshot", entry.name)))
+    {
+        ConfigProblemKind::Omitted
+    } else {
+        ConfigProblemKind::Sanitized
+    };
+    kind.label()
+}
+
+/// A store record as a finding: its kind, the org that owns the row and the
+/// row itself where the record names one.
+fn problem_finding(problem: &rolter_store::ConfigProblem) -> Value {
+    let org_id = match &problem.owner {
+        rolter_store::ProblemOwner::Tenant(tenancy) if !tenancy.org_id.is_empty() => {
+            Some(tenancy.org_id.clone())
+        }
+        _ => None,
+    };
+    json!({
+        "kind": problem.kind.label(),
+        "message": problem.message,
+        "org_id": org_id,
+        "subject": problem.subject.as_ref().map(|s| json!({ "kind": s.kind, "name": s.name })),
+    })
 }
 
 /// The problem lines and omitted records the snapshot computes for `config`,
@@ -2609,7 +2687,7 @@ async fn get_config_problems(
 fn snapshot_problems(
     state: &ControlState,
     config: &mut GatewayConfig,
-) -> (Vec<String>, Vec<rolter_core::OmittedEntry>) {
+) -> (Vec<String>, Vec<rolter_core::OmittedEntry>, Vec<String>) {
     let SnapshotReport {
         mut problems,
         omitted,
@@ -2617,10 +2695,9 @@ fn snapshot_problems(
     } = sanitize_snapshot(state, config);
     // structural problems never reach a gateway at all — the snapshot refuses
     // outright — so an operator needs to see those here too, not just in a log
-    if let Err(fatal) = config.validate_snapshot() {
-        problems.extend(fatal);
-    }
-    (problems, omitted)
+    let invalid = config.validate_snapshot().err().unwrap_or_default();
+    problems.extend(invalid.iter().cloned());
+    (problems, omitted, invalid)
 }
 
 const CONFIG_PROBLEM_RETRY_BACKOFF: std::time::Duration = std::time::Duration::from_secs(30);
@@ -4545,6 +4622,42 @@ mod tests {
             .collect();
         assert_eq!(lines.len(), 1, "{body}");
         assert!(lines[0].starts_with("warning: organization org-a's route 'gpt-4o'"));
+        // and as a finding the dashboard groups by, with the row and its org
+        // rather than a sentence to read (#3646)
+        let findings = body["findings"].as_array().expect("findings");
+        assert_eq!(findings.len(), body["problems"].as_array().unwrap().len());
+        let shadow = findings
+            .iter()
+            .find(|f| f["kind"] == "bootstrap_shadow")
+            .expect("a shadow finding");
+        assert_eq!(shadow["org_id"], "org-a");
+        assert_eq!(
+            shadow["subject"],
+            json!({ "kind": "route", "name": "gpt-4o" })
+        );
+        assert_eq!(shadow["message"], lines[0]);
+    }
+
+    /// a snapshot line is filed under the kind its source gives it (#3646)
+    #[test]
+    fn a_snapshot_line_takes_its_kind_from_its_source() {
+        let omitted = vec![rolter_core::OmittedEntry {
+            kind: rolter_core::OmittedKind::Route,
+            name: "llama".to_string(),
+            reason: "no target".to_string(),
+            index: 0,
+        }];
+        let invalid = vec!["two routes named gpt-4o".to_string()];
+        let kind = |line: &str| snapshot_line_kind(line, &omitted, &invalid);
+        assert_eq!(
+            kind("route 'llama' omitted from the snapshot: no target"),
+            "omitted"
+        );
+        assert_eq!(kind("two routes named gpt-4o"), "invalid");
+        assert_eq!(
+            kind("provider 'edge': egress proxy reset to none"),
+            "sanitized"
+        );
     }
 
     /// A store that refuses to build a config, and can say why (#2943).
@@ -5484,6 +5597,48 @@ mod tests {
             !body.contains("sk-super-secret") && !body.contains("sk-also-secret"),
             "config endpoint must not leak provider keys: {body}"
         );
+    }
+
+    /// Each row says whether it is deployment-wide or an organization's, so
+    /// an org's row that shadows a config-file row of its name reads apart
+    /// from it (#3645), and still not which organization (#1844).
+    #[tokio::test]
+    async fn the_config_view_says_each_rows_scope_and_not_its_org() {
+        let route = |tenancy: Option<rolter_core::Tenancy>| rolter_core::ModelRoute {
+            model: "gpt-4o".to_string(),
+            strategy: Default::default(),
+            targets: vec![],
+            params: Default::default(),
+            param_policy: Default::default(),
+            advanced: Default::default(),
+            cache: None,
+            variants: Default::default(),
+            tenancy,
+        };
+        let mut config = GatewayConfig::default();
+        config.routes.push(route(None));
+        config.routes.push(route(Some(rolter_core::Tenancy {
+            org_id: "org-secret-id".to_string(),
+            project_id: None,
+        })));
+        let state = ControlState {
+            store: Arc::new(InMemoryConfigStore::new(config)),
+            ..state_with_token(None)
+        };
+        let addr = serve(build_app_with(state, true)).await;
+        let body: Value = reqwest::Client::new()
+            .get(format!("http://{addr}/api/v1/config"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(
+            body["origins"]["routes"],
+            json!(["deployment", "organization"])
+        );
+        assert!(!body.to_string().contains("org-secret-id"), "{body}");
     }
 
     /// The #813 regression: an operator saves an origin and it must actually

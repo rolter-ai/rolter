@@ -199,6 +199,8 @@ export type {
   GatewayConfigDto,
   OmittedKind,
   OmittedEntry,
+  ConfigFinding,
+  RowScope,
   ConfigProblems,
   ConfigExportOptions,
 } from "./config";

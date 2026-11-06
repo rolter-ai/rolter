@@ -916,6 +916,7 @@ impl PostgresConfigStore {
                         org_id: row.org_id.to_string(),
                         project_id: Some(row.project_id.to_string()),
                     }),
+                    subject: None,
                 });
             }
         }
@@ -940,6 +941,7 @@ impl PostgresConfigStore {
                         org_id: org.to_string(),
                         project_id: project.map(|p| p.to_string()),
                     }),
+                    subject: None,
                 });
             }
         }
@@ -977,6 +979,7 @@ impl PostgresConfigStore {
                         org_id: org.to_string(),
                         project_id: None,
                     }),
+                    subject: None,
                 });
             }
         }
@@ -1144,6 +1147,7 @@ impl PostgresConfigStore {
                         kind: crate::ConfigProblemKind::Misread,
                         message,
                         owner: crate::ProblemOwner::Tenant(tenancy.clone()),
+                        subject: None,
                     }),
             );
             if stranded {
@@ -2525,6 +2529,7 @@ impl ConfigStore for PostgresConfigStore {
                     // a scope the gateway does not enforce names no tenant
                     None => ProblemOwner::Deployment,
                 },
+                subject: None,
             })
             .collect();
         let prices = repo::ModelPriceRepo(&self.pool).list().await?;
@@ -2547,6 +2552,7 @@ impl ConfigStore for PostgresConfigStore {
                         org_id: row.org_id.to_string(),
                         project_id: Some(row.project_id.to_string()),
                     }),
+                    subject: None,
                 })
         }));
         // the security gate and the egress pools (#2943). a gate that cannot be
@@ -2581,6 +2587,7 @@ impl ConfigStore for PostgresConfigStore {
                         org_id: org.to_string(),
                         project_id: project.map(|p| p.to_string()),
                     }),
+                    subject: None,
                 }
             })
         }));

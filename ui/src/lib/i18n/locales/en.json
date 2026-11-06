@@ -4700,6 +4700,8 @@
         "link": "View nodes"
       },
       "tables": {
+        "scope": "Scope",
+        "scopes": { "deployment": "Deployment", "organization": "Organization" },
         "providers": "Providers",
         "routes": "Routes",
         "name": "Name",
@@ -6137,6 +6139,21 @@
   },
   "providers": {
     "unserved": {
+      "subjects": { "provider": "provider", "route": "route", "provider_group": "provider group" },
+      "shadowed_one": "{{count}} row of {{org}} replaces a config-file row of the same name for that organization's keys",
+      "shadowed_other": "{{count}} rows of {{org}} replace config-file rows of the same name for that organization's keys",
+      "omitted": {
+        "provider_one": "{{count}} provider is not served",
+        "provider_other": "{{count}} providers are not served",
+        "route_one": "{{count}} route is not served",
+        "route_other": "{{count}} routes are not served",
+        "virtual_key_one": "{{count}} config-file key is not served",
+        "virtual_key_other": "{{count}} config-file keys are not served",
+        "public_example_key_one": "The example key from the bundled config is not served",
+        "public_example_key_other": "The example key from the bundled config is not served"
+      },
+      "other_one": "{{count}} other finding",
+      "other_other": "{{count}} other findings",
       "title_one": "{{count}} config entry is not being served as written",
       "title_other": "{{count}} config entries are not being served as written"
     }

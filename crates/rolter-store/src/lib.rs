@@ -47,6 +47,18 @@ pub struct ConfigProblem {
     /// `rolter_config_problems{kind}` gauge (#3542): a row the loader misread
     /// or left out, or an org row shadowing a bootstrap row
     pub kind: ConfigProblemKind,
+    /// the row a line is about, where the line names one: what the dashboard
+    /// groups and names a problem by, so it never reads the English line
+    /// (#3646). `None` for a line about no single row
+    pub subject: Option<ProblemSubject>,
+}
+
+/// The row a [`ConfigProblem`] is about: its kind (`provider`, `route`,
+/// `provider group`, ...) and its name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProblemSubject {
+    pub kind: String,
+    pub name: String,
 }
 
 impl ConfigProblem {
@@ -55,6 +67,7 @@ impl ConfigProblem {
             message: message.into(),
             owner: ProblemOwner::Deployment,
             kind: ConfigProblemKind::Misread,
+            subject: None,
         }
     }
 }
@@ -365,6 +378,10 @@ fn bootstrap_shadows(file: &GatewayConfig, db: &GatewayConfig) -> Vec<ConfigProb
             ),
             owner: ProblemOwner::Tenant(owner.clone()),
             kind: ConfigProblemKind::BootstrapShadow,
+            subject: Some(ProblemSubject {
+                kind: kind.to_string(),
+                name: name.to_string(),
+            }),
         });
     };
     for provider in &db.providers {

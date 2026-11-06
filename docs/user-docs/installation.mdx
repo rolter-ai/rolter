@@ -126,6 +126,8 @@ on the host through `ps` while the command runs and lands in shell history, so
 the three are mutually exclusive and the first two are the ones to use. The two
 that read a source need `--admin-email`, and an empty source is refused.
 
+In database mode the providers, routes, provider groups, budgets, rate limits, prices, prompt templates and MCP tool groups of `--config` (or of `--import`, when given) are imported into the database, and the control plane is started on the rest of the file only: its server and logging settings. Each row is served once, from the database, where the dashboard can edit it. A file that still served them too listed every row twice and reported each as a database row shadowing a config-file row of its name. The file's `[[virtual_keys]]` are not served either, since a database deployment mints keys in the store. The bundled example is imported without its self-hosted examples (the two vLLM servers and the Ollama on `localhost`) and the routes that only reach them, so a fresh install does not open on providers that cannot answer; a file you wrote is imported as written. Edits to `--config` take effect at the next `easy-up` start.
+
 Every `--admin-*` flag needs `--database-url`: without one `easy-up` refuses to start and names the missing flag, rather than starting with no admin. `--import` needs it too, for the same reason: without a database `easy-up` serves `--config` directly, so an import file would be ignored and the gateway would start without its providers and routes.
 
 <Note>

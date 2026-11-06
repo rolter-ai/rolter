@@ -34,6 +34,7 @@ import {
   type ProviderDto,
   type RouteDto,
   type OmittedEntry,
+  type RowScope,
   type VirtualKeyDto,
 } from "@/lib/api";
 import { errorText } from "@/lib/error-copy";
@@ -127,13 +128,23 @@ export default function Config() {
             target="config-problems"
           />
         )}
-        <UnservedConfigNotice problems={problems.data?.problems ?? []} />
+        <UnservedConfigNotice report={problems.data} />
         {config.isLoading && <TableSkeleton rows={6} />}
 
         {cfg && (
           <>
-            <ProvidersTable read={config} providers={cfg.providers} omitted={omitted} />
-            <RoutesTable read={config} routes={cfg.routes} omitted={omitted} />
+            <ProvidersTable
+              read={config}
+              providers={cfg.providers}
+              scopes={cfg.origins?.providers}
+              omitted={omitted}
+            />
+            <RoutesTable
+              read={config}
+              routes={cfg.routes}
+              scopes={cfg.origins?.routes}
+              omitted={omitted}
+            />
             {cfg.virtual_keys.length > 0 && (
               <VirtualKeysTable keys={cfg.virtual_keys} omitted={omitted} />
             )}
@@ -269,8 +280,23 @@ function OmissionReason({ reason }: { reason: string }) {
   );
 }
 
-const PROVIDER_GRID = `${primaryColumn(1)} 1.1fr 2fr`;
-const ROUTE_GRID = `${primaryColumn(1.2)} 1.1fr 2fr`;
+const PROVIDER_GRID = `${primaryColumn(1)} 1.1fr 2fr 0.9fr`;
+const ROUTE_GRID = `${primaryColumn(1.2)} 1.1fr 2fr 0.9fr`;
+
+/**
+ * Where a row comes from (#3645): the config file and the deployment's own
+ * rows are deployment-wide, an organization's database row is its own. An
+ * org's row of a config-file row's name shadows it for that org's keys, and
+ * this is what tells the two lines apart.
+ */
+function ScopeCell({ scope }: { scope: RowScope | undefined }) {
+  const { t } = useTranslation();
+  return (
+    <ListCell className="min-w-0 text-xs text-[color:var(--text-secondary)]">
+      {scope ? t(`pages.config.tables.scopes.${scope}`) : "—"}
+    </ListCell>
+  );
+}
 const KEY_GRID = `${primaryColumn(1)} 2fr`;
 // values here are config the operator reads in full: a base url or a model name
 // wraps rather than truncating, so nothing is only readable by resizing
@@ -288,10 +314,12 @@ function TableSection({ title, children }: { title: string; children: React.Reac
 function ProvidersTable({
   read,
   providers,
+  scopes,
   omitted,
 }: {
   read: ReadState;
   providers: ProviderDto[];
+  scopes: RowScope[] | undefined;
   omitted: readonly OmittedEntry[] | undefined;
 }) {
   const { t } = useTranslation();
@@ -309,6 +337,7 @@ function ProvidersTable({
           <ListHeaderCell>{t("pages.config.tables.name")}</ListHeaderCell>
           <ListHeaderCell>{t("pages.config.tables.kind")}</ListHeaderCell>
           <ListHeaderCell>{t("pages.config.tables.apiBase")}</ListHeaderCell>
+          <ListHeaderCell>{t("pages.config.tables.scope")}</ListHeaderCell>
         </ListHeader>
         {providers.map((p, i) => {
           const omission = notServed.get(i)?.reason;
@@ -329,6 +358,7 @@ function ProvidersTable({
                 <span>{p.api_base}</span>
                 {omission !== undefined && <OmissionReason reason={omission} />}
               </ListCell>
+              <ScopeCell scope={scopes?.[i]} />
             </ListRow>
           );
         })}
@@ -357,10 +387,12 @@ function ProvidersTable({
 function RoutesTable({
   read,
   routes,
+  scopes,
   omitted,
 }: {
   read: ReadState;
   routes: RouteDto[];
+  scopes: RowScope[] | undefined;
   omitted: readonly OmittedEntry[] | undefined;
 }) {
   const { t } = useTranslation();
@@ -378,6 +410,7 @@ function RoutesTable({
           <ListHeaderCell>{t("pages.config.tables.model")}</ListHeaderCell>
           <ListHeaderCell>{t("pages.config.tables.strategy")}</ListHeaderCell>
           <ListHeaderCell>{t("pages.config.tables.targets")}</ListHeaderCell>
+          <ListHeaderCell>{t("pages.config.tables.scope")}</ListHeaderCell>
         </ListHeader>
         {/* the endpoint strips tenancy, so two orgs' routes can share a public
             name: the position keeps the keys apart */}
@@ -406,6 +439,7 @@ function RoutesTable({
                 ))}
                 {reason !== undefined && <OmissionReason reason={reason} />}
               </ListCell>
+              <ScopeCell scope={scopes?.[i]} />
             </ListRow>
           );
         })}
@@ -560,7 +594,7 @@ function RelatedLink({ to, title, desc }: { to: string; title: string; desc: str
 const TABLED = new Set(["providers", "routes", "virtual_keys"]);
 // carried for the gateway, meaningless to a reader: digests and an
 // always-empty (redacted) session list
-const HIDDEN = new Set(["db_virtual_keys", "mcp_oauth_sessions"]);
+const HIDDEN = new Set(["db_virtual_keys", "mcp_oauth_sessions", "origins"]);
 
 function AllSections({ config }: { config: GatewayConfigDto }) {
   const { t } = useTranslation();

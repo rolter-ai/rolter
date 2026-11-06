@@ -101,6 +101,19 @@ Keys stored in the database are not entries here: the config read does not list 
 database key that allowed only omitted providers is still dropped, and still named in
 `problems`.
 
+## Findings
+
+`findings` repeats every line of `problems`, in the same order, as a record a client can group and translate without reading the sentence: its `kind` (`omitted`, `sanitized`, `invalid`, `misread` or `bootstrap_shadow`, the kinds of the `rolter_config_problems{kind}` gauge), the `message` itself, and, where the line is about one row, the `org_id` that owns it and the `subject` (`{ "kind": "provider", "name": "anthropic" }`). The dashboard's banner shows one line per kind from these, names the organization rather than its id, and lists the rows a kind is about on demand. A control plane older than the field sends no `findings`.
+
+```json
+{
+  "kind": "bootstrap_shadow",
+  "message": "warning: organization 0d1f…'s provider 'anthropic' shadows the readonly provider of the same name in the control plane's config file for that organization's keys; every other key is served the file's provider (#3516)",
+  "org_id": "0d1f6c2e-…",
+  "subject": { "kind": "provider", "name": "anthropic" }
+}
+```
+
 The operation appears as `getConfigProblems` in the
-[control-plane OpenAPI document](/api/control-plane-openapi), with `ConfigProblems` and
+[control-plane OpenAPI document](/api/control-plane-openapi), with `ConfigProblems`, `ConfigFinding` and
 `OmittedEntry` schemas.
