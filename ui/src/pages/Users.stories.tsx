@@ -54,6 +54,7 @@ import ru from "@/lib/i18n/locales/ru.json";
 import { expectFieldHint } from "@/lib/story-hints";
 import {
   atMobile,
+  atWide,
   atSplit,
   expectInViewport,
   expectNoHorizontalOverflow,
@@ -640,7 +641,7 @@ export const AvatarColourFollowsThePerson: Story = {
     await canvas.findByText("ada@example.com");
     // the chip is the one element that reads the address's first two letters
     const chip = (email: string) =>
-      canvas.getByText(email.slice(0, 2).toUpperCase()).style.background;
+      canvas.getByText(email.slice(0, 1).toUpperCase()).style.background;
     const [ada, grace, former] = [
       chip("ada@example.com"),
       chip("grace@example.com"),
@@ -4413,5 +4414,29 @@ export const TheFilterHoldsBackWhileMembershipsLoad: Story = {
     await expectSkeleton(canvasElement);
     await expect(canvas.queryByText("ada@example.com")).toBeNull();
     await expect(canvas.queryByText("No users match")).toBeNull();
+  },
+};
+
+/**
+ * At 1440 px in Russian the toolbar wraps before the search is squeezed to
+ * "Поиск п…", an address is whole rather than "admin@r…", and the chip reads
+ * one letter for an address, as the rail's own chip does (#3660).
+ */
+export const TheListFitsAtLaptopWidthInRussian: Story = {
+  ...atWide,
+  globals: { ...atWide.globals, locale: "ru" },
+  render: () => (
+    <Harness fetchStub={loaded}>
+      <Users />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const email = await canvas.findByText("ada@example.com");
+    await expect(email.scrollWidth).toBeLessThanOrEqual(email.clientWidth + 1);
+    const search = canvas.getByPlaceholderText(ru.pages.users.searchPlaceholder);
+    await expect(search.getBoundingClientRect().width).toBeGreaterThanOrEqual(240);
+    const row = email.closest<HTMLElement>('[role="row"]')!;
+    await expect(within(row).getByText("A")).toBeVisible();
   },
 };

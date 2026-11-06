@@ -890,6 +890,7 @@ export function McpCatalog() {
                   </p>
                 </div>
                 <GatedSwitch
+                  tone="neutral"
                   gate="mcp_server:update"
                   control="mcp-server-toggle"
                   checked={server.enabled}

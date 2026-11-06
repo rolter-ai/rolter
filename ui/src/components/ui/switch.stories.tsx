@@ -3,6 +3,7 @@ import * as React from "react";
 import { expect, userEvent, within } from "storybook/test";
 
 import { contrastRatio } from "@/lib/contrast";
+import { resolveColorToken } from "@/lib/story-tokens";
 
 import { Switch } from "./switch";
 
@@ -21,9 +22,11 @@ type Story = StoryObj<typeof meta>;
 function Controlled({
   initial = false,
   disabled = false,
+  tone,
 }: {
   initial?: boolean;
   disabled?: boolean;
+  tone?: "brand" | "neutral";
 }) {
   const [checked, setChecked] = React.useState(initial);
   // a wrapping <label> names an input, never a role="switch" button, so the
@@ -36,6 +39,7 @@ function Controlled({
         checked={checked}
         onCheckedChange={setChecked}
         disabled={disabled}
+        tone={tone}
         aria-labelledby={labelId}
       />
       <span id={labelId}>{checked ? "Enabled" : "Disabled"}</span>
@@ -46,6 +50,30 @@ function Controlled({
 export const Off: Story = { render: () => <Controlled /> };
 export const On: Story = { render: () => <Controlled initial /> };
 export const DisabledOn: Story = { render: () => <Controlled initial disabled /> };
+
+/**
+ * A switch repeated down a list is neutral when on (#3658): Folk Red on every
+ * enabled row made routine state the loudest thing on the screen. The brand
+ * tone stays the default, for the one switch a settings screen is about.
+ */
+export const NeutralInAListRow: Story = {
+  render: () => (
+    <div className="flex flex-col gap-2">
+      <Controlled initial tone="neutral" />
+      <Controlled initial />
+    </div>
+  ),
+  play: async ({ canvasElement }) => {
+    const [neutral, brand] = within(canvasElement).getAllByRole("switch");
+    await expect(getComputedStyle(neutral!).backgroundColor).toBe(resolveColorToken("--zinc-300"));
+    await expect(getComputedStyle(brand!).backgroundColor).toBe(resolveColorToken("--red-folk"));
+    // the thumb stays visible against the light track
+    const thumb = neutral!.firstElementChild as HTMLElement;
+    await expect(
+      contrastRatio(getComputedStyle(thumb).backgroundColor, resolveColorToken("--zinc-300")),
+    ).toBeGreaterThanOrEqual(3);
+  },
+};
 
 // a switch always carries a name: the primitive's type requires aria-label or
 // aria-labelledby, and axe fails the story if the rendered button has neither

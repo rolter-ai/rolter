@@ -26,7 +26,7 @@ import type { EffectiveRule } from "@/lib/guardrail-policy";
 import en from "@/lib/i18n/locales/en.json";
 import ru from "@/lib/i18n/locales/ru.json";
 import { expectFieldHint } from "@/lib/story-hints";
-import { atShort, expectInViewport, phoneFits } from "@/lib/story-viewport";
+import { atShort, atWide, expectInViewport, phoneFits } from "@/lib/story-viewport";
 
 const RULES: GuardrailRuleRow[] = [
   {
@@ -1649,5 +1649,25 @@ export const PolicyTrialInRussian: Story = {
     const verdict = await dialog.findByText(copy.policyTrial.verdict.redacted);
     await waitFor(() => expect(verdict).toBeVisible());
     await expect(dialog.getAllByText(copy.policyTrial.source.file).length).toBeGreaterThan(0);
+  },
+};
+
+/**
+ * The body sits in the 22px gutter every screen uses, left-aligned under the
+ * header, rather than centred in its 1120px cap, which put it about 33px right
+ * of the header's gutter at 1440 px (#3660).
+ */
+export const TheBodySharesTheHeadersGutterInRussian: Story = {
+  ...atWide,
+  globals: { ...atWide.globals, locale: "ru" },
+  render: () => <Harness fetchStub={OFF_ON_ONE_ROUTE} />,
+  play: async ({ canvasElement }) => {
+    const intro = await within(canvasElement).findByText(ru.pages.guardrailRules.intro);
+    const body = intro.closest<HTMLElement>(".p-\\[22px\\]")!;
+    await expect(body).not.toBeNull();
+    await expect(getComputedStyle(body).marginLeft).toBe("0px");
+    await expect(
+      Math.round(intro.getBoundingClientRect().left - body.getBoundingClientRect().left),
+    ).toBe(22);
   },
 };

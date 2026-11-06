@@ -365,6 +365,7 @@ function StageLane({
                   </p>
                 </div>
                 <GatedSwitch
+                  tone="neutral"
                   gate="plugin:update"
                   control="plugin-toggle"
                   checked={plugin.enabled}

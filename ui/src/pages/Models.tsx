@@ -346,6 +346,9 @@ export default function Models() {
     <PageBody>
       <Toolbar>
         <SearchInput
+          // full width on a phone rather than squeezed to a few characters
+          // beside the origin filter (#3660)
+          className="min-w-full max-w-full sm:min-w-[220px] sm:max-w-[320px]"
           placeholder={t("pages.models.searchPlaceholder")}
           value={search}
           onChange={(e) => setSearch(e.target.value)}

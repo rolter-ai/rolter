@@ -406,49 +406,54 @@ export default function RoutingRules() {
                 )}
                 {/* the Playground opens on this route's model. a disabled route
                     is not served, so a request to it would only fail */}
-                {r.enabled && (
-                  <Link
-                    to={`/playground?model=${encodeURIComponent(r.model)}`}
-                    aria-label={t("pages.routing.tryRoute", { model: r.model })}
-                    className={cn(
-                      buttonVariants({ variant: "outline", size: "sm" }),
-                      "ml-auto h-[30px] gap-1.5",
-                    )}
-                  >
-                    <Play className="h-3.5 w-3.5" />
-                    {t("pages.routing.tryIt")}
-                  </Link>
-                )}
-                {/* the label names the route, so a grid of cards does not
+                {/* the actions are one cluster that wraps as a whole: one by
+                    one, the delete button fell onto its own line under the
+                    others in every card in Russian (#3660) */}
+                <div className="ml-auto flex flex-none items-center gap-2">
+                  {r.enabled && (
+                    <Link
+                      to={`/playground?model=${encodeURIComponent(r.model)}`}
+                      aria-label={t("pages.routing.tryRoute", { model: r.model })}
+                      className={cn(
+                        buttonVariants({ variant: "outline", size: "sm" }),
+                        "h-[30px] gap-1.5",
+                      )}
+                    >
+                      <Play className="h-3.5 w-3.5" />
+                      {t("pages.routing.tryIt")}
+                    </Link>
+                  )}
+                  {/* the label names the route, so a grid of cards does not
                     expose N buttons a screen reader cannot tell apart (#1214) */}
-                <GatedButton
-                  gate="route:update"
-                  control="route-edit"
-                  size="sm"
-                  variant="outline"
-                  className={cn("h-[30px]", !r.enabled && "ml-auto")}
-                  aria-label={t("pages.routing.editRoute", { model: r.model })}
-                  onClick={() => setEditing(r)}
-                >
-                  <Pencil className="h-3.5 w-3.5" />
-                  {t("pages.routing.edit")}
-                </GatedButton>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  className="h-[30px]"
-                  aria-label={t("labels.labelsOf", { name: r.model })}
-                  onClick={() => setLabelling(r)}
-                >
-                  <Tag className="h-3.5 w-3.5" />
-                </Button>
-                <DeleteIconButton
-                  gate="route:delete"
-                  control="route-delete"
-                  label={t("pages.routing.deleteRoute", { model: r.model })}
-                  pending={remove.isPending && remove.variables === r.id}
-                  onClick={() => startDelete(r)}
-                />
+                  <GatedButton
+                    gate="route:update"
+                    control="route-edit"
+                    size="sm"
+                    variant="outline"
+                    className="h-[30px]"
+                    aria-label={t("pages.routing.editRoute", { model: r.model })}
+                    onClick={() => setEditing(r)}
+                  >
+                    <Pencil className="h-3.5 w-3.5" />
+                    {t("pages.routing.edit")}
+                  </GatedButton>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-[30px]"
+                    aria-label={t("labels.labelsOf", { name: r.model })}
+                    onClick={() => setLabelling(r)}
+                  >
+                    <Tag className="h-3.5 w-3.5" />
+                  </Button>
+                  <DeleteIconButton
+                    gate="route:delete"
+                    control="route-delete"
+                    label={t("pages.routing.deleteRoute", { model: r.model })}
+                    pending={remove.isPending && remove.variables === r.id}
+                    onClick={() => startDelete(r)}
+                  />
+                </div>
               </div>
             </div>
           );

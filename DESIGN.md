@@ -199,6 +199,9 @@ components:
   switch-on:
     backgroundColor: "{colors.red-folk}"
     rounded: "{rounded.full}"
+  switch-on-row:
+    backgroundColor: "{colors.zinc-300}"
+    rounded: "{rounded.full}"
   chip-selected:
     backgroundColor: "{colors.red-tint}"
     textColor: "{colors.text-primary}"
@@ -288,10 +291,14 @@ closer than CIE76 ΔE 17, also under the three colour-vision deficiencies.
 ### Named Rules
 
 **The One Red Voice Rule.** A view has one red action at most: the Folk Red brand button, or a
-single destructive action. Otherwise Folk Red marks state (the active page, a switch that is on)
-and Accent Red marks a selection. If two things on a screen are red for different reasons, one of
-them is wrong. A state that a screen draws hundreds of times is therefore never red: the allowed
-cells of the permission matrix are neutral (see Permission matrix).
+single destructive action. Otherwise Folk Red marks state (the active page, the one switch a
+settings screen is about) and Accent Red marks a selection. If two things on a screen are red for
+different reasons, one of them is wrong. A state that a screen draws hundreds of times is therefore
+never red: the allowed cells of the permission matrix are neutral (see Permission matrix), a switch
+repeated down a list is `switch-on-row` (Zinc 300 with a dark thumb; `Switch tone="neutral"`)
+rather than Folk Red on every enabled row, and a categorical series starts from a neutral colour:
+`--chart-1` is Zinc 300 and red is the last of the eight, so the busiest model and the first
+weight bar are never the red thing on the screen (#3658). Red in data means an error.
 
 **The Shape-or-Glyph Rule.** Every hue that colours both shapes and text comes as a pair. Pick the
 half by what it paints: a dot, bar or border takes the fill; a letter takes the `-text` token.

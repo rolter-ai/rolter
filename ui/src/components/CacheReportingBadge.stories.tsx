@@ -50,9 +50,9 @@ export const ThreeStates: Story = {
     const reports = canvas.getByText(/^Reports cache/);
     const none = canvas.getByText(/^No cache metrics/);
     const unprobed = canvas.getByText("Not probed yet");
-    await expect(reports.className).toContain("status-success");
-    await expect(none.className).toContain("status-warning");
-    await expect(unprobed.className).not.toContain("status-warning");
+    await expect(reports.parentElement!.className).toContain("status-success");
+    await expect(none.parentElement!.className).toContain("status-warning");
+    await expect(unprobed.parentElement!.className).not.toContain("status-warning");
     await expect(noteOf(reports)).toContain("Model: gpt-4o-mini");
     await expect(noteOf(reports)).toContain("Field: cached_tokens");
   },

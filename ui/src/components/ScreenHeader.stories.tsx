@@ -585,3 +585,26 @@ export const MobileLongestLabel: Story = {
     await expectNoHorizontalOverflow();
   },
 };
+
+/**
+ * At 390 px in Russian the subtitle takes two lines at most, where three or
+ * four of them pushed every screen's content about 160px down (#3660); the
+ * whole sentence is still the paragraph's text.
+ */
+export const MobileInRussian: Story = {
+  ...atMobile,
+  globals: { ...atMobile.globals, locale: "ru" },
+  args: {
+    title: ru.screens.dashboard.title,
+    subtitle: ru.screens.dashboard.subtitle,
+  },
+  render: (args) => <HeaderStory {...args} onOpenNav={() => {}} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const subtitle = await canvas.findByText(ru.screens.dashboard.subtitle);
+    const line = parseFloat(getComputedStyle(subtitle).lineHeight);
+    await expect(subtitle.getBoundingClientRect().height).toBeLessThanOrEqual(line * 2 + 1);
+    const header = subtitle.closest("header")!;
+    await expect(header.getBoundingClientRect().height).toBeLessThanOrEqual(140);
+  },
+};

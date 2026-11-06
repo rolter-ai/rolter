@@ -87,7 +87,9 @@ itself.
 ### The account menu
 
 The card opens a menu about the person and nothing else. Above the entries an
-identity block gives the initials, the name, the email beneath it when the name
+identity block gives the initials (one rule for every chip, `initialsOf` in
+`ui/src/lib/avatar.ts`: two words give two letters, one word or an email one, so
+the Users table and the rail agree, #3660), the name, the email beneath it when the name
 differs, and a **role line** that says where the role applies: _Admin · org acme_,
 _Member · team platform_, _Viewer · project default_, _Superadmin · whole
 deployment_. `ui/src/lib/account-role.ts` derives it from `user`, `memberships` and

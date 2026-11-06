@@ -94,7 +94,7 @@ import {
   type UserRow,
 } from "@/lib/api";
 import { errorText } from "@/lib/error-copy";
-import { avatarColor } from "@/lib/avatar";
+import { avatarColor, initialsOf } from "@/lib/avatar";
 import { useOptionalAuth } from "@/lib/auth";
 import { useCan, useCapabilities } from "@/lib/can";
 import { useFormat } from "@/lib/i18n/format";
@@ -497,17 +497,18 @@ export default function Users() {
   // the roles column holds one line per grant, each with its own two controls,
   // so it takes the widest share and the table a floor that fits a grant line
   const GRID = factorReadable
-    ? `${primaryColumn(1.5)} 2.2fr 1.6fr 110px 120px 0.9fr 110px`
-    : `${primaryColumn(1.5)} 2.2fr 1.6fr 110px 0.9fr 110px`;
+    ? `${primaryColumn(1.9)} 2fr 1.5fr 110px 120px 0.9fr 110px`
+    : `${primaryColumn(1.9)} 2fr 1.5fr 110px 0.9fr 110px`;
 
   return (
     <PageBody>
       <Toolbar>
         {/* flex-1 alone lets the field shrink to its icon beside the status
             filter at phone width; a full-width floor sends the filter to its
-            own line instead */}
+            own line instead, and from `sm` a 240px floor wraps the toolbar
+            before the field is squeezed to "Поиск п…" (#3660) */}
         <SearchInput
-          className="min-w-full max-w-full sm:min-w-0 sm:max-w-[320px]"
+          className="min-w-full max-w-full sm:min-w-[240px] sm:max-w-[320px]"
           placeholder={t("pages.users.searchPlaceholder")}
           value={search}
           onChange={(e) => setSearch(e.target.value)}
@@ -604,7 +605,7 @@ export default function Users() {
         {rows.map((user) => {
           const active = !user.deactivated_at;
           const grants = byUser.get(user.id) ?? [];
-          const initials = (user.display_name || user.email).slice(0, 2).toUpperCase();
+          const initials = initialsOf(user.display_name || user.email);
           return (
             <ListRow
               key={user.id}
@@ -624,10 +625,12 @@ export default function Users() {
                   <div className="flex items-center gap-1.5">
                     {/* the name leads when the account has one, with the email
                         beneath it; without one the email stays the headline (#2434) */}
+                    {/* an address wraps rather than truncates: the column is the
+                        one a row is found by, and "admin@r…" finds nobody (#3660) */}
                     {user.display_name ? (
-                      <span className="truncate text-sm">{user.display_name}</span>
+                      <span className="min-w-0 break-words text-sm">{user.display_name}</span>
                     ) : (
-                      <span className="truncate font-mono text-sm">{user.email}</span>
+                      <span className="min-w-0 break-all font-mono text-sm">{user.email}</span>
                     )}
                     {user.is_superadmin && (
                       <Badge tone="neutral" className="flex-none">
@@ -647,7 +650,9 @@ export default function Users() {
                     )}
                   </div>
                   {user.display_name && (
-                    <p className="truncate font-mono text-xs text-muted-foreground">{user.email}</p>
+                    <p className="break-all font-mono text-xs text-muted-foreground">
+                      {user.email}
+                    </p>
                   )}
                   {/* the bio says who to ask about what, so others can read it (V2.1) */}
                   {user.bio && (
