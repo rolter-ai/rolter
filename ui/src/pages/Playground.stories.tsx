@@ -2600,3 +2600,204 @@ export const FailedRemintKeepsTheBandActive: Story = {
     await canvas.findByText("Still answered by the old key.");
   },
 };
+
+// ------------------------------------------- a provider's 401 is not the session (#3643)
+
+/** the gateway passing an upstream's 401 through, as it does for a provider with no key */
+const upstreamRefusal = () =>
+  new Response(
+    JSON.stringify({
+      type: "error",
+      error: { type: "authentication_error", message: "x-api-key header is required" },
+    }),
+    { status: 401, headers: { "content-type": "application/json", "x-request-id": "req-401" } },
+  );
+
+const refusedUpstream = deployment(async () => json(minted()), undefined, undefined, {
+  chat: () => upstreamRefusal(),
+});
+
+/**
+ * A model whose provider has no key answers 401 with the provider's own body.
+ * That is not the dashboard session and not the playground's key: the note
+ * says the provider refused rolter's credentials, keeps the provider's words,
+ * and links to the request in LLM Logs, where its attempts are listed. It never
+ * says to sign in again.
+ */
+export const AProvidersRefusalIsNotASessionExpiry: Story = {
+  render: () => <Screen fetchStub={refusedUpstream} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const composer = await readyComposer(canvas);
+    await sendMessage(canvas, composer, "Hello there");
+    const note = await canvas.findByRole("alert");
+    await expect(note).toHaveTextContent(
+      en.errors.gateway.upstreamAuth.replace("{{status}}", "401"),
+    );
+    await expect(note).toHaveTextContent("x-api-key header is required");
+    await expect(note).not.toHaveTextContent(en.errors.api.unauthorized);
+    await expect(
+      within(note).getByRole("link", { name: en.errors.gateway.openInLogs }),
+    ).toHaveAttribute("href", "/logs?request_id=req-401");
+  },
+};
+
+const refusedKey = deployment(async () => json(minted()), undefined, undefined, {
+  chat: () =>
+    json(
+      {
+        error: {
+          message: "invalid api key",
+          type: "authentication_error",
+          code: "invalid_api_key",
+        },
+      },
+      401,
+    ),
+});
+
+/** the gateway's own refusal of the key reads differently, and also never as a session */
+export const ARejectedKeyOnSendSaysSo: Story = {
+  beforeEach: shortKeyWait,
+  render: () => <Screen fetchStub={refusedKey} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const composer = await readyComposer(canvas);
+    await sendMessage(canvas, composer, "Hello there");
+    const note = await canvas.findByRole("alert");
+    await expect(note).toHaveTextContent(en.errors.gateway.keyRefused);
+    await expect(note).not.toHaveTextContent(en.errors.api.unauthorized);
+    await expect(note).not.toHaveTextContent(
+      en.errors.gateway.upstreamAuth.replace("{{status}}", "401"),
+    );
+  },
+};
+
+export const AProvidersRefusalInRussian: Story = {
+  globals: { locale: "ru" },
+  render: () => <Screen fetchStub={refusedUpstream} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const composer = await canvas.findByRole("textbox", { name: /minicpm5-1b/ });
+    const send = canvas.getByRole("button", { name: /^Отправить/ });
+    await waitFor(() => expect(send).toBeEnabled());
+    await userEvent.type(composer, "Привет");
+    await userEvent.click(send);
+    const note = await canvas.findByRole("alert");
+    await expect(note).toHaveTextContent(
+      ru.errors.gateway.upstreamAuth.replace("{{status}}", "401"),
+    );
+    await expect(note).not.toHaveTextContent(ru.errors.api.unauthorized);
+  },
+};
+
+// ------------------------------------------- the model the column opens on (#3652)
+
+/** a default install: `claude` has no key and fails all its traffic, `qwen3.6` answers */
+const HEALTHY_ROUTES = [
+  {
+    model: "claude",
+    strategy: "round_robin",
+    targets: 1,
+    route_targets: [{ provider: "anthropic", model: "claude-sonnet-4", weight: 1 }],
+    source: "db",
+  },
+  {
+    model: "qwen3.6",
+    strategy: "round_robin",
+    targets: 1,
+    route_targets: [{ provider: "neuraldeep", model: "qwen3.6-35b-a3b", weight: 1 }],
+    source: "db",
+  },
+  { model: "kimi", strategy: "round_robin", targets: 0, route_targets: [], source: "db" },
+];
+
+const healthRow = (provider: string, target: string, ok: number) => ({
+  provider,
+  target_id: target,
+  grain: "target",
+  sources: ["passive"],
+  events: "4",
+  ok: String(ok),
+  errors: String(4 - ok),
+  timeouts: "0",
+  uptime: ok / 4,
+  failure_rate: 1 - ok / 4,
+  error_budget_burn: (1 - ok / 4) / 0.01,
+  sla_breached: ok < 4 ? "1" : "0",
+  last_event: "2026-11-05 10:00:00",
+});
+
+const withHealth =
+  (inner: FetchStub): FetchStub =>
+  async (input, init) => {
+    if (String(input).includes("/api/v1/health/uptime")) {
+      return json({
+        data: [
+          healthRow("anthropic", "claude-sonnet-4", 0),
+          healthRow("neuraldeep", "qwen3.6-35b-a3b", 4),
+        ],
+      });
+    }
+    return inner(input, init);
+  };
+
+const healthyGateway = withHealth(
+  deployment(async () => json(minted()), undefined, undefined, {
+    routes: HEALTHY_ROUTES,
+    gateway: () =>
+      json({
+        data: [
+          { id: "claude", object: "model", owned_by: "rolter" },
+          { id: "qwen3.6", object: "model", owned_by: "rolter" },
+          { id: "kimi", object: "model", owned_by: "rolter" },
+          { id: "fake-llm", object: "model", owned_by: "rolter" },
+        ],
+      }),
+  }),
+);
+
+/**
+ * The column opens on a route that answers its traffic, not on the first one
+ * the gateway lists, whose provider has no key. The picker lists routes by
+ * name and says which one fails every request.
+ */
+export const OpensOnARouteThatAnswers: Story = {
+  render: () => <Screen fetchStub={healthyGateway} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const picker = await canvas.findByRole("combobox", { name: "Model" });
+    await waitFor(() => expect(picker).toHaveValue("qwen3.6"));
+    await userEvent.click(picker);
+    const listbox = canvas.getByRole("listbox");
+    const names = within(listbox)
+      .getAllByRole("option")
+      .map((o) => o.textContent ?? "");
+    const routes = names.filter((n) => /^(claude|kimi|qwen)/.test(n));
+    await expect(routes.map((n) => n.split(en.pages.playground.modelFailing)[0])).toEqual([
+      "claude",
+      "kimi",
+      "qwen3.6",
+    ]);
+    const claude = within(listbox).getByRole("option", { name: /^claude/ });
+    await expect(claude).toHaveTextContent(en.pages.playground.modelFailing);
+    await expect(within(listbox).getByRole("option", { name: /^qwen3\.6/ })).not.toHaveTextContent(
+      en.pages.playground.modelFailing,
+    );
+    await userEvent.keyboard("{Escape}");
+  },
+};
+
+/** a model picked here is the one the next visit opens on */
+export const OpensOnTheModelLastPicked: Story = {
+  beforeEach: () => {
+    window.localStorage.setItem("rolter.playground.lastModel", "kimi");
+    return () => window.localStorage.removeItem("rolter.playground.lastModel");
+  },
+  render: () => <Screen fetchStub={healthyGateway} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const picker = await canvas.findByRole("combobox", { name: "Model" });
+    await waitFor(() => expect(picker).toHaveValue("kimi"));
+  },
+};

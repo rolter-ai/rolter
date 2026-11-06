@@ -8,7 +8,7 @@
 import type { TFunction } from "i18next";
 
 import { ApiError } from "@/lib/api";
-import { GatewayError } from "@/lib/gateway";
+import { GatewayError, isKeyRefusal } from "@/lib/gateway";
 
 /** the `code`s the control plane sends that the dashboard has a sentence for */
 export const KNOWN_ERROR_CODES = [
@@ -77,12 +77,7 @@ const keepsDetail = new Set<string>([
  * as `detail` when the code and the status were both unknown to the dashboard.
  */
 export function describeError(error: unknown, t: TFunction): ErrorCopy {
-  // the gateway's message is the upstream model's own words, which is what the
-  // operator came to read, so it is kept as detail under a translated lead
-  if (error instanceof GatewayError) {
-    if (error.status === 401) return { message: t("errors.api.unauthorized") };
-    return { message: t("errors.api.generic"), detail: error.message || undefined };
-  }
+  if (error instanceof GatewayError) return describeGatewayError(error, t);
   if (!(error instanceof ApiError)) return { message: t("errors.api.unreachable") };
   if (error.code && known.has(error.code)) {
     // the field the refusal is about, when the control plane named one (#2735)
@@ -98,6 +93,51 @@ export function describeError(error: unknown, t: TFunction): ErrorCopy {
   if (error.status === 429) return { message: t("errors.api.rateLimited") };
   if (error.status >= 500) return { message: t("errors.api.server") };
   return { message: t("errors.api.generic"), detail: error.message || undefined };
+}
+
+/** the gateway's own `error.code`s that the dashboard has a sentence for */
+export const KNOWN_GATEWAY_CODES = [
+  "model_not_found",
+  "rate_limit_exceeded",
+  "insufficient_quota",
+  "guardrail_blocked",
+  "plugin_blocked",
+  "model_unpriced",
+  "provider_credential_missing",
+  "upstream_auth_failed",
+] as const;
+
+const knownGateway = new Set<string>(KNOWN_GATEWAY_CODES);
+
+/**
+ * The copy for a failed call to the gateway, which is not the control plane:
+ * its `401` is about the virtual key the request carried, never the dashboard
+ * session, so it never says "sign in again" (#3643). Rolter's own code is read
+ * first; a `401` or `403` that is not rolter refusing the key came from the
+ * provider, and says so; anything else names its status. The message under it
+ * is the gateway's or the upstream's own words, which is what the operator came
+ * to read, so it is always kept as detail, and `requestId` lets the screen open
+ * the request in LLM Logs, where the attempts are listed.
+ */
+export function describeGatewayError(
+  error: GatewayError,
+  t: TFunction,
+): ErrorCopy & { requestId?: string } {
+  const detail = error.message || undefined;
+  const requestId = error.requestId;
+  if (isKeyRefusal(error)) return { message: t("errors.gateway.keyRefused"), detail, requestId };
+  if (error.code && knownGateway.has(error.code)) {
+    return { message: t(`errors.gateway.codes.${error.code}`), detail, requestId };
+  }
+  if (error.status === 401 || error.status === 403) {
+    return {
+      message: t("errors.gateway.upstreamAuth", { status: error.status }),
+      detail,
+      requestId,
+    };
+  }
+  if (error.status === 429) return { message: t("errors.gateway.rateLimited"), detail, requestId };
+  return { message: t("errors.gateway.failed", { status: error.status }), detail, requestId };
 }
 
 /**

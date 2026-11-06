@@ -41,12 +41,21 @@ import {
   fetchConfigProblems,
   fetchModels,
   fetchRoutes,
+  fetchUptime,
   mintPlaygroundKey,
   unservedModels,
   type MintedKey,
 } from "@/lib/api";
 import { useCan, useCapabilities } from "@/lib/can";
 import { describeError, type ErrorCopy } from "@/lib/error-copy";
+import { logLookupSearch } from "@/lib/log-lookup";
+import {
+  lastPickedModel,
+  pickModel,
+  rememberPickedModel,
+  routeVerdicts,
+} from "@/lib/playground-models";
+import { HEALTH_SLA } from "@/lib/route-targets";
 import {
   awaitingMintedKey,
   embed,
@@ -88,6 +97,8 @@ export interface ModelOption {
   /** `owned_by` from `/v1/models`; absent when the list came from routes */
   ownedBy?: string;
   capabilities?: { decisions: boolean; chat: boolean };
+  /** every target of the route is below its SLA, by the health rollup (#3652) */
+  failing?: boolean;
 }
 
 /**
@@ -156,6 +167,16 @@ function useModelCatalog(session: KeySession): ModelCatalog {
   const routes = useQuery({ queryKey: ["models"], queryFn: fetchModels });
   // the same query the Providers screen lists, so the two share one answer
   const problems = useQuery({ queryKey: ["config-problems"], queryFn: fetchConfigProblems });
+  // which routes answer their traffic (#3652). the rollup needs analytics and
+  // ClickHouse, so a refusal or a deployment without them judges no route,
+  // and the picker behaves as it did before
+  const uptime = useQuery({
+    queryKey: ["health-uptime", HEALTH_SLA],
+    queryFn: () => fetchUptime(HEALTH_SLA),
+    retry: false,
+    staleTime: 60_000,
+  });
+  const verdicts = routeVerdicts(routes.data, uptime.data);
   const gateway = useQuery({
     queryKey: ["gateway-models", key],
     queryFn: ({ signal }) => fetchGatewayModels(signal),
@@ -188,13 +209,16 @@ function useModelCatalog(session: KeySession): ModelCatalog {
   );
   const served = configured.filter((model) => !unserved.has(model));
 
-  const options: ModelOption[] = gateway.data
-    ? gateway.data.map((m) => ({
-        id: m.id,
-        ownedBy: m.owned_by,
-        capabilities: m.rolter_capabilities,
-      }))
-    : served.map((model) => ({ id: model }));
+  const failing = (id: string) => verdicts.get(id) === "failing";
+  const options: ModelOption[] = (
+    gateway.data
+      ? gateway.data.map((m) => ({
+          id: m.id,
+          ownedBy: m.owned_by,
+          capabilities: m.rolter_capabilities,
+        }))
+      : served.map((model) => ({ id: model }))
+  ).map((o) => (failing(o.id) ? { ...o, failing: true } : o));
 
   // the built-in always works, so it stays selectable whatever the source
   const withFake = options.some((o) => o.id === FAKE)
@@ -204,11 +228,20 @@ function useModelCatalog(session: KeySession): ModelCatalog {
   // the gateway's own list is served by definition, and its first bare id is
   // a route rather than a provider pin. the fallback only earns a pick once the
   // problems are in, since until then any route in it may be a dead one
+  // a route that answers its traffic comes first, and one that fails all of
+  // it never: a default install opened on `claude`, whose provider has no key,
+  // and the first message failed (#3652)
   const preferred =
     source === "gateway"
-      ? (options.find((o) => o.id !== FAKE && !o.id.includes("/"))?.id ?? null)
+      ? pickModel(
+          options.filter((o) => o.id !== FAKE && !o.id.includes("/")).map((o) => o.id),
+          verdicts,
+        )
       : source !== "waiting" && problems.isSuccess
-        ? (served.find((model) => model !== FAKE) ?? null)
+        ? pickModel(
+            served.filter((model) => model !== FAKE),
+            verdicts,
+          )
         : null;
 
   // the catalog is what the screen waits on before anything can be sent, so
@@ -256,11 +289,21 @@ function ModelSelect({
   const groups = new Map<string, ComboboxOption[]>();
   for (const option of models) {
     const label = groupLabel(option, routesLabel);
-    const row: ComboboxOption = { value: option.id, label: option.id, group: label };
+    const row: ComboboxOption = {
+      value: option.id,
+      label: option.id,
+      group: label,
+      // the picker says which routes fail all their traffic, so a reader does
+      // not find out by sending (#3652)
+      ...(option.failing ? { description: t("pages.playground.modelFailing") } : {}),
+    };
     const bucket = groups.get(label);
     if (bucket) bucket.push(row);
     else groups.set(label, [row]);
   }
+  // in name order inside each group: the gateway lists them in config order,
+  // which reads as no order at all (#3652)
+  for (const bucket of groups.values()) bucket.sort((a, b) => a.label.localeCompare(b.label));
 
   return (
     <Combobox
@@ -858,8 +901,14 @@ function GatewayButton({
   );
 }
 
-// an error arrives after an action, so it is announced the moment it appears
-function ErrorNote({ error }: { error: ErrorCopy | null }) {
+/** a failure, and for one the gateway answered, the request's id to open in LLM Logs */
+type PlaygroundError = ErrorCopy & { requestId?: string };
+
+// an error arrives after an action, so it is announced the moment it appears.
+// a gateway failure links to its request in LLM Logs, which lists the
+// attempts and the upstream's answer to each (#3643)
+function ErrorNote({ error }: { error: PlaygroundError | null }) {
+  const { t } = useTranslation();
   if (!error) return null;
   return (
     <p
@@ -871,6 +920,14 @@ function ErrorNote({ error }: { error: ErrorCopy | null }) {
         <span className="mt-1 block break-words font-mono text-[color:var(--text-subtle)]">
           {error.detail}
         </span>
+      )}
+      {error.requestId && (
+        <Link
+          to={`/logs${logLookupSearch({ kind: "request_id", value: error.requestId })}`}
+          className="mt-1 block font-medium underline underline-offset-2"
+        >
+          {t("errors.gateway.openInLogs")}
+        </Link>
       )}
     </p>
   );
@@ -955,7 +1012,7 @@ function ChatColumn({
   const [raw, setRaw] = React.useState(false);
   const [draft, setDraft] = React.useState("");
   const [image, setImage] = React.useState<string | null>(null);
-  const [error, setError] = React.useState<ErrorCopy | null>(null);
+  const [error, setError] = React.useState<PlaygroundError | null>(null);
   const [busy, setBusy] = React.useState(false);
   // the turns of the last request the column sent, for Copy as code
   const [lastSent, setLastSent] = React.useState<SnippetMessage[] | null>(null);
@@ -1353,12 +1410,19 @@ function ChatMode({ models, preferred }: { models: ModelOption[]; preferred: str
   // the saved model, but only once the catalog confirms the gateway serves it
   const [params] = useSearchParams();
   const requested = params.get("model");
+  // then the model this browser last picked, unless its route now fails all
+  // of its traffic (#3652)
+  const [last] = React.useState(lastPickedModel);
+  const usable = (id: string | null): id is string =>
+    !!id && models.some((option) => option.id === id && !option.failing);
   const preferredModel =
     requested && models.some((option) => option.id === requested)
       ? requested
       : saved && models.some((option) => option.id === saved)
         ? saved
-        : preferred;
+        : usable(last)
+          ? last
+          : preferred;
   // a column's thread lives in the column, so a column needs an identity that
   // outlasts its position: removing the first of two must not hand its thread
   // to the one that moved up
@@ -1383,6 +1447,7 @@ function ChatMode({ models, preferred }: { models: ModelOption[]; preferred: str
   const compare = cols.length > 1;
   const setModel = (i: number, v: string) => {
     touched.current = true;
+    rememberPickedModel(v);
     setCols((c) => c.map((col, j) => (j === i ? { ...col, model: v } : col)));
   };
   const add = () => {
@@ -1489,7 +1554,7 @@ function EmbeddingsMode({ models }: { models: ModelOption[] }) {
     t("pages.playground.samples.embeddings").split("\n"),
   );
   const [points, setPoints] = React.useState<ScatterPoint[]>([]);
-  const [error, setError] = React.useState<ErrorCopy | null>(null);
+  const [error, setError] = React.useState<PlaygroundError | null>(null);
   const [busy, setBusy] = React.useState(false);
 
   const setText = (i: number, v: string) => setTexts((a) => a.map((t, j) => (j === i ? v : t)));
@@ -1591,7 +1656,7 @@ function ImageMode({ models }: { models: ModelOption[] }) {
   const [size, setSize] = React.useState("1024x1024");
   const [n, setN] = React.useState(4);
   const [images, setImages] = React.useState<GeneratedImage[]>([]);
-  const [error, setError] = React.useState<ErrorCopy | null>(null);
+  const [error, setError] = React.useState<PlaygroundError | null>(null);
   const [busy, setBusy] = React.useState(false);
 
   const gen = async () => {
@@ -1688,7 +1753,7 @@ function AudioMode({ models, active }: { models: ModelOption[]; active: boolean 
   const [voice, setVoice] = React.useState("nova");
   const [audioUrl, setAudioUrl] = React.useState<string | null>(null);
   const [transcript, setTranscript] = React.useState<string | null>(null);
-  const [error, setError] = React.useState<ErrorCopy | null>(null);
+  const [error, setError] = React.useState<PlaygroundError | null>(null);
   const [busy, setBusy] = React.useState(false);
   const fileRef = React.useRef<HTMLInputElement>(null);
   const clipRef = React.useRef<HTMLAudioElement>(null);
