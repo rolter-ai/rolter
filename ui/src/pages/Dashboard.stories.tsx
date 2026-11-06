@@ -584,7 +584,7 @@ export const TheFleetTileCountsTheLiveGateways: Story = {
     const canvas = within(canvasElement);
     const fleet = await canvas.findByTestId("dashboard-fleet");
     await waitFor(() =>
-      expect(fleet).toHaveTextContent(`${fmt.number(3)}${en.pages.dashboard.fleet.liveUnit}`),
+      expect(fleet).toHaveTextContent(`${fmt.number(3)}${en.pages.dashboard.fleet.liveUnit_other}`),
     );
     await expect(fleet).toHaveTextContent(en.pages.dashboard.fleet.allCurrent);
     // the first tile of the strip: it is read before any figure of the window
@@ -1432,7 +1432,7 @@ export const AFailedSummaryLeavesTheFleetTileUp: Story = {
     await expectLoadError(figures, /failed to return the overview figures/i);
     const fleet = await within(figures).findByTestId("dashboard-fleet");
     await waitFor(() =>
-      expect(fleet).toHaveTextContent(`${fmt.number(3)}${en.pages.dashboard.fleet.liveUnit}`),
+      expect(fleet).toHaveTextContent(`${fmt.number(3)}${en.pages.dashboard.fleet.liveUnit_other}`),
     );
     await expect(fleet).toBeVisible();
     await expect(figures.querySelector("[data-testid]")).toBe(fleet);

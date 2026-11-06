@@ -61,7 +61,7 @@ export const Healthy: Story = {
   render: () => <TileStory fleet={counts(3, 0, 0)} />,
   play: async ({ canvasElement }) => {
     await waitFor(() =>
-      expect(tile(canvasElement)).toHaveTextContent(`${fmt.number(3)}${D.fleet.liveUnit}`),
+      expect(tile(canvasElement)).toHaveTextContent(`${fmt.number(3)}${D.fleet.liveUnit_other}`),
     );
     await expect(tile(canvasElement)).toHaveTextContent(D.fleet.allCurrent);
   },
@@ -91,7 +91,9 @@ export const Stale: Story = {
     await waitFor(() =>
       expect(tile(canvasElement)).toHaveTextContent(D.fleet.stale_one.replace("{{count}}", "1")),
     );
-    await expect(tile(canvasElement)).toHaveTextContent(`${fmt.number(2)}${D.fleet.liveUnit}`);
+    await expect(tile(canvasElement)).toHaveTextContent(
+      `${fmt.number(2)}${D.fleet.liveUnit_other}`,
+    );
   },
 };
 
@@ -187,7 +189,9 @@ export const AgreesWithTheHeaderPill: Story = {
     await expect(tile(canvasElement)).toHaveTextContent(
       D.fleet.lagging_one.replace("{{count}}", "1"),
     );
-    await expect(tile(canvasElement)).toHaveTextContent(`${fmt.number(3)}${D.fleet.liveUnit}`);
+    await expect(tile(canvasElement)).toHaveTextContent(
+      `${fmt.number(3)}${D.fleet.liveUnit_other}`,
+    );
   },
 };
 

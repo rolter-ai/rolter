@@ -1113,7 +1113,9 @@ export const ShowsWhoHasASecondFactor: Story = {
     ).toBeVisible();
     // an account the roster does not list is not claimed to lack a factor
     await expect(
-      within(await factorRow(canvasElement, "former@example.com")).getByText("Not listed"),
+      within(await factorRow(canvasElement, "former@example.com")).getByText(
+        en.pages.users.factorNotListed,
+      ),
     ).toBeVisible();
   },
 };

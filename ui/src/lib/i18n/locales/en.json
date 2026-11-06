@@ -962,7 +962,8 @@
         "filters_other": "{{count}} filters"
       },
       "fleet": {
-        "liveUnit": "live",
+        "liveUnit_one": "live",
+        "liveUnit_other": "live",
         "allCurrent": "All on the latest config",
         "lagging_one": "{{count}} not on the latest config",
         "lagging_other": "{{count}} not on the latest config",
@@ -4567,7 +4568,7 @@
       },
       "factorArmed": "Armed",
       "factorNone": "Not set up",
-      "factorNotListed": "Not listed",
+      "factorNotListed": "Not a member",
       "factorArmedHint_one": "An authenticator app is set up; {{count}} recovery code left.",
       "factorArmedHint_other": "An authenticator app is set up; {{count}} recovery codes left.",
       "factorNoneHint": "No authenticator app is set up for this account.",

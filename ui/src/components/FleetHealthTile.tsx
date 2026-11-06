@@ -27,7 +27,8 @@ export function FleetHealthTile() {
   const value = fleet
     ? fmt.number(fleet.live)
     : t(`pages.dashboard.fleet.probe.${refusal ?? health}`);
-  const unit = fleet ? t("pages.dashboard.fleet.liveUnit") : undefined;
+  // a plural: "1 активен", "3 активны" (#3662)
+  const unit = fleet ? t("pages.dashboard.fleet.liveUnit", { count: fleet.live }) : undefined;
   let delta: string | undefined;
   if (fleet) {
     const parts = [
