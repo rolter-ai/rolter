@@ -103,6 +103,11 @@ export function a11yGate(tally = false) {
     context: A11Y_CONTEXT,
     options: {
       runOnly: { type: "tag" as const, values: [...A11Y_TAGS] },
+      // only violations are collected in full; passes and incomplete results
+      // keep one node each. every rule's every passing node landed in the run's
+      // JSON report, and with the WCAG 2.1 and 2.2 rules added (#3654) the
+      // report outgrew the longest string the runtime can write
+      resultTypes: ["violations" as const],
       // the addon always disables `region` itself; in a tally it is a rule to count
       rules: tally ? { region: { enabled: true } } : {},
     },
