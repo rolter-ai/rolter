@@ -60,7 +60,10 @@ export function LocalePicker({ collapsed = false }: { collapsed?: boolean }) {
         type="button"
         onClick={() => setOpen((v) => !v)}
         title={t("locale.change")}
-        aria-label={t("locale.change")}
+        // the name starts with the code the button shows, so a voice user who
+        // says "click RU" reaches it (WCAG 2.5.3, #3654); folded, the code is
+        // not drawn, and the name keeps it for the same reader
+        aria-label={t("locale.changeFrom", { code: LOCALE_SHORT[active] })}
         aria-haspopup="menu"
         aria-expanded={open}
         className={cn(

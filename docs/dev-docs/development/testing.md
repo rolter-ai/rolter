@@ -1515,7 +1515,7 @@ flag prose as often as code. A reviewer still has to.
 function has finished, and `parameters.a11y.test: "error"` fails the story on
 **any violation at any impact** — minor and moderate included. The configuration
 is `a11yGate()` in `ui/src/lib/story-a11y.ts`, which `.storybook/preview.ts`
-applies to every story: the rule set is `wcag2a` + `wcag2aa` + `best-practice`,
+applies to every story: the rule set is WCAG 2.0, 2.1 and 2.2 at levels A and AA (`wcag2a`, `wcag2aa`, `wcag21a`, `wcag21aa`, `wcag22aa`) plus `best-practice`,
 and every excluded rule is named in `EXCLUDED_RULES` there with the reason beside
 it. The context is the whole document (`context: "html"`) rather than
 `#storybook-root`, because dialogs, sheets and toasts portal to `<body>` and those

@@ -284,7 +284,7 @@ export const ListsModelsWithUnpricedTraffic: Story = {
     await expect(
       canvas.getByRole("heading", { name: "2 models have traffic and no price" }),
     ).toBeVisible();
-    await clickWhenEnabled(canvasElement, "Add a price for qwen-max");
+    await clickWhenEnabled(canvasElement, "Add price for qwen-max");
     const form = within(sheet());
     await waitFor(() =>
       expect(form.getByRole("combobox", { name: "Model name" })).toHaveValue("qwen-max"),

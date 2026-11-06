@@ -36,8 +36,23 @@ import { cn } from "@/lib/utils";
 // nothing here either: it offers to open LLM Logs on that id, which is where
 // the control plane answers it (#1861).
 
-/** how many records of one kind the palette offers before it stops listing */
+/**
+ * how many matches of one kind the palette lists. It caps what is shown, never
+ * what is searched: a cap applied before matching made the seventh route
+ * unfindable by its own name (#3642)
+ */
 const RECORDS_PER_KIND = 6;
+
+/** the best `RECORDS_PER_KIND` matches of each kind, in rank order */
+function capPerKind(ranked: PaletteEntry[]): PaletteEntry[] {
+  const seen = new Map<string, number>();
+  return ranked.filter((entry) => {
+    const kind = entry.id.slice(0, entry.id.indexOf(":"));
+    const n = seen.get(kind) ?? 0;
+    seen.set(kind, n + 1);
+    return n < RECORDS_PER_KIND;
+  });
+}
 
 const SECTION_HEADING =
   "px-1 py-1.5 text-2xs uppercase tracking-[0.08em] text-[color:var(--text-subtle)]";
@@ -135,7 +150,7 @@ export function CommandPalette({
 
   const records = React.useMemo<PaletteEntry[]>(() => {
     const out: PaletteEntry[] = [];
-    for (const key of (keys.data ?? []).slice(0, RECORDS_PER_KIND)) {
+    for (const key of keys.data ?? []) {
       out.push({
         id: `key:${key.id}`,
         screen: "virtual-keys",
@@ -143,7 +158,7 @@ export function CommandPalette({
         hint: t("shell.palette.kinds.virtualKey"),
       });
     }
-    for (const provider of (providers.data ?? []).slice(0, RECORDS_PER_KIND)) {
+    for (const provider of providers.data ?? []) {
       out.push({
         id: `provider:${provider.id}`,
         screen: "providers",
@@ -151,7 +166,7 @@ export function CommandPalette({
         hint: t("shell.palette.kinds.provider"),
       });
     }
-    for (const route of (routes.data ?? []).slice(0, RECORDS_PER_KIND)) {
+    for (const route of routes.data ?? []) {
       out.push({
         id: `route:${route.id}`,
         screen: "routing-rules",
@@ -190,7 +205,7 @@ export function CommandPalette({
     }
     // records only once there is something to match them against: the whole
     // list of every key, provider and route is not a useful thing to open onto
-    const matchedRecords = typed ? rankEntries(records, query) : [];
+    const matchedRecords = typed ? capPerKind(rankEntries(records, query)) : [];
     // a pasted id is offered when no name matched it, never ahead of one: a
     // route called `gpt-4o-mini` has a digit and eleven characters too, and
     // Enter on it must still open Routing Rules

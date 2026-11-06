@@ -96,6 +96,12 @@ export interface NavSidebarProps extends React.HTMLAttributes<HTMLElement> {
   groups: NavGroup[];
   activeKey?: string;
   onNavigate?: (key: string) => void;
+  /* when set, a screen is a link to this address rather than a button: a
+     modified or middle click opens it in a new tab, hovering shows where it
+     goes, "copy link" works and a screen reader hears a link. a plain click
+     still goes through onNavigate, without a page load (#3653). a group,
+     which only opens and closes, stays a button */
+  hrefFor?: (key: string) => string;
   user?: NavUser;
   /* when provided, the user block becomes a menu trigger: clicking it opens an
      actions menu beside the block, above it on the full rail and to its right
@@ -171,6 +177,22 @@ const itemOpen = "bg-muted text-foreground";
 const itemActive =
   "bg-[color:var(--surface-subtle)] text-foreground before:absolute before:-left-px before:top-1/2 before:h-4 before:w-[3px] before:-translate-y-1/2 before:rounded-full before:bg-[color:var(--red-folk)] before:content-['']";
 
+/**
+ * A plain left click on a screen's link is the dashboard's own navigation; a
+ * click with a modifier, or one something else already handled, is the reader
+ * asking the browser for a new tab or window, and is left to it. A middle
+ * click never arrives here: it is `auxclick`.
+ */
+function followLink(e: React.MouseEvent<HTMLAnchorElement>, go: () => void) {
+  if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey)
+    return;
+  e.preventDefault();
+  go();
+}
+
+/** the focusable entries of a list of screens, links and buttons alike */
+const ENTRY_SELECTOR = "a[href], button";
+
 function matches(it: NavItem, q: string): boolean {
   if (it.label.toLowerCase().includes(q)) return true;
   return (it.children ?? []).some((c) => matches(c, q));
@@ -202,7 +224,12 @@ function holds(it: NavItem, key: string | undefined): boolean {
  */
 function NavLabel({ item }: { item: NavItem }) {
   const { t } = useTranslation();
-  if (!item.experimental) return <span className="min-w-0 truncate">{item.label}</span>;
+  // a long name wraps onto a second line rather than ending in an ellipsis:
+  // eight Russian screens were cut at the default 232px ("Правила маршрутиза…",
+  // #3657). past two lines, at the narrowest rail, it is clamped, and the rail
+  // names it on hover like any other cut text
+  if (!item.experimental)
+    return <span className="line-clamp-2 min-w-0 break-words">{item.label}</span>;
   return (
     <span className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-1">
       <span className="min-w-0 break-words">{item.label}</span>
@@ -222,7 +249,7 @@ function NavLabel({ item }: { item: NavItem }) {
  * The panel is `AnchoredPanel`'s: `fixed` and placed from the icon's rectangle,
  * against the rail's right edge and level with the icon, because the rail's list
  * scrolls and a scroll container clips an absolutely positioned child. It is a
- * disclosure, not an ARIA menu: the entries are navigation buttons, so they stay
+ * disclosure, not an ARIA menu: the entries are navigation links, so they stay
  * in the tab order right after the icon that opened them, and arrows are an
  * addition rather than the only way in. Escape closes and hands focus back to
  * the icon; a pointer press outside, focus leaving, or the rail scrolling out
@@ -236,19 +263,22 @@ function GroupFlyout({
   item,
   anchor,
   activeKey,
+  hrefFor,
   onSelect,
   onClose,
 }: {
   item: NavItem;
   anchor: HTMLElement;
   activeKey?: string;
+  hrefFor?: (key: string) => string;
   onSelect: (key: string) => void;
   onClose: (restoreFocus: boolean) => void;
 }) {
   const ref = React.useRef<HTMLDivElement>(null);
   const headingId = React.useId();
 
-  const entries = () => Array.from(ref.current?.querySelectorAll<HTMLElement>("button") ?? []);
+  const entries = () =>
+    Array.from(ref.current?.querySelectorAll<HTMLElement>(ENTRY_SELECTOR) ?? []);
 
   // keyboard focus lands on where the reader already is in this group, or on
   // its first screen
@@ -285,23 +315,58 @@ function GroupFlyout({
         {item.label}
       </div>
       {(item.children ?? []).map((c) => (
-        <button
+        <FlyoutEntry
           key={c.key}
-          type="button"
-          aria-current={c.key === activeKey ? "page" : undefined}
-          onClick={() => onSelect(c.key)}
-          className={cn(itemBase, c.key === activeKey ? itemActive : itemIdle)}
-        >
-          {c.icon}
-          <NavLabel item={c} />
-          {c.count != null && (
-            <span className="ml-auto font-mono text-2xs text-[color:var(--text-subtle)]">
-              {c.count}
-            </span>
-          )}
-        </button>
+          item={c}
+          active={c.key === activeKey}
+          href={hrefFor?.(c.key)}
+          onSelect={() => onSelect(c.key)}
+        />
       ))}
     </AnchoredPanel>
+  );
+}
+
+/** one screen in a group's flyout: a link when the rail was given addresses */
+function FlyoutEntry({
+  item,
+  active,
+  href,
+  onSelect,
+}: {
+  item: NavItem;
+  active: boolean;
+  href?: string;
+  onSelect: () => void;
+}) {
+  const className = cn(itemBase, active ? itemActive : itemIdle);
+  const current = active ? ("page" as const) : undefined;
+  const body = (
+    <>
+      {item.icon}
+      <NavLabel item={item} />
+      {item.count != null && (
+        <span className="ml-auto font-mono text-2xs text-[color:var(--text-subtle)]">
+          {item.count}
+        </span>
+      )}
+    </>
+  );
+  if (href)
+    return (
+      <a
+        href={href}
+        aria-current={current}
+        onClick={(e) => followLink(e, onSelect)}
+        className={className}
+      >
+        {body}
+      </a>
+    );
+  return (
+    <button type="button" aria-current={current} onClick={onSelect} className={className}>
+      {body}
+    </button>
   );
 }
 
@@ -320,6 +385,7 @@ export function NavSidebar({
   groups = [],
   activeKey,
   onNavigate,
+  hrefFor,
   user,
   userMenu,
   headerExtra,
@@ -506,72 +572,97 @@ export function NavSidebar({
     const foldedTitle = it.experimental
       ? t("shell.experimentalItem", { label: it.label })
       : it.label;
-    return (
-      <React.Fragment key={it.key}>
-        <button
-          type="button"
-          ref={(el) => {
-            if (el) triggers.current.set(it.key, el);
-            else triggers.current.delete(it.key);
-          }}
-          aria-current={active ? "page" : holdsCurrent ? "true" : undefined}
-          aria-expanded={hasKids ? (foldedGroup ? flyoutOpen : expanded) : undefined}
-          title={folded ? foldedTitle : undefined}
-          onClick={() => {
-            if (foldedGroup) {
-              setFlyout((k) => (k === it.key ? null : it.key));
-              return;
-            }
-            if (hasKids) {
-              setOpen((o) => ({ ...o, [it.key]: !isOpen(it) }));
-              return;
-            }
-            onNavigate?.(it.key);
-            // the drawer covers the screen it just navigated to
-            if (isDrawer) closeDrawer();
-          }}
-          onKeyDown={(e) => {
-            // the way a submenu opens from a vertical list; Enter and Space
-            // already click
-            if (foldedGroup && (e.key === "ArrowRight" || e.key === "ArrowDown")) {
-              e.preventDefault();
-              setFlyout(it.key);
-            }
-          }}
-          className={cn(
-            itemBase,
-            active || holdsCurrent ? itemActive : flyoutOpen ? itemOpen : itemIdle,
-            folded && "justify-center px-0",
-            // a touch target, not a pointer one, once the rail is a drawer
-            isDrawer && "py-2.5",
-          )}
-        >
-          {it.icon}
-          {/* folded, the marker is a dot on the corner of the icon — the same
+    const leafHref = !hasKids && hrefFor ? hrefFor(it.key) : undefined;
+    const entryClass = cn(
+      itemBase,
+      active || holdsCurrent ? itemActive : flyoutOpen ? itemOpen : itemIdle,
+      folded && "justify-center px-0",
+      // a touch target, not a pointer one, once the rail is a drawer
+      isDrawer && "py-2.5",
+    );
+    const body = (
+      <>
+        {it.icon}
+        {/* folded, the marker is a dot on the corner of the icon — the same
               shape the footer's update hint uses, so "there is something to
               know here" reads the same way twice. decorative: `title` above
               already carries the word */}
-          {folded && it.experimental && (
-            <span
-              aria-hidden="true"
-              className="absolute right-1 top-1 h-1.5 w-1.5 rounded-full bg-[color:var(--status-warning)]"
-            />
-          )}
-          {!folded && <NavLabel item={it} />}
-          {!folded && it.count != null && (
-            <span className="ml-auto font-mono text-2xs text-[color:var(--text-subtle)]">
-              {it.count}
-            </span>
-          )}
-          {!folded && hasKids && (
-            <ChevronDown
-              className={cn(
-                "!ml-auto !h-3.5 !w-3.5 text-[color:var(--text-subtle)] transition-transform",
-                !expanded && "-rotate-90",
-              )}
-            />
-          )}
-        </button>
+        {folded && it.experimental && (
+          <span
+            aria-hidden="true"
+            className="absolute right-1 top-1 h-1.5 w-1.5 rounded-full bg-[color:var(--status-warning)]"
+          />
+        )}
+        {!folded && <NavLabel item={it} />}
+        {!folded && it.count != null && (
+          <span className="ml-auto font-mono text-2xs text-[color:var(--text-subtle)]">
+            {it.count}
+          </span>
+        )}
+        {!folded && hasKids && (
+          <ChevronDown
+            className={cn(
+              "!ml-auto !h-3.5 !w-3.5 text-[color:var(--text-subtle)] transition-transform",
+              !expanded && "-rotate-90",
+            )}
+          />
+        )}
+      </>
+    );
+    return (
+      <React.Fragment key={it.key}>
+        {leafHref ? (
+          <a
+            href={leafHref}
+            aria-current={active ? "page" : undefined}
+            title={folded ? foldedTitle : undefined}
+            onClick={(e) =>
+              followLink(e, () => {
+                onNavigate?.(it.key);
+                // the drawer covers the screen it just navigated to
+                if (isDrawer) closeDrawer();
+              })
+            }
+            className={entryClass}
+          >
+            {body}
+          </a>
+        ) : (
+          <button
+            type="button"
+            ref={(el) => {
+              if (el) triggers.current.set(it.key, el);
+              else triggers.current.delete(it.key);
+            }}
+            aria-current={active ? "page" : holdsCurrent ? "true" : undefined}
+            aria-expanded={hasKids ? (foldedGroup ? flyoutOpen : expanded) : undefined}
+            title={folded ? foldedTitle : undefined}
+            onClick={() => {
+              if (foldedGroup) {
+                setFlyout((k) => (k === it.key ? null : it.key));
+                return;
+              }
+              if (hasKids) {
+                setOpen((o) => ({ ...o, [it.key]: !isOpen(it) }));
+                return;
+              }
+              onNavigate?.(it.key);
+              // the drawer covers the screen it just navigated to
+              if (isDrawer) closeDrawer();
+            }}
+            onKeyDown={(e) => {
+              // the way a submenu opens from a vertical list; Enter and Space
+              // already click
+              if (foldedGroup && (e.key === "ArrowRight" || e.key === "ArrowDown")) {
+                e.preventDefault();
+                setFlyout(it.key);
+              }
+            }}
+            className={entryClass}
+          >
+            {body}
+          </button>
+        )}
         {expanded && !folded && (
           <div className="ml-[15px] flex flex-col gap-0.5 border-l border-[color:var(--border-subtle)] pl-1.5">
             {it.children!.map((c) => renderItem(c, depth + 1, selfMatch))}
@@ -582,6 +673,7 @@ export function NavSidebar({
             item={it}
             anchor={triggers.current.get(it.key)!}
             activeKey={activeKey}
+            hrefFor={hrefFor}
             onSelect={(key) => {
               onNavigate?.(key);
               setFlyout(null);

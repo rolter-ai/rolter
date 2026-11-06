@@ -72,13 +72,14 @@ export function CopyableText({
           {value}
         </code>
         {/* lifted by the difference between the 24px button and a 16px line,
-            so its icon sits on the value's first line */}
+            so its icon sits on the value's first line. at least 24px wide
+            too: a 22px target beside a link under it failed WCAG 2.5.8 */}
         <CopyButton
           value={value}
           label={copyLabel}
           persistFailure={persistFailure}
           onStateChange={onCopyStateChange}
-          className="-mt-1 h-6 flex-none px-1"
+          className="-mt-1 h-6 min-w-6 flex-none justify-center px-1"
         />
       </span>
     );

@@ -567,7 +567,9 @@ function DetailDrawer({ eventId, onClose }: { eventId: string; onClose: () => vo
               {d.request_id && (
                 <Link
                   to={`/logs?request_id=${encodeURIComponent(d.request_id)}`}
-                  className="text-xs underline underline-offset-4 hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                  // a 24px row of its own, so it and the copy button above are
+                  // each a full target (WCAG 2.5.8)
+                  className="inline-flex min-h-6 items-center text-xs underline underline-offset-4 hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                 >
                   {t("pages.mcpLogs.openInLogs")}
                 </Link>

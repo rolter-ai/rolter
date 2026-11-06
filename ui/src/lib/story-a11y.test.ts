@@ -72,7 +72,14 @@ describe("a11yGate", () => {
     expect(gate.context).toBe(A11Y_CONTEXT);
     expect(gate.context).toBe("html");
     expect(gate.options.runOnly).toEqual({ type: "tag", values: [...A11Y_TAGS] });
-    expect(A11Y_TAGS).toEqual(["wcag2a", "wcag2aa", "best-practice"]);
+    expect(A11Y_TAGS).toEqual([
+      "wcag2a",
+      "wcag2aa",
+      "wcag21a",
+      "wcag21aa",
+      "wcag22aa",
+      "best-practice",
+    ]);
   });
 
   it("names every rule it excludes, and nothing else", () => {

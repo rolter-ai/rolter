@@ -1808,9 +1808,15 @@ function Where() {
 /** the day a row fell on, as the column writes it under the clock */
 const dayOf = (ts: string) => fmt.date(ts, { month: "short", day: "numeric" });
 
-/** the name of the link that opens a request, as the catalog words it */
-const openName = (model: string, ts: string) =>
-  en.pages.dashboard.openRequest.replace("{{model}}", model).replace("{{time}}", fmt.dateTime(ts));
+/**
+ * the name of the link that opens a request: the clock it shows (and the day
+ * under it, when there is one), then what it opens, so the name holds the
+ * visible text (WCAG 2.5.3)
+ */
+const openName = (model: string, _ts: string) =>
+  new RegExp(
+    `, ${en.pages.dashboard.openRequest.replace("{{model}}", model).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`,
+  );
 
 /**
  * The recent requests window is 24 hours and crosses midnight, where a bare
@@ -1840,7 +1846,12 @@ export const RecentRequestsShowTheirDayAndOpenInLlmLogs: Story = {
     const noId = await rowOf("gemini-2.5-flash");
 
     // a clock alone for today, and the day under it for the earlier request
-    await expect(today.cells[0].textContent).toBe(fmt.time(TODAY_ROW.ts));
+    // what is drawn, without the screen-reader-only words after it
+    const drawn = (cell: HTMLElement) =>
+      Array.from(cell.querySelectorAll("span:not(.sr-only)"))
+        .map((el) => el.textContent)
+        .join("");
+    await expect(drawn(today.cells[0])).toBe(fmt.time(TODAY_ROW.ts));
     await expect(earlier.cells[0]).toHaveTextContent(fmt.time(EARLIER_ROW.ts));
     await expect(earlier.cells[0]).toHaveTextContent(dayOf(EARLIER_ROW.ts));
 

@@ -54,8 +54,20 @@ export const PAGE_A11Y_STORY_ID =
  */
 export const A11Y_CONTEXT = "html";
 
-/** The rule sets the gate runs: `wcag2a` + `wcag2aa` + `best-practice`. */
-export const A11Y_TAGS = ["wcag2a", "wcag2aa", "best-practice"] as const;
+/**
+ * The rule sets the gate runs: WCAG 2.0, 2.1 and 2.2 at A and AA, plus
+ * `best-practice`. The 2.1 and 2.2 sets were left out until #3654, so a rule
+ * such as Label in Name (2.5.3) never ran and a live pass found it on every
+ * screen.
+ */
+export const A11Y_TAGS = [
+  "wcag2a",
+  "wcag2aa",
+  "wcag21a",
+  "wcag21aa",
+  "wcag22aa",
+  "best-practice",
+] as const;
 
 /**
  * Rules the gate excludes, with the reason. `ROLTER_AXE_TALLY` keeps the first

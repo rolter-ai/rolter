@@ -86,13 +86,13 @@ export const Desktop: Story = {
 
     // labels, not icons: this is the full rail, not the tablet strip
     await expect(within(rail).getByText("rolter")).toBeVisible();
-    await expect(within(rail).getByRole("button", { name: nav.playground })).toBeVisible();
+    await expect(within(rail).getByRole("link", { name: nav.playground })).toBeVisible();
     // the splitter belongs to this width and only this width
     await expect(
       within(rail).getByRole("separator", { name: en.shell.resizeSidebar }),
     ).toBeInTheDocument();
     // the shell knows which route it is on, and the screen agrees
-    await expect(within(rail).getByRole("button", { name: nav.dashboard })).toHaveAttribute(
+    await expect(within(rail).getByRole("link", { name: nav.dashboard })).toHaveAttribute(
       "aria-current",
       "page",
     );
@@ -189,10 +189,10 @@ export const AccountMenuHoldsThePersonOnly: Story = {
     // the rail's own leaves, found through its search box, which opens a group
     const search = within(rail).getByRole("textbox", { name: en.shell.searchNav });
     await userEvent.type(search, "account");
-    await expect(within(rail).getByRole("button", { name: nav["api-keys"] })).toBeVisible();
+    await expect(within(rail).getByRole("link", { name: nav["api-keys"] })).toBeVisible();
     await userEvent.clear(search);
     await userEvent.type(search, "preferences");
-    await expect(within(rail).getByRole("button", { name: nav.preferences })).toBeVisible();
+    await expect(within(rail).getByRole("link", { name: nav.preferences })).toBeVisible();
     await userEvent.clear(search);
 
     const { menu } = await openAccountMenu(rail, /anya@acme.co/);
@@ -216,7 +216,7 @@ export const AccountMenuEntriesNavigate: Story = {
     const { card, menu } = await openAccountMenu(rail, /anya@acme.co/);
     await userEvent.click(within(menu).getByRole("menuitem", { name: nav["api-keys"] }));
     await canvas.findByRole("heading", { level: 1, name: screens["api-keys"].title });
-    await expect(within(rail).getByRole("button", { name: nav["api-keys"] })).toHaveAttribute(
+    await expect(within(rail).getByRole("link", { name: nav["api-keys"] })).toHaveAttribute(
       "aria-current",
       "page",
     );
@@ -481,11 +481,11 @@ export const FoldedRailOpensAGroup: Story = {
 
     await userEvent.click(group);
     const flyout = within(await within(rail).findByRole("group", { name: nav.models }));
-    await expect(flyout.getByRole("button", { name: nav.providers })).toHaveAttribute(
+    await expect(flyout.getByRole("link", { name: nav.providers })).toHaveAttribute(
       "aria-current",
       "page",
     );
-    await userEvent.click(flyout.getByRole("button", { name: nav["routing-rules"] }));
+    await userEvent.click(flyout.getByRole("link", { name: nav["routing-rules"] }));
 
     await waitFor(() =>
       expect(
@@ -514,9 +514,9 @@ export const FoldedRailFlyoutLeavesOutRefusedScreens: Story = {
     );
     await userEvent.click(within(rail).getByRole("button", { name: nav.governance }));
     const flyout = within(await within(rail).findByRole("group", { name: nav.governance }));
-    await expect(flyout.getByRole("button", { name: nav["gov-teams"] })).toBeVisible();
-    await expect(flyout.queryByRole("button", { name: nav["audit-logs"] })).toBeNull();
-    await expect(flyout.queryByRole("button", { name: nav.sso })).toBeNull();
+    await expect(flyout.getByRole("link", { name: nav["gov-teams"] })).toBeVisible();
+    await expect(flyout.queryByRole("link", { name: nav["audit-logs"] })).toBeNull();
+    await expect(flyout.queryByRole("link", { name: nav.sso })).toBeNull();
   },
 };
 
@@ -705,7 +705,7 @@ export const Mobile: Story = {
 
     // a top-level leaf, so the assertion is about the drawer and not about
     // expanding a parent on the way to a child
-    await userEvent.click(await within(drawer).findByRole("button", { name: nav.playground }));
+    await userEvent.click(await within(drawer).findByRole("link", { name: nav.playground }));
 
     // navigated…
     await waitFor(() =>
@@ -735,7 +735,7 @@ export const ExperimentalMarker: Story = {
   ),
   play: async ({ canvasElement }) => {
     const rail = await railOf(canvasElement);
-    const marked = await within(rail).findByRole("button", {
+    const marked = await within(rail).findByRole("link", {
       name: `${nav["skills-repo"]} ${en.shell.experimental}`,
     });
     await expect(marked).toBeVisible();
@@ -750,7 +750,7 @@ export const ExperimentalMarker: Story = {
     );
     // and the marker is the exception it claims to be: a sibling the answer
     // did not name carries nothing
-    const plain = within(rail).getByRole("button", { name: nav.playground });
+    const plain = within(rail).getByRole("link", { name: nav.playground });
     await expect(within(plain).queryByText(en.shell.experimental)).toBeNull();
   },
 };
@@ -768,7 +768,7 @@ export const ExperimentalMarkerTranslated: Story = {
   ),
   play: async ({ canvasElement }) => {
     const rail = await railOf(canvasElement, ru.shell.navLabel);
-    const marked = await within(rail).findByRole("button", {
+    const marked = await within(rail).findByRole("link", {
       name: `${ru.nav["skills-repo"]} ${ru.shell.experimental}`,
     });
     const badge = within(marked).getByText(ru.shell.experimental);
@@ -797,7 +797,7 @@ export const ExperimentalMarkerWithoutNote: Story = {
   ),
   play: async ({ canvasElement }) => {
     const rail = await railOf(canvasElement);
-    const marked = await within(rail).findByRole("button", {
+    const marked = await within(rail).findByRole("link", {
       name: `${nav["skills-repo"]} ${en.shell.experimental}`,
     });
     const badge = within(marked).getByText(en.shell.experimental);
@@ -819,7 +819,7 @@ export const ExperimentalMarkerOnIconRail: Story = {
   play: async ({ canvasElement }) => {
     const rail = await railOf(canvasElement);
     await waitFor(() => expect(rail.getBoundingClientRect().width).toBe(52));
-    const marked = await within(rail).findByRole("button", {
+    const marked = await within(rail).findByRole("link", {
       name: en.shell.experimentalItem.replace("{{label}}", nav["skills-repo"]),
     });
     await expect(marked).toBeVisible();
@@ -883,13 +883,13 @@ function entriesStayWhole(locale: "en" | "ru") {
       };
 
       // a top-level entry
-      const skills = await within(rail).findByRole("button", {
+      const skills = await within(rail).findByRole("link", {
         name: `${labels["skills-repo"]} ${word}`,
       });
       await whole(skills, labels["skills-repo"]);
       // one nested under its group, which has the least room of all
       await userEvent.click(within(rail).getByRole("button", { name: labels.mcp }));
-      const settings = await within(rail).findByRole("button", {
+      const settings = await within(rail).findByRole("link", {
         name: `${labels["mcp-settings"]} ${word}`,
       });
       await whole(settings, labels["mcp-settings"]);
@@ -919,7 +919,7 @@ export const ExperimentalEntriesStayWholeInTheFlyoutInRussian: Story = {
     await waitFor(() => expect(rail.getBoundingClientRect().width).toBe(52));
     await userEvent.click(within(rail).getByRole("button", { name: ru.nav.mcp }));
     const flyout = within(await within(rail).findByRole("group", { name: ru.nav.mcp }));
-    const entry = flyout.getByRole("button", {
+    const entry = flyout.getByRole("link", {
       name: `${ru.nav["mcp-settings"]} ${ru.shell.experimental}`,
     });
     await expectNotTruncated(within(entry).getByText(ru.nav["mcp-settings"]));
@@ -1140,49 +1140,39 @@ export const KeyCachePolicyIsReadableAt1024: Story = keysShowTheirCachePolicy("e
 export const KeyCachePolicyIsReadableAt1024InRussian: Story = keysShowTheirCachePolicy("ru");
 
 /**
- * A rail entry too long for the rail ends in an ellipsis, and the rest of its
- * name was nowhere on screen: "Адаптивная маршрут…" at the rail's 232px. The
- * folded rail names its icons through `title`; the full rail now does the same
- * for the label it has cut, and only for that one.
+ * #3657: at the rail's default 232px, eight Russian screen names ended in an
+ * ellipsis ("Адаптивная маршрут…", "Действующая конфи…"). A long name now wraps
+ * onto a second line, so every entry of the full tree reads whole.
  *
  * Every group is opened first, so the nested entries are measured too, and the
- * story insists that something is cut: a catalog reworded to fit would
+ * story insists that some name does wrap: a catalog reworded to fit would
  * otherwise leave it asserting nothing.
  */
-export const RailLabelsNameThemselvesWhenCutInRussian: Story = {
+export const RailLabelsAreWholeInRussian: Story = {
   ...atSplit,
   globals: { ...atSplit.globals, locale: "ru" },
   render: () => <AppShell route="/dashboard" />,
   play: async ({ canvasElement }) => {
     const rail = await railOf(canvasElement, ru.shell.navLabel);
-    await within(rail).findByRole("button", { name: ru.nav.playground });
+    await within(rail).findByRole("link", { name: ru.nav.playground });
     // a group opens in place, so the next closed one is looked up afresh
     const closedGroup = () => rail.querySelector('button[aria-expanded="false"]');
     for (let group = closedGroup(), opened = 0; group && opened < 30; opened++) {
       await userEvent.click(group);
       group = closedGroup();
     }
-    const labels = Array.from(rail.querySelectorAll<HTMLElement>("button > span")).filter(
-      (el) => getComputedStyle(el).textOverflow === "ellipsis",
+    const labels = Array.from(rail.querySelectorAll<HTMLElement>("a > span, button > span"));
+    await expect(labels.length).toBeGreaterThan(20);
+    const cut = labels.filter(
+      (el) => el.scrollWidth > el.clientWidth + 1 || el.scrollHeight > el.clientHeight + 1,
     );
-    const cut = labels.filter((el) => el.scrollWidth > el.clientWidth + 1);
-    const whole = labels.filter((el) => el.scrollWidth <= el.clientWidth + 1);
-    await expect(cut.length).toBeGreaterThan(0);
-    await expect(whole.length).toBeGreaterThan(0);
-
-    for (const label of cut) {
-      await userEvent.hover(label);
-      await expect(label).toHaveAttribute("title", label.textContent ?? "");
-    }
-    // a label that fits has nothing to add
-    for (const label of whole.slice(0, 3)) {
-      await userEvent.hover(label);
-      await expect(label).not.toHaveAttribute("title");
-    }
-    // the entry the livetest could not read
+    await expect(cut.map((el) => el.textContent)).toEqual([]);
+    // the entry the livetest could not read wraps rather than ending in "…"
     const adaptive = labels.find((el) => el.textContent === ru.nav["adaptive-routing"]);
     await expect(adaptive).toBeDefined();
-    await expect(adaptive).toHaveAttribute("title", ru.nav["adaptive-routing"]);
+    const line = parseFloat(getComputedStyle(adaptive!).lineHeight);
+    await expect(adaptive!.getBoundingClientRect().height).toBeGreaterThan(line * 1.5);
+    await expect(getComputedStyle(adaptive!).textOverflow).not.toBe("ellipsis");
     await expectNoHorizontalOverflow();
   },
 };
@@ -1546,7 +1536,7 @@ export const DocumentTitle: Story = {
     await canvas.findByRole("heading", { level: 1, name: screens.playground.title });
     await waitFor(() => expect(document.title).toBe(`${screens.playground.title} · rolter`));
 
-    await userEvent.click(canvas.getByRole("button", { name: en.locale.change }));
+    await userEvent.click(canvas.getByRole("button", { name: new RegExp(en.locale.change, "i") }));
     await userEvent.click(await canvas.findByRole("menuitemradio", { name: LOCALE_NAMES.ru }));
     await waitFor(() => expect(document.title).toBe(`${ru.screens.playground.title} · rolter`));
   },

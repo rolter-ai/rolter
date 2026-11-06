@@ -275,6 +275,46 @@ export const RecordsFound: Story = {
 };
 
 /**
+ * #3642: the palette searches every record and caps only what it lists. Ten
+ * routes, the seventh named `qwen3.6`: a cap applied before matching answered
+ * "no matches" for it. A query matching all ten still lists six.
+ */
+const TEN_ROUTES = [
+  "fake-llm",
+  "claude",
+  "llama",
+  "llama-pipeline",
+  "nemotron",
+  "gpt-4o",
+  "qwen3.6",
+  "yandexgpt",
+  "kimi",
+  "deepseek",
+].map((model, i) => ({ ...ROUTE, id: `route-${i}`, model }));
+
+export const TheSeventhRouteIsFound: Story = {
+  render: () => (
+    <Palette
+      fetchStub={routes([
+        ["/virtual-keys", () => []],
+        ["/providers", () => []],
+        ["/routes", () => TEN_ROUTES],
+      ])}
+    />
+  ),
+  play: async () => {
+    await userEvent.type(await input(), "qwen3.6");
+    const group = await body().findByRole("group", { name: palette.sections.records });
+    await expect(await within(group).findByRole("option", { name: /qwen3\.6/ })).toBeVisible();
+    await userEvent.clear(await input());
+    // seven of the names hold an "e"; six are listed
+    await userEvent.type(await input(), "e");
+    const all = await body().findByRole("group", { name: palette.sections.records });
+    await waitFor(() => expect(within(all).getAllByRole("option").length).toBe(6));
+  },
+};
+
+/**
  * The record lists are three requests, so the section stands in a skeleton
  * while they are out rather than claiming there is nothing to find. The query
  * matches no screen, so the skeleton is the only thing the section can show.

@@ -255,7 +255,7 @@ export const RefusedToAViewer: Story = {
     </Harness>
   ),
   play: async ({ canvasElement }) => {
-    await expectRefused(canvasElement, "Edit the complexity policy for gpt-4o");
+    await expectRefused(canvasElement, "Edit policy for gpt-4o");
     await expectRefused(canvasElement, "Disable policy for gpt-4o");
   },
 };
@@ -305,7 +305,7 @@ export const OnePolicyNotDelivered: Story = {
       canvas.queryByRole("button", { name: "Add a complexity policy for claude-sonnet" }),
     ).not.toBeInTheDocument();
     await expect(
-      canvas.queryByRole("button", { name: "Edit the complexity policy for claude-sonnet" }),
+      canvas.queryByRole("button", { name: "Edit policy for claude-sonnet" }),
     ).not.toBeInTheDocument();
   },
 };
@@ -353,9 +353,7 @@ export const EditorPolicyReadFails: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await userEvent.click(
-      await canvas.findByRole("button", { name: "Edit the complexity policy for gpt-4o" }),
-    );
+    await userEvent.click(await canvas.findByRole("button", { name: "Edit policy for gpt-4o" }));
     const dialog = within(await within(document.body).findByRole("dialog"));
     await waitFor(() =>
       expect(
@@ -376,9 +374,7 @@ export const EditorPolicyReadFails: Story = {
 
 const openEditor = async (canvasElement: HTMLElement) => {
   const canvas = within(canvasElement);
-  await userEvent.click(
-    await canvas.findByRole("button", { name: "Edit the complexity policy for gpt-4o" }),
-  );
+  await userEvent.click(await canvas.findByRole("button", { name: "Edit policy for gpt-4o" }));
   return within(await within(document.body).findByRole("dialog"));
 };
 

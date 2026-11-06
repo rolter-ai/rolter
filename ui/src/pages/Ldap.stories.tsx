@@ -574,7 +574,7 @@ export const MapsAGroupToARole: Story = {
       await canvas.findByLabelText("IdP group"),
       "cn=devs,ou=groups,dc=acme,dc=example",
     );
-    await clickWhenEnabled(canvasElement, "Map a group in Corporate directory");
+    await clickWhenEnabled(canvasElement, "Map group in Corporate directory");
     // a mapping onto the whole organization is confirmed first
     await confirmDestructive(/Map cn=devs,ou=groups,dc=acme,dc=example to Viewer\?/, "Map group");
     const body = await maps.expectSentBody<Record<string, unknown>>(

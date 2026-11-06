@@ -143,7 +143,7 @@ export const CardOffersAStepUpForTheMissingScope: Story = {
     );
     await withPopup(async (opened) => {
       await userEvent.click(
-        linear.getByRole("button", { name: "Reconnect Linear with more access" }),
+        linear.getByRole("button", { name: "Reconnect with more access: Linear" }),
       );
       await waitFor(() => expect(steps.authorize()).toBeDefined());
       await expect(JSON.parse(steps.authorize()?.body ?? "{}")).toEqual({
@@ -242,7 +242,7 @@ export const StepUpRefusedByTheControlPlane: Story = {
   play: async ({ canvasElement }) => {
     const linear = await card(within(canvasElement), "Linear");
     await userEvent.click(
-      await linear.findByRole("button", { name: "Reconnect Linear with more access" }),
+      await linear.findByRole("button", { name: "Reconnect with more access: Linear" }),
     );
     await waitFor(() =>
       expect(within(canvasElement).getByText(/Could not start consent for Linear/)).toBeVisible(),
@@ -317,7 +317,7 @@ export const LogDetailOffersTheMissingScope: Story = {
     );
     await withPopup(async () => {
       await userEvent.click(
-        body.getByRole("button", { name: "Reconnect Linear with more access" }),
+        body.getByRole("button", { name: "Reconnect with more access: Linear" }),
       );
       await waitFor(() => expect(logSteps.authorize()).toBeDefined());
       await expect(JSON.parse(logSteps.authorize()?.body ?? "{}")).toEqual({
@@ -343,7 +343,7 @@ export const LogDetailAsksTheOwnerToNameTheScope: Story = {
   play: async ({ canvasElement }) => {
     const body = await openDetail(canvasElement);
     const field = await body.findByLabelText("Scopes to add");
-    const action = body.getByRole("button", { name: "Reconnect Linear with more access" });
+    const action = body.getByRole("button", { name: "Reconnect with more access: Linear" });
     // nothing to ask for until a scope is named
     await expect(action).toBeDisabled();
     await userEvent.type(field, "repo, read:org");
@@ -383,7 +383,7 @@ export const LogDetailOffersTheScopesTheUpstreamAskedFor: Story = {
       ).toBeVisible(),
     );
     await expect(body.queryByLabelText("Scopes to add")).toBeNull();
-    const action = body.getByRole("button", { name: "Reconnect Linear with more access" });
+    const action = body.getByRole("button", { name: "Reconnect with more access: Linear" });
     await waitFor(() => expect(action).toBeEnabled());
     await withPopup(async () => {
       await userEvent.click(action);
@@ -412,7 +412,7 @@ export const LogDetailWithEveryAskedScopeHeldExplainsWhy: Story = {
   play: async ({ canvasElement }) => {
     const body = await openDetail(canvasElement);
     await waitFor(() => expect(body.getByText(/already holds these scopes/)).toBeVisible());
-    const action = body.getByRole("button", { name: "Reconnect Linear with more access" });
+    const action = body.getByRole("button", { name: "Reconnect with more access: Linear" });
     await expect(action).toBeDisabled();
     await expect(action).toHaveAccessibleDescription(/already holds these scopes/);
   },
