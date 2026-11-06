@@ -648,3 +648,91 @@ export const ARouteNameSharedByTwoProjectsIsOfferedOnce: Story = {
     await expect(within(listbox).getAllByRole("option", { name: "chat" })).toHaveLength(1);
   },
 };
+
+const PLAYGROUND_SITTINGS: SavingsReport = {
+  ...REPORT,
+  spend: {
+    ...REPORT.spend,
+    by_caller: [
+      {
+        project_id: "project-1",
+        virtual_key_id: "vk-1",
+        requests: 9000,
+        cost_usd: 400,
+        unpriced_requests: 0,
+      },
+      {
+        project_id: "project-1",
+        virtual_key_id: "vk-play-1",
+        key_name: "Playground",
+        requests: 30,
+        cost_usd: 1.5,
+        unpriced_requests: 2,
+      },
+      {
+        project_id: "project-1",
+        virtual_key_id: "vk-play-2",
+        key_name: "Playground",
+        requests: 12,
+        cost_usd: 0.5,
+        unpriced_requests: 1,
+      },
+    ],
+  },
+};
+
+const playgroundKey = (id: string) => ({
+  id,
+  project_id: "project-1",
+  name: "Playground",
+  key_prefix: `rk_live_${id}`,
+  models: [],
+  providers: [],
+  disabled: false,
+  purpose: "playground",
+});
+
+/**
+ * #3651: each Playground sitting minted its own key, and each was its own
+ * caller. They are one caller, the Playground, with the sittings added up.
+ */
+export const PlaygroundSittingsAreOneCaller: Story = {
+  render: () => (
+    <Harness
+      fetchStub={routes([
+        ["/analytics/savings", () => PLAYGROUND_SITTINGS],
+        [
+          "/virtual-keys",
+          () => [
+            {
+              id: "vk-1",
+              project_id: "project-1",
+              name: "ci-runner",
+              key_prefix: "rk_live_ab12",
+              models: [],
+              providers: [],
+              disabled: false,
+            },
+            playgroundKey("vk-play-1"),
+            playgroundKey("vk-play-2"),
+          ],
+        ],
+        ["/models", () => [{ model: "chat", strategy: "weighted", targets: 1 }]],
+      ])}
+    >
+      <Savings />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const table = await canvas.findByRole("table", { name: "Spend by caller (50 costliest)" });
+    // the merge waits on the key list, a step after the report
+    await waitFor(() => expect(within(table).getAllByRole("row")).toHaveLength(3));
+    const playground = within(table)
+      .getByRole("cell", { name: "Playground" })
+      .closest('[role="row"]') as HTMLElement;
+    await expect(within(playground).getByRole("cell", { name: "42" })).toBeVisible();
+    await expect(within(playground).getByRole("cell", { name: "3" })).toBeVisible();
+    await expect(within(table).queryByText(/rk_live_vk-play/)).toBeNull();
+  },
+};

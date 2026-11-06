@@ -223,6 +223,9 @@ export default function Keys() {
   const [deleteTarget, setDeleteTarget] = React.useState<VirtualKeyRow | null>(null);
   const [created, setCreated] = React.useState<CreatedVirtualKey | null>(null);
   const [search, setSearch] = React.useState("");
+  // the Playground mints a key per sitting (#944, #2608), and they crowded
+  // the keys an operator made (#3651): hidden until asked for, behind a count
+  const [showPlayground, setShowPlayground] = React.useState(false);
 
   // UX stream (#805); the screen key comes from the enclosing UxScreenProvider
   useScreenReady(!keys.isLoading);
@@ -230,8 +233,11 @@ export default function Keys() {
   const scopeBlocked = !scope.isLoading && !!scope.errorKey;
 
   const q = search.trim().toLowerCase();
+  const playgroundCount = (keys.data ?? []).filter((k) => k.purpose === PLAYGROUND_PURPOSE).length;
   const rows = (keys.data ?? []).filter(
-    (k) => !q || (k.name ?? "").toLowerCase().includes(q) || k.key_prefix.includes(q),
+    (k) =>
+      (showPlayground || k.purpose !== PLAYGROUND_PURPOSE) &&
+      (!q || (k.name ?? "").toLowerCase().includes(q) || k.key_prefix.includes(q)),
   );
 
   // id -> display name for the two attribution dimensions, so a row and the
@@ -287,6 +293,18 @@ export default function Keys() {
           value={search}
           onChange={(e) => setSearch(e.target.value)}
         />
+        {playgroundCount > 0 && (
+          <Button
+            variant="ghost"
+            size="sm"
+            aria-pressed={showPlayground}
+            onClick={() => setShowPlayground((v) => !v)}
+          >
+            {showPlayground
+              ? t("pages.virtualKeys.hidePlayground")
+              : t("pages.virtualKeys.showPlayground", { count: playgroundCount })}
+          </Button>
+        )}
         <div className="ml-auto flex flex-wrap items-center gap-2">
           {/* a list that has not loaded exports a header line and no rows,
               which reads as a project with no keys (#2056) */}
@@ -464,33 +482,40 @@ export default function Keys() {
               />
             </ListCell>
             <ListCell className="flex items-center justify-self-end">
-              <RowIconButton
-                gate="virtual_key:update"
-                control="key-edit"
-                title={t("pages.virtualKeys.edit")}
-                aria-label={t("pages.virtualKeys.editKey", {
-                  name: key.name ?? key.key_prefix,
-                })}
-                disabled={scopeBlocked}
-                onClick={() => setEditTarget(key)}
-              >
-                <Pencil className="h-3.5 w-3.5" />
-              </RowIconButton>
-              <RowIconButton
-                gate="virtual_key:update"
-                control="key-rotate"
-                title={t("pages.virtualKeys.rotate")}
-                aria-label={t("pages.virtualKeys.rotateKey", {
-                  name: key.name ?? key.key_prefix,
-                })}
-                disabled={scopeBlocked}
-                onClick={() => {
-                  setRotateOverlap("none");
-                  setRotateTarget(key);
-                }}
-              >
-                <RotateCw className="h-3.5 w-3.5" />
-              </RowIconButton>
+              {/* a Playground key is the server's to scope and rotate: it is
+                  re-minted when routes change and expires on its own, so the
+                  list offers only to delete it (#3651) */}
+              {key.purpose !== PLAYGROUND_PURPOSE && (
+                <>
+                  <RowIconButton
+                    gate="virtual_key:update"
+                    control="key-edit"
+                    title={t("pages.virtualKeys.edit")}
+                    aria-label={t("pages.virtualKeys.editKey", {
+                      name: key.name ?? key.key_prefix,
+                    })}
+                    disabled={scopeBlocked}
+                    onClick={() => setEditTarget(key)}
+                  >
+                    <Pencil className="h-3.5 w-3.5" />
+                  </RowIconButton>
+                  <RowIconButton
+                    gate="virtual_key:update"
+                    control="key-rotate"
+                    title={t("pages.virtualKeys.rotate")}
+                    aria-label={t("pages.virtualKeys.rotateKey", {
+                      name: key.name ?? key.key_prefix,
+                    })}
+                    disabled={scopeBlocked}
+                    onClick={() => {
+                      setRotateOverlap("none");
+                      setRotateTarget(key);
+                    }}
+                  >
+                    <RotateCw className="h-3.5 w-3.5" />
+                  </RowIconButton>
+                </>
+              )}
               <DeleteIconButton
                 gate="virtual_key:delete"
                 control="key-delete"

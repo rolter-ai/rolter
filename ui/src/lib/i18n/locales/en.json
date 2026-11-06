@@ -1792,6 +1792,9 @@
       "createdTitle": "Key created",
       "createdBody": "This is the only time the plaintext key is shown. Copy it now — it can't be retrieved again.",
       "playground": "Playground",
+      "showPlayground_one": "Show {{count}} playground key",
+      "showPlayground_other": "Show {{count}} playground keys",
+      "hidePlayground": "Hide playground keys",
       "playgroundHint": "The Playground minted this key for one sitting, scoped to this project's routes. It expires on its own — nothing needs to delete it.",
       "confirm": {
         "deleteTitle": "Delete virtual key {{name}}?",

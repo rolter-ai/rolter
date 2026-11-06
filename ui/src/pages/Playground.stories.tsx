@@ -358,12 +358,28 @@ function Screen({
   );
 }
 
+const forgetPickedModel = () => {
+  try {
+    window.localStorage.removeItem("rolter.playground.lastModel");
+  } catch {
+    // no storage, nothing remembered
+  }
+};
+
 const meta = {
   title: "Screens/Playground",
   component: Playground,
   parameters: { layout: "fullscreen" },
-  // every story starts from an empty UX queue and leaves one behind (#1730)
-  beforeEach: recordUxEvents,
+  // every story starts from an empty UX queue and leaves one behind (#1730),
+  // and with no model remembered from a pick in the story before it (#3652)
+  beforeEach: () => {
+    forgetPickedModel();
+    const stopRecording = recordUxEvents();
+    return () => {
+      stopRecording();
+      forgetPickedModel();
+    };
+  },
 } satisfies Meta<typeof Playground>;
 
 export default meta;
