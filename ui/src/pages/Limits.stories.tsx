@@ -297,6 +297,9 @@ export const Empty: Story = {
     const canvas = within(canvasElement);
     await expect(await canvas.findByText(/no budgets for this scope/i)).toBeInTheDocument();
     await expect(canvas.getByText(/no rate limits for this scope/i)).toBeInTheDocument();
+    // both are sections of one screen, so neither draws the вышивка thread
+    // DESIGN.md keeps for a screen-level placeholder (#3658)
+    await expect(canvasElement.querySelectorAll(".vyshivka-rule")).toHaveLength(0);
   },
 };
 

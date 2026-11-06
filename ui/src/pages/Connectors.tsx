@@ -401,6 +401,7 @@ function ConnectorsScreen() {
                   </div>
                 </div>
                 <GatedSwitch
+                  tone="neutral"
                   gate="connector:update"
                   control="connector-toggle"
                   checked={c.enabled}
