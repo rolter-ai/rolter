@@ -189,7 +189,7 @@ export const Loaded: Story = {
     // with requests to measure, the latency tile is the 95th percentile and not
     // the mean (214.6 ms here): rounded, in milliseconds, and no reason line
     const latency = tile(canvas, en.pages.dashboard.statP95);
-    await expect(latency).toHaveTextContent(`${fmt.number(980)}${en.pages.dashboard.colMs}`);
+    await expect(latency).toHaveTextContent(`${fmt.number(980)} ${en.pages.dashboard.colMs}`);
     await expect(latency).not.toHaveTextContent(fmt.number(215));
     await expect(latency).not.toHaveTextContent(en.pages.dashboard.noRequestsInWindow);
 
@@ -490,7 +490,7 @@ export const TheProviderTileCountsTheProvidersMeetingTheirSla: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     const providers = await canvas.findByTestId("dashboard-providers");
-    await waitFor(() => expect(providers).toHaveTextContent(`${fmt.number(1)}of 3 up`));
+    await waitFor(() => expect(providers).toHaveTextContent(`${fmt.number(1)} of 3 up`));
     // the worst provider is named with its uptime, and the others counted
     await expect(providers).toHaveTextContent("Below the SLA: bedrock-east 90.00%");
     await expect(providers).toHaveTextContent("and 1 more");
@@ -509,7 +509,7 @@ export const EveryProviderWithinItsSlaReadsGood: Story = {
   render: () => render(loaded),
   play: async ({ canvasElement }) => {
     const providers = await within(canvasElement).findByTestId("dashboard-providers");
-    await waitFor(() => expect(providers).toHaveTextContent("2of 2 up"));
+    await waitFor(() => expect(providers).toHaveTextContent("2 of 2 up"));
     await expect(providers).toHaveTextContent("Lowest uptime: anthropic-prod 99.91%");
     await expect(getComputedStyle(within(providers).getByText(/Lowest uptime/)).color).toBe(
       resolveColorToken("--status-success-text"),
@@ -584,7 +584,9 @@ export const TheFleetTileCountsTheLiveGateways: Story = {
     const canvas = within(canvasElement);
     const fleet = await canvas.findByTestId("dashboard-fleet");
     await waitFor(() =>
-      expect(fleet).toHaveTextContent(`${fmt.number(3)}${en.pages.dashboard.fleet.liveUnit_other}`),
+      expect(fleet).toHaveTextContent(
+        `${fmt.number(3)} ${en.pages.dashboard.fleet.liveUnit_other}`,
+      ),
     );
     await expect(fleet).toHaveTextContent(en.pages.dashboard.fleet.allCurrent);
     // the first tile of the strip: it is read before any figure of the window
@@ -1432,7 +1434,9 @@ export const AFailedSummaryLeavesTheFleetTileUp: Story = {
     await expectLoadError(figures, /failed to return the overview figures/i);
     const fleet = await within(figures).findByTestId("dashboard-fleet");
     await waitFor(() =>
-      expect(fleet).toHaveTextContent(`${fmt.number(3)}${en.pages.dashboard.fleet.liveUnit_other}`),
+      expect(fleet).toHaveTextContent(
+        `${fmt.number(3)} ${en.pages.dashboard.fleet.liveUnit_other}`,
+      ),
     );
     await expect(fleet).toBeVisible();
     await expect(figures.querySelector("[data-testid]")).toBe(fleet);
@@ -2596,5 +2600,29 @@ export const TheFilterPanelOpensFromTheKeyboard: Story = {
     await userEvent.keyboard("{Enter}");
     await expect(button).toHaveAttribute("aria-expanded", "false");
     await expect(button).toHaveFocus();
+  },
+};
+
+/**
+ * At 390 px in Russian the figures are a two-column strip rather than eight
+ * full-width cards, and every unit is set apart from its number as the tables
+ * write it: "4 632 мс", and "30,43 %" with the space Russian puts before a
+ * percent sign (#3660).
+ */
+export const FiguresPairUpOnAPhoneInRussian: Story = {
+  ...atMobile,
+  globals: { ...atMobile.globals, locale: "ru" },
+  render: () => render(loaded),
+  play: async ({ canvasElement }) => {
+    const figures = await within(canvasElement).findByTestId("dashboard-figures");
+    const grid = figures.firstElementChild as HTMLElement;
+    await waitFor(() => expect(grid.children.length).toBeGreaterThanOrEqual(4));
+    const [first, second] = Array.from(grid.children) as HTMLElement[];
+    await expect(Math.round(first!.getBoundingClientRect().top)).toBe(
+      Math.round(second!.getBoundingClientRect().top),
+    );
+    await waitFor(() => expect(figures.textContent).toMatch(/\d\u00a0мс/u));
+    await expect(figures.textContent).not.toMatch(/\dмс/u);
+    await expect(figures.textContent).toMatch(/\d\u00a0%/u);
   },
 };

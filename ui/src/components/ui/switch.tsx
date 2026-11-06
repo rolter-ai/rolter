@@ -17,6 +17,13 @@ export type SwitchProps = Omit<
 > & {
   checked: boolean;
   onCheckedChange?: (checked: boolean) => void;
+  /**
+   * `brand` (the default) is Folk Red when on: the one switch a settings
+   * screen is about. `neutral` is for a switch repeated down a list, one per
+   * row, where a red on every enabled row turned routine state into the
+   * screen's loudest thing (#3658, DESIGN.md's One Red Voice rule)
+   */
+  tone?: "brand" | "neutral";
 } & SwitchLabel;
 
 // the off track is --zinc-500, not --muted: --muted is the same tone as
@@ -26,7 +33,7 @@ export type SwitchProps = Omit<
 // minimal switch primitive (no radix dependency); mirrors the Rolter Design
 // System Switch — track + thumb, brand-red when on
 const Switch = React.forwardRef<HTMLButtonElement, SwitchProps>(
-  ({ checked, onCheckedChange, disabled, className, ...props }, ref) => (
+  ({ checked, onCheckedChange, disabled, className, tone = "brand", ...props }, ref) => (
     <button
       ref={ref}
       type="button"
@@ -38,14 +45,20 @@ const Switch = React.forwardRef<HTMLButtonElement, SwitchProps>(
         "relative inline-flex h-5 w-9 shrink-0 items-center rounded-full border border-transparent transition-colors",
         "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
         "disabled:cursor-not-allowed disabled:opacity-50",
-        checked ? "bg-[color:var(--red-folk)]" : "bg-[color:var(--zinc-500)]",
+        !checked
+          ? "bg-[color:var(--zinc-500)]"
+          : tone === "neutral"
+            ? "bg-[color:var(--zinc-300)]"
+            : "bg-[color:var(--red-folk)]",
         className,
       )}
       {...props}
     >
       <span
         className={cn(
-          "inline-block h-4 w-4 rounded-full bg-foreground shadow transition-transform",
+          "inline-block h-4 w-4 rounded-full shadow transition-transform",
+          // a light thumb on the light neutral track would vanish
+          checked && tone === "neutral" ? "bg-[color:var(--zinc-900)]" : "bg-foreground",
           checked ? "translate-x-4" : "translate-x-0.5",
         )}
       />

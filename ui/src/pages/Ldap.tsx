@@ -397,6 +397,7 @@ function DirectoryCard({
         </div>
         <div className="ml-auto flex flex-none items-center gap-1">
           <GatedSwitch
+            tone="neutral"
             gate="ldap_directory:update"
             control="ldap-directory-toggle"
             checked={directory.enabled}

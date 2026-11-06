@@ -317,7 +317,9 @@ function GuardrailRulesScreen() {
   // rule's card carries them, and a paused row is in no policy to be off in
   const offRoutes = (name: string) => resolution?.offRoutes.get(name) ?? [];
   return (
-    <div className="mx-auto flex max-w-[1120px] flex-col gap-5 p-[22px]">
+    // left-aligned in the 22px gutter every screen uses; centred, its body sat
+    // about 33px right of the header above it (#3660)
+    <div className="flex max-w-[1120px] flex-col gap-5 p-[22px]">
       <div className="flex flex-col gap-3 border-b border-[color:var(--border-subtle)] pb-5 sm:flex-row sm:items-end sm:justify-between">
         <div>
           <p className="max-w-2xl text-sm text-muted-foreground">

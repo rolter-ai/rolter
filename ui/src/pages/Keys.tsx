@@ -469,6 +469,7 @@ export default function Keys() {
             </ListCell>
             <ListCell className="grid">
               <GatedSwitch
+                tone="neutral"
                 gate="virtual_key:update"
                 control="key-toggle"
                 checked={!key.disabled}

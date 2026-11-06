@@ -369,7 +369,9 @@ export default function Providers() {
   });
   const filtering = !!q || !!labelFilter;
 
-  const GRID = `${primaryColumn(1)} 1.1fr 1.7fr 1fr 1fr 1fr 1.3fr 1fr 108px`;
+  // the actions column fits "Изменить", the labels and the delete button; at
+  // 108px they ran left over the scope column in Russian (#3660)
+  const GRID = `${primaryColumn(1)} 1.1fr 1.7fr 1fr 1fr 1fr 1.3fr 1fr 168px`;
 
   return (
     <PageBody>

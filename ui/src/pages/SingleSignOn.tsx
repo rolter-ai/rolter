@@ -714,6 +714,7 @@ function ProviderCard({
             which took its group mappings with it (#1233). it is an update, the
             same capability as the edit beside it (#2084) */}
           <GatedSwitch
+            tone="neutral"
             gate="sso_provider:update"
             control="sso-provider-toggle"
             checked={provider.enabled}

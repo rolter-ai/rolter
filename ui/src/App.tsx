@@ -15,6 +15,7 @@ import { ScreenHeader } from "@/components/ScreenHeader";
 import { ShortcutHelp } from "@/components/ShortcutHelp";
 import { ShellSkeleton } from "@/components/ShellSkeleton";
 import { MenuItem, MenuSeparator } from "@/components/ui/menu";
+import { initialsOf } from "@/lib/avatar";
 import {
   NAV_SEARCH_ID,
   NavSidebar,
@@ -388,7 +389,7 @@ function Shell() {
   });
   // the name the account goes by, else its email (#2434)
   const shownName = user?.display_name?.trim() || email;
-  const initials = (shownName.trim()[0] ?? "?").toUpperCase();
+  const initials = initialsOf(shownName);
 
   return (
     // the open-mode warning spans the full width above the shell rather than
