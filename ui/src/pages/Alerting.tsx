@@ -280,6 +280,7 @@ function AlertChannelsScreen() {
                 </div>
               </div>
               <GatedSwitch
+                tone="neutral"
                 gate="alert_channel:update"
                 control="alert-channel-toggle"
                 checked={c.enabled}
@@ -740,6 +741,7 @@ function AlertRulesScreen() {
                 </span>
                 <Pill tone={tone.pill}>{stateLabel(r.state, t)}</Pill>
                 <GatedSwitch
+                  tone="neutral"
                   gate="alert_rule:update"
                   control="alert-rule-toggle"
                   className="ml-auto"
