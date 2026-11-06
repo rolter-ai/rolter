@@ -346,7 +346,22 @@
     "gateway": {
       "unauthorized": "unauthorized — set a valid virtual key",
       "streamEnded": "the stream ended before the reply was complete",
-      "requestFailed": "gateway request failed: {{status}}"
+      "requestFailed": "gateway request failed: {{status}}",
+      "keyRefused": "The gateway refused the virtual key this request carried: it is unknown, disabled or expired.",
+      "upstreamAuth": "The provider refused rolter's credentials ({{status}}). Its key is missing or wrong; check it on Providers.",
+      "rateLimited": "The request was rate limited. Wait a moment and send it again.",
+      "failed": "The gateway answered {{status}}.",
+      "openInLogs": "Open the request in LLM Logs",
+      "codes": {
+        "model_not_found": "No route serves this model, or the key may not use it.",
+        "rate_limit_exceeded": "A rate limit on this key or route was reached. Wait a moment and send it again.",
+        "insufficient_quota": "A budget that covers this request is spent.",
+        "guardrail_blocked": "A guardrail blocked this request.",
+        "plugin_blocked": "A plugin blocked this request.",
+        "model_unpriced": "This model has no price, and the deployment refuses unpriced traffic.",
+        "provider_credential_missing": "The provider behind this model has no key configured, so rolter did not call it.",
+        "upstream_auth_failed": "The provider refused rolter's credentials. Its key is missing or wrong; check it on Providers."
+      }
     },
     "api": {
       "unreachable": "Could not reach the server. Check your connection and try again.",
@@ -1366,6 +1381,7 @@
         "confidence": "Confidence: {{value}}%",
         "raw": "Decision response"
       },
+      "modelFailing": "every target failed its recent requests",
       "groupRoutes": "Routes",
       "modelsNeedKey": "Showing configured routes only. Provider-pinned and provider-group addresses are in the gateway's own list, which takes a key to read.",
       "modelsUnreachable": "Could not read the gateway's model list with this key, so configured routes are shown instead. Provider-pinned and provider-group addresses are missing from this list.",
@@ -1776,6 +1792,9 @@
       "createdTitle": "Key created",
       "createdBody": "This is the only time the plaintext key is shown. Copy it now — it can't be retrieved again.",
       "playground": "Playground",
+      "showPlayground_one": "Show {{count}} playground key",
+      "showPlayground_other": "Show {{count}} playground keys",
+      "hidePlayground": "Hide playground keys",
       "playgroundHint": "The Playground minted this key for one sitting, scoped to this project's routes. It expires on its own — nothing needs to delete it.",
       "confirm": {
         "deleteTitle": "Delete virtual key {{name}}?",

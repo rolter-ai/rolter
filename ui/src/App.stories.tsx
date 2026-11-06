@@ -1032,6 +1032,15 @@ const SPLIT_KEYS: VirtualKeyRow[] = [
  * badge share the line while they fit and the badge drops under the name when
  * they do not; the name is never what gives way.
  */
+/**
+ * The Playground's session keys are hidden until asked for (#3651); these
+ * stories measure one, so they ask first.
+ */
+async function showPlaygroundKeys(canvas: ReturnType<typeof within>, locale: "en" | "ru") {
+  const name = locale === "ru" ? /^Показать \d+ ключ/ : /^Show \d+ playground key/;
+  await userEvent.click(await canvas.findByRole("button", { name }));
+}
+
 function keysKeepTheirNames(locale: "en" | "ru") {
   const cat = locale === "ru" ? ru : en;
   return {
@@ -1049,6 +1058,7 @@ function keysKeepTheirNames(locale: "en" | "ru") {
     play: async ({ canvasElement }: { canvasElement: HTMLElement }) => {
       const canvas = within(canvasElement);
       const table = await canvas.findByRole("table", { name: cat.screens["virtual-keys"].title });
+      await showPlaygroundKeys(canvas, locale);
       const row = (
         await within(table).findByText("Playground", { selector: "span.font-semibold" })
       ).closest('[role="row"]') as HTMLElement;
@@ -1097,6 +1107,7 @@ function keysShowTheirCachePolicy(locale: "en" | "ru") {
     play: async ({ canvasElement }: { canvasElement: HTMLElement }) => {
       const canvas = within(canvasElement);
       const table = await canvas.findByRole("table", { name: cat.screens["virtual-keys"].title });
+      await showPlaygroundKeys(canvas, locale);
       const policy = (name: string) =>
         within(table).findByRole("combobox", {
           name: cat.pages.virtualKeys.cacheAria.replace("{{name}}", name),

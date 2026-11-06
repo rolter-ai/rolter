@@ -31,6 +31,7 @@ import {
   fetchModels,
   fetchSavings,
   fetchVirtualKeys,
+  PLAYGROUND_PURPOSE,
   type MoneyRange,
   type SavingsCandidate,
   type SavingsReport,
@@ -173,6 +174,11 @@ export default function Savings() {
   // account cannot read, or one since deleted) stays an id there (#3408)
   const projectNames = new Map(projects.map((project) => [project.id, project.name]));
   const keyNames = new Map((keys.data ?? []).map((k) => [k.id, keyLabel(k)]));
+  // the Playground mints a key per sitting, and each was its own caller row
+  // (#3651): they are one caller, the Playground, whatever key it held
+  const playgroundKeys = new Set(
+    (keys.data ?? []).filter((k) => k.purpose === PLAYGROUND_PURPOSE).map((k) => k.id),
+  );
   const unavailable = report.error instanceof AnalyticsUnavailableError ? report.error : null;
 
   return (
@@ -294,7 +300,12 @@ export default function Savings() {
           }
         />
       ) : report.data ? (
-        <Report report={report.data} projectNames={projectNames} keyNames={keyNames} />
+        <Report
+          report={report.data}
+          projectNames={projectNames}
+          keyNames={keyNames}
+          playgroundKeys={playgroundKeys}
+        />
       ) : null}
     </PageBody>
   );
@@ -460,14 +471,51 @@ function CallerCell({
   );
 }
 
+type CallerRow = SavingsReport["spend"]["by_caller"][number];
+
+/** the id the merged Playground row carries, never a key's own */
+const PLAYGROUND_CALLER = "playground";
+
+/**
+ * The by-caller rows with every Playground key of a project folded into one
+ * row (#3651). A key is known to be the Playground's only when the screen's
+ * key list holds it, which is the project the filters point at.
+ */
+function foldPlaygroundCallers(
+  rows: CallerRow[],
+  playgroundKeys: ReadonlySet<string>,
+): CallerRow[] {
+  const out: CallerRow[] = [];
+  const merged = new Map<string, CallerRow>();
+  for (const row of rows) {
+    if (!playgroundKeys.has(row.virtual_key_id)) {
+      out.push(row);
+      continue;
+    }
+    const seen = merged.get(row.project_id);
+    if (seen) {
+      seen.requests += row.requests;
+      seen.cost_usd += row.cost_usd;
+      seen.unpriced_requests += row.unpriced_requests;
+      continue;
+    }
+    const folded = { ...row, virtual_key_id: PLAYGROUND_CALLER, key_name: null };
+    merged.set(row.project_id, folded);
+    out.push(folded);
+  }
+  return out;
+}
+
 function Report({
   report,
   projectNames,
   keyNames,
+  playgroundKeys,
 }: {
   report: SavingsReport;
   projectNames: ReadonlyMap<string, string>;
   keyNames: ReadonlyMap<string, string>;
+  playgroundKeys: ReadonlySet<string>;
 }) {
   const { t } = useTranslation();
   const fmt = useFormat();
@@ -534,13 +582,17 @@ function Report({
                 {t("pages.savings.unpricedColumn")}
               </ListHeaderCell>
             </ListHeader>
-            {spend.by_caller.map((row) => (
+            {foldPlaygroundCallers(spend.by_caller, playgroundKeys).map((row) => (
               <ListRow key={`${row.project_id}/${row.virtual_key_id}`} grid={CALLER_GRID}>
                 <CallerCell id={row.project_id} names={projectNames} />
                 <CallerCell
                   id={row.virtual_key_id}
                   names={keyNames}
-                  name={row.key_name ?? undefined}
+                  name={
+                    row.virtual_key_id === PLAYGROUND_CALLER
+                      ? t("pages.virtualKeys.playground")
+                      : (row.key_name ?? undefined)
+                  }
                 />
                 <ListCell className="text-right font-mono text-xs">{count(row.requests)}</ListCell>
                 <ListCell className="text-right font-mono text-xs">{money(row.cost_usd)}</ListCell>

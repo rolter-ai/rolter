@@ -268,6 +268,17 @@ export const PlaygroundKeyIsLabelled: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
+    // #3651: the Playground's keys are hidden behind a count until asked for,
+    // so the keys an operator made are what the list opens on
+    await canvas.findByText("backend service");
+    await expect(canvas.queryByTitle(/expires on its own/)).toBeNull();
+    const toggle = canvas.getByRole("button", { name: "Show 1 playground key" });
+    await expect(toggle).toHaveAttribute("aria-pressed", "false");
+    await userEvent.click(toggle);
+    await expect(canvas.getByRole("button", { name: "Hide playground keys" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
     // by its explanation, not its text: the control plane names the key itself
     // "Playground" too, so matching on the word alone finds the name as well
     const badge = await canvas.findByTitle(/expires on its own/);
@@ -280,6 +291,12 @@ export const PlaygroundKeyIsLabelled: Story = {
     const row = badge.closest('[style*="grid-template-columns"]');
     const expires = formattersFor("en").date(PLAYGROUND_KEY.expires_at as string);
     await expect(within(row as HTMLElement).getByText(`expires ${expires}`)).toBeVisible();
+    // the server scopes and re-mints it, so the row offers no edit and no
+    // rotation, only the delete
+    const inRow = within(row as HTMLElement);
+    await expect(inRow.queryByRole("button", { name: /^Edit key/ })).toBeNull();
+    await expect(inRow.queryByRole("button", { name: /^Rotate/ })).toBeNull();
+    await expect(inRow.getByRole("button", { name: /^Delete/ })).toBeVisible();
   },
 };
 

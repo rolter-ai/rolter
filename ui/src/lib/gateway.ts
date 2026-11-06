@@ -177,28 +177,54 @@ function authHeaders(json = true): Record<string, string> {
  */
 export class GatewayError extends Error {
   readonly status: number;
+  /** the body's `error.code`: rolter's own slug, or the upstream's when it was passed through */
+  readonly code?: string;
+  /** the body's `error.type`, which is what tells rolter's key refusal from an upstream's 401 */
+  readonly type?: string;
+  /** the request's `x-request-id` as the gateway echoed it, so LLM Logs can open it */
+  readonly requestId?: string;
 
-  constructor(message: string, status: number) {
+  constructor(
+    message: string,
+    status: number,
+    extra: { code?: string; type?: string; requestId?: string } = {},
+  ) {
     super(message);
     this.name = "GatewayError";
     this.status = status;
+    this.code = extra.code;
+    this.type = extra.type;
+    this.requestId = extra.requestId;
   }
 }
 
 // surface the gateway's OpenAI-style `{"error":{"message":...}}` body, else status
 async function gwError(res: Response): Promise<GatewayError> {
+  const requestId = res.headers.get("x-request-id") ?? undefined;
   try {
-    const body = (await res.json()) as { error?: { message?: string } };
-    if (body?.error?.message) return new GatewayError(body.error.message, res.status);
+    const body = (await res.json()) as {
+      error?: { message?: string; code?: unknown; type?: unknown };
+    };
+    const error = body?.error;
+    if (error?.message) {
+      return new GatewayError(error.message, res.status, {
+        code: typeof error.code === "string" ? error.code : undefined,
+        type: typeof error.type === "string" ? error.type : undefined,
+        requestId,
+      });
+    }
   } catch {
     // not json
   }
   if (res.status === 401) {
-    return new GatewayError(i18n.t("errors.gateway.unauthorized"), res.status);
+    return new GatewayError(i18n.t("errors.gateway.unauthorized"), res.status, { requestId });
   }
   return new GatewayError(
     i18n.t("errors.gateway.requestFailed", { status: res.status }),
     res.status,
+    {
+      requestId,
+    },
   );
 }
 
@@ -206,12 +232,20 @@ async function gwError(res: Response): Promise<GatewayError> {
  * Whether a gateway failure is the gateway refusing the key it was sent.
  *
  * The gateway answers a key it does not hold, a revoked one and an expired one
- * alike with `401` (`authenticate` in `crates/rolter-gateway/src/handlers.rs`),
- * so the status is the whole signal. Any other failure says something about
- * the gateway rather than the key, and must not be read as the key being bad.
+ * alike with `401`, `code: "invalid_api_key"` and `type: "authentication_error"`
+ * (`authenticate` in `crates/rolter-gateway/src/handlers.rs`). A `401` an
+ * upstream sent and the gateway passed through is shaped by that upstream:
+ * Anthropic's carries no code, OpenAI's the same code under
+ * `type: "invalid_request_error"`. Reading the status alone made a provider with
+ * no key look like a playground whose session had expired (#3643), so the pair
+ * is the signal; a `401` with no JSON body is the gateway's, as before. Any
+ * other failure says something about the gateway or the provider rather than
+ * the key, and must not be read as the key being bad.
  */
 export function isKeyRefusal(error: unknown): boolean {
-  return error instanceof GatewayError && error.status === 401;
+  if (!(error instanceof GatewayError) || error.status !== 401) return false;
+  if (error.code === undefined && error.type === undefined) return true;
+  return error.code === "invalid_api_key" && error.type === "authentication_error";
 }
 
 /** The backoff a freshly minted key is given to reach the gateway. */
