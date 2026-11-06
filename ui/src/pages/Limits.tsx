@@ -707,6 +707,13 @@ function useScopeDirectory(types: ReadonlySet<string>) {
         return null;
     }
   };
+  // a type whose names are still on their way, so its picker is not drawn empty
+  const pending = (type: string) =>
+    type === "org"
+      ? scope.isLoading
+      : type === "team" || type === "project"
+        ? scope.isLoading || orgScope.isLoading
+        : !!read(type)?.query.isLoading;
   const userName = (id: string) => {
     const user = users.data?.find((entry) => entry.id === id);
     return user ? personName(user) : undefined;
@@ -725,7 +732,7 @@ function useScopeDirectory(types: ReadonlySet<string>) {
     project: scope.projectId,
   };
   const defaultId = (type: string) => sidebar[type] ?? "";
-  return { options, read, userName, nameOf, keyProject, defaultId };
+  return { options, read, pending, userName, nameOf, keyProject, defaultId };
 }
 
 /**
@@ -874,42 +881,23 @@ function ScopeCell({ scope }: { scope: ScopeLabel }) {
 /** A row's edit and delete, asked at the chain the row's own scope sits in (#2529). */
 function CapActions({
   gateAt,
-  resource,
-  editLabel,
-  deleteLabel,
-  deleting,
-  onEdit,
-  onDelete,
+  children,
 }: {
   gateAt: RowScope | undefined;
-  resource: "budget" | "rate_limit";
-  editLabel: string;
-  deleteLabel: string;
-  deleting: boolean;
-  onEdit: () => void;
-  onDelete: () => void;
+  children: React.ReactNode;
 }) {
-  const control = resource === "budget" ? "budget" : "rate-limit";
   return (
-    <ListCell className={cn("flex justify-end gap-[5px]", STICKY_ACTIONS.cell)}>
-      <RowCapabilityScope at={gateAt}>
-        <RowIconButton
-          gate={`${resource}:update`}
-          control={`${control}-edit`}
-          title={editLabel}
-          aria-label={editLabel}
-          onClick={onEdit}
-        >
-          <Pencil className="h-3.5 w-3.5" />
-        </RowIconButton>
-        <DeleteIconButton
-          gate={`${resource}:delete`}
-          control={`${control}-delete`}
-          label={deleteLabel}
-          pending={deleting}
-          onClick={onDelete}
-        />
-      </RowCapabilityScope>
+    // stretched to the row's height below `md`, where the cell is pinned over
+    // the columns scrolling under it and a two-line cap would show above and
+    // below a cell only as tall as its buttons
+    <ListCell
+      className={cn(
+        "flex items-center justify-end gap-[5px]",
+        STICKY_ACTIONS.cell,
+        "max-md:self-stretch",
+      )}
+    >
+      <RowCapabilityScope at={gateAt}>{children}</RowCapabilityScope>
     </ListCell>
   );
 }
@@ -942,6 +930,7 @@ function BudgetLine({
   // the controls name the row: "Delete budget" said once per row tells a screen
   // reader nothing (#1214)
   const names = useBudgetNames()(budget, scope.label);
+  const editLabel = t("pages.limits.editBudgetAria", names);
   return (
     <ListRow grid={BUDGET_GRID} data-budget={budget.id}>
       <ScopeCell scope={scope} />
@@ -972,15 +961,24 @@ function BudgetLine({
       <ListCell className="min-w-0">
         <BudgetSpend budget={budget} spend={spend} />
       </ListCell>
-      <CapActions
-        gateAt={gateAt}
-        resource="budget"
-        editLabel={t("pages.limits.editBudgetAria", names)}
-        deleteLabel={t("pages.limits.deleteBudgetAria", names)}
-        deleting={deleting}
-        onEdit={onEdit}
-        onDelete={onDelete}
-      />
+      <CapActions gateAt={gateAt}>
+        <RowIconButton
+          gate="budget:update"
+          control="budget-edit"
+          title={editLabel}
+          aria-label={editLabel}
+          onClick={onEdit}
+        >
+          <Pencil className="h-3.5 w-3.5" />
+        </RowIconButton>
+        <DeleteIconButton
+          gate="budget:delete"
+          control="budget-delete"
+          label={t("pages.limits.deleteBudgetAria", names)}
+          pending={deleting}
+          onClick={onDelete}
+        />
+      </CapActions>
     </ListRow>
   );
 }
@@ -1003,6 +1001,7 @@ function RateLimitLine({
   const { t } = useTranslation();
   const fmt = useFormat();
   const caps = useRateLimitCaps()(limit);
+  const editLabel = t("pages.limits.editRateLimitAria", { limit: caps, scope: scope.label });
   // a blank cap is no cap on that measure, said in words rather than as a dash
   const cap = (value: number | null | undefined) =>
     value != null ? (
@@ -1015,15 +1014,24 @@ function RateLimitLine({
       <ScopeCell scope={scope} />
       <ListCell>{cap(limit.rpm)}</ListCell>
       <ListCell>{cap(limit.tpm)}</ListCell>
-      <CapActions
-        gateAt={gateAt}
-        resource="rate_limit"
-        editLabel={t("pages.limits.editRateLimitAria", { limit: caps, scope: scope.label })}
-        deleteLabel={t("pages.limits.deleteRateLimitAria", { limit: caps, scope: scope.label })}
-        deleting={deleting}
-        onEdit={onEdit}
-        onDelete={onDelete}
-      />
+      <CapActions gateAt={gateAt}>
+        <RowIconButton
+          gate="rate_limit:update"
+          control="rate-limit-edit"
+          title={editLabel}
+          aria-label={editLabel}
+          onClick={onEdit}
+        >
+          <Pencil className="h-3.5 w-3.5" />
+        </RowIconButton>
+        <DeleteIconButton
+          gate="rate_limit:delete"
+          control="rate-limit-delete"
+          label={t("pages.limits.deleteRateLimitAria", { limit: caps, scope: scope.label })}
+          pending={deleting}
+          onClick={onDelete}
+        />
+      </CapActions>
     </ListRow>
   );
 }
@@ -1154,7 +1162,7 @@ function CapScopeFields({
   const { t } = useTranslation();
   const options = directory.options(value.type);
   const read = directory.read(value.type);
-  const pending = !!read?.query.isLoading;
+  const pending = directory.pending(value.type);
   return (
     <>
       <Field
@@ -1222,20 +1230,34 @@ function CapScopeFields({
 function useNewCapScope(open: boolean, target: ScopeDraft | undefined) {
   const { t } = useTranslation();
   const [where, setWhere] = React.useState<ScopeDraft>(() => target ?? { type: "project", id: "" });
+  // until the reader picks a scope the sheet follows `target`, which fills in
+  // once the sidebar's project has loaded: a sheet opened a moment earlier
+  // would otherwise keep the empty scope it opened on
+  const [picked, setPicked] = React.useState(false);
   const reachOptions = useUserReachOptions();
   const [reach, setReach] = React.useState<ReachDraft>(() => initialReach(reachOptions));
   React.useEffect(() => {
-    if (!open || !target) return;
-    setWhere(target);
+    if (!open) return;
+    setPicked(false);
     setReach(initialReach(reachOptions));
-    // the page builds `target` every render; the sheet resets when it opens
+    // the options are rebuilt every render; the sheet resets when it opens
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
+  const targetType = target?.type;
+  const targetId = target?.id;
+  React.useEffect(() => {
+    if (open && targetType !== undefined && !picked) {
+      setWhere({ type: targetType, id: targetId ?? "" });
+    }
+  }, [open, picked, targetType, targetId]);
   const directory = useScopeDirectory(new Set([where.type]));
   const isUser = where.type === USER_SCOPE;
   return {
     where,
-    setWhere,
+    setWhere: (next: ScopeDraft) => {
+      setPicked(true);
+      setWhere(next);
+    },
     reach,
     setReach,
     reachOptions,
