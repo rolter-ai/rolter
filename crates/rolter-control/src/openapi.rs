@@ -3577,6 +3577,31 @@ fn config_problem_schemas(p: &Prim) -> Value {
                     "type": "array",
                     "items": {"$ref": "#/components/schemas/OmittedEntry"},
                     "description": "the providers, routes and config-file virtual keys the snapshot leaves out whole, so they are not served"
+                },
+                "findings": {
+                    "type": "array",
+                    "items": {"$ref": "#/components/schemas/ConfigFinding"},
+                    "description": "every line of `problems` again, in the same order, with its kind and, where the line names one, the row it is about and the organization that owns it; what a client groups and translates by, never the sentence. Absent from a control plane older than it"
+                }
+            }
+        },
+        "ConfigFinding": {
+            "type": "object",
+            "required": ["kind", "message"],
+            "properties": {
+                "kind": {
+                    "type": "string",
+                    "enum": ["omitted", "sanitized", "invalid", "misread", "bootstrap_shadow"],
+                    "description": "the same kinds as the rolter_config_problems{kind} gauge"
+                },
+                "message": {"type": "string", "description": "the line, as `problems` has it"},
+                "org_id": {"type": ["string", "null"], "description": "the organization that owns the row the line is about"},
+                "subject": {
+                    "type": ["object", "null"],
+                    "properties": {
+                        "kind": {"type": "string", "description": "provider, route, provider group, ..."},
+                        "name": {"type": "string"}
+                    }
                 }
             }
         },

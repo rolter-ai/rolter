@@ -314,7 +314,7 @@ export default function Providers() {
 
   return (
     <PageBody>
-      <UnservedConfigNotice problems={problems.data?.problems ?? []} />
+      <UnservedConfigNotice report={problems.data} />
 
       <Toolbar>
         <SearchInput

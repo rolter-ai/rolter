@@ -143,6 +143,130 @@ fn ensure_config(path: &Path) -> anyhow::Result<bool> {
     Ok(true)
 }
 
+/// The row tables `rolter seed --import` copies into the database
+/// (`import_config` in `rolter-control`), plus `virtual_keys`, whose keys a
+/// database deployment mints in the store and never reads from the file. A
+/// control plane started on a bootstrap file that still holds them served
+/// every imported row twice, once from the file and once from the database,
+/// and opened a fresh install on a page of "shadows the read-only row" config
+/// problems (#3645).
+#[cfg(feature = "postgres")]
+const IMPORTED_TABLES: &[&str] = &[
+    "providers",
+    "routes",
+    "provider_groups",
+    "virtual_keys",
+    "budgets",
+    "rate_limits",
+    "model_prices",
+    "prompt_templates",
+    "mcp_gateway_tool_groups",
+];
+
+/// `text` without the tables the seed imported: what the control plane is
+/// started on in database mode, so its server settings still come from the
+/// file and its rows only from the database.
+#[cfg(feature = "postgres")]
+fn served_bootstrap(text: &str) -> anyhow::Result<String> {
+    let mut table: toml::Table = toml::from_str(text)?;
+    for name in IMPORTED_TABLES {
+        table.remove(*name);
+    }
+    Ok(toml::to_string(&table)?)
+}
+
+/// Whether `api_base` points at this machine. The bundled example's vLLM and
+/// Ollama providers do, and on a laptop nothing answers there.
+#[cfg(feature = "postgres")]
+fn is_loopback_base(api_base: &str) -> bool {
+    let Some(host) = api_base
+        .split_once("://")
+        .map(|(_, rest)| rest.split(['/', '?']).next().unwrap_or(rest))
+    else {
+        return false;
+    };
+    // an IPv6 host is bracketed, and a port follows the last colon otherwise
+    let host = match host.strip_prefix('[') {
+        Some(bracketed) => bracketed.split(']').next().unwrap_or(bracketed),
+        None => host.rsplit_once(':').map_or(host, |(name, _)| name),
+    };
+    host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback())
+}
+
+/// The bundled example as `easy-up` imports it into a database (#3645): its
+/// self-hosted examples (two vLLM servers and an Ollama on localhost) cannot
+/// answer on a laptop, and imported as live providers they opened the health
+/// screen on six cards below their SLA. They are left out, with the targets
+/// that name them and the routes those leave with no target. A file an
+/// operator wrote is imported as written: a provider on localhost there is one
+/// they run.
+#[cfg(feature = "postgres")]
+fn example_for_database(text: &str) -> anyhow::Result<String> {
+    let mut table: toml::Table = toml::from_str(text)?;
+    let mut dropped = std::collections::HashSet::new();
+    if let Some(toml::Value::Array(providers)) = table.get_mut("providers") {
+        providers.retain(|provider| {
+            let local = provider
+                .get("api_base")
+                .and_then(toml::Value::as_str)
+                .is_some_and(is_loopback_base);
+            if local {
+                if let Some(name) = provider.get("name").and_then(toml::Value::as_str) {
+                    dropped.insert(name.to_string());
+                }
+            }
+            !local
+        });
+    }
+    if let Some(toml::Value::Array(routes)) = table.get_mut("routes") {
+        for route in routes.iter_mut() {
+            if let Some(toml::Value::Array(targets)) = route.get_mut("targets") {
+                targets.retain(|target| {
+                    target
+                        .get("provider")
+                        .and_then(toml::Value::as_str)
+                        .is_none_or(|name| !dropped.contains(name))
+                });
+            }
+        }
+        routes.retain(|route| {
+            route
+                .get("targets")
+                .and_then(toml::Value::as_array)
+                .is_some_and(|targets| !targets.is_empty())
+        });
+    }
+    Ok(toml::to_string(&table)?)
+}
+
+/// Where `easy-up` keeps the files it derives from `config` for one database
+/// start: beside each other in the temp directory, named for the config's path
+/// so two installs on one machine do not share them.
+#[cfg(feature = "postgres")]
+fn derived_path(config: &Path, suffix: &str) -> PathBuf {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    std::fs::canonicalize(config)
+        .unwrap_or_else(|_| config.to_path_buf())
+        .hash(&mut hasher);
+    std::env::temp_dir()
+        .join("rolter-easy-up")
+        .join(format!("{:016x}-{suffix}.toml", hasher.finish()))
+}
+
+#[cfg(feature = "postgres")]
+fn write_derived(config: &Path, suffix: &str, text: &str) -> anyhow::Result<PathBuf> {
+    let path = derived_path(config, suffix);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(&path, text)?;
+    Ok(path)
+}
+
 /// Build the gateway args for `easy-up`. In database mode the gateway polls the
 /// control plane's snapshot endpoint; in file mode it runs from the local toml.
 fn gateway_args(args: &EasyUpArgs, db_mode: bool) -> rolter_gateway::Args {
@@ -174,7 +298,11 @@ fn gateway_args(args: &EasyUpArgs, db_mode: bool) -> rolter_gateway::Args {
 // this function against a wider `Args` than the cfgs below can see (#1295).
 // clippy sees the exhaustive half of that pair and calls the base redundant
 #[allow(clippy::needless_update)]
-fn control_args(args: &EasyUpArgs, database_url: Option<String>) -> rolter_control::Args {
+fn control_args(
+    args: &EasyUpArgs,
+    database_url: Option<String>,
+    bootstrap: Option<PathBuf>,
+) -> rolter_control::Args {
     // `database_url` only backs a field under the postgres feature
     #[cfg(not(feature = "postgres"))]
     let _ = &database_url;
@@ -190,7 +318,8 @@ fn control_args(args: &EasyUpArgs, database_url: Option<String>) -> rolter_contr
         ui_otel_service_name: std::env::var("ROLTER_UI_OTEL_SERVICE_NAME").ok(),
         ui_docs_base_url: std::env::var("ROLTER_UI_DOCS_BASE_URL").ok(),
         gateway_url: format!("http://127.0.0.1:{}", args.gateway_port),
-        config: Some(args.config.clone()),
+        // in database mode, the file without the rows the seed imported
+        config: Some(bootstrap.unwrap_or_else(|| args.config.clone())),
         #[cfg(feature = "postgres")]
         database_url,
         redis_url: args.redis_url.clone(),
@@ -373,6 +502,22 @@ pub async fn run(args: EasyUpArgs) -> anyhow::Result<()> {
         tracing::info!(config = %args.config.display(), "created config from bundled example");
     }
 
+    // the file the control plane is started on: in database mode, the config
+    // without the rows the seed is about to import (#3645)
+    #[cfg(feature = "postgres")]
+    let bootstrap: Option<PathBuf> = if database_url.is_some() {
+        let text = std::fs::read_to_string(&args.config)?;
+        Some(write_derived(
+            &args.config,
+            "bootstrap",
+            &served_bootstrap(&text)?,
+        )?)
+    } else {
+        None
+    };
+    #[cfg(not(feature = "postgres"))]
+    let bootstrap: Option<PathBuf> = None;
+
     #[cfg(feature = "postgres")]
     let admin_note: Option<String> = if let Some(url) = database_url.clone() {
         use rolter_control::seed::{seed, SeedOptions};
@@ -396,7 +541,19 @@ pub async fn run(args: EasyUpArgs) -> anyhow::Result<()> {
                 org_slug: None,
                 admin_email: args.admin_email.clone(),
                 admin_password,
-                import: args.import.clone().or_else(|| Some(args.config.clone())),
+                import: Some(match &args.import {
+                    Some(path) => path.clone(),
+                    None => {
+                        // the bootstrap file itself, and the bundled example
+                        // without its self-hosted examples (#3645)
+                        let text = std::fs::read_to_string(&args.config)?;
+                        if text == EXAMPLE_CONFIG {
+                            write_derived(&args.config, "import", &example_for_database(&text)?)?
+                        } else {
+                            args.config.clone()
+                        }
+                    }
+                }),
             },
         )
         .await?;
@@ -423,7 +580,7 @@ pub async fn run(args: EasyUpArgs) -> anyhow::Result<()> {
         &hint_auth(loaded.as_ref(), db_mode),
     );
 
-    let control = rolter_control::run(control_args(&args, database_url));
+    let control = rolter_control::run(control_args(&args, database_url, bootstrap));
     let gateway = rolter_gateway::run(gateway_args(&args, db_mode));
 
     // both planes listen for ctrl-c and SIGTERM themselves and drain on it, so
@@ -585,6 +742,109 @@ mod tests {
         LOCK.get_or_init(Default::default)
             .lock()
             .unwrap_or_else(|e| e.into_inner())
+    }
+
+    // a database start serves no imported row from the file too, and imports
+    // none of the example's self-hosted providers (#3645)
+    #[cfg(feature = "postgres")]
+    #[test]
+    fn the_served_bootstrap_holds_no_imported_rows() {
+        let served = served_bootstrap(EXAMPLE_CONFIG).expect("the example strips");
+        let table: toml::Table = toml::from_str(&served).expect("the stripped file parses");
+        for name in IMPORTED_TABLES {
+            assert!(
+                !table.contains_key(*name),
+                "{name} is still served from the file"
+            );
+        }
+        // the server settings stay the file's
+        assert!(table.contains_key("server"), "{served}");
+        let config: rolter_core::GatewayConfig = toml::from_str(&served).expect("a config");
+        assert!(config.providers.is_empty() && config.routes.is_empty());
+        assert!(config.virtual_keys.is_empty());
+    }
+
+    #[cfg(feature = "postgres")]
+    #[test]
+    fn the_example_is_imported_without_its_self_hosted_providers() {
+        let imported = example_for_database(EXAMPLE_CONFIG).expect("the example prunes");
+        let mut config: rolter_core::GatewayConfig = toml::from_str(&imported).expect("a config");
+        let providers: Vec<&str> = config.providers.iter().map(|p| p.name.as_str()).collect();
+        for local in ["vllm-1", "vllm-2", "ollama"] {
+            assert!(
+                !providers.contains(&local),
+                "{local} imported: {providers:?}"
+            );
+        }
+        for hosted in ["openai", "anthropic", "openrouter"] {
+            assert!(
+                providers.contains(&hosted),
+                "{hosted} left out: {providers:?}"
+            );
+        }
+        let routes: Vec<&str> = config.routes.iter().map(|r| r.model.as_str()).collect();
+        assert!(
+            routes.contains(&"gpt-4o") && routes.contains(&"claude"),
+            "{routes:?}"
+        );
+        assert!(!routes.iter().any(|r| r.starts_with("llama")), "{routes:?}");
+        // every target left names a provider that is left, so the snapshot drops
+        // nothing and the first page load reports no omitted route
+        for route in &config.routes {
+            for target in &route.targets {
+                assert!(
+                    providers.contains(&target.provider.as_str()),
+                    "{}",
+                    route.model
+                );
+            }
+        }
+        let problems = config.sanitize_for_snapshot();
+        assert!(
+            !problems
+                .iter()
+                .any(|p| p.contains("omitted") || p.contains("llama")),
+            "{problems:?}"
+        );
+    }
+
+    #[cfg(feature = "postgres")]
+    #[test]
+    fn only_a_loopback_api_base_is_self_hosted() {
+        for local in [
+            "http://localhost:8001",
+            "http://127.0.0.1:11434/v1",
+            "http://[::1]:8000",
+            "HTTP://LOCALHOST",
+        ] {
+            assert!(is_loopback_base(local), "{local}");
+        }
+        for hosted in [
+            "https://api.openai.com",
+            "http://vllm-team:8000",
+            "http://10.0.0.5:8000",
+            "https://localhost.example.com",
+            "not a url",
+        ] {
+            assert!(!is_loopback_base(hosted), "{hosted}");
+        }
+    }
+
+    #[cfg(feature = "postgres")]
+    #[test]
+    fn a_derived_file_is_named_for_its_config() {
+        let a = derived_path(Path::new("/tmp/one/rolter.toml"), "bootstrap");
+        let b = derived_path(Path::new("/tmp/two/rolter.toml"), "bootstrap");
+        assert_ne!(a, b);
+        assert!(
+            a.to_string_lossy().ends_with("-bootstrap.toml"),
+            "{}",
+            a.display()
+        );
+        assert_eq!(
+            a,
+            derived_path(Path::new("/tmp/one/rolter.toml"), "bootstrap")
+        );
     }
 
     #[test]
@@ -855,7 +1115,7 @@ models = ["fake-llm"]
 
         let cli = Cli::parse_from(["rolter"]);
         assert_eq!(cli.easy_up.host, "127.0.0.1");
-        assert_eq!(control_args(&cli.easy_up, None).host, "127.0.0.1");
+        assert_eq!(control_args(&cli.easy_up, None, None).host, "127.0.0.1");
         assert!(!cli.easy_up.allow_open_mode);
         // and the flag still works as a flag, with no value
         let cli = Cli::parse_from(["rolter", "--allow-open-mode"]);
@@ -874,7 +1134,7 @@ models = ["fake-llm"]
 
         let cli = Cli::parse_from(["rolter"]);
         assert_eq!(cli.easy_up.host, "0.0.0.0");
-        assert_eq!(control_args(&cli.easy_up, None).host, "0.0.0.0");
+        assert_eq!(control_args(&cli.easy_up, None, None).host, "0.0.0.0");
         let cli = Cli::parse_from(["rolter", "--host", "127.0.0.1"]);
         assert_eq!(cli.easy_up.host, "127.0.0.1");
     }
@@ -895,15 +1155,15 @@ models = ["fake-llm"]
             gateway_args(&cli.easy_up, false).host.as_deref(),
             Some("0.0.0.0")
         );
-        assert_eq!(control_args(&cli.easy_up, None).host, "127.0.0.1");
+        assert_eq!(control_args(&cli.easy_up, None, None).host, "127.0.0.1");
         // the flag still wins over the variable
         let cli = Cli::parse_from(["rolter", "--control-host", "0.0.0.0"]);
-        assert_eq!(control_args(&cli.easy_up, None).host, "0.0.0.0");
+        assert_eq!(control_args(&cli.easy_up, None, None).host, "0.0.0.0");
 
         // a blank value is unset, as it is for the admin token
         let _control_host = EnvVar::set("ROLTER_CONTROL_HOST", Some(""));
         let cli = Cli::parse_from(["rolter"]);
-        assert_eq!(control_args(&cli.easy_up, None).host, "0.0.0.0");
+        assert_eq!(control_args(&cli.easy_up, None, None).host, "0.0.0.0");
         let mut args = args_on("0.0.0.0");
         args.control_host = Some("  ".to_string());
         assert_eq!(args.control_host(), "0.0.0.0");
@@ -1004,9 +1264,9 @@ models = ["fake-llm"]
         // forwarded would silently refuse to start on --host 0.0.0.0
         let mut args = args_on("0.0.0.0");
         args.allow_open_mode = true;
-        assert!(control_args(&args, None).allow_open_mode);
+        assert!(control_args(&args, None, None).allow_open_mode);
         args.allow_open_mode = false;
-        assert!(!control_args(&args, None).allow_open_mode);
+        assert!(!control_args(&args, None, None).allow_open_mode);
     }
 
     #[cfg(feature = "postgres")]
@@ -1042,7 +1302,7 @@ models = ["fake-llm"]
         let key = "ROLTER_DB_MAX_CONNECTIONS";
         std::env::set_var(key, "37");
         let cli = Cli::parse_from(["rolter"]);
-        let built = control_args(&cli.easy_up, None);
+        let built = control_args(&cli.easy_up, None, None);
         std::env::remove_var(key);
 
         assert_eq!(built.db_max_connections, 37);

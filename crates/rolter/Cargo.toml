@@ -29,6 +29,9 @@ tracing.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 reqwest.workspace = true
+# `easy-up` derives its database-mode bootstrap and import files from the
+# config it was given (#3645)
+toml = { workspace = true, optional = true }
 
 [dev-dependencies]
 # `cli_guard`: every secret-bearing env flag must hide its value in `--help` (#2793)
@@ -52,4 +55,5 @@ postgres = [
   "rolter-control/postgres",
   "dep:rolter-store",
   "rolter-store/postgres",
+  "dep:toml",
 ]

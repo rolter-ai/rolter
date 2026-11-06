@@ -314,6 +314,8 @@ export const ConfigFailsWhileProblemsAnswer: Story = {
     await expect(
       await canvas.findByText("2 config entries are not being served as written"),
     ).toBeVisible();
+    // the lines are folded under one line per kind until opened (#3646)
+    await userEvent.click(canvas.getByRole("button", { name: "2 other findings" }));
     await expect(canvas.getByText(/required_headers is unreadable/)).toBeVisible();
     await expect(canvas.getByText(/no snapshot is being published/)).toBeVisible();
     await expectGateAnswered();
@@ -832,5 +834,38 @@ export const AsViewer: Story = {
     await expect(within(canvasElement).queryByText(/live gateway/)).toBeNull();
     await expect(within(canvasElement).queryByRole("link", { name: "View nodes" })).toBeNull();
     viewing.expectNotSent("GET", "/api/v1/cluster/nodes");
+  },
+};
+
+/**
+ * #3645: an organization's route of the name of a config-file route shadows it
+ * for that organization's keys. The two rows read the same without a scope;
+ * the column tells them apart, and still does not say which organization.
+ */
+export const ARowSaysItsScope: Story = {
+  render: () => (
+    <Stage
+      fetchStub={api({
+        config: () =>
+          json({
+            ...CONFIG,
+            origins: {
+              providers: ["deployment", "organization", "deployment"],
+              routes: ["deployment", "organization"],
+            },
+          }),
+      })}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const routes = await canvas.findByRole("table", { name: "Routes" });
+    const rows = within(routes)
+      .getAllByRole("row")
+      .filter((row) => within(row).queryByText("gpt-4o", { selector: "span" }));
+    await expect(rows).toHaveLength(2);
+    await expect(within(rows[0]).getByRole("cell", { name: "Deployment" })).toBeVisible();
+    await expect(within(rows[1]).getByRole("cell", { name: "Organization" })).toBeVisible();
+    await expectListTable(canvasElement, "Routes");
   },
 };

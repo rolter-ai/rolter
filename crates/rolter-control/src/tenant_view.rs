@@ -181,8 +181,22 @@ impl TenantView {
         state: &ControlState,
         records: Vec<ConfigProblem>,
     ) -> Vec<String> {
+        self.visible_problem_records(state, records)
+            .await
+            .into_iter()
+            .map(|p| p.message)
+            .collect()
+    }
+
+    /// [`Self::visible_problems`] keeping the records whole, for the
+    /// structured `findings` of `GET /api/v1/config/problems` (#3646).
+    pub(crate) async fn visible_problem_records(
+        &mut self,
+        state: &ControlState,
+        records: Vec<ConfigProblem>,
+    ) -> Vec<ConfigProblem> {
         if self.sees_everything() {
-            return records.into_iter().map(|p| p.message).collect();
+            return records;
         }
         let mut kept = Vec::with_capacity(records.len());
         for problem in records {
@@ -195,7 +209,7 @@ impl TenantView {
                 }
             };
             if seen {
-                kept.push(problem.message);
+                kept.push(problem);
             }
         }
         kept

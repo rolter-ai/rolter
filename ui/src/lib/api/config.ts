@@ -38,10 +38,23 @@ export interface ProviderDto {
   api_base: string;
 }
 
+export type RowScope = "deployment" | "organization";
+
 export interface GatewayConfigDto {
   providers: ProviderDto[];
   routes: RouteDto[];
   virtual_keys: VirtualKeyDto[];
+  /**
+   * whether each provider, route and provider group is deployment-wide or an
+   * organization's, by position: the rows carry no tenancy (#1844), and an
+   * org's row shadowing a config-file row of its name read the same as it
+   * without this (#3645). Absent from an older control plane
+   */
+  origins?: {
+    providers?: RowScope[];
+    routes?: RowScope[];
+    provider_groups?: RowScope[];
+  };
   /**
    * every other section of `GatewayConfig` (`crates/rolter-core/src/config.rs`)
    * — server, tls, cache, guardrails, feature_flags, … — which the Effective
@@ -79,10 +92,24 @@ export interface OmittedEntry {
 // escaped so check:literals does not read the angle brackets as markup text
 export const UNNAMED_KEY = "\u003cunnamed>";
 
+/**
+ * One line of `problems` as a record (#3646): its kind and, where the line is
+ * about one row, the row and the org that owns it. What the dashboard groups
+ * and translates by, so it never reads the English sentence.
+ */
+export interface ConfigFinding {
+  kind: "omitted" | "sanitized" | "invalid" | "misread" | "bootstrap_shadow" | (string & {});
+  message: string;
+  org_id?: string | null;
+  subject?: { kind: string; name: string } | null;
+}
+
 export interface ConfigProblems {
   /** one English sentence per finding, for a person to read and never to parse */
   problems: string[];
   omitted: OmittedEntry[];
+  /** `problems` as records; absent from a control plane older than #3646 */
+  findings?: ConfigFinding[];
 }
 
 /**
@@ -98,6 +125,7 @@ export function fetchConfigProblems(): Promise<ConfigProblems> {
     problems: r.problems ?? [],
     // an older control plane answers sentences only
     omitted: r.omitted ?? [],
+    ...(r.findings ? { findings: r.findings } : {}),
   }));
 }
 
