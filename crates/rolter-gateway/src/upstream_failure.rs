@@ -175,7 +175,20 @@ pub(crate) fn exhausted(
     cooling_down: bool,
 ) -> Exhausted {
     let rate_limited = failure.status == 429;
-    let (status, code, message) = if rate_limited {
+    // the provider refused rolter's own credentials: a deployment problem the
+    // caller cannot fix, so it is a 502 with a code of its own and never the
+    // caller's 401, which reads as its virtual key being wrong (#3644)
+    let auth_failed = matches!(failure.status, 401 | 403);
+    let (status, code, message) = if auth_failed {
+        (
+            StatusCode::BAD_GATEWAY,
+            "upstream_auth_failed",
+            format!(
+                "the upstream provider for model '{model}' refused rolter's credentials (upstream status {})",
+                failure.status
+            ),
+        )
+    } else if rate_limited {
         (
             StatusCode::TOO_MANY_REQUESTS,
             "upstream_rate_limited",

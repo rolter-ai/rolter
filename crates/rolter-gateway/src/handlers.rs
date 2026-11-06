@@ -1245,6 +1245,18 @@ pub(crate) fn plugin_tenant(scope: &ScopeIds) -> rolter_core::WebhookTenant {
 /// could not reach, userinfo and credential query values included, and the
 /// caller is not the operator who configured that address (#2919).
 fn upstream_error_response(message: &str) -> Response {
+    // a provider whose credential does not resolve was never called (#3644):
+    // the deployment is missing something, not the caller, so it is a 503
+    // with a code of its own rather than a 502 that blames the upstream
+    if let Some(bare) = message
+        .strip_prefix("config error: ")
+        .and_then(|m| m.strip_prefix(rolter_proxy::CREDENTIAL_MISSING))
+        .and_then(|m| m.strip_prefix(": "))
+    {
+        return crate::error::ApiError::new(StatusCode::SERVICE_UNAVAILABLE, bare)
+            .with_code(rolter_proxy::CREDENTIAL_MISSING)
+            .into_response();
+    }
     if let Some((code, message)) = translation_request_error(message) {
         return crate::error::ApiError::new(StatusCode::BAD_REQUEST, message)
             .with_code(code)
@@ -2236,11 +2248,12 @@ fn forward_body(
     parsed: &Value,
     body: &Bytes,
     rewrote: bool,
+    inject_usage: bool,
 ) -> Bytes {
     let effective_model = &entry.route.model;
     let rewrite_model = effective_model != model;
     let has_forward_params = entry.route.params.keys().any(|key| key != POLICY_PARAM);
-    if !has_forward_params && !rewrite_model && !rewrote {
+    if !has_forward_params && !rewrite_model && !rewrote && !inject_usage {
         return body.clone();
     }
     let mut injected = parsed.clone();
@@ -2253,9 +2266,72 @@ fn forward_body(
     if let Some(object) = injected.as_object_mut() {
         object.remove(POLICY_PARAM);
     }
+    if inject_usage {
+        ask_for_stream_usage(&mut injected);
+    }
     serde_json::to_vec(&injected)
         .map(Bytes::from)
         .unwrap_or_else(|_| body.clone())
+}
+
+/// The kinds that report usage on a stream only when asked, and accept the
+/// asking: OpenAI's own API and the servers that speak it (#3667). A kind the
+/// gateway translates (Anthropic, Gemini) reports usage on its own, and any
+/// other kind is left as it was rather than sent a field it might refuse.
+fn asks_for_stream_usage(kind: rolter_core::ProviderKind) -> bool {
+    matches!(
+        kind,
+        rolter_core::ProviderKind::Openai | rolter_core::ProviderKind::OpenaiCompatible
+    )
+}
+
+/// Whether to ask the upstreams for streamed usage on the caller's behalf
+/// (#3667): a streamed request that did not set `stream_options.include_usage`
+/// itself, on a route whose every target is a provider of a kind that
+/// [`asks_for_stream_usage`]. Without it NeuralDeep, Selectel and vLLM stream
+/// no usage, and the request is logged with no tokens, no cost and nothing for
+/// a budget to count.
+fn wants_stream_usage(snap: &Snapshot, entry: &crate::state::RouteEntry, parsed: &Value) -> bool {
+    if parsed.get("stream").and_then(Value::as_bool) != Some(true) {
+        return false;
+    }
+    if parsed
+        .get("stream_options")
+        .and_then(|options| options.get("include_usage"))
+        .is_some()
+    {
+        return false;
+    }
+    let route = &entry.route;
+    let mut targets = route
+        .targets
+        .iter()
+        .chain(
+            route
+                .variants
+                .iter()
+                .flat_map(|variant| variant.targets.iter()),
+        )
+        .peekable();
+    targets.peek().is_some()
+        && targets.all(|target| {
+            snap.providers
+                .get(&target.provider)
+                .is_some_and(|provider| asks_for_stream_usage(provider.kind))
+        })
+}
+
+/// Set `stream_options.include_usage` on `body`, keeping any other option.
+fn ask_for_stream_usage(body: &mut Value) {
+    let Some(object) = body.as_object_mut() else {
+        return;
+    };
+    let options = object
+        .entry("stream_options")
+        .or_insert_with(|| Value::Object(Default::default()));
+    if let Some(options) = options.as_object_mut() {
+        options.insert("include_usage".to_string(), Value::Bool(true));
+    }
 }
 
 /// The streamed restore of a stream the sanitizer restores through its
@@ -2524,6 +2600,8 @@ async fn proxy(
     drop(guardrails_pre_stage);
 
     let effective_model = entry.route.model.clone();
+    // usage an OpenAI-style upstream streams only when asked (#3667)
+    let inject_usage = wants_stream_usage(&snap, entry, &parsed);
     let forward_body = forward_body(
         entry,
         &model,
@@ -2535,6 +2613,7 @@ async fn proxy(
             || pre_route_transformed
             || template_applied
             || pii_sanitized,
+        inject_usage,
     );
 
     // capture log fields independent of the chosen target
@@ -2696,6 +2775,7 @@ async fn proxy(
             parsed: &parsed,
             body: &body,
             forward_body: &forward_body,
+            inject_usage,
         },
         path,
         started,
@@ -2824,6 +2904,7 @@ async fn proxy(
         token_recorder,
         inflight_guard,
         genai_span,
+        strip_usage_chunk: inject_usage,
     };
     // a request that did not ask for a stream keeps the legs that judge
     // a whole body: the built-in output rules, the post_response
@@ -3601,6 +3682,7 @@ async fn proxy_multipart(
             token_recorder,
             inflight_guard,
             genai_span,
+            strip_usage_chunk: false,
         },
         None,
         DeliveryPolicy {
@@ -3826,6 +3908,9 @@ enum ForwardPayload<'a> {
         parsed: &'a Value,
         body: &'a Bytes,
         forward_body: &'a Bytes,
+        /// a variant's body asks for streamed usage too, as `forward_body`
+        /// does (#3667)
+        inject_usage: bool,
     },
     /// a multipart upload, forwarded verbatim with its content type, as
     /// [`proxy_multipart`] forwards one to the classic pool (#3494)
@@ -3956,9 +4041,17 @@ async fn forward_variants(
 
         // merge variant params over route params for this candidate's body
         let forward_body = match payload {
-            ForwardPayload::Json { parsed, body, .. } => {
+            ForwardPayload::Json {
+                parsed,
+                body,
+                inject_usage,
+                ..
+            } => {
                 let mut injected = parsed.clone();
                 route.apply_variant_params(v, &mut injected);
+                if inject_usage {
+                    ask_for_stream_usage(&mut injected);
+                }
                 serde_json::to_vec(&injected)
                     .map(Bytes::from)
                     .unwrap_or_else(|_| body.clone())
@@ -4576,9 +4669,27 @@ impl<'f> ForwardLoop<'f> {
             // slot is given back rather than held for the lease
             state.breaker.release(dial.namespace, dial.index);
             self.last_failure = Failure::from_status(status);
-            if can_retry {
+            // a 401 the last key got is the provider refusing rolter, as for a
+            // single-key provider below, and ends as a 502 rather than reaching
+            // the caller as its own 401 (#3644)
+            if can_retry || status == 401 {
                 return self.supersede_status(dial, response, cancel).await;
             }
+        } else if is_upstream_auth_failure(status) {
+            // the provider refused rolter's credentials (#3644). that is the
+            // deployment's failure, not the caller's: the target is parked and
+            // the next one tried, and with none left the request ends as a 502
+            // `upstream_auth_failed`, never as the caller's own 401 or 403
+            self.last_failure = None;
+            if self.cd_enabled {
+                let secs = snap.cooldown.duration_secs(retry_after_secs(&response));
+                state.cooldowns.park(dial.namespace, dial.index, secs);
+                state.metrics.cooldowns_tripped_total.fetch_add(1, Relaxed);
+            }
+            if state.breaker.on_failure(dial.namespace, dial.index) {
+                state.metrics.breaker_opened_total.fetch_add(1, Relaxed);
+            }
+            return self.supersede_status(dial, response, cancel).await;
         } else if is_retryable_status(status) {
             self.last_failure = Failure::from_status(status);
             // park the failing target so siblings absorb the load
@@ -5024,6 +5135,12 @@ fn is_retryable_status(status: u16) -> bool {
     status == 408 || status == 429 || status >= 500
 }
 
+/// An upstream refusing the credentials rolter sent it: a `401`, or a `403`
+/// that the content-policy check above did not take as a refusal (#3644).
+fn is_upstream_auth_failure(status: u16) -> bool {
+    status == 401 || status == 403
+}
+
 /// Cheap, dependency-free jitter source in `[0, 1)` derived from the request
 /// clock — good enough to decorrelate concurrent retriers.
 fn jitter(started: Instant) -> f64 {
@@ -5227,12 +5344,23 @@ async fn stream_response(
     } else {
         upstream
     };
+    let strip_usage_chunk = acct.strip_usage_chunk && is_sse;
     let body = acct
         .into_stream(translated, is_sse)
         .with_completion_observer(completion_observer)
         .with_thinking_count(translation.thinking_count())
         .with_header_cache_read(header_cache_read);
-    let body = restore_stream_body(body, is_sse, status, pii_stream);
+    // after the logging stream, which has read the usage for the row (#3667)
+    let body = if strip_usage_chunk {
+        restore_stream_body(
+            crate::usage_chunk::StripUsageChunk::new(body),
+            is_sse,
+            status,
+            pii_stream,
+        )
+    } else {
+        restore_stream_body(body, is_sse, status, pii_stream)
+    };
     let mut builder = Response::builder()
         .status(status)
         .header(header::CONTENT_TYPE, content_type);
@@ -5474,6 +5602,10 @@ struct Accounting {
     /// the successful attempt's span, which token usage is recorded on once
     /// the body has been consumed (#808)
     genai_span: Option<tracing::Span>,
+    /// the gateway asked the upstream for the stream's usage, and the caller
+    /// did not: the usage chunk is read for the row and kept from the caller
+    /// (#3667)
+    strip_usage_chunk: bool,
 }
 
 impl Accounting {
@@ -6531,6 +6663,7 @@ mod tests {
                     parsed: &parsed,
                     body: &body,
                     forward_body: &body,
+                    inject_usage: false,
                 },
             ),
             (

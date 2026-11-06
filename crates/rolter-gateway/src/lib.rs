@@ -85,6 +85,7 @@ mod trace;
 mod unit_billing;
 mod upstream_failure;
 mod upstream_metrics;
+mod usage_chunk;
 mod usage_recording;
 mod watcher;
 
