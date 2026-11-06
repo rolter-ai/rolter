@@ -749,7 +749,48 @@ export const RulesEmpty: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(await canvas.findByText("No alert rules")).toBeVisible();
-    await expect(canvas.getAllByRole("button", { name: "Add rule" })).toHaveLength(2);
+    // with no channel a rule notifies nobody, so the way forward is Channels
+    // and the empty state does not repeat the header's button (#3668)
+    await expect(canvas.getAllByRole("button", { name: "Add rule" })).toHaveLength(1);
+    await expect(canvas.getByRole("link", { name: "Add a channel" })).toHaveAttribute(
+      "href",
+      "/alerting-channels",
+    );
+    await expect(canvas.queryByRole("button", { name: "Error rate above 5%" })).toBeNull();
+  },
+};
+
+const channelOnly = routes([
+  ["/alert-channels", () => CHANNELS],
+  ["/alert-rules", () => []],
+  ["/alert-notifications", () => []],
+]);
+
+/**
+ * #3668: with a channel and no rule, a first rule starts from a preset: the
+ * sheet opens filled in, named, on the signal and threshold the preset says.
+ */
+export const RulesEmptyOffersPresets: Story = {
+  render: () => (
+    <Harness fetchStub={channelOnly}>
+      <AlertRules />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByText("No alert rules")).toBeVisible();
+    for (const label of [
+      "Error rate above 5%",
+      "p95 latency above 5 s",
+      "Provider health flapping",
+    ]) {
+      await expect(canvas.getByRole("button", { name: label })).toBeVisible();
+    }
+    await userEvent.click(canvas.getByRole("button", { name: "Error rate above 5%" }));
+    const sheet = await within(document.body).findByRole("dialog");
+    await waitFor(() => expect(sheet).toBeVisible());
+    await expect(within(sheet).getByDisplayValue("high error rate")).toBeVisible();
+    await expect(within(sheet).getByDisplayValue("5")).toBeVisible();
   },
 };
 

@@ -645,6 +645,14 @@ struct MeResponse {
     /// the address clients already dial), so every session may read it without
     /// holding `client_settings:read`
     gateway_base_url: Option<String>,
+    /// the address the `/gw/*` proxy reaches the gateway at
+    /// (`ROLTER_GATEWAY_URL`), but only when it is a loopback one: on a laptop
+    /// install (`rolter easy-up`) that is also the address a client on the
+    /// same machine dials, so the dashboard can hand out a first request
+    /// before anyone saves a public base URL (#3650). Any other address is
+    /// one inside the deployment (a service name, a pod IP) that a client may
+    /// not reach, and is never sent
+    local_gateway_url: Option<String>,
     /// whether the account has a local password. `false` is an account that
     /// signs in through single sign-on only: `POST /api/v1/auth/password` has
     /// nothing to change for it and answers `409 no_local_password`, so the
@@ -703,8 +711,29 @@ async fn me(
         memberships,
         display_name_managed,
         gateway_base_url,
+        local_gateway_url: loopback_gateway_url(&state.gateway_url),
         has_local_password,
     }))
+}
+
+/// `url` when its host is a loopback address (`localhost`, `127.0.0.0/8`,
+/// `::1`), with no trailing slash; `None` for anything else, an address inside
+/// the deployment a client elsewhere may not reach.
+pub(crate) fn loopback_gateway_url(url: &str) -> Option<String> {
+    let parsed = reqwest::Url::parse(url.trim()).ok()?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return None;
+    }
+    // an IPv6 host comes back bracketed
+    let host = parsed
+        .host_str()?
+        .trim_start_matches('[')
+        .trim_end_matches(']');
+    let loopback = host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback());
+    loopback.then(|| url.trim().trim_end_matches('/').to_string())
 }
 
 /// stable code of the 409 for a password change on an account that has no
@@ -963,6 +992,31 @@ impl FromRequestParts<ControlState> for CurrentUser {
 
 #[cfg(test)]
 mod tests {
+    // only a loopback gateway address reaches the dashboard: anything else is
+    // an address inside the deployment a client may not reach (#3650)
+    #[test]
+    fn only_a_loopback_gateway_url_is_offered() {
+        use super::loopback_gateway_url as local;
+        assert_eq!(
+            local("http://127.0.0.1:4000"),
+            Some("http://127.0.0.1:4000".into())
+        );
+        assert_eq!(
+            local("http://localhost:4000/"),
+            Some("http://localhost:4000".into())
+        );
+        assert_eq!(
+            local("http://127.8.9.1:4000"),
+            Some("http://127.8.9.1:4000".into())
+        );
+        assert_eq!(local("http://[::1]:4000"), Some("http://[::1]:4000".into()));
+        assert_eq!(local("http://rolter-gateway:4000"), None);
+        assert_eq!(local("http://10.0.0.7:4000"), None);
+        assert_eq!(local("https://gateway.example.com"), None);
+        assert_eq!(local("ftp://127.0.0.1"), None);
+        assert_eq!(local("not a url"), None);
+    }
+
     use super::*;
     use argon2::password_hash::PasswordHasher;
 

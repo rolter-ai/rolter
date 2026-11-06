@@ -1161,7 +1161,9 @@ fn operations() -> Vec<Op> {
                 "The account behind the current session, with `has_local_password` \
                  (false for an account that signs in through single sign-on only) and \
                  `gateway_base_url`, the saved public base URL of the gateway (null when \
-                 none is saved), readable by every signed-in caller",
+                 none is saved), readable by every signed-in caller, and \
+                 `local_gateway_url`, the address the control plane reaches the gateway \
+                 at when that is a loopback one (null otherwise)",
             ),
             Op::post(
                 "/api/v1/auth/password",

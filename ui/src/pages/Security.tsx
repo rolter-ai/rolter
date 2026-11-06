@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { SettingsBody } from "@/components/screen";
 import * as React from "react";
-import { useTranslation } from "react-i18next";
+import { Trans, useTranslation } from "react-i18next";
 
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { superadminOnly } from "@/components/ForbiddenScreen";
@@ -240,19 +240,19 @@ function SecurityScreen() {
       <ListCard
         title={t("pages.security.allowedOrigins")}
         desc={t("pages.security.allowedOriginsHint")}
-        placeholder={t("pages.security.allowedOriginsPlaceholder")}
+        example={t("pages.security.allowedOriginsExample")}
         {...listProps("allowedOrigins", "security-allowed-origins", parsed.allowedOrigins.problems)}
       />
       <ListCard
         title={t("pages.security.allowedHeaders")}
         desc={t("pages.security.allowedHeadersHint")}
-        placeholder={t("pages.security.allowedHeadersPlaceholder")}
+        example={t("pages.security.allowedHeadersExample")}
         {...listProps("allowedHeaders", "security-allowed-headers", parsed.allowedHeaders.problems)}
       />
       <ListCard
         title={t("pages.security.requiredHeaders")}
         desc={t("pages.security.requiredHeadersHint")}
-        placeholder={t("pages.security.requiredHeadersPlaceholder")}
+        example={t("pages.security.requiredHeadersExample")}
         {...listProps(
           "requiredHeaders",
           "security-required-headers",
@@ -262,7 +262,7 @@ function SecurityScreen() {
       <ListCard
         title={t("pages.security.bypassRoutes")}
         desc={t("pages.security.bypassRoutesHint")}
-        placeholder={t("pages.security.bypassRoutesPlaceholder")}
+        example={t("pages.security.bypassRoutesExample")}
         {...listProps("bypassRoutes", "security-bypass-routes", parsed.bypassRoutes.problems)}
       />
 
@@ -329,7 +329,7 @@ function ListCard({
   title,
   desc,
   value,
-  placeholder,
+  example,
   changed,
   problems,
   showProblems,
@@ -340,7 +340,9 @@ function ListCard({
   title: string;
   desc: string;
   value: string;
-  placeholder: string;
+  /** one entry, shown under the description: an example in the field itself
+      read as a configured value on an empty auth-bypass list (#3663) */
+  example: string;
   changed: boolean;
   problems: EntryProblem[];
   showProblems: boolean;
@@ -359,7 +361,18 @@ function ListCard({
   return (
     <SettingsPanel
       title={title}
-      description={<span id={hintId}>{desc}</span>}
+      description={
+        <span id={hintId}>
+          {desc}
+          <span className="mt-1 block">
+            <Trans
+              i18nKey="pages.security.exampleLine"
+              values={{ example }}
+              components={[<code key="example" className="font-mono text-foreground" />]}
+            />
+          </span>
+        </span>
+      }
       badge={changed && <ChangedBadge />}
       className="gap-2.5"
     >
@@ -371,7 +384,9 @@ function ListCard({
         // scrolling the third entry out of sight
         rows={Math.min(8, Math.max(3, value.split("\n").length + 1))}
         value={value}
-        placeholder={placeholder}
+        // an empty list says so, in the field's own words rather than as an
+        // entry that could be read as configured (#3663)
+        placeholder={t("pages.security.emptyList")}
         spellCheck={false}
         autoCapitalize="off"
         autoCorrect="off"

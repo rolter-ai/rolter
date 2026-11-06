@@ -48,3 +48,17 @@ export function useGatewayBase(): GatewayBase | null {
   const saved = typeof fetched === "string" ? fetched : fromSession;
   return React.useMemo(() => gatewayBase(saved), [saved]);
 }
+
+/**
+ * The gateway on this machine, as the control plane reaches it, when no public
+ * base URL is saved and that address is a loopback one (#3650). A laptop
+ * install binds the gateway to `127.0.0.1:4000`, which is also the address a
+ * client beside it dials, so the first request a new key is handed can work
+ * before anyone opens Client Settings. `null` once a public base URL is saved,
+ * since that one wins, and on any deployment whose gateway sits elsewhere.
+ */
+export function useLocalGatewayBase(): GatewayBase | null {
+  const saved = useGatewayBase();
+  const local = useOptionalAuth()?.localGatewayUrl ?? null;
+  return React.useMemo(() => (saved ? null : gatewayBase(local)), [saved, local]);
+}

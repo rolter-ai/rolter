@@ -640,8 +640,10 @@ function AlertRulesScreen() {
   // the rule the sheet edits, or `null` when it adds one, kept after the sheet
   // closes for the reason the channel's is
   const [editTarget, setEditTarget] = React.useState<AlertRuleRow | null>(null);
-  const openSheet = (rule: AlertRuleRow | null) => {
+  const [preset, setPreset] = React.useState<RulePreset | null>(null);
+  const openSheet = (rule: AlertRuleRow | null, from: RulePreset | null = null) => {
     setEditTarget(rule);
+    setPreset(from);
     setSheetOpen(true);
   };
   const [deleteTarget, setDeleteTarget] = React.useState<AlertRuleRow | null>(null);
@@ -688,13 +690,35 @@ function AlertRulesScreen() {
               : t("pages.alerting.rules.emptyBody")
           }
           actions={
-            <GatedButton
-              gate="alert_rule:create"
-              control="alert-rule-new-empty"
-              onClick={() => openSheet(null)}
-            >
-              {t("pages.alerting.rules.add")}
-            </GatedButton>
+            // a rule with no channel evaluates and notifies nobody, so with
+            // none the way forward is Channels; with one, a first rule starts
+            // from a preset rather than a blank form (#3668)
+            channels.data && channels.data.length === 0 ? (
+              <EmptyStateLink to="/alerting-channels">
+                {t("pages.alerting.rules.emptyAddChannel")}
+              </EmptyStateLink>
+            ) : (
+              <>
+                {RULE_PRESETS.map((p) => (
+                  <GatedButton
+                    key={p.id}
+                    gate="alert_rule:create"
+                    control="alert-rule-preset"
+                    variant="outline"
+                    onClick={() => openSheet(null, p)}
+                  >
+                    {t(`pages.alerting.rules.presets.${p.id}.label`)}
+                  </GatedButton>
+                ))}
+                <GatedButton
+                  gate="alert_rule:create"
+                  control="alert-rule-new-empty"
+                  onClick={() => openSheet(null)}
+                >
+                  {t("pages.alerting.rules.add")}
+                </GatedButton>
+              </>
+            )
           }
         />
       )}
@@ -870,6 +894,7 @@ function AlertRulesScreen() {
         open={sheetOpen}
         onOpenChange={setSheetOpen}
         existing={editTarget}
+        preset={preset}
         channels={channels.data ?? []}
         onDone={invalidate}
       />
@@ -917,7 +942,36 @@ interface RuleDraft {
 // the form as it opens: an existing rule's own values, with the threshold in
 // the form's unit (a stored 0.05 error rate opens as 5), or a new rule's
 // defaults
-function ruleSeed(existing: AlertRuleRow | null, channels: AlertChannelRow[]): RuleDraft {
+/**
+ * Starting points for a first rule (#3668): the questions an operator brings
+ * on day one, so the sheet opens filled in rather than blank. Thresholds are in
+ * the form's unit (a percentage for `error_rate`). Each is only a draft; the
+ * operator saves it or changes it.
+ */
+const RULE_PRESETS = [
+  { id: "errorRate", signal: "error_rate", threshold: "5", windowSecs: "300" },
+  { id: "latency", signal: "p95_latency_ms", threshold: "5000", windowSecs: "300" },
+  { id: "providerHealth", signal: "provider_health_flaps", threshold: "3", windowSecs: "900" },
+] as const;
+
+type RulePreset = (typeof RULE_PRESETS)[number];
+
+function ruleSeed(
+  existing: AlertRuleRow | null,
+  channels: AlertChannelRow[],
+  preset?: { name: string; signal: string; threshold: string; windowSecs: string } | null,
+): RuleDraft {
+  if (!existing && preset) {
+    return {
+      name: preset.name,
+      signal: preset.signal,
+      threshold: preset.threshold,
+      comparison: "above",
+      noData: "ignore",
+      windowSecs: preset.windowSecs,
+      channelId: channels[0]?.id ?? "",
+    };
+  }
   return existing
     ? {
         name: existing.name,
@@ -943,6 +997,7 @@ function RuleSheet({
   open,
   onOpenChange,
   existing,
+  preset = null,
   channels,
   onDone,
 }: {
@@ -950,13 +1005,19 @@ function RuleSheet({
   onOpenChange: (open: boolean) => void;
   /** the rule to edit, or `null` to add one */
   existing: AlertRuleRow | null;
+  /** a starting point for a new rule, from the empty state's presets (#3668) */
+  preset?: RulePreset | null;
   channels: AlertChannelRow[];
   onDone: () => void;
 }) {
   const { t } = useTranslation();
   const toast = useToast();
   const currency = useCurrencyCode();
-  const seed = ruleSeed(existing, channels);
+  const seed = ruleSeed(
+    existing,
+    channels,
+    preset && { ...preset, name: t(`pages.alerting.rules.presets.${preset.id}.name`) },
+  );
   const [name, setName] = React.useState(seed.name);
   // a string rather than an `AlertSignal`: an existing rule may carry a signal
   // this build does not know, and an edit sends it back as it found it
@@ -1056,7 +1117,7 @@ function RuleSheet({
       save.reset();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, existing]);
+  }, [open, existing, preset]);
 
   // a rule notifies a channel of its own org or a deployment one, so another
   // org's is not offered; the control plane refuses it all the same

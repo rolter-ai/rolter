@@ -2,7 +2,7 @@ import { Code2 } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 
-import { GatewayBasePrompt } from "@/components/GatewayBasePrompt";
+import { GatewayBasePrompt, LocalGatewayNote } from "@/components/GatewayBasePrompt";
 import { Button } from "@/components/ui/button";
 import { CodeBlock } from "@/components/ui/code-block";
 import {
@@ -20,7 +20,7 @@ import {
   type SnippetLang,
   type SnippetRequest,
 } from "@/lib/snippets";
-import { useGatewayBase } from "@/lib/use-gateway-base";
+import { useGatewayBase, useLocalGatewayBase } from "@/lib/use-gateway-base";
 
 const LABELS: Record<SnippetLang, string> = {
   curl: "curl",
@@ -66,7 +66,10 @@ export function CodeSnippetDialog({
   // the saved public base URL when this caller can read it. there is no /gw
   // fallback: the proxy needs a dashboard session an external client lacks, so
   // without an address the dialog asks for one instead (#2486)
-  const base = useGatewayBase();
+  const saved = useGatewayBase();
+  // a laptop install's gateway when nothing is saved yet (#3650)
+  const local = useLocalGatewayBase();
+  const base = saved ?? local;
   const snippet = React.useMemo(
     () => (base ? renderSnippet(lang, request, base) : null),
     [lang, request, base],
@@ -89,6 +92,7 @@ export function CodeSnippetDialog({
             value={lang}
             onChange={(v) => setLang(v as SnippetLang)}
           />
+          {!saved && <LocalGatewayNote />}
 
           {/* the block scrolls sideways rather than wrapping: a snippet broken
             mid-URL reads as two broken lines, not as one long one (#948).

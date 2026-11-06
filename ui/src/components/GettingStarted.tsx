@@ -5,7 +5,7 @@ import { Link } from "react-router";
 import { useTranslation } from "react-i18next";
 
 import { GatedButton } from "@/components/GatedButton";
-import { GatewayBasePrompt } from "@/components/GatewayBasePrompt";
+import { GatewayBasePrompt, LocalGatewayNote } from "@/components/GatewayBasePrompt";
 import { LoadError } from "@/components/LoadError";
 import { LoadingRegion } from "@/components/LoadingState";
 import { Button, buttonVariants } from "@/components/ui/button";
@@ -18,7 +18,7 @@ import { splitCapability, useCan, useCapabilities, useGate, type Capability } fr
 import { classifyLoadError } from "@/lib/load-error";
 import { openCreateProject, useScope } from "@/lib/scope";
 import { KEY_ENV } from "@/lib/snippets";
-import { useGatewayBase } from "@/lib/use-gateway-base";
+import { useGatewayBase, useLocalGatewayBase } from "@/lib/use-gateway-base";
 import { cn } from "@/lib/utils";
 
 // The thread between the screens a first-run admin has to visit in order
@@ -149,7 +149,10 @@ function StepRow({ step, index, next }: { step: Step; index: number; next: boole
  */
 function ClientRequest() {
   const { t } = useTranslation();
-  const gateway = useGatewayBase();
+  const saved = useGatewayBase();
+  // a laptop install's gateway when nothing is saved yet (#3650)
+  const local = useLocalGatewayBase();
+  const gateway = saved ?? local;
   if (!gateway) return <GatewayBasePrompt />;
   const snippet = [
     `curl ${gateway.url}/v1/chat/completions \\`,
@@ -158,12 +161,15 @@ function ClientRequest() {
     `  -d '{"model": "fake-llm", "messages": [{"role": "user", "content": "hi"}]}'`,
   ].join("\n");
   return (
-    <CodeBlock
-      value={snippet}
-      language="bash"
-      label={t("pages.gettingStarted.snippetLabel")}
-      wrap
-    />
+    <>
+      {!saved && <LocalGatewayNote />}
+      <CodeBlock
+        value={snippet}
+        language="bash"
+        label={t("pages.gettingStarted.snippetLabel")}
+        wrap
+      />
+    </>
   );
 }
 

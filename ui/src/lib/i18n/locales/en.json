@@ -96,6 +96,7 @@
       "closeBody": "It will not be shown again.",
       "closeConfirm": "Close anyway",
       "nextStep": {
+        "localNote": "This is the gateway on this machine, the address the control plane reaches it at. For clients elsewhere, a superadmin saves the gateway's public base URL on Client Settings.",
         "title": "Make your first request",
         "body": "Export the key as <code>{{env}}</code>, then send this request to the gateway.",
         "gatewayUrl": "Gateway URL",
@@ -1903,6 +1904,15 @@
       "rules": {
         "emptyTitle": "No alert rules",
         "emptyBody": "Add a threshold rule and rolter evaluates it against gateway analytics every minute, firing when the signal reaches the threshold.",
+        "emptyAddChannel": "Add a channel",
+        "presets": {
+          "errorRate": { "label": "Error rate above 5%", "name": "high error rate" },
+          "latency": { "label": "p95 latency above 5 s", "name": "slow responses" },
+          "providerHealth": {
+            "label": "Provider health flapping",
+            "name": "provider health flapping"
+          }
+        },
         "emptyBodyNoChannel": "Add a channel first, then a rule that delivers to it. Rules without a channel evaluate but never notify.",
         "add": "Add rule",
         "toggleAria": "Enable {{name}}",
@@ -4915,6 +4925,8 @@
     "clientSettings": {
       "exampleRequest": "Example request",
       "baseUrl": "Base URL",
+      "noBaseUrl": "With no base URL saved, the dashboard hands external clients no snippet: its own /gw proxy needs a dashboard session, which a client does not have.",
+      "useLocal": "Use {{url}} (this machine)",
       "baseUrlHint": "The address clients point their SDK at. Until you save one, the dashboard shows no snippet for external clients: its own /gw proxy needs a dashboard session, so it is not an address they can use. Set the gateway’s own address, such as its load balancer or a custom domain.",
       "publicBaseUrl": "Public base URL",
       "forwarded": "Forwarded request headers",
@@ -4949,16 +4961,18 @@
     "security": {
       "allowedOrigins": "Allowed origins",
       "allowedOriginsHint": "One exact http(s) origin per line, allowed for CORS and WebSocket connections. Wildcards are rejected — list each origin explicitly.",
-      "allowedOriginsPlaceholder": "https://app.example.com\nhttps://console.example.com",
+      "emptyList": "Not set",
+      "exampleLine": "For example: <0>{{example}}</0>",
+      "allowedOriginsExample": "https://app.example.com",
       "allowedHeaders": "Allowed headers",
       "allowedHeadersHint": "One header name per line, allowed for CORS.",
-      "allowedHeadersPlaceholder": "X-Stainless-Timeout",
+      "allowedHeadersExample": "X-Stainless-Timeout",
       "requiredHeaders": "Required headers",
       "requiredHeadersHint": "One name: value pair per line that must be present on every request. Requests missing any of them are rejected. A value may contain commas.",
-      "requiredHeadersPlaceholder": "X-Tenant-ID: acme\nX-Custom-Header: value",
+      "requiredHeadersExample": "X-Tenant-ID: acme",
       "bypassRoutes": "Auth bypass routes",
       "bypassRoutesHint": "One exact /v1 path per line that skips the auth middleware. System routes like /health and the login endpoints are always open.",
-      "bypassRoutesPlaceholder": "/v1/models\n/v1/ping",
+      "bypassRoutesExample": "/v1/models",
       "edited": "Edited",
       "confirm": {
         "title_one": "Save a change that loosens security?",
