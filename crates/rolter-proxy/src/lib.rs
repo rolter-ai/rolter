@@ -376,6 +376,7 @@ impl Forwarder {
         passthrough_headers: &[(&str, &str)],
         route: &RouteOverrides,
     ) -> Result<Response> {
+        require_declared_credential(provider, api_key)?;
         if provider.kind == ProviderKind::Openrouter && api_key.is_none() {
             return Err(Error::Config(format!(
                 "openrouter provider '{}' requires a resolved api key",
@@ -503,6 +504,7 @@ impl Forwarder {
         passthrough_headers: &[(&str, &str)],
         route: &RouteOverrides,
     ) -> Result<Response> {
+        require_declared_credential(provider, api_key)?;
         if provider.kind == ProviderKind::OllamaCloud && api_key.is_none() {
             return Err(Error::Config(format!(
                 "ollama_cloud provider '{}' requires a resolved api key",
@@ -1000,6 +1002,26 @@ fn maybe_rewrite_model(body: Bytes, upstream_model: Option<&str>) -> Bytes {
         }
     }
     body
+}
+
+/// The code of the refusal raised for a provider whose credential does not resolve, which the
+/// gateway answers as a `503` of its own (#3644).
+pub const CREDENTIAL_MISSING: &str = "provider_credential_missing";
+
+/// Refuse to call a provider that names a credential the gateway could not
+/// resolve. Sent bare, it answered `401`, and the caller read that as its own
+/// key being refused; refused here, the attempt fails over to the next target
+/// like any other provider-side failure, and the request ends with a code
+/// that says what is wrong.
+fn require_declared_credential(provider: &ProviderConfig, api_key: Option<&str>) -> Result<()> {
+    if api_key.is_none() && provider.declares_credential() {
+        return Err(Error::Config(format!(
+            "{CREDENTIAL_MISSING}: provider '{}' names a credential that does not resolve, \
+             such as an unset environment variable, so it was not called",
+            provider.name
+        )));
+    }
+    Ok(())
 }
 
 #[cfg(test)]

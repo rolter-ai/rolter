@@ -1162,6 +1162,16 @@ impl ProviderConfig {
     /// provider yields a one-element list with weight 1, so callers can treat
     /// every provider uniformly. Entries whose secret cannot be resolved
     /// (missing env var) are skipped.
+    /// Whether the provider names a credential at all: a `key`, an
+    /// `api_key_env` or an `api_keys` entry. A provider that names one and
+    /// resolves none (an unset variable) is not called: it was sent with no
+    /// credential, and the provider's 401 reached the caller as if their own
+    /// key were wrong (#3644). One that names none, a local vLLM, is called
+    /// bare as it always was.
+    pub fn declares_credential(&self) -> bool {
+        !self.api_keys.is_empty() || self.api_key.is_some() || self.api_key_env.is_some()
+    }
+
     pub fn resolve_api_keys(&self) -> Vec<(String, u32)> {
         if self.api_keys.is_empty() {
             return self

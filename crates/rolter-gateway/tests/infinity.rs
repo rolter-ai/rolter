@@ -428,7 +428,7 @@ async fn a_url_prefix_travels_in_the_base() {
 }
 
 #[tokio::test]
-async fn the_key_travels_as_a_bearer_token_and_a_refusal_reaches_the_caller() {
+async fn the_key_travels_as_a_bearer_token_and_a_refusal_is_the_gateways() {
     let up = Infinity {
         api_key: Some("inf-secret".into()),
         ..Default::default()
@@ -457,7 +457,8 @@ async fn the_key_travels_as_a_bearer_token_and_a_refusal_reaches_the_caller() {
     assert_eq!(response.status(), StatusCode::OK);
 
     // a provider configured without the key the server wants: infinity's 401
-    // is handed on rather than turned into a gateway error
+    // is the server refusing rolter, not the caller, so it ends as a 502 of
+    // its own rather than as the caller's 401 (#3644)
     let keyless = gateway(&config(format!("http://{addr}"), None, Default::default())).await;
     let response = post_json(
         keyless,
@@ -465,9 +466,9 @@ async fn the_key_travels_as_a_bearer_token_and_a_refusal_reaches_the_caller() {
         json!({"model": "embed-small", "input": "x"}),
     )
     .await;
-    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
     let body: Value = response.json().await.unwrap();
-    assert_eq!(body["detail"], "Unauthorized");
+    assert_eq!(body["error"]["code"], "upstream_auth_failed", "{body}");
 }
 
 #[tokio::test]

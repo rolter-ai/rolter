@@ -66,8 +66,10 @@ omissions = [
 deviations = [
   "a `provider-slug/model` name pins a provider and is rewritten to the upstream model before forwarding",
   "guardrails, plugins and the PII sanitizer a route configures may refuse or rewrite a request or response; with none configured the bodies pass unchanged",
+  "a streamed request that does not set `stream_options.include_usage`, on a route of `openai` and `openai_compatible` targets only, is sent with it set, and the usage chunk it brings back is logged and kept from the caller (#3667)",
 ]
 tests = [
+  "crates/rolter-gateway/tests/chat_stream_usage.rs::usage_is_asked_for_logged_and_kept_from_a_caller_that_did_not_ask",
   "crates/rolter-gateway/tests/integration.rs::non_streaming_request_proxies_upstream_body",
   "crates/rolter-gateway/tests/integration.rs::streaming_request_passes_through_sse",
   "crates/rolter-gateway/tests/integration.rs::output_guardrail_masks_a_non_streaming_completion",
@@ -304,10 +306,12 @@ supported = [
 ]
 deviations = [
   "`code` carries rolter's own stable codes for refusals the vendor API has no name for",
+  "an upstream's `401` or `403` is answered as rolter's own `502 upstream_auth_failed`, never relayed as the caller's `401` (#3644)",
 ]
 omissions = ["an upstream's own error body is relayed unchanged"]
 tests = [
   "crates/rolter-gateway/tests/integration.rs::retry_policy_distinguishes_client_and_transient_upstream_errors",
+  "crates/rolter-gateway/tests/provider_credentials.rs::an_upstream_401_is_a_502_of_its_own_and_not_the_callers",
 ]
 
 [[spec]]
